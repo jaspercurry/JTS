@@ -38,17 +38,26 @@ MIN_RECOMMENDATION_MARGIN_DB = 1.0
 #: evidence is a COARSE gate (#1968) — six poses at 1/12 octave, not a polar
 #: measurement — and this halves it.
 #:
-#: **Halving it is not the same as keeping it small, and the banked evidence
-#: says so.** The weight scales a term with no upper bound: ``excess`` is a
-#: measured dB difference, so 0.5 x a large number is still a large number.
-#: Across 122 scored records banked from live jts3 rounds (2026-08-17/18) the
-#: WEIGHTED lateral term is the largest of the three in 70 of them, reaches
-#: 18.03 dB (raw ``lateral_excess_db`` up to 36.05 dB) against an anchor term
-#: whose worst is 4.98 dB, and accounts for 43.5% of the score on average and
-#: 91.9% at its peak. So on this speaker the coarse gate frequently IS the
-#: decision, which is the opposite of what an earlier version of this comment
-#: claimed. Whether that is the right weighting is a separate, unmade decision;
-#: this states what the number does, not what it was meant to do.
+#: **Halving it is not the same as bounding it, and the banked evidence says
+#: so.** The weight scales a term with no upper limit: ``excess`` is a measured
+#: dB difference, so half of a large number is still a large number.
+#:
+#: Measured over the 74 DISTINCT scored records banked from live jts3 rounds
+#: (2026-08-10, 2026-08-17 and 2026-08-18; the five corpora named in
+#: ``tests/test_fc_selector.py::test_the_lateral_term_still_measures_what_this_comment_claims``,
+#: deduplicated because the preapply/state pairs bank the same round twice), the
+#: WEIGHTED lateral term is the largest of the three in 35 of them — not a
+#: majority, but far from a discount — reaches 18.03 dB (raw
+#: ``lateral_excess_db`` up to 36.05 dB) against an anchor term whose worst is
+#: 4.98 dB, and accounts for 36.3% of the score on average and 91.9% at its
+#: peak.
+#:
+#: So it neither dominates nor recedes: on roughly half the records this coarse
+#: six-pose gate is the term that decides, which an earlier version of this
+#: comment denied outright. That is worth knowing precisely because the gate is
+#: coarse — #1968 already places it below the noise floor of what it adjudicates.
+#: Whether the weighting should change is a separate, unmade decision; this
+#: states what the number does, not what it was meant to do.
 LATERAL_ROBUSTNESS_WEIGHT = 0.5
 
 #: Weight on headroom given up: real but recoverable (turn it up), unlike a

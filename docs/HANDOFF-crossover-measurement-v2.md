@@ -3241,11 +3241,22 @@ one-time compute budget is derived per sweep by `fc_sweep_budget_s(planned)` —
 `planned × FC_CORNER_COMPUTE_COST_S` (16 s, rounded up from the measured
 per-corner ceiling), so a plan narrowed by declarations asks for less wall than
 a full one. `FC_SWEEP_COMPUTE_BUDGET_S` is the largest budget any plan can ask
-for (six corners, 96 s); the capture page owns `CAPTURE_RESULT_WAIT_BUDGET_MS`
-(116 s minimum) and must stay above that ceiling plus 20 s for anchor analysis, result
-publication, polling, and loaded-Pi variance. The configured candidate always
-starts. Later candidates start only when the slowest attempt so far forecasts
-they fit; otherwise each is represented as `evaluation_budget_spent`.
+for (six corners, 96 s).
+
+The phone's per-capture result wait is **minted from that ceiling on the Pi**
+(`fc_sweep_result_wait_s` = ceiling + `FC_SWEEP_RESULT_OVERHEAD_S`, the measured
+10.48–12.46 s of blob pull, anchor analysis, publication and polling) and
+carried to the page on `CaptureSpec.result_wait_s`. The page holds no copy: its
+`CAPTURE_RESULT_WAIT_BUDGET_MS` is a 90 s fallback for a Pi that publishes no
+wait, and nothing else. That split matters because the page is a separately
+deployed bundle — a page whose wait is shorter than the Pi's ceiling does not
+degrade, it throws a terminal `sweepFailed` and the household loses a completed
+capture. See `capture-page/README.md`'s release-order entry for build
+`20260818.1` (forward: page first; rollback: Pi first).
+
+The configured candidate always starts. Later candidates start only when the
+slowest attempt so far forecasts they fit; otherwise each is represented as
+`evaluation_budget_spent`.
 
 `FcSelection.comparison_complete` is the one completeness fact: true only when
 every deliberately selected candidate was attempted. An attempted but invalid
@@ -3255,11 +3266,13 @@ configured-Fc linearization, but cannot select, persist, or present an
 alternative as best; its durable summary labels the comparison incomplete.
 
 *Memory is bounded by releasing, not by caching.* Ten banked jts3 rounds
-(2026-08-17/18) measure an alternative corner at 11.65–15.52 s, the configured
-corner at 1.7–2.3 s (it reuses the anchor's analysis rather than re-running it),
-and a complete all-six sweep at 62.81–69.84 s; analysis workspaces are around
-400–500 MB. The derived budget is a bounded deployment ceiling, not a claimed
-runtime — it is sized so completion is the normal case, not so it is
+(2026-08-17/18) attempted 45 alternative corners; the 42 with a timed cost span
+11.65–15.52 s. The configured corner runs 1.7–2.3 s (it reuses the anchor's
+analysis rather than re-running it), a complete all-six sweep 62.81–69.84 s, and
+the phone-visible `capture_relay.captured`→`crossover_v2_result` wall
+67.95–81.28 s (73.29–81.28 s for the five all-six rounds); analysis workspaces
+are around 400–500 MB. The derived budget is a bounded deployment ceiling, not a
+claimed runtime — it is sized so completion is the normal case, not so it is
 guaranteed. Each
 candidate's intermediates are released before the next allocates. The retained
 set holds compact executable candidates, bounded full prediction/delta arrays,

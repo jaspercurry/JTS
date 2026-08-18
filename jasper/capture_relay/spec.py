@@ -715,6 +715,24 @@ class CaptureSpec:
     # ``None`` (every caller that does not set it, and every older Pi) renders
     # nothing; the page must not invent a number it was not told.
     time_budget: Mapping[str, int] | None = None
+    # How long the page should wait for THIS Pi to answer one capture, in
+    # seconds, minted by whichever flow knows what its own analysis costs.
+    #
+    # **A sibling of ``time_budget`` rather than a third key inside it**, and
+    # the difference is what each is for. ``time_budget`` is a CLOSED,
+    # all-keys-required set of the two clocks a HOUSEHOLD races, and the page
+    # spends it on one rendered sentence — "the page renders these two and
+    # nothing else". This is a machine deadline the page programs a timer from;
+    # it is per-capture where those are per-session; and only the flows that run
+    # an expensive post-upload analysis can name it. Folding it in would have
+    # made a required key of a number most kinds cannot compute, and invalidated
+    # every two-key budget already on the wire.
+    #
+    # ``None`` — every kind that does not set it, and every Pi predating the
+    # field — means the page keeps its own conservative floor. The page must
+    # never be the place a Pi-side budget change has to be remembered, which is
+    # exactly what this field buys.
+    result_wait_s: int | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -788,6 +806,11 @@ class CaptureSpec:
             **(
                 {"time_budget": dict(self.time_budget)}
                 if self.time_budget is not None
+                else {}
+            ),
+            **(
+                {"result_wait_s": int(self.result_wait_s)}
+                if self.result_wait_s is not None
                 else {}
             ),
             "output": {"format": self.output_format},
@@ -903,6 +926,14 @@ class CaptureSpec:
             time_budget=(
                 {str(k): _as_int(time_budget_raw, str(k)) for k in time_budget_raw}
                 if isinstance(time_budget_raw, Mapping)
+                else None
+            ),
+            # Absent stays absent: a Pi that did not publish a wait is not the
+            # same as one that published a default, and the page's fallback is
+            # the only honest answer for it.
+            result_wait_s=(
+                _as_int(data, "result_wait_s")
+                if data.get("result_wait_s") is not None
                 else None
             ),
             # REQUIRED on the wire, with no default — a spec that states no
@@ -1045,6 +1076,7 @@ class CaptureSpec:
             )
         _validate_return_url(self.return_url)
         _validate_time_budget(self.time_budget)
+        _validate_result_wait(self.result_wait_s)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
@@ -1067,6 +1099,16 @@ class CaptureSpec:
         return replace(
             self, time_budget={"step_s": int(step_s), "session_s": int(session_s)}
         ).validate()
+
+    def with_result_wait(self, result_wait_s: int) -> CaptureSpec:
+        """Return a copy publishing how long this Pi may take to answer.
+
+        Set at MINT time by the flow that knows its own post-upload cost, for
+        the same reason :meth:`with_time_budget` is set there: the page cannot
+        derive it, and a page-side constant is a second copy of a Pi-side
+        number that drifts the moment the Pi's analysis changes.
+        """
+        return replace(self, result_wait_s=int(result_wait_s)).validate()
 
 
 # --- Validation helpers -------------------------------------------------------
@@ -1091,6 +1133,17 @@ def _validate_time_budget(time_budget: Mapping[str, int] | None) -> None:
         value = time_budget[key]
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise CaptureSpecError(f"time_budget.{key} must be a positive integer")
+
+
+def _validate_result_wait(result_wait_s: int | None) -> None:
+    if result_wait_s is None:
+        return
+    if (
+        not isinstance(result_wait_s, int)
+        or isinstance(result_wait_s, bool)
+        or result_wait_s <= 0
+    ):
+        raise CaptureSpecError("result_wait_s must be a positive integer or null")
 
 
 def _validate_validity(validity: CaptureValidity) -> None:

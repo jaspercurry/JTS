@@ -9,7 +9,18 @@ A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial` and
 what a capture-consuming phase decides, and what one build produced.  This one
 answers R17's question: **given a capture that is alive exactly once, which
 crossover corners may this speaker be asked about, what does each one cost to
-score, and which one does the evidence recommend?**
+score, and — in a session that walks — which one does the evidence recommend?**
+
+**No shipped session runs this today.**  The sweep fires at MEASURE-consume
+only when a lateral walk follows, and adjudicates only at that walk's close;
+the walk was paused on 2026-08-18 by owner ruling
+(``crossover_v2_flow.STAGE1_INCLUDES_LATERAL``, whose comment carries the
+evidence), so a shipped round commits its configured Fc without scoring
+candidates and ``fc_selection`` stays ``None``.  Nothing here changed and
+nothing here is dead: forcing that flag back on restores this module's callers
+unmodified, and it is kept intact for the redesigned lateral statistic the
+pause is waiting on.  Read every "runs at" and "at the walk's close" below as
+"when a walk is in the plan".
 
 **Why it could not move until now.**  ``evaluate_candidate`` consumes a build
 product, and through it the linearization state and the cloud terms — which is
@@ -108,6 +119,7 @@ __all__ = [
     "FC_REJECT_OUTSIDE_SEARCH_BAND",
     "FC_CORNER_COMPUTE_COST_S",
     "FC_SWEEP_COMPUTE_BUDGET_S",
+    "FC_SWEEP_RESULT_OVERHEAD_S",
     "MAX_PROPOSED_FC_CANDIDATES",
     "Adjudication",
     "FcCandidateSet",
@@ -119,6 +131,7 @@ __all__ = [
     "evaluate_candidate",
     "fc_candidate_set",
     "fc_sweep_budget_s",
+    "fc_sweep_result_wait_s",
     "refusal",
     "resolve_fc_search_band",
     "sweep_candidates",
@@ -161,9 +174,10 @@ FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
 # edge comparison must not refuse a value it just rounded onto that edge.
 _FC_GRID_EPS_HZ = 0.05
 
-#: What ONE corner costs to score, measured on live jts3 — 43 alternative
-#: corners across ten banked rounds (2026-08-17/18) spanning 11.65 s to
-#: 15.52 s. Rounded UP from the slowest of them, not fitted to it: 43 corners
+#: What ONE corner costs to score, measured on live jts3 — ten banked rounds
+#: (2026-08-17/18) attempted 45 alternative corners, 42 of which are bounded on
+#: both sides by a fit-band line and so have a timed cost; those 42 span 11.65 s
+#: to 15.52 s. Rounded UP from the slowest of them, not fitted to it: 42 corners
 #: on one speaker do not locate a true worst case to a tenth of a second, and
 #: the two directions are not symmetric — too high costs a slow Pi some extra
 #: wall before it truncates, too low re-opens the defect this replaced. The
@@ -204,14 +218,39 @@ def fc_sweep_budget_s(planned: int) -> float:
 
 
 #: The largest budget any plan can ask for — the full proposed set plus the
-#: configured corner. The capture page's ``CAPTURE_RESULT_WAIT_BUDGET_MS`` must
-#: stay above THIS, not above whatever a particular household's declarations
-#: happen to propose, because the phone's wait is a build-time constant and the
-#: plan size is not. Overrunning that wait is not a degraded advisory: the page
-#: throws a terminal ``sweepFailed`` and the household loses the capture.
-#: ``test_the_result_wait_is_named_once_and_exceeds_the_compute_budget`` is what
-#: keeps the two moving together.
+#: configured corner. The phone's per-capture result wait must stay above THIS,
+#: not above whatever a particular household's declarations happen to propose,
+#: because the page is deployed separately and cannot know the plan.
 FC_SWEEP_COMPUTE_BUDGET_S = fc_sweep_budget_s(MAX_PROPOSED_FC_CANDIDATES + 1)
+
+#: Everything the phone waits through that is NOT the sweep: pulling and
+#: decrypting the blob, the anchor analysis, result publication, and its own
+#: polling interval. Measured across the same ten banked rounds as the
+#: per-corner cost — the gap between each round's ``elapsed_s`` and the wall
+#: between its ``event=capture_relay.captured`` and
+#: ``event=correction.crossover_v2_result`` lines — at 10.48 s to 12.46 s
+#: (mean 11.56 s). Rounded up from the worst of them.
+FC_SWEEP_RESULT_OVERHEAD_S = 12.5
+
+
+def fc_sweep_result_wait_s() -> int:
+    """How long the page must wait for a Pi running the largest Fc sweep.
+
+    **Why this is minted Pi-side and carried on the CaptureSpec.** The capture
+    page ships as a separately-deployed bundle, so a page-side constant is a
+    copy of this number living in an artifact that updates on its own schedule
+    — and the two drifting apart is not a cosmetic mismatch. Overrunning the
+    page's wait is not a degraded advisory: ``waitForCaptureResult`` throws a
+    terminal ``sweepFailed`` and the household loses a completed capture, at
+    whatever position of a ten-minute session it happened to reach. Carrying
+    the wait on the spec makes the Pi the only writer, so a later change to the
+    budget or the per-corner cost cannot strand a page nobody remembered to
+    republish.
+
+    Whole seconds because the spec's wire contract is integral, rounded UP so
+    the published wait never states less than the derivation.
+    """
+    return math.ceil(FC_SWEEP_COMPUTE_BUDGET_S + FC_SWEEP_RESULT_OVERHEAD_S)
 
 #: The exceptions a candidate evaluation may fail with and still leave the
 #: capture acceptable. An enumeration rather than a blind ``except Exception``
@@ -782,10 +821,12 @@ def sweep_candidates(
 ) -> tuple[FcCandidateEvaluation, ...]:
     """Evaluate the proposable Fc set against THIS capture, then release.
 
-    Runs at MEASURE-consume because the raw capture is alive only there: the
+    Runs at MEASURE-consume — in a session whose plan includes the lateral
+    walk, which since the 2026-08-18 pause is no shipped session (see the
+    module docstring) — because the raw capture is alive only there: the
     retained anchor holds derived ``DriverResponse``s, and §4.2's own
     conditioning policy refuses to un-compose them. Adjudication still
-    happens at the walk's close, so nothing publishes early (§4.4).
+    happens at that walk's close, so nothing publishes early (§4.4).
 
     **Never raises**, for anything in :data:`_SWEEP_ERRORS` — which includes
     the ``OSError`` a logging port raises with nowhere to write, and which
@@ -984,8 +1025,10 @@ def adjudicate(
 ) -> Adjudication:
     """Turn the retained per-candidate evidence into ONE recommendation.
 
-    At the walk's close, where §4.4 puts every judgement that reads the
-    whole walk. The caller releases the evaluations after: the selection is
+    At the lateral walk's close, where §4.4 puts every judgement that reads the
+    whole walk — so a plan without that walk never reaches here at all, which
+    since the 2026-08-18 pause is every shipped plan (see the module docstring).
+    The caller releases the evaluations after: the selection is
     what the review screen renders, and the evidence behind it has done its job.
 
     Says nothing itself — see :class:`Adjudication` for why this one disclosure

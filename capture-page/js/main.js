@@ -74,13 +74,31 @@ async function loadCapturePageIdentity() {
 // same microphone without asking the household to rediscover it each time.
 const DEVICE_STORAGE_KEY = "jts.capture.selected-device";
 const SETUP_IDENTITY_SCHEMA = 1;
-// End-to-end post-upload wait floor. The Pi's one-time serial Fc sweep owns a
-// 96 s compute ceiling (six corners at its measured per-corner cost); this page
-// owns the larger result/publication window, leaving 20 s for anchor analysis,
-// result publication, polling, and loaded-Pi variance. A floor, not a cost: a
-// healthy round answers in ~70 s and moves on, so this only bites when the
-// speaker has genuinely gone quiet.
-const CAPTURE_RESULT_WAIT_BUDGET_MS = 116000;
+// FALLBACK end-to-end post-upload wait, used only for a spec that carries no
+// `result_wait_s` — i.e. a Pi predating that field, whose Fc sweep is bounded
+// by the 70 s budget of that era. This page no longer owns the number for a
+// current Pi: it reads the Pi-minted wait off the spec (see `resultWaitMs`),
+// so a Pi-side budget change can never strand a page nobody republished.
+//
+// Keep this at the pre-field era's value. Raising it would only make this page
+// wait longer for Pis that cannot possibly need it, and lowering it would break
+// the very speakers it exists for.
+//
+// Scale, for whoever touches it next: on ten banked jts3 rounds the governed
+// wall — `event=capture_relay.captured` to `event=correction.crossover_v2_result`
+// — measured 67.95-81.28 s, and 73.29-81.28 s for the five rounds that swept
+// all six corners. A floor, not a cost: a healthy round answers inside it and
+// moves on, so this only bites when the speaker has genuinely gone quiet.
+const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;
+
+// The wait this capture actually runs under: the Pi's own published figure when
+// it sent one, else the fallback above. Never the larger of the two — the Pi is
+// the owner, and a future Pi that legitimately shortens its analysis must be
+// able to say so.
+function resultWaitMs(spec) {
+  const published = Number(spec && spec.result_wait_s);
+  return published > 0 ? published * 1000 : CAPTURE_RESULT_WAIT_BUDGET_MS;
+}
 // Calibration files are ordinarily a few kilobytes. Keep enough headroom for
 // real vendor files while staying well below the relay's 1 MiB event ceiling:
 // the full text is sent exactly once for Pi validation, never in meter batches.
@@ -3534,7 +3552,7 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
   // here. Give the bounded computation enough headroom for anchor analysis,
   // result publication, polling, and loaded-Pi variance.
   const deadline = Date.now() + Math.max(
-    CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0,
+    resultWaitMs(spec), Number(spec.duration_ms) || 0,
   );
   // 20-40 s of blind analysis per capture, under one static line, was the
   // owner's "I did not know whether to wait or give up" (work order D9).
@@ -4858,6 +4876,10 @@ export {
   timeBudgetLine,
   entryNoiseNote,
   expiredBudgetCopy,
+  // Same layer, same reason: the absence case — a spec from a Pi that
+  // publishes no wait — is the one a full-loop test reaches only by accident,
+  // and is exactly the case an old speaker depends on.
+  resultWaitMs,
   // The link-deadline pair (issue #2083) belongs to the same layer: one
   // records the only evidence the page has about the relay's own clock, the
   // other turns it into the single decision the dead-session screen makes.

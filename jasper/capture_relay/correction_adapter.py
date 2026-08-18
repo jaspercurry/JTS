@@ -101,6 +101,7 @@ def open_capture(
     capture_origin: str,
     return_url: str = "",
     ttl_s: int = DEFAULT_TTL_S,
+    result_wait_s: int | None = None,
 ) -> RelayCapture:
     """Mint + register a relay capture for any `capture_spec`, kind-agnostic.
 
@@ -108,9 +109,18 @@ def open_capture(
     measurement kind; only the `spec` differs. Each flow builds its own spec
     (room sweep, sync marker, crossover sweep, …) and calls this — so the adapter
     never grows a per-kind function.
+
+    `result_wait_s` is passed IN rather than derived here, exactly as `ttl_s`
+    is: how long a capture takes to answer is a property of the analysis the
+    calling flow runs, and this module is the transport — it never imports the
+    domain that would know (see the host-mediated note above). `None` leaves
+    the field off the spec, which is what every kind whose analysis is not
+    worth publishing a wait for should do.
     """
     if return_url:
         spec = spec.with_return_url(return_url)
+    if result_wait_s is not None:
+        spec = spec.with_result_wait(int(result_wait_s))
     # Publish the two clocks this session will actually run under, so the phone
     # can name which one is ticking and which one expired (work order D8, issue
     # #1807). Set HERE rather than in a spec builder because ``ttl_s`` is

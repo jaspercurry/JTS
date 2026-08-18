@@ -406,7 +406,7 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "a6e33e209eb4b2c360c3c6fac50850aae81de53fe1ebf02e9305402a45ed6656"
+    "a679819fbedaa4217108ece2d5ee90338395e9c168f7e3f8639399369b87b0db"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260818.1"
 
@@ -498,6 +498,30 @@ def test_capture_page_existing_field_rollout_order_is_pinned():
     assert "**Forward rollout → Pi first, page second.**" in readme
     assert "**Rollback → page first, Pi second.**" in readme
     assert "build `20260729.1` starts\nrendering Room" in readme
+
+
+def test_capture_page_result_wait_rollout_order_is_pinned():
+    """Build 20260818.1 moves the post-upload result wait off the page and onto
+    the spec, and the two directions are NOT symmetric — which is the whole
+    reason the entry has to exist.
+
+    A new page against an old Pi falls back to the same 90 s it always used, so
+    that pair is exactly today's behaviour. An OLD page against a new Pi holds a
+    90 s wall against a sweep whose ceiling is now 96 s: `waitForCaptureResult`
+    then throws a terminal `sweepFailed` and the household loses a completed
+    capture. Nothing gates the pair — `validate_capture_page` checks the stamp's
+    FORMAT, never a minimum — so the documented order is the only safeguard, and
+    an undocumented order is how it gets got wrong.
+    """
+    readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
+    main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+
+    assert "Build `20260818.1` moves a number OFF this page" in readme
+    assert "**Forward rollout → page first, Pi second**" in readme
+    assert "**Old page + new Pi: UNSAFE.**" in readme
+    # The tolerance the page-first order rests on is a BRANCH, not a hope: a
+    # spec with no published wait falls back rather than reading NaN.
+    assert "published > 0 ? published * 1000 : CAPTURE_RESULT_WAIT_BUDGET_MS" in main_js
 
 
 def test_capture_page_new_phone_event_rollout_order_is_pinned():
@@ -1584,9 +1608,10 @@ def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
     result_body = main_js[start:end]
     assert "failure.sweepFailed = true;" in result_body
     assert "throw failure;" in result_body
-    # The named result wait gives the Pi's bounded analysis real headroom.
-    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 116000;" in main_js
-    assert "CAPTURE_RESULT_WAIT_BUDGET_MS, Number(spec.duration_ms) || 0" in result_body
+    # The wait is the Pi's to publish (`CaptureSpec.result_wait_s`); the
+    # constant survives only as the fallback for a Pi that publishes none.
+    assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;" in main_js
+    assert "resultWaitMs(spec), Number(spec.duration_ms) || 0" in result_body
 
 
 def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():

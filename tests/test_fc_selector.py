@@ -9,7 +9,11 @@ widens it, with no other input changed.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -467,3 +471,114 @@ def test_a_configured_corner_sitting_on_the_declared_floor_is_not_duplicated():
     assert set(coincident.candidates) == set(control.candidates) - {2500.0}
     # The floor is proposed, so it is never left sitting in the refused list.
     assert coincident.rejected == ()
+
+
+# --- the lateral weight's own claim, checked against the corpus it cites ------
+
+#: The banked rounds the ``LATERAL_ROBUSTNESS_WEIGHT`` comment's numbers are
+#: measured over. Named here rather than in the comment so a reader can see
+#: exactly what "the banked evidence" is, and so the guard below can recompute
+#: it. Laptop-durable and absent in CI, where the guard skips.
+_LATERAL_CORPORA = (
+    "jts3-incident-20260810-issue2291",
+    "xover-armrun-2026-08-18",
+    "xover-blenditer-2026-08-18",
+    "xover-series1-2026-08-17",
+    "xover-series2-2026-08-17",
+)
+
+_CAPTURES_ROOT = Path(
+    os.environ.get("JTS_CAPTURES_ROOT", "").strip()
+    or Path(__file__).resolve().parents[1] / "captures"
+)
+
+
+def _banked_fc_scores() -> list[dict]:
+    """Every DISTINCT banked ``fc_selection`` score row, deduplicated.
+
+    Content-hashed rather than path-keyed: the walk banks a ``-preapply`` state
+    beside the applied one, so nine of the fourteen blocks appear in two files.
+    Counting files would double them, which is exactly how the first version of
+    the comment above reported a majority that is not there.
+    """
+    seen: dict[str, dict] = {}
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            if {"scores", "comparison_complete", "verdict"} <= set(node):
+                seen.setdefault(
+                    hashlib.sha256(
+                        json.dumps(node, sort_keys=True, default=str).encode()
+                    ).hexdigest(),
+                    node,
+                )
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for corpus in _LATERAL_CORPORA:
+        for path in sorted((_CAPTURES_ROOT / corpus).rglob("*.json")):
+            try:
+                walk(json.loads(path.read_text(errors="replace")))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+    return [
+        row
+        for block in seen.values()
+        for row in (block.get("scores") or [])
+        if isinstance(row, dict) and "lateral_excess_db" in row
+    ]
+
+
+@pytest.mark.skipif(
+    not all((_CAPTURES_ROOT / c).is_dir() for c in _LATERAL_CORPORA),
+    reason=(
+        f"laptop-durable banked corpora absent under {_CAPTURES_ROOT} "
+        "(set JTS_CAPTURES_ROOT to point at them)"
+    ),
+)
+def test_the_lateral_term_still_measures_what_this_comment_claims():
+    """``LATERAL_ROBUSTNESS_WEIGHT``'s comment states measured numbers, and a
+    measured number nothing recomputes is a claim with no keeper.
+
+    It failed that way once already: the first version of that comment counted
+    the preapply duplicates and reported the term as largest in a MAJORITY of
+    records. It is 35 of 74. This recomputes every figure the comment states, so
+    the next person to widen the corpus finds out whether the sentence still
+    holds instead of inheriting it.
+    """
+    rows = _banked_fc_scores()
+    assert len(rows) == 74, "the comment's denominator moved; restate it"
+
+    largest = 0
+    shares: list[float] = []
+    anchor_worst = lateral_peak = raw_peak = 0.0
+    for row in rows:
+        anchor = abs(float(row["worst_db"]))
+        lateral = sel.LATERAL_ROBUSTNESS_WEIGHT * float(row["lateral_excess_db"])
+        headroom = sel.HEADROOM_COST_WEIGHT * float(row["headroom_cost_db"])
+        anchor_worst = max(anchor_worst, anchor)
+        lateral_peak = max(lateral_peak, lateral)
+        raw_peak = max(raw_peak, float(row["lateral_excess_db"]))
+        if lateral > anchor and lateral > headroom:
+            largest += 1
+        total = anchor + lateral + headroom
+        if total > 0:
+            shares.append(lateral / total)
+
+    assert largest == 35
+    assert round(lateral_peak, 2) == 18.03
+    assert round(raw_peak, 2) == 36.05
+    # Pinned at three decimals, not two: the measured value is 4.975, and
+    # ``round(4.975, 2)`` is 4.97 under Python's banker's rounding while the
+    # comment renders it 4.98 half-up. Asserting the rendering would pin the
+    # rounding rule; asserting the measurement pins the fact.
+    assert round(anchor_worst, 3) == 4.975
+    assert round(100 * sum(shares) / len(shares), 1) == 36.3
+    assert round(100 * max(shares), 1) == 91.9
+    # The load-bearing direction: NOT a majority. The comment says "35 of 74 —
+    # not a majority, but far from a discount", and that reading is the whole
+    # reason the weighting question stays open rather than settled.
+    assert largest < len(rows) / 2
