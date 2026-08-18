@@ -267,21 +267,17 @@ RENDERER_LANES: tuple[RendererLane, ...] = (
         aloop_device="shairport_substream",
         ring_device="shairport_ring_lane",
         conf_renderer="deploy/bin/jasper-apply-airplay-mode",
-        # Printed at arm time. AirPlay is the one lane whose SYNC machinery
-        # was tuned against the transport this arm replaces; the constants
-        # are not invalidated by the arm, but their validation does not
-        # transfer automatically — the per-box source pass owns re-deriving
-        # them (docs/HANDOFF-audio-graph-consolidation.md, U3 arc row).
+        # Printed at arm time. Drift tolerance has SHM-ring evidence for the
+        # observed out-of-date/order event class. The other sync settings were
+        # held unchanged and still need ring reliability and A/V validation.
         arm_advisory=(
-            "AirPlay's sync tuning was derived on the snd-aloop transport: "
-            "the audio_backend_latency_offset's VISIBLE-delay half changes "
-            "on the ring (the ioplug reports honest occupancy where aloop "
-            "reported buffer fill), and drift_tolerance / resync_threshold "
-            "/ audio_backend_buffer_desired_length in "
-            "deploy/shairport-sync.conf.template were tuned against aloop "
-            "fill dynamics. Keep resync_threshold at 0.2 through the "
-            "migration; re-verify A/V sync and watch the resync log on this "
-            "box's source pass (docs/HANDOFF-airplay.md, U3)."
+            "AirPlay's shipped drift_tolerance=0.002 has SHM-ring validation "
+            "for the observed out-of-date/order event class. Keep "
+            "resync_threshold at 0.2 and "
+            "audio_backend_buffer_desired_length at 0.5; those settings and "
+            "the latency offset were held unchanged and still need their own "
+            "ring reliability and A/V validation "
+            "(docs/HANDOFF-airplay.md, U3)."
         ),
     ),
 )
