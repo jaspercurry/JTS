@@ -53,10 +53,12 @@ never redirected.
 - ✅ **Crossover measurement is now the v2 commission session (default
   flipped 2026-07-19).** The `/sound/crossover/` measurement + tuning flow
   is a guided spatial cloud around one mark, walked in two stages with the
-  household's explicit Apply between them (CHECK → MEASURE → the lateral
-  walk → the entry baseline → the household applies → VERIFY → the
-  post-apply position group). At the shipped defaults Full is 15 captures
-  (9 then 6) and Express is 10 (the same 9, then 1) — they differ in stage
+  household's explicit Apply between them (CHECK → MEASURE → the entry
+  baseline → the household applies → VERIFY → the
+  post-apply position group; the 6-pose lateral walk sat between MEASURE and
+  the entry baseline until it was paused on 2026-08-18). At the shipped
+  defaults Full is 9 captures
+  (3 then 6) and Express is 4 (the same 3, then 1) — they differ in stage
   2 only, and `crossover_v2_flow.tier_display_info()` derives both, so read
   it rather than a number written down here (flow-simplification PR-U1,
   both tiers first-class in the wizard's tier chooser). Its canonical operational

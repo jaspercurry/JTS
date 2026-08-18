@@ -3703,13 +3703,17 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     elif phase == PHASE_ENTRY_BASELINE:
         # #2291's "before" capture. Same screen and step as the three above —
         # the household is still measuring — with copy that says the two things
-        # the neighbours' copy would get wrong: they are BACK on the mark and
-        # holding still again (the lateral walk just had them moving), and this
-        # recording is what the tuning gets compared against afterwards.
+        # the neighbours' copy would get wrong: they are on the mark and holding
+        # still, and this recording is what the tuning gets compared against
+        # afterwards. The copy says "on the mark", not "BACK on the mark",
+        # because it has two possible predecessors and only one of them moved
+        # anybody: since the 2026-08-18 lateral pause this capture follows
+        # MEASURE, where the microphone never left the mark, and "back" would
+        # ask a household to undo a move it was never asked to make.
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                "One last measurement, back on the mark and held still — this "
+                "One last measurement, on the mark and held still — this "
                 "is how your speaker sounds now, so JTS can tell you whether "
                 "the tuning actually improved it."
             ),

@@ -1049,7 +1049,7 @@ def relay_link_ttl_s(plan_shape: Any, wall_clock_ceiling_s: float) -> int:
     ``capture_relay.session.DEFAULT_TTL_S`` (900 s) is an ABSOLUTE clock —
     ``TIME_BUDGET_LINK``, counted from the mint and refreshed by nothing. A
     hand-walked stage finishes well inside it. A REMOTE stage does not fit: its
-    own wall-clock ceiling is 2520 s (stage 1) / 2040 s (stage 2) at the shipped
+    own wall-clock ceiling is 1800 s (stage 1) / 2040 s (stage 2) at the shipped
     shape, and a single stalled position may spend
     ``REMOTE_POSITION_HOLD_BUDGET_S`` of that on its own. The first real
     remote run died at ~890 s with the phone still posting, on a 404 from a link

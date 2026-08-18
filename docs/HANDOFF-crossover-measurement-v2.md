@@ -24,9 +24,9 @@ changed — repeating that apply-and-re-measure round, up to three times, while
 the result is still getting flatter (#2602).
 
 - **Two tiers, chosen every session** on the `/correction/` wizard. At the
-  shipped defaults `TIER_FULL` is **15 captures — 9 then 6**, and
-  `TIER_EXPRESS` is **10 — the same 9, then 1**. The tiers differ in
-  **stage 2 only**: stage 1 is 9 captures for both. Do not restate those
+  shipped defaults `TIER_FULL` is **9 captures — 3 then 6**, and
+  `TIER_EXPRESS` is **4 — the same 3, then 1**. The tiers differ in
+  **stage 2 only**: stage 1 is 3 captures for both. Do not restate those
   numbers anywhere a plan change cannot reach them —
   `tier_display_info()` derives them from the plans themselves and is what
   the household-facing chooser reads (`TIER_FULL` / `TIER_EXPRESS` /
@@ -34,7 +34,7 @@ the result is still getting flatter (#2602).
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
 - **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is
-  **14 — the same 9, then 5**: Full's walk driven by an external mic
+  **8 — the same 3, then 5**: Full's walk driven by an external mic
   positioner instead of by hand, so it drops exactly the one pose a
   positioner cannot reach (the vertical) and states every other pose as an
   ANGLE. The chooser never offers it — consenting to it means owning a
@@ -148,21 +148,35 @@ The class they were named after — `CrossoverV2Conductor` — was dissolved in
 The journey is **two relay sessions** with an untimed household decision
 between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 
-**Stage 1 — `POST /correction/crossover/v2/session`, 9 captures — the same 9 on both tiers.**
+**Stage 1 — `POST /correction/crossover/v2/session`, 3 captures — the same 3 on both tiers.**
 
 | index | phase | what it is |
 |---|---|---|
 | 1 | `check` | microphone check |
 | 2 | `measure` | design-axis anchor, per-driver |
-| 3–8 | `lateral` | 6 prompted poses off the design axis |
-| 9 | `entry_baseline` | summed sweep back at the mark — the round's measured "before" |
+| 3 | `entry_baseline` | summed sweep at the mark — the round's measured "before" |
 
 Which phases stage 1 walks is three flags in the flow file, not a guess:
-`STAGE1_INCLUDES_LATERAL` and `STAGE1_INCLUDES_ENTRY_BASELINE` are `True`,
-`STAGE1_INCLUDES_CLOUD_MEASURE` is `False`, so a shipped session emits no
-`cloud_measure` phase or prompt. The entry baseline is **last** on purpose:
-the less the room, the mic and the household have moved between it and the
-graph change, the more of the before→after difference is the graph.
+`STAGE1_INCLUDES_ENTRY_BASELINE` is `True`, and `STAGE1_INCLUDES_CLOUD_MEASURE`
+and `STAGE1_INCLUDES_LATERAL` are `False`, so a shipped session emits no
+`cloud_measure` and no `lateral` phase or prompt. The entry baseline is
+**last** on purpose: the less the room, the mic and the household have moved
+between it and the graph change, the more of the before→after difference is
+the graph.
+
+**The 6-pose `lateral` walk is PAUSED, not retired (2026-08-18).** It ran as
+indexes 3–8 from R17 until the pause. The flag comment on
+`STAGE1_INCLUDES_LATERAL` carries the owner-ratified evidence; in short, over
+the 8 banked rounds it was 59.4% of all session audio, never changed an
+outcome, and the scalar it feeds adjudicates below its own 3.54 dB repeat
+noise. The pose measurements themselves are sound, so every piece of the walk
+stays in place — prompts, screens, ladder, curve builder, relay arithmetic —
+and forcing the flag back to `True` restores the 9-capture shape unchanged.
+It re-enables when a redesigned lateral statistic shows rank separation above
+its measured noise floor. **The R17 Fc candidate sweep pauses with it**: the
+sweep fires only in a session that walks, so a shipped round now commits its
+configured Fc without scoring alternatives — the verdict all 8 banked rounds
+reached anyway.
 
 The set is held open past its capture target until the phone posts
 `complete_capture_set` — the household's "Continue". That signal closes the
@@ -193,7 +207,7 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 
 | | Full | Remote |
 |---|---|---|
-| stage 1 | 9 captures | the same 9 |
+| stage 1 | 3 captures | the same 3 |
 | stage 2 | 6 captures | 5 — Full's walk minus the vertical pose |
 | per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
 | pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
@@ -205,7 +219,8 @@ is the longest prefix of `CLOUD_POSITION_PROMPTS` containing no
 stranding it. `position_angle_deg()` likewise derives each bearing from the
 pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the row's LEFT/RIGHT
 word — there is no second table of angles to drift. At the shipped offsets the
-walk is **0°, −7°, +7°, −22°, +22°** (stage 1 opens and closes on 0°). Roles
+walk is **0°, −7°, +7°, −22°, +22°** (stage 1's paused lateral walk opened and
+closed on 0°). Roles
 still come from the existing `WIDE_OFFSET_MIN_CM` rule, so a remote group's
 durable evidence stays comparable with a hand-walked one's.
 
@@ -368,7 +383,7 @@ does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) refuses it as
 `position_hold_expired`, because a dead driver would otherwise pin the
 measurement volume, the paused voice, and the relay slot indefinitely. That is
 a **per-hold** bound and not the operative total — the session's own wall-clock
-ceiling (`session_wall_clock_ceiling_s`, 2520 s for stage 1 and 2040 s for
+ceiling (`session_wall_clock_ceiling_s`, 1800 s for stage 1 and 2040 s for
 stage 2 at the shipped shape) covers the whole walk, so a driver that answers
 every position but answers slowly ends on that ceiling with no single hold ever
 expiring. That death has its own name too, since
@@ -1431,17 +1446,17 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
 (`jasper/capture_relay/session.py`) in each.
 
-**Stage 1 — 9 captures at either tier.** `STAGE1_INCLUDES_LATERAL` is `True`
-(R17's Fc selector flipped it, #2173), `STAGE1_INCLUDES_ENTRY_BASELINE` is
-`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` stays `False`
-(R15, #2106), so a shipped session runs the anchor pair, then the lateral walk,
-then one summed capture back at the mark, and emits no `cloud_measure` phase or
-prompt. Production passes
+**Stage 1 — 3 captures at either tier.** `STAGE1_INCLUDES_ENTRY_BASELINE` is
+`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) and
+`STAGE1_INCLUDES_LATERAL` are both `False`, so a shipped session runs the
+anchor pair, then one summed capture at the mark, and emits no `cloud_measure`
+and no `lateral` phase or prompt. Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
 
-Gate 0 pairs every producer with a current consumer, and the walk's is
+R17 (#2173) flipped `STAGE1_INCLUDES_LATERAL` on, because Gate 0 pairs every
+producer with a current consumer and the walk's is
 `fc_selector.score_candidate`'s lateral robustness term — the only evidence in
 a session that a candidate's handoff survives off the design axis. The
 **structural** blocker cleared first: #1654 made the HF sweep floor follow the
@@ -1452,11 +1467,28 @@ sweep floor itself stay unscorable — at Fc 1600 the handoff sits exactly on th
 band edge — so the honest downward limit is **Fc strictly above the declared
 hard floor**.
 
+**The walk was paused on 2026-08-18**, owner-ratified on a recompute over the
+8 banked rounds carrying an `fc_selection`: it was 59.4% of all banked session
+audio (1,649 of 2,776 s) and the largest retake source (9 of 13 rejected
+captures), it never changed an outcome (8 of 8 committed the configured Fc),
+and the max-over-poses scalar it feeds adjudicates below its own noise —
+3.54 dB same-arm repeat noise against rank-1-to-rank-2 gaps of 0.004–2.13 dB,
+with the closing at-mark repeat frequently carrying the argmax in 4 of the 8.
+The pose measurements are sound (inter-driver drift 0.6–1.9 dB against a
+0.09–0.32 dB mark-return floor; ±40 cm ~2.2× the ±12 cm pair in 8 of 8), so
+the machinery below is intact and unmodified — this is a paused producer
+awaiting a redesigned statistic, not a retired one. **The Fc candidate sweep
+is dormant with it**, since it fires only in a session that walks.
+
+Everything from here to the end of this subsection describes the walk **as it
+runs when the flag is forced back to `True`** — indexes 3–8, stage 1 back to
+9 captures:
+
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `check` | tap | microphone check |
 | 2 | `measure` | tap | design-axis anchor, per-driver |
-| 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) |
+| 3–8 | `lateral` | tap each | 6 prompted poses (plan §4.4) — **paused, flag-off today** |
 | 9 | `entry_baseline` | tap | summed sweep at the mark, the round's measured "before" (#2291) |
 
 The walk is the mark, ±12 cm and ±40 cm left/right, and a return to the mark.
@@ -1492,11 +1524,13 @@ schema. Each pose holds one `LateralPoseCurve` per role: complex values
 × 2 roles × 6 poses. Deliberately coarse — #1968 calls lateral samples a coarse
 gate, and this is not a polar measurement.
 
-The RAW-WAV side is not free, though: flag-on takes stage 1 from 2 captures to
-8, so an operator running with the dump ring enabled ("Operator capture
-retention" below) keeps roughly a quarter as many past sessions in the same
+The RAW-WAV side is not free, though: flag-on takes stage 1 from 3 captures to
+9, so an operator running with the dump ring enabled ("Operator capture
+retention" below) keeps roughly a third as many past sessions in the same
 fixed-size ring. Worth knowing before a debugging session that expects last
-week's captures to still be there.
+week's captures to still be there. It is also the largest single cost of the
+walk, and half the reason for the pause above: six replays of the anchor
+program were 59.4% of all banked session audio.
 
 `lateral_mark_return_drift_db()` is the walk's own honesty screen: per-role
 worst |Δ dB| between the two at-mark poses, in band. **Reported, never gated** —
@@ -1504,12 +1538,15 @@ no evidence in this campaign fixes a threshold — and `None`, never `0.0`, when
 a bracket pose is missing. Journalled at the walk's close as
 `event=correction.crossover_v2_lateral_walk_closed`.
 
-**The fit runs at the last capture before the apply**, and R16 makes the walk's
-close that capture (`_close_lateral_walk`) rather than MEASURE's accept. Same
-rule the cloud's own deferral implements, for the same reason: a proposal built
-before the walk would predate five minutes of evidence the household was just
-asked to produce. A walk whose FINAL pose is dropped still closes — the anchor's
-coefficients were never the poses' to withhold.
+**The fit runs at the last capture of the last GROUP**, and R16 makes the
+walk's close that capture (`_close_lateral_walk`) rather than MEASURE's accept.
+Same rule the cloud's own deferral implements, for the same reason: a proposal
+built before the walk would predate five minutes of evidence the household was
+just asked to produce. A walk whose FINAL pose is dropped still closes — the
+anchor's coefficients were never the poses' to withhold. With the walk paused
+there is no group to wait for, so the fit runs at MEASURE's accept; #2291's
+entry baseline follows it without deferring it, because that capture is the
+round's "before" rather than an input to the fit.
 
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
@@ -1983,9 +2020,11 @@ together. Design rationale:
 - **Session budget.** `session_wall_clock_ceiling_s(plan)` scales the
   walked-away measurement-volume ceiling with plan length
   (1800 s + 120 s per capture beyond the 3-entry baseline), and each STAGE
-  arms its own from its own plan since the two-stage split: Full 2640 s
-  (stage 1, 10 captures) / 2160 s (stage 2, 6), Express 2160 s / 1800 s,
-  hard-capped by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s. The
+  arms its own from its own plan since the two-stage split: Full 1800 s
+  (stage 1, 3 captures) / 2160 s (stage 2, 6), Express 1800 s / 1800 s,
+  hard-capped by `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s.
+  Stage 1 sits at the baseline itself now that the lateral walk is paused, so
+  the longest stage in the journey is Full's stage 2. The
   restore ladder and the restore-once latch are unchanged: a walked-away
   household can never leave the speaker at measurement volume.
 - **Resume is unchanged (§5.6).** A new relay session invalidates every
@@ -3083,6 +3122,14 @@ slot is last-write-wins, and `capture_set_complete` routinely overwrites the
 final `capture_result` before the page's ~250 ms poll reads it.
 
 ### Recommending an Fc
+
+> **Dormant since 2026-08-18.** The sweep that gathers this evidence fires only
+> in a session that walks the lateral poses, and that walk is paused (see
+> "Stage 1" above and the `STAGE1_INCLUDES_LATERAL` flag comment). A shipped
+> round therefore produces no `fc_selection`, always takes the configured-Fc
+> path below, and never renders **Use N Hz and apply**. Nothing here was
+> removed or changed: re-arming the walk re-arms all of it. The section
+> describes what runs when it is armed.
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
 tells the household which one measured best. A configured-Fc winner keeps the
@@ -5286,7 +5333,7 @@ no retries-as-bodge). Treat these as regression fences.
     the process has been continuously busy past
     `_systemd.HOLD_LEAK_WARN_AFTER_SEC` (7200 s = 2× the volume plan's
     `MAX_WALL_CLOCK_CEILING_S`, so no legitimate session — not even the
-    longest stage, Full's 2640 s stage 1 — can trip it), so a leaked hold
+    longest stage, Full's 2160 s stage 2 — can trip it), so a leaked hold
     can never buy
     silent immortality. **The escalation is a log level, not a reaper.**
     Before this fix the 600 s exit incidentally killed a *wedged* worker
@@ -5439,8 +5486,10 @@ R16 lateral-evidence diff and its tests. The lateral walk is code-complete,
 can until `STAGE1_INCLUDES_LATERAL` flips with R17, so every claim about it is
 about what the code does, not about what a household or a microphone did.
 Position groups, failure taxonomy, benchmarks, and history were not re-verified.
-*Superseded — R17 (#2173) flipped the flag; the capture-flow section above has
-the shipped shape.*
+*Superseded twice — R17 (#2173) flipped the flag on, and the 2026-08-18 pause
+flipped it back off; the capture-flow section above has the shipped shape.
+Note the walk is still hardware-unproven: the pause landed before the owner-run
+selection walk this note was waiting on.*
 
 **2026-08-06 #1654 scope:** three sections only — the conditioning-policy
 margin, the R16-stage-1 blocker paragraph, and the level-match frame's
@@ -5595,7 +5644,13 @@ corrections came from that gate's review of PR #2545, and every figure in them
 was measured on this branch. **The date below is deliberately NOT bumped**, for
 the same reason as the two addenda above.
 
-Last verified: 2026-08-17 (series-2 D1 — the safety-axis section was rewritten
+Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
+capture tables, the tier capture/duration totals, the remote wall-clock
+ceiling, the fit-timing rule, and the "Recommending an Fc" section were
+re-verified against the shipped `STAGE1_INCLUDES_LATERAL = False` and the
+values `tier_display_info()` / `session_wall_clock_ceiling_s` actually return.
+**Scope: only those sections.** The prior pass's reading, carried forward
+unchanged: 2026-08-17 — series-2 D1 — the safety-axis section was rewritten
 against the code in the same diff: the anchored directional findings, the two
 SAFE reasons and their five surfaces, the comparability rule, what the anchored
 rule cannot see, and the `safety_only` block. Two paragraphs that D1's own fix

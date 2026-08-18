@@ -123,38 +123,96 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
 
 
-# --- the shipped stage-1 shape, now that R17 has flipped the walk on ----------
+# --- the shipped stage-1 shape, now that the walk is paused -------------------
 
 
-def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
-    """R17 flipped ``STAGE1_INCLUDES_LATERAL``, so a household now walks the
-    six poses after the anchor; #2291 added one held-still capture at the mark
-    after them. Same guard as the dormancy pin it replaces, one state over: the
-    shape is written out INDEPENDENTLY of the flags, so a build that flipped a
-    flag and also changed the shape some other way still fails. (The retired
-    assertion was ``… is False`` over a 794-byte plan.)
+def _stage1(**flags):
+    """The index map, plan and spec one set of stage-1 flags produces."""
+    return (
+        build_v2_cloud_index_phase_map(tier="full", **flags),
+        build_v2_capture_plan(_roles(), FC_HZ, tier="full", **flags),
+        build_v2_session_spec(
+            _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
+            **flags,
+        ),
+    )
+
+
+def _shipped_flags():
+    return dict(
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    )
+
+
+def test_the_walk_is_paused_and_stage_1_is_the_pinned_three_capture_shape():
+    """The walk is PAUSED (2026-08-18), so a household is no longer walked:
+    stage 1 is the anchor pair plus #2291's one held-still capture at the mark.
+
+    Same guard as the two states before it, one state over — the shape is
+    written out INDEPENDENTLY of the flags, so a build that flipped a flag and
+    also changed the shape some other way still fails. (R17's assertion was
+    ``… is True`` over a 2,692-byte plan; R16's dormant one was ``… is False``
+    over a 794-byte plan, which is NOT this shape — #2291's entry baseline
+    landed in between.)
+
+    Why the walk is off, in one line: over the 8 banked rounds it was 59.4% of
+    all session audio, never changed an outcome, and fed a statistic whose
+    rank-1-to-rank-2 gaps (0.004–2.13 dB) sit under its own 3.54 dB repeat
+    noise. ``STAGE1_INCLUDES_LATERAL`` carries the full record, and
+    :func:`test_forcing_the_walk_back_on_restores_it_byte_for_byte` is the
+    executable half of the promise that this is a pause and not a deletion.
     """
-    assert flow.STAGE1_INCLUDES_LATERAL is True
+    assert flow.STAGE1_INCLUDES_LATERAL is False
     assert flow.STAGE1_INCLUDES_ENTRY_BASELINE is True
 
-    index_phase = build_v2_cloud_index_phase_map(
-        tier="full",
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-    plan = build_v2_capture_plan(
-        _roles(), FC_HZ, tier="full",
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
+    index_phase, plan, spec = _stage1(**_shipped_flags())
 
-    # Stage 1 stated in full: the anchor pair, one entry per prompted pose, and
-    # #2291's entry baseline LAST — the capture immediately before apply, which
-    # is the whole reason it is at the end rather than anywhere else. The
-    # pre-apply cloud stays off — a separate flag, and R17 did not authorize it.
+    # Stage 1 stated in full: the anchor pair, then #2291's entry baseline. The
+    # pre-apply cloud stays off on its own separate flag, as it has since R15.
+    assert index_phase == {
+        1: PHASE_CHECK, 2: PHASE_MEASURE, 3: flow.PHASE_ENTRY_BASELINE,
+    }
+    assert [e.kind_label for e in plan.entries] == [
+        "check", "measure", "entry_baseline",
+    ]
+    assert plan.capture_target == 3
+    assert plan.max_attempts == 3 + flow.CLOUD_RETAKE_ALLOWANCE
+    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3
+
+    # No pose reaches the wire — this plan is what the phone renders.
+    raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+    assert b"lateral" not in raw
+    assert b"entry_baseline" in raw
+    assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
+        1107, "6ac9a2d24b80031faa9c9f0f745ab2c77b39176c349ed6d149e62f232a0265b9",
+    ), "the shipped stage-1 plan's wire bytes moved"
+
+    # …and the consent screen no longer tells the household they will be
+    # walked. Its walk note is the one R17 added; with the poses gone the
+    # screen must not still promise a move nobody will be asked to make.
+    notes = [c["text"] for c in spec.screen if c["type"] == "note"]
+    assert not any("of the mark" in note for note in notes)
+
+
+def test_forcing_the_walk_back_on_restores_it_byte_for_byte():
+    """The PAUSE-not-DELETE promise, executable.
+
+    Every piece of the walk stays in the tree, so setting the flag back to
+    ``True`` must reproduce R17's shipped stage 1 EXACTLY — same phases, same
+    entry labels, same capture target, and the same wire bytes the phone
+    rendered before the pause (2,692 / ``7737d2b3…``, carried over verbatim
+    from the pin this file kept while the walk shipped on). A refactor that
+    quietly ate a prompt, a screen or a plan entry while the walk was dark
+    fails here rather than on the first re-armed household.
+    """
     poses = len(flow.LATERAL_POSE_PROMPTS)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
+        index_phase, plan, spec = _stage1(**_shipped_flags())
+        assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3 + poses
+
     assert index_phase == (
         {1: PHASE_CHECK, 2: PHASE_MEASURE}
         | {index: PHASE_LATERAL for index in range(3, 3 + poses)}
@@ -165,25 +223,14 @@ def test_the_walk_is_on_and_stage_1_is_the_pinned_six_pose_shape():
     ]
     assert plan.capture_target == 3 + poses
     assert plan.max_attempts == 3 + poses + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3 + poses
 
-    # The walk reaches the wire, and its bytes are pinned exactly as the
-    # dormant shape's were — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
-    assert b"lateral" in raw
-    assert b"entry_baseline" in raw
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
         2692, "7737d2b3cecd04bae6c43aa40f872da0617d86319a0544d431558df8ce9c8940",
-    ), "the shipped stage-1 plan's wire bytes moved"
+    ), "re-arming the walk no longer reproduces the plan R17 shipped"
 
-    # …and the consent screen now tells the household they will be walked,
-    # rather than promising a stationary microphone.
-    spec = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding="b" * 24, tier="full",
-        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
+    # The consent copy comes back with it — the household is told they will be
+    # moved, which is the whole reason that note exists.
     notes = [c["text"] for c in spec.screen if c["type"] == "note"]
     assert any("of the mark" in note for note in notes)
 
@@ -195,10 +242,11 @@ def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure(
     not run.
 
     ``include_lateral=False`` is written out rather than read off
-    ``STAGE1_INCLUDES_LATERAL``: this pins the no-walk SHAPE, which stays a
-    real shape (Express, the verify re-arm) now that R17 has flipped the
-    stage-1 flag on. Reading the flag would have made it silently retest the
-    walk instead.
+    ``STAGE1_INCLUDES_LATERAL`` — and stays written out now that the pause has
+    made it the flag's value too. Pinning the SHAPE rather than the flag is
+    what keeps this test answering the same question in all three of this
+    flag's states: it asked it while the walk was dormant, kept asking it while
+    R17 shipped the walk on, and asks it unchanged today.
     """
     fakes = FakeSeams()
     c = _conductor(
@@ -364,14 +412,16 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
     """
     import jasper.capture_relay.spec as spec
 
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds today, walk ON
+    flow.assert_cloud_plan_fits_relay_capacity()  # holds as shipped, walk PAUSED
     worst = dict(
         cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
     with pytest.MonkeyPatch.context() as mp:
-        # The walk-off baseline is now the patched state, not the shipped one
-        # (R17 flipped the flag), so it is established under the patch.
+        # Both cases are established under an explicit patch, so this test says
+        # the same thing in every state of the flag — it has been the shipped
+        # value (pre-R17), the patched one (R17), and is the shipped value
+        # again since the pause.
         mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
         cloud_only = flow.relay_plan_attempts_required(**worst)
     ceiling = cloud_only + 1
@@ -390,7 +440,8 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
         # The control: at the SAME reduced ceiling, a build whose walk is off
         # must still pass — otherwise the failure above would prove only that
         # the ceiling is small, not that the poses are counted. The flag is
-        # patched off explicitly because R17 ships it on.
+        # patched rather than read even though it agrees today, so this control
+        # cannot quietly become a no-op the next time the flag moves.
         mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
         mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         flow.assert_cloud_plan_fits_relay_capacity()

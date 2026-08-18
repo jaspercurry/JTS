@@ -241,13 +241,28 @@ def test_a_vertical_pose_has_no_bearing_and_says_so():
 
 def test_the_remote_walks_are_the_specified_bearings():
     """The acceptance criterion, stated as the angles a driver will be asked
-    for — and read back off the PLAN, not off the helper that builds it."""
+    for — and read back off the PLAN, not off the helper that builds it.
+
+    Stage 1's own walk is PAUSED (2026-08-18, ``STAGE1_INCLUDES_LATERAL``), so
+    the shipped remote stage 1 asks a positioner for nothing but the axis. The
+    bearings it asks for WHEN ARMED are still the acceptance criterion — a
+    positioner-driven walk that quietly stopped matching ``STAGE1_ANGLES``
+    while the flag was off would be discovered by the first re-armed run — so
+    they are asserted under a forced flag rather than deleted with the pause.
+    """
     stage1 = [int(e.screen[POSITION_DEG_KEY]) for e in _stage1(TIER_REMOTE).entries]
     stage2 = [int(e.screen[POSITION_DEG_KEY]) for e in _stage2(TIER_REMOTE).entries]
+    # Shipped: CHECK, MEASURE and the entry baseline, every one on the axis.
+    assert stage1 == [0, 0, 0]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
+        armed = [
+            int(e.screen[POSITION_DEG_KEY]) for e in _stage1(TIER_REMOTE).entries
+        ]
     # CHECK and MEASURE are design-axis captures ahead of the walk itself.
-    assert stage1[:2] == [0, 0]
-    assert tuple(stage1[2:-1]) == STAGE1_ANGLES
-    assert stage1[-1] == 0  # the entry baseline, back on the axis
+    assert armed[:2] == [0, 0]
+    assert tuple(armed[2:-1]) == STAGE1_ANGLES
+    assert armed[-1] == 0  # the entry baseline, back on the axis
     assert tuple(stage2) == STAGE2_ANGLES
     # No vertical anywhere: that is the tier's whole coverage claim.
     for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):

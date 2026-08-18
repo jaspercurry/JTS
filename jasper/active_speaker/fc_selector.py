@@ -4,6 +4,15 @@ It reads per-candidate evidence gathered at MEASURE-consume, scores each
 candidate against the lateral walk's robustness evidence, and returns a
 RECOMMENDATION. The host retains its winner for Sound-owned apply; see R17.
 
+**No stage-1 session feeds this today.** The lateral walk that produces
+``poses`` was paused on 2026-08-18 (``crossover_v2_flow.
+STAGE1_INCLUDES_LATERAL``, whose comment carries the evidence), and the sweep
+that gathers the evidence fires only in a session that walks — so the shipped
+round commits its configured Fc without scoring candidates. Nothing here
+changed and nothing here is dead: forcing that flag back on restores this
+module's inputs unmodified. It is kept intact for the redesigned lateral
+statistic the pause is waiting on.
+
 Everything here is a pure function of small arrays — no conductor state, no
 I/O. ``M`` below is a pose's NEUTRAL measured transfer (``plant * P``), what
 ``LateralPoseCurve.complex_tf`` holds.
