@@ -42,135 +42,29 @@ from typing import Any, Callable, Mapping
 import numpy as np
 
 from jasper.atomic_io import atomic_write_text
+
+# The model registry — SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
+# measurement_mic_usb_ids, mic_tier_for_model — lives in the numpy-free leaf
+# module jasper.audio_measurement.mic_identity, so the reconciler's hotplug
+# bridge (`python -m jasper.cli.measurement_mic`) can read it without paying
+# this module's numpy import. Re-exported here (the `X as X` form) because
+# this module is the established import surface for the wizard/web consumers;
+# the leaf stays the one owner.
+from jasper.audio_measurement.mic_identity import (
+    DEFAULT_SIGN_CONVENTION as DEFAULT_SIGN_CONVENTION,
+    SUPPORTED_MODELS as SUPPORTED_MODELS,
+    measurement_mic_usb_ids as measurement_mic_usb_ids,
+    mic_tier_for_model as mic_tier_for_model,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
-# Single source of truth for supported measurement mics. Adding a mic here
-# wires the vendor lookup, the model picker, the wrong-mic guard, AND the
-# wizard's label-based auto-inference (see model_label_aliases). Optional
-# `label_aliases` overrides the default (the vendor_model) when a mic's OS
-# device label doesn't contain its vendor model string.
-#
-# `tier` is the correction-envelope trust tier (#1668 PR-B) — see
-# `mic_tier_for_model` below and
-# jasper.active_speaker.linearization_envelope.MIC_TIERS for the vocabulary
-# ("reference" / "consumer" / "phone"). Not imported from here: audio_measurement
-# is a lower architectural layer than active_speaker (every existing import
-# between the two packages runs active_speaker -> audio_measurement, never
-# the reverse), so the tier vocabulary is duplicated as plain string
-# literals rather than imported upward.
-#
-# `sign_convention` is what the VENDOR's file states, and therefore how
-# `fetch_vendor_calibration` must parse it. It is per-entry rather than a
-# single hardcode in the fetcher because that hardcode was the 2026-07-27
-# bug: one literal `"correction"` covered every provider, so every
-# vendor-fetched record stored the mic's response as if it were already a
-# correction and the measurement pipeline ADDED what it should have
-# SUBTRACTED — an error of exactly twice the file's value. Measured on the
-# live JTS3 UMIK-2 file: mean +1.71 dB, max +1.84 dB of over-cut across
-# 2.8-8 kHz, reversing to a mean -1.14 dB (max 2.56 dB) under-cut over
-# 11-16 kHz, and |4.85| dB worst case across the full 20 Hz-20 kHz span.
-# Declaring the convention beside the provider is what makes the next mic's
-# convention a deliberate registry decision instead of an inherited default.
-#
-# Every entry today is "response", on two evidence classes:
-#
-#   * miniDSP (direct physical proof, owner-measured 2026-07-27): for one
-#     UMIK-2 the 0-degree and 90-degree files differ by ~9.4 dB at 20 kHz,
-#     the 90-degree file being the MORE negative. A microphone is less
-#     sensitive off-axis at HF, so those numbers can only be the mic's
-#     response; a 90-degree *correction* would have to be strongly positive
-#     at HF to add the lost treble back. Recorded in
-#     captures/iloud-comparison-20260727/LINEARIZATION-AGENT-PROMPT.md.
-#   * Dayton (documented ecosystem contract, no Dayton file inspected by
-#     this project): both vendors publish these files for REW, whose own
-#     help states a cal file "should contain the actual gain (and optionally
-#     phase) response of the meter or microphone at the frequencies given,
-#     these will then be subtracted from subsequent measurements"
-#     (roomeqwizard.com/help/help_en-GB/html/meter.html). REW has one mic-cal
-#     semantics with no per-vendor sign switch, and Dayton's product pages
-#     direct owners to REW with exactly this file.
-#
-# If a real Dayton file ever contradicts that, the registry edit fixes every
-# FUTURE fetch — but it does not fix the past by itself: the migration below
-# runs one way (correction -> response) and the vendor cache serves stored
-# records ahead of any re-fetch. Reversing a declaration therefore costs a
-# registry edit plus a NEW opposite-direction migration.
-SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
-    "dayton_imm6": {
-        "provider": "dayton_audio",
-        "vendor_model": "iMM-6",
-        "label": "Dayton Audio iMM-6 / iMM-6C",
-        "tier": "consumer",
-        "sign_convention": "response",
-    },
-    "dayton_umm6": {
-        "provider": "dayton_audio",
-        "vendor_model": "UMM-6",
-        "label": "Dayton Audio UMM-6",
-        "tier": "consumer",
-        "sign_convention": "response",
-    },
-    "minidsp_umik1": {
-        "provider": "minidsp",
-        "vendor_model": "umik-1",
-        "label": "miniDSP UMIK-1",
-        "tier": "reference",
-        "sign_convention": "response",
-    },
-    "minidsp_umik2": {
-        "provider": "minidsp",
-        "vendor_model": "umik-2",
-        "label": "miniDSP UMIK-2",
-        "tier": "reference",
-        "sign_convention": "response",
-    },
-}
-
-# What a measurement-mic calibration file states when nothing says otherwise:
-# the microphone's own response, which JTS negates into `correction_db`. Used
-# for a registry entry that forgot to declare one (a missing declaration must
-# not resurrect the old wrong default — `test_supported_models_declare_a_sign_convention`
-# keeps the registry explicit) and for the phone-relay upload, whose page has
-# no sign control (see `_relay_calibration_from_setup`).
-DEFAULT_SIGN_CONVENTION = "response"
-
-
-def mic_tier_for_model(model_key: str | None) -> str:
-    """Resolve a calibration model key to its correction-envelope trust
-    tier ("reference" / "consumer" / "phone" —
-    jasper.active_speaker.linearization_envelope.MIC_TIERS).
-
-    ``None`` (no measurement mic selected/known) resolves to "phone", the
-    most conservative tier — absence of mic information must never read as
-    "trust it like a reference mic." ``"other"`` (the wizard's "Other
-    calibrated mic" bring-your-own-curve option, see
-    ``jasper/web/correction_setup.py``) resolves to "consumer": a
-    calibrated but uncatalogued mic gets the middle trust level, never
-    "reference" (product-taste call ratified 2026-07-23, revisit under
-    #1672 once transfer-calibration gives a real basis for trusting a
-    specific BYO mic at reference level). An unrecognized non-``None`` key
-    (a stale or renamed registry entry) also resolves to "consumer" rather
-    than raising — this is a display/trust-tier seam, not a safety gate,
-    and a KeyError here would be a worse failure mode than a conservative
-    guess.
-
-    Not yet wired into the production analyze path
-    (``bind_production_analyze`` in
-    ``jasper/web/correction_crossover_v2.py``) — that wiring belongs to the
-    PR that actually calls ``compose_envelope`` in the measure/fit flow.
-    """
-    if model_key is None:
-        return "phone"
-    if model_key == "other":
-        return "consumer"
-    spec = SUPPORTED_MODELS.get(model_key)
-    if spec is None:
-        return "consumer"
-    return str(spec["tier"])
+# NOTE: the model registry (SUPPORTED_MODELS et al.) moved to
+# jasper.audio_measurement.mic_identity — see the re-export block in the
+# imports above for why. Everything below consumes it via that import.
 
 
 def model_label_aliases(model_key: str) -> list[str]:

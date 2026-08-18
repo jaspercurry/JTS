@@ -307,9 +307,27 @@ in either direction.
 `Type=notify` and may itself be waiting on other startup dependencies, so
 the AEC oneshot must apply its single-writer verdict and exit rather than
 blocking inside PID 1's job graph. `jasper-aec-reconcile.service` also has
-`TimeoutStartSec=60`; if a future edit reintroduces a blocking child, the
-mistake becomes a visible failed unit instead of an indefinite
+`TimeoutStartSec=120` (raised from 60 for the chip-AEC alignment sequence —
+see the unit's own comment); if a future edit reintroduces a blocking child,
+the mistake becomes a visible failed unit instead of an indefinite
 `activating` state that leaves voice looking permanently offline.
+
+`restart_voice` is also change-gated (2026-08-18): a pass that proves no
+voice-relevant change skips the voice restart and the chip-AEC /
+software-AEC3 stack bounce — stable journal events
+`event=aec_reconcile.voice_restart_skipped`, `…chip_aec_bounce_skipped`,
+`…aec_stack_bounce_skipped` — so a measurement-mic hotplug no longer costs
+~8 s of mid-song deafness. "No change" is proven, never assumed: env writes
+are compared against a pass-start snapshot of `jasper.env`, and a `/run`
+stamp records the non-env inputs voice starts from (the install manifest,
+the published accessory-mic sources, and `grouping-voice.env` content).
+Callers whose kick means "restart" rather than "hardware may have drifted"
+declare intent — install passes via `--reason install`, the enhanced-AEC v2
+activation via the one-shot
+`/run/jasper-aec-reconcile/voice-restart-intent` marker. Every unknown
+fails toward restarting. Truth lives in `voice_restart_can_be_skipped` /
+`voice_start_inputs` in `deploy/bin/jasper-aec-reconcile`, pinned by
+`tests/test_aec_reconcile.py`.
 
 Why a reconciler-written marker instead of a direct `/proc/asound/$card`
 check like the output owner's `ExecCondition`: the mic is reached via
@@ -520,7 +538,8 @@ the UI pairing flow converges without a second deploy. Adapter service changes
 are queued with `systemctl --no-block` and the boot reconciler orders only
 before `jasper-voice`, not before the adapter it may start, so optional
 accessory state cannot wedge voice startup. The accessory reconciler also carries
-`TimeoutStartSec=60`, matching the AEC oneshot: future blocking mistakes fail
+`TimeoutStartSec=60` (the AEC oneshot's own bound is 120, sized for its
+chip-AEC alignment sequence): future blocking mistakes fail
 visibly instead of holding voice startup forever. Grouping has a separate
 finite 300-second bound because it may join one pre-existing accessory and
 fan-in coupling activation before queuing fresh post-role passes, with bounded

@@ -5959,8 +5959,8 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
 # --- mic_tier threading (#1668 PR-C) --------------------------------------
 #
 # jasper.audio_measurement.calibration.mic_tier_for_model's own docstring
-# names bind_production_analyze as "the PR that actually calls
-# compose_envelope in the measure/fit flow" — this is that wiring.
+# names bind_production_analyze as the path that consumes it — this is that
+# wiring, and these tests are what pin the claim.
 
 
 def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypatch):

@@ -514,8 +514,31 @@ def _refresh_aec_runtime() -> str:
     Activation is already committed when this runs. A scheduling failure must
     therefore remain a warning—the live bridge safely stays on v1 and the new
     engine will be selected at its next ordinary restart.
+
+    The kick is INTENT, not drift: the verified v2 engine lives in a venv, so
+    nothing the reconciler's change gate inspects (env files, the install
+    manifest, published accessory/grouping facts) moves — a bare kick would be
+    gated off as "no voice-relevant change". The one-shot marker below is the
+    declared-intent path the gate honors; a systemctl kick can carry no
+    arguments, which is why it is a file. The path literal mirrors
+    VOICE_RESTART_INTENT_MARKER in deploy/bin/jasper-aec-reconcile (pinned by
+    tests/test_aec_reconcile.py). Marker-write failures fall through to the
+    kick on purpose: a gated-off refresh degrades exactly like a failed kick —
+    v2 waits for the next ordinary restart, already this function's documented
+    fallback.
     """
 
+    marker = Path("/run/jasper-aec-reconcile/voice-restart-intent")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("enhanced_aec_v2_activation\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "enhanced-aec: could not declare restart intent at %s (%s); "
+            "the reconciler may gate the refresh off as a no-change pass",
+            marker,
+            exc,
+        )
     try:
         _run(
             [
