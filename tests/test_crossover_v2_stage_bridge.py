@@ -488,7 +488,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 
 
 def test_persisted_verify_priors_carries_exactly_the_ten_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has NINE keys.
+    """The write side of the bridge: ``verify_priors`` has TEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -657,6 +657,98 @@ def test_the_state_axis_crosses_the_bridge_beside_the_commanded_one(monkeypatch)
     freqs, declared = stage_2.measure_declared_transfer
     assert list(freqs) == _COMMANDED_FREQS_HZ
     assert list(declared) == [v * 2.0 for v in _COMMANDED_DELTA_DB]
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the delay prescription — CROSSES, from the request body to the receipt
+# --------------------------------------------------------------------------- #
+
+
+_PRESCRIPTION_BODY = {
+    "delay_us": -450.0,
+    "basis_delay_us": -405.7,
+    "basis_artifacts": [
+        "captures/xover-series2-2026-08-17/diagnosis/landscape_delay_polarity_r1b.json",
+    ],
+    "basis_note": "direct arrival gap -405.7 +/- 3.3 us, n=33",
+}
+
+
+def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkeypatch):
+    """#2662, both halves, through the REAL boundaries.
+
+    The write half starts at the request body rather than at a field poked onto
+    a conductor: the gate that validates a prescription and the thread that
+    carries it to the session are the two things that could silently not be
+    wired, and a test that installed the record by hand would pass with either
+    one missing.
+
+    The read half is the reason the durable key exists at all — the stage that
+    GRADES a round builds a fresh session and holds nothing stage 1 measured,
+    so an adopted arm could otherwise reach its adoption record with no basis
+    named. VALUES, not key presence, for ``commanded_delta``'s reason.
+    """
+    prepared = v2host.prepare_v2_session(
+        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    assert conductor.alignment_prescription_record["delay_us"] == -450.0
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    banked = (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
+    assert banked == {
+        "delay_us": -450.0,
+        "basis_delay_us": -405.7,
+        # Derived on the way out, never carried in: the receipt states the
+        # residual so a reader does not have to subtract two conventions.
+        "residual_us": pytest.approx(-44.3),
+        "basis_artifacts": list(_PRESCRIPTION_BODY["basis_artifacts"]),
+        "basis_note": _PRESCRIPTION_BODY["basis_note"],
+    }
+
+    # ...and the read half, on a fresh stage-2 conductor.
+    state = _seed_applied_stage_1_state()
+    state["verify_priors"]["alignment_prescription"] = {
+        k: v for k, v in banked.items() if k != "residual_us"
+    }
+    v2host.save_v2_state(state)
+    stage_2, _ = _stage_2(monkeypatch)
+    assert stage_2.alignment_prescription_record["basis_delay_us"] == -405.7
+
+
+def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):
+    """Fail-closed at the tap, not after a ten-minute capture.
+
+    The ``0 µs`` control arm is the honest fixture here: against the measured
+    basis it leaves 405.7 µs of residual, outside the half-period lobe at this
+    rig's corner, and it is refused with its reason named rather than clamped
+    onto the boundary and measured under the arm's name.
+    """
+    del monkeypatch
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"alignment_prescription": {**_PRESCRIPTION_BODY, "delay_us": 0.0}},
+            status=_status(), run_async=None, camilla_factory=None,
+        )
+    assert "prescription_out_of_lobe" in str(excinfo.value)
+
+
+def test_a_session_that_prescribed_nothing_persists_nothing(monkeypatch):
+    """The control: absence stays absence, and is never invented.
+
+    Every ordinary round takes this path, so an empty provenance block on a
+    receipt has to mean exactly one thing — no prescription was made — rather
+    than "one was made and something dropped it".
+    """
+    conductor, _state = _stage_1(monkeypatch)
+    assert conductor.alignment_prescription_record is None
+
+    v2host.persist_conductor_state(conductor, failure_code=None)
+    assert (
+        (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
+        is None
+    )
 
 
 def test_a_conductor_with_no_state_axis_rehydrates_none(monkeypatch):
