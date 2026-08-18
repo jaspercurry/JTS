@@ -487,7 +487,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatch):
+def test_persisted_verify_priors_carries_exactly_the_ten_bridge_keys(monkeypatch):
     """The write side of the bridge: ``verify_priors`` has NINE keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
@@ -526,7 +526,16 @@ def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatc
     consumer, same reason as the fifth — without it a stage-2 probe stops
     watching every band a repeat round left alone.
 
-    The top-level payload is unchanged by all five widenings — each new key is
+    **Deliberate widening (#2662): ``alignment_prescription``.** The tenth. The
+    round's delay may have come from an explicit, bounded, provenance-carrying
+    prescription rather than from the aligner's own search, and the stage that
+    GRADES the round has to be able to say what that number was derived from —
+    an adoption record naming an arm without naming its measured basis is the
+    unauditable half of the thing. Same producer, same consumer, same channel
+    as the fifth; ``None`` on every ordinary round, which is what makes an
+    empty provenance block on a receipt mean exactly one thing.
+
+    The top-level payload is unchanged by all six widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -543,6 +552,7 @@ def test_persisted_verify_priors_carries_exactly_the_nine_bridge_keys(monkeypatc
         "entry_baseline",
         "proposal_fingerprint",
         "verify_measured",
+        "alignment_prescription",
     }
 
 

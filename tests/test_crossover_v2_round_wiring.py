@@ -3231,7 +3231,9 @@ def test_the_two_region_residuals_on_the_receipt_name_their_instruments():
         ),
     )
     measurements = coordinator._round_measurements(
-        SimpleNamespace(delta_probe=None, position_residuals=()),
+        SimpleNamespace(
+            delta_probe=None, position_residuals=(), alignment_prescription=None,
+        ),
         SimpleNamespace(
             blend=blend,
             region_benefit=Verdict(

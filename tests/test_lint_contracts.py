@@ -445,6 +445,46 @@ def test_noqa_debt_does_not_grow() -> None:
 #  * `correction_crossover_v2` stays at 9,186. Decision 10 adds no endpoint, no
 #    screen, and no state key the host must own, so the host that has only ever
 #    grown does not grow here.
+# 2026-08-18 (#2662, the explicit delay prescription). Three ceilings move,
+# and the honest accounting is that most of the room is PROSE this repository
+# charges for on purpose — the #2603 note below says compressing a reason out
+# to keep a number flat is gaming the guard, and that rule does not stop
+# applying when the number is inconvenient.
+#  * `program_analysis` 6,978 -> 7,155. The largest bump, and the one owed the
+#    most explanation. About a third is executable: two commitment objectives
+#    and the two sets that classify them, one prior field, `half_period_us`,
+#    the selector's prescribed-delay arms, and the disclosure that fires when a
+#    prescription reaches no commitment. The rest is this file's own
+#    convention — every objective constant here carries a paragraph saying
+#    WHICH FACT produced the commitment, because a forensic reader of a
+#    persisted candidate has nothing else to read, and the two new ones each
+#    have a membership argument to make (one keeps its residual, one gives it
+#    up with the rest of the low-SNR refusal). `half_period_us`'s docstring is
+#    load-bearing for the same reason: it is the single geometry two modules
+#    now share, and the sentence naming BOTH callers is what stops a third
+#    spelling appearing.
+#    THE SEAM, named rather than taken: the `ALIGNMENT_*` objective vocabulary
+#    plus `half_period_us` and the alignment dataclasses are ~200 lines of pure
+#    vocabulary with no logic, and extracting them to an `alignment` sibling
+#    would pay this bump back several times over. It is not taken HERE because
+#    two sibling implementers are live in this same file tonight (the
+#    delta-probe axis and the capture-integrity work), and a 200-line move
+#    under them is a merge collision, not a cleanup. It is the right next cut.
+#  * `crossover_v2_flow` 12,645 -> 12,682. Fifteen executable lines and no
+#    policy: one ctor argument, one field, one property, and three hand-offs —
+#    the session HOLDS a prescription the boundary already validated and never
+#    re-judges it. Every rule about what a prescription may be lives in the new
+#    `crossover_v2/alignment_prescription.py`; this file learned no new fact
+#    about delays.
+#  * `correction_crossover_v2` 9,186 -> 9,258. Twenty-eight executable lines:
+#    the request gate's call and its refusal translation, one durable key, one
+#    reader beside its eight siblings, and two hand-offs. The comment block at
+#    the gate is most of the rest, and it is where the ORDER is recorded — the
+#    two speaker-level gates run first, because whether this speaker can be
+#    measured at all is a prior question to whether this request is good.
+#  * `crossover_envelope_v2` stays at 4,096. The prescription adds no household
+#    screen: the fourth declared-polarity objective reuses the sentence the
+#    other three already earned.
 MAX_LINES_BY_PATH = {
     # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
     # catching its own author again. The representative RoleBand pair at
@@ -456,8 +496,8 @@ MAX_LINES_BY_PATH = {
     # what costs the lines. Paying them here, in the diff that earned them, is
     # the guard working; compressing the reason out to keep a number flat would
     # be gaming it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_645,
-    "jasper/web/correction_crossover_v2.py": 9_186,
+    "jasper/active_speaker/crossover_v2_flow.py": 12_682,
+    "jasper/web/correction_crossover_v2.py": 9_258,
     "jasper/active_speaker/crossover_envelope_v2.py": 4_096,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
@@ -485,7 +525,12 @@ MAX_LINES_BY_PATH = {
     # with a clean boundary. Moving it is a ~300-line relocation inside a file
     # other live sessions of this fix wave are also editing, which is a
     # collision, not a cleanup. Take it in a quiet window and lower this back.
-    "jasper/audio_measurement/program_analysis.py": 7_060,
+    #
+    # …and #2662's prescription lands on top of D7's, in the same file and the
+    # same night — the two sessions D7's own note above names as the reason its
+    # seam was not cut. Both bumps are real and neither subsumes the other, so
+    # the number carries both.
+    "jasper/audio_measurement/program_analysis.py": 7_155,
 }
 
 

@@ -1199,7 +1199,7 @@ def test_an_absent_previous_reading_keeps_the_loop_prescribing():
 def _blend_record(result: bc.BlendCorrection) -> dict:
     evaluation = SimpleNamespace(blend=result, region_benefit=None)
     evidence = SimpleNamespace(
-        delta_probe=None, position_residuals=(),
+        delta_probe=None, position_residuals=(), alignment_prescription=None,
     )
     return coordinator._round_measurements(evidence, evaluation)
 

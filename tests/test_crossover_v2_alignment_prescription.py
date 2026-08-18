@@ -18,6 +18,7 @@ be expressed as a prescription at all.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from types import SimpleNamespace
 
@@ -727,5 +728,5 @@ def test_the_record_is_frozen():
     """A prescription cannot be edited after the gate accepted it."""
     prescription = read_alignment_prescription(_arm(-450.0), fc_hz=FC_HZ)
     assert isinstance(prescription, AlignmentPrescription)
-    with pytest.raises(Exception):  # noqa: B017 - dataclasses.FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
         prescription.delay_us = 0.0  # type: ignore[misc]
