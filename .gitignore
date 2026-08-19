@@ -1,7 +1,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+# No trailing slash — agent worktrees symlink the main checkout's
+# .venv in (no .venv of their own), and a trailing slash only matches
+# a directory, not a symlink of the same name (bit for real, PR #2740).
+.venv
 venv/
 .env
 .env.*
@@ -32,7 +35,8 @@ logs/*
 !logs/.gitkeep
 
 # Local measurement and diagnostic captures — large/private binaries.
-captures/
+# No trailing slash — same symlink reason as .venv above.
+captures
 
 # Voice-eval harness artifacts:
 # - audio_cache/: OpenAI TTS-synthesized prompt WAVs (regenerate
