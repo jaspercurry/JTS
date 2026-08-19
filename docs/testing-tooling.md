@@ -1724,7 +1724,9 @@ other two verbs) because the round ordinal is read from it — staging without
 one would file a prescription against a series the command cannot see. Staging
 twice is last-wins: the slot holds one instruction, and the overwrite is logged
 (`event=crossover_v2.prescription_staged` carries `replaced`) so a round that
-applied the second of two prescriptions can be explained. Owner:
+applied the second of two prescriptions can be explained. That line goes to
+**stderr**, so it is visible in an operator's shell and in the journal when the
+command runs under systemd; stdout stays the machine channel for `--json`. Owner:
 [`prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py).
 
 `<bundle-dir>` is a commissioning bundle — the directory holding `info.json`
