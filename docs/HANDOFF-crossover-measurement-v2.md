@@ -2213,6 +2213,14 @@ and warns on an applied profile that was never graded — the silence
 gates on a FAILING `PHASE_CLOUD_VERIFY` verdict and a missing one renders as no
 phase at all.
 
+That doctor line also discloses `post_apply_grade.outcome` as `result=<code>`
+beside `capture verify=` (the four codes are tabled under "Terminal grading has
+one owner" below) — a disclosure and never a gate, because the check grades the
+*checking* rather than the result: a `keep_previous` sitting behind a clean,
+complete grade stays `ok` and simply names the code the done screen's badge is
+reading, and a pre-R18 state that recorded no result evidence prints no code at
+all.
+
 **A failed mark-VERIFY caps `state` at `failed` whatever the spatial group
 says** (#2464, ruled 2026-08-19). A closed group used to be tested first, so it
 masked the `failed` and `inconclusive` answers entirely and a re-verify that
