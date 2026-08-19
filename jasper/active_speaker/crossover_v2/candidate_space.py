@@ -20,7 +20,7 @@ owners and never restates their arithmetic:
   :func:`~jasper.active_speaker.driver_protection.protection_highpass_floor_satisfied`;
 * the intersected declared search band, through
   :func:`~jasper.active_speaker.crossover_v2.fc_sweep.resolve_fc_search_band`;
-* the beaming ceiling, through
+* the ka beaming ceiling, through
   :func:`~jasper.active_speaker.branch_chain.beaming_onset_hz`;
 * the legal Linkwitz-Riley orders, through
   :data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`;
@@ -30,6 +30,35 @@ owners and never restates their arithmetic:
 The realizable delay STEP is the one bound this module does not resolve: it is
 a property of the chain being proposed into (#2710), so the caller declares it
 on :attr:`CandidateBounds.delay_step_us` and this file never guesses one.
+
+**Three sources of bound, with a precedence, because they are not the same kind
+of fact.** Adopted from the owner's crossover-design research review; the house
+fresh-eyes rule stated for this module is **priors seed the search and
+measurements decide**.
+
+1. **Declared driver safety — HARD.** The protection floor above. It is a
+   claim a person confirmed about a component, it binds regardless of what any
+   measurement says, and it is the one bound the apply gate re-checks.
+2. **Measured directivity — a HARD ceiling and a SOFT prior.** The literature's
+   primary Fc selector is directivity matching: cross where the woofer's
+   narrowing beamwidth meets the horn's coverage. Two numbers come out of
+   per-driver per-angle data, and they are different kinds of thing.
+   :attr:`CandidateBounds.directivity_ceiling_hz` — the woofer's -6 dB at
+   30 degrees off axis — is a measured ceiling and REFUSES above it.
+   :attr:`CandidateBounds.matched_beamwidth_hz` is where the two coverages
+   meet: an excellent place to start looking and not a fence, so it never
+   refuses.
+3. **Geometry priors — SOFT, seed only, never binding.** The ka beaming
+   ceiling is modelled from a declared radius, not measured, so it may inform
+   or warn and may never refuse. #1675 rules it guidance, and on live jts3 it
+   sits BELOW the configured corner — a bound there would refuse the speaker's
+   own running crossover.
+
+The measured layer is deliberately NOT produced by
+:func:`bounds_from_declarations`, whose whole contract is that it reads
+declarations only. It arrives through
+:meth:`CandidateBounds.with_measured_directivity`, so a reader can always tell
+which bounds were declared and which were measured.
 
 **Never a clamp.** :func:`refusal_for` returns a named slug or ``None``. A
 proposal outside a bound is refused by name, never pulled to the boundary and
@@ -61,6 +90,13 @@ Two consequences for how the floor is read here, both non-obvious:
   emitted graph. Inventing a floor here that the graph does not enforce would
   again make the two disagree.
 
+**Stricter than the backstop is allowed; looser never is.** The two rules above
+are about the floor's VALUE, which must match exactly. An ADDITIONAL condition
+that only ever refuses more than the apply gate would is safe, because the
+backstop still catches everything this door lets through. That asymmetry is
+what makes the slope question below a legitimate future refinement rather than
+a contradiction.
+
 **Slope is NOT part of the floor comparison, and this PR is what makes that
 observable.** The shared predicate compares corner FREQUENCIES only
 (``highpass_hz >= floor_hz``); it has no slope term, and neither does the apply
@@ -68,11 +104,19 @@ gate. A declaration may still carry
 ``required_protection_filters[highpass].minimum_slope_db_per_octave``, and this
 module is the first consumer to make order a searchable axis — the corner sweep
 it supersedes hard-coded LR4 — so a candidate can now propose a shallower slope
-than a declaration requires and pass the frequency check. That gap is
-**disclosed rather than closed here on purpose**: enforcing slope in the front
-door while the backstop ignores it would rebuild the front-door-stricter
-asymmetry described above. Closing it means changing the shared predicate, and
-that is an owner's call, not a proposer's.
+than a declaration requires and pass the frequency check.
+
+Deferred rather than closed, and the reason is EVIDENCE rather than layering.
+The declared floor is really a distortion/excursion bound, so a steeper
+high-pass legitimately permits a lower crossing — it attenuates the sub-Fs
+excursion region faster. A slope-aware ``floor(slope)`` is therefore a real
+refinement this module MAY take, but only against a source that can validate
+it: the banked Novak distortion-versus-frequency captures are the candidate.
+Two rules bind whoever takes it. It may only ever make this door **stricter**
+— admitting a candidate the apply gate would refuse is forbidden, and a
+naive reading of "steeper permits lower" does exactly that. And the apply gate
+stays slope-blind and conservative on purpose; it is the backstop, not the
+place to encode a curve.
 
 **Why the shared refusal slugs are imported from** :mod:`.fc_sweep`. The three
 Fc walls below are already spelled there, and a journal slug is a grep contract
@@ -98,7 +142,7 @@ record: ``_hz`` frequencies, ``_us`` microseconds, ``_db`` decibels,
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis import half_period_us
@@ -118,6 +162,7 @@ __all__ = [
     "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
     "FC_REJECT_BELOW_DECLARED_FLOOR",
     "FC_REJECT_OUTSIDE_SEARCH_BAND",
+    "REJECT_ABOVE_DIRECTIVITY_CEILING",
     "REJECT_DELAY_NOT_REALIZABLE",
     "REJECT_DELAY_OUTSIDE_WINDOW",
     "REJECT_GAIN_OUTSIDE_RANGE",
@@ -137,6 +182,7 @@ __all__ = [
 # Named codes and not bare booleans for the reason ``fc_sweep`` gives about its
 # own: each of these is an operator- or household-actionable declaration, so a
 # refusal has to say WHICH declaration refused it and therefore where to go.
+REJECT_ABOVE_DIRECTIVITY_CEILING = "above_measured_directivity_ceiling"
 REJECT_UNSUPPORTED_ORDER = "unsupported_lr_order"
 REJECT_INVALID_POLARITY = "polarity_not_plus_or_minus_one"
 REJECT_DELAY_OUTSIDE_WINDOW = "delay_outside_declared_window"
@@ -149,6 +195,7 @@ REJECT_UNDECLARED_ROLE = "role_has_no_declared_bounds"
 #: typo'd slug should fail a test rather than reach a page as mystery text.
 CANDIDATE_REFUSAL_REASONS = frozenset({
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+    REJECT_ABOVE_DIRECTIVITY_CEILING,
     FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_OUTSIDE_SEARCH_BAND,
     REJECT_DELAY_NOT_REALIZABLE,
@@ -306,6 +353,12 @@ class CandidateBounds:
     delay_step_us: float
     gain_db_range: tuple[float, float]
     undeclared_roles: tuple[str, ...]
+    # The MEASURED layer, defaulted absent because it does not exist until a
+    # per-driver per-angle capture does. Supplied through
+    # ``with_measured_directivity`` rather than by ``bounds_from_declarations``,
+    # so declared and measured provenance never blur together.
+    directivity_ceiling_hz: float | None = None
+    matched_beamwidth_hz: float | None = None
 
     @property
     def proposable(self) -> bool:
@@ -315,6 +368,48 @@ class CandidateBounds:
         still evaluated, and "keep what is configured" is an answer.
         """
         return self.fc_band_hz is not None
+
+    def with_measured_directivity(
+        self,
+        *,
+        directivity_ceiling_hz: float | None = None,
+        matched_beamwidth_hz: float | None = None,
+    ) -> "CandidateBounds":
+        """These bounds plus what a per-driver per-angle capture measured.
+
+        A separate entry point from :func:`bounds_from_declarations` on
+        purpose. That function's contract is that it reads DECLARATIONS, and a
+        measured ceiling is a different kind of fact with a different
+        precedence — mixing them into one constructor would leave a reader
+        unable to tell which bounds a person confirmed and which a microphone
+        did. Both arguments are optional because a session may have measured
+        one and not the other.
+
+        ``directivity_ceiling_hz`` is the woofer's -6 dB at 30 degrees off
+        axis: crossing above it hands the horn a band the cone has already
+        stopped covering off axis, which no on-axis EQ repairs. It REFUSES.
+
+        ``matched_beamwidth_hz`` is where the two coverages meet. It is the
+        literature's primary Fc selector and an excellent seed, but it is a
+        target rather than a limit — a candidate away from it may still measure
+        better, and this file does not get to decide that in advance. It never
+        refuses; the search reads it.
+
+        Neither number is computed here. Deriving them is per-angle
+        measurement work that belongs to whoever holds the captures; this
+        module's job is to carry them with the right force.
+        """
+        return replace(
+            self,
+            directivity_ceiling_hz=(
+                self.directivity_ceiling_hz if directivity_ceiling_hz is None
+                else float(directivity_ceiling_hz)
+            ),
+            matched_beamwidth_hz=(
+                self.matched_beamwidth_hz if matched_beamwidth_hz is None
+                else float(matched_beamwidth_hz)
+            ),
+        )
 
 
 def bounds_from_declarations(
@@ -469,6 +564,12 @@ def refusal_for(
                 return FC_REJECT_OUTSIDE_SEARCH_BAND
             if fc_hz > float(bounds.fc_band_hz[1]):
                 return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
+            if bounds.directivity_ceiling_hz is not None and fc_hz > float(
+                bounds.directivity_ceiling_hz
+            ):
+                # MEASURED, so it refuses — unlike the ka prior below it, which
+                # is modelled from a declared radius and only ever informs.
+                return REJECT_ABOVE_DIRECTIVITY_CEILING
             if fc_hz < float(bounds.fc_band_hz[0]):
                 return FC_REJECT_OUTSIDE_SEARCH_BAND
 

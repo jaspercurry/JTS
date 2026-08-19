@@ -29,6 +29,7 @@ from jasper.active_speaker.crossover_v2.candidate_space import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_OUTSIDE_SEARCH_BAND,
+    REJECT_ABOVE_DIRECTIVITY_CEILING,
     REJECT_DELAY_NOT_REALIZABLE,
     REJECT_DELAY_OUTSIDE_WINDOW,
     REJECT_GAIN_OUTSIDE_RANGE,
@@ -849,6 +850,61 @@ def test_an_empty_intersection_reports_the_band_with_both_owners_still_named():
     assert bounds.proposable is False
 
 
+def test_the_three_bound_sources_carry_three_different_forces():
+    """Priors seed the search; measurements decide. Asserted, not described.
+
+    The same frequency, 1900 Hz, is legal under a ka prior below it and
+    refused under a measured directivity ceiling below it — which is the whole
+    precedence in one comparison. A geometry model of a declared radius may
+    inform; a microphone may refuse.
+    """
+    prior_only = _bounds(
+        beaming_ceiling_hz=1500.0,
+        fc_band_hz=(200.0, 4000.0),
+        declared_floor_hz_by_role={TWEETER: 900.0},
+    )
+    assert refusal_for(_two_way(fc_hz=1900.0), prior_only) is None
+
+    measured = prior_only.with_measured_directivity(directivity_ceiling_hz=1500.0)
+    assert refusal_for(_two_way(fc_hz=1900.0), measured) == (
+        REJECT_ABOVE_DIRECTIVITY_CEILING
+    )
+    assert refusal_for(_two_way(fc_hz=1400.0), measured) is None
+
+    # The matched-beamwidth frequency is the literature's primary SELECTOR and
+    # still never a fence: a candidate away from it may measure better, and
+    # this module does not get to decide that in advance.
+    seeded = measured.with_measured_directivity(matched_beamwidth_hz=1200.0)
+    assert seeded.matched_beamwidth_hz == 1200.0
+    assert refusal_for(_two_way(fc_hz=1400.0), seeded) is None
+
+    # ...and supplying one measured number must not silently drop the other.
+    assert seeded.directivity_ceiling_hz == 1500.0
+
+
+def test_declarations_never_produce_the_measured_layer():
+    """Provenance stays legible: a reader can tell who set which bound.
+
+    ``bounds_from_declarations`` reads declarations, full stop. If it could
+    also emit a measured ceiling, no consumer downstream could tell whether a
+    refusal came from a person's confirmation or from a microphone — and those
+    two send an operator to completely different places.
+    """
+    bounds = bounds_from_declarations(
+        drivers_by_role={TWEETER: _DriverSpecDouble(1600.0)},
+        search_band_hz_by_role={TWEETER: (1600.0, 4000.0), WOOFER: (200.0, 3000.0)},
+        excitation_ceiling_hz_by_role={WOOFER: 2800.0},
+        lower_driver_diameter_mm=114.0,
+        incumbent_fc_hz=2000.0,
+        geometry_seed_us=0.0,
+        delay_step_us=0.0,
+    )
+    assert bounds.directivity_ceiling_hz is None
+    assert bounds.matched_beamwidth_hz is None
+    # The ka prior IS produced, because it is derived from a declaration.
+    assert bounds.beaming_ceiling_hz == pytest.approx(1915.4, abs=0.1)
+
+
 def test_the_beaming_ceiling_is_guidance_and_never_refuses():
     """#1675 defines the ka prior as something to warn on, not a fence.
 
@@ -905,6 +961,12 @@ def test_every_slug_refusal_for_can_return_is_in_the_closed_set():
             (_two_way(gain_db_by_role={WOOFER: 0.0, TWEETER: 1.5}), _bounds()),
             (_two_way(), _bounds(fc_band_hz=None, undeclared_roles=(TWEETER,))),
             (_two_way(), _bounds(fc_band_hz=None)),
+            (
+                _two_way(fc_hz=2500.0),
+                _bounds(fc_band_hz=(200.0, 4000.0)).with_measured_directivity(
+                    directivity_ceiling_hz=1500.0
+                ),
+            ),
         )
     }
     assert None not in seen, "the battery must exercise refusals, not passes"
