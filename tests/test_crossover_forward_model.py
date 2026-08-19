@@ -18,12 +18,15 @@ tolerance is a measured number rather than an asserted one.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_chain import (
     CrossoverSection, crossover_response_complex,
 )
+from jasper.active_speaker.branch_chain import CrossoverSection as CS
 from jasper.active_speaker.crossover_v2.candidate_space import (
     CANDIDATE_REFUSAL_REASONS,
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
@@ -41,12 +44,16 @@ from jasper.active_speaker.crossover_v2.candidate_space import (
     bounds_from_declarations,
     refusal_for,
     residual_delay_us,
+    strictest_highpass_hz,
 )
 from jasper.active_speaker.crossover_v2.forward_model import (
     branch_operator, driver_plants, predict_sum,
 )
 from jasper.active_speaker.driver_protection import (
     protection_highpass_floor_satisfied,
+)
+from jasper.active_speaker.test_signal_plan import (
+    declared_protection_floor_hz, strictest_crossover_highpass_hz,
 )
 from jasper.audio_measurement.program_analysis import (
     CONFIGURED_PATH_PROTECTION_FLOOR_DB,
@@ -251,14 +258,19 @@ def test_a_delay_is_a_linear_phase_ramp_and_nothing_else():
 
 
 def test_at_zero_residual_delay_the_model_is_predicted_branch_sum_bit_for_bit():
-    """The strongest statement available without hardware, and it is exact.
+    """The two expressions agree exactly where they can be made comparable.
 
-    ``predicted_branch_sum`` is what VERIFY already grades against. With a
-    unity candidate — no crossover, no correction, no protection — this model
-    reduces to the same expression, and "the same arithmetic" deserves an exact
-    number rather than a tolerance. Bit-for-bit is achievable here because the
-    only factors are a real gain and an exact +/-1, both of which multiply
-    without rounding.
+    **Scope, stated honestly, because "the same arithmetic" is easy to
+    overclaim.** What this pins is the SUMMATION ALGEBRA — polarity, per-branch
+    gain and the multiply-add — at unity ``C`` and unity ``K``. It does not
+    exercise the crossover or correction terms, which have no counterpart in
+    ``predicted_branch_sum`` at all; those are covered by the analytic rung
+    above and by ``branch_chain``'s own suite. The claim earned here is that
+    this model does not reassemble the branch sum differently, not that every
+    factor in it has been cross-checked.
+
+    Bit-for-bit is achievable in this scope because the only factors are a real
+    gain and an exact +/-1, both of which multiply without rounding.
     """
     rng = np.random.default_rng(20260819)
     freqs_hz = _grid()
@@ -297,9 +309,13 @@ def test_with_a_residual_delay_the_two_agree_to_a_stated_numerical_bound():
     builds a candidate-only operator — which is the entire reason a search can
     reuse it across angles — so it associates as ``T * ((sign * g) * e)``.
     Floating-point multiplication is not associative, so the two differ by
-    rounding. The bound below is MEASURED, not chosen: it is the observed
-    worst case with a decade of headroom, so a real regression moves it and
-    ordinary rounding does not.
+    rounding.
+
+    The bound is MEASURED, not chosen, and it is worth reading as what it is:
+    a few ULP on operands of order 1, which is the floor any reassociation of
+    this expression has. It is not evidence about the physics — only that no
+    step was added or dropped between the two spellings. Stated with a decade
+    of headroom so a real regression moves it and ordinary rounding does not.
     """
     rng = np.random.default_rng(20260819)
     freqs_hz = _grid()
@@ -314,19 +330,24 @@ def test_with_a_residual_delay_the_two_agree_to_a_stated_numerical_bound():
     )
 
     worst = 0.0
-    for tau_us in (-550.0, -350.0, -250.0, 12.2, 96.0, 405.7):
-        candidate = XoverCandidate(
-            sections_by_role={},
-            polarity_by_role={WOOFER: 1, TWEETER: 1},
-            delay_us_by_role={WOOFER: 0.0, TWEETER: tau_us},
-            gain_db_by_role={WOOFER: 0.0, TWEETER: 0.0},
-        )
-        mine = predict_sum(candidate, plants)[0.0]
-        theirs = predicted_branch_sum(
-            woofer, tweeter, 0.0, 0.0, 1,
-            freqs_hz=freqs_hz, residual_delay_us=tau_us,
-        )
-        worst = max(worst, float(np.max(np.abs(mine - theirs))))
+    # Both polarities, because the inverted branch is not a corner case here:
+    # 3 of the banked armrun's arms committed an inverted tweeter, and sign is
+    # the factor whose association with the delay term differs between the two
+    # expressions.
+    for sign in (1, -1):
+        for tau_us in (-550.0, -350.0, -250.0, 12.2, 96.0, 405.7):
+            candidate = XoverCandidate(
+                sections_by_role={},
+                polarity_by_role={WOOFER: 1, TWEETER: sign},
+                delay_us_by_role={WOOFER: 0.0, TWEETER: tau_us},
+                gain_db_by_role={WOOFER: 0.0, TWEETER: 0.0},
+            )
+            mine = predict_sum(candidate, plants)[0.0]
+            theirs = predicted_branch_sum(
+                woofer, tweeter, 0.0, 0.0, sign,
+                freqs_hz=freqs_hz, residual_delay_us=tau_us,
+            )
+            worst = max(worst, float(np.max(np.abs(mine - theirs))))
     assert worst <= 1e-14, f"worst absolute divergence {worst:.3e}"
 
 
@@ -476,19 +497,18 @@ def test_protection_below_the_shared_floor_refuses_on_the_required_band():
     assert "-12" in str(excinfo.value)
 
 
-def test_a_crossover_shaped_protection_does_not_refuse_the_whole_sweep():
-    """The gap the banked armrun found: 6 of 6 arms refused, wrongly.
+def test_an_unsupplied_required_band_means_the_whole_driven_band():
+    """Mirror the kernel, including its ``band is None`` path.
 
-    A sweep necessarily runs past the corner, so when ``P`` contains a
-    crossover it is far below the floor inside the DRIVEN band by construction
-    — an LR4 low-pass at 1648.7 Hz is about -30 dB at 4 kHz, inside a woofer's
-    150-4000 Hz sweep. Checking the floor over the driven band therefore
-    refused every real two-way capture, including the incumbent round trip
-    where the de-embedding provably cancels.
+    ``_compose_configured_path_ir`` leaves the whole radiated band required
+    when no candidate band is supplied, so this does too. The alternative —
+    "required if supplied, else check nothing" — is what silently hollowed out
+    ``DriverPlant.trusted``'s by-construction guarantee: 43 untrusted driven
+    bins were accepted while the docstring still promised none.
 
-    The required band is what the kernel intersects for exactly this reason,
-    and it is the caller's to declare because it is a property of the
-    candidate. Undeclared refuses nothing and the mask carries the answer.
+    The consequence is real and is the honest one: a ``P`` that contains a
+    crossover IS ill-conditioned across a sweep that runs past the corner, so
+    it refuses until the caller declares the span it actually needs.
     """
     freqs_hz = _grid()
     ones = np.ones(freqs_hz.shape, dtype=np.complex128)
@@ -496,44 +516,36 @@ def test_a_crossover_shaped_protection_does_not_refuse_the_whole_sweep():
     def woofer_lowpass(f: np.ndarray) -> np.ndarray:
         return crossover_response_complex(f, (CrossoverSection(1648.7, 4, False),))
 
-    measurement = _Measurement(
-        WOOFER, freqs_hz, ones, band_hz=(150.0, 4000.0),
-    )
-    # The floor is genuinely violated deep in the sweep — this is not a fixture
-    # that dodges the question.
+    measurement = _Measurement(WOOFER, freqs_hz, ones, band_hz=(150.0, 4000.0))
+    # The floor is genuinely violated deep in the sweep — not a fixture that
+    # dodges the question.
     assert np.min(np.abs(woofer_lowpass(np.array([4000.0])))) < 10.0 ** (
         CONFIGURED_PATH_PROTECTION_FLOOR_DB / 20.0
     )
 
-    (plant,) = driver_plants(
-        [measurement], protection_by_role={WOOFER: woofer_lowpass},
-    )
-    assert not bool(np.all(plant.trusted)), "the mask must still record it"
+    with pytest.raises(ConfiguredPathConditioningError) as excinfo:
+        driver_plants([measurement], protection_by_role={WOOFER: woofer_lowpass})
+    assert excinfo.value.protection_floor is True
 
-    # Declaring a band the branch actually owns is honest and passes...
+    # Declaring the span the branch actually owns is honest, passes, and the
+    # guarantee holds over exactly that span.
     (narrow,) = driver_plants(
         [measurement],
         protection_by_role={WOOFER: woofer_lowpass},
         required_band_hz_by_role={WOOFER: (150.0, 1200.0)},
     )
-    assert bool(np.all(narrow.trusted[narrow.driven & (freqs_hz <= 1200.0)]))
-
-    # ...and declaring one that reaches into the stopband still refuses.
-    with pytest.raises(ConfiguredPathConditioningError) as excinfo:
-        driver_plants(
-            [measurement],
-            protection_by_role={WOOFER: woofer_lowpass},
-            required_band_hz_by_role={WOOFER: (150.0, 4000.0)},
-        )
-    assert excinfo.value.protection_floor is True
+    required = narrow.driven & (freqs_hz <= 1200.0)
+    assert bool(np.all(narrow.trusted[required]))
+    assert not bool(np.all(narrow.trusted)), "the mask still records the rest"
 
 
-def test_an_untrusted_bin_outside_the_driven_band_is_marked_not_refused():
-    """The band is where there was stimulus; outside it there is no claim.
+def test_the_trusted_guarantee_holds_over_the_band_that_was_required():
+    """The contract ``trusted``'s docstring now states, pinned both ways.
 
-    A protective high-pass is BELOW its floor far under its own corner by
-    construction, which is not ill-conditioning — it is a region the excitation
-    never drove. Refusing there would refuse every real tweeter capture.
+    Unnarrowed: every driven bin is trusted, by construction. Narrowed: the
+    guarantee holds over the narrowed span only, and the mask is the answer
+    outside it. A test that only checked the first case is what let the
+    guarantee go false unnoticed.
     """
     freqs_hz = _grid()
     ones = np.ones(freqs_hz.shape, dtype=np.complex128)
@@ -546,9 +558,6 @@ def test_an_untrusted_bin_outside_the_driven_band_is_marked_not_refused():
         protection_by_role={TWEETER: protection},
     )
     assert bool(np.all(plant.trusted[plant.driven]))
-    assert not bool(np.all(plant.trusted)), (
-        "an LR8 high-pass at 300 Hz must fall below the floor somewhere under it"
-    )
 
 
 def test_outside_the_driven_band_a_driver_contributes_exactly_zero():
@@ -641,6 +650,25 @@ def test_plants_from_one_pose_on_two_grids_raise_rather_than_vanish():
     with pytest.raises(ValueError, match="frequency grid"):
         predict_sum(_two_way(), plants)
 
+    # The half a SHAPE check waves through, and the dangerous one: two grids of
+    # equal length over different frequencies. The sum would add bins that are
+    # not the same frequency and the result would still look like a spectrum.
+    shifted = freqs_hz * 1.05
+    same_length = driver_plants(
+        [_Measurement(
+            WOOFER, freqs_hz, np.ones(freqs_hz.shape, dtype=np.complex128),
+        )],
+        protection_by_role={},
+    ) + driver_plants(
+        [_Measurement(
+            TWEETER, shifted, np.ones(shifted.shape, dtype=np.complex128),
+        )],
+        protection_by_role={},
+    )
+    assert same_length[0].freqs_hz.shape == same_length[1].freqs_hz.shape
+    with pytest.raises(ValueError, match="frequency grid"):
+        predict_sum(_two_way(), same_length)
+
 
 def test_every_angle_is_predicted_and_keyed_by_its_own_degrees():
     freqs_hz = _grid()
@@ -687,6 +715,31 @@ def test_a_branch_operator_is_evaluated_once_per_grid_not_once_per_angle(
 
 
 # --- candidate legality: the walls, by name ---------------------------------
+
+
+def _preset_with(candidate: XoverCandidate, *, floor_hz: float | None):
+    """The minimal preset shape the two BACKSTOP functions actually read.
+
+    ``strictest_crossover_highpass_hz`` touches ``preset.crossover_regions``
+    (``upper_driver`` / ``fc_hz``) and ``declared_protection_floor_hz`` touches
+    ``preset.drivers[role].protection_highpass_floor_hz``. Nothing else. The
+    functions under test are the REAL shipped ones — only the preset is a
+    double, so the property is about the code that will run.
+
+    A high-pass section on a role is a crossover region whose UPPER driver is
+    that role, which is the same mapping ``branch_chain.sections_by_role``
+    makes in the other direction.
+    """
+    regions = [
+        SimpleNamespace(upper_driver=role, fc_hz=float(section.fc_hz))
+        for role in sorted(candidate.sections_by_role)
+        for section in candidate.sections_by_role[role]
+        if section.highpass
+    ]
+    return SimpleNamespace(
+        crossover_regions=regions,
+        drivers={TWEETER: _DriverSpecDouble(floor_hz)},
+    )
 
 
 class _DriverSpecDouble:
@@ -742,23 +795,25 @@ def test_a_corner_exactly_at_the_declared_floor_is_legal():
     assert refusal_for(_two_way(fc_hz=1600.0), _bounds()) is None
 
 
-def test_the_floor_binds_high_pass_corners_only():
-    """A low-pass corner never asks a driver to work below its floor.
+def test_a_low_pass_corner_is_never_itself_compared_to_the_floor():
+    """The floor binds the role's strictest HIGH-PASS corner, and only that.
 
-    The generalization of the two-way rule that keeps it physically exact: in a
-    two-way the single corner IS the HF role's high-pass corner, which is why
-    the corner sweep could get away with one number. Applying that number to a
-    LOW-pass would refuse a woofer for a wall that says nothing about it.
+    The distinction survives the move to a per-role strictest corner, but it
+    is now sharper: a low-pass corner's frequency is never compared to the
+    floor at all, so a role carrying a low-pass BELOW the floor and a
+    high-pass ABOVE it is protected and passes. What is refused is a role with
+    no high-pass corner to read — covered by the parametrized case above.
     """
-    below_floor = XoverCandidate(
-        sections_by_role={WOOFER: (CrossoverSection(1500.0, 4, False),)},
-        polarity_by_role={WOOFER: 1},
-        delay_us_by_role={WOOFER: 0.0},
-        gain_db_by_role={WOOFER: 0.0},
+    protected = XoverCandidate(
+        sections_by_role={
+            TWEETER: (CS(900.0, 4, False), CS(2500.0, 4, True)),
+        },
+        polarity_by_role={TWEETER: 1},
+        delay_us_by_role={TWEETER: 0.0},
+        gain_db_by_role={TWEETER: 0.0},
     )
-    assert refusal_for(
-        below_floor, _bounds(declared_floor_hz_by_role={WOOFER: 1600.0})
-    ) == FC_REJECT_OUTSIDE_SEARCH_BAND  # the band, not the floor
+    assert strictest_highpass_hz(protected, TWEETER) == 2500.0
+    assert refusal_for(protected, _floor_bounds()) is None
 
 
 def test_an_absent_floor_is_satisfied_and_never_read_as_zero():
@@ -839,7 +894,16 @@ def test_an_undeclared_role_is_named_as_the_cause_not_as_a_missing_band():
         delay_us_by_role={TWEETER: 0.0},
         gain_db_by_role={TWEETER: 0.0},
     )
-    assert refusal_for(full_range, bounds) == REJECT_UNDECLARED_ROLE
+    # No declared floor on these bounds: with one, the SAFETY wall would answer
+    # first and rightly so — a full-range candidate for a floor-declared role
+    # is the no-readable-corner hazard, not a declaration-shape complaint.
+    assert refusal_for(
+        full_range, _bounds(
+            fc_band_hz=None,
+            undeclared_roles=(TWEETER,),
+            declared_floor_hz_by_role={},
+        ),
+    ) == REJECT_UNDECLARED_ROLE
 
 
 def test_an_empty_intersection_reports_the_band_with_both_owners_still_named():
@@ -1054,6 +1118,157 @@ def test_an_undeclared_floor_is_unbounded_below_exactly_as_the_apply_layer_reads
     )
     assert TWEETER not in bounds.declared_floor_hz_by_role
     assert refusal_for(_two_way(fc_hz=300.0), bounds) is None
+
+
+def _floor_bounds(floor_hz: float | None = 1600.0) -> CandidateBounds:
+    return _bounds(
+        declared_floor_hz_by_role=({} if floor_hz is None else {TWEETER: floor_hz}),
+        fc_band_hz=(200.0, 9000.0),
+    )
+
+
+@pytest.mark.parametrize(
+    "label, sections",
+    [
+        # Every shape that leaves a floor-declared role with NO readable
+        # high-pass corner. Each one was ADMITTED before the floor pass stopped
+        # walking the candidate's roles and started walking the declarations.
+        ("empty sections tuple", {TWEETER: (), WOOFER: (CS(1648.7, 4, False),)}),
+        ("low-pass only", {TWEETER: (CS(1648.7, 4, False),)}),
+        ("role absent from sections_by_role", {WOOFER: (CS(1648.7, 4, False),)}),
+        ("no sections at all", {}),
+    ],
+)
+def test_a_declared_floor_with_no_readable_corner_is_refused(label, sections):
+    """The emit gate's rule, mirrored: silence is not protection.
+
+    #2736 refuses when a role declares a floor and
+    ``strictest_crossover_highpass_hz`` returns ``None`` — "a declared floor
+    with no readable crossover corner is refused rather than waved through".
+    A candidate that simply omits the tweeter's high-pass is asking for a
+    tweeter that runs open, which is the hazard the floor exists for.
+
+    A per-section check cannot see any of these: there is no section to
+    iterate, so the loop body never runs and the candidate falls through
+    admitted.
+    """
+    candidate = XoverCandidate(
+        sections_by_role=sections,
+        polarity_by_role={WOOFER: 1, TWEETER: 1},
+        delay_us_by_role={WOOFER: 0.0, TWEETER: 0.0},
+        gain_db_by_role={WOOFER: 0.0, TWEETER: 0.0},
+    )
+    assert refusal_for(candidate, _floor_bounds()) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    ), label
+    # ...and with NO floor declared, every one of them is honoured unchanged,
+    # exactly as the backstop honours an undeclared driver.
+    assert refusal_for(candidate, _floor_bounds(None)) is None, label
+
+
+def test_the_strictest_corner_is_the_highest_because_high_passes_compound():
+    """``max``, matching ``strictest_crossover_highpass_hz`` on the preset side.
+
+    A role high-passed at both 500 Hz and 2000 Hz is protected to 2000 — the
+    sections cascade. Taking the lowest corner would refuse a fully-protected
+    branch for the section that is not doing the protecting, which is the
+    front-door-stricter failure in its unhelpful form.
+    """
+    both = XoverCandidate(
+        sections_by_role={TWEETER: (CS(500.0, 4, True), CS(2000.0, 4, True))},
+        polarity_by_role={TWEETER: 1},
+        delay_us_by_role={TWEETER: 0.0},
+        gain_db_by_role={TWEETER: 0.0},
+    )
+    assert strictest_highpass_hz(both, TWEETER) == 2000.0
+    assert strictest_highpass_hz(both, WOOFER) is None
+    assert refusal_for(both, _floor_bounds()) is None
+
+
+def test_a_raw_driver_payload_is_routed_through_the_single_parse():
+    """``getattr`` on a dict is silent, and silence here removes a safety wall.
+
+    A raw payload reads perfectly naturally at a call site. Read by attribute
+    it yields ``None`` for every role, every floor vanishes, and nothing
+    anywhere reports it. Asserted at the boundary the apply gate pins —
+    4999 refuses against a 5000 floor, 5000 does not — so the two doors are
+    compared at the same number rather than merely both having one.
+    """
+    payload = {
+        "required_protection_filters": [
+            {"kind": "highpass", "cutoff_hz": 5000.0},
+        ],
+    }
+    bounds = bounds_from_declarations(
+        drivers_by_role={TWEETER: payload},
+        search_band_hz_by_role={TWEETER: (200.0, 9000.0), WOOFER: (200.0, 9000.0)},
+        excitation_ceiling_hz_by_role={},
+        incumbent_fc_hz=2000.0,
+        geometry_seed_us=0.0,
+        delay_step_us=0.0,
+    )
+    assert bounds.declared_floor_hz_by_role[TWEETER] == 5000.0
+    assert refusal_for(_two_way(fc_hz=5000.0), bounds) is None
+    assert refusal_for(_two_way(fc_hz=4999.0), bounds) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+def test_the_front_door_refuses_a_superset_of_what_the_backstop_refuses():
+    """The 'looser never' rule as an executable property, not prose.
+
+    Sweeps a corpus of candidates through BOTH doors and asserts
+    front-door-refusals is a superset of backstop-refusals. The backstop side
+    calls the real shipped pair — ``test_signal_plan.strictest_crossover_highpass_hz``
+    against a compiled preset, through the shared predicate — rather than a
+    restatement of its rule, so the property is about the code that will
+    actually run and not about my reading of it.
+
+    A superset rather than equality on purpose: stricter is allowed (the
+    backstop still catches everything let through), looser is the hazard.
+    """
+    floor_hz = 1600.0
+    corpus = [
+        (label, XoverCandidate(
+            sections_by_role=sections,
+            polarity_by_role={WOOFER: 1, TWEETER: 1},
+            delay_us_by_role={WOOFER: 0.0, TWEETER: 0.0},
+            gain_db_by_role={WOOFER: 0.0, TWEETER: 0.0},
+        ))
+        for label, sections in [
+            ("at floor", {TWEETER: (CS(1600.0, 4, True),)}),
+            ("one below", {TWEETER: (CS(1599.0, 4, True),)}),
+            ("well above", {TWEETER: (CS(2500.0, 4, True),)}),
+            ("well below", {TWEETER: (CS(800.0, 4, True),)}),
+            ("empty tuple", {TWEETER: ()}),
+            ("lowpass only", {TWEETER: (CS(2500.0, 4, False),)}),
+            ("absent", {WOOFER: (CS(2500.0, 4, False),)}),
+            ("two corners, high protects", {
+                TWEETER: (CS(800.0, 4, True), CS(2500.0, 4, True)),
+            }),
+            ("two corners, both below", {
+                TWEETER: (CS(800.0, 4, True), CS(1000.0, 4, True)),
+            }),
+        ]
+    ]
+
+    front, back = set(), set()
+    for label, candidate in corpus:
+        if refusal_for(candidate, _floor_bounds(floor_hz)) is not None:
+            front.add(label)
+        preset = _preset_with(candidate, floor_hz=floor_hz)
+        if not protection_highpass_floor_satisfied(
+            highpass_hz=strictest_crossover_highpass_hz(preset, TWEETER),
+            floor_hz=declared_protection_floor_hz(preset, TWEETER),
+        ):
+            back.add(label)
+
+    assert back, "the battery must exercise the backstop, not just pass vacuously"
+    assert back <= front, (
+        "the front door is LOOSER than the backstop for: "
+        f"{sorted(back - front)} — a below-floor candidate would reach the "
+        "apply door, which writes the Sound declaration before the graph apply"
+    )
 
 
 def test_the_floor_boundary_matches_the_shared_predicate_exactly():

@@ -50,9 +50,13 @@ measurements decide**.
    refuses.
 3. **Geometry priors — SOFT, seed only, never binding.** The ka beaming
    ceiling is modelled from a declared radius, not measured, so it may inform
-   or warn and may never refuse. #1675 rules it guidance, and on live jts3 it
-   sits BELOW the configured corner — a bound there would refuse the speaker's
-   own running crossover.
+   or warn and may never refuse. #1675 rules it guidance, and on jts3 it has
+   sat BELOW that speaker's own configured corner — a bound there would refuse
+   the crossover the speaker is running. (Deliberately no numbers: the corner
+   is per-speaker and moves. ``fc_selector.score_candidate``'s docstring
+   quotes a "jts3: 1915.4 ceiling, 2000 configured" pair that the 2026-08-18
+   bank contradicts at 1648.7 — pre-existing staleness in a module this plan
+   supersedes, recorded rather than edited here.)
 
 The measured layer is deliberately NOT produced by
 :func:`bounds_from_declarations`, whose whole contract is that it reads
@@ -137,7 +141,7 @@ vocabulary the emitted graph and the design draft both already speak.
 
 **Units are in every name**, because the sign convention is the convention of
 record: ``_hz`` frequencies, ``_us`` microseconds, ``_db`` decibels,
-``_deg`` degrees.
+``_deg`` degrees, ``_mm`` millimetres.
 """
 from __future__ import annotations
 
@@ -148,7 +152,9 @@ from typing import Any, Mapping
 from jasper.audio_measurement.program_analysis import half_period_us
 
 from ..branch_chain import CrossoverSection, beaming_onset_hz
-from ..driver_protection import protection_highpass_floor_satisfied
+from ..driver_protection import (
+    declared_protection_highpass_floor_hz, protection_highpass_floor_satisfied,
+)
 from ..profile import SUPPORTED_LR_ORDERS
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
@@ -331,10 +337,10 @@ class CandidateBounds:
     a two-way the single corner IS the HF role's high-pass corner.
 
     ``beaming_ceiling_hz`` is GUIDANCE and never refuses. #1675 defines the ka
-    prior as something to warn on rather than a fence, and on live jts3 the
-    ceiling (1915.4 Hz) sits below the configured corner (2000 Hz) — a bound
-    that refused it would refuse the speaker's own running crossover. It is
-    published here so a shortlist can disclose it.
+    prior as something to warn on rather than a fence, and on jts3 the ceiling
+    has sat below that speaker's own configured corner — a bound that refused
+    it would refuse the crossover the speaker is running. It is published here
+    so a shortlist can disclose it.
 
     ``delay_step_us`` is what the chain can REALIZE, declared by the caller
     from the graph it is proposing into (#2710: per-role integer-sample
@@ -436,13 +442,18 @@ def bounds_from_declarations(
     because the confirmation is a property of the safety plan and this module
     has no business re-deciding it.
 
-    ``drivers_by_role`` are the preset's parsed driver specs, duck-typed on
-    ``protection_highpass_floor_hz`` alone. **Parsed specs and not raw payloads,
-    deliberately:** that field is where
-    ``driver_protection.declared_protection_highpass_floor_hz`` puts its single
-    parse, and the apply gate reads the same field. Re-parsing a payload here
-    would be a second read of one fact, which is how the front door and the
-    backstop start disagreeing.
+    ``drivers_by_role`` accepts either the preset's parsed driver specs (read
+    off ``protection_highpass_floor_hz``, the field the apply gate reads) or a
+    raw driver payload mapping (routed through
+    ``driver_protection.declared_protection_highpass_floor_hz``, the function
+    that PRODUCES that field). Both end at one parse of one fact, so the front
+    door and the backstop cannot disagree.
+
+    **Both, and not just the spec, because ``getattr`` on a dict is silent.** An
+    earlier version read the attribute only. Handed a raw payload — which reads
+    perfectly naturally at a call site — every lookup returned ``None``, every
+    role lost its floor, and the safety wall disappeared with no error anywhere.
+    A fail-open that a caller cannot see is worse than a refusal it can.
 
     **A role with no declared floor gets no entry, and that is unbounded below
     rather than a floor of zero or a style default.** ``None`` means the
@@ -460,11 +471,9 @@ def bounds_from_declarations(
     """
     floors: dict[str, float] = {}
     for role in sorted(drivers_by_role):
-        floor_hz = getattr(
-            drivers_by_role[role], "protection_highpass_floor_hz", None,
-        )
-        if floor_hz is not None:
-            floors[role] = float(floor_hz)
+        floors_hz = _declared_floor_hz(drivers_by_role[role])
+        if floors_hz is not None:
+            floors[role] = floors_hz
 
     search = resolve_fc_search_band(search_band_hz_by_role)
     band_hz = search.band_hz
@@ -498,6 +507,56 @@ def bounds_from_declarations(
     )
 
 
+def _declared_floor_hz(driver: Any) -> float | None:
+    """One driver's declared protection floor, however the caller holds it.
+
+    A parsed :class:`~jasper.active_speaker.profile.DriverSpec` carries the
+    value on ``protection_highpass_floor_hz``; a raw payload mapping has not
+    been parsed yet and goes through
+    :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`,
+    which is the function that fills that field in the first place. Two shapes,
+    one parse, one number.
+
+    The ``Mapping`` branch is checked FIRST and is not defensive padding: a
+    ``dict`` answers ``getattr`` with the default, so reading the attribute
+    first would turn every raw payload into "no floor declared" — silently,
+    with no error, taking the safety wall down with it.
+    """
+    if isinstance(driver, Mapping):
+        floor_hz = declared_protection_highpass_floor_hz(driver)
+    else:
+        floor_hz = getattr(driver, "protection_highpass_floor_hz", None)
+    return None if floor_hz is None else float(floor_hz)
+
+
+def strictest_highpass_hz(candidate: XoverCandidate, role: str) -> float | None:
+    """The strictest (highest) corner that high-passes ``role``, or ``None``.
+
+    The candidate-side twin of
+    :func:`~jasper.active_speaker.test_signal_plan.strictest_crossover_highpass_hz`,
+    which reads the same quantity off a compiled preset (``max`` of the
+    regions whose ``upper_driver`` is this role). Same rule, same ``max``, same
+    ``None`` — because the front door and the emit gate have to be answering
+    one question about one number.
+
+    ``max`` and not ``min``: cascading high-passes compound, so a role
+    high-passed at both 500 Hz and 2000 Hz is protected to 2000. Taking the
+    lowest corner would refuse a fully-protected branch for a section that is
+    not the one doing the protecting.
+
+    ``None`` means this candidate gives the role NO high-pass at all — the
+    driver would run open in the emitted graph. Against a declared floor the
+    shared predicate reads that as unsatisfied, which is the whole point: a
+    missing corner is the hazard, not the absence of one.
+    """
+    corners = [
+        float(section.fc_hz)
+        for section in candidate.sections_by_role.get(role, ())
+        if section.highpass
+    ]
+    return max(corners) if corners else None
+
+
 def refusal_for(
     candidate: XoverCandidate, bounds: CandidateBounds,
 ) -> str | None:
@@ -518,14 +577,24 @@ def refusal_for(
     This keeps ``fc_sweep._fc_rejection``'s floor-first discipline rather than
     inventing a second precedence.
 
-    **Why 1-2 are a separate pass over the roles.** An undeclared role poisons
-    the whole bounds object rather than only its own entry — the intersection
-    is ``None`` for everyone — so the check has to sit between the per-role
-    walls and the band, not inside a single loop. In one loop the FIRST role
-    walked reaches the absent band before the LAST role gets to say it is the
-    undeclared one, and the refusal names the symptom. That is not
-    hypothetical: it is what this function did until a test asked for the
-    two-role case in the order that exposes it.
+    **Why each wall is its own pass over the roles.** Two independent reasons,
+    both found by a test rather than by reading.
+
+    An undeclared role poisons the whole bounds object rather than only its own
+    entry — the intersection is ``None`` for everyone — so that check has to sit
+    between the per-role walls and the band. In one loop the FIRST role walked
+    reaches the absent band before the LAST role gets to say it is the
+    undeclared one, and the refusal names the symptom.
+
+    The floor is worse, because a single loop over the CANDIDATE's roles cannot
+    see the hazard at all. A role that declares a floor and carries no readable
+    high-pass corner — an empty sections tuple, only a low-pass, or no entry in
+    ``sections_by_role`` — has nothing for a per-section check to iterate, so it
+    fell through and was ADMITTED, while the emit gate refuses exactly that
+    case. The floor pass therefore walks
+    :attr:`CandidateBounds.declared_floor_hz_by_role`, not the candidate's own
+    roles: the declaration decides who gets checked, and a candidate cannot opt
+    out of a wall by staying silent about the driver it protects.
 
     Roles are walked in sorted order so a candidate with two violations always
     reports the same one. A refusal that varies with dictionary order is a
@@ -535,18 +604,19 @@ def refusal_for(
     :data:`CANDIDATE_REFUSAL_REASONS` or a candidate it may score. There is no
     third outcome and no adjusted candidate.
     """
+    # Pass 1 — the safety wall, driven by the DECLARATIONS rather than by the
+    # candidate. Mirrors the emit gate exactly: one strictest corner per role
+    # through the one shared predicate, so "floor declared, no readable corner"
+    # refuses on both doors and "no floor declared" is honoured on both.
+    for role in sorted(bounds.declared_floor_hz_by_role):
+        if not protection_highpass_floor_satisfied(
+            highpass_hz=strictest_highpass_hz(candidate, role),
+            floor_hz=bounds.declared_floor_hz_by_role.get(role),
+        ):
+            return FC_REJECT_BELOW_DECLARED_FLOOR
+
     for role in candidate.roles:
         for section in candidate.sections_by_role.get(role, ()):
-            # The floor binds HIGH-PASS corners only. A low-pass corner never
-            # asks a driver to work below its declared minimum, so refusing one
-            # against this floor would be a bound with no physical claim under
-            # it. An absent floor is satisfied — see the module docstring on
-            # why absence is never read as zero.
-            if section.highpass and not protection_highpass_floor_satisfied(
-                highpass_hz=float(section.fc_hz),
-                floor_hz=bounds.declared_floor_hz_by_role.get(role),
-            ):
-                return FC_REJECT_BELOW_DECLARED_FLOOR
             if int(section.order) not in bounds.legal_orders:
                 return REJECT_UNSUPPORTED_ORDER
 

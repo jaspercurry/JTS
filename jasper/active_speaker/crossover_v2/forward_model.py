@@ -95,21 +95,28 @@ class DriverPlant:
     reason.
 
     ``trusted`` marks where ``P`` was well-conditioned across the WHOLE grid,
-    including outside the driven band. :func:`driver_plants` refuses outright
-    when a bin inside the driven band is untrusted, so a plant that exists has
-    a trusted driven band by construction; the mask carries the answer for
-    everywhere else.
+    including outside the driven band.
+
+    **The guarantee, stated exactly, because a looser version of this sentence
+    went false once already.** :func:`driver_plants` refuses when any bin in
+    the REQUIRED band is untrusted, and the required band defaults to the whole
+    driven band. So a plant that exists has a trusted driven band by
+    construction — UNLESS its caller narrowed the required band with
+    ``required_band_hz_by_role``, in which case the guarantee holds over that
+    narrower span and the mask is the only answer outside it. An earlier
+    revision narrowed the default to "required if supplied, else nothing" and
+    left this sentence unchanged; the measured cost was 43 untrusted driven
+    bins accepted with the guarantee still claimed.
 
     **Nothing in this module reads ``trusted``, and that is deliberate rather
     than an oversight** — said plainly so a reader does not have to work out
-    whether it is dead. Inside the driven band it is ``True`` by construction
-    (the refusal above guarantees it) and outside it :func:`predict_sum`
-    contributes zero, so this module cannot need it. Its consumer is the
-    objective: a grade computed over the predicted sum has to know which bins
-    the de-embedding could stand behind, and that answer is a property of the
-    CAPTURE rather than of any candidate — so it is derived once, here, where
-    the division that produced it happens, instead of being re-derived per
-    candidate by whoever grades one.
+    whether it is dead. Its consumer is the objective, and the contract that
+    consumer must honour is the paragraph above: where a caller narrowed the
+    required band, a grade computed over the predicted sum has to mask by
+    ``trusted`` rather than assume it. That answer is a property of the CAPTURE
+    rather than of any candidate, so it is derived once, here, where the
+    division that produced it happens, instead of per candidate by whoever
+    grades one.
     """
 
     role: str
@@ -158,18 +165,22 @@ def driver_plants(
 
     ``required_band_hz_by_role`` is where the de-embedding must be honest, and
     it is intersected with the driven band exactly as the kernel intersects
-    ``candidate_required_band_hz_by_role`` with ``radiated_band_hz``. **Passing
-    nothing means the mask carries the answer and nothing refuses**, which is
-    deliberate rather than lax: the band a search depends on is a property of
-    the CANDIDATE, and this function runs before any candidate exists.
+    ``candidate_required_band_hz_by_role`` with ``radiated_band_hz`` — including
+    when it is absent: the kernel's ``band is None`` path leaves the whole
+    radiated band required, and so does this one. Mirroring the kernel is the
+    rule this module claims to follow, so it follows it here too rather than
+    inventing a permissive default that would quietly hollow out the guarantee
+    on :attr:`DriverPlant.trusted`.
 
     Why the parameter exists at all — a measured lesson, not a hypothetical.
-    Checking the floor over the whole DRIVEN band refuses every real two-way
-    capture whenever ``P`` contains a crossover: a sweep necessarily runs past
-    the corner, and an LR4 low-pass at 1648.7 Hz is about -30 dB at 4 kHz,
-    inside a woofer's 150-4000 Hz sweep. Graded against the banked armrun that
-    refused **6 of 6 arms** for a de-embedding that provably cancels. A gate
-    that refuses every honest input is not a strict gate, it is a broken one.
+    The whole-band check refuses a capture whenever ``P`` contains a crossover:
+    a sweep necessarily runs past the corner, and an LR4 low-pass at 1648.7 Hz
+    is about -30 dB at 4 kHz, inside a woofer's 150-4000 Hz sweep. Every banked
+    armrun arm refused that way, for a de-embedding that provably cancels.
+    **The narrowing is the caller's to declare, not this function's to assume**,
+    because which band a search depends on is a property of the candidate — and
+    a ``P`` that contains a crossover is the misuse named below, whose honest
+    answer really is a refusal until the caller says which span it needs.
 
     ``P`` is the EMITTED protection — what the graph actually ran during this
     capture. On a MEASURE capture that is the per-driver protective high-pass,
@@ -211,19 +222,16 @@ def driver_plants(
             raise ConfiguredPathConditioningError(f"non-finite P for {role}")
 
         band = (required_band_hz_by_role or {}).get(role)
-        if band is not None:
-            required = driven & (
-                (freqs_hz >= float(band[0])) & (freqs_hz <= float(band[1]))
+        required = driven if band is None else driven & (
+            (freqs_hz >= float(band[0])) & (freqs_hz <= float(band[1]))
+        )
+        if not np.any(required):
+            raise ConfiguredPathConditioningError(f"no required bins for {role}")
+        if not np.all(trusted[required]):
+            raise ConfiguredPathConditioningError(
+                f"P below {protection_floor_db:g} dB for {role}",
+                protection_floor=True,
             )
-            if not np.any(required):
-                raise ConfiguredPathConditioningError(
-                    f"no required bins for {role}"
-                )
-            if not np.all(trusted[required]):
-                raise ConfiguredPathConditioningError(
-                    f"P below {protection_floor_db:g} dB for {role}",
-                    protection_floor=True,
-                )
         plants.append(DriverPlant(
             role=role,
             angle_deg=float(measurement.angle_deg),
@@ -353,7 +361,13 @@ def predict_sum(
         if not named.issubset(present):
             continue
         grid = angle_plants[0].freqs_hz
-        if any(plant.freqs_hz.shape != grid.shape for plant in angle_plants):
+        if any(
+            not np.array_equal(plant.freqs_hz, grid) for plant in angle_plants
+        ):
+            # VALUES, not shape. Two grids of equal length over different
+            # abscissae are the dangerous case precisely because a shape check
+            # waves them through: the sum would then add bins that are not the
+            # same frequency, and the result looks like a spectrum.
             raise ValueError(
                 f"plants at {angle_deg} deg disagree about their frequency grid"
             )
