@@ -33,7 +33,7 @@ predicts every number the capture reported (the woofer pair straddles it:
 32.1 + 64/1_036_800 = 93.8 ppm against 94.118 observed; the tweeter pair sits
 entirely after it, so 32.097 ppm is the TRUE drift). A +64 step was large
 enough for the shipped guards to catch; the Stage-0 bank's +1.986 is the same
-fault two orders of magnitude smaller, and that one they do not catch.
+fault about 32x smaller, and that one they do not catch.
 
 **What already existed, and the one thing that was wrong with it.**
 :mod:`jasper.audio_measurement.program_analysis` has carried a single-step
@@ -47,11 +47,12 @@ into this module's one admission rule) and it was wired as
 diagnostic-only. That is the entire gap this module closes — the model was
 never the problem, the quantization was. Fed sub-sample positions (the
 occurrence-vs-occurrence estimator, whose measured noise on the same corpus
-is 0.038-0.299 samples), the same fit gates at 1.5 samples instead: a 2.7x
-sharpening against that 4.0 floor, and against the spread guard's effective
-~3.0-sample step it is a 2x one. Modest multipliers, deliberately stated as
-such — see ``SLIP_GATE_SAMPLES`` for the measured operating point, and for
-the one-sample bar this structure cannot reach at all.
+is 0.038-0.299 samples), the same fit gates at 1.5 samples instead. In the
+terms that matter to a capture — the smallest whole-sample slip actually
+rejected — that moves the floor from 4 samples to 2, a **2x** sharpening.
+A modest multiplier, deliberately stated as one: see ``SLIP_GATE_SAMPLES``
+for the measured operating point, and for the one-sample bar this structure
+cannot reach at all.
 
 **Why not simply lower the residual guard's threshold instead.** The
 shipped ``GLITCH_RESIDUAL_SAMPLES`` = 1.5 guard reduces a role's occurrences
