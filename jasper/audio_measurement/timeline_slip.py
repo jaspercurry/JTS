@@ -130,22 +130,24 @@ STEP_RSS_RATIO = 0.25
 #: What this buys, stated as the quantity that changed: the shipped spread
 #: guard reduces a step to roughly half its size before comparing against
 #: ``GLITCH_RESIDUAL_SAMPLES`` = 1.5 (its own pins: a +4-sample insertion
-#: reads 2.0, a +2 reads 1.0), so it starts rejecting at a step of about 3.0
-#: samples — 62 us. Gating the step's own size at 1.5 halves that to 31 us,
-#: which is what brings the +1.986-sample (41 us) slip inside the net.
+#: reads 2.0, a +2 reads 1.0), so it only rejects ABOVE a step of 3.0
+#: samples — in the integer-insertion pins it fires at +4 and not at +3, so
+#: 4 samples (83 us) is the floor a whole-sample slip actually meets. Gating
+#: the step's own size at 1.5 halves that to 2 samples (41 us), which is what
+#: brings the +1.986-sample slip inside the net.
 #:
 #: The limit, because it is not the one originally asked for: **one-sample
 #: slips are NOT reliably caught** (0.20 % at the operating point, same n).
 #: Reaching a 1-sample bar would need a gate near 0.6, and that gate
 #: false-rejects **15.05 %** of clean captures at sd = 0.20 and **33.33 %** at
 #: sd = 0.30 — the D7 failure mode rebuilt on purpose, and worse than D7's
-#: own eight-in-twenty-eight. Note the cost is already unacceptable one full
+#: own eight-in-twenty-eight. The cost is already unacceptable one full
 #: stress row BELOW the worst case, which is the part that settles it. Six
-#: locate
-#: positions and a best-of-five cut search do not carry the information for
-#: it; that requires adding signal to the capture (the Stage-0 dual timing
-#: pilot resolves 0.002 samples because it measures a known 2.2 s playback
-#: spacing at high SNR), which is a program change, not an analysis one.
+#: locate positions and a best-of-five cut search do not carry the
+#: information for it; that requires adding signal to the capture (the
+#: Stage-0 dual timing pilot resolves 0.002 samples because it measures a
+#: known 2.2 s playback spacing at high SNR), which is a program change, not
+#: an analysis one.
 #:
 #: Raise this and the +1.986 class starts passing again; lower it and the
 #: fit's own noise starts rejecting clean captures. Both directions are
