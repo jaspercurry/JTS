@@ -635,6 +635,36 @@ def test_drive_level_measures_only_the_scheduled_window():
     assert empty.capture_rms_dbfs == float("-inf")
 
 
+def _replay_cli(name: str):
+    """``scripts/harmonic-distortion-replay.py`` as a module.
+
+    It is a script rather than a package module (laptop-only, never shipped to
+    the Pi) and its filename is not an identifier, so it is loaded by path —
+    the same shape ``tests/test_crossover_v2_boost_scenarios.py`` uses for its
+    sibling replay. Registered before exec because the module defines
+    dataclasses, and popped again if exec raises: a half-executed module left
+    in ``sys.modules`` would be handed to the next caller as if it were fine.
+    The caller pops it on the way out.
+    """
+    import importlib.util
+    import sys
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / (
+        "harmonic-distortion-replay.py"
+    )
+    spec = importlib.util.spec_from_file_location(name, path)
+    cli = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = cli
+    loaded = False
+    try:
+        spec.loader.exec_module(cli)
+        loaded = True
+    finally:
+        if not loaded:
+            sys.modules.pop(spec.name, None)
+    return cli, spec
+
+
 def test_a_sidecar_without_gate_fields_is_refused_not_read_ungated():
     """The replay CLI's fidelity gate fails closed on an empty diagnostic.
 
@@ -643,17 +673,10 @@ def test_a_sidecar_without_gate_fields_is_refused_not_read_ungated():
     exactly such sidecars. The refusal happens before any analysis, so the
     stub arguments prove it cannot depend on them.
     """
-    import importlib.util
     import sys
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / (
-        "harmonic-distortion-replay.py"
-    )
-    spec = importlib.util.spec_from_file_location("_hd_replay_under_test", path)
-    cli = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = cli
+    cli, spec = _replay_cli("_hd_replay_under_test")
     try:
-        spec.loader.exec_module(cli)
         for sidecar in ({}, {"diagnostic": {}}, {"diagnostic": {"epsilon_ppm": None}}):
             readings, failures, disclosure, compared = cli.read_capture(
                 None, None, None, (2, 3), None, sidecar
@@ -672,19 +695,12 @@ def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
     refuses widths it does not support rather than mis-analyzing them.
     (Twin pin for scripts/severed-twin-replay.py lives in
     tests/test_crossover_v2_boost_scenarios.py.)"""
-    import importlib.util
     import struct
     import sys
     import wave
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / (
-        "harmonic-distortion-replay.py"
-    )
-    spec = importlib.util.spec_from_file_location("_hd_replay_widths", path)
-    cli = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = cli
+    cli, spec = _replay_cli("_hd_replay_widths")
     try:
-        spec.loader.exec_module(cli)
 
         def _write(name, values, width):
             wav_path = tmp_path / name
@@ -716,21 +732,6 @@ def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
             cli.load_mono(eight)
     finally:
         sys.modules.pop(spec.name, None)
-
-
-def _replay_cli(name: str):
-    """The replay CLI, loaded as a module. Caller pops ``sys.modules[name]``."""
-    import importlib.util
-    import sys
-
-    path = Path(__file__).resolve().parents[1] / "scripts" / (
-        "harmonic-distortion-replay.py"
-    )
-    spec = importlib.util.spec_from_file_location(name, path)
-    cli = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = cli
-    spec.loader.exec_module(cli)
-    return cli, spec
 
 
 def _measure_program_at(downstream_db: float, *, courtesy_prelude: bool):
