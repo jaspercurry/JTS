@@ -28,6 +28,14 @@ the #2491 config a green load gate — reproduced through the real handler by tw
 independent review lenses. Absence of the keys therefore refuses; an honest
 undeclared driver, which staging writes as present-and-``None``, still passes.
 
+A fifth family, section (g), pins the **apply-time** layer. All four families
+above compare the floor only once a graph exists — none of them stood between a
+chosen crossover frequency and an APPLIED graph, which was harmless only while
+nothing varied Fc. ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``
+closes that at the emitter, and section (g) keeps it honest in both directions:
+it must refuse a below-floor corner, and it must not invent a floor where the
+operator declared none.
+
 The two real-box fixtures in ``tests/fixtures/active_speaker_protection_floor_20260814/``
 are verbatim design drafts captured from jts.local's first sanctioned composite
 arm (2026-08-14, issue #2491's closing comment): the 2000 Hz draft that armed
@@ -38,11 +46,21 @@ re-issued 5000 Hz draft that did arm.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from jasper.active_speaker.calibration_level import calibration_level_payload
+from jasper.active_speaker.camilla_yaml import (
+    EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
+    _assert_tweeter_crossover_honours_declared_floor,
+    emit_active_speaker_baseline_config,
+    emit_active_speaker_driver_domain_config,
+)
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import (
     DRIVER_RESEARCH_KIND,
@@ -58,6 +76,7 @@ from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
 )
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.staging import (
     compile_preset_from_crossover_preview,
     stage_protected_startup_config,
@@ -812,3 +831,181 @@ def test_real_box_honest_redraft_at_the_floor_still_arms(tmp_path: Path) -> None
             issue["code"] == "crossover_below_declared_protection_floor"
             for issue in group["crossovers"][0]["issues"]
         )
+
+
+# --- (g) the apply-time layer: the L0 emit gate -----------------------------
+#
+# The fifth surface, and the one that was missing until the crossover frequency
+# stopped being frozen at commissioning. Sections (a)-(f) above cover a floor
+# that is only ever compared AFTER a graph exists: the clamp raises the derived
+# protective high-pass, staging publishes the two facts, and the startup-load
+# gate refuses the staged artifact. None of that stands between a chosen
+# crossover frequency and an APPLIED graph -- the routine apply transaction
+# (build_baseline_profile_candidate -> apply_baseline_profile ->
+# dsp_apply.apply_dsp_config) emitted whatever corner it was handed. Harmless
+# while nothing varied Fc; a live hazard the moment Fc becomes a searched or
+# prescribed parameter.
+#
+# camilla_yaml._assert_tweeter_crossover_honours_declared_floor closes it at the
+# emitter, before a line of YAML is built. These pins exist to keep it honest in
+# BOTH directions: it must refuse a below-floor corner, and it must not invent a
+# floor where the operator declared none.
+
+ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def _below_floor_preset(topology: OutputTopology):
+    """A 2000 Hz crossover under a 5000 Hz declared tweeter floor (the #2491 shape)."""
+
+    return _preset(topology, _preview(topology, fc_hz=2000, tweeter_floor_hz=5000))
+
+
+def test_baseline_emit_refuses_a_below_floor_crossover_by_name(caplog) -> None:
+    topology = mono_output_topology()
+    preset = _below_floor_preset(topology)
+    caplog.set_level(logging.ERROR, logger="jasper.active_speaker.camilla_yaml")
+
+    with pytest.raises(ActiveSpeakerConfigError) as excinfo:
+        emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    # The operator sentence names BOTH numbers and the remedy -- the same three
+    # things the startup-load gate's refusal names, because a household that
+    # hits one should not get a worse message than one that hits the other.
+    message = str(excinfo.value)
+    assert "2000 Hz" in message
+    assert "5000 Hz" in message
+    assert "required_protection_filters" in message
+
+    # ...and the refusal is never silent. The slug is the machine-readable half:
+    # the sentence above may be reworded, this may not.
+    assert "event=active_speaker.emit_gate" in caplog.text
+    assert f"result={EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR}" in caplog.text
+    assert "tweeter_crossover_highpass_hz=2000.0" in caplog.text
+    assert "tweeter_protection_floor_hz=5000.0" in caplog.text
+
+
+def test_baseline_emit_accepts_a_crossover_exactly_at_the_declared_floor() -> None:
+    """The boundary, matched to the startup gate's rather than chosen afresh.
+
+    ``>=``: a driver rated to cross at 5000 Hz may cross at 5000 Hz (owner
+    ruling 2026-08-17). Both layers reach that answer through the SAME shared
+    predicate, which is what makes the pin below meaningful -- were the emit
+    gate to grow its own comparison, an apply could refuse a graph the startup
+    load accepts, or worse, accept one it refuses.
+    """
+
+    topology = mono_output_topology()
+    preset = _preset(topology, _preview(topology, fc_hz=5000, tweeter_floor_hz=5000))
+
+    text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    # Positive control: the emit really happened and really carries the corner
+    # under test, so this test cannot pass by emitting nothing at all.
+    assert "freq: 5000.0000" in text
+    assert "as_tweeter_woofer_tweeter_5000hz_hp" in text
+    # The rule both layers share, asserted directly at the boundary value.
+    assert protection_highpass_floor_satisfied(highpass_hz=5000, floor_hz=5000) is True
+
+
+def test_baseline_emit_accepts_a_crossover_above_the_declared_floor() -> None:
+    topology = mono_output_topology()
+    preset = _preset(topology, _preview(topology, fc_hz=6000, tweeter_floor_hz=5000))
+
+    text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    assert "freq: 6000.0000" in text
+
+
+def test_baseline_emit_invents_no_floor_where_the_operator_declared_none() -> None:
+    """The never-nanny direction, and the one place this gate could over-block.
+
+    An undeclared floor is ``None``, and the shared predicate honours it. That
+    is NOT a hole: it is the same present-and-``None`` case the startup-load
+    gate calls "the honest undeclared case", and substituting the class-default
+    code policy here would invent a bound the operator never declared (the
+    2026-08-14 never-nanny ruling). A 2000 Hz crossover with no declared floor
+    is exactly what it was before this gate existed.
+    """
+
+    topology = mono_output_topology()
+    preset = _preset(topology, _preview(topology, fc_hz=2000, tweeter_floor_hz=None))
+
+    assert preset.drivers["tweeter"].protection_highpass_floor_hz is None
+
+    text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    assert "freq: 2000.0000" in text
+
+
+@pytest.mark.parametrize("emitter", ["baseline", "driver_domain"])
+def test_both_household_emitters_share_the_declared_floor_gate(emitter: str) -> None:
+    """Every graph that carries household program inherits the bound.
+
+    Mirrors ``test_both_emitters_share_correction_safety_gate`` in
+    tests/test_active_speaker_driver_domain.py: a bonded leader's driver domain
+    runs the same protective chain on the same drivers as the solo baseline, so
+    a gate one honours and the other does not is a hole with a hardware trigger
+    (bond the speaker, and the refused graph applies).
+    """
+
+    topology = mono_output_topology()
+    preset = _below_floor_preset(topology)
+
+    with pytest.raises(ActiveSpeakerConfigError):
+        if emitter == "baseline":
+            emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+        else:
+            emit_active_speaker_driver_domain_config(
+                preset,
+                playback_device=ACTIVE_PCM,
+                program_channel="left",
+            )
+
+
+def test_the_gate_refuses_a_declared_floor_with_no_readable_crossover_corner(
+    caplog,
+) -> None:
+    """Fail-closed: an unreadable corner must not pass as "nothing to compare".
+
+    Unreachable through the emitters today -- ``ActiveSpeakerPreset.validate()``
+    requires a region for every adjacent driver pair, so a validated 2-way
+    preset always has a tweeter-upper corner, and the emitters validate before
+    they call this gate. Pinned anyway because it is the direction that fails
+    DANGEROUSLY: a future preset shape that could not name its tweeter corner
+    must refuse, not sail through on a ``None``. The rule lives in the shared
+    predicate (absent high-pass against a real floor is not satisfied), so this
+    also pins that the gate reads its answer from there rather than
+    short-circuiting on a missing value.
+    """
+
+    topology = mono_output_topology()
+    preset = dataclasses.replace(_below_floor_preset(topology), crossover_regions=())
+    caplog.set_level(logging.ERROR, logger="jasper.active_speaker.camilla_yaml")
+
+    with pytest.raises(ActiveSpeakerConfigError) as excinfo:
+        _assert_tweeter_crossover_honours_declared_floor(preset)
+
+    assert "no crossover corner" in str(excinfo.value)
+    assert f"result={EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR}" in caplog.text
+
+
+def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose() -> None:
+    """The scope boundary, pinned so a later widening has to argue with a test.
+
+    The gate deliberately does NOT run on the startup / commissioning / program
+    emitters. Staging a below-floor graph is how the layer above it produces its
+    actionable refusal: staging emits, publishes both facts onto the metadata,
+    and the load gate refuses BY NAME with a remedy. Gating the emitter would
+    replace that with a bare exception thrown from under the commissioning flow
+    -- and would leave the load gate untestable against the one artifact it
+    exists to catch, which is what sections (c)-(e) above depend on.
+    """
+
+    topology = mono_output_topology()
+    preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=5000)
+
+    # Compiling the preset is what the commissioning flow does before staging;
+    # neither step may refuse, because the load gate owns that refusal.
+    preset = _preset(topology, preview)
+
+    assert preset.drivers["tweeter"].protection_highpass_floor_hz == 5000.0

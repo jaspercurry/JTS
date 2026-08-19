@@ -197,7 +197,19 @@ def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -
         {
             "role": "tweeter",
             "model": "F110M-8",
-            "recommended_highpass_hz": 2500,
+            # 2000, not 2500, and the gap is load-bearing. Since #2603 this one
+            # field IS the declared protection floor, and the apply-time gate
+            # (camilla_yaml._assert_tweeter_crossover_honours_declared_floor)
+            # refuses any crossover below it. Declaring 2500 while ALSO crossing
+            # at 2500 left this fixture speaker with zero downward headroom, so
+            # every alternative-Fc test below (the 2500 -> 2250 nudge the #2292
+            # undo pins use) was exercising a crossover its own driver
+            # declaration forbids. 2000 keeps the fixture honest -- still far
+            # above this driver's own do_not_test_below_hz of 1200 -- and lets
+            # those tests go on testing apply/undo mechanics rather than
+            # tripping a safety gate. Raise it here to test the gate itself;
+            # tests/test_active_speaker_protection_floor.py owns those pins.
+            "recommended_highpass_hz": 2000,
             "do_not_test_below_hz": 1200,
             "gain_offset_db": tweeter_gain_db,
             "sources": ["https://example.test/tweeter"],

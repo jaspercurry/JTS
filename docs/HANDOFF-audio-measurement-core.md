@@ -1490,6 +1490,24 @@ which is stricter than "a File sink", so an ALSA-sink program graph stays
 blocked under a roleful topology. Scope:
 L0 proves HP-presence + a safe corner FLOOR only — validating that a preset's
 *designed* Fc suits its specific driver is preset-validation's job (follow-up).
+
+> **Annotation (2026-08-19), not a rewrite of the 2026-07-03 entry above:** that
+> follow-up has landed, and *not* in preset validation. The routine apply
+> transaction now refuses a designed Fc below the tweeter's own declared
+> protection floor at the emit boundary —
+> `camilla_yaml._assert_tweeter_crossover_honours_declared_floor`, the *bound*
+> half beside `_assert_tweeter_outputs_protected`'s *structural* half, reading
+> the declared floor from its owner (`test_signal_plan.declared_protection_floor_hz`
+> → the preset-carried `DriverSpec.protection_highpass_floor_hz`) and comparing
+> with the shared `driver_protection.protection_highpass_floor_satisfied`.
+> **Its emitter set is two, not five:** only the graphs that carry household
+> program (`emit_active_speaker_{baseline,driver_domain}_config`). The
+> commissioning-flow emitters stay ungated on purpose — staging a below-floor
+> graph is how `path_safety._tweeter_protection_floor_verdict` produces the
+> actionable startup-load refusal, which is the older and still-current layer.
+> So the "absolute 400 Hz corner floor" sentence above still describes what the
+> *structural* gate proves; the driver's own declared floor is a second,
+> stricter bound that only these two emitters enforce.
 **New failure mode callers handle:** an emit now raises
 `ActiveSpeakerConfigError` (a `ValueError`) with `event=active_speaker.emit_gate`
 logged first (never silent) if a graph would ship an unprotected tweeter — the

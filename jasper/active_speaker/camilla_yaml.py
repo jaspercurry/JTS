@@ -55,6 +55,10 @@ from jasper.log_event import log_event
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
+from .driver_protection import (
+    format_protection_hz,
+    protection_highpass_floor_satisfied,
+)
 from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     bass_extension_block_valid,
@@ -76,10 +80,23 @@ from .profile import (
     required_driver_roles,
 )
 from .test_signal_plan import (
+    declared_protection_floor_hz,
     protective_tweeter_highpass_frequency_hz,
+    strictest_crossover_highpass_hz,
 )
 
 logger = logging.getLogger(__name__)
+
+#: ``result=`` slug of the L0 emit gate's below-declared-floor refusal
+#: (:func:`_assert_tweeter_crossover_honours_declared_floor`). Named rather than
+#: spelled inline because it is the machine-readable half of a hearing-safety
+#: refusal: the operator sentence may be reworded, this may not. Sibling of the
+#: startup gate's ``tweeter_crossover_below_declared_protection_floor`` blocker
+#: code (``path_safety._tweeter_protection_floor_verdict``) — two layers, one
+#: condition, so the two slugs are deliberately readable as a pair.
+EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR = (
+    "blocked_tweeter_crossover_below_declared_floor"
+)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.profile import BassExtensionProfile
@@ -733,6 +750,107 @@ def _assert_bass_extension_safe(
     )
 
 
+def _assert_tweeter_crossover_honours_declared_floor(
+    preset: ActiveSpeakerPreset,
+) -> None:
+    """Fail-closed L0 emit gate: refuse a crossover below the tweeter's own floor.
+
+    The *bound* half of tweeter protection, where
+    :func:`_assert_tweeter_outputs_protected` is the *structural* half.
+    Structure answers "is there **a** high-pass on this output"; this answers
+    "is its corner at or above what this driver's own declaration requires". A
+    searched or prescribed crossover frequency makes those two different
+    questions: a graph can carry a textbook-correct high-pass whose corner the
+    driver's manufacturer forbids.
+
+    **Both compared numbers come from their owners, never re-derived here.**
+    ``test_signal_plan.strictest_crossover_highpass_hz`` is the one derivation
+    of "the crossover corner this driver is protected at";
+    ``test_signal_plan.declared_protection_floor_hz`` is the thin read of the
+    preset-carried floor that
+    ``driver_protection.declared_protection_highpass_floor_hz`` parsed at the
+    single compile point (``staging._driver_spec_from_preview``); and
+    ``driver_protection.protection_highpass_floor_satisfied`` is the shared
+    comparison rule. So this gate cannot drift from the protective-high-pass
+    clamp, the staged metadata, or the load gate — all four compare the same
+    numbers with the same rule.
+
+    **Two layers, deliberately, and they are not redundant.**
+    ``path_safety._tweeter_protection_floor_verdict`` refuses the same
+    condition at **startup / commission-load**, reading the two facts
+    ``staging`` published onto a *staged config's metadata*. That gate can only
+    ever judge a graph already written to disk, and only on the load path. This
+    one runs first thing inside the household-facing emitters, before a single
+    line of YAML is built — so the routine apply transaction
+    (``baseline_profile.build_baseline_profile_candidate`` →
+    ``apply_baseline_profile`` → ``dsp_apply.apply_dsp_config``) cannot put a
+    below-floor crossover on disk in the first place. Neither subsumes the
+    other: remove this and a routine apply ships the graph the load gate would
+    later refuse; remove that and a config staged by any other producer loads
+    unchecked.
+
+    **Why only the household-facing emitters, and not every emitter.** The
+    commissioning-flow emitters (startup / commissioning / program) must stay
+    able to emit a below-floor graph, because refusing one is precisely what
+    the layer above them does *with a better message*: ``staging`` emits the
+    startup config, publishes both facts onto its metadata, and the load gate
+    then refuses it by name with an actionable "raise the crossover or correct
+    the declaration". Gating the emitter would replace that operator-facing
+    refusal with a bare emit-time exception thrown from underneath the
+    commissioning flow, and would leave the load gate untestable against the
+    very artifact it exists to catch (issue #2491's own contract pins stage a
+    below-floor draft on purpose). The scope is therefore the graphs that carry
+    household program: the baseline apply and the multiroom driver-domain bake.
+
+    **Boundary semantics are the shared predicate's, deliberately identical to
+    the startup gate's:** *at* the floor is legal (``>=``, the 2026-08-17 owner
+    ruling — a driver rated to cross at 5000 Hz may cross at 5000 Hz), below it
+    is refused, and a declared floor with no readable crossover corner is
+    refused rather than waved through. A driver that declares **no** floor is
+    honoured unchanged: ``None`` means the operator declared nothing, and
+    inventing a floor there is the nanny behaviour the 2026-08-14 ruling
+    excludes — the same present-and-``None`` case the startup gate calls "the
+    honest undeclared case".
+    """
+    floor_hz = declared_protection_floor_hz(preset, "tweeter")
+    crossover_hz = strictest_crossover_highpass_hz(preset, "tweeter")
+    if protection_highpass_floor_satisfied(
+        highpass_hz=crossover_hz,
+        floor_hz=floor_hz,
+    ):
+        return
+    # Unreachable with floor_hz None: the predicate honours an absent floor, so
+    # a refusal here always has a real declared number to name.
+    assert floor_hz is not None
+    floor = format_protection_hz(floor_hz)
+    if crossover_hz is None:
+        detail = (
+            "the preset declares no crossover corner that high-passes the "
+            "tweeter, so it cannot be proven to honour that driver's own "
+            f"declared protective high-pass floor of {floor}"
+        )
+    else:
+        detail = (
+            f"tweeter crossover is {format_protection_hz(crossover_hz)}, below "
+            f"that driver's own declared protective high-pass floor of {floor}; "
+            f"raise the crossover to at least {floor} (or correct the driver's "
+            "declared required_protection_filters)"
+        )
+    log_event(
+        logger,
+        "active_speaker.emit_gate",
+        level=logging.ERROR,
+        result=EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
+        preset_id=preset.preset_id,
+        tweeter_crossover_highpass_hz=crossover_hz,
+        tweeter_protection_floor_hz=floor_hz,
+    )
+    raise ActiveSpeakerConfigError(
+        "refusing to emit an active-speaker graph whose crossover is below the "
+        "tweeter's declared protection floor: " + detail
+    )
+
+
 def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPreset) -> None:
     """Fail-closed L0 emit gate: refuse a graph with an unprotected tweeter output.
 
@@ -742,6 +860,14 @@ def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPrese
     the emitter's own construction — that every physical output the preset
     assigns a ``tweeter`` (compression-driver) role carries a protective
     high-pass: its crossover high-pass and/or a dedicated protective high-pass.
+
+    Structure only: this answers "is there **a** high-pass on this output", not
+    "is its corner at or above what this driver declared". That bound is the
+    separate concern of
+    :func:`_assert_tweeter_crossover_honours_declared_floor`, which the
+    household-facing emitters run *before* they build anything — see its
+    docstring for why the two are deliberately not merged, and why it does not
+    run on the commissioning-flow emitters this one also guards.
 
     This closes the L0 hearing-safety hole (docs/HANDOFF-audio-measurement-core.md):
     a compression driver is ~25 dB more sensitive than the woofer, so a graph
@@ -3566,6 +3692,11 @@ def emit_active_speaker_baseline_config(
     """
 
     preset.validate()
+    # L0 emit gate (fail-closed), BEFORE any YAML is built: this is the graph
+    # the routine apply transaction ships to a household, so a crossover below
+    # the tweeter's own declared protection floor is refused here rather than
+    # emitted and left for the startup-load gate to catch on the next boot.
+    _assert_tweeter_crossover_honours_declared_floor(preset)
     # N3 (#1668 PR-D review): normalize the optional linearization mapping
     # here rather than defaulting the parameter to a mutable ``{}`` literal
     # -- matches how every other optional dict/sequence param on this
@@ -3808,6 +3939,10 @@ def emit_active_speaker_driver_domain_config(
     """
 
     preset.validate()
+    # Same L0 emit gate as the solo baseline above, for the same reason: a
+    # bonded leader's driver domain runs the identical protective chain on the
+    # identical drivers, so it inherits the identical declared-floor bound.
+    _assert_tweeter_crossover_honours_declared_floor(preset)
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
     if forbidden_token:
