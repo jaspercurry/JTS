@@ -207,15 +207,34 @@ def test_the_journal_reports_the_polish_delta_it_measured(
     band-average solve is the fixture's to produce, not this test's to restate:
     ``polish_delta_db == raw_trim_db − band_average_trim_db``, per role.
 
-    **This fixture's own base is already 2.688 dB off its band-average solve**,
-    which is worth knowing rather than normalising away: it means the banked
-    2026-08-10 incident violated the precondition, and 2.688 dB is exactly the
-    residual realized level error that incident's anchor still carries in
-    ``test_crossover_v2_incident_replay``. The δ→δ pass-through, on real banked
-    data rather than a synthetic pair. So the assertion below is on the SHIFT
-    between an unpolished and a polished run, not on an absolute value — a
-    hard-coded ``0.0`` moves the shift to zero and fails, while the fixture's
-    pre-existing offset is left as the fact it is.
+    **This fixture reports a non-zero delta of 2.688 dB, and it is a FIXTURE
+    ARTIFACT rather than anything the 2026-08-10 session did.** Saying so
+    precisely, because an earlier version of this paragraph had it backwards and
+    the mistake would have overstated the evidence behind #2734:
+
+    * the banked incident did NOT violate the precondition. Its
+      ``analysis.trim_db['tweeter']`` and ``analysis.trim_band_average_db['tweeter']``
+      are **both −10.8846** — the base IS the band average, difference
+      ``+0.000000``;
+    * the 2.688 appears because the planner re-solves the band average on this
+      replay's **synthetic** branches (−13.573), and those exist only because the
+      incident's per-driver responses were never retained — this file's own
+      module docstring says so;
+    * so ``raw − band_average == the replay's residual realized level error``
+      holds exactly (to 12 decimals) as a property of how the replay is
+      CONSTRUCTED, not as a measurement of that session.
+
+    **The honest evidence base, which is the stronger claim anyway: a
+    precondition violation has never been observed in banked production data.**
+    The only non-zero polish delta this repo holds is the artifact above. That
+    is materially different from "seen in the wild", and #2734 should be read
+    against the weaker premise — the concern is a reachable path with a bound
+    twice the gate, not an incident we have caught.
+
+    The assertion below is therefore on the SHIFT between an unpolished and a
+    polished run rather than on an absolute value: it needs no view on where the
+    fixture's own offset came from, and a hard-coded ``0.0`` collapses the shift
+    to zero and fails.
     """
     request = _planner_request(_sections_at(SELECTED_FC_HZ))
     tweeter = request.tweeter.role
