@@ -928,10 +928,11 @@ def check_crossover_unit_installed() -> CheckResult:
 # The grouping-remnant guard (audio-graph consolidation #2285, P9-C).
 #
 # WHY THIS EXISTS. P9-C moved every solo box's content lane onto SHM rings and
-# deleted snd-aloop pair 5's PCM definitions. What snd-aloop is still loaded
-# FOR is the bonded round-trip on pair 6 (`GROUPING_LOOPBACK_PLAYBACK` /
-# `_CAPTURE` in jasper/multiroom/reconcile.py) — the design's "option A:
-# bounded aloop remnant, grouping-only". A bounded remnant is only bounded if
+# deleted snd-aloop pair 5's PCM definitions, leaving the bounded remnant this
+# check measures: the pairs `_derive_registered_pairs` reads out of their owning
+# constants below. (The bonded grouping ingress used to ride pair 6 raw; it is
+# on `jasper.multiroom.grouping_ring`'s SHM ring now and declares no aloop pair
+# at all.) A bounded remnant is only bounded if
 # something measures it, and the design names the failure mode directly
 # (risk 5.1): "the remnant becomes permanent by silence." This check is the
 # measurement, and it carries the EOL issue in its own text so an operator who
@@ -1088,10 +1089,10 @@ def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
     if content_pair is None:
         return None
     # Last on purpose: this row wins the provenance string if pair 6 is ever
-    # shared with another owner (today it is not — a bonded box's grouping
-    # round-trip opens the same hw:Loopback,0,6/1,6 pair raw via
-    # jasper.multiroom.reconcile's GROUPING_LOOPBACK_PLAYBACK/_CAPTURE,
-    # mutually exclusive with this lane by hardware mode, never concurrent).
+    # shared with another owner. It has none today — the bonded grouping
+    # ingress that used to share it raw now rides
+    # jasper.multiroom.grouping_ring's SHM ring, so this lane is pair 6's sole
+    # opener.
     registered[content_pair] = "outputd passive content lane"
 
     return registered, content_pair

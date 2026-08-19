@@ -4,10 +4,10 @@
 
 """The grouping-remnant guard (#2285 P9-C).
 
-Pins the contract that snd-aloop is retained ONLY for the bonded grouping
-round-trip on pair 6, and that anything holding a substream with no registered
-purpose in this phase — pair 5, whose PCM definitions P9-C deleted — is a FAIL
-that names the offender.
+Pins the contract that every OPEN snd-aloop substream has a purpose registered
+by one of the constants that own the pair allocation, and that anything holding
+a substream with no such purpose — pair 5, whose PCM definitions P9-C deleted —
+is a FAIL that names the offender.
 
 Two of these tests are the load-bearing ones:
 
@@ -31,7 +31,6 @@ from jasper.cli.doctor import grouping
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
-_RECONCILE_PY = _REPO_ROOT / "jasper" / "multiroom" / "reconcile.py"
 _ASOUNDRC_JASPER = _REPO_ROOT / "deploy" / "alsa" / "asoundrc.jasper"
 
 _OPEN_STATUS = (
@@ -222,9 +221,13 @@ def test_check_never_raises_on_hostile_status(proc_root, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Contract pins (design :498 — "GROUPING_LOOPBACK_PLAYBACK/_CAPTURE and the
-# modprobe pcm_substreams value pinned together, so a reduction to 1 pair
-# cannot leave the constants naming pair 6")
+# Contract pins: an owning constant must not name a pair the module never
+# creates, so a `pcm_substreams` reduction fails here instead of on a speaker
+# whose lane silently has no substream to open. That pin lives over the DERIVED
+# set (`test_registered_pairs_are_within_the_module_range` below), which reads
+# every owner of the allocation. It once had a second, narrower copy over the
+# grouping round-trip's own two constants; those are gone — the bonded ingress
+# rides `jasper.multiroom.grouping_ring`'s SHM ring and names no aloop pair.
 # --------------------------------------------------------------------------
 
 def _modprobe_substreams() -> int:
@@ -244,33 +247,6 @@ def test_walker_range_matches_modprobe_pcm_substreams():
     assert grouping._ALOOP_SUBSTREAMS == _modprobe_substreams()
 
 
-def test_grouping_constants_name_a_pair_that_exists():
-    """THE DESIGN'S PIN: a reduction to 1 pair cannot leave the constants
-    naming pair 6.
-
-    Both halves of the grouping round-trip are parsed and checked against the
-    module's substream count, so shrinking `pcm_substreams` without moving
-    `GROUPING_LOOPBACK_*` fails here instead of on a bonded speaker.
-    """
-    from jasper.multiroom.reconcile import (
-        GROUPING_LOOPBACK_CAPTURE,
-        GROUPING_LOOPBACK_PLAYBACK,
-    )
-
-    substreams = _modprobe_substreams()
-    pairs = set()
-    for const in (GROUPING_LOOPBACK_PLAYBACK, GROUPING_LOOPBACK_CAPTURE):
-        m = re.fullmatch(r"hw:([^,]+),(\d+),(\d+)", const.strip())
-        assert m, f"{const!r} is not an hw:<card>,<device>,<sub> triple"
-        assert m.group(1) == grouping._ALOOP_CARD_ID
-        pairs.add(int(m.group(3)))
-        assert int(m.group(3)) < substreams, (
-            f"{const!r} names substream {m.group(3)} but snd-aloop is loaded "
-            f"with pcm_substreams={substreams}"
-        )
-    assert len(pairs) == 1, (
-        f"the grouping round-trip must ride ONE pair, got {sorted(pairs)}"
-    )
 
 
 def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
@@ -307,25 +283,16 @@ _EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4, 6, 7)
 def test_derived_set_matches_the_expected_allocation():
     """Dropping a pair from any owning constant changes this set.
 
-    Also the re-sourcing pin (design §6.1a): pair 6 now derives from
-    `_OUTPUTD_CONTENT_ALOOP_PCM` rather than `GROUPING_LOOPBACK_PLAYBACK`, and
-    `_EXPECTED_REGISTERED_PAIRS` is the same literal either way — the
-    registered set is byte-identical before and after that move.
+    Also the re-sourcing pin (design §6.1a): pair 6 derives from
+    `_OUTPUTD_CONTENT_ALOOP_PCM`, and `_EXPECTED_REGISTERED_PAIRS` is the same
+    literal it was before that move — the registered set is byte-identical
+    across it, and across the grouping ingress leaving snd-aloop entirely.
+
+    The re-sourcing's negative control — breaking the grouping round-trip's own
+    constant and watching the set stay identical — retired with the constant:
+    the reconciler names no aloop pair at all now, so nothing in the grouping
+    path can feed this derivation to begin with.
     """
-    derived, content_pair = grouping._derive_registered_pairs()
-    assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
-    assert content_pair == 6
-
-
-def test_grouping_constant_no_longer_feeds_pair_6(monkeypatch):
-    """THE RE-SOURCING PIN's negative control: breaking
-    GROUPING_LOOPBACK_PLAYBACK must not affect the derived set any more —
-    pair 6's registration moved to `_OUTPUTD_CONTENT_ALOOP_PCM`, so the set
-    stays byte-identical whether or not grouping's own constant even parses.
-    """
-    import jasper.multiroom.reconcile as reconcile
-
-    monkeypatch.setattr(reconcile, "GROUPING_LOOPBACK_PLAYBACK", "not-a-pcm")
     derived, content_pair = grouping._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
     assert content_pair == 6
@@ -411,12 +378,19 @@ def test_ring_armed_lanes_still_reserve_their_aloop_pair():
 
 def test_pair_five_is_not_registered():
     """P9-C DELETED pair 5, so no owner names it any more. If a future edit
-    re-registers it, this fails — the deletion is what the guard protects."""
+    re-registers it, this fails — the deletion is what the guard protects.
+
+    The prose half reads the ALLOCATION OWNER (`snd-aloop.conf`, which says so
+    in its own words and which asoundrc.jasper defers to). It read the grouping
+    reconciler until that module stopped describing the aloop allocation at
+    all — its ingress is the grouping ring now, so it has no pair to allocate
+    and no standing to document one.
+    """
     derived, _ = grouping._derive_registered_pairs()
     assert 5 not in derived
-    text = _RECONCILE_PY.read_text(encoding="utf-8")
+    text = _MODPROBE_CONF.read_text(encoding="utf-8")
     assert "unallocated" in text.lower(), (
-        "reconcile.py should still describe pair 5 as unallocated"
+        "snd-aloop.conf should still describe pair 5 as unallocated"
     )
 
 

@@ -154,10 +154,14 @@ def _fake_apply_dsp_config():
 def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     """Happy path: precheck builds camilla#2's driver-domain graph AND camilla#1's
     program bake, RE-PROVES BOTH with the real classifier, and returns both
-    paths. The driver-domain config captures the round-trip loopback and carries
+    paths. The driver-domain config captures the grouping ring and carries
     NO leader-baked program domain; the bake is a File sink writing the snapfifo
     (NOT a DAC)."""
-    from jasper.multiroom.reconcile import GROUPING_LOOPBACK_CAPTURE, SNAPFIFO
+    from jasper.multiroom.grouping_ring import (
+        GROUPING_RING_FORMAT,
+        GROUPING_RING_PCM,
+    )
+    from jasper.multiroom.reconcile import SNAPFIFO
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -181,11 +185,15 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     assert bake_path == alc.LEADER_BAKE_CONFIG_PATH
     assert crossover_path == alc.CROSSOVER_CONFIG_PATH
 
-    # camilla#2 driver-domain: loopback capture, channel pick, NO program domain.
+    # camilla#2 driver-domain: grouping-ring capture, channel pick, NO program domain.
     crossover_yaml = Path(crossover_path).read_text(encoding="utf-8")
     assert "emit_active_speaker_driver_domain_config" in crossover_yaml
     assert "# program_channel=left" in crossover_yaml
-    assert f'device: "{GROUPING_LOOPBACK_CAPTURE}"' in crossover_yaml
+    # BOTH capture halves — see the twin assertion in the follower's precheck
+    # test: a wrong format on the raw ring PCM fails negotiation at open.
+    leader_capture = yaml.safe_load(crossover_yaml)["devices"]["capture"]
+    assert leader_capture["device"] == GROUPING_RING_PCM
+    assert leader_capture["format"] == GROUPING_RING_FORMAT
     assert "active_baseline_headroom" not in crossover_yaml  # leader bakes B/C
     crossover_doc = yaml.safe_load(crossover_yaml)
     woofer_chain = next(

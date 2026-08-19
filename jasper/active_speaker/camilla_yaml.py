@@ -197,15 +197,6 @@ ACTIVE_PROGRAM_BAKE_SOURCE = (
 # (gap 5) — both are out of scope for the follower driver-domain emit.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 
-# S1 (G7 chunksize-knob safety): the follower driver-domain graph captures the
-# leader's stream from an snd-aloop loopback whose period underruns (EPIPE)
-# below ~1024 frames. The JASPER_CAMILLA_CHUNKSIZE knob is deliberately tunable
-# low for the direct-DAC output paths, but this loopback CAPTURE is floored so a
-# latency-tuned box cannot underrun its follower capture. Equals DEFAULT_CHUNKSIZE
-# today, but it is the loopback's own minimum — not the shipped default — so it
-# is named separately and lives next to the only emitter that needs it.
-FOLLOWER_LOOPBACK_MIN_CHUNKSIZE = 1024
-
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 _PROGRAM_PROTECTION_RE = re.compile(r"^as_(woofer|tweeter)_program_protection_([0-9]+)$")
 
@@ -3932,7 +3923,7 @@ def emit_active_speaker_driver_domain_config(
     soft-clip limiters, and non-positive per-driver correction gain, and it
     refuses the existing stereo outputd lane as a playback device. It does NOT
     load or reload CamillaDSP — the reconciler (gap 3, a later slice) owns
-    pointing the capture at the round-trip loopback and the apply. ``corrections``
+    pointing the capture at the grouping ring and the apply. ``corrections``
     carries the same commissioned per-driver delay/gain/polarity as the solo
     baseline (hardware truth, role-independent — gap 1), so the relocated Layer A
     is the same protective chain the speaker runs solo.
@@ -3971,11 +3962,6 @@ def emit_active_speaker_driver_domain_config(
         target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
-    # S1: floor the loopback capture chunksize (see FOLLOWER_LOOPBACK_MIN_CHUNKSIZE).
-    # Clamp rather than raise — mirrors the knob's malformed->default leniency —
-    # and unset env resolves to 1024, so this is a no-op on the default path.
-    if chunksize < FOLLOWER_LOOPBACK_MIN_CHUNKSIZE:
-        chunksize = FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     limiter_clip_limit_db = _finite_float(
         limiter_clip_limit_db,

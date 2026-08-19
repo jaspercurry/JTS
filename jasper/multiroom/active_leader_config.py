@@ -22,19 +22,19 @@ must feed both the wire (2 ch) and its own DACs (N ch)":
   - **camilla#2** (the endpoint-crossover instance, ``:1235``,
     ``jasper-camilla-crossover.service`` — INERT infra from PR #930) runs the
     DRIVER domain — Layer A: the ``2->N`` split + per-driver crossover / delay /
-    gain / soft-clip limiter (+ tweeter high-pass) — captured from the
-    round-trip loopback (snapclient -> loopback -> camilla#2 [rate_adjust ON] ->
-    DAC). This is **literally the follower endpoint config**
+    gain / soft-clip limiter (+ tweeter high-pass) — captured from the grouping
+    ring (snapclient -> ``jts_ring_grouping`` -> camilla#2 -> DAC). This is
+    **literally the follower endpoint config**
     (:func:`jasper.active_speaker.emit_active_speaker_driver_domain_config`, via
     ``build_baseline_profile_candidate(driver_domain=True, ...)``), so the
     leader's own drivers are protected by the SAME re-proven Layer-A graph a
     wireless follower uses.
 
 This is the **music-only validated seam** (HANDOFF "Sequencing" step 1): no
-``outputd-summer``, no leader TTS yet (Steps 2-3). camilla#2 keeps
-``enable_rate_adjust`` ON — exactly the already-validated active-follower clock
-seam — so a failure here has one candidate cause (the two-instance setup), not a
-new clock topology.
+``outputd-summer``, no leader TTS yet (Steps 2-3). camilla#2 runs the active
+follower's clock seam unchanged — same capture (the grouping ring), same
+per-sink rate-adjust resolution — so a failure here has one candidate cause (the
+two-instance setup), not a new clock topology.
 
 Structure mirrors :mod:`jasper.multiroom.follower_config` (a fail-closed precheck
 GATE + late applies + an unbond restore, all fail-LOUD; the reconciler catches,
@@ -177,10 +177,7 @@ async def precheck_active_leader(
     from jasper.sound.profile import load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
-    from .reconcile import (
-        GROUPING_LOOPBACK_CAPTURE,
-        GROUPING_LOOPBACK_CAPTURE_FORMAT,
-    )
+    from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
 
     # program_channel_for is the SHARED single-box channel pick; re-raise its
     # follower-flavoured error as the leader error so this arm raises a single
@@ -234,7 +231,7 @@ async def precheck_active_leader(
         ) from exc
 
     # 1. camilla#2 driver-domain (Layer A) — the leader's OWN drivers, captured
-    #    from the round-trip loopback. Identical build to the active follower
+    #    from the grouping ring. Identical build to the active follower
     #    (build_baseline_profile_candidate(driver_domain=True, ...)) — the leader
     #    is its own receiver — only the config/state paths differ so the solo
     #    baseline + follower files are never clobbered.
@@ -259,8 +256,8 @@ async def precheck_active_leader(
             write=True,
             state_path=CROSSOVER_STATE_PATH,
             config_path=CROSSOVER_CONFIG_PATH,
-            capture_device=GROUPING_LOOPBACK_CAPTURE,
-            capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
+            capture_device=GROUPING_RING_PCM,
+            capture_format=GROUPING_RING_FORMAT,
             driver_domain=True,
             program_channel=program_channel,
             driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),

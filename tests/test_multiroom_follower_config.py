@@ -44,17 +44,20 @@ from tests.test_active_speaker_baseline_profile import (
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 
-# Clock-seam guard imports — the active follower's CamillaDSP is the sole
-# rate-tracker of the snapclient round-trip loopback (see the clock-seam tests
-# at the end of this file).
+# Clock-seam guard imports — the grouping ring is the follower's ingress and
+# snapclient is its sole rate-tracker (see the clock-seam tests at the end of
+# this file).
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_driver_domain_config,
 )
+from jasper.active_speaker.camilla_yaml import active_emit_devices
 from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE
-from jasper.multiroom.reconcile import (
-    GROUPING_LOOPBACK_CAPTURE,
-    GROUPING_LOOPBACK_CAPTURE_FORMAT,
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.multiroom.grouping_ring import (
+    GROUPING_RING_FORMAT,
+    GROUPING_RING_PCM,
+    GROUPING_RING_PERIOD_FRAMES,
 )
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_bass_extension_profile import _profile
@@ -188,7 +191,12 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     yaml_text = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
     assert "emit_active_speaker_driver_domain_config" in yaml_text
     assert "# program_channel=left" in yaml_text
-    assert 'device: "hw:Loopback,1,6"' in yaml_text  # the round-trip loopback capture (shared pair 6)
+    # BOTH capture halves, because the precheck passes both and a wrong FORMAT
+    # is not a wrong-sounding graph, it is a negotiation failure at open: the
+    # ring PCM is raw (single-valued hw_params, no `plug` in front of it).
+    capture = yaml.safe_load(yaml_text)["devices"]["capture"]
+    assert capture["device"] == GROUPING_RING_PCM
+    assert capture["format"] == GROUPING_RING_FORMAT
     assert "active_baseline_headroom" not in yaml_text  # no leader-baked program domain
     document = yaml.safe_load(yaml_text)
     woofer_chain = next(
@@ -927,53 +935,104 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 
 # --- follower clock-seam guard -----------------------------------------------
 # docs/HANDOFF-distributed-active.md "Clock domain + fail-closed" calls the
-# active follower's loopback clock seam safety-critical, but the 2026-06-21
-# over-engineering pressure-test found it unpinned by any test. The active
-# follower's CamillaDSP is the SOLE rate-tracker of the snapclient round-trip
-# loopback it captures, so the seam must hold: chunksize >= 1024 (512 -> EPIPE
-# underruns on a Pi), NO resampler (the rate_adjust+AsyncSinc oscillation trap,
-# CamillaDSP #207), enable_rate_adjust true, and a RAW hw: loopback capture (a
-# plug: device would silently insert a resampler). The follower inherits the
-# SHARED DEFAULT_CHUNKSIZE (it passes no chunksize override), so a solo-side
-# retune to 512 would silently regress it — these guards fail first.
+# active follower's ingress clock seam safety-critical, but the 2026-06-21
+# over-engineering pressure-test found it unpinned by any test.
+#
+# SNAPCLIENT IS THE SOLE TRACKER. It steers its own playback rate against the
+# server clock, and the grouping ring it writes reports a real
+# `snd_pcm_delay` (occupancy slots x period + the staged remainder), so the
+# tracking loop it needs is closed on its side of the ring. CamillaDSP's
+# `enable_rate_adjust` cannot be a second tracker here whatever it is set to: a
+# ring PCM is an ioplug, so `snd_pcm_info.card` is -1, CamillaDSP builds no
+# HCtl, finds neither the Loopback nor the UAC2-gadget mixer element, and the
+# request is a silent no-op. The emitted value follows the SINK the endpoint
+# plays into (`active_emit_devices`), which is what these guards read it from.
+#
+# THE CHUNK AND THE RING SLOT ARE ONE NUMBER. On the ring branch the chunk is
+# RING_CAMILLA_CHUNKSIZE and the grouping ring's slot is
+# GROUPING_RING_PERIOD_FRAMES; one chunk is one slot, the relationship every
+# other ring in the tree ships. The 1024 floor that used to sit on this path
+# was an snd-aloop EPIPE artifact and is deleted — it would now put a chunk
+# eight times the playback ring's whole buffer into the graph.
+#
+# Both branches are exercised: a bonded box whose coupling is armed plays into
+# the ACTIVE RING, one whose coupling is not plays into its DAC, and the seam
+# has to hold on both.
+
+_PLAYBACK_BRANCHES = ("hw:CARD=DAC8x,DEV=0", RING_ACTIVE_PLAYBACK_DEVICE)
 
 
-def _follower_driver_domain_devices() -> dict:
+def _follower_driver_domain_devices(playback_device: str) -> dict:
     """The follower's driver-domain ``devices`` block, emitted exactly as the
-    reconciler feeds it (raw round-trip loopback capture, shared chunksize
-    default — `build_baseline_profile_candidate` passes no chunksize override)."""
+    reconciler feeds it: the grouping ring on the capture side (the precheck's
+    two kwargs) and the sink's own geometry everywhere else, DERIVED from
+    ``active_emit_devices`` the way ``build_baseline_profile_candidate`` derives
+    it rather than restated here."""
+    devices = active_emit_devices(playback_device)
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
     text = emit_active_speaker_driver_domain_config(
         preset,
-        playback_device="hw:CARD=DAC8x,DEV=0",
+        playback_device=playback_device,
         program_channel="left",
-        capture_device=GROUPING_LOOPBACK_CAPTURE,
-        capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
+        capture_device=GROUPING_RING_PCM,
+        capture_format=GROUPING_RING_FORMAT,
+        playback_format=devices.playback_format,
+        chunksize=devices.chunksize,
+        target_level=devices.target_level,
+        queuelimit=devices.queuelimit,
+        enable_rate_adjust=devices.enable_rate_adjust,
     )
     return yaml.safe_load(text)["devices"]
 
 
-def test_follower_clock_seam_chunksize_at_least_1024() -> None:
-    # The shared default the follower inherits; 512 -> EPIPE underruns.
-    assert DEFAULT_CHUNKSIZE >= 1024
-    assert _follower_driver_domain_devices()["chunksize"] >= 1024
+def test_follower_clock_seam_chunk_is_the_ring_slot() -> None:
+    # Ring branch: one chunk is one grouping-ring slot, and nothing floors it.
+    assert (
+        _follower_driver_domain_devices(RING_ACTIVE_PLAYBACK_DEVICE)["chunksize"]
+        == GROUPING_RING_PERIOD_FRAMES
+    )
+    # DAC branch: the sink has no opinion, so the shared default stands.
+    assert (
+        _follower_driver_domain_devices("hw:CARD=DAC8x,DEV=0")["chunksize"]
+        == DEFAULT_CHUNKSIZE
+    )
 
 
-def test_follower_clock_seam_no_resampler_rate_adjust_on() -> None:
-    devices = _follower_driver_domain_devices()
-    # The follower is the sole rate-tracker of the loopback it captures.
-    assert devices["enable_rate_adjust"] is True
-    # No resampler when capture rate == playback rate (the oscillation trap).
+@pytest.mark.parametrize("playback_device", _PLAYBACK_BRANCHES)
+def test_follower_clock_seam_no_resampler(playback_device: str) -> None:
+    # Capture rate == playback rate on both branches, so there is nothing to
+    # resample — and an async resampler is the documented half of the
+    # rate-adjust oscillation trap (CamillaDSP #207).
+    devices = _follower_driver_domain_devices(playback_device)
     assert "resampler" not in devices
     assert "resampler_type" not in devices
 
 
-def test_follower_clock_seam_raw_hw_loopback_capture() -> None:
-    # A plug: capture would insert a resampler and break bit-perfect tracking;
-    # the round-trip loopback must be raw hw + bit-exact format.
-    assert GROUPING_LOOPBACK_CAPTURE.startswith("hw:")
-    assert "plug" not in GROUPING_LOOPBACK_CAPTURE
-    assert GROUPING_LOOPBACK_CAPTURE_FORMAT == "S16_LE"
-    devices = _follower_driver_domain_devices()
+def test_follower_clock_seam_rate_adjust_follows_the_sink() -> None:
+    # Ring sink: OFF. A blocking slot handshake gives the rate controller
+    # nothing to adjust to, and on a ring capture the request cannot be
+    # actuated at all — snapclient is the tracker.
+    assert (
+        _follower_driver_domain_devices(RING_ACTIVE_PLAYBACK_DEVICE)[
+            "enable_rate_adjust"
+        ]
+        is False
+    )
+    # DAC sink: unchanged from the pre-ring emit.
+    assert (
+        _follower_driver_domain_devices("hw:CARD=DAC8x,DEV=0")["enable_rate_adjust"]
+        is True
+    )
+
+
+@pytest.mark.parametrize("playback_device", _PLAYBACK_BRANCHES)
+def test_follower_capture_is_the_raw_grouping_ring(playback_device: str) -> None:
+    # The ring PCM is opened directly: a `plug` wrapper would insert a
+    # conversion in front of a single-valued hw_params, and the format has to
+    # be the one the conf.d block declares or the open fails at negotiation.
+    assert "plug" not in GROUPING_RING_PCM
+    assert GROUPING_RING_FORMAT == "S16_LE"
+    devices = _follower_driver_domain_devices(playback_device)
     assert devices["capture"]["type"] == "Alsa"
-    assert devices["capture"]["device"] == GROUPING_LOOPBACK_CAPTURE
+    assert devices["capture"]["device"] == GROUPING_RING_PCM
+    assert devices["capture"]["format"] == GROUPING_RING_FORMAT

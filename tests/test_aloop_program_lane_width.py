@@ -33,15 +33,13 @@ substream pair (``hw:Loopback,0/1,6``) on the SAME card. So the reason this
 lane is narrow is ``mixer::FORMAT`` and the three literals that follow it —
 nothing about snd-aloop.
 
-**The counter-example is a ROLE, not a device, and the difference is real.**
-That same pair carries a second, mutually-exclusive role — the bonded
-active-follower grouping round-trip — which opens the RAW device at ``S16_LE``
-(``jasper.multiroom.reconcile``'s ``GROUPING_LOOPBACK_CAPTURE`` /
-``GROUPING_LOOPBACK_CAPTURE_FORMAT``), bypassing the asound.conf aliases
-entirely. So "``hw:Loopback,0/1,6`` is wide" would be false as a statement
-about the device. What is true, and what the test below asserts, is that the
-named post-DSP content PCMs declare ``S32_LE`` — which is all the
-counter-example needs: an snd-aloop substream demonstrably CAN carry S32.
+**And the counter-example is a ROLE, not a device.** What is true, and what the
+test below asserts, is that the named post-DSP content PCMs declare ``S32_LE`` —
+which is all the counter-example needs: an snd-aloop substream demonstrably CAN
+carry S32. It is not a statement about ``hw:Loopback,0/1,6``, which a raw opener
+could take at any width the card accepts. (One did: the bonded active-endpoint
+grouping ingress opened that pair raw at ``S16_LE`` until it moved to
+``jasper.multiroom.grouping_ring``'s SHM ring.)
 
 Why the campaign has not widened it (U2 PR-3): the box-level program-width
 capability is the ring's — ``JASPER_FANIN_RING_WIRE_FORMAT`` plus the

@@ -12,19 +12,18 @@ its CamillaDSP stays out of the bonded path (jasper.multiroom.leader_config +
 member_config own that). An *active* (multi-driver) follower cannot do that —
 sending the full-range program to a tweeter would destroy it. So this module
 relocates **Layer A** (the ``2->N`` split + per-driver crossover / limiter /
-tweeter high-pass) onto the follower's own CamillaDSP, fed by the round-trip
-loopback:
+tweeter high-pass) onto the follower's own CamillaDSP, fed by the grouping ring
+(:mod:`jasper.multiroom.grouping_ring`) — ONE PCM name, written at one end and
+captured at the other:
 
-    snapclient --player alsa -> hw:Loopback,0,6   (snapclient writes)
-    CamillaDSP captures           hw:Loopback,1,6  (rate-tracked, bit-perfect)
+    snapclient --player alsa --soundcard jts_ring_grouping   (writes)
+    CamillaDSP captures            jts_ring_grouping         (reads)
       -> driver-domain Layer A (channel-select -> split -> per-driver chain)
       -> outputd active sink -> DACs
 
 The graph is ALWAYS the re-proven driver-domain baseline, so no capture
 content — stream, silence, or garbage — can produce a full-range driver feed
-(graph-resident protection, the active-crossover analogue of inv-1). The fixed
-CamillaDSP pipeline latency is nulled by snapclient ``--latency`` so the active
-follower stays sample-locked with a dumb follower.
+(graph-resident protection, the active-crossover analogue of inv-1).
 
 This mirrors :mod:`jasper.multiroom.leader_config`'s structure (an apply flow
 and a solo-restore flow, both fail-LOUD; the reconciler catches, logs
@@ -146,7 +145,7 @@ async def precheck_active_follower(
     tears down the solo path, so a follower that cannot be made safe never bonds
     — it falls back to solo active (invariant 5 + self-recovery). The companion
     :func:`apply_prebuilt_follower_config` does the actual CamillaDSP swap once
-    snapclient is feeding the loopback.
+    snapclient is feeding the grouping ring.
     """
     from jasper.active_speaker import ActiveSpeakerConfigError
     from jasper.active_speaker.baseline_profile import (
@@ -164,10 +163,7 @@ async def precheck_active_follower(
         load_output_topology_strict,
     )
 
-    from .reconcile import (
-        GROUPING_LOOPBACK_CAPTURE,
-        GROUPING_LOOPBACK_CAPTURE_FORMAT,
-    )
+    from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
 
     program_channel = program_channel_for(cfg.channel)
 
@@ -191,7 +187,7 @@ async def precheck_active_follower(
     measurements = load_measurement_state(topology)
 
     # Emit the driver-domain-only graph to the follower-specific path, capturing
-    # the round-trip loopback. The solo baseline state/config are untouched.
+    # the grouping ring. The solo baseline state/config are untouched.
     # ``validate`` is a test seam (mirrors apply_baseline_profile); production
     # leaves it None so build uses the real CamillaDSP --check.
     build_kwargs = {} if validate is None else {"validate": validate}
@@ -210,8 +206,8 @@ async def precheck_active_follower(
             write=True,
             state_path=FOLLOWER_STATE_PATH,
             config_path=FOLLOWER_CONFIG_PATH,
-            capture_device=GROUPING_LOOPBACK_CAPTURE,
-            capture_format=GROUPING_LOOPBACK_CAPTURE_FORMAT,
+            capture_device=GROUPING_RING_PCM,
+            capture_format=GROUPING_RING_FORMAT,
             driver_domain=True,
             program_channel=program_channel,
             driver_domain_pair_trim_db=max(0.0, -float(cfg.trim_db)),
@@ -266,14 +262,14 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
     """Swap CamillaDSP to the pre-checked driver-domain config + stash the prior
     solo-active config for the unwind. Call ONLY after
     :func:`precheck_active_follower` has built + re-proven it, and after
-    snapclient is feeding the round-trip loopback (so CamillaDSP locks at once).
+    snapclient is feeding the grouping ring (so CamillaDSP locks at once).
     """
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
     )
     from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
 
-    from .reconcile import GROUPING_LOOPBACK_CAPTURE
+    from .grouping_ring import GROUPING_RING_PCM
 
     cam = camilla_factory()
     async with dsp_writer_lock(
@@ -329,7 +325,7 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
         "multiroom.camilla_apply",
         result="active_follower",
         path=FOLLOWER_CONFIG_PATH,
-        capture=GROUPING_LOOPBACK_CAPTURE,
+        capture=GROUPING_RING_PCM,
         prior=current or "(none)",
     )
     return FOLLOWER_CONFIG_PATH

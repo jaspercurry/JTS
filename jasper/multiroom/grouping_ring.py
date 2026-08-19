@@ -9,25 +9,14 @@ transport: snapclient writes it, the endpoint's CamillaDSP captures it. This
 module owns what that transport IS — its ALSA PCM name, its ring file, the
 conf.d block that declares it, and the wire both ends have to agree on.
 
-**Nothing in the tree points at these constants.** The grouping ingress runs
-over the snd-aloop round trip whose identity lives in
-:mod:`jasper.multiroom.reconcile` (``GROUPING_LOOPBACK_PLAYBACK`` /
-``GROUPING_LOOPBACK_CAPTURE`` / ``GROUPING_LOOPBACK_CAPTURE_FORMAT``). Those
-three constants and this module are the two halves of one transport swap: the
-ring platform ships inert first — this module plus
-``deploy/alsa/conf.d/62-jts-ring-grouping.conf`` — and the flip that repoints
-snapclient's ``--soundcard`` and both active-endpoint prechecks'
-``capture_device`` retires them. Design, including the geometry derivation this
-module deliberately does not restate:
-``captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md`` §3 and §4.
-
-**One name replaces the loopback's pair.** A ring PCM is one device opened in
-two directions — the ioplug branches its ``hw_params`` on ``io->stream``
-(``c/jts-ring-ioplug/pcm_jts_ring.c``) — so snapclient's ``--soundcard`` and
-CamillaDSP's ``capture.device`` are the same string, and the playback/capture
-pair an snd-aloop round trip needs collapses into one constant. That is what
-makes "the writer and the reader agree" structural instead of a claim someone
-has to check.
+**Three consumers, one name.** ``jasper.multiroom.reconcile`` gives
+snapclient's ``--soundcard`` the WRITE end; ``precheck_active_follower`` and
+``precheck_active_leader`` give their CamillaDSP's ``capture_device`` the READ
+end. A ring PCM is one device opened in two directions — the ioplug branches its
+``hw_params`` on ``io->stream`` (``c/jts-ring-ioplug/pcm_jts_ring.c``) — so all
+three name the same string, and the playback/capture pair an snd-aloop round
+trip needed collapses into one constant. That is what makes "the writer and the
+reader agree" structural instead of a claim someone has to check.
 
 **Here rather than in** :mod:`jasper.multiroom.reconcile`, which is a
 2600-line module whose transport constants are already imported piecemeal by

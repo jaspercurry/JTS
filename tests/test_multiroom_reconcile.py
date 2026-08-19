@@ -37,6 +37,7 @@ from jasper.multiroom.config import (
     GroupingConfig,
 )
 from jasper.multiroom import reconcile as reconcile_mod
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     SNAPCLIENT_UNIT,
@@ -411,12 +412,11 @@ def test_snapclient_argv_adds_file_player_when_fifo_set():
 # ---------- snapclient_argv(): ACTIVE follower loopback (Slice 3) ----------
 
 
-def test_snapclient_argv_active_endpoint_uses_alsa_loopback_player():
-    """An active follower writes the round-trip snd-aloop loopback via the ALSA
-    player (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO —
-    its CamillaDSP captures the paired side and runs Layer A in the bonded
-    path."""
-    dev = reconcile_mod.GROUPING_LOOPBACK_PLAYBACK
+def test_snapclient_argv_active_endpoint_uses_alsa_ring_player():
+    """An active endpoint writes the grouping ring via the ALSA player
+    (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO — its
+    CamillaDSP captures the SAME PCM and runs Layer A in the bonded path."""
+    dev = GROUPING_RING_PCM
     argv = snapclient_argv(_follower(), player_alsa_device=dev)
     assert argv[argv.index("--soundcard") + 1] == dev
     assert argv[argv.index("--player") + 1] == "alsa"
@@ -424,12 +424,12 @@ def test_snapclient_argv_active_endpoint_uses_alsa_loopback_player():
 
 
 def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
-    """If both are (defensively) passed, the ALSA loopback wins — the active
-    path never falls back to the FIFO."""
+    """If both are (defensively) passed, the ALSA ring wins — the active path
+    never falls back to the FIFO."""
     argv = snapclient_argv(
         _follower(),
         player_fifo="/x.fifo",
-        player_alsa_device="hw:Loopback,0,6",
+        player_alsa_device=GROUPING_RING_PCM,
     )
     assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
 
@@ -475,7 +475,7 @@ def test_assemble_args_leader_strips_binary_name_from_client():
     # the round-trip file player (Increment 5) and not an ALSA sink, which
     # on this path would fight outputd for the DAC. NOT "always": an
     # active-speaker endpoint gets `--player alsa` instead — pinned by
-    # test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
+    # test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
     assert d[CLIENT_KEY] == " ".join(
         snapclient_argv(_leader(), player_fifo=MEMBER_CONTENT_FIFO)[1:]
     )
@@ -502,7 +502,7 @@ def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
 
     Scoped to that path, not a universal. An active-speaker endpoint
     (active_endpoint=True) writes an ALSA sink instead — pinned by
-    test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
+    test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
     This test's name describes the default path it covers."""
     from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
 
@@ -513,18 +513,15 @@ def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
     assert "alsa:device=default" not in d[CLIENT_KEY]
 
 
-def test_assemble_args_active_endpoint_writes_loopback_not_fifo():
-    """An ACTIVE follower (active_endpoint=True) writes the snd-aloop round-trip
-    loopback via the ALSA player; the dumb-follower FIFO is NOT used (camilla
-    owns the path). The default (active_endpoint=False) is unchanged."""
-    from jasper.multiroom.reconcile import (
-        GROUPING_LOOPBACK_PLAYBACK,
-        MEMBER_CONTENT_FIFO,
-    )
+def test_assemble_args_active_endpoint_writes_the_ring_not_fifo():
+    """An ACTIVE endpoint (active_endpoint=True) writes the grouping ring via
+    the ALSA player; the dumb-follower FIFO is NOT used (camilla owns the
+    path). The default (active_endpoint=False) is unchanged."""
+    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
 
     d = _assemble_args(_follower(), active_endpoint=True)
     assert d[SERVER_KEY] == ""  # a follower runs no server
-    assert f"--soundcard {GROUPING_LOOPBACK_PLAYBACK} --player alsa" in d[CLIENT_KEY]
+    assert f"--soundcard {GROUPING_RING_PCM} --player alsa" in d[CLIENT_KEY]
     assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
     # default path is the dumb FIFO (regression guard for the off-by-default).
     assert "--soundcard" not in _assemble_args(_follower())[CLIENT_KEY]
@@ -1793,9 +1790,9 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     # Gate before units; camilla swap after the unit plan.
     assert order.index("precheck") < order.index("apply")
     assert order.index("apply") < order.index("camilla_active_follower")
-    # snapclient targets the round-trip loopback, not the dumb FIFO.
+    # snapclient targets the grouping ring, not the dumb FIFO.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
     # endpoint status persisted as active_crossover.
     status = tmp_path / "grouping-follower-status.json"
@@ -2116,10 +2113,10 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     # the active-content lane.
     assert "outputd_restart" not in order
     assert "stream_binding" in order  # the leader hosts the stream
-    # snapclient targets the round-trip loopback (the leader is its own receiver),
+    # snapclient targets the grouping ring (the leader is its own receiver),
     # not the dumb FIFO; the leader still runs snapserver.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
     assert f"{SERVER_KEY}=" in body and SNAPFIFO in body
     # endpoint status persisted as an active LEADER.
@@ -2156,7 +2153,7 @@ def test_main_active_leader_already_armed_skips_release_probe(
     assert "probe" not in order
     assert "arm_camilla2" not in order
     assert "stream_binding" in order
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+    assert GROUPING_RING_PCM in target.read_text()
 
 
 def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkeypatch):
@@ -2537,7 +2534,7 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
 ):
     """After the bake and inert camilla#2 statefile seed, outputd must
     re-converge to the active-content lane before camilla#2 can safely own the
-    round-trip loopback. If that handoff fails, leave camilla#2 unarmed."""
+    grouping ring. If that handoff fails, leave camilla#2 unarmed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
@@ -2626,7 +2623,7 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     # The first part of reconcile still writes the active endpoint snapclient
     # args; fail-closed here is the late camilla handoff, not a permanent unbond.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "active_content_pcm_busy"' in status
     assert '"active_leader": false' in status
@@ -2679,7 +2676,7 @@ def test_main_active_leader_fails_closed_when_writer_lock_absent(
     assert '"active_leader": false' in status
     # Still wrote the active endpoint snapclient args — fail-closed here is the
     # late camilla handoff, not a permanent unbond.
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+    assert GROUPING_RING_PCM in target.read_text()
 
 
 def test_main_active_leader_fails_closed_through_the_real_writer_lock_probe(

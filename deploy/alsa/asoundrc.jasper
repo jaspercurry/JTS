@@ -238,13 +238,6 @@ pcm.correction_substream {
 # order, and the follower-side snapclient writer keeps its own format
 # adaptation. The slave pin is what makes the lane's width a declaration
 # rather than a race — tests/test_outputd_wiring.py asserts it.
-#
-# The active-follower grouping round-trip shares substream 6 (see the
-# allocation comment above) and is NOT affected by this pin: it opens RAW
-# `hw:Loopback,0,6` / `hw:Loopback,1,6` directly (jasper.multiroom.reconcile's
-# GROUPING_LOOPBACK_PLAYBACK / _CAPTURE) at S16_LE, bypassing these aliases,
-# so its bit-perfect snapclient rate-track is unchanged. The two uses remain
-# mutually exclusive by hardware mode either way.
 pcm.outputd_content_playback {
     type plug
     slave {
