@@ -44,6 +44,9 @@ from jasper.active_speaker.crossover_v2.candidate_space import (
 from jasper.active_speaker.crossover_v2.forward_model import (
     branch_operator, driver_plants, predict_sum,
 )
+from jasper.active_speaker.driver_protection import (
+    protection_highpass_floor_satisfied,
+)
 from jasper.audio_measurement.program_analysis import (
     CONFIGURED_PATH_PROTECTION_FLOOR_DB,
     ConfiguredPathConditioningError,
@@ -685,6 +688,19 @@ def test_a_branch_operator_is_evaluated_once_per_grid_not_once_per_angle(
 # --- candidate legality: the walls, by name ---------------------------------
 
 
+class _DriverSpecDouble:
+    """The one field ``bounds_from_declarations`` duck-types on.
+
+    A double rather than a real ``DriverSpec`` so the test states exactly which
+    attribute the contract depends on. ``jasper.active_speaker.profile``'s own
+    suite owns whether that field parses correctly; this suite owns that the
+    bounds read THAT field and no other.
+    """
+
+    def __init__(self, protection_highpass_floor_hz: float | None) -> None:
+        self.protection_highpass_floor_hz = protection_highpass_floor_hz
+
+
 def _bounds(**overrides) -> CandidateBounds:
     base = dict(
         fc_band_hz=(1600.0, 3000.0),
@@ -901,19 +917,18 @@ def test_every_slug_refusal_for_can_return_is_in_the_closed_set():
 # --- bounds come from declarations, resolved by their owners ----------------
 
 
-def test_bounds_read_the_declared_minimum_recommended_crossover_frequency():
-    """The floor's provenance is the owner, not a number this module holds.
+def test_bounds_read_the_floor_from_the_presets_own_single_parse():
+    """The floor's provenance is the apply layer's field, not a second read.
 
-    ``resolve_driver_low_limit`` is the 2026-08-17 ruling's single owner of "a
-    driver's bottom allowed frequency". A published manufacturer figure wins
-    outright, including below the style default — so a bounds object that
-    quietly substituted a policy default would be the nanny behaviour the same
-    ruling forbids.
+    ``DriverSpec.protection_highpass_floor_hz`` is where
+    ``declared_protection_highpass_floor_hz`` puts its single parse, and it is
+    the field the apply gate reads. The front door and the backstop have to
+    compare the same number or the pairing is theatre.
     """
     bounds = bounds_from_declarations(
-        driver_by_role={
-            TWEETER: {"recommended_highpass_hz": 1400.0},
-            WOOFER: {},
+        drivers_by_role={
+            TWEETER: _DriverSpecDouble(1400.0),
+            WOOFER: _DriverSpecDouble(None),
         },
         search_band_hz_by_role={TWEETER: (1300.0, 4000.0), WOOFER: (200.0, 3000.0)},
         excitation_ceiling_hz_by_role={WOOFER: 2800.0},
@@ -923,6 +938,7 @@ def test_bounds_read_the_declared_minimum_recommended_crossover_frequency():
         delay_step_us=20.833333,
     )
     assert bounds.declared_floor_hz_by_role[TWEETER] == 1400.0
+    assert WOOFER not in bounds.declared_floor_hz_by_role
     assert bounds.fc_band_hz == (1300.0, 2800.0)  # ceiling narrowed the band
     assert bounds.fc_lo_role == TWEETER and bounds.fc_hi_role == WOOFER
     assert bounds.beaming_ceiling_hz == pytest.approx(1915.4, abs=0.1)
@@ -937,9 +953,13 @@ def test_a_role_with_no_declared_search_band_makes_nothing_proposable():
     ``crossover_search_band_hz`` is a required declaration, so absence is an
     anomaly — and the safe reading of an anomaly is "this role has told us
     nothing", never "this role permits everything".
+
+    Note this is the OPPOSITE default from the protection floor above, and the
+    two are not in tension: the search band has no apply-side counterpart to
+    agree with, while the floor does and must match it.
     """
     bounds = bounds_from_declarations(
-        driver_by_role={TWEETER: {"recommended_highpass_hz": 1600.0}},
+        drivers_by_role={TWEETER: _DriverSpecDouble(1600.0)},
         search_band_hz_by_role={TWEETER: (1600.0, 4000.0), WOOFER: None},
         excitation_ceiling_hz_by_role={WOOFER: 2800.0},
         incumbent_fc_hz=2000.0,
@@ -951,42 +971,44 @@ def test_a_role_with_no_declared_search_band_makes_nothing_proposable():
     assert refusal_for(_two_way(), bounds) == REJECT_UNDECLARED_ROLE
 
 
-def test_an_undeclared_driver_falls_back_to_its_style_anchor_not_to_no_floor():
-    """``resolve_driver_low_limit``'s third arm, and it is ORDINARY.
+def test_an_undeclared_floor_is_unbounded_below_exactly_as_the_apply_layer_reads_it():
+    """The front door may not be stricter than the backstop it pairs with.
 
-    "Absent" is a legitimate research answer, so a tweeter that publishes no
-    minimum recommended crossover still gets its style's anchor — labelled as a
-    code default rather than as datasheet data. Asserting this rather than "no
-    floor" matters because the two differ in the direction that hurts: reading
-    the empty payload as "no floor" would let the search propose a corner an
-    undeclared tweeter has no evidence it survives.
+    ``None`` means the derived protection is unclamped on the emitted graph, so
+    a proposer that invented a floor here would refuse candidates the apply
+    path accepts — the never-nanny ruling in reverse, and the very divergence
+    this pairing exists to remove.
 
-    A role whose style has no anchor at all (a low-frequency role) is the one
-    case that genuinely yields no floor, and it is asserted here beside it so
-    the two are never conflated.
+    Asserted through ``refusal_for`` and not just on the bounds object, because
+    the bound only matters if the refusal honours it.
     """
     bounds = bounds_from_declarations(
-        driver_by_role={TWEETER: {}, WOOFER: {}},
-        search_band_hz_by_role={TWEETER: (1000.0, 4000.0), WOOFER: (200.0, 4000.0)},
+        drivers_by_role={TWEETER: _DriverSpecDouble(None)},
+        search_band_hz_by_role={TWEETER: (200.0, 4000.0), WOOFER: (200.0, 4000.0)},
         excitation_ceiling_hz_by_role={},
         incumbent_fc_hz=2000.0,
         geometry_seed_us=0.0,
         delay_step_us=0.0,
     )
-    assert bounds.declared_floor_hz_by_role[TWEETER] > 0.0
-    assert WOOFER not in bounds.declared_floor_hz_by_role
+    assert TWEETER not in bounds.declared_floor_hz_by_role
+    assert refusal_for(_two_way(fc_hz=300.0), bounds) is None
 
-    # ...and a PUBLISHED figure wins outright over that anchor, including well
-    # below it: the 2026-08-17 ruling's whole point.
-    declared = bounds_from_declarations(
-        driver_by_role={TWEETER: {"recommended_highpass_hz": 1400.0}},
-        search_band_hz_by_role={TWEETER: (1000.0, 4000.0)},
-        excitation_ceiling_hz_by_role={},
-        incumbent_fc_hz=2000.0,
-        geometry_seed_us=0.0,
-        delay_step_us=0.0,
-    )
-    assert declared.declared_floor_hz_by_role[TWEETER] == 1400.0
-    assert declared.declared_floor_hz_by_role[TWEETER] < (
-        bounds.declared_floor_hz_by_role[TWEETER]
+
+def test_the_floor_boundary_matches_the_shared_predicate_exactly():
+    """At-floor is legal on both sides of the pairing, to the same number.
+
+    The apply gate pins ``protection_highpass_floor_satisfied(highpass_hz=5000,
+    floor_hz=5000) is True``. The front door must agree at exactly that
+    boundary, or a candidate that the graph would accept is refused before it
+    can be proposed — and one Hz below must refuse on both.
+    """
+    assert protection_highpass_floor_satisfied(
+        highpass_hz=5000.0, floor_hz=5000.0
+    ) is True
+
+    bounds = _bounds(declared_floor_hz_by_role={TWEETER: 5000.0},
+                     fc_band_hz=(200.0, 9000.0))
+    assert refusal_for(_two_way(fc_hz=5000.0), bounds) is None
+    assert refusal_for(_two_way(fc_hz=4999.0), bounds) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
     )

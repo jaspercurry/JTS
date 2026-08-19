@@ -12,9 +12,11 @@ be proposed at all.
 DECLARATION by the module that owns that declaration — this file imports those
 owners and never restates their arithmetic:
 
-* the tweeter's minimum recommended crossover frequency, through
-  :func:`~jasper.active_speaker.driver_protection.resolve_driver_low_limit` and
-  compared through the shared predicate
+* the tweeter's declared protective high-pass floor, read from
+  :attr:`~jasper.active_speaker.profile.DriverSpec.protection_highpass_floor_hz`
+  — the value
+  :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`
+  parses ONCE onto the preset — and compared through the shared predicate
   :func:`~jasper.active_speaker.driver_protection.protection_highpass_floor_satisfied`;
 * the intersected declared search band, through
   :func:`~jasper.active_speaker.crossover_v2.fc_sweep.resolve_fc_search_band`;
@@ -33,6 +35,44 @@ on :attr:`CandidateBounds.delay_step_us` and this file never guesses one.
 proposal outside a bound is refused by name, never pulled to the boundary and
 run: a silently different candidate is worse than no candidate, because the
 round then grades something nobody proposed.
+
+**The front door, with the apply gate as the backstop.** This module and the
+apply transaction check the SAME rule against the SAME number, deliberately,
+because they defend against different failures — and they must therefore agree
+exactly. The reason is a measured sequencing defect rather than a principle:
+the alternative-apply door writes the Sound declaration BEFORE the graph apply,
+so a below-floor candidate that reaches the door refuses AFTER the declaration
+is saved and surfaces to a household as an ambiguous "could not confirm whether
+the DSP apply finished". A below-floor Fc must therefore never become a
+proposable candidate at all.
+
+Two consequences for how the floor is read here, both non-obvious:
+
+* **The value comes from the same parse, not from a second resolver.** An
+  earlier draft of this module used
+  :func:`~jasper.active_speaker.driver_protection.resolve_driver_low_limit`,
+  which falls back to a per-style code default when a driver declares nothing.
+  That would have made the front door STRICTER than the backstop — refusing
+  proposals the apply path accepts — which is the 2026-08-14 never-nanny ruling
+  in reverse and re-creates the divergence this pairing exists to remove.
+* **An undeclared floor is unbounded below, and that is the apply layer's
+  semantics rather than a permissive shortcut.** ``None`` means no floor was
+  declared; the derived protection is then unclamped, exactly as it is on the
+  emitted graph. Inventing a floor here that the graph does not enforce would
+  again make the two disagree.
+
+**Slope is NOT part of the floor comparison, and this PR is what makes that
+observable.** The shared predicate compares corner FREQUENCIES only
+(``highpass_hz >= floor_hz``); it has no slope term, and neither does the apply
+gate. A declaration may still carry
+``required_protection_filters[highpass].minimum_slope_db_per_octave``, and this
+module is the first consumer to make order a searchable axis — the corner sweep
+it supersedes hard-coded LR4 — so a candidate can now propose a shallower slope
+than a declaration requires and pass the frequency check. That gap is
+**disclosed rather than closed here on purpose**: enforcing slope in the front
+door while the backstop ignores it would rebuild the front-door-stricter
+asymmetry described above. Closing it means changing the shared predicate, and
+that is an owner's call, not a proposer's.
 
 **Why the shared refusal slugs are imported from** :mod:`.fc_sweep`. The three
 Fc walls below are already spelled there, and a journal slug is a grep contract
@@ -64,9 +104,7 @@ from typing import Any, Mapping
 from jasper.audio_measurement.program_analysis import half_period_us
 
 from ..branch_chain import CrossoverSection, beaming_onset_hz
-from ..driver_protection import (
-    protection_highpass_floor_satisfied, resolve_driver_low_limit,
-)
+from ..driver_protection import protection_highpass_floor_satisfied
 from ..profile import SUPPORTED_LR_ORDERS
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
@@ -281,8 +319,7 @@ class CandidateBounds:
 
 def bounds_from_declarations(
     *,
-    driver_by_role: Mapping[str, Any],
-    driver_style_by_role: Mapping[str, Any] | None = None,
+    drivers_by_role: Mapping[str, Any],
     search_band_hz_by_role: Mapping[str, tuple[float, float] | None],
     excitation_ceiling_hz_by_role: Mapping[str, float],
     lower_driver_diameter_mm: float | None = None,
@@ -304,14 +341,20 @@ def bounds_from_declarations(
     because the confirmation is a property of the safety plan and this module
     has no business re-deciding it.
 
-    **A role with no resolvable low limit gets no floor entry, and that is not
-    a floor of zero.** ``resolve_driver_low_limit`` returns ``None`` when a
-    driver declares no minimum recommended crossover, has no legacy protective
-    high-pass, and its style has no anchor;
+    ``drivers_by_role`` are the preset's parsed driver specs, duck-typed on
+    ``protection_highpass_floor_hz`` alone. **Parsed specs and not raw payloads,
+    deliberately:** that field is where
+    ``driver_protection.declared_protection_highpass_floor_hz`` puts its single
+    parse, and the apply gate reads the same field. Re-parsing a payload here
+    would be a second read of one fact, which is how the front door and the
+    backstop start disagreeing.
+
+    **A role with no declared floor gets no entry, and that is unbounded below
+    rather than a floor of zero or a style default.** ``None`` means the
+    derived protection is unclamped on the emitted graph too, and
     :func:`protection_highpass_floor_satisfied` reads an absent floor as
-    satisfied. Inventing a floor where the operator declared none is the nanny
-    behaviour the 2026-08-14 ruling excludes, and substituting a policy default
-    for a published figure is what the 2026-08-17 ruling forbids.
+    satisfied. See the module docstring for why matching the apply layer
+    exactly matters more here than being conservative.
 
     The delay window is ``geometry_seed_us`` plus or minus one half-period at
     the incumbent corner — the lobe
@@ -320,14 +363,13 @@ def bounds_from_declarations(
     Two delays further apart than this sit on adjacent comb lobes, where a
     score can land on the wrong one and look just as good locally.
     """
-    styles = driver_style_by_role or {}
     floors: dict[str, float] = {}
-    for role in sorted(driver_by_role):
-        limit = resolve_driver_low_limit(
-            driver_by_role[role], role=role, driver_style=styles.get(role),
+    for role in sorted(drivers_by_role):
+        floor_hz = getattr(
+            drivers_by_role[role], "protection_highpass_floor_hz", None,
         )
-        if limit is not None:
-            floors[role] = float(limit.frequency_hz)
+        if floor_hz is not None:
+            floors[role] = float(floor_hz)
 
     search = resolve_fc_search_band(search_band_hz_by_role)
     band_hz = search.band_hz
