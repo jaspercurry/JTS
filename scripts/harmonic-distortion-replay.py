@@ -70,7 +70,8 @@ import numpy as np
 # Session volume is not recorded in any banked artifact, so it is solved
 # against the program id. -40..0 dB in 0.5 dB steps covers every session volume
 # the flow can compose (the composer clamps to non-positive), and the solve is
-# ~80 program builds, well under a second.
+# ~80 program builds per courtesy-prelude value (:func:`rebuild_program` tries
+# at most two), well under a second either way.
 DOWNSTREAM_GRID_DB = np.arange(-40.0, 0.01, 0.5)
 
 # Sidecar diagnostics compared against the replay. Each is a value the banked
@@ -195,10 +196,10 @@ def rebuild_program(state: dict[str, Any], bands: dict[str, tuple[float, float]]
     2026-08-19, ``captures/wired-night-2026-08-19`` solves at ``False`` and the
     ``captures/xover-series2-2026-08-17`` corpus this file's usage names solves
     at ``True``. Pinning the shipped rule alone would therefore leave the tool
-    unable to read its own documented corpus. That rule is tried FIRST
-    so a current capture is answered by the product's own answer, and the
-    search is safe in both directions because the ``program_id`` hash is what
-    accepts it: a wrong prelude cannot match, it can only fail to.
+    unable to read its own documented corpus. That rule is tried FIRST, so a
+    current capture is answered by the product's own answer, and the search is
+    safe in both directions because the ``program_id`` hash is what accepts it:
+    a wrong prelude cannot match, it can only fail to.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_MEASURE,
