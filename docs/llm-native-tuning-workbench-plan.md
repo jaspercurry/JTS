@@ -203,13 +203,22 @@ existing owner.
 > *shape* below is shipped for the crossover domain, under a narrower name and
 > without the tool catalog. `jasper-crossover-prescriber`
 > ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
-> is an installed console script with two verbs: `packet` emits one banked
+> is an installed console script with three verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
 > ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
-> and `propose` reads a correction back through a strict gate
+> `propose` reads a correction back through a strict gate
 > ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)),
-> which owns the response format and enforces it. It follows this section's CLI
-> conventions and the laptop-agent-as-SSH-client split exactly.
+> which owns the response format and enforces it, and `stage` (2026-08-19)
+> leaves an accepted correction where the next crossover round takes it
+> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)).
+> It follows this section's CLI conventions and the laptop-agent-as-SSH-client
+> split exactly.
+>
+> `stage` closed the gap the first wired night hit: until it shipped, an
+> accepted prescription had nowhere to go, and the loop was proven only up to
+> acceptance. It stays inside the paste tier's boundary — still no model
+> client, no API key, no network, and the operator still carries the JSON both
+> ways.
 >
 > **What is NOT built, and is not implied by the above:** there is no
 > `jasper/tuning_workbench/` package, no `CapabilityPack`, no `tools`/`call`/

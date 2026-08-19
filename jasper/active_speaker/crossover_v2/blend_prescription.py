@@ -1402,9 +1402,11 @@ def blend_prescription_to_candidate_fields(
 
     **It re-asks the route rather than trusting that the gate already did.**
     :func:`read_blend_prescription` calls :func:`prescription_route` before it
-    returns, so today every prescription reaching here is already a cut — but
-    "today" is a fact about one caller, and this function is the last thing
-    between a prescription and a fingerprinted candidate field. A
+    returns, so every prescription reaching here through either of today's two
+    callers — ``jasper-crossover-prescriber`` and the round's own blend reader
+    (``CrossoverV2Session._blend_prescription``) — is already a cut. But that is
+    a fact about those callers, and this function is the last thing between a
+    prescription and a fingerprinted candidate field. A
     :class:`BlendPrescription` can also be built directly, or read back by
     :func:`blend_prescription_from_mapping`, neither of which routes. Asking
     the one owner of the rule again costs a function call and makes the
