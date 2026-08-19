@@ -382,7 +382,8 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
     The move-before-validate order is what makes single-use a property of this
     function: a document that refuses is consumed too, so a walk staged with a
     bad angle refuses once rather than refusing every session until someone
-    deletes it by hand.
+    deletes it by hand. The one exception -- a slot that cannot be READ at all,
+    where there is no document to consume -- is argued at its own arm below.
     """
     pending = angle_request_spool_path()
     try:
@@ -393,6 +394,17 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
         # Unreadable is not absent: an unreadable slot must not look like an
         # ordinary session, or a permissions mistake becomes a walk that
         # silently never runs.
+        #
+        # **This is the one refusal that does NOT consume, and the exception is
+        # deliberate rather than an oversight of the rule below.** Consuming
+        # exists so a bad DOCUMENT refuses once instead of every session; this
+        # arm has no document — the bytes were never read — and the fault is in
+        # the filesystem, not in what somebody staged. A process that cannot
+        # read the file almost certainly cannot rename it either, and a
+        # best-effort rename that happened to succeed would destroy the only
+        # evidence of a permissions mistake while leaving the operator with a
+        # walk that never ran and no file to look at. So this one refuses
+        # loudly and repeatedly until the permissions are fixed.
         _refuse(SPOOL_MALFORMED, f"the staged walk could not be read: {exc}")
     _consume(pending)
     if len(raw) > SPOOL_MAX_BYTES:

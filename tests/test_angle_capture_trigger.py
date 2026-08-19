@@ -351,6 +351,37 @@ def test_a_document_that_is_not_json_is_refused_rather_than_ignored(slot):
     with pytest.raises(spool.AngleRequestRefused) as excinfo:
         spool.take_staged_angle_request()
     assert excinfo.value.reason == spool.SPOOL_MALFORMED
+    # …and it WAS consumed, so a bad document refuses once rather than forever.
+    assert not spool.staged_angle_request_pending()
+
+
+def test_an_unreadable_slot_refuses_without_consuming(slot, monkeypatch):
+    """The documented exception to consume-on-refusal, pinned rather than claimed.
+
+    There is no document here -- the bytes were never read -- and the fault is
+    in the filesystem, not in what somebody staged. A rename that happened to
+    succeed would destroy the only evidence of a permissions mistake, so this
+    arm refuses loudly and repeatedly until the permissions are fixed. Every
+    OTHER refusal consumes, which is what the assertion pair above pins.
+    """
+    path, _ = slot
+    spool.stage_angle_request(per_driver_at([7]))
+
+    real_read_bytes = type(path).read_bytes
+
+    def _deny(self, *a, **k):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(type(path), "read_bytes", _deny)
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        spool.take_staged_angle_request()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
+    assert "could not be read" in excinfo.value.detail
+    # The slot is UNTOUCHED: no `.consumed` copy, and the pending file remains.
+    assert spool.staged_angle_request_pending()
+    assert not path.with_name(path.name + spool.CONSUMED_SUFFIX).exists()
 
 
 def test_a_walk_longer_than_the_bound_is_refused_at_both_ends(slot):
