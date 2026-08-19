@@ -156,6 +156,8 @@ def _fanin_expected_inputs(
 
 _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
 
+_OUTPUTD_CONTENT_ALOOP_PCM = "hw:Loopback,0,6"
+
 _OUTPUTD_EXPECTED_CONTENT_PCM = "outputd_content_capture"
 
 _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM = "outputd_active_content_capture"

@@ -30,10 +30,10 @@ makes "the writer and the reader agree" structural instead of a claim someone
 has to check.
 
 **Here rather than in** :mod:`jasper.multiroom.reconcile`, which is a
-2600-line module whose transport constants are already imported by production
-and test modules that want nothing else from it —
-``jasper.cli.doctor.grouping``'s ``_grouping_pair_index`` imports the whole
-reconciler to read one device name.
+2600-line module whose transport constants are already imported piecemeal by
+production and test modules that want nothing else from it — for example,
+``jasper.cli.doctor.grouping``'s ``check_grouping_leader_pipe`` imports only
+``SNAPFIFO`` from the reconciler, not the whole module's surface.
 
 **Deliberately NOT a member of the ring platform's registries.**
 :data:`jasper.fanin_coupling.RING_PCM_DEVICES` is what

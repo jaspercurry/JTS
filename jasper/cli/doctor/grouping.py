@@ -945,7 +945,7 @@ def check_crossover_unit_installed() -> CheckResult:
 #
 #   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (jasper/cli/doctor/audio_runtime.py)
 #   pair  7    `_FANIN_EXPECTED_OUTPUT_PCM`     (same file)
-#   pair  6    `GROUPING_LOOPBACK_PLAYBACK`     (jasper/multiroom/reconcile.py)
+#   pair  6    `_OUTPUTD_CONTENT_ALOOP_PCM`     (same file)
 #
 # Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
 # stops being registered the moment its owning constant stops naming it, with
@@ -1053,21 +1053,8 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
     return int(m.group(2))
 
 
-def _grouping_pair_index() -> int | None:
-    """The substream index the grouping round-trip is pinned to.
-
-    Read from `jasper.multiroom.reconcile`'s own constant rather than
-    hardcoded, so the remnant's identity has ONE owner. Returns None when the
-    constant is not a Loopback hw triple this can parse — the caller degrades
-    to `warn` rather than guessing an index.
-    """
-    from ...multiroom.reconcile import GROUPING_LOOPBACK_PLAYBACK
-
-    return _pair_from_loopback_pcm(GROUPING_LOOPBACK_PLAYBACK)
-
-
 def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
-    """``({pair: provenance}, grouping_pair)`` derived from the owning facts.
+    """``({pair: provenance}, content_pair)`` derived from the owning facts.
 
     The registered set is never written down here — it is read out of the
     constants that already own the allocation (see the header comment). A pair
@@ -1081,6 +1068,7 @@ def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
     from .audio_runtime import (
         _FANIN_EXPECTED_ALOOP_INPUTS,
         _FANIN_EXPECTED_OUTPUT_PCM,
+        _OUTPUTD_CONTENT_ALOOP_PCM,
     )
 
     registered: dict[int, str] = {}
@@ -1096,16 +1084,17 @@ def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
         return None
     registered[output_pair] = "fan-in summed music output"
 
-    grouping_pair = _grouping_pair_index()
-    if grouping_pair is None:
+    content_pair = _pair_from_loopback_pcm(_OUTPUTD_CONTENT_ALOOP_PCM)
+    if content_pair is None:
         return None
-    # Last on purpose: the remnant's own row wins the provenance string if the
-    # grouping round-trip ever shares a pair with another owner (today it does
-    # not — pair 6's passive-content use is mutually exclusive by hardware
-    # mode, never concurrent).
-    registered[grouping_pair] = "THE REMNANT — bonded grouping round-trip (#2508)"
+    # Last on purpose: this row wins the provenance string if pair 6 is ever
+    # shared with another owner (today it is not — a bonded box's grouping
+    # round-trip opens the same hw:Loopback,0,6/1,6 pair raw via
+    # jasper.multiroom.reconcile's GROUPING_LOOPBACK_PLAYBACK/_CAPTURE,
+    # mutually exclusive with this lane by hardware mode, never concurrent).
+    registered[content_pair] = "outputd passive content lane"
 
-    return registered, grouping_pair
+    return registered, content_pair
 
 
 def _aloop_substream_owner(status_text: str) -> str:
@@ -1181,14 +1170,14 @@ def check_grouping_aloop_remnant() -> CheckResult:
             "warn",
             "could not derive the registered substream set from its owning "
             "constants (_FANIN_EXPECTED_ALOOP_INPUTS / "
-            "_FANIN_EXPECTED_OUTPUT_PCM in jasper/cli/doctor/audio_runtime.py, "
-            "GROUPING_LOOPBACK_PLAYBACK in jasper/multiroom/reconcile.py) — "
-            "each must be an 'hw:Loopback,<device>,<sub>' triple. The "
-            "remnant's scope cannot be verified.",
+            "_FANIN_EXPECTED_OUTPUT_PCM / _OUTPUTD_CONTENT_ALOOP_PCM in "
+            "jasper/cli/doctor/audio_runtime.py) — each must be an "
+            "'hw:Loopback,<device>,<sub>' triple. The remnant's scope cannot "
+            "be verified.",
         )
-    registered_pairs, grouping_pair = derived
-    # There is deliberately NO "grouping pair missing from the registry" branch:
-    # the grouping pair is derived from GROUPING_LOOPBACK_PLAYBACK and inserted
+    registered_pairs, content_pair = derived
+    # There is deliberately NO "content pair missing from the registry"
+    # branch: the pair is derived from _OUTPUTD_CONTENT_ALOOP_PCM and inserted
     # by the same function, so it is in the set by construction. The earlier
     # hand-maintained table could drift from that constant; a derived set
     # cannot, so the branch that caught that drift is now unreachable code.
@@ -1245,7 +1234,7 @@ def check_grouping_aloop_remnant() -> CheckResult:
             "fail",
             "snd-aloop substream(s) open with no registered purpose in this "
             f"phase: {'; '.join(shown)}{suffix}. snd-aloop is retained only "
-            f"for the grouping round-trip on pair {grouping_pair} (#2508); "
+            f"for the grouping round-trip on pair {content_pair} (#2508); "
             "pair 5's PCM definitions were DELETED by #2285 P9-C, so a holder "
             "there means a rolled-back binary or a stale /etc/asound.conf "
             "resurrected a deleted lane. Identify the process above, stop it, "
@@ -1253,10 +1242,10 @@ def check_grouping_aloop_remnant() -> CheckResult:
             "ALSA config.",
         )
 
-    non_grouping = sorted(registered_open - {grouping_pair})
+    non_grouping = sorted(registered_open - {content_pair})
     detail = (
         f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
-        f"still registered, grouping remnant on pair {grouping_pair} (#2508)"
+        f"still registered, grouping remnant on pair {content_pair} (#2508)"
     )
     if non_grouping:
         detail += (

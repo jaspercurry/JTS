@@ -32,6 +32,7 @@ from jasper.cli.doctor import grouping
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
 _RECONCILE_PY = _REPO_ROOT / "jasper" / "multiroom" / "reconcile.py"
+_ASOUNDRC_JASPER = _REPO_ROOT / "deploy" / "alsa" / "asoundrc.jasper"
 
 _OPEN_STATUS = (
     "state: RUNNING\n"
@@ -272,31 +273,22 @@ def test_grouping_constants_name_a_pair_that_exists():
     )
 
 
-def test_check_reads_the_grouping_pair_from_reconcile():
-    """The remnant's identity has ONE owner — jasper/multiroom/reconcile.py."""
-    from jasper.multiroom.reconcile import GROUPING_LOOPBACK_PLAYBACK
+def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
+    """`_OUTPUTD_CONTENT_ALOOP_PCM` — pair 6's registration source since
+    design §6.1(a) — must name the same PCM asoundrc.jasper's
+    `pcm.outputd_content_playback` slave actually opens, or the doctor's
+    derivation and the shipped ALSA config drift apart silently.
+    """
+    from jasper.cli.doctor import audio_runtime
 
-    expected = int(GROUPING_LOOPBACK_PLAYBACK.rsplit(",", 1)[1])
-    assert grouping._grouping_pair_index() == expected
-
-
-def test_grouping_pair_index_is_none_on_unparseable(monkeypatch):
-    """An unparseable constant degrades to None, so the check can warn rather
-    than guess an index."""
-    import jasper.multiroom.reconcile as reconcile
-
-    monkeypatch.setattr(reconcile, "GROUPING_LOOPBACK_PLAYBACK", "not-a-pcm")
-    assert grouping._grouping_pair_index() is None
-
-
-def test_unparseable_grouping_constant_is_warn(proc_root, tmp_path, monkeypatch):
-    import jasper.multiroom.reconcile as reconcile
-
-    monkeypatch.setattr(reconcile, "GROUPING_LOOPBACK_PLAYBACK", "not-a-pcm")
-    proc_root(_make_card(tmp_path))
-    result = grouping.check_grouping_aloop_remnant()
-    assert result.status == "warn"
-    assert "could not derive" in result.detail
+    text = audio_runtime._asound_non_comment_text(
+        _ASOUNDRC_JASPER.read_text(encoding="utf-8")
+    )
+    block = audio_runtime._asound_pcm_block(text, "outputd_content_playback")
+    assert block is not None
+    m = re.search(r'slave\s*\{\s*pcm\s+"([^"]+)"', block)
+    assert m, f"no slave pcm found in outputd_content_playback block: {block!r}"
+    assert m.group(1) == audio_runtime._OUTPUTD_CONTENT_ALOOP_PCM
 
 
 # --------------------------------------------------------------------------
@@ -313,10 +305,30 @@ _EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4, 6, 7)
 
 
 def test_derived_set_matches_the_expected_allocation():
-    """Dropping a pair from any owning constant changes this set."""
-    derived, grouping_pair = grouping._derive_registered_pairs()
+    """Dropping a pair from any owning constant changes this set.
+
+    Also the re-sourcing pin (design §6.1a): pair 6 now derives from
+    `_OUTPUTD_CONTENT_ALOOP_PCM` rather than `GROUPING_LOOPBACK_PLAYBACK`, and
+    `_EXPECTED_REGISTERED_PAIRS` is the same literal either way — the
+    registered set is byte-identical before and after that move.
+    """
+    derived, content_pair = grouping._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
-    assert grouping_pair == 6
+    assert content_pair == 6
+
+
+def test_grouping_constant_no_longer_feeds_pair_6(monkeypatch):
+    """THE RE-SOURCING PIN's negative control: breaking
+    GROUPING_LOOPBACK_PLAYBACK must not affect the derived set any more —
+    pair 6's registration moved to `_OUTPUTD_CONTENT_ALOOP_PCM`, so the set
+    stays byte-identical whether or not grouping's own constant even parses.
+    """
+    import jasper.multiroom.reconcile as reconcile
+
+    monkeypatch.setattr(reconcile, "GROUPING_LOOPBACK_PLAYBACK", "not-a-pcm")
+    derived, content_pair = grouping._derive_registered_pairs()
+    assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
+    assert content_pair == 6
 
 
 @pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
@@ -336,13 +348,14 @@ def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
 def test_grouping_pair_is_always_registered():
     """Replaces the old 'grouping pair missing from the registry' warn branch.
 
-    That branch existed because a hand-maintained table could drift from
-    GROUPING_LOOPBACK_PLAYBACK. The derived set inserts the grouping pair from
-    that same constant, so the drift is now structurally impossible and the
-    branch was deleted as unreachable. This is the invariant that replaced it.
+    That branch existed because a hand-maintained table could drift from its
+    source constant. The derived set inserts the content pair (pair 6) from
+    `_OUTPUTD_CONTENT_ALOOP_PCM` in the same function that returns it, so the
+    drift is now structurally impossible and the branch was deleted as
+    unreachable. This is the invariant that replaced it.
     """
-    derived, grouping_pair = grouping._derive_registered_pairs()
-    assert grouping_pair in derived
+    derived, content_pair = grouping._derive_registered_pairs()
+    assert content_pair in derived
 
 
 def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
@@ -365,6 +378,19 @@ def test_derivation_rejects_a_non_loopback_card(monkeypatch):
         audio_runtime, "_FANIN_EXPECTED_OUTPUT_PCM", "hw:SomeOtherCard,0,7"
     )
     assert grouping._derive_registered_pairs() is None
+
+
+def test_unparseable_content_pcm_constant_is_warn(proc_root, tmp_path, monkeypatch):
+    """Pair 6's source is `_OUTPUTD_CONTENT_ALOOP_PCM` now, not a grouping
+    constant — an unparseable value there, not in reconcile.py, is what
+    degrades the full check to warn."""
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(audio_runtime, "_OUTPUTD_CONTENT_ALOOP_PCM", "not-a-pcm")
+    proc_root(_make_card(tmp_path))
+    result = grouping.check_grouping_aloop_remnant()
+    assert result.status == "warn"
+    assert "could not derive" in result.detail
 
 
 def test_ring_armed_lanes_still_reserve_their_aloop_pair():
