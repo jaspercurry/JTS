@@ -233,6 +233,48 @@ def test_the_round_receipt_carries_who_prescribed_it_and_which_document(
     assert record["prescription_sha256"] == prescription_sha256(payload)
 
 
+def test_the_provenance_is_written_to_durable_state_not_only_held_in_memory(
+    monkeypatch,
+):
+    """The channel the attribution actually travels on, and the mutation for it.
+
+    The stage that TAKES a prescription is stage 1 and the stage that banks the
+    round's receipt is stage 2 — different sessions in different processes — so
+    a record that lived only on the conductor would be gone before anything
+    could bank it. That is why ``alignment_prescription`` rides
+    ``verify_priors``, and this rides beside it.
+
+    Reading the property alone cannot catch a missing persist: it answers off
+    the conductor either way. This reads the state the preparer actually wrote.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage(for_round_ordinal=9)
+
+    _prepare(monkeypatch)
+    persisted = v2host.load_v2_state() or {}
+
+    record = (persisted.get("verify_priors") or {}).get("blend_prescription")
+    assert record is not None, "the prescription never reached durable state"
+    assert record["filters"] == [dict(f) for f in _ACCEPTED_FILTERS]
+    assert record["prescriber"]["model"] == "claude-opus-5"
+    assert record["prescription_sha256"]
+
+
+def test_a_deterministic_round_banks_no_prescription_in_durable_state(monkeypatch):
+    """The control that makes the key's presence mean something.
+
+    ``None`` is what every automatic round writes, so a reader can tell a
+    prescribed round from a solved one by the key alone. If both wrote a record
+    the attribution would be decoration.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+
+    _prepare(monkeypatch)
+    persisted = v2host.load_v2_state() or {}
+
+    assert (persisted.get("verify_priors") or {}).get("blend_prescription") is None
+
+
 def test_a_round_with_nothing_staged_is_byte_identical_to_today(monkeypatch):
     """The no-prescription path, which is every ordinary round.
 
@@ -701,13 +743,19 @@ def test_the_stage_verb_stamps_the_round_the_receipt_says_is_next(
 
 
 def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
-    tmp_path,
+    tmp_path, capsys,
 ):
     """Staging without ``--state`` would file against a series it cannot see.
 
     ``series_position_from_state`` resolves every unreadable shape to the first
     round — a real answer for a series starting over, a fabricated one here — so
     the command refuses rather than stamping a 1 nobody measured.
+
+    The MESSAGE is asserted, not just the exit code, and that is what makes this
+    a pin on the guard rather than on an accident: without the explicit check
+    the ordinal read still fails, on a ``FileNotFoundError`` for a path spelled
+    ``None``, and exits the same ``1``. An operator reading that has no idea
+    which flag they missed.
     """
     document = tmp_path / "prescription.json"
     document.write_bytes(_document())
@@ -715,6 +763,7 @@ def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
     code = cli.main(["stage", str(tmp_path), "--prescription", str(document)])
 
     assert code == cli.EXIT_EVIDENCE_UNREADABLE
+    assert "--state is required" in capsys.readouterr().err
     assert not spool.staged_prescription_pending()
 
 
