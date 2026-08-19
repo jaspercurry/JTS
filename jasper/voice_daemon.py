@@ -527,6 +527,11 @@ SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 # NO_SPEECH_ABORT_SEC, which still applies; degradation is at worst
 # "turn aborts and user re-wakes," vs the silent failure of "model
 # hallucinates a response while user is still trying to start."
+#
+# Both the 0.15 and 0.60 figures above are mean scores, not peaks:
+# SpeechVAD.predict() (jasper/vad.py) returns openWakeWord's average over
+# a frame's 480/480/320-sample sub-chunks, so the corpus sweep measured
+# mean-over-sub-chunks the whole time.
 SPEECH_RUN_PEAK_MIN = 0.60
 
 # In-session barge-in: how long the user must speak continuously (each

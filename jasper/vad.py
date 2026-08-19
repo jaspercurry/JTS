@@ -106,12 +106,31 @@ class SpeechVAD:
     def predict(self, frame_int16: np.ndarray) -> float:
         """Predict speech probability for a 16 kHz int16 mono frame.
 
-        Accepts any frame size; openWakeWord's VAD chunks internally
-        based on its frame_size param. Returns 0-1: max sub-chunk
-        score, which answers "did ANY part of this frame look like
-        speech?" — the right question for gating mic forwarding.
+        Delegates to openWakeWord's VAD.predict(), which internally splits
+        the input into frame_size-sample sub-chunks (default 480, i.e.
+        30 ms @ 16 kHz) and returns np.mean(sub_chunk_scores) as a plain
+        numpy scalar — not a list or ndarray. JTS calls this with
+        1280-sample (80 ms) frames (OUTPUT_FRAME_SAMPLES in
+        jasper/audio_io.py) and never passes frame_size, so
+        range(0, 1280, 480) yields three sub-chunks of 480, 480, and a
+        ragged 320 samples — shorter than the 480-sample frame_size that
+        openWakeWord's own docstring says the input length must be an
+        integer multiple of. The score this method returns is therefore
+        the MEAN over those three unevenly-sized sub-chunks, not a peak:
+        a loud transient confined to the trailing 320-sample chunk is
+        averaged in at only 1/3 weight rather than dominating the score,
+        so it is under-weighted relative to a true "did any part of this
+        frame look like speech?" max.
         """
         result = self._vad.predict(frame_int16)
+        # openwakeword==0.6.0 (the hard-pinned version — see
+        # deploy/lib/install/python-runtime.sh) always returns a scalar
+        # here, so this branch is unreachable today. It stays as a
+        # version-compat shim: float() on a multi-element ndarray raises,
+        # so if a future openwakeword release ever changed VAD.predict()
+        # to return a list/array of per-chunk scores, deleting this branch
+        # would turn that upstream shape change into a daemon crash
+        # instead of a degraded (max-of-chunks) score.
         if isinstance(result, (list, np.ndarray)):
             arr = np.asarray(result).flatten()
             return float(arr.max()) if arr.size else 0.0
