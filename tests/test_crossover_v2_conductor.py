@@ -8792,9 +8792,25 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     """#1668 anchored give-back, the core math: each role's committed trim is
-    its raw trim plus that branch's own measured `correction_giveback_db`, with
-    a shared shift applied so no role lands POSITIVE (a boost the emitter would
-    refuse). Pinned end-to-end against the conductor's committed trims."""
+    its raw trim plus that branch's own measured LEVEL-BAND give-back, with a
+    shared shift applied so no role lands POSITIVE (a boost the emitter would
+    refuse). Pinned end-to-end against the conductor's committed trims.
+
+    **This test was INERT until 2026-08-19, and how it was inert is the useful
+    part.** It computed its expectation from ``correction_giveback_db`` — the
+    core-band number that no longer places the trim — and then compared the
+    tweeter against it under ``LINEARIZATION_TRIM_SANITY_MARGIN_DB``, a **6.0 dB**
+    tolerance. The two give-backs differ by 0.918 dB on this fixture, so the
+    tolerance swallowed the whole difference and the test passed on BOTH sides
+    of the band change: mutating the production anchor did not move it. Its
+    woofer leg was degenerate too (raw 0.0, shift equal to the woofer's own
+    give-back, so it asserted 0.0 == 0.0 whatever the give-back was).
+
+    It now reads the same frame production does (``_measured_level_frame``,
+    shared with this file's other anchor tests) and grades to 1e-9, so the
+    arithmetic is actually pinned. The 6.0 dB constant it used to lean on is a
+    SCAN-drift guard and was never a tolerance on the anchor's own math.
+    """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8803,10 +8819,8 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     assert verdict["accepted"] is True
 
     raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
-    giveback = {
-        role: c.candidate.linearization[role]["correction_giveback_db"]
-        for role in ("woofer", "tweeter")
-    }
+    frame = _measured_level_frame(c)
+    giveback = frame.giveback_db
     # Every branch that emitted filters reports a positive give-back.
     assert giveback["tweeter"] > 0.0
     # ``anchor_trims`` (single-datum-owner migration, #2609) has no summed
@@ -8820,17 +8834,15 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     anchored = {r: v - shift for r, v in unnormalized.items()}
 
     committed = c.candidate.role_attenuations_db
-    # No committed trim is a boost.
+    # No committed trim is a boost. The hearing-safety invariant.
     assert all(v <= 1e-9 for v in committed.values())
-    # The woofer is committed at its anchor exactly (only the tweeter is scanned).
-    assert committed["woofer"] == pytest.approx(anchored["woofer"])
-    # The tweeter sits at/near its anchor (the scan only fine-tunes around it).
-    assert abs(committed["tweeter"] - anchored["tweeter"]) <= (
-        LINEARIZATION_TRIM_SANITY_MARGIN_DB
-    )
-    # And the give-back genuinely moved it up from the raw trim toward level
-    # preservation -- the whole point of the anchor.
-    assert committed["tweeter"] > raw_trim["tweeter"] - 1e-9
+    # Both roles are committed at their anchor exactly on this fixture — the
+    # scan walks off it and the level adjudication commits the anchor.
+    assert committed["woofer"] == pytest.approx(anchored["woofer"], abs=1e-9)
+    assert committed["tweeter"] == pytest.approx(anchored["tweeter"], abs=1e-9)
+    # And the property the arithmetic exists to produce, asserted independently
+    # of it: the committed pair hands the two branches off at the same level.
+    assert abs(_inter_driver_level_error_db(frame, committed)) <= 1e-3
 
 
 def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
@@ -12140,7 +12152,10 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     # Leg 2 — the two give-backs, side by side, showing the 0.918 dB this
     # fixture's bands disagree by. The old anchor spent the core-band pair and
     # committed the tweeter at -2.691; the level-band pair commits -0.856.
-    assert 'giveback_db="{\'woofer\': 1.147, \'tweeter\': 2.064}"' in caplog.text
+    assert (
+        'level_band_giveback_db="{\'woofer\': 1.147, \'tweeter\': 2.064}"'
+        in caplog.text
+    )
     assert (
         'core_band_giveback_db="{\'woofer\': 2.104, \'tweeter\': 1.186}"'
         in caplog.text

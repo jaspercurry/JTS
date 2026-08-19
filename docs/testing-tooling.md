@@ -1313,12 +1313,28 @@ linearized-vs-raw predicted-spec gate that passed on the incident, is
 orthogonal to both defects, and cannot pass on synthetic branches without
 shaping them until it does. Copy the shape, not the contents:
 
-* **Derive, never hand-copy.** The script has a `--check` mode that re-derives
-  and diffs, so a fixture can be proved to still be the session it names. It
-  exits `2` when the bank is absent, because "I could not check" must not read
-  as "the check passed" — and it is an operator tool, never a CI gate. Content
-  drift and a same-content/renamed-directory bank both exit `1` but say so in
-  different sentences, so neither sends a reader hunting for the other.
+* **Derive, never hand-copy — and name the one field you cannot.** The script
+  has a `--check` mode that re-derives and diffs, so a fixture can be proved to
+  still be the session it names. It exits `2` when the bank is absent, because
+  "I could not check" must not read as "the check passed" — and it is an
+  operator tool, never a CI gate. Content drift and a same-content/renamed-
+  directory bank both exit `1` but say so in different sentences, so neither
+  sends a reader hunting for the other. **Exactly one field is exempt:
+  `anchor_replay` in `expected_outcome.json` is HAND-BANKED**, and the script
+  neither derives nor validates it. Since 2026-08-19 the anchor's give-back is
+  measured by `solve_branch_trims` over `branch_level_bands_hz`, which needs the
+  per-driver COMPLEX responses this bundle never retained (dropped for size), so
+  no arithmetic over the banked scalars can reach the number — a derivation kept
+  here would report drift on a correct fixture forever, and a checker known to
+  fail trains a reader to ignore `--check`. The script's `main` instead splices
+  the committed block through verbatim, so a plain re-run cannot delete a value
+  nothing can rebuild, and `--check` matches it by construction rather than by a
+  special case in the diff loop. Every other field is still derived and still
+  diffed. What guards the exempt one is the replay test, which asserts
+  production's own anchor equals the banked value; what is lost is only this
+  script's independent second opinion on it. When a field earns this exemption,
+  it carries its own provenance note in the fixture — `anchor_replay`'s says
+  which formula it replaced and what the change moved.
 * **Inject only what cannot be committed, and name every stub.** Every SCALAR
   the decision consumes rides in the fixture, and **two** seams are stubbed —
   `fit_driver_linearization` returns the incident's own serialized

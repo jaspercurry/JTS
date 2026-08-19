@@ -524,11 +524,35 @@ runs AFTER the flattening peaking loop:
   the shift preserves relative leveling exactly and is honest extra ledger.
 
   **The invariant, and why the band is load-bearing.** A give-back spent against
-  a trim must be measured in that trim's frame. Both reads go through the
-  identical call, so the estimator's known +0.54 dB linear-grid systematic
-  cancels in the difference, and the committed pair lands level by construction:
-  `realized = (level_t_pre − level_w_pre) + (raw_t − raw_w)`, which `raw` is
-  defined to zero.
+  a trim must be measured in that trim's frame. The committed pair then lands
+  level by construction: `realized = (level_t_pre − level_w_pre) + (raw_t −
+  raw_w)`, which `raw` is defined to zero. The estimator's known +0.54 dB
+  linear-grid systematic cannot reach that result — it *telescopes out*, since
+  every term comes from the same call, which is a stronger property than
+  partial cancellation (the per-role biases actually differ by ≈0.45 dB).
+
+  **The invariant has a precondition, and it is not always met.** The give-back
+  is the right adjustment for a base that came from this same solve. Usually
+  `raw_trim_db` did — `solve_branch_trims` over these bands produces
+  `trim_t_band_average`. But the MEASURE path may hand over the **ripple-polished**
+  tweeter trim instead (`solve_ripple_optimal_trim`, a *flatness* choice),
+  admitted whenever it sits within `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB) of the
+  band average. When it fires, δ of polish becomes exactly δ of realized
+  inter-driver level error — and **that bound is double the 3.0 dB realized-level
+  tolerance**, so a polish legal by its own guard can still push the pair past the
+  level gate. The gate is the arbiter and fails closed; the polish delta is
+  published on every round (`polish_delta_db`) so the precondition is observed
+  rather than assumed. Whether the anchor should bind to `trim_band_average_db`
+  instead is an open design question, filed for the architect.
+
+  **What the fix does is level-match, not quieten.** It is tempting to read this
+  as "the tweeter gets quieter"; it does not. The committed trim moves by exactly
+  the realized level error the old anchor was carrying — in whichever direction
+  that error sat. A branch whose correction lives inside the graded band can
+  legitimately end up **hotter** than before (measured worst case on the corpus:
+  +9.21 dB), still under the non-positive clamps and still level-correct. The
+  property being restored is equality between the two branches at the handoff,
+  not a monotone reduction in level.
 
   **What this replaced (2026-08-19).** The anchor used to take
   `LinearizationFit.correction_giveback_db`, the same measured delta over each

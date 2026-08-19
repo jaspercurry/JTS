@@ -1628,10 +1628,48 @@ def plan_linearization(
     # must be measured with the same estimator, in the same averaging domain,
     # and over the SAME BANDS as the trim it adjusts and the verdict that grades
     # that trim. Here that estimator is :func:`solve_branch_trims` over
-    # ``branch_level_bands_hz``, because that is what solved ``raw_trim_db`` and
-    # what :func:`realized_level_match` re-reads to grade the committed pair. Any
-    # other band answers a different question, and the difference lands as
-    # inter-driver level error.
+    # ``branch_level_bands_hz``, which is what :func:`realized_level_match`
+    # re-reads to grade the committed pair. Any other band answers a different
+    # question, and the difference lands as inter-driver level error.
+    #
+    # **The invariant has a PRECONDITION, and it is not always met — state it
+    # rather than assume it.** The give-back is the right adjustment for a base
+    # that came from this same solve. ``raw_trim_db`` usually did:
+    # ``solve_branch_trims`` over these bands produces ``trim_t_band_average``.
+    # But ``program_analysis``' MEASURE path may hand over the RIPPLE-POLISHED
+    # tweeter trim instead — ``solve_ripple_optimal_trim``'s result, a FLATNESS
+    # choice the candidate made, admitted whenever it sits within
+    # ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) of the band average. When it
+    # fires, the base is δ away from what this give-back is calibrated to, and
+    # δ passes straight through: the committed pair lands with exactly δ of
+    # realized inter-driver level error. **That bound is DOUBLE the 3.0 dB
+    # realized-level tolerance**, so a polish inside its own guard can still
+    # push the pair past the level gate on its own.
+    #
+    # Two things follow, and neither is "fix it here". Whether the anchor should
+    # bind to ``trim_band_average_db`` instead of ``raw_trim_db`` is a real
+    # design question about which datum owns the pair, and it is not this
+    # change's to settle — it is filed for the architect. What IS done here is
+    # to stop the precondition being invisible: the band-average solve is
+    # already computed below for free (``_pre_res_*``), so the polish delta is
+    # published on every round (``polish_delta_db``). The realized-level gate
+    # remains the arbiter and still fails closed above 3.0 dB; this only makes
+    # the reason legible when it does.
+    #
+    # (The repo has met this conflation once already, at
+    # :func:`check_level_consistency`, whose own comment names a bound that was
+    # "DOUBLE the tolerance". Same shape, different seam.)
+    #
+    # **This LEVEL-MATCHES; it does not quieten. Read that before assuming a
+    # safety direction.** The committed trim moves by exactly the realized level
+    # error the old anchor was carrying, in whichever direction that error sat.
+    # A branch whose correction lives INSIDE the graded band legitimately ends
+    # up HOTTER than the old rule left it — measured worst case on the corpus,
+    # +9.21 dB — still under the non-positive clamps below, and still level-
+    # correct. What is restored is equality between the two branches at the
+    # handoff, not a monotone reduction in level. Anyone reasoning about
+    # hearing safety here should reason about the clamps and the realized gate,
+    # which are unchanged, and not about a direction this change does not have.
     #
     # Two of the invariant's three legs were already enforced and the third was
     # not. ``linearization_fit``'s give-back carries a LOCKSTEP REQUIREMENT that
@@ -1657,18 +1695,27 @@ def plan_linearization(
     # differential. The owner's ear reached the same verdict independently on the
     # shipped config: "a little bright."
     #
-    # **Why the 2026-07-24 objection does not apply to this band.** The old
-    # ``solve_branch_trims(W_lin, T_lin)`` seed was rejected because it averaged
-    # over the CROSSOVER OVERLAP band — the tweeter's LR4 high-pass skirt lives
-    # there and a power mean weights the least-cut bins hardest; measured live it
-    # returned only 5.81 dB of a 9.27 dB spend. That objection was against a
-    # frame **PR-L3 has since deleted**: the estimator no longer reads a shared
-    # overlap band at all, it reads each branch only on its own side of Fc
-    # (mirrored halves), which is the fix for exactly the skirt-weighting the
-    # objection named. The surviving rationale for the core band was "measured
-    # give-back beats any solver prediction" — and this is still a MEASURED
-    # before-vs-after delta, not a prediction. It changes the band, not the
-    # method, so that rationale is preserved rather than overturned.
+    # **Why the core band was kept, and why that reasoning does not survive.**
+    # The 2026-07-24 measurement rejected a ``solve_branch_trims(W_lin, T_lin)``
+    # seed because it averaged over the CROSSOVER OVERLAP band — the tweeter's
+    # LR4 high-pass skirt lives there and a power mean weights the least-cut
+    # bins hardest; it returned only 5.81 dB of a 9.27 dB spend. That objection
+    # was sound against THAT frame.
+    #
+    # Being honest about the history matters more than a tidy story: the
+    # comment this replaces was written on **2026-08-10, with PR-L3 already in
+    # hand**. So this is not a stale objection nobody revisited — a later
+    # author kept the core band while knowing the overlap-band frame had been
+    # deleted, and carried the 2026-07-24 numbers forward as the reason. What
+    # was missed is that PR-L3 did not merely narrow the old band, it replaced
+    # it with mirrored halves read on each branch's OWN side of Fc, which is the
+    # fix for precisely the skirt-weighting the objection named. The measurement
+    # that justified the core band therefore no longer describes the available
+    # alternative, and the conclusion drawn from it stopped following.
+    #
+    # The other stated rationale — "measured give-back beats any solver
+    # prediction" — is untouched here: this is still a MEASURED before-vs-after
+    # delta, not a prediction. It changes the band, not the method.
     #
     # The 5.81-of-9.27 shortfall was also the wrong ledger to judge it by. A
     # correction's SPEND is a headroom quantity and has its own owner
@@ -1678,17 +1725,26 @@ def plan_linearization(
     # audible-band question and is still disclosed below, and the anchor now
     # takes the leveling one.
     #
-    # Both measurements go through the identical call, so the estimator's known
-    # +0.54 dB linear-grid systematic appears in each and CANCELS in the
-    # difference — a property the cross-band route could not have.
+    # The estimator's own bias cannot reach the verdict, and the reason is
+    # stronger than "it cancels". ``solve_branch_trims`` carries a known
+    # +0.54 dB linear-grid systematic, and it TELESCOPES out of the graded
+    # result entirely: the verdict is ``(level_t_pre - level_w_pre) + (raw_t -
+    # raw_w)``, every term of which this same call produces, so the bias enters
+    # with one sign and leaves nothing behind. Partial cancellation would be a
+    # weaker claim AND a false one here — the per-role biases differ by
+    # ~0.45 dB, so a "they cancel" argument would not survive inspection. The
+    # cross-band route had neither property: its two reads came from different
+    # bands, so nothing telescoped.
     #
-    _pre_res_w, _pre_res_t, level_w_pre_db, level_t_pre_db = solve_branch_trims(
-        freqs,
-        responses[woofer_role].complex_tf,
-        responses[tweeter_role].complex_tf,
-        fc_hz,
-        woofer_span_hz=woofer_span,
-        tweeter_span_hz=tweeter_span,
+    band_average_trim_w_db, band_average_trim_t_db, level_w_pre_db, level_t_pre_db = (
+        solve_branch_trims(
+            freqs,
+            responses[woofer_role].complex_tf,
+            responses[tweeter_role].complex_tf,
+            fc_hz,
+            woofer_span_hz=woofer_span,
+            tweeter_span_hz=tweeter_span,
+        )
     )
     _post_res_w, _post_res_t, level_w_post_db, level_t_post_db = solve_branch_trims(
         freqs,
@@ -1701,6 +1757,20 @@ def plan_linearization(
     level_band_giveback_db = {
         woofer_role: float(level_w_pre_db - level_w_post_db),
         tweeter_role: float(level_t_pre_db - level_t_post_db),
+    }
+    # The precondition, MEASURED rather than assumed (see the invariant above).
+    # The same call that produced the give-back's "before" levels also produced
+    # this solve's own trims, so the distance between those and the base the
+    # planner was handed is free. Non-zero means the MEASURE path polished the
+    # trim for ripple, and the pair will land with that much realized level
+    # error — which is why it is published rather than discarded.
+    band_average_trim_db = {
+        woofer_role: float(band_average_trim_w_db),
+        tweeter_role: float(band_average_trim_t_db),
+    }
+    polish_delta_db = {
+        role: float(request.raw_trim_db.get(role, 0.0) - band_average_trim_db[role])
+        for role in (woofer_role, tweeter_role)
     }
     #
     # The anchor's base is the RAW MEASURED TRIM, unconditionally. There is no
@@ -1737,10 +1807,12 @@ def plan_linearization(
     raw_trim = dict(request.raw_trim_db)
     # The anchor's OTHER term, checked rather than trusted for the reason the
     # request's trims are checked at the door: a non-finite give-back lands in
-    # the same ``max`` and the same clamp does nothing about it. Whether
-    # ``correction_giveback_db`` can be non-finite in production is a question
-    # this guard makes moot — it is cheap, and the failure it prevents is a
-    # NaN trim reaching the emitter.
+    # the same ``max`` and the same clamp does nothing about it. Whether the
+    # level-band give-back can be non-finite in production is a question this
+    # guard makes moot — it is cheap, and the failure it prevents is a NaN trim
+    # reaching the emitter. (It guards ``level_band_giveback_db``, the term the
+    # anchor actually spends; ``correction_giveback_db`` is disclosure and
+    # cannot reach the clamp.)
     giveback_db = {}
     for role in (woofer_role, tweeter_role):
         value = float(level_band_giveback_db[role])
@@ -1829,10 +1901,32 @@ def plan_linearization(
         "correction.crossover_v2_linearization_giveback",
         {
             # THE ANCHOR'S TERM: the level-band give-back, measured by the same
-            # estimator over the same bands that solved the raw trim and that
-            # grade the committed pair.
-            "giveback_db": {
+            # estimator over the same bands the committed pair is graded in.
+            #
+            # Named for its BAND rather than carrying the bare ``giveback_db``
+            # this line used to publish. That key's meaning changed under a
+            # stable name when the anchor moved bands, and a reader diffing two
+            # journals across the change would have compared two different
+            # quantities without a hint. Renaming is free here — no automated
+            # reader consumes it — and old journal lines keep the old key as
+            # the history of what they actually measured.
+            "level_band_giveback_db": {
                 role: round(float(giveback_db[role]), 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            # THE PRECONDITION, published so it is observed on every real round
+            # rather than assumed. The give-back is calibrated to a base that
+            # came from the band-average solve; when MEASURE polished the trim
+            # for ripple instead, this is how far the base moved, and the pair
+            # lands with exactly that much realized inter-driver level error.
+            # Zero on the ordinary path. The realized-level gate is still the
+            # arbiter — this only makes its reason legible.
+            "band_average_trim_db": {
+                role: round(band_average_trim_db[role], 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            "polish_delta_db": {
+                role: round(polish_delta_db[role], 3)
                 for role in (woofer_role, tweeter_role)
             },
             # The core-band give-back, kept BESIDE it rather than replaced by

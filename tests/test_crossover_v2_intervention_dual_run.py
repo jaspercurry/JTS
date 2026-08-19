@@ -735,23 +735,112 @@ def test_both_roles_carrying_sections_names_nobody(monkeypatch):
 def test_no_committed_trim_is_ever_positive_however_large_the_giveback(
     monkeypatch, giveback_db
 ):
-    """The hearing-safety invariant, driven at the input that can break it.
+    """The hearing-safety invariant, on a fixture that reaches it.
 
     A branch whose own cuts give back more than its raw attenuation lands
     POSITIVE before ``normalize_shift_db`` subtracts the common shift — a boost
-    the emitter refuses and the hardware must never see. The earlier assertion
-    read the incident fixture's own trims, which can only ever confirm that
-    fixture; this drives the give-back up until the unnormalized anchor is
-    positive and asserts the output stays cut-only anyway.
+    the emitter refuses and the hardware must never see. This fixture does land
+    there on its own: the anchor's unnormalized woofer is ``+3.916`` dB and the
+    shared shift subtracts exactly that, so the clamp is genuinely exercised
+    below.
+
+    **The parametrization drives the give-back at the ESTIMATOR, and it has to.**
+    It was originally written to raise ``LinearizationFit.correction_giveback_db``.
+    The 2026-08-19 band fix moved the anchor's give-back onto
+    ``solve_branch_trims`` over ``branch_level_bands_hz``, and that stub then
+    stopped reaching the anchor at all: measured before this was repaired, all
+    four values handed ``anchor_trims`` the identical
+    ``{'woofer': 3.916, 'tweeter': 8.400}`` and committed the identical pair
+    (``tweeter`` −6.400575020419777). One case four times, wearing the name of a
+    ladder.
+
+    It now injects where the anchor actually reads, the way the sibling
+    ``test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it`` does:
+    the POST-correction level read is lowered by ``giveback_db``, so the
+    measured give-back — ``level_pre − level_post`` — rises by exactly that on
+    both roles and the unnormalized anchor is pushed arbitrarily far positive.
+    At 60 dB it is nowhere near legal, which is the point: the clamp, not the
+    fixture, is what has to hold.
+
+    **Why the COMMITTED pair is the wrong thing to watch, and the anchor's
+    inputs are the right thing.** The injection raises both roles' give-back by
+    the same amount, and the shared shift subtracts the same amount from both —
+    so the committed pair is *identical* at every rung (tweeter
+    −6.400575020419777 throughout). That is the normalize doing exactly its job:
+    it preserves relative leveling and spends only ledger. Asserting on the
+    committed pair would therefore look green whether or not the ladder ran,
+    which is precisely how this test was inert before. The assertions below
+    watch the anchor's own inputs and the shift, where the ladder is visible.
+
+    **The call-count assertion is not decoration.** This test went inert once
+    because production stopped calling what it stubbed, silently. Pinning that
+    the planner made exactly the two estimator reads this injection assumes
+    means the next such move fails here loudly instead of quietly returning to
+    one case four times.
     """
     _install_stubs(monkeypatch, scan_delta_db=0.0)
 
-    def generous(resp, envelope, **kwargs):
-        return replace(_incident_fit(resp.role), correction_giveback_db=giveback_db)
+    real_solve = iv.solve_branch_trims
+    reads = {"n": 0}
 
-    monkeypatch.setattr(iv, "fit_driver_linearization", generous)
+    def laddered(*args, **kwargs):
+        trim_w, trim_t, level_w, level_t = real_solve(*args, **kwargs)
+        reads["n"] += 1
+        # Call 1 is the PRE-correction read, call 2 the POST-correction one.
+        # Lowering only the second raises `pre - post` by exactly `giveback_db`.
+        if reads["n"] == 2:
+            return trim_w, trim_t, level_w - giveback_db, level_t - giveback_db
+        return trim_w, trim_t, level_w, level_t
+
+    monkeypatch.setattr(iv, "solve_branch_trims", laddered)
+
+    # Capture what the anchor was actually handed, so the ladder's effect is
+    # asserted at the seam it acts on rather than inferred from the committed
+    # pair (which, correctly, does not move — see below).
+    anchor_inputs: dict[str, float] = {}
+    real_anchor = iv.anchor_trims
+
+    def spy(*, roles, anchor_base_db, giveback_db):
+        anchored, shift = real_anchor(
+            roles=roles, anchor_base_db=anchor_base_db, giveback_db=giveback_db,
+        )
+        anchor_inputs.update(
+            {
+                f"unnormalized_{role}": float(
+                    anchor_base_db.get(role, 0.0) + giveback_db.get(role, 0.0)
+                )
+                for role in roles
+            },
+            shift=float(shift),
+        )
+        return anchored, shift
+
+    monkeypatch.setattr(iv, "anchor_trims", spy)
     plan = _pure(_sections_at(SELECTED_FC_HZ))
 
+    assert reads["n"] == 2, (
+        f"the anchor made {reads['n']} estimator reads, not 2 — this injection "
+        "no longer lands where the give-back is measured, and the sweep below "
+        "is inert again"
+    )
+    # The injection reached the anchor and the clamp scaled with it. Measured
+    # across the ladder: the unnormalized TWEETER anchor runs -2.485 dB (needing
+    # no clamp) up to +57.515 dB (needing a very large one), and the shared
+    # shift tracks at 3.916 + giveback_db.
+    assert anchor_inputs["shift"] >= giveback_db, (
+        f"shift {anchor_inputs['shift']:.3f} did not absorb an injected "
+        f"give-back of {giveback_db:.1f} dB — the ladder is not reaching the "
+        "clamp"
+    )
+    # At the top of the ladder the TWEETER's own unnormalized anchor is far
+    # positive, which is the give-back-exceeds-attenuation case this test is
+    # named for. Pinned so the ladder cannot quietly shrink to values the
+    # fixture would have cleared anyway.
+    if giveback_db >= 20.0:
+        assert anchor_inputs["unnormalized_tweeter"] > 10.0, (
+            "the ladder no longer pushes the tweeter's unnormalized anchor "
+            "well positive, so the clamp is not being exercised by the sweep"
+        )
     assert plan.role_attenuations_db
     for role, trim_db in plan.role_attenuations_db.items():
         assert trim_db <= 0.0, f"{role} committed a boost of {trim_db:+.3f} dB"
@@ -918,7 +1007,11 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
 # goes to the emitter. Since #2609 made the raw measured trim the anchor's
 # base, the complete set of doors is ``raw_trim_db`` and
 # ``trim_band_average_db`` (guarded in ``LinearizationRequest.__post_init__``)
-# plus ``correction_giveback_db`` (guarded at the anchor's own call site).
+# plus the anchor's give-back term (guarded at the anchor's own call site).
+# That third door moved bands on 2026-08-19: it is the LEVEL-BAND give-back
+# ``solve_branch_trims`` measures over ``branch_level_bands_hz``, not
+# ``LinearizationFit.correction_giveback_db``, which no longer reaches the
+# anchor at all.
 #
 # The safety delta caught these guards UNPINNED: deleting the whole
 # trim-finiteness loop left 432 tests green. The three ``match="finite"``

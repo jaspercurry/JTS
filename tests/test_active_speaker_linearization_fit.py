@@ -778,9 +778,14 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
     assert fit.verify_residual_max_db == pytest.approx(v_exact_max, abs=1e-9)
     assert abs(v_lor_max - v_exact_max) > 0.05
 
-    # ...and for the give-back, which is NOT report-only: it is the SSOT
-    # crossover_v2_flow anchors each branch's linearized trim on, so grading it
-    # with the wrong evaluator moved an emitted TRIM.
+    # ...and for the give-back. It does not place a trim: since the 2026-08-19
+    # band fix the anchor measures its own give-back over
+    # ``branch_level_bands_hz`` (the bands the realized-level verdict grades),
+    # and THIS number is published beside it as ``core_band_giveback_db`` — the
+    # audible-band answer to "what did this branch's correction remove across
+    # its own core band". That still makes it a MEASUREMENT a reader acts on
+    # rather than a modelled estimate, so it gets the same rule as the residuals
+    # above: the realized cascade's delta, never the Lorentzian's.
     level_mask = _core_or_fallback_mask(
         envelope, envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB,
     )
@@ -1239,11 +1244,14 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
 
 
 def test_correction_giveback_table_pins_the_fixture_family():
-    """The give-back SSOT: ``correction_giveback_db`` is the MEASURED
+    """The audible-band give-back: ``correction_giveback_db`` is the MEASURED
     before-vs-after power-domain level delta of the driver's core (reference)
-    band, reported POSITIVE. On the canonical fired synthetic — a flat core — it
-    lands close to the CD-horn spend, which is what makes the flow's anchored
-    trim restore the pre-correction level.
+    band, reported POSITIVE — what this branch's own correction removed across
+    its own passband, published by the flow as ``core_band_giveback_db``. (It
+    does not place a trim; since the 2026-08-19 band fix the anchor measures its
+    own give-back over ``branch_level_bands_hz``.) On the canonical fired
+    synthetic — a flat core — it lands close to the CD-horn spend, because on a
+    flat core the level the shelf removes IS the spend.
 
     ``spend`` is NOT the definition, only a sanity companion, so that comparison
     holds to 1.0 dB rather than 0.5. Across the fixture family (dB; delta is
@@ -1264,8 +1272,9 @@ def test_correction_giveback_table_pins_the_fixture_family():
 
     The larger deltas are correct, not error: whenever the correction also cuts
     INSIDE the core band (the CD-horn residual peak near the onset, a flattening
-    cut on a bumped core) it removes real level there, and the anchor restores
-    exactly what was removed. Only the flat-core cases are expected near spend.
+    cut on a bumped core) it removes real level there, and this measurement
+    counts exactly what was removed. Only the flat-core cases are expected near
+    spend.
 
     The structural checks below BOUND a mechanical regenerate rather than
     forbidding one: a uniform give-back shift under ~0.22 dB — canonical's
@@ -1329,8 +1338,8 @@ def test_correction_giveback_table_pins_the_fixture_family():
 def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
     """Era-tolerant default + the flattening-only case: a fit that emitted no
     filters reports 0.0 give-back; a woofer carrying only ordinary flattening
-    cuts still reports a positive give-back, so the flow can anchor BOTH
-    branches, not just the CD-horn one."""
+    cuts still reports a positive give-back, so the flow discloses a real
+    audible-band number for BOTH branches, not just the CD-horn one."""
     family = _giveback_fixture_family()
     flat_fit = family["flat"]
     assert flat_fit.filters == ()
@@ -2268,8 +2277,8 @@ def test_every_lift_suppression_reason_the_stage_returns_is_enumerated():
 
 
 def test_the_lift_stage_does_not_unwind_the_cd_horn_give_back():
-    """The CD-horn stage's Lowshelf is a DELIBERATE level move whose give-back
-    the trim returns — not a cut the lift stage may reclaim. The permitted-
+    """The CD-horn stage's Lowshelf is a DELIBERATE level move that the give-back
+    accounts for — not a cut the lift stage may reclaim. The permitted-
     headroom constraint protects it with no special case: after that stage the
     sub-onset band already sits at the give-back frame's target, so there is no
     headroom there to spend."""
@@ -2569,10 +2578,14 @@ def test_an_unbounded_fit_is_byte_identical_to_before_the_bound_existed():
 def test_the_bound_does_not_move_the_target_level_or_the_give_back():
     """Scoped to the SHAPE question. ``target_level_db`` is the flat line every
     stage in this fit grades against, so it is read over the whole region the
-    fit may place a filter on; ``correction_giveback_db`` anchors the trim and
-    is a power-domain average over the same region. #1809's bound must move
-    neither, and #1929 did not change that — it gave the FRAME's own median a
-    band (:func:`driver_core_level_db`), which is a different question.
+    fit may place a filter on; ``correction_giveback_db`` is a power-domain
+    average over that same region — the audible-band give-back the flow
+    discloses as ``core_band_giveback_db``. (It stopped placing the trim in the
+    2026-08-19 band fix; the anchor measures its own give-back over
+    ``branch_level_bands_hz``, the bands the realized-level verdict grades.)
+    #1809's bound must move neither, and #1929 did not change that — it gave the
+    FRAME's own median a band (:func:`driver_core_level_db`), which is a
+    different question.
     """
     from jasper.active_speaker.branch_chain import radiating_band_hz
 
@@ -2815,9 +2828,10 @@ def test_out_of_band_content_does_not_reach_the_solve():
         - clean_fit.observe_octave_summary["8000"]
     ) > 20.0
 
-    # The give-back is the term that leaves this module: it is the SSOT
-    # ``crossover_v2.intervention.plan_linearization`` anchors each branch's
-    # linearized trim on. It too is unmoved by content out of band — to within
+    # The give-back is the level number that leaves this module:
+    # ``crossover_v2.intervention.plan_linearization`` publishes it as
+    # ``core_band_giveback_db``, the audible-band disclosure beside the anchor's
+    # own level-band term. It too is unmoved by content out of band — to within
     # the same smoothing bleed, which is why this is a tolerance and the
     # filters above are not.
     assert dirty_fit.correction_giveback_db == pytest.approx(
@@ -2830,9 +2844,13 @@ def test_out_of_band_content_does_not_reach_the_solve():
     assert was.fit_band_hz[1] > 4.0 * clean_fit.fit_band_hz[1]
     assert was.residual_rms_db > 15.0
     # …and the cost was not confined to the claim. Every filter went out of
-    # band, so the CORE band went uncorrected and the give-back with it — the
-    # anchor would have returned 2.15 dB less level than the branch's own
-    # correction actually removed. That is an emitted trim, not a report.
+    # band, so the CORE band went uncorrected and the measured give-back
+    # collapsed with it — 2.15 dB below what the bounded solve returns on the
+    # same fixture. When this was written that number was also the trim's anchor
+    # term, which is why docs/linearization-integrity-plan.md's #2523 bullet
+    # calls it an emitted trim rather than a report. The anchor has since moved
+    # to ``branch_level_bands_hz`` and this is now the audible-band disclosure —
+    # but the solve defect it measures is unchanged.
     assert was.correction_giveback_db < 0.1
     assert clean_fit.correction_giveback_db - was.correction_giveback_db > 2.0
 

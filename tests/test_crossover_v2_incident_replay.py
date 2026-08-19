@@ -752,9 +752,10 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     # honest pin — and it is the fix's mechanism showing up on an independent
     # incident, not a fixture drifting.
     #
-    # Both pairs still miss the 3.0 dB realized-level tolerance, which is why
-    # this session refuses either way — the fail-closed direction, and the
-    # thing this replay exists to reproduce.
+    # (What used to stand here — "both pairs still miss the 3.0 dB tolerance" —
+    # was true of the old anchor and is contradicted 25 lines below by this same
+    # block's own assertions: the band-matched anchor CLEARS it at 2.688 while
+    # the scan pair still misses at 3.924. Deleted rather than softened.)
     assert abs(anchor["difference_db"]) < abs(scan["difference_db"]), (
         "the band-matched anchor should grade BETTER than the scan pair at "
         "the candidate's corner; if the scan wins, the give-back is no longer "

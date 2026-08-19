@@ -32,6 +32,16 @@ only stops the bad case is half a fix:
 * a correction lying OUTSIDE the graded band must not move the committed pair
   (the defect), and
 * a correction lying INSIDE it must still be given back (the purpose).
+
+**Scope: this file pins the PHYSICS, not the WIRING.** Every test here drives
+``anchor_trims`` / ``solve_branch_trims`` / ``realized_branch_level_match``
+directly on synthetic branches, so it answers "is the arithmetic right?" and
+cannot notice a planner that stopped calling any of it. The wiring — that
+``plan_linearization`` actually measures its give-back this way and that the
+committed candidate carries the result — is guarded by
+``test_crossover_v2_conductor.py``, ``test_crossover_v2_incident_replay.py`` and
+``test_crossover_v2_intervention_dual_run.py``, which run the real planner. Both
+halves are needed; neither substitutes for the other.
 """
 
 from __future__ import annotations
@@ -41,6 +51,8 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.intervention import anchor_trims
 from jasper.audio_measurement.program_analysis import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+    RIPPLE_TRIM_SANITY_MARGIN_DB,
     realized_branch_level_match,
     solve_branch_trims,
 )
@@ -125,9 +137,18 @@ def _level_band_giveback_db(
     """The NEW rule's give-back, through the production estimator.
 
     Same function, same bands, same averaging as the trim solve and the
-    verdict — which is the whole invariant. Because both reads go through the
-    identical call, the estimator's known +0.54 dB linear-grid systematic
-    appears in each and cancels in the difference.
+    verdict — which is the whole invariant.
+
+    **Why the estimator's own bias cannot reach the verdict.** ``solve_branch_trims``
+    carries a known +0.54 dB linear-grid systematic. It does not merely
+    "partially cancel" in the difference — it TELESCOPES out of the graded
+    result entirely: the verdict is ``(level_t_pre − level_w_pre) + (raw_t −
+    raw_w)``, every term of which this same call produces, so the bias enters
+    each term with the same sign and leaves nothing behind. (The weaker
+    partial-cancellation claim is also measurably wrong here — the per-role
+    biases differ by ≈0.45 dB, so "they cancel" would not survive inspection.
+    The telescoping argument does, and it is what the zero-residual assertions
+    in this file actually rest on.)
     """
     _rw, _rt, level_w_before, level_t_before = solve_branch_trims(
         freqs, w_before, t_before, FC_HZ,
@@ -327,12 +348,89 @@ def test_the_giveback_carries_no_cross_branch_coupling():
 
 
 # --------------------------------------------------------------------------- #
+# the invariant's PRECONDITION — a polished base passes straight through
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "polish_delta_db,inside_realized_gate",
+    [
+        (2.0, True),    # a polish the realized gate would still admit
+        (5.0, False),   # inside the 6.0 dB polish guard, PAST the 3.0 dB gate
+    ],
+)
+def test_a_polished_base_passes_its_delta_straight_through(
+    polish_delta_db, inside_realized_gate,
+):
+    """The give-back cannot repair a base it was not calibrated to.
+
+    The invariant holds *given* that the anchor's base came from this same
+    solve. ``program_analysis``' MEASURE path may instead hand over the
+    RIPPLE-POLISHED tweeter trim — a flatness choice, admitted whenever it sits
+    within ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) of the band average. This
+    pins what happens then, because it is not intuitive and it is not caught by
+    the give-back: **δ of polish becomes exactly δ of realized inter-driver
+    level error**, since the give-back is a per-role constant that knows
+    nothing about how the base was chosen.
+
+    **The bound is DOUBLE the gate**, which is the whole reason this is pinned
+    at two points rather than one. A polish sitting comfortably inside its own
+    6.0 dB guard can still put the pair past the 3.0 dB realized-level
+    tolerance — the second case here does exactly that. The realized gate is
+    what catches it, and it fails closed; this test's job is to make the
+    pass-through a stated property rather than a surprise, and to fail loudly
+    if some future change makes the give-back silently absorb a polish instead
+    of letting the gate see it.
+
+    Whether the anchor should bind to the band-average solve rather than to
+    whatever ``raw_trim_db`` carries is a live design question for the
+    architect, filed with this PR. This test deliberately does NOT assert a
+    preference — it asserts the arithmetic either answer has to live with.
+    """
+    freqs, W, T, w_lin, t_lin = _horn_case()
+    band_average = _raw_trim_db(freqs, W, T)
+    giveback = _level_band_giveback_db(freqs, W, T, w_lin, t_lin)
+
+    # The unpolished base lands level — the invariant, restated as the control.
+    committed_clean, _s = anchor_trims(
+        roles=(WOOFER, TWEETER), anchor_base_db=band_average, giveback_db=giveback,
+    )
+    assert _realized_error_db(freqs, w_lin, t_lin, committed_clean) == pytest.approx(
+        0.0, abs=1e-9
+    )
+
+    # Now hand the anchor a POLISHED base, exactly as MEASURE may.
+    polished = dict(band_average)
+    polished[TWEETER] = band_average[TWEETER] + polish_delta_db
+    committed_polished, _s2 = anchor_trims(
+        roles=(WOOFER, TWEETER), anchor_base_db=polished, giveback_db=giveback,
+    )
+    realized = _realized_error_db(freqs, w_lin, t_lin, committed_polished)
+
+    # δ in, δ out. Not "about δ" — exactly δ.
+    assert realized == pytest.approx(polish_delta_db, abs=1e-9)
+    # And the gate's verdict on it, so the two cases are not just two numbers.
+    assert (abs(realized) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB) is inside_realized_gate
+    # The polish is legal by its own guard in BOTH cases — that is the point.
+    assert polish_delta_db < RIPPLE_TRIM_SANITY_MARGIN_DB
+
+
+# --------------------------------------------------------------------------- #
 # the banked jts3 runs — the wander was the differential, and nothing else
 # --------------------------------------------------------------------------- #
 
 #: Three banked stage-1 runs on jts3, 2026-08-19, read from the journal's own
 #: ``correction.crossover_v2_linearization_giveback`` lines. ``anchored`` is
 #: what the OLD cross-band rule committed.
+#:
+#: **These are OLD-anchor values, and that is deliberate — they are the
+#: DEFECT's signature, not the fix's.** The banked corpus predates the fix, so
+#: no new-anchor value exists for these runs to compare against; re-deriving one
+#: would need the per-driver responses these sessions did not retain. What this
+#: table can therefore pin is that the old anchor carried the give-back
+#: differential and wandered with it, which is exactly what the two tests below
+#: assert. The FIX's own arithmetic is pinned on synthetic branches above, where
+#: the truth is known rather than banked.
 JTS3_RUNS = (
     # (label,          raw_t,    gb_core_w, gb_core_t, anchored_t)
     ("attempt-01",     -10.841,  2.749,     6.740,     -6.849),
@@ -367,12 +465,14 @@ def test_the_banked_runs_anchor_is_exactly_raw_plus_the_giveback_differential(
     assert committed[TWEETER] == pytest.approx(raw_t + (gb_t - gb_w), abs=1e-9)
 
     # Against the JOURNAL's own committed value the budget is rounding, and it
-    # is stated rather than tuned: the journal rounds every term to 3 dp
-    # independently, so `raw_t`, `gb_t` and `gb_w` each carry +/-0.0005 and
-    # their combination carries up to +/-0.0015 against a separately-rounded
-    # `anchored_t`. attempt-02 lands exactly there (-6.827 recomputed against a
-    # printed -6.826), which is the rounding showing, not the identity failing.
-    assert committed[TWEETER] == pytest.approx(anchored_t, abs=2e-3)
+    # is the DERIVED budget rather than a round number chosen to pass: the
+    # journal rounds every term to 3 dp independently, so `raw_t`, `gb_t` and
+    # `gb_w` each carry +/-0.0005 and their combination carries at most
+    # +/-0.0015 against a separately-rounded `anchored_t`. attempt-02 lands
+    # exactly at that bound (-6.827 recomputed against a printed -6.826), which
+    # is the rounding showing, not the identity failing. Asserted AT 1.5e-3 and
+    # not a hair above it, so a real drift cannot hide in slack.
+    assert committed[TWEETER] == pytest.approx(anchored_t, abs=1.5e-3)
 
 
 def test_the_anchor_wandered_further_than_the_measurement_it_was_built_from():
