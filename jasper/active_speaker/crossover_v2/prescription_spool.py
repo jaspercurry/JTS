@@ -397,6 +397,19 @@ def take_staged_prescription(*, round_ordinal: int) -> StagedPrescription | None
     except OSError as exc:
         _refuse(SPOOL_MALFORMED, f"the staged prescription cannot be read: {exc}")
     _consume(pending)
+    if len(raw) > SPOOL_MAX_BYTES:
+        # The stat above is what stops a huge file being LOADED; this is what
+        # makes the cap a property of the BYTES. A file that grew between the
+        # two calls would otherwise be capped on a size it no longer had, and
+        # "the number I checked is not the number I used" is the whole failure
+        # mode a cap exists to close.
+        _refuse(
+            SPOOL_TOO_LARGE,
+            f"a staged prescription may be at most {SPOOL_MAX_BYTES} bytes, got "
+            f"{len(raw)}",
+            max_bytes=SPOOL_MAX_BYTES,
+            got_bytes=len(raw),
+        )
     return _validate(raw, round_ordinal=round_ordinal)
 
 

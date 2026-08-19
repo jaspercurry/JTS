@@ -518,6 +518,39 @@ def test_an_oversized_spool_file_is_refused_on_its_size_not_its_content():
     assert caught.value.evidence["got_bytes"] > spool.SPOOL_MAX_BYTES
 
 
+def test_the_cap_is_a_property_of_the_bytes_not_of_the_stat(monkeypatch):
+    """A stat that under-reports must not let an oversized file through.
+
+    The stat is what stops a huge file being LOADED; it is not what bounds the
+    document, because the size it reports and the size that gets read are two
+    measurements of a file that anything could have rewritten in between. Pinned
+    by making the stat lie — the only way to reach the second check, and the
+    reason it is not dead code.
+    """
+    import os
+
+    _stage(for_round_ordinal=9)
+    path = spool.prescription_spool_path()
+    path.write_text("x" * (spool.SPOOL_MAX_BYTES + 1))
+    real_stat = Path.stat
+
+    def _understating_stat(self, *args, **kwargs):
+        info = real_stat(self, *args, **kwargs)
+        if self != path:
+            return info
+        fields = list(info)
+        fields[6] = 1  # st_size
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(Path, "stat", _understating_stat)
+
+    with pytest.raises(BlendPrescriptionRefused) as caught:
+        spool.take_staged_prescription(round_ordinal=9)
+
+    assert caught.value.reason == spool.SPOOL_TOO_LARGE
+    assert caught.value.evidence["got_bytes"] > spool.SPOOL_MAX_BYTES
+
+
 def test_the_two_refusal_vocabularies_stay_disjoint():
     """Two questions, two owners, and no slug answering for both.
 
