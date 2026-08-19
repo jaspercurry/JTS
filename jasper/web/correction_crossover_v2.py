@@ -6673,14 +6673,35 @@ def _resolve_prepare_capture_source() -> tuple[str, Any]:
     import surface. A wired resolution error (an explicit override with no
     mic present, an unrecognized override value) refuses at the tap, before
     any evidence store or durable state is touched.
+
+    **The relay's own precondition is checked HERE too** (gate fix round
+    S3): a session that resolved to the relay needs a configured relay
+    origin, and learning that at the dispatch — after the preparer had
+    already opened a fresh evidence bundle (abandoning the prior one) and
+    hydrated durable state — was a refusal that cost side effects. Every
+    source's "can this session open at all?" question is answered at this
+    one point, before anything is written. The dispatch's later
+    ``_require_relay_base()`` read is then a plain re-read of a value this
+    gate just proved present.
     """
     from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.web import correction_crossover_v2_wired as wired
 
     try:
-        return wired.resolve_v2_capture_source()
+        source, device = wired.resolve_v2_capture_source()
     except WiredCaptureError as exc:
         raise CrossoverV2Refused(str(exc)) from exc
+    if source == SOURCE_RELAY:
+        # The one owner of the relay-configured question and its message
+        # (correction_setup._require_relay_base), reached lazily exactly as
+        # the calibration resolver reaches its correction_setup owner.
+        from jasper.web.correction_setup import _require_relay_base
+
+        try:
+            _require_relay_base()
+        except ValueError as exc:
+            raise CrossoverV2Refused(str(exc)) from exc
+    return source, device
 
 
 def _mint_source_session(

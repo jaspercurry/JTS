@@ -197,6 +197,86 @@ def test_resolve_prepare_capture_source_translates_to_a_refusal(monkeypatch):
         v2host._resolve_prepare_capture_source()
 
 
+def test_a_relay_session_requires_the_relay_at_the_source_gate(monkeypatch):
+    """S3 (#2720 gate), the unit half: a session that resolved to the RELAY
+    refuses right at the source gate when no relay origin is configured —
+    while a WIRED session on the same relay-less Pi sails through (a local
+    measurement must not depend on a public Worker)."""
+    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+    monkeypatch.setattr(
+        v2wired, "resolve_v2_capture_source", lambda: (SOURCE_RELAY, None),
+    )
+    with pytest.raises(
+        v2host.CrossoverV2Refused, match="relay capture is not configured"
+    ):
+        v2host._resolve_prepare_capture_source()
+
+    device = _device()
+    monkeypatch.setattr(
+        v2wired, "resolve_v2_capture_source", lambda: (SOURCE_WIRED, device),
+    )
+    assert v2host._resolve_prepare_capture_source() == (SOURCE_WIRED, device)
+
+
+def test_a_refused_prepare_leaves_the_bundle_store_untouched(
+    monkeypatch, tmp_path,
+):
+    """S3's behavioral pin: the relay-precondition refusal fires BEFORE
+    ``open_v2_evidence_store`` — a refused start on a relay-less Pi must not
+    abandon the prior bundle and write a new one on its way to the 400 (the
+    side effect the dispatch-level gate ordering used to prevent, and this
+    PR's reorder briefly lost). The gates ahead of the source resolution are
+    stubbed to pass; the evidence store is a bomb."""
+    import jasper.active_speaker.branch_chain as branch_chain
+    from jasper.active_speaker.crossover_v2 import (
+        alignment_prescription as prescription_mod,
+    )
+
+    v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
+    try:
+        monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
+        monkeypatch.setattr(
+            v2wired, "resolve_v2_capture_source", lambda: (SOURCE_RELAY, None),
+        )
+        monkeypatch.setattr(
+            v2host, "session_volume_plan",
+            lambda: SimpleNamespace(needs_recovery=False),
+        )
+        monkeypatch.setattr(
+            v2host, "reconcile_session_volume_for_new_session",
+            lambda run_async, camilla_factory: None,
+        )
+        monkeypatch.setattr(
+            v2host, "resolve_conductor_context",
+            lambda status: SimpleNamespace(
+                safety_profile={}, role_targets={}, fc_hz=1600.0, preset=None,
+            ),
+        )
+        monkeypatch.setattr(
+            branch_chain, "confirmed_protection_sections",
+            lambda safety_profile, role_targets: {},
+        )
+        monkeypatch.setattr(
+            prescription_mod, "read_alignment_prescription",
+            lambda raw, *, fc_hz, declared_bounds_us: None,
+        )
+
+        def _bomb(topology):
+            raise AssertionError(
+                "a refused prepare must not open an evidence bundle"
+            )
+
+        monkeypatch.setattr(v2host, "open_v2_evidence_store", _bomb)
+        with pytest.raises(
+            v2host.CrossoverV2Refused, match="relay capture is not configured"
+        ):
+            v2host.prepare_v2_session(
+                {}, status={}, run_async=None, camilla_factory=None,
+            )
+    finally:
+        v2host.set_state_path_for_tests(None)
+
+
 def test_mint_source_session_forks_on_the_source(monkeypatch):
     minted = []
     monkeypatch.setattr(

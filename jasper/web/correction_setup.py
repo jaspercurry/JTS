@@ -6127,11 +6127,13 @@ def _handle_crossover_v2_relay(
         camilla_factory=_camilla,
     )
     # #2662 W2b: the relay origin is required only when the session actually
-    # opens on the relay. Prepare resolves the source, so the gate moved
-    # after it — a wired session must work on a relay-unconfigured Pi (a
-    # local measurement must not depend on a public Worker), and a
-    # relay-configured Pi sees the same refusals in a different order only
-    # when both gates would fire.
+    # opens on the relay — a wired session must work on a relay-unconfigured
+    # Pi (a local measurement must not depend on a public Worker). The
+    # REFUSAL itself lives inside the preparers' source gate
+    # (`_resolve_prepare_capture_source`, before any evidence bundle opens —
+    # gate fix round S3), so this later read is a plain re-read of a value
+    # prepare just proved present, kept only to hand the orchestrator its
+    # base URL.
     wired = prepared.capture_source == v2host.SOURCE_WIRED
     relay_base = "" if wired else _require_relay_base()
     kind = RelayCaptureKind(
