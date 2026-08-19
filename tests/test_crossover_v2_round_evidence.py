@@ -25,6 +25,8 @@ So these tests are about three things, and deliberately not about verdicts
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -758,13 +760,14 @@ def test_realized_and_improved_keeps_even_with_a_failing_spec():
     )
 
 
-def test_the_acoustic_grade_survives_a_round_with_no_comparable_baseline():
-    """The attempts ledger and the benefit verdict are different questions.
+def test_the_pooled_residual_survives_a_round_with_no_comparable_baseline():
+    """The round's own pooled number and the benefit verdict are different
+    questions: the residual grades one measurement, the verdict differences
+    two. So a round with no "before" still records a number of its own while
+    its verdict is indeterminate, and the journal line says both.
 
-    The loop differences consecutive ATTEMPTS — its kernel reads only the last
-    two entries on purpose — so a round with no "before" still has an honest
-    absolute grade to bank. Pinning them apart is what stops a missing
-    baseline from silently blanking the ledger.
+    (This used to claim the residual feeds the attempts ledger. It does not —
+    #2433; see ``_post_residual`` for where the ledger's grade comes from.)
     """
     evaluation = _round(_post(), None)
 
@@ -775,8 +778,12 @@ def test_the_acoustic_grade_survives_a_round_with_no_comparable_baseline():
     assert evaluation.post_residual_db > 0.0
 
 
-def test_the_acoustic_grade_is_the_number_the_benefit_verdict_used():
-    """One computation, two readers — never two that can disagree."""
+def test_the_pooled_residual_is_the_number_the_benefit_verdict_used():
+    """Two computations, one shipped evaluator — pinned so they cannot
+    disagree about what "the post-apply residual" is. (Not one computation
+    with two readers: ``_post_residual`` and ``evaluate_benefit``'s
+    ``_pooled_residual`` each call ``evaluate_flat_spec`` on the post side,
+    which is exactly why this assertion is worth making.)"""
     baseline = _baseline_from(_flatter(_post(), factor=3.0))
 
     evaluation = _round(_post(), baseline)
@@ -785,6 +792,60 @@ def test_the_acoustic_grade_is_the_number_the_benefit_verdict_used():
         evaluation.post_residual_db
     )
     assert evaluation.benefit.evidence["n_bins"] == evaluation.post_residual_bins
+
+
+#: Every production read of :attr:`RoundEvaluation.post_residual_db` /
+#: ``post_residual_bins``, as ``<module path>::<enclosing scope>``. The field's
+#: docstring says its readership IS the round's journal line; #2433 exists
+#: because the neighbouring claim about a SECOND consumer was never pinned by
+#: anything, and shipped wrong. ``to_dict``'s own sole production caller is
+#: ``_log_round``, and ``_regrade_after_failed_restore`` copies the pair onto
+#: the re-graded evaluation it then re-logs — so all three are the journal.
+POST_RESIDUAL_FIELD_READERS = frozenset({
+    "jasper/active_speaker/crossover_v2/coordinator.py::_log_round",
+    "jasper/active_speaker/crossover_v2/coordinator.py::_regrade_after_failed_restore",
+    "jasper/active_speaker/crossover_v2/round_evidence.py::RoundEvaluation.to_dict",
+})
+
+
+def _post_residual_field_reads() -> set[str]:
+    """Attribute reads only — the same-named evidence KEYS (``region_benefit``'s
+    region-masked one, ``evaluate_benefit``'s pooled one) are subscripts of a
+    dict and are deliberately invisible here."""
+    repo_root = Path(__file__).resolve().parents[1]
+    fields = {"post_residual_db", "post_residual_bins"}
+    found: set[str] = set()
+
+    def walk(node, scope: list[str], relative: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                walk(child, [*scope, child.name], relative)
+                continue
+            if isinstance(child, ast.Attribute) and child.attr in fields:
+                found.add(f"{relative}::{'.'.join(scope) or '<module>'}")
+            walk(child, scope, relative)
+
+    for path in sorted((repo_root / "jasper").rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        # Substring pre-filter, not a second rule: a file whose text does not
+        # contain the name cannot parse to an attribute access on it, and
+        # parsing every module instead costs ~25x the wall time.
+        if "post_residual" not in source:
+            continue
+        relative = path.relative_to(repo_root).as_posix()
+        walk(ast.parse(source), [], relative)
+    return found
+
+
+def test_the_pooled_residual_is_read_only_by_the_rounds_journal():
+    """#2433: the field's "readership is the journal line, and that is the
+    whole list" is a claim about the call graph, so it gets a detector rather
+    than a sentence. Two-sided: a new reader fails, and so does a stale entry
+    here once its site goes — a claim nothing can falsify is how the ledger
+    sentence this PR corrects survived being wrong."""
+    assert _post_residual_field_reads() == POST_RESIDUAL_FIELD_READERS
 
 
 def test_a_restore_the_host_cannot_perform_escalates_it_never_keeps():
