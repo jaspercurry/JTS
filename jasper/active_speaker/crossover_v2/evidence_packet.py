@@ -31,7 +31,7 @@ of it: no clock, no network, no CamillaDSP handle, no session.
 fields verbatim is necessary and not sufficient — a reader also has to know
 which questions this round cannot answer at all.  Three examples this survey
 actually found on the shipped corpus, all carried as
-:data:`NOT_EVALUATED` entries rather than omitted:
+``not_evaluated`` entries rather than omitted:
 
 * **the microphone's angle at each position** is nowhere in the banked tree;
   only a coarse ``role`` (``onax``/``offax``) is.  The lab recovered angles by
@@ -433,8 +433,8 @@ def build_crossover_evidence_packet(
     which is banked separately because the bundle does not contain it. It is
     OPTIONAL and its absence is reported rather than papered over — but a
     packet without it cannot carry the per-claim verify verdicts, the Fc
-    selection, or the applied profile's own incumbent, and says so in
-    :data:`NOT_EVALUATED`.
+    selection, or the applied profile's own incumbent, and says so in the
+    packet's ``not_evaluated`` block.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
