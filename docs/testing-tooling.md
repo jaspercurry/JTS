@@ -37,6 +37,8 @@
 | Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
+| Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
+| Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -1677,6 +1679,57 @@ and the only signal is `correction.crossover_v2_uncalibrated_capture` in the
 `jasper-correction-web` journal. Hardware-free coverage lives in
 [`tests/test_e0_capture_experiment.py`](../tests/test_e0_capture_experiment.py),
 which runs the same offline checks `--selftest` does.
+
+---
+
+## Crossover prescriber harness
+
+`jasper-crossover-prescriber`
+([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
+is the read side and the write side of "hand a round's evidence to a reader,
+take a correction back". It has no model client, no API key and no network:
+**who calls the model is not the tool's business**, which is what makes it
+work identically with a human doing the reasoning, a laptop agent over SSH, or
+a paste into a browser.
+
+```sh
+# the read side: one round's banked evidence as one versioned JSON document
+jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
+    --out round.json
+
+# the write side: validate what came back, against the round it answers
+jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
+    --prescription answer.json --json
+```
+
+`<bundle-dir>` is a commissioning bundle — the directory holding `info.json`
+beside `evidence/v1/artifacts/crossover_v2/<relay-session-id>/`. `--state` is
+the crossover-v2 flow state, which is banked **separately** from the bundle;
+without it the packet cannot carry the per-claim verify verdicts, the Fc
+selection, or the applied profile's incumbent, and it says so rather than
+going quiet.
+
+**Exit codes are the contract**, because the caller is often a script: `0`
+accepted, `1` the evidence could not be read, `2` the prescription was refused.
+A refusal is the loop working, not a crash — `--json` prints the machine-
+readable `reason` slug plus the evidence behind it, so a prescriber can correct
+itself rather than guess.
+
+What the packet is for beyond the model loop: it is the single document the
+deterministic trend engine and any by-hand round review both want, and its
+`not_evaluated` block is the fastest way to see what a round **cannot** answer
+(no numeric mic angle is banked anywhere; the reflection time exists only
+inside gate-disclosure prose; no round banks a distortion reading).
+
+Owners:
+[`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)
+builds the document;
+[`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)
+owns the response format *and* the gate that enforces it, so the instructions a
+prescriber is given and the bar it is judged by cannot describe different
+shapes. Hardware-free coverage, including a hostile-input battery and a golden
+against a real banked round when `captures/` is present, lives in
+[`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py).
 
 ---
 

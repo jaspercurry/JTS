@@ -199,6 +199,35 @@ existing owner.
 
 ### 5.0 Where the pieces run — decided
 
+> **Partly built, 2026-08-18 — read this before planning around §5.0.** The
+> *shape* below is shipped for the crossover domain, under a narrower name and
+> without the tool catalog. `jasper-crossover-prescriber`
+> ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
+> is an installed console script with two verbs: `packet` emits one banked
+> round's evidence as a versioned JSON document
+> ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
+> and `propose` reads a correction back through a strict gate
+> ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)),
+> which owns the response format and enforces it. It follows this section's CLI
+> conventions and the laptop-agent-as-SSH-client split exactly.
+>
+> **What is NOT built, and is not implied by the above:** there is no
+> `jasper/tuning_workbench/` package, no `CapabilityPack`, no `tools`/`call`/
+> `context` surface, no approval ledger, and no `WorkbenchToolDeps` — §5.1
+> onwards is untouched. The paste tier (§ "v1" in the deployment brief) is not
+> built either: nothing in the product renders a prompt or accepts a response
+> over HTTP, and the harness has no model client, no API key, and no network.
+> The operator carries the JSON both ways.
+>
+> One boundary the build established rather than assumed, recorded here because
+> it constrains any later tier: a **summed-region boost has no seam**. The blend
+> stage refuses a positive gain *and* is deliberately not a term in
+> `camilla_yaml.total_headroom_db`, so opening it is a gain-structure change
+> rather than a routing one; and the per-driver `linearization` seam that does
+> carry boosts is derived from per-branch sweeps a summed packet cannot contain.
+> The gate therefore validates a boost fully and then refuses to route it,
+> naming both facts. See `prescription_route`.
+
 The superseded execution plan was explicit about process placement; this
 plan keeps the same, repo-standard split. Treat this as decided:
 
