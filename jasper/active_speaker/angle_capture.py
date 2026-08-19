@@ -180,6 +180,25 @@ _REGIME_PROGRAM_PHASE = {
 # --------------------------------------------------------------------------- #
 
 
+def _validated_angle(angle_deg: object) -> int:
+    """One bearing, checked -- the single validator both entry points share.
+
+    :class:`AngleStop` and :func:`pose_at_angle` are both reachable directly, so
+    the two bounds live here rather than on whichever one a caller happened to
+    use first.
+    """
+    if type(angle_deg) is not int:
+        raise CrossoverV2FlowError(
+            f"an angle is stated in WHOLE degrees, got {angle_deg!r}"
+        )
+    if abs(angle_deg) > MAX_ANGLE_DEG:
+        raise CrossoverV2FlowError(
+            f"an angle must be within +/-{MAX_ANGLE_DEG} deg of the design "
+            f"axis, got {angle_deg:+d} deg"
+        )
+    return angle_deg
+
+
 @dataclass(frozen=True)
 class AngleStop:
     """One stop: an angle, and what is played there.
@@ -196,16 +215,7 @@ class AngleStop:
     regime: str
 
     def __post_init__(self) -> None:
-        if type(self.angle_deg) is not int:
-            raise CrossoverV2FlowError(
-                "an angle stop is stated in WHOLE degrees, got "
-                f"{self.angle_deg!r}"
-            )
-        if abs(self.angle_deg) > MAX_ANGLE_DEG:
-            raise CrossoverV2FlowError(
-                f"an angle stop must be within +/-{MAX_ANGLE_DEG} deg of the "
-                f"design axis, got {self.angle_deg:+d} deg"
-            )
+        _validated_angle(self.angle_deg)
         if self.regime not in REGIMES:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
@@ -308,8 +318,7 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     is mover-neutral in fact -- "keep it 1 m from the speaker and pointed at it"
     is what a taut string does by construction and what an arm does by radius.
     """
-    stop = AngleStop(angle_deg=angle_deg, regime=REGIME_PER_DRIVER)  # validates
-    degrees = stop.angle_deg
+    degrees = _validated_angle(angle_deg)
     offset_cm = 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
     sign = 0 if degrees == 0 else (1 if degrees > 0 else -1)
     role = POSITION_ROLE_OFFAX if offset_cm >= WIDE_OFFSET_MIN_CM else POSITION_ROLE_ONAX
