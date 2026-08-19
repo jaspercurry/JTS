@@ -801,7 +801,25 @@ def observe_restore() -> None:
     ``round_receipt`` is the fifth (#2698), and the one field here cleared IN
     PART rather than wholesale — it is the SERIES' memory, not the session's,
     so the blend instruction is withdrawn while the ordinal that bounds the
-    series survives. The argument for that split is at the line itself."""
+    series survives. The argument for that split is at the line itself. A9's
+    staged prescription is withdrawn on the same rule, and is the one thing this
+    function clears that does not live in ``state`` at all — see its call."""
+    from jasper.active_speaker.crossover_v2.prescription_spool import (
+        withdraw_staged_prescription,
+    )
+
+    # A9's half of the ``round_receipt`` withdrawal below, and it runs FIRST —
+    # ahead of the no-state early return — because it is the one thing this
+    # function clears that does not live in ``state``. An operator staged that
+    # document by reading the evidence of the round this Undo has just reversed,
+    # so it prescribes a correction for a graph the household no longer has,
+    # exactly as the banked instruction does. Whether durable state survived is
+    # a fact about the journey record, not about that document: a lost state
+    # file resolves the next round's ordinal back to 1, which is an ordinal a
+    # stale document could legitimately match. Withdrawn rather than consumed —
+    # nothing ran it — and best-effort in the owner, so a slot that cannot be
+    # cleared never costs the household its Undo.
+    withdraw_staged_prescription()
     state = load_v2_state()
     if state is None:
         return
@@ -2720,6 +2738,57 @@ def alignment_prescription_prior_from_state(state: Mapping[str, Any] | None) -> 
     return alignment_prescription_from_mapping(record)
 
 
+def _take_staged_blend_prescription(round_ordinal: int) -> Any:
+    """The staged blend prescription for this round, or ``None`` (A9).
+
+    The ONE place a staged prescription enters the flow, and the one place its
+    refusal is turned into a round that carries on without it. Named and
+    module-level for
+    :func:`alignment_prescription_prior_from_state`'s reason — the seeding path
+    is then drivable in a test without a relay.
+
+    **Fail-open on the transport, fail-closed on the content.** A document that
+    is stale, corrupt, oversized, tampered, or a boost is REFUSED by name and
+    never reaches the candidate; the round then runs decision 10's deterministic
+    instruction exactly as it would have with no document at all. Those two
+    directions are not in tension: the content gate protects the speaker from a
+    correction nobody vouched for, and the round proceeding protects the
+    household from losing a measurement session over an optional instruction it
+    never asked for. The refusal is journal-visible rather than silent, because
+    an operator who staged a prescription and got a deterministic round needs to
+    be told which of the two happened.
+
+    The take CONSUMES the document whether or not it is accepted — see
+    :func:`~jasper.active_speaker.crossover_v2.prescription_spool.take_staged_prescription`
+    — so a refusal here cannot repeat itself on the next round.
+    """
+    from jasper.active_speaker.crossover_v2.blend_prescription import (
+        BlendPrescriptionRefused,
+    )
+    from jasper.active_speaker.crossover_v2.prescription_spool import (
+        take_staged_prescription,
+    )
+
+    try:
+        staged = take_staged_prescription(round_ordinal=round_ordinal)
+    except BlendPrescriptionRefused as exc:
+        log_event(
+            logger, "correction.crossover_v2_blend_prescription_refused",
+            level=logging.WARNING, reason=exc.reason,
+            round_ordinal=round_ordinal, detail=exc.detail,
+        )
+        return None
+    if staged is not None:
+        log_event(
+            logger, "correction.crossover_v2_blend_prescription_taken",
+            round_ordinal=round_ordinal,
+            prescription_class=staged.prescription.prescription_class,
+            filters=len(staged.prescription.filters),
+            prescription_sha256=staged.prescription_sha256,
+        )
+    return staged
+
+
 def pilot_transfer_prior_from_state(
     state: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
@@ -3643,6 +3712,17 @@ def persist_conductor_state(
             # means downstream.
             "alignment_prescription": getattr(
                 conductor, "alignment_prescription_record", None
+            ),
+            # A9's provenance, and it crosses for the line above's reason, read
+            # the same way: the stage that TAKES a blend prescription is stage 1
+            # and the stage that banks the round's receipt is stage 2, so
+            # durable state is the only channel it has. ``None`` means the
+            # round's blend correction came from decision 10's solver, which is
+            # what every automatic round banks — so a series read back later can
+            # attribute an outcome to the class that produced it, which is the
+            # comparison the prescriber loop exists to make possible.
+            "blend_prescription": getattr(
+                conductor, "blend_prescription_record", None
             ),
             # …and WHICH commitment the fit reached, the fact that turns the
             # block above from "this arm was asked for" into "this arm ran".
@@ -7072,6 +7152,13 @@ def prepare_v2_session(
             index_phase_map=stage1_index_phase,
             verify_capture_target=plan_shape.verify_capture_target,
         )
+        # A9. Resolved ONCE and used twice, because the two uses have to agree:
+        # the ordinal that decides which round this is is the ordinal a staged
+        # prescription must have been staged for, and re-reading it would let a
+        # state write between the two hand this round an instruction written for
+        # another one.
+        series_position = series_position_from_state(prior_raw)
+        staged_blend = _take_staged_blend_prescription(series_position.ordinal)
         conductor = CrossoverV2Session.hydrate(
             prior_snapshot,
             session_id=relay_session_id,
@@ -7116,7 +7203,17 @@ def prepare_v2_session(
             # back to the incumbent, so a measuring session with no position
             # silently discards every blend instruction the previous round
             # banked and the series can never converge.
-            series_position=series_position_from_state(prior_raw),
+            series_position=series_position,
+            # A9, and it rides the same stage for the same reason: the door it
+            # enters is that same ``_blend_prescription``, so a prescription
+            # handed to any other stage would be held by a session that never
+            # builds a candidate.
+            blend_prescription=(
+                None if staged_blend is None else staged_blend.prescription
+            ),
+            blend_prescription_sha256=(
+                "" if staged_blend is None else staged_blend.prescription_sha256
+            ),
         )
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = _build_source_run(
