@@ -254,7 +254,7 @@ def test_slip_location_and_sign_are_ambiguous_at_even_cuts():
 @pytest.mark.parametrize(
     "step, label",
     [
-        (1.986, "Stage-0 p001A — the slip today's spread guard passes"),
+        (1.986, "Stage-0 p001A — the slip the spread guard passes"),
         (7.008, "Stage-0 p004B — one whole USB isochronous packet"),
     ],
 )
@@ -266,8 +266,9 @@ def test_detects_the_two_real_stage0_slips(step, label):
     which is not a size a test suite should carry when the quantity under
     test is a sample count. ``+1.986`` is the one that matters most — 41 us,
     twice the 20 us relative-phase bar, and inside the SPREAD guard's blind
-    spot (it is the reason this gate exists; "today's guard" would read as
-    this one the moment this lands).
+    spot, which is the reason this gate exists. Name that guard explicitly
+    rather than calling it the current one: this module adds a second guard,
+    so an unqualified reference stops resolving.
 
     Measured across 1000 seeds rather than one, because a single seed would
     hide a marginal detection rate.
