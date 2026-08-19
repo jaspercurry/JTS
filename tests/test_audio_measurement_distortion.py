@@ -820,6 +820,64 @@ def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
         sys.modules.pop(spec.name, None)
 
 
+def test_the_replay_run_names_the_prelude_vintage_it_solved(
+    tmp_path, capsys, monkeypatch,
+):
+    """The solved vintage is a fact about the CAPTURE, so the run has to say it.
+
+    Which prelude reproduced tells the reader which side of #2715 the corpus
+    was banked on — the difference between "this is a current capture" and
+    "this is archive". The test above proves the solve FINDS it; only a run
+    proves it is REPORTED, and deleting the disclosure breaks nothing the
+    solve asserts.
+
+    Both vintages are driven because one alone cannot tell a real disclosure
+    from a constant: a hardcoded "prelude off" passes any single-vintage read.
+    Driven through ``main()`` on an empty capture directory, so the run reaches
+    the identity line and stops there — no corpus, no analysis.
+    """
+    import json
+    import sys
+
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_MEASURE,
+        courtesy_prelude_for_phase,
+    )
+
+    cli, spec = _replay_cli("_hd_replay_disclosure")
+    shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
+    captures, dumps = tmp_path / "wav", tmp_path / "sidecar"
+    captures.mkdir()
+    dumps.mkdir()
+    try:
+        said: dict[str, str] = {}
+        for label, prelude in (("shipped", shipped), ("legacy", not shipped)):
+            program = _measure_program_at(-20.0, courtesy_prelude=prelude)
+            state = tmp_path / f"state-{label}.json"
+            state.write_text(json.dumps({
+                "gain_plan_db": GAIN_PLAN_DB,
+                "candidate": {"program_id": program.program_id},
+                "pre_apply_profile": {"recomposition_snapshot": {"preset": {
+                    "crossover_regions": [{"fc_hz": 1648.7}],
+                }}},
+            }))
+            monkeypatch.setattr(sys, "argv", [
+                "harmonic-distortion-replay.py",
+                "--state", str(state),
+                "--captures", str(captures),
+                "--dumps", str(dumps),
+            ])
+            with pytest.raises(SystemExit, match="was claimed by a sidecar"):
+                cli.main()
+            said[label] = capsys.readouterr().out
+            assert program.program_id[:12] in said[label]
+
+        assert f"courtesy prelude {'on' if shipped else 'off'}" in said["shipped"]
+        assert f"courtesy prelude {'off' if shipped else 'on'}" in said["legacy"]
+    finally:
+        sys.modules.pop(spec.name, None)
+
+
 # --------------------------------------------------------------------------- #
 # corpus smoke — skipped wherever captures/ is not checked out (i.e. on CI)
 # --------------------------------------------------------------------------- #

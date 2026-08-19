@@ -1175,12 +1175,11 @@ def test_a_remote_session_open_announces_the_captures_it_will_actually_take(
     """The positioner's only sizing surface must be the plan, not the shape.
 
     ``crossover_v2_remote_session_open`` is emitted for an externally
-    positioned session and read by whoever is driving the arm — there is no
-    household screen at that moment. It logged
-    ``plan_shape.measure_capture_target``, the cloud-INCLUSIVE 10, while the
-    shipped stage 1 walks 3: on 2026-08-19 a wired-night driver sized its walk
-    from this line and came within one ``--complete-after`` of closing a held
-    position-set seven captures early.
+    positioned session and read by whoever is driving the arm. Why the old
+    value was wrong, which direction it fails in, and the 2026-08-19 near-miss
+    are written ONCE, at the emitter — ``prepare_v2_session``'s comment on this
+    field. Deliberately not restated here: a fact restated in a second place is
+    a fact that drifts, and this one already did.
 
     Driven through the REAL preparer and compared against the map the conductor
     is actually opened with, so the pin is "these two agree" rather than "the

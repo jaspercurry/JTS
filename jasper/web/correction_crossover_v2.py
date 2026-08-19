@@ -6957,10 +6957,13 @@ def prepare_v2_session(
             # The captures this session will ACTUALLY take, off that plan. It
             # logged ``plan_shape.measure_capture_target`` — the cloud-INCLUSIVE
             # shape target, 10 where the shipped stage 1 walks 3. The reader is
-            # an external positioner with no screen to check it against: on
-            # 2026-08-19 a wired-night driver sized its walk from this line and
-            # came within one ``--complete-after`` of closing a held
-            # position-set seven captures early.
+            # an external positioner with no screen to check it against, and
+            # OVER-reporting is the direction that STALLS a walk: a driver sized
+            # at 10 waits for seven captures that are never coming, until the
+            # session ceiling expires (#2506). On 2026-08-19 a wired-night
+            # driver met exactly that contradiction — its own
+            # ``--complete-after 3`` against this line's 10 — and settled it by
+            # re-deriving the count by hand on the live box.
             captures=len(stage1_index_phase),
         )
 
