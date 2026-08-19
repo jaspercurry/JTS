@@ -646,7 +646,56 @@ MAX_LINES_BY_PATH = {
     # at its floor gives up — the walk's only above/below-mark-height pose.
     # Both are decisions a reader has to be able to re-derive from the file,
     # and neither is visible in the code that implements it.
-    "jasper/active_speaker/crossover_v2_flow.py": 12_974,
+    #
+    # 2026-08-19 (A9, the prescription door): 12,974 -> 13,041, +68 added / -1
+    # removed, counted from the diff rather than estimated. Roughly a fifth
+    # executes. Where the lines went:
+    #    3  the `BlendPrescription` type-only import
+    #    2  the two ctor arguments — the prescription, and the digest of the
+    #       document that carried it
+    #   12  the two fields and their contract: held-not-re-judged (the twin of
+    #       `alignment_prescription` two lines above), and WHY the field is
+    #       `_prescribed_blend` rather than `_blend_prescription` — the latter
+    #       is already the METHOD that decides which source wins, and a field of
+    #       that name would silently shadow it. That trap was live in this PR's
+    #       first draft, so the sentence that stops it recurring is paid for.
+    #   14  `_blend_prescription`'s docstring gaining source 0 (-1 where the
+    #       "Two sources" line was replaced). This method's whole content is a
+    #       precedence order, and an order with an unexplained first entry is
+    #       the shape a later reader "simplifies" back — the argument is that a
+    #       deterministic instruction quietly beating a staged one would make
+    #       the staging step a no-op nobody could see
+    #   14  the branch itself: the lazy seam import (5, this module's local
+    #       convention for `crossover_v2` leaves) and 9 for the read, 6 of them
+    #       saying why it goes THROUGH `blend_prescription_to_candidate_fields`
+    #       rather than off `.filters`. That is the one-door property: the seam
+    #       re-asks the route, so "a boost can never populate this field" stays
+    #       true of the function rather than of today's call graph
+    #   23  `blend_prescription_record`, the sibling of
+    #       `alignment_prescription_record` — 5 executing, the rest the
+    #       None-means-solved rule (without it a series cannot tell a prescribed
+    #       round from a deterministic one, which is the comparison the whole
+    #       prescriber loop exists to make possible) and why the digest travels
+    #       beside the prescription rather than inside it
+    # No seam to cut: the lifecycle this door opens — placing, taking,
+    # consuming, withdrawing, re-validating — is ~540 lines and every one of
+    # them is in a NEW module (`crossover_v2/prescription_spool.py`), which is
+    # where a ratchet-respecting change puts them. What lands here is only what
+    # the SESSION must know, and this file learned no new fact about
+    # prescriptions beyond "one may arrive".
+    #
+    # ...and 13,041 -> 13,055 (A9 gate round 1, SF-2), +14 net. The provenance
+    # record was ONE dict and is now a record plus a digest, because the gate
+    # found stage 2 rehydrating `None`: the durable record has to round-trip
+    # through `blend_prescription_from_mapping` for the grading stage to read
+    # it, and that reader refuses an unknown field rather than ignoring it — so
+    # the digest folded in beside the prescription made the whole record
+    # unreadable. Splitting it costs a 13-line `blend_prescription_sha256`
+    # property (5 execute) and 1 net on the record's own body; the remaining
+    # lines are the paragraph recording that the strictness is CORRECT — it is
+    # why a receipt cannot bank half a prescription — so the next author moves
+    # the field rather than loosening the reader.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_055,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -759,7 +808,74 @@ MAX_LINES_BY_PATH = {
     # replaced), so the announced count and the walked plan are one object. The
     # prose is what stops a future reader "simplifying" this back to the shape
     # target — the failure mode this entry exists to make expensive.
-    "jasper/web/correction_crossover_v2.py": 8_609,
+    #
+    # 2026-08-19 (A9, the prescription door): 8,609 -> 8,706, +99 added / -2
+    # removed, counted hunk by hunk. This file is the flow's untrusted-input
+    # boundary and its only durable-state writer, so both halves of the door's
+    # policy — when a document may be taken, and what a refusal costs — belong
+    # here and nowhere else:
+    #   19  `observe_restore` (-1 on the docstring line it extends). Two lines
+    #       execute; the rest is why the withdrawal runs AHEAD of the no-state
+    #       early return. A staged prescription is the one thing this function
+    #       clears that does not live in `state`, and a lost state file resolves
+    #       the next round's ordinal back to 1 — an ordinal a surviving document
+    #       could legitimately match. Guarding it behind a readable state file
+    #       would be the #2699 trap this docstring already calls standing,
+    #       reintroduced one indirection further out.
+    #   51  `_take_staged_blend_prescription`, the ONE place a staged
+    #       prescription enters and the one place its refusal becomes a round
+    #       that carries on. ~14 execute. The rest states the two directions and
+    #       why they are not in tension: fail-CLOSED on content (a document that
+    #       is stale, tampered, oversized, or a boost never reaches the
+    #       candidate) and fail-OPEN on transport (the round still runs, on
+    #       decision 10's deterministic instruction, because an optional
+    #       instruction must not cost a household a measurement session). Named
+    #       and module-level on `alignment_prescription_prior_from_state`'s
+    #       rule, which is what makes the seeding path drivable without a relay.
+    #   11  the durable `verify_priors.blend_prescription` key, 3 executing. It
+    #       crosses stages for `alignment_prescription`'s reason, read the same
+    #       way — stage 1 TAKES the prescription and stage 2 banks the receipt,
+    #       so durable state is the only channel it has. Without it the
+    #       attribution dies in stage 1's process and no series can be read back
+    #       as prescribed-versus-solved.
+    #    7  the series-position hoist at the ctor, 2 executing. The ordinal is
+    #       resolved ONCE and used twice — to take the prescription and to
+    #       hydrate the session — because a second read could be answered by a
+    #       state write in between and hand this round an instruction written
+    #       for another one.
+    #   11  the two ctor arguments and why they ride the MEASURING stage (-1
+    #       where the inline `series_position=` call was replaced by the hoisted
+    #       local): the door is `_blend_prescription`, which runs at
+    #       candidate-build time, so a prescription handed to any other stage
+    #       would be held by a session that never builds a candidate.
+    # No seam to cut: the spool's own lifecycle is a new module, and the two
+    # policy questions above are exactly the ones a capture provider may not
+    # own — the same line slice 1 drew when the relay's choreography left and
+    # the source CHOICE stayed. 8,609 + 97 = 8,706.
+    #
+    # ...and 8,706 -> 8,774 (A9 gate round 1, SF-2), +68, counted hunk by hunk.
+    # The gate found that the feature's whole point — banking WHO prescribed a
+    # round — was erased by stage 2 of that same round: `verify_priors` is
+    # rebuilt from the conductor on every persist, `alignment_prescription` has
+    # a stage-2 rehydration arm, and `blend_prescription` had none, so stage 2
+    # wrote `None` over the stage-1 record BEFORE the receipt. The #2698 shape
+    # exactly, one module over. What it cost:
+    #   47  the two readers, `blend_prescription_prior_from_state` and
+    #       `blend_prescription_sha256_from_state`, ~12 executing. They sit
+    #       beside `alignment_prescription_prior_from_state` and mirror it
+    #       exactly. The prose is the finding: that this arm is not merely how
+    #       stage 2 LEARNS the prescription but the only thing stopping stage 2
+    #       ERASING it, which is the sentence that stops it being deleted as a
+    #       redundant read of a value stage 2 does not use.
+    #   12  the `blend_prescription_sha256` persist key, 3 executing, with the
+    #       reason it cannot live inside the record it describes.
+    #    7  the two rehydration reads in `prepare_v2_verify`, 2 executing.
+    #    2  the two ctor arguments on the stage-2 session.
+    # No seam to cut: this file owns the state's read and write sides, and a
+    # reader for one of its own keys placed anywhere else would be a second
+    # owner of that key's shape — the exact drift the neighbouring reader/writer
+    # pairs exist in this file to prevent. 8,706 + 68 = 8,774.
+    "jasper/web/correction_crossover_v2.py": 8_774,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

@@ -1402,9 +1402,11 @@ def blend_prescription_to_candidate_fields(
 
     **It re-asks the route rather than trusting that the gate already did.**
     :func:`read_blend_prescription` calls :func:`prescription_route` before it
-    returns, so today every prescription reaching here is already a cut — but
-    "today" is a fact about one caller, and this function is the last thing
-    between a prescription and a fingerprinted candidate field. A
+    returns, so every prescription reaching here through either of today's two
+    callers — ``jasper-crossover-prescriber`` and the round's own blend reader
+    (``CrossoverV2Session._blend_prescription``) — is already a cut. But that is
+    a fact about those callers, and this function is the last thing between a
+    prescription and a fingerprinted candidate field. A
     :class:`BlendPrescription` can also be built directly, or read back by
     :func:`blend_prescription_from_mapping`, neither of which routes. Asking
     the one owner of the rule again costs a function call and makes the
@@ -1437,13 +1439,31 @@ def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
     a receipt that banked half a prescription would claim provenance it does
     not have.
 
-    **Who reads it.** ``jasper-crossover-prescriber propose`` already writes
-    exactly the shape this parses (``BlendPrescription.to_dict``), so the pair
-    round-trips today. Its second consumer is the live-flow wiring PR, which
-    rehydrates a banked prescription off the round state to report what a round
-    was prescribed — the same job
-    :func:`~.alignment_prescription.alignment_prescription_from_mapping` does
-    for the delay. Note that this reader does NOT route: it re-derives
+    **Who reads it.** ``jasper-crossover-prescriber propose`` and ``stage``
+    both write exactly the shape this parses (``BlendPrescription.to_dict``),
+    so the pair round-trips today.
+
+    The second consumer this paragraph anticipated is A9's live-flow wiring, and
+    it arrived as predicted: ``correction_crossover_v2``'s
+    ``blend_prescription_prior_from_state`` rehydrates the record stage 1 banked
+    so the stage that GRADES a round can name what it was prescribed — the same
+    job :func:`~.alignment_prescription.alignment_prescription_from_mapping`
+    does for the delay, on the same route, for the same reason.
+
+    That consumer is also why a durable record is EXACTLY ``to_dict()`` and
+    carries nothing else. A9's first shape folded the document's digest in
+    beside it; this reader refuses an unknown field rather than ignoring it, so
+    one extra key made the whole record unreadable and stage 2 silently
+    rehydrated ``None``. The strictness worked — it is the reason a receipt
+    cannot bank half a prescription — and the fix was to give the digest its own
+    slot rather than to loosen the reader.
+
+    A9's OTHER read, of a document that has not been through the gate this
+    process, does not come here: that one goes through
+    :func:`read_blend_prescription` with the bounds (see
+    :mod:`.prescription_spool`).
+
+    Note that this reader does NOT route: it re-derives
     ``prescription_class`` from the gains but applies no bound and no seam
     check, which is why
     :func:`blend_prescription_to_candidate_fields` asks

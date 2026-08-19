@@ -3290,6 +3290,12 @@ def test_no_instruction_makes_the_next_candidate_hold_the_applied_graph(
         # the same strict path the solve's incumbent does rather than a stub
         # that could disagree with it.
         return SimpleNamespace(
+            # A9's source 0, explicitly absent. Named rather than left off: the
+            # method reads it FIRST, so a stand-in without the field raises
+            # instead of exercising the two sources this test is about — and a
+            # stand-in that quietly carried one would be testing the
+            # prescription path under a name that says "no instruction".
+            _prescribed_blend=None,
             _series_position=(
                 None if instruction is _ABSENT
                 else SimpleNamespace(previous_blend_correction=instruction)

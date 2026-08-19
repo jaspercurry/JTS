@@ -39,6 +39,7 @@
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
+| Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -1702,7 +1703,29 @@ jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
 # the write side: validate what came back, against the round it answers
 jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
     --prescription answer.json --json
+
+# the door: same gate, and the accepted answer is left for the next round
+jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
+    --prescription answer.json
 ```
+
+`propose` is the **dry run of** `stage` — the same gate on the same document,
+and the only difference is that `stage` banks the result. Run the first to see
+the answer, the second to commit to it.
+
+`stage` writes one document to
+`/var/lib/jasper/active_speaker_crossover_v2_prescription.json` and stamps it
+with the round the flow state says is next. The next crossover round takes it
+**once**, re-validates it, and consumes it; a household Undo withdraws it
+unrun; and a document staged for a round that has already run is refused as
+`prescription_not_staged_for_this_round` while the round carries on with the
+deterministic correction. `--state` is required here (it is optional for the
+other two verbs) because the round ordinal is read from it — staging without
+one would file a prescription against a series the command cannot see. Staging
+twice is last-wins: the slot holds one instruction, and the overwrite is logged
+(`event=crossover_v2.prescription_staged` carries `replaced`) so a round that
+applied the second of two prescriptions can be explained. Owner:
+[`prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py).
 
 `<bundle-dir>` is a commissioning bundle — the directory holding `info.json`
 beside `evidence/v1/artifacts/crossover_v2/<relay-session-id>/`. `--state` is
@@ -1712,10 +1735,12 @@ selection, or the applied profile's incumbent, and it says so rather than
 going quiet.
 
 **Exit codes are the contract**, because the caller is often a script: `0`
-accepted, `1` the evidence could not be read, `2` the prescription was refused.
-A refusal is the loop working, not a crash — `--json` prints the machine-
-readable `reason` slug plus the evidence behind it, so a prescriber can correct
-itself rather than guess.
+accepted, `1` the evidence could not be read, `2` the prescription was refused,
+`3` an accepted prescription could not be staged. A refusal is the loop
+working, not a crash — `--json` prints the machine-readable `reason` slug plus
+the evidence behind it, so a prescriber can correct itself rather than guess.
+`3` is separate from `1` because the two send you to different places: `2`
+means fix the prescription, `3` means fix the speaker's filesystem.
 
 What the packet is for beyond the model loop: it is the single document the
 deterministic trend engine and any by-hand round review both want, and its

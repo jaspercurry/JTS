@@ -135,6 +135,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.alignment_prescription import (
         AlignmentPrescription,
     )
+    from jasper.active_speaker.crossover_v2.blend_prescription import (
+        BlendPrescription,
+    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         RoundPorts,
         SeriesPosition,
@@ -5069,6 +5072,8 @@ class CrossoverV2Session:
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
         alignment_prescription: "AlignmentPrescription | None" = None,
+        blend_prescription: "BlendPrescription | None" = None,
+        blend_prescription_sha256: str = "",
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -5091,6 +5096,18 @@ class CrossoverV2Session:
         # the record rather than the bare float so the round receipt can name
         # the measured basis without a second copy of it living anywhere.
         self._alignment_prescription = alignment_prescription
+        # A9. The blend-region twin of the line above, and held on the same
+        # terms: already validated by the boundary that took it out of the
+        # spool, re-validated there against the region it was checked against,
+        # and NOT re-judged here. A session handed none runs decision 10's
+        # deterministic instruction exactly as before. The digest travels beside
+        # it rather than inside it because it names the DOCUMENT, not the
+        # correction — see ``blend_prescription_record``. Named for what it IS
+        # rather than for the ctor argument, because ``_blend_prescription`` is
+        # already the METHOD that decides which source wins and a field of that
+        # name would shadow it.
+        self._prescribed_blend = blend_prescription
+        self._prescribed_blend_sha256 = str(blend_prescription_sha256 or "")
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5891,7 +5908,20 @@ class CrossoverV2Session:
     def _blend_prescription(self) -> tuple[Mapping[str, Any], ...]:
         """The blend correction the next candidate should carry (decision 10).
 
-        Two sources, in this order, and the order is the panel's second ruling:
+        Three sources, in this order, and the order below the first is the
+        panel's second ruling:
+
+        0. **An accepted prescription staged for THIS round** (A9), if the
+           preparer took one out of the spool. It supersedes the series'
+           instruction for exactly one round, and that precedence is the whole
+           point of staging one: an operator who read the round's evidence and
+           wrote a correction is answering the same question decision 10's
+           solver answered, with more of the evidence in front of them, and a
+           deterministic instruction that quietly won would make the staging
+           step a no-op nobody could see. It cannot persist past this round —
+           :func:`~.crossover_v2.prescription_spool.take_staged_prescription`
+           consumed the document before this session was built — so the series
+           resumes on its own at the next round with no state to unwind.
 
         1. **The series' instruction**, if the previous round left one —
            ``SeriesPosition.previous_blend_correction``. A round that KEEPS its
@@ -5913,6 +5943,20 @@ class CrossoverV2Session:
         can be established, and the candidate build is deriving the whole graph
         from that same unreadable profile anyway.
         """
+        from .crossover_v2.blend_prescription import (
+            BLEND_CANDIDATE_FIELD,
+            blend_prescription_to_candidate_fields,
+        )
+
+        if self._prescribed_blend is not None:
+            # Through the route rather than off the object's ``filters``, so the
+            # promise that a boost can never populate this field is a property
+            # of every path into it. The seam re-asks the route for exactly this
+            # reason (see ``blend_prescription_to_candidate_fields``), and a
+            # caller that reached past it here would be the second entry point
+            # that makes the promise untrue.
+            fields = blend_prescription_to_candidate_fields(self._prescribed_blend)
+            return tuple(fields[BLEND_CANDIDATE_FIELD])
         instruction = (
             None if self._series_position is None
             else self._series_position.previous_blend_correction
@@ -6248,6 +6292,43 @@ class CrossoverV2Session:
         if self._alignment_prescription is None:
             return None
         return self._alignment_prescription.to_dict()
+
+    @property
+    def blend_prescription_record(self) -> dict[str, Any] | None:
+        """This session's blend prescription as the receipt banks it (A9).
+
+        The sibling of :attr:`alignment_prescription_record` in every respect,
+        including the ``None``-means-the-automatic-path rule — so a series read
+        back later can tell a round whose blend correction was PRESCRIBED from
+        one whose was solved, which is the attribution the whole prescriber loop
+        exists to make comparable.
+
+        **Exactly ``to_dict()``, with nothing added.** An earlier shape folded
+        the document digest in beside it and that was a real defect, not a
+        stylistic one: the durable record has to survive a round trip through
+        :func:`~.crossover_v2.blend_prescription.blend_prescription_from_mapping`
+        so stage 2 can rehydrate it, and that reader refuses an unknown field
+        rather than ignoring it — by design, because a misspelled ``filters``
+        that was quietly dropped would leave a receipt claiming provenance it
+        does not have. One extra key made the whole record unreadable. The
+        digest travels as :attr:`blend_prescription_sha256` instead.
+        """
+        if self._prescribed_blend is None:
+            return None
+        return self._prescribed_blend.to_dict()
+
+    @property
+    def blend_prescription_sha256(self) -> str:
+        """The digest of the document this round's prescription came from (A9).
+
+        Its own value rather than a field inside the record above, on
+        :attr:`measure_alignment_objective`'s rule and for the same reason: the
+        prescription is WHAT was asked for and the digest names the DOCUMENT
+        that asked, they are two facts, and nesting one in the other is what
+        broke the record's round trip. ``""`` when this round prescribed
+        nothing, which is what the record's own ``None`` already says.
+        """
+        return self._prescribed_blend_sha256
 
     @property
     def last_intervention_proposal(self) -> Any:
