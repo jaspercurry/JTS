@@ -173,11 +173,16 @@ def _pypi_reachable() -> bool:
 
 def _uv_venv_available() -> bool:
     """Whether a bare ``uv pip install`` (no ``--system``/``--python``)
-    has a target environment to resolve into, mirroring uv's own
-    discovery order: an activated venv (``$VIRTUAL_ENV``) or a
-    ``.venv/`` at the repo root. Without either, uv exits before
-    resolving anything ("No virtual environment found; run `uv venv`
-    ... or pass `--system`") — an environment precondition, not a
+    has a target environment to resolve into: an activated venv
+    (``$VIRTUAL_ENV``) or a ``.venv/`` at the repo root. These are the
+    two cases this repo's own lanes actually produce — uv's real
+    discovery is broader (it also honors ``$CONDA_PREFIX`` and walks up
+    from cwd rather than stopping at the repo root), but every lane
+    here (``scripts/test-fast``, ``scripts/test-merge``, CI) ``cd``s to
+    the repo toplevel before running, and this repo doesn't use conda,
+    so the narrower pair below is sufficient. Without either, uv exits
+    before resolving anything ("No virtual environment found; run `uv
+    venv` ... or pass `--system`") — an environment precondition, not a
     resolution failure, so it belongs in the skip list next to
     ``_pypi_reachable``. A ``git worktree add`` checkout has neither by
     default; the main checkout and CI (post ``uv sync``) have the
