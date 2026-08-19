@@ -706,8 +706,12 @@ class RelayCaptureKind:
     """
 
     label: str
-    open: Callable[[RelayClient, str, str, str], "RelayCapture"]
-    run_and_consume: Callable[[RelayClient, PiCaptureSession], Awaitable[None]]
+    #: ``RelayClient | None`` because a LOCAL kind receives ``None`` (#2662
+    #: W2b — see ``local`` below); every relay kind still gets a real client.
+    open: Callable[[RelayClient | None, str, str, str], "RelayCapture"]
+    run_and_consume: Callable[
+        [RelayClient | None, PiCaptureSession], Awaitable[None]
+    ]
     request_stop: Callable[[], None] | None = None
     #: The remote commission tier's position gate, or None. Only the crossover
     #: v2 kinds ever set it; every other flow leaves it unset and is untouched.
@@ -721,6 +725,22 @@ class RelayCaptureKind:
     #: to POST /crossover/v2/complete via the slot, with the same lifecycle
     #: as ``request_stop``.
     request_complete: Callable[[], None] | None = None
+
+
+def _require_relay_client(client: "RelayClient | None") -> "RelayClient":
+    """Narrow the seam's ``RelayClient | None`` inside a RELAY kind's closure.
+
+    Only a LOCAL (wired) kind receives ``None`` (#2662 W2b), and a local
+    kind never enters these closures — the orchestrator builds a real client
+    for every non-local kind — so ``None`` here is a wiring defect. Failing
+    loudly at the closure boundary beats an ``AttributeError`` deep inside a
+    relay helper.
+    """
+    if client is None:
+        raise RuntimeError(
+            "this relay capture kind was invoked without a relay client"
+        )
+    return client
 
 
 def _request_local_return_url(
@@ -4295,11 +4315,12 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     def _open(
-        client: RelayClient,
+        client: RelayClient | None,
         base: str,
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        client = _require_relay_client(client)
         return correction_adapter.open_room_sweep_capture(
             client,
             position=1 if is_repeat else sess.current_position + 1,
@@ -4312,8 +4333,9 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     async def _run_and_consume(
-        client: RelayClient, pi_session: PiCaptureSession
+        client: RelayClient | None, pi_session: PiCaptureSession
     ) -> None:
+        client = _require_relay_client(client)
         _assert_room_relay_alignment_policy(pi_session)
         # On `armed` (phone recording), play the sweep through the SAME
         # measurement_window()/prepare_and_play_sweep path the browser flow uses
@@ -4458,11 +4480,12 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     def _open(
-        client: RelayClient,
+        client: RelayClient | None,
         base: str,
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        client = _require_relay_client(client)
         return correction_adapter.open_capture(
             client,
             build_room_sweep_spec(
@@ -4476,8 +4499,9 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
 
     async def _run_and_consume(
-        client: RelayClient, pi_session: PiCaptureSession
+        client: RelayClient | None, pi_session: PiCaptureSession
     ) -> None:
+        client = _require_relay_client(client)
         from jasper.capture_relay.session import purge, run_capture
         from jasper.correction import coordinator, playback
 
@@ -5214,11 +5238,12 @@ def _handle_relay_level_match(
     setup_binding_id = str(sess.session_id)
 
     def _open(
-        client: RelayClient,
+        client: RelayClient | None,
         base: str,
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        client = _require_relay_client(client)
         return correction_adapter.open_capture(
             client,
             build_level_ramp_spec(
@@ -5237,7 +5262,7 @@ def _handle_relay_level_match(
             return_url=return_url,
         )
 
-    async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+    async def _run(client: RelayClient | None, pi_session: PiCaptureSession) -> None:
         # NEEDS_NOISE_CAPTURE normally has a short local-browser upload
         # watchdog. Relay mic permission, calibration, placement, and gradual
         # level matching are deliberately human-paced, so pause that watchdog
@@ -5653,11 +5678,12 @@ def _handle_crossover_relay_level_match(
             stop_event.set()
 
     def _open(
-        client: RelayClient,
+        client: RelayClient | None,
         base: str,
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        client = _require_relay_client(client)
         return correction_adapter.open_capture(
             client,
             build_level_ramp_spec(
@@ -5708,7 +5734,7 @@ def _handle_crossover_relay_level_match(
             camilla_factory=_camilla,
         )
 
-    async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+    async def _run(client: RelayClient | None, pi_session: PiCaptureSession) -> None:
         from jasper.capture_relay.session import CaptureStopped
 
         # `_run_relay_capture` has acquired the global relay slot before this
@@ -5935,11 +5961,12 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
     assert session_token is not None
 
     def _open(
-        client: RelayClient,
+        client: RelayClient | None,
         base: str,
         capture_origin: str,
         return_url: str,
     ) -> RelayCapture:
+        client = _require_relay_client(client)
         return correction_adapter.open_capture(
             client,
             build_sync_marker_spec(),
@@ -5948,7 +5975,7 @@ def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any
             return_url=return_url,
         )
 
-    async def _run(client: RelayClient, pi_session: PiCaptureSession) -> None:
+    async def _run(client: RelayClient | None, pi_session: PiCaptureSession) -> None:
         await sync_flow.relay_run_and_consume(
             client,
             pi_session,
