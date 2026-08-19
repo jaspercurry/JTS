@@ -404,9 +404,13 @@ def program_for_phase(
     sweep at the identical clamp, minus the courtesy prelude no position needs.
 
     ``measure`` is ``None`` until the CHECK gain solve produces a plan;
-    requesting MEASURE (or a lateral pose, which replays MEASURE's program
-    verbatim) before then raises :class:`NoProgramForPhaseError` rather than
-    composing something at a guessed level.
+    requesting MEASURE before then raises :class:`NoProgramForPhaseError` rather
+    than composing something at a guessed level. Three callers reach that arm,
+    and they are worth naming because two of them do not spell "measure": the
+    MEASURE anchor itself, a lateral pose (which replays MEASURE's program
+    verbatim), and a per-driver stop of an angle-capture request
+    (:mod:`jasper.active_speaker.angle_capture`, which asks this function for
+    ``PHASE_MEASURE``'s object by that same identity rule).
     """
     if phase == PHASE_CHECK:
         return check
