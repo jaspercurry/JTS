@@ -9,9 +9,9 @@ period, the underlying voice provider may need to reopen its
 session before it can accept audio (Gemini Live: ~3 s context
 reset; OpenAI Realtime: similar; xAI Grok: similar). The mic
 loop can't block on that or it drops audio frames into either
-sounddevice's OS-level queue (where they later arrive as a burst
-that confuses our wall-clock-based VAD) or off the floor entirely
-— either way the user's command gets clipped.
+sounddevice's OS-level queue (where they later arrive in a burst,
+long after the audio they carry) or off the floor entirely —
+either way the user's command gets clipped.
 
 The fix is the canonical voice-agent pattern: capture frames into
 a bounded buffer during the wake → turn-acquired window, then
@@ -27,9 +27,10 @@ sounddevice / openwakeword / camilladsp.
 """
 from __future__ import annotations
 
+import logging
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from .voice.session import LiveTurn
@@ -46,14 +47,31 @@ if TYPE_CHECKING:
 ACQUIRE_BUFFER_MAX_FRAMES = 250
 
 
+logger = logging.getLogger(__name__)
+
+
+class DrainResult(NamedTuple):
+    """What the drain sent, and what its VAD saw while sending it.
+
+    ``run_frames`` / ``run_peak`` are the speech run STILL OPEN when the
+    buffer ran dry — the caller carries them into the live mic path so one
+    utterance cut by the acquire boundary keeps accumulating instead of
+    restarting. ``max_score`` is the turn-so-far maximum (never reset by a
+    silence gap) and feeds the abort log + ``wake_events.max_silero_aec``.
+    """
+
+    frames: int
+    run_frames: int
+    run_peak: float
+    max_score: float
+
+
 async def drain_acquire_buffer(
     buffer: deque, turn: "LiveTurn",
     *,
     vad_predict: Callable[[Any], float] | None = None,
-    speech_threshold: float = 0.15,
-    min_consecutive_speech: int = 3,
-    peak_min: float = 0.0,
-) -> tuple[int, bool]:
+    speech_threshold: float,
+) -> DrainResult:
     """Pop frames from `buffer` and forward each via
     ``turn.send_audio`` in FIFO order. Loops until the buffer is
     briefly empty.
@@ -66,64 +84,46 @@ async def drain_acquire_buffer(
     ``WakeLoop._acquire_and_drain``) happen without yielding, so
     no frame is appended after the drain decides it's done.
 
-    If ``vad_predict`` is provided, also predict on each frame and
-    flag whether any run of ``min_consecutive_speech`` consecutive
-    frames scored at or above ``speech_threshold`` — AND, if
-    ``peak_min > 0``, the maximum score within that run reached
-    ``peak_min``. This lets the caller pre-arm its end-of-utterance
-    silence detector for fast-talker turns where the user's whole
-    question lands in the acquire window (so live frames start
-    after the user has finished speaking and never see speech to
-    arm on themselves). Without this signal those turns abort with
-    "no user speech detected" after 5 s while the LLM happily
-    processed the audio from the buffer. Stateful VADs (Silero)
-    also benefit from getting the acquire frames in order — the
-    LSTM is warm when live frames start.
+    If ``vad_predict`` is provided, score each frame and accumulate the
+    run of consecutive frames at or above ``speech_threshold``. This
+    helper does NOT decide whether that run admits speech: the acquire
+    window and the live mic stream are two halves of one utterance, so
+    the gate is evaluated once, by the caller, over the combined run
+    (``WakeLoop._arm_speech_if_admitted``). Stateful VADs (Silero) also
+    benefit from getting the acquire frames in order — the LSTM is warm
+    when live frames start.
 
-    Default ``min_consecutive_speech=3`` (≈240 ms at 80 ms/frame)
-    is the closest whole-frame match to the live-mic VAD gate's
-    ``SUSTAINED_SPEECH_TO_ARM_SEC = 0.20`` in
-    ``jasper/voice_daemon.py``. The two paths' gates must stay in
-    sync — the acquire path pre-arms ``_user_speech_seen`` and
-    bypasses the live gate entirely, so a looser threshold here
-    silently undoes the wake-tail filtering the live gate is
-    designed for.
-
-    The ``peak_min`` parameter mirrors the live path's
-    ``SPEECH_RUN_PEAK_MIN``. Default is ``0.0`` (off) for backward
-    compatibility; callers that want wake-tail rejection should pass
-    the same value the live gate uses. Wake-tail audio with quiet
-    music vocals cleared the duration-only gate with peaks around
-    0.15-0.50, which the live path now rejects by requiring a peak
-    >= 0.60 in the arming run. Real user speech reliably peaks
-    above 0.7 within 2-3 frames; the gap is the load-bearing
-    discriminator. See ``voice_daemon.SPEECH_RUN_PEAK_MIN`` for the
-    full corpus-derived rationale and the 2026-05-23 sweep that
-    picked 0.60.
-
-    Returns ``(count, sustained_speech_detected)``.
-    ``sustained_speech_detected`` is always ``False`` if
-    ``vad_predict`` is ``None``. Propagates any ``send_audio``
-    exception unchanged so the caller can log + clear remaining
-    frames; partially-drained buffer state stays as-is on raise.
+    A ``vad_predict`` failure disables scoring for the rest of the drain
+    but never stops the drain: the frames are the user's command, and
+    dropping them costs a turn. ``send_audio`` failures still propagate
+    unchanged so the caller can log + clear the remaining frames;
+    partially-drained buffer state stays as-is on raise.
     """
     count = 0
-    consecutive_speech = 0
-    run_max_score = 0.0
-    sustained_speech_detected = False
+    run_frames = 0
+    run_peak = 0.0
+    max_score = 0.0
     while buffer:
         frame = buffer.popleft()
         await turn.send_audio(frame.tobytes())
-        if vad_predict is not None:
-            prob = vad_predict(frame)
-            if prob >= speech_threshold:
-                consecutive_speech += 1
-                run_max_score = max(run_max_score, prob)
-                if (consecutive_speech >= min_consecutive_speech
-                        and run_max_score >= peak_min):
-                    sustained_speech_detected = True
-            else:
-                consecutive_speech = 0
-                run_max_score = 0.0
         count += 1
-    return count, sustained_speech_detected
+        if vad_predict is None:
+            continue
+        try:
+            prob = vad_predict(frame)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "acquire-buffer drain: VAD scoring failed on frame %d "
+                "(%s: %s); forwarding the rest unscored",
+                count, type(e).__name__, e,
+            )
+            vad_predict = None
+            continue
+        max_score = max(max_score, prob)
+        if prob >= speech_threshold:
+            run_frames += 1
+            run_peak = max(run_peak, prob)
+        else:
+            run_frames = 0
+            run_peak = 0.0
+    return DrainResult(count, run_frames, run_peak, max_score)

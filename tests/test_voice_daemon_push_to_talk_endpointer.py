@@ -785,10 +785,10 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     wl._acquire_buffer.extend(_frame() for _ in range(4))
     wl._manual_endpoint_this_turn = True
 
-    drained, speech = await wl._drain_acquire_audio()
+    drained = await wl._drain_acquire_audio()
 
     assert drained == 4
-    assert speech is False
+    assert wl._user_speech_seen is False
     assert wl._vad.predict_calls == 0
 
 
@@ -802,10 +802,10 @@ async def test_acquire_drain_still_scores_on_a_wake_turn():
     wl._acquire_buffer.extend(_frame() for _ in range(4))
     wl._manual_endpoint_this_turn = False
 
-    drained, speech = await wl._drain_acquire_audio()
+    drained = await wl._drain_acquire_audio()
 
     assert drained == 4
-    assert speech is True
+    assert wl._user_speech_seen is True
     assert wl._vad.predict_calls == 4
 
 

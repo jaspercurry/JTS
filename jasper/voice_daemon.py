@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -510,11 +511,14 @@ NO_SPEECH_ABORT_SEC = 5.0
 # 800 ms of silence fired end-of-utterance, the LLM received only
 # pre-roll + acquire-buffer audio plus its cached prior-turn context
 # and confabulated a response while the user was still mid-pause.
+#
+# This is the intent; SPEECH_RUN_MIN_FRAMES below is the form actually
+# enforced, and the two differ by one frame — see its derivation.
 SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 
 # Minimum PEAK Silero score that the arming speech-run must reach.
-# The duration gate alone (3 frames at >= 0.15) is too permissive
-# against wake-tail residual; real user speech reliably peaks well
+# The duration gate alone (SPEECH_RUN_MIN_FRAMES at >= 0.15) is too
+# permissive against wake-tail residual; real user speech peaks well
 # above this within 2-3 frames while wake-tail residual maxes out in
 # the 0.15-0.55 band. The 2026-05-23 corpus sweep found 0.60 cleanly
 # rejects the broken event (tail peak 0.52) while keeping every
@@ -534,10 +538,29 @@ SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 # mean-over-sub-chunks the whole time.
 SPEECH_RUN_PEAK_MIN = 0.60
 
+# One mic frame's worth of audio, and the arming duration above expressed
+# in frames. Frames — not the loop clock — are the basis both admission
+# paths share: the acquire drain has no wall clock to measure with (its
+# frames were captured earlier and replay as fast as the socket takes
+# them), and the live path's clock measures DELIVERY, so a burst arriving
+# after a scheduling stall advances it far less than the audio it carries.
+# `k >= S/F + 1` is the live path's own condition rearranged: it anchors
+# on the FIRST supra-threshold frame, so k frames span (k-1) frame periods
+# and 0.20 s has always taken 4 frames / 320 ms. Keeping that effective
+# bar is deliberate — carrying the run across the acquire boundary already
+# makes arming easier, which is the same direction that lets wake-word
+# tail through.
+MIC_FRAME_SEC = MicCapture.OUTPUT_FRAME_SAMPLES / MicCapture.OUTPUT_RATE
+SPEECH_RUN_MIN_FRAMES = math.ceil(
+    SUSTAINED_SPEECH_TO_ARM_SEC / MIC_FRAME_SEC + 1
+)
+
 # In-session barge-in: how long the user must speak continuously (each
 # frame >= JASPER_VAD_BARGE_IN_THRESHOLD) before we flush local TTS.
 # Reuses the wake-tail arming duration so a real spoken interruption
-# clears it within ~200 ms while a single bleed transient cannot. The
+# clears it within ~320 ms (it anchors on the first supra-threshold
+# frame, so 0.20 s takes 4 frames) while a single bleed transient
+# cannot. The
 # per-frame bar is the (stricter) barge-in threshold, not the loose
 # wake-tail 0.15 — bleed false-positives are the failure mode here.
 BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
@@ -1260,16 +1283,13 @@ class WakeLoop:
         self._input_ended: bool = False
         self._turn_started_at_loop: float = 0.0
         self._max_silero_score_in_turn: float = 0.0
-        # Anchor timestamp for the current run of continuous speech.
-        # Resets to 0 on any sub-threshold frame; once `now -
-        # _speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC` AND
-        # `_speech_run_max_silero >= SPEECH_RUN_PEAK_MIN`, arm the
-        # silence detector.
-        self._speech_run_started_at: float = 0.0
-        # Max Silero score observed within the current speech run.
-        # Resets to 0 on any sub-threshold frame (same lifetime as
-        # `_speech_run_started_at`). Used to reject wake-tail audio
-        # — see SPEECH_RUN_PEAK_MIN.
+        # The current run of continuous speech: frame count and the max
+        # Silero score within it, both reset by any sub-threshold frame.
+        # ONE run per turn — the acquire drain seeds these
+        # (`_drain_acquire_audio`) and the live mic path continues them,
+        # so an utterance the acquire boundary cuts in half is measured
+        # once. `_arm_speech_if_admitted` is the only reader.
+        self._speech_run_frames: int = 0
         self._speech_run_max_silero: float = 0.0
         self._server_vad_this_turn: bool = False
         # Per-turn endpointer selection, decided ONCE at the top of
@@ -4109,22 +4129,21 @@ class WakeLoop:
             await self._notify_peering_session_started()
 
             try:
-                drained, speech_in_acquire = await self._drain_acquire_audio()
+                drained = await self._drain_acquire_audio()
             except Exception as e:  # noqa: BLE001
                 drained = 0
-                speech_in_acquire = False
                 logger.warning("acquire-buffer drain failed: %s", e)
+                # A send_audio failure propagates with the buffer part
+                # drained and hands the cleanup here; frames left behind
+                # would replay into the NEXT turn.
+                self._acquire_buffer.clear()
             if drained:
                 logger.info(
                     "acquire-buffer drained: %d frames (~%.0fms%s)",
                     drained, drained * 80.0,
                     "; contained speech — silence detector pre-armed"
-                    if speech_in_acquire else "",
+                    if self._user_speech_seen else "",
                 )
-            # Fast-talker compensation: see _begin_turn comment block.
-            if speech_in_acquire and not self._user_speech_seen:
-                self._user_speech_seen = True
-                await self._telemetry_stage("speech_detected")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             await self._telemetry_outcome("session_failed", str(e)[:200])
@@ -4642,6 +4661,29 @@ class WakeLoop:
 
         await self._send_session_audio(frame)
 
+    async def _arm_speech_if_admitted(self, *, at_ms: int) -> None:
+        """Arm the end-of-utterance detector if the open speech run clears
+        the admission bar. This is THE gate: the acquire drain and the live
+        mic path feed one run, and it is judged once, so an utterance the
+        acquire boundary cuts in half is not judged as two short halves
+        that each fail. ``at_ms`` is the arming offset from turn start
+        recorded for the corpus — 0 means "armed from acquire-window
+        audio", i.e. before the first live frame."""
+        if (self._user_speech_seen
+                or self._speech_run_frames < SPEECH_RUN_MIN_FRAMES
+                or self._speech_run_max_silero < SPEECH_RUN_PEAK_MIN):
+            return
+        logger.info(
+            "user speech detected (sustained=%.0fms, peak_in_run=%.2f) "
+            "— silence detector armed",
+            self._speech_run_frames * MIC_FRAME_SEC * 1000,
+            self._speech_run_max_silero,
+        )
+        self._user_speech_seen = True
+        if self._silero_aec_armed_at_ms is None:
+            self._silero_aec_armed_at_ms = at_ms
+        await self._telemetry_stage("speech_detected")
+
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
         # this frame is silently consumed (no double-dispatch into detector).
@@ -4770,37 +4812,22 @@ class WakeLoop:
             return
 
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
-            if self._speech_run_started_at == 0.0:
-                self._speech_run_started_at = now
-                self._speech_run_max_silero = speech_prob
-            else:
-                self._speech_run_max_silero = max(
-                    self._speech_run_max_silero, speech_prob,
-                )
-            sustained = now - self._speech_run_started_at
-            if (not self._user_speech_seen
-                    and sustained >= SUSTAINED_SPEECH_TO_ARM_SEC
-                    and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
-                logger.info(
-                    "user speech detected (sustained=%.0fms, "
-                    "silero=%.2f, peak_in_run=%.2f) "
-                    "— silence detector armed",
-                    sustained * 1000, speech_prob,
-                    self._speech_run_max_silero,
-                )
-                self._user_speech_seen = True
-                if self._silero_aec_armed_at_ms is None:
-                    self._silero_aec_armed_at_ms = int(
-                        (now - self._turn_started_at_loop) * 1000
-                    )
-                await self._telemetry_stage("speech_detected")
+            # Extends the run the acquire drain may already have started
+            # — same run, same bar, judged in one place.
+            self._speech_run_frames += 1
+            self._speech_run_max_silero = max(
+                self._speech_run_max_silero, speech_prob,
+            )
+            await self._arm_speech_if_admitted(
+                at_ms=int((now - self._turn_started_at_loop) * 1000),
+            )
             self._silence_started_at = 0.0
         else:
-            # Sub-threshold frame breaks the run. Both the duration
-            # anchor and the peak-tracker reset together so the next
-            # run starts fresh — partial accumulation across silence
-            # gaps would defeat the wake-tail-rejection design.
-            self._speech_run_started_at = 0.0
+            # Sub-threshold frame breaks the run. Both the frame count
+            # and the peak-tracker reset together so the next run starts
+            # fresh — partial accumulation across silence gaps would
+            # defeat the wake-tail-rejection design.
+            self._speech_run_frames = 0
             self._speech_run_max_silero = 0.0
             if self._user_speech_seen:
                 if self._silence_started_at == 0.0:
@@ -4816,30 +4843,41 @@ class WakeLoop:
 
         await self._send_session_audio(frame)
 
-    async def _drain_acquire_audio(self) -> tuple[int, bool]:
-        """Forward buffered wake/acquire frames into the newly opened turn.
+    async def _drain_acquire_audio(self) -> int:
+        """Forward buffered wake/acquire frames into the newly opened turn,
+        then fold what their VAD saw into this turn's speech run. Returns
+        the number of frames sent.
 
-        The VAD pass exists for one purpose: pre-arm ``_user_speech_seen``
-        so the live end-of-utterance detector doesn't abort a fast-talker
-        turn whose whole question landed in the acquire window. A
-        push-to-talk turn runs neither the detector nor the abort, so
-        scoring those frames would buy nothing and cost a Silero pass per
-        frame on the exact class of box (Pi Zero 2 W) that can least
-        afford it. ``drain_acquire_buffer`` already contracts
-        ``vad_predict=None`` -> ``sustained_speech_detected=False``.
+        Scoring exists so the live end-of-utterance detector doesn't abort
+        a fast-talker turn whose question started — or finished — inside
+        the acquire window. A push-to-talk turn runs neither the detector
+        nor the abort, so scoring those frames would buy nothing and cost a
+        Silero pass per frame on the exact class of box (Pi Zero 2 W) that
+        can least afford it.
         """
         vad_predict = (
             None
             if self._manual_endpoint_this_turn
             else self._vad.predict
         )
-        return await drain_acquire_buffer(
+        result = await drain_acquire_buffer(
             self._acquire_buffer,
             self._turn,  # type: ignore[arg-type]
             vad_predict=vad_predict,
             speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
-            peak_min=SPEECH_RUN_PEAK_MIN,
         )
+        # Assignment, not accumulation: the mic loop buffers while
+        # `_acquiring`, so no live frame has touched this turn's run yet.
+        self._speech_run_frames = result.run_frames
+        self._speech_run_max_silero = result.run_peak
+        # Without this the abort log and the corpus's max_silero_aec report
+        # what the LIVE path saw only, which reads as "the user never
+        # spoke" on exactly the turns where the drain heard them speak.
+        self._max_silero_score_in_turn = max(
+            self._max_silero_score_in_turn, result.max_score,
+        )
+        await self._arm_speech_if_admitted(at_ms=0)
+        return result.frames
 
     async def manual_session_start(self, source: str | None = None) -> str:
         """Trigger a voice session from external IPC (remote hold-to-talk).
@@ -4932,7 +4970,7 @@ class WakeLoop:
             else:
                 await self._begin_turn(listening_feedback=True)
             if source:
-                drained, speech_in_acquire = await self._drain_acquire_audio()
+                drained = await self._drain_acquire_audio()
                 if drained:
                     log_event(
                         logger,
@@ -4940,9 +4978,6 @@ class WakeLoop:
                         source=source,
                         frames=drained,
                     )
-                if speech_in_acquire:
-                    self._user_speech_seen = True
-                    self._silence_started_at = 0.0
             log_event(
                 logger,
                 "session.manual_started",
@@ -5177,7 +5212,7 @@ class WakeLoop:
         self._vad.reset()
         # Reset end-of-utterance tracking. _input_ended must be False
         # so we resume forwarding mic frames; _user_speech_seen,
-        # _silence_started_at, and _speech_run_started_at must be
+        # _silence_started_at, and the speech run must be
         # cleared so the silence detector doesn't fire on prior-turn
         # state. _turn_started_at_loop anchors NO_SPEECH_ABORT_SEC,
         # HARD_RECORDING_CAP_SEC, and the push-to-talk hold cap —
@@ -5185,7 +5220,7 @@ class WakeLoop:
         # silence detector reads.
         self._user_speech_seen = False
         self._silence_started_at = 0.0
-        self._speech_run_started_at = 0.0
+        self._speech_run_frames = 0
         self._speech_run_max_silero = 0.0
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
