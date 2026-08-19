@@ -988,3 +988,36 @@ under the full venv and in the 22037-test run. Quirks for wave runs: rm -rf
 .pytest_cache after any env repair (stale lastfailed makes test-fast crawl);
 always verify the lanes' tool-origin lines before trusting a verdict (stray
 /root/.local/bin mypy 1.19.1 shadows when .venv lacks tools).
+
+### 2026-08-19 — **PR-2 SEALED 0/0/0** (adversarial gate; delta re-review by
+the SAME reviewer). Range b974572..5ea2ae5, excluding the captures-only
+errata commit 7a3a534. Builder Sonnet (commit 141d731: re-source pair 6 from
+_OUTPUTD_CONTENT_ALOOP_PCM beside _FANIN_EXPECTED_OUTPUT_PCM; delete
+_grouping_pair_index; second return value grouping_pair→content_pair across
+the four call sites; T-4's three tests incl. a REAL negative control that
+FAILS against reconstructed base and an asoundrc pin through the production
+parsers). Round 1 verdict: 0 B / 0 SF / 1 nit — Nit-1: the rewritten
+"deliberately NO branch" comment bound the historical drift claim to the
+one-commit-old constant. Fix round 5ea2ae5 ("that constant" → "its source
+constant", grouping.py:1182, separate commit, 141d731 unamended); delta
+verdict SEALED — diff exactly the 2/2 reflow, phrase parity with the test
+docstring exact, zero tense delta, scanning guards pass. Adjudications (both
+to the builder): (1) FAIL/OK message wording ("grouping round-trip on pair
+6") correctly left to PR-5 — with the sharp trade named: pair 6's message
+went true-BY-CONSTRUCTION → true-BY-COINCIDENCE (the two constants
+independently equal 6; nothing asserts equality); the gate deliberately
+REJECTED an equality pin as one-PR-wide churn; carry-forward recorded on
+PR-5's task (the renamed check stops calling pair 6 "the grouping
+round-trip"). (2) grouping_ring.py:32-36 docstring retarget = in-scope
+orphan cleanup of this PR's own deletion; replacement example verified
+(check_grouping_leader_pipe's function-local SNAPFIFO import). Campaign
+observation → PR-6 ledger: grouping_ring.py:22 (PR-1's) cites the captures/
+design path in a SHIPPED docstring — absent from fresh clones post-merge;
+convert to a path-less design citation. Gate evidence: test-merge at 141d731
+reproduced the baseline signature exactly (3 root-artifacts, 22037 passed;
+mypy clean), test-fast 868, targeted 430+334, mutation probes vs a
+reconstructed base, tense+subject sweeps, docs-impact (no doc update owed),
+linkcheck clean. Disposition replicates onto the PR when PRs exist (venue
+ruling pending). Branch rebased onto current origin/main at this seal —
+wave-boundary currency, the campaign-branch adaptation of the design's
+per-push rebase rule.
