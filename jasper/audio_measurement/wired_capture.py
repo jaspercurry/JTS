@@ -13,13 +13,16 @@ lives here — this module records, counts, and encodes; the provider decides
 when and what.
 
 **Device resolution is registry-anchored, probe-at-use.**
-:func:`resolve_wired_mic` matches ``/proc/asound/card*/usbid`` against
-:func:`jasper.audio_measurement.calibration.measurement_mic_usb_ids` — the
-curated calibration registry is the ONLY authority on "this USB device is a
-measurement microphone", so a voice array (XVF3800), a USB DAC, or any other
-capture card can never be selected. Probed fresh at session prepare, no
-reconciler: the mic is plugged in for a measurement and unplugged after, so
-presence is a per-session fact, not steady state to converge on.
+:func:`resolve_wired_mic` matches ``/proc/asound/card*/usbid`` against the
+``usb_ids`` the curated model registry declares
+(:data:`jasper.audio_measurement.mic_identity.SUPPORTED_MODELS` — the same
+identity vocabulary ``jasper-aec-reconcile`` uses to keep a measurement mic
+OUT of the voice-input candidate set, #2703). The registry is the ONLY
+authority on "this USB device is a measurement microphone", so a voice
+array (XVF3800), a USB DAC, or any other capture card can never be
+selected. Probed fresh at session prepare, no reconciler: the mic is
+plugged in for a measurement and unplugged after, so presence is a
+per-session fact, not steady state to converge on.
 
 **CLOCK RULE (inherited from** :mod:`jasper.route_latency.mic_readers` **).**
 The mic is its own USB clock master (the UMIK-2 capture endpoint is ASYNC), so
@@ -196,21 +199,30 @@ def resolve_wired_mic(
 ) -> WiredMicDevice | None:
     """The first measurement-class capture card present, or ``None``.
 
-    Matches ``/proc/asound/card<N>/usbid`` against the calibration registry's
-    declared USB identities (:func:`~jasper.audio_measurement.calibration.
-    measurement_mic_usb_ids`) and requires a capture stream (``pcm0c``
-    present), so a playback-only device with a coincidental id can never
-    resolve. Lowest card index wins when several match — deterministic, and
-    the multi-mic case is not a real household shape.
+    Matches ``/proc/asound/card<N>/usbid`` against the ``usb_ids`` declared
+    by :data:`jasper.audio_measurement.mic_identity.SUPPORTED_MODELS` (the
+    stdlib-only registry leaf — one owner for "is this hardware a
+    measurement microphone?", shared with the reconciler's voice-candidate
+    exclusion, #2703) and requires a capture stream (``pcm0c`` present), so
+    a playback-only device with a coincidental id can never resolve. Lowest
+    card index wins when several match — deterministic, and the multi-mic
+    case is not a real household shape.
 
-    Fail-soft to ``None`` on any probe error: "no wired mic" selects the
-    relay, which is the safe default; only the explicit
-    ``JASPER_CAPTURE_SOURCE=wired`` override turns absence into a loud error
-    (the provider owns that).
+    Fail-soft to ``None`` on any probe error — including an unreadable or
+    non-UTF-8 proc file (the ring_assets precedent for reads of
+    kernel-owned text): "no wired mic" selects the relay, which is the safe
+    default; only the explicit ``JASPER_CAPTURE_SOURCE=wired`` override
+    turns absence into a loud error (the provider owns that).
     """
-    from jasper.audio_measurement.calibration import measurement_mic_usb_ids
+    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
-    known = measurement_mic_usb_ids()
+    # id → model, DERIVED per call from the one registry owner (never a
+    # second declaration; ``measurement_mic_usb_ids`` flattens the same
+    # field for the reconciler, which needs no model attribution).
+    known: dict[str, str] = {}
+    for registry_key, spec in SUPPORTED_MODELS.items():
+        for declared in spec.get("usb_ids") or ():
+            known[str(declared).strip().lower()] = registry_key
     if not known:
         return None
     root = Path(proc_asound)
@@ -225,8 +237,8 @@ def resolve_wired_mic(
     for card_index, card_dir in card_dirs:
         try:
             usb_id = (card_dir / "usbid").read_text().strip().lower()
-        except OSError:
-            continue  # not a USB card
+        except (OSError, UnicodeDecodeError):
+            continue  # not a USB card, or not a readable text file
         model_key = known.get(usb_id)
         if model_key is None:
             continue
@@ -234,10 +246,8 @@ def resolve_wired_mic(
             continue  # no capture stream — never a microphone
         try:
             card_id = (card_dir / "id").read_text().strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             card_id = card_dir.name
-        from jasper.audio_measurement.calibration import SUPPORTED_MODELS
-
         label = str(SUPPORTED_MODELS.get(model_key, {}).get("label") or model_key)
         return WiredMicDevice(
             card_id=card_id,

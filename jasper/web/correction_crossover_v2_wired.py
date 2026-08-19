@@ -391,7 +391,7 @@ def build_v2_wired_run_and_consume(
         def _make_recorder(max_capture_s: float) -> Any:
             if recorder_factory is not None:
                 return recorder_factory(max_capture_s)
-            from jasper.audio_measurement.calibration import SUPPORTED_MODELS
+            from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
             channels = int(
                 SUPPORTED_MODELS.get(device.model_key, {}).get(
