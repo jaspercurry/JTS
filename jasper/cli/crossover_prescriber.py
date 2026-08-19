@@ -135,7 +135,15 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
         return EXIT_REFUSED
 
-    assert prescription is not None  # read_prescription_bytes rejects a null body
+    if prescription is None:
+        # Unreachable today — `read_blend_prescription` returns None only for a
+        # null document, and `read_prescription_bytes` has already refused one.
+        # Written as a branch rather than an `assert` because `python -O`
+        # strips asserts, and a stripped narrowing would turn an impossible
+        # state into an AttributeError three lines down instead of a named
+        # exit. Same reason `linearization_fit`'s cut-only invariant raises.
+        print("refused: the prescription document was empty", file=sys.stderr)
+        return EXIT_REFUSED
     candidate_fields = blend_prescription_to_candidate_fields(prescription)
     result: dict[str, Any] = {
         "accepted": True,
