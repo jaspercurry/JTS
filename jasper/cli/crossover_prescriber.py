@@ -307,7 +307,28 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _add_evidence_args(parser: argparse.ArgumentParser) -> None:
+#: What ``--state`` is, said once. The two verbs differ only in whether they
+#: can proceed without it, so the sentence that describes the FILE has one owner
+#: and each verb appends its own requirement — a shared "Optional" on a verb
+#: that hard-refuses without it is a `--help` that contradicts the command.
+_STATE_HELP = (
+    "the crossover-v2 flow state JSON, banked separately from the bundle"
+)
+_STATE_HELP_OPTIONAL = (
+    f"{_STATE_HELP}. Optional; without it the packet cannot carry the "
+    "per-claim verify verdicts, the Fc selection, or the applied profile's "
+    "incumbent, and says so"
+)
+_STATE_HELP_REQUIRED = (
+    f"{_STATE_HELP}. REQUIRED for this verb: the round a prescription becomes "
+    "an instruction for is read from its round receipt, and staging without "
+    "one would file the prescription against a series this command cannot see"
+)
+
+
+def _add_evidence_args(
+    parser: argparse.ArgumentParser, *, state_help: str = _STATE_HELP_OPTIONAL
+) -> None:
     parser.add_argument(
         "session_dir",
         help=(
@@ -315,16 +336,10 @@ def _add_evidence_args(parser: argparse.ArgumentParser) -> None:
             "evidence/v1/artifacts/crossover_v2/<relay-session-id>/)"
         ),
     )
-    parser.add_argument(
-        "--state",
-        default=None,
-        help=(
-            "the crossover-v2 flow state JSON, banked separately from the "
-            "bundle. Optional; without it the packet cannot carry the "
-            "per-claim verify verdicts, the Fc selection, or the applied "
-            "profile's incumbent, and says so"
-        ),
-    )
+    # Not `required=True` even for ``stage``: argparse would refuse before the
+    # two speaker-level questions are asked, and the command owns a sentence
+    # that says WHY the flag matters here. The check lives in `_cmd_stage`.
+    parser.add_argument("--state", default=None, help=state_help)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -375,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
             "validate a prescription and leave it for the next round to apply"
         ),
     )
-    _add_evidence_args(stage)
+    _add_evidence_args(stage, state_help=_STATE_HELP_REQUIRED)
     stage.add_argument(
         "--prescription",
         required=True,

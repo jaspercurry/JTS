@@ -493,8 +493,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_twelve_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has TWELVE keys.
+def test_persisted_verify_priors_carries_exactly_the_thirteen_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has THIRTEEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -557,12 +557,19 @@ def test_persisted_verify_priors_carries_exactly_the_twelve_bridge_keys(monkeypa
     reason exactly: an operator stages a prescription against stage 1, and the
     stage that GRADES the round runs in another process, so without this key
     the attribution dies with the session that took it and no series can ever
-    be read back as prescribed-versus-solved. It carries the document's digest
-    beside the prescription, because "which correction" and "which document
-    asked for it" are two facts and only the second can find the evidence
-    packet again. ``None`` on every ordinary round.
+    be read back as prescribed-versus-solved. ``None`` on every ordinary round.
 
-    The top-level payload is unchanged by all eight widenings — each new key is
+    **Deliberate widening (A9): ``blend_prescription_sha256``.** The thirteenth,
+    and the OUTCOME/REQUEST split the eleventh already draws, arrived at the
+    same way: the record above says WHAT was prescribed, this says WHICH
+    DOCUMENT asked, and only the second can find the evidence packet and the
+    conversation behind the numbers. Its own key is not stylistic here — the
+    record must round-trip through ``blend_prescription_from_mapping`` for stage
+    2 to rehydrate it, and that reader refuses an unknown field rather than
+    ignoring it, so a digest nested inside made the whole record unreadable.
+    ``""`` on every ordinary round.
+
+    The top-level payload is unchanged by all nine widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -582,6 +589,7 @@ def test_persisted_verify_priors_carries_exactly_the_twelve_bridge_keys(monkeypa
         "alignment_prescription",
         "alignment_objective",
         "blend_prescription",
+        "blend_prescription_sha256",
     }
 
 

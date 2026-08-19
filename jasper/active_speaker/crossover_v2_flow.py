@@ -6303,18 +6303,32 @@ class CrossoverV2Session:
         one whose was solved, which is the attribution the whole prescriber loop
         exists to make comparable.
 
-        Carries ``prescription_sha256`` beside the prescription's own view. The
-        digest is not part of the prescription: the prescription is what was
-        asked for, the digest names the document that asked, and a reader
-        reconstructing a round six weeks later needs the second to find the
-        evidence packet and the conversation that produced it.
+        **Exactly ``to_dict()``, with nothing added.** An earlier shape folded
+        the document digest in beside it and that was a real defect, not a
+        stylistic one: the durable record has to survive a round trip through
+        :func:`~.crossover_v2.blend_prescription.blend_prescription_from_mapping`
+        so stage 2 can rehydrate it, and that reader refuses an unknown field
+        rather than ignoring it — by design, because a misspelled ``filters``
+        that was quietly dropped would leave a receipt claiming provenance it
+        does not have. One extra key made the whole record unreadable. The
+        digest travels as :attr:`blend_prescription_sha256` instead.
         """
         if self._prescribed_blend is None:
             return None
-        return {
-            **self._prescribed_blend.to_dict(),
-            "prescription_sha256": self._prescribed_blend_sha256,
-        }
+        return self._prescribed_blend.to_dict()
+
+    @property
+    def blend_prescription_sha256(self) -> str:
+        """The digest of the document this round's prescription came from (A9).
+
+        Its own value rather than a field inside the record above, on
+        :attr:`measure_alignment_objective`'s rule and for the same reason: the
+        prescription is WHAT was asked for and the digest names the DOCUMENT
+        that asked, they are two facts, and nesting one in the other is what
+        broke the record's round trip. ``""`` when this round prescribed
+        nothing, which is what the record's own ``None`` already says.
+        """
+        return self._prescribed_blend_sha256
 
     @property
     def last_intervention_proposal(self) -> Any:

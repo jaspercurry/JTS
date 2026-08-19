@@ -75,6 +75,8 @@ module opens no route; it carries the class the seam already accepts.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -82,6 +84,8 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from jasper.atomic_io import atomic_write_text
+from jasper.log_event import log_event
+from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .blend_prescription import (
     PRESCRIPTION_MAX_BYTES,
@@ -91,6 +95,8 @@ from .blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONSUMED_SUFFIX",
@@ -154,6 +160,15 @@ SPOOL_SCHEMA_VERSION = 1
 #: it, so there is exactly one number policing a prescription's size and it is
 #: not this one.
 SPOOL_MAX_BYTES = 8 * PRESCRIPTION_MAX_BYTES
+
+#: The highest frequency the gate's biquad evaluator is defined for.
+#:
+#: Half of :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`, imported from
+#: the evaluator's own owner rather than written down here, on the rule
+#: :mod:`.blend_prescription` follows for the cut ceilings it imports from the
+#: deterministic solver. Used by :func:`_band` — see its docstring for why a
+#: finite-but-absurd band edge is a refusal rather than a curiosity.
+_EVALUABLE_MAX_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 
 
 # --------------------------------------------------------------------------- #
@@ -305,8 +320,25 @@ def stage_prescription(
 
     The write is atomic and mode ``0o640`` with the parent's group, matching the
     flow state file it sits beside: the operator's CLI writes it, the web user
-    reads and consumes it, and neither should be able to publish it wider.
+    reads and consumes it, and neither should be able to publish it wider. The
+    group assignment is STRICT — no ``best_effort_group`` — which is
+    ``save_v2_state``'s posture and is the right one here for a sharper reason
+    than symmetry: this file exists to be read by another user. A write that
+    silently fell back to the writer's own group would publish a document
+    ``jasper-web`` cannot open, and the failure would surface a round later as a
+    prescription that mysteriously did not apply. Failing the ``stage`` command
+    loudly (exit ``3``) tells the operator at the moment they can fix it.
+
+    **Staging twice is last-wins, and that is the decision rather than an
+    accident.** The slot holds ONE instruction because a round takes one; an
+    operator who re-prescribes after re-reading the evidence means the second
+    document, and a refusal there would make them delete a file by hand to
+    correct themselves. The overwrite is logged
+    (``event=crossover_v2.prescription_staged`` carries ``replaced``) so it is
+    never silent, and the atomic rename means a concurrent take sees one whole
+    document or the other, never a splice.
     """
+    replaced = prescription_spool_path().is_file()
     payload = {
         "artifact_schema_version": SPOOL_SCHEMA_VERSION,
         "kind": SPOOL_KIND,
@@ -324,19 +356,30 @@ def stage_prescription(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         mode=0o640,
         group_from_parent=True,
-        best_effort_group=True,
         durable=True,
+    )
+    log_event(
+        logger, "crossover_v2.prescription_staged",
+        for_round_ordinal=int(for_round_ordinal),
+        prescription_sha256=payload["prescription_sha256"],
+        replaced=replaced,
     )
     return path
 
 
 def staged_prescription_pending() -> bool:
-    """Whether a document is waiting, WITHOUT taking it.
+    """Is a document waiting? A TEST predicate, with no production caller.
 
-    For surfaces that report state (a CLI's status line, a screen). It answers
-    the question a stat can answer and deliberately no more: anything that wants
-    the prescription itself must go through :func:`take_staged_prescription`,
-    which is the only reader and always consumes.
+    Named rather than left as a bare ``.is_file()`` in a dozen assertions,
+    because "is one pending" is the concept the lifecycle tests are actually
+    checking and a second spelling of it in each test is how the two drift. It
+    is deliberately NOT offered as a surface for a screen or a status line: no
+    such caller exists, and inventing one here would be the speculative
+    flexibility this repository trims.
+
+    It answers what a stat answers and no more. Anything that wants the
+    prescription itself goes through :func:`take_staged_prescription`, which is
+    the only reader and always consumes.
     """
     return prescription_spool_path().is_file()
 
@@ -483,7 +526,20 @@ def _validate(raw: bytes, *, round_ordinal: int) -> StagedPrescription:
             f"a staged prescription must carry its document, got "
             f"{type(document).__name__}",
         )
-    payload = document.encode("utf-8")
+    try:
+        payload = document.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # A JSON string may hold a LONE SURROGATE — `json.loads` accepts
+        # ``"\ud800"`` and produces a `str` no UTF-8 encoder will take. The
+        # encode is therefore a parse step, not a formality, and an escaping
+        # `UnicodeEncodeError` reaches the preparer as a bare programmer string
+        # in the wizard's 400 rather than as a named refusal. Every other
+        # unreadable byte in this envelope answers `spool_malformed`; so does
+        # this one.
+        _refuse(
+            SPOOL_MALFORMED,
+            f"the staged document is not encodable UTF-8 text: {exc}",
+        )
     digest = envelope.get("prescription_sha256")
     actual = prescription_sha256(payload)
     if digest != actual:
@@ -523,6 +579,32 @@ def _band(raw: Any) -> tuple[float, float] | None:
     the sentence for a prescription with no region to be checked against
     (:data:`~.blend_prescription.REGION_UNAVAILABLE`), and a second spelling of
     it here would be a second owner of the same refusal.
+
+    **Two guards, and both were escapes rather than tidiness.** A band read off
+    disk is handed straight to the gate, which EVALUATES biquads across it —
+    so an edge this reader lets through is an edge ``chain_response`` has to
+    survive, and it does not survive either of these:
+
+    * ``isfinite``. ``0.0 < lo < hi`` is true for ``(1.0, inf)``, and a NaN edge
+      is false everywhere so it escaped as ``None`` by luck rather than by rule.
+      An infinite upper edge reached ``np.geomspace(lo, inf, 512)`` and produced
+      a math domain error. The stricter of the two readers of this shape,
+      :func:`~.blend_prescription.blend_prescription_from_mapping`, already
+      guarded exactly this and this one had copied the laxer; they now agree
+      instead of differing by which reader you happened to reach.
+    * **Nyquist.** ``isfinite`` alone is not enough: ``(1.0, 1e308)`` is finite,
+      passes every ordering test, and raises the SAME math domain error one
+      layer down, in ``math.cos(2πf/fs)``. The bound is the evaluator's own —
+      :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` divided by two,
+      IMPORTED rather than restated, on the rule the cut ceilings in
+      :mod:`.blend_prescription` follow. A response above half the sample rate
+      is not a conservative refusal, it is an undefined quantity. It is also a
+      very loose bound in practice — a real crossover region is a few hundred to
+      a few thousand Hz — so it constrains no legitimate document and exists
+      only to keep an unnamed exception out of a refusal path.
+
+    Both edges are checked, not just the upper one: a band sitting entirely
+    above Nyquist is the same nonsense arriving in a different order.
     """
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
         return None
@@ -530,7 +612,11 @@ def _band(raw: Any) -> tuple[float, float] | None:
         lo, hi = float(raw[0]), float(raw[1])
     except (TypeError, ValueError, OverflowError):
         return None
-    return (lo, hi) if 0.0 < lo < hi else None
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return None
+    if not (0.0 < lo < hi):
+        return None
+    return (lo, hi) if hi <= _EVALUABLE_MAX_HZ else None
 
 
 # --------------------------------------------------------------------------- #

@@ -1721,7 +1721,10 @@ unrun; and a document staged for a round that has already run is refused as
 `prescription_not_staged_for_this_round` while the round carries on with the
 deterministic correction. `--state` is required here (it is optional for the
 other two verbs) because the round ordinal is read from it — staging without
-one would file a prescription against a series the command cannot see. Owner:
+one would file a prescription against a series the command cannot see. Staging
+twice is last-wins: the slot holds one instruction, and the overwrite is logged
+(`event=crossover_v2.prescription_staged` carries `replaced`) so a round that
+applied the second of two prescriptions can be explained. Owner:
 [`prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py).
 
 `<bundle-dir>` is a commissioning bundle — the directory holding `info.json`

@@ -19,7 +19,9 @@ trusted, that it runs once, and that an Undo withdraws it.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -47,6 +49,8 @@ from tests.test_crossover_v2_stage_bridge import (
     _isolated_v2_state as _isolated_v2_state,
     _open_prepared,
     _production_host_seams as _production_host_seams,
+    _seed_applied_stage_1_state,
+    _stage_2,
     _status,
 )
 
@@ -215,7 +219,8 @@ def test_the_round_receipt_carries_who_prescribed_it_and_which_document(
     v2host.save_v2_state(_state_carrying_a_kept_round())
     payload = _stage(for_round_ordinal=9)
 
-    record = _prepare(monkeypatch).blend_prescription_record
+    conductor = _prepare(monkeypatch)
+    record = conductor.blend_prescription_record
 
     assert record is not None
     assert record["prescription_class"] == "cut"
@@ -226,11 +231,14 @@ def test_the_round_receipt_carries_who_prescribed_it_and_which_document(
     assert record["packet_fingerprint"] == _PACKET_FINGERPRINT
     assert record["filters"] == [dict(f) for f in _ACCEPTED_FILTERS]
     # The digest of the bytes that were STAGED, not of a re-serialization of
-    # what they parsed to — the field that lets a reader find the evidence
+    # what they parsed to — the value that lets a reader find the evidence
     # packet and the conversation that produced the numbers. Asserted against a
     # fresh hash of the same bytes, so a hop that quietly re-encoded the
-    # document somewhere in the middle would show up as a mismatch here.
-    assert record["prescription_sha256"] == prescription_sha256(payload)
+    # document somewhere in the middle would show up as a mismatch here. It
+    # rides BESIDE the record, never inside it — the record must survive
+    # `blend_prescription_from_mapping`, which refuses an unknown field.
+    assert conductor.blend_prescription_sha256 == prescription_sha256(payload)
+    assert "prescription_sha256" not in record
 
 
 def test_the_provenance_is_written_to_durable_state_not_only_held_in_memory(
@@ -248,16 +256,99 @@ def test_the_provenance_is_written_to_durable_state_not_only_held_in_memory(
     the conductor either way. This reads the state the preparer actually wrote.
     """
     v2host.save_v2_state(_state_carrying_a_kept_round())
-    _stage(for_round_ordinal=9)
+    payload = _stage(for_round_ordinal=9)
 
     _prepare(monkeypatch)
     persisted = v2host.load_v2_state() or {}
 
-    record = (persisted.get("verify_priors") or {}).get("blend_prescription")
+    priors = persisted.get("verify_priors") or {}
+    record = priors.get("blend_prescription")
     assert record is not None, "the prescription never reached durable state"
     assert record["filters"] == [dict(f) for f in _ACCEPTED_FILTERS]
     assert record["prescriber"]["model"] == "claude-opus-5"
-    assert record["prescription_sha256"]
+    # The digest is banked BESIDE the record, never inside it: the record has
+    # to survive `blend_prescription_from_mapping`, which refuses an unknown
+    # field rather than ignoring it.
+    assert priors["blend_prescription_sha256"] == prescription_sha256(payload)
+    assert "prescription_sha256" not in record
+
+
+def _state_a_prescribed_round_left(payload: bytes) -> dict[str, Any]:
+    """An applied stage-1 state carrying a prescribed round's provenance.
+
+    Built on the stage bridge's own ``_seed_applied_stage_1_state`` rather than
+    hand-rolled, so the seed is the shipped shape and only the two A9 keys are
+    this test's addition.
+    """
+    state = _seed_applied_stage_1_state()
+    state["verify_priors"]["blend_prescription"] = _accept(payload).to_dict()
+    state["verify_priors"]["blend_prescription_sha256"] = prescription_sha256(payload)
+    v2host.save_v2_state(state)
+    return state
+
+
+def test_stage_two_does_not_erase_the_provenance_stage_one_banked(monkeypatch):
+    """SF-2: the durable channel has to outlive the round, not just stage 1.
+
+    ``verify_priors`` is REBUILT from the conductor on every persist. A stage-2
+    conductor holds no prescription of its own, so without a rehydration arm
+    stage 2 writes ``None`` over stage 1's record — before the round receipt is
+    written — and a round that ran a prescribed correction is banked as though
+    its correction had been solved.
+
+    This is the #2698 shape exactly: the value reaches durable state and then
+    nothing carries it the rest of the way. The shipped test stopped after
+    stage 1, which is precisely where that defect hides, so this one reads the
+    state after a stage-2 persist.
+    """
+    payload = _document()
+    _state_a_prescribed_round_left(payload)
+
+    _conductor, state = _stage_2(monkeypatch)
+
+    priors = state.get("verify_priors") or {}
+    record = priors.get("blend_prescription")
+    assert record is not None, "stage 2 erased the prescription stage 1 banked"
+    assert record["filters"] == [dict(f) for f in _ACCEPTED_FILTERS]
+    assert record["packet_fingerprint"] == _PACKET_FINGERPRINT
+    assert priors["blend_prescription_sha256"] == prescription_sha256(payload)
+
+
+def test_the_stage_two_conductor_can_name_what_the_round_was_prescribed(
+    monkeypatch,
+):
+    """The read side: the rehydrated record lands on the grading conductor.
+
+    The state assertion above proves the value survived the persist; this
+    proves the GRADING session holds it, which is what lets the round receipt
+    name it. Same split as the alignment prior's two pins.
+    """
+    payload = _document()
+    _state_a_prescribed_round_left(payload)
+
+    conductor, _state = _stage_2(monkeypatch)
+
+    assert conductor.blend_prescription_record["filters"] == [
+        dict(f) for f in _ACCEPTED_FILTERS
+    ]
+    assert conductor.blend_prescription_sha256 == prescription_sha256(payload)
+
+
+def test_a_grading_session_carrying_a_prescription_cannot_re_apply_it(monkeypatch):
+    """Carrying it is not applying it — the safety question the arm raises.
+
+    Stage 2 now holds a `BlendPrescription`, and `_blend_prescription` reads it
+    FIRST. That is only safe because the door it feeds — the MEASURE-stage
+    candidate build — is not on stage 2's plan at all. Pinned on the plan rather
+    than on an argument: a stage-2 session that ever grew a MEASURE phase would
+    re-apply a correction the round already applied, and this fails first.
+    """
+    _state_a_prescribed_round_left(_document())
+
+    conductor, _state = _stage_2(monkeypatch)
+
+    assert conductor._prescribed_blend is not None
+    assert flow.PHASE_MEASURE not in set(conductor.session_phases)
 
 
 def test_a_deterministic_round_banks_no_prescription_in_durable_state(monkeypatch):
@@ -349,20 +440,77 @@ def test_a_refused_document_leaves_the_round_running_the_deterministic_path(
 def test_the_ordinal_the_preparer_checks_is_the_one_it_hands_the_session(
     monkeypatch,
 ):
-    """One read, used twice — a state write between them would mis-target.
+    """One read, used twice — pinned by making a second read DIVERGE.
 
-    The preparer resolves the series position once and uses the ordinal both to
-    take the prescription and to hydrate the session. Pinned by staging for the
-    ordinal the hydrated position reports: if the take read the state
-    separately, any divergence would show as a refusal here.
+    The claim is that the preparer resolves the series position once. On a
+    quiescent state file a second read returns the same answer, so a test that
+    only staged for the right ordinal would pass against either shape and pin
+    nothing.
+
+    So the reader is made to answer differently each time it is called. A
+    preparer that resolved twice hands the take one ordinal and the session the
+    other; with the take going first it would look for round 9 and the session
+    would believe it is round 10, and the prescription would be refused as
+    stale. The two assertions below can only both hold if exactly ONE read
+    happened.
     """
     v2host.save_v2_state(_state_carrying_a_kept_round())
     _stage(for_round_ordinal=9)
 
+    from jasper.active_speaker.crossover_v2 import coordinator
+
+    # Patched at its OWNER, because the preparer imports it inside the function
+    # — so this is the binding the call site actually resolves.
+    real_reader = coordinator.series_position_from_state
+    calls: list[int] = []
+
+    def _diverging_reader(raw):
+        position = real_reader(raw)
+        calls.append(len(calls))
+        return dataclasses.replace(position, ordinal=9 + len(calls) - 1)
+
+    monkeypatch.setattr(
+        coordinator, "series_position_from_state", _diverging_reader
+    )
     conductor = _prepare(monkeypatch)
 
+    assert calls == [0], "the preparer resolved the series position more than once"
     assert conductor._series_position.ordinal == 9
     assert conductor._blend_prescription() == _ACCEPTED_FILTERS
+
+
+def test_staging_twice_is_last_wins_and_says_so(caplog):
+    """The slot holds ONE instruction, and the second document is the answer.
+
+    An operator who re-prescribes after re-reading the evidence means the
+    second document; refusing would make them delete a file by hand to correct
+    themselves. What must not happen is silence — the overwrite is logged, so a
+    round that applied the second of two prescriptions can be explained.
+    """
+    first = _document(rationale="the first answer")
+    second = _document(rationale="the second answer")
+    assert prescription_sha256(first) != prescription_sha256(second)
+
+    _stage(for_round_ordinal=9, document=first)
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.crossover_v2"
+                                              ".prescription_spool"):
+        _stage(for_round_ordinal=9, document=second)
+
+    staged = spool.take_staged_prescription(round_ordinal=9)
+    assert staged.prescription.rationale == "the second answer"
+    assert staged.prescription_sha256 == prescription_sha256(second)
+    # logfmt renders booleans lowercase — the rendered line is the contract a
+    # reader greps, so it is what gets asserted.
+    assert "replaced=true" in caplog.text
+
+
+def test_staging_the_first_time_does_not_claim_to_have_replaced_anything(caplog):
+    """The control: ``replaced`` is a fact, not a constant."""
+    with caplog.at_level(logging.INFO, logger="jasper.active_speaker.crossover_v2"
+                                              ".prescription_spool"):
+        _stage(for_round_ordinal=9)
+
+    assert "replaced=false" in caplog.text
 
 
 # --------------------------------------------------------------------------- #
@@ -576,6 +724,161 @@ def test_the_cap_is_a_property_of_the_bytes_not_of_the_stat(monkeypatch):
 
     assert caught.value.reason == spool.SPOOL_TOO_LARGE
     assert caught.value.evidence["got_bytes"] > spool.SPOOL_MAX_BYTES
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the envelope fuzz — every corrupt field refuses BY NAME
+#
+# Shipped as the fuzz rather than as the two cases it caught, because the
+# finding was never "these two values"; it was that a REFUSAL path could raise
+# an unnamed exception, and the preparer turns that into a raw programmer
+# string in the wizard's 400 instead of a round that carries on. Two escapes
+# came out of the reviewer's 8-field x 25-value sweep (a lone surrogate in the
+# document string, an infinite band edge) and a third out of re-running it here
+# (a finite-but-absurd band edge, which `isfinite` does not catch). A
+# two-case test would pin the three values; this pins the property.
+# --------------------------------------------------------------------------- #
+
+#: Values chosen for the ways a JSON document can be hostile rather than merely
+#: wrong: type confusion, the numeric tower's edges, the string edges an
+#: encoder rejects, and structures that recurse or allocate.
+_HOSTILE_VALUES = (
+    None, True, False, 0, -1, 1, 2**63, -(2**63), 0.0, -0.0,
+    float("inf"), float("-inf"), float("nan"), 1e308, -1e308, 1e-308,
+    "", " ", "\x00", "\ud800", "\U0001f600", "x" * 4096,
+    [], {}, [[[[[]]]]], {"a": {"b": {"c": {}}}}, [1e308, float("inf")],
+)
+
+#: Every top-level field the envelope carries. Derived from a staged document
+#: rather than listed, so a field added to the envelope joins the fuzz without
+#: anyone remembering to add it — the sweep cannot go stale against its subject.
+def _envelope_fields() -> tuple[str, ...]:
+    _stage(for_round_ordinal=9)
+    fields = tuple(sorted(json.loads(spool.prescription_spool_path().read_text())))
+    spool.withdraw_staged_prescription()
+    return fields
+
+
+def test_the_envelope_fuzz_covers_every_field_and_the_known_escapes():
+    """The fuzz's own control: it sweeps what it claims to sweep.
+
+    A fuzz whose field list drifted from the envelope would report a clean
+    sweep of a subject it no longer covers — silence that looks like safety.
+    The three values that actually escaped are named, so a later edit that
+    dropped them from the corpus fails here rather than quietly narrowing it.
+    """
+    fields = _envelope_fields()
+
+    assert fields == (
+        "artifact_schema_version", "band_hz", "document", "for_round_ordinal",
+        "kind", "packet_fingerprint", "prescription_sha256", "staged_at",
+    )
+    assert "\ud800" in _HOSTILE_VALUES
+    assert float("inf") in _HOSTILE_VALUES
+    assert 1e308 in _HOSTILE_VALUES
+    assert len(fields) * len(_HOSTILE_VALUES) >= 8 * 25
+
+
+def test_no_corrupt_envelope_field_escapes_the_refusal_vocabulary():
+    """Every field x every hostile value: a NAMED refusal, or a clean take.
+
+    The property, stated as the preparer experiences it: a corrupt spool may
+    cost the round its prescription, and may never cost the household its
+    session. Anything that is not a ``BlendPrescriptionRefused`` carrying a slug
+    from one of the two vocabularies reaches ``prepare_v2_session`` as an
+    unhandled exception — the wizard's 400 with a programmer string in it.
+
+    A few combinations legitimately ACCEPT (a hostile value in a field the take
+    does not read, such as ``staged_at``), and that is not a failure; the
+    assertion is about what a refusal looks like, not about refusing.
+
+    Two escapes this caught on the reviewer's sweep — a lone surrogate in
+    ``document`` (``UnicodeEncodeError`` at the encode) and ``band_hz``'s
+    infinite edge (a math domain error out of ``chain_response``) — plus one
+    more found re-running it here: ``1e308``, finite and absurd, which reaches
+    the same evaluator through ``math.cos`` instead.
+    """
+    known = spool.SPOOL_REFUSAL_REASONS | PRESCRIPTION_REFUSAL_REASONS
+    escapes: list[str] = []
+
+    for field in _envelope_fields():
+        for value in _HOSTILE_VALUES:
+            _stage(for_round_ordinal=9)
+            try:
+                _rewrite_envelope(**{field: value})
+            except (TypeError, ValueError):  # unserializable probe, not a case
+                spool.withdraw_staged_prescription()
+                continue
+            try:
+                spool.take_staged_prescription(round_ordinal=9)
+            except BlendPrescriptionRefused as exc:
+                if exc.reason not in known:
+                    escapes.append(f"{field}={value!r} -> unknown slug {exc.reason}")
+            except Exception as exc:  # noqa: BLE001 - the finding IS the escape
+                escapes.append(f"{field}={value!r} -> {type(exc).__name__}: {exc}")
+            finally:
+                spool.withdraw_staged_prescription()
+
+    assert not escapes, "corrupt envelopes escaped the vocabulary:\n" + "\n".join(
+        escapes
+    )
+
+
+@pytest.mark.parametrize(
+    "band, label",
+    [
+        ([1.0, float("inf")], "infinite upper edge"),
+        ([float("inf"), 1e9], "infinite lower edge"),
+        ([1.0, float("nan")], "NaN edge"),
+        # Finite, ordered, and still undefined: the evaluator computes
+        # cos(2*pi*f/fs), which has no answer this far out.
+        ([1.0, 1e308], "finite but past Nyquist"),
+        ([1.0, spool._EVALUABLE_MAX_HZ + 1.0], "one hertz past Nyquist"),
+    ],
+)
+def test_an_unevaluable_band_refuses_by_name_rather_than_raising(band, label):
+    """The band guard, per escape shape, with the boundary named.
+
+    ``region_unavailable`` rather than a spool slug on purpose:
+    ``read_blend_prescription`` owns the sentence for "no region to check
+    against", and a second spelling here would be a second owner of it.
+    """
+    _stage(for_round_ordinal=9)
+    _rewrite_envelope(band_hz=band)
+
+    with pytest.raises(BlendPrescriptionRefused) as caught:
+        spool.take_staged_prescription(round_ordinal=9)
+
+    assert caught.value.reason == "region_unavailable", label
+
+
+def test_the_nyquist_bound_is_the_evaluators_own_number():
+    """Imported, not restated — the rule the cut ceilings already follow.
+
+    A locally-written 24000 would be a second source of truth for the response
+    rate, and the failure mode of that copy is a band this reader accepts and
+    the evaluator cannot compute.
+    """
+    from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+
+    assert spool._EVALUABLE_MAX_HZ == RESPONSE_SAMPLE_RATE_HZ / 2.0
+    # And it is loose enough to constrain no real crossover region.
+    assert spool._EVALUABLE_MAX_HZ > _BAND_HZ[1]
+
+
+def test_a_lone_surrogate_document_refuses_rather_than_raising():
+    """``json.loads`` accepts ``"\\ud800"``; no UTF-8 encoder will take it.
+
+    So the encode in the take is a parse step, not a formality. Before the fix
+    it raised ``UnicodeEncodeError`` straight through the preparer.
+    """
+    _stage(for_round_ordinal=9)
+    _rewrite_envelope(document="\ud800")
+
+    with pytest.raises(BlendPrescriptionRefused) as caught:
+        spool.take_staged_prescription(round_ordinal=9)
+
+    assert caught.value.reason == spool.SPOOL_MALFORMED
 
 
 def test_the_two_refusal_vocabularies_stay_disjoint():
@@ -825,6 +1128,30 @@ def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
     assert code == cli.EXIT_EVIDENCE_UNREADABLE
     assert "--state is required" in capsys.readouterr().err
     assert not spool.staged_prescription_pending()
+
+
+def test_the_state_flag_help_matches_whether_the_verb_needs_it():
+    """``--help`` must not call a hard-required flag optional.
+
+    ``stage`` refuses without ``--state``; ``packet`` and ``propose`` degrade
+    and say so. One shared help string cannot be true of both, and the one that
+    shipped was the optional sentence — a `--help` contradicting the command it
+    documents, and contradicting the tool index's own row.
+    """
+    parser = cli.build_parser()
+    helps = {
+        name: next(
+            action.help for action in sub._actions
+            if action.dest == "state"
+        )
+        for name, sub in parser._subparsers._group_actions[0].choices.items()
+    }
+
+    assert "REQUIRED for this verb" in helps["stage"]
+    assert "Optional" not in helps["stage"]
+    for verb in ("packet", "propose"):
+        assert "Optional" in helps[verb]
+        assert "REQUIRED" not in helps[verb]
 
 
 def test_a_refused_prescription_stages_nothing_and_exits_two(tmp_path, monkeypatch):
