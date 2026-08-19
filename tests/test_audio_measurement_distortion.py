@@ -718,6 +718,107 @@ def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
         sys.modules.pop(spec.name, None)
 
 
+def _replay_cli(name: str):
+    """The replay CLI, loaded as a module. Caller pops ``sys.modules[name]``."""
+    import importlib.util
+    import sys
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / (
+        "harmonic-distortion-replay.py"
+    )
+    spec = importlib.util.spec_from_file_location(name, path)
+    cli = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = cli
+    spec.loader.exec_module(cli)
+    return cli, spec
+
+
+def _measure_program_at(downstream_db: float, *, courtesy_prelude: bool):
+    """A MEASURE program in the exact shape ``rebuild_program`` reconstructs."""
+    from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB
+
+    return build_measure_program(
+        GAIN_PLAN_DB,
+        (
+            RoleBand("woofer", 0, FrequencyBand(*WOOFER_BAND_HZ)),
+            RoleBand("tweeter", 1, FrequencyBand(*TWEETER_BAND_HZ)),
+        ),
+        downstream_gain_db=downstream_db,
+        leading_pilot_gains_db=(
+            GAIN_PLAN_DB["woofer"] - PILOT_LEVEL_DELTA_DB, GAIN_PLAN_DB["woofer"],
+        ),
+        leading_pilot_role="woofer",
+        courtesy_prelude=courtesy_prelude,
+    )
+
+
+def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
+    """The CI hole that let the replay CLI rot, closed with no corpus at all.
+
+    ``rebuild_program``'s imports are FUNCTION-local, so the two pins above —
+    which only ``exec_module`` the file — went on passing while the tool was
+    un-runnable: #2715 deleted ``COURTESY_PRELUDE_ENABLED`` and every CI leg
+    stayed green, because the one test that would have called the function is
+    the corpus pin below, and it skips wherever ``captures/`` is absent (i.e.
+    everywhere CI runs). Found by an operator running the tool on 2026-08-19,
+    not by the suite. This test CALLS the reconstruction, so the next rename of
+    a constant it reaches for fails here instead of on a lab bench.
+
+    The program is built by the shipped composer and handed back as the thing
+    to reproduce, so the assertion is a round trip through the real solve —
+    both unbanked parameters (the session volume, and the courtesy prelude
+    whose MEASURE value #2715 flipped) recovered from the ``program_id`` hash
+    alone.
+    """
+    import sys
+
+    from jasper.active_speaker.crossover_v2_flow import (
+        PHASE_MEASURE,
+        courtesy_prelude_for_phase,
+    )
+
+    cli, spec = _replay_cli("_hd_replay_identity")
+    bands = {"woofer": WOOFER_BAND_HZ, "tweeter": TWEETER_BAND_HZ}
+    shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
+    try:
+        # A capture banked TODAY: the product's own rule reproduces it, and the
+        # solve reports the grid point the program was built at.
+        current = _measure_program_at(-20.0, courtesy_prelude=shipped)
+        program, downstream, prelude = cli.rebuild_program(
+            {"gain_plan_db": GAIN_PLAN_DB,
+             "candidate": {"program_id": current.program_id}},
+            bands,
+        )
+        assert program.program_id == current.program_id
+        assert downstream == pytest.approx(-20.0)
+        assert prelude is shipped
+
+        # A capture banked the other side of #2715 — the corpus this file's own
+        # smoke test reads, and the one the CLI's usage names. Its id is
+        # unreachable under today's rule, so a tool pinned to that rule alone
+        # could not read its own documented corpus.
+        legacy = _measure_program_at(-12.5, courtesy_prelude=not shipped)
+        assert legacy.program_id != current.program_id
+        program, downstream, prelude = cli.rebuild_program(
+            {"gain_plan_db": GAIN_PLAN_DB,
+             "candidate": {"program_id": legacy.program_id}},
+            bands,
+        )
+        assert program.program_id == legacy.program_id
+        assert downstream == pytest.approx(-12.5)
+        assert prelude is not shipped
+
+        # ...and the gate still refuses rather than reports: an id no grid
+        # point reproduces is a reconstruction that cannot prove itself.
+        with pytest.raises(SystemExit, match="reproduces program_id"):
+            cli.rebuild_program(
+                {"gain_plan_db": GAIN_PLAN_DB, "candidate": {"program_id": "deadbeef"}},
+                bands,
+            )
+    finally:
+        sys.modules.pop(spec.name, None)
+
+
 # --------------------------------------------------------------------------- #
 # corpus smoke — skipped wherever captures/ is not checked out (i.e. on CI)
 # --------------------------------------------------------------------------- #
@@ -736,6 +837,7 @@ def test_the_banked_corpus_reconstructs_and_reads():
     segment — this is a wiring check, not the campaign.
     """
     import json
+    import sys
     import wave
 
     state = json.loads((_CORPUS / "series2-state-r1b-preapply.json").read_text())
@@ -743,35 +845,20 @@ def test_the_banked_corpus_reconstructs_and_reads():
     if not wavs:
         pytest.skip("round r1b holds no MEASURE capture")
 
-    # The session volume is banked nowhere, so it is solved against the
-    # program id exactly as `scripts/harmonic-distortion-replay.py` solves it.
-    # Repeated here rather than imported: the CLI's filename is not a module
-    # name, and renaming a lab tool to suit a test is the wrong direction.
-    from jasper.active_speaker.crossover_v2_flow import (
-        COURTESY_PRELUDE_ENABLED,
-        PILOT_LEVEL_DELTA_DB,
-    )
-
-    gains = state["gain_plan_db"]
-    program = None
-    for downstream in np.arange(-40.0, 0.01, 0.5):
-        candidate = build_measure_program(
-            {r: float(gains[r]) for r in ("woofer", "tweeter")},
-            (
-                RoleBand("woofer", 0, FrequencyBand(*WOOFER_BAND_HZ)),
-                RoleBand("tweeter", 1, FrequencyBand(*TWEETER_BAND_HZ)),
-            ),
-            downstream_gain_db=float(downstream),
-            leading_pilot_gains_db=(
-                float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB, float(gains["woofer"]),
-            ),
-            leading_pilot_role="woofer",
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
+    # Solved BY the CLI rather than beside it. This loop used to be a second
+    # copy of ``rebuild_program``, on the argument that a lab tool should not be
+    # renamed to suit a test — but the two pins above already load the file by
+    # spec, so the copy bought nothing and cost the usual price: it went stale
+    # against #2715 in exactly the same way the tool did, silently, because this
+    # test skips wherever ``captures/`` is absent. Driving the real function is
+    # also what makes this a join with the corpus rather than a re-derivation.
+    cli, spec = _replay_cli("_hd_replay_corpus")
+    try:
+        program, _downstream, _prelude = cli.rebuild_program(
+            state, {"woofer": WOOFER_BAND_HZ, "tweeter": TWEETER_BAND_HZ},
         )
-        if candidate.program_id == state["candidate"]["program_id"]:
-            program = candidate
-            break
-    assert program is not None, "banked program_id no longer reconstructs"
+    finally:
+        sys.modules.pop(spec.name, None)
 
     with wave.open(str(wavs[0])) as handle:
         channels = handle.getnchannels()

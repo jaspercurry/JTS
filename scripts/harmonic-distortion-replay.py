@@ -25,10 +25,11 @@ than reporting:
    ``gain_plan_db`` and the driver bands, and its ``program_id`` must equal the
    id the session recorded. That is a SHA-256 over the full segment schedule, so
    a match means the reconstructed stimulus — hence every ``L`` the harmonic
-   offsets are derived from — is exactly the one that played. The session
-   volume is not banked anywhere, so it is SOLVED against that same id over a
-   bounded grid (:data:`DOWNSTREAM_GRID_DB`); a solve verified by a hash is
-   worth more than an operator's assertion.
+   offsets are derived from — is exactly the one that played. The two
+   parameters the corpus never banked (the session volume, and the courtesy
+   prelude whose MEASURE value #2715 changed) are SOLVED against that same id
+   rather than asserted — see :func:`rebuild_program`; a solve verified by a
+   hash is worth more than an operator's assertion.
 2. **Analysis fidelity.** The shipped ``analyze_program_capture`` is re-run and
    its :data:`FIDELITY_FIELDS` compared against the sidecar's own ``diagnostic``
    block — the analysis AS PERFORMED. Only then is the distortion read trusted,
@@ -179,14 +180,30 @@ def sign_convention(calibration_id: str) -> str:
 def rebuild_program(state: dict[str, Any], bands: dict[str, tuple[float, float]]):
     """The round's MEASURE program, verified against its banked ``program_id``.
 
-    Returns ``(program, downstream_gain_db)``. Raises ``SystemExit`` when no
-    grid point reproduces the id — a reconstruction that cannot prove itself
-    must not be read, because every harmonic offset derives from the sweep
-    ``L`` this program carries.
+    Returns ``(program, downstream_gain_db, courtesy_prelude)``. Raises
+    ``SystemExit`` when no grid point reproduces the id — a reconstruction that
+    cannot prove itself must not be read, because every harmonic offset derives
+    from the sweep ``L`` this program carries.
+
+    **Two unbanked parameters are solved here, not asserted.** The session
+    volume was never banked (see :data:`DOWNSTREAM_GRID_DB`), and neither was
+    the courtesy prelude — whose value for MEASURE *changed* when #2715
+    replaced the flat ``COURTESY_PRELUDE_ENABLED`` global with the per-phase
+    :func:`courtesy_prelude_for_phase` (``True`` before it, ``False`` after).
+    The prelude moves the program bytes, so a corpus banked either side of that
+    commit reproduces under exactly one of the two values: measured on
+    2026-08-19, ``captures/wired-night-2026-08-19`` solves at ``False`` and the
+    ``captures/xover-series2-2026-08-17`` corpus this file's usage names solves
+    at ``True``. Pinning today's rule alone would therefore leave the tool
+    unable to read its own documented corpus. The shipped rule is tried FIRST
+    so a current capture is answered by the product's own answer, and the
+    search is safe in both directions because the ``program_id`` hash is what
+    accepts it: a wrong prelude cannot match, it can only fail to.
     """
     from jasper.active_speaker.crossover_v2_flow import (
-        COURTESY_PRELUDE_ENABLED,
+        PHASE_MEASURE,
         PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
     )
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -207,24 +224,27 @@ def rebuild_program(state: dict[str, Any], bands: dict[str, tuple[float, float]]
         RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
         RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
     )
-    for downstream in DOWNSTREAM_GRID_DB:
-        program = build_measure_program(
-            {role: float(gains[role]) for role in ("woofer", "tweeter")},
-            roles,
-            downstream_gain_db=float(downstream),
-            leading_pilot_gains_db=(
-                float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB,
-                float(gains["woofer"]),
-            ),
-            leading_pilot_role="woofer",
-            courtesy_prelude=COURTESY_PRELUDE_ENABLED,
-        )
-        if program.program_id == want:
-            return program, float(downstream)
+    shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
+    for prelude in (shipped, not shipped):
+        for downstream in DOWNSTREAM_GRID_DB:
+            program = build_measure_program(
+                {role: float(gains[role]) for role in ("woofer", "tweeter")},
+                roles,
+                downstream_gain_db=float(downstream),
+                leading_pilot_gains_db=(
+                    float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB,
+                    float(gains["woofer"]),
+                ),
+                leading_pilot_role="woofer",
+                courtesy_prelude=prelude,
+            )
+            if program.program_id == want:
+                return program, float(downstream), prelude
     raise SystemExit(
         f"no session volume in [{DOWNSTREAM_GRID_DB[0]}, {DOWNSTREAM_GRID_DB[-1]}] dB "
-        f"reproduces program_id {want[:12]} at bands {bands}. Either the driver "
-        f"bands are wrong or this state does not describe a MEASURE round."
+        f"reproduces program_id {want[:12]} at bands {bands}, with the courtesy "
+        f"prelude either on or off. Either the driver bands are wrong or this "
+        f"state does not describe a MEASURE round."
     )
 
 
@@ -574,9 +594,10 @@ def main() -> int:
         "tweeter": tuple(float(x) for x in args.tweeter_band.split(":")),
     }
     state = json.loads(args.state.read_text())
-    program, downstream = rebuild_program(state, bands)
+    program, downstream, prelude = rebuild_program(state, bands)
     print(f"program_id {program.program_id[:12]} reproduced "
-          f"(session volume solved: {downstream:+.1f} dB)")
+          f"(session volume solved: {downstream:+.1f} dB, courtesy prelude "
+          f"{'on' if prelude else 'off'})")
 
     preset = ((state.get("pre_apply_profile") or {}).get("recomposition_snapshot")
               or {}).get("preset") or {}
