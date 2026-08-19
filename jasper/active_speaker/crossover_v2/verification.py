@@ -658,7 +658,10 @@ def pooled_residual(
     through a private copy of this function that was identical statement for
     statement. One reduction with one owner is now why that number and this
     axis's ``post_residual_db`` cannot disagree about what "the post-apply
-    residual" is.
+    residual" is. Being public also puts it one namespace from
+    :func:`~jasper.active_speaker.flat_spec_views.log_pooled_residual`, which is
+    not this: that one re-pools a FINISHED report by octave, this one grades a
+    curve.
     """
 
     try:

@@ -544,7 +544,8 @@ class RoundEvaluation:
     #: re-deriving it from the curve. It IS the benefit axis's own reduction —
     #: :func:`~.verification.pooled_residual` over the post side of
     #: :func:`benefit_comparands` — so this number and the one that axis
-    #: graded cannot disagree about what "the post-apply residual" is.
+    #: graded cannot disagree about what "the post-apply residual" is, and it
+    #: is computed even when that axis cannot grade.
     #:
     #: **Its readership is the round's journal line, and that is the whole
     #: list.** Earlier text here claimed a second consumer — that
