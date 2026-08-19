@@ -97,8 +97,9 @@ GLITCH_INPUT_TIMELINE_SLIP = "timeline_slip"
 #: The step model must also EXPLAIN the capture, not merely absorb one extra
 #: degree of freedom: its residual sum of squares must fall to this fraction
 #: of the no-step fit's. This is the false-positive arbiter the spread guard
-#: never had, and it is why the gate below can sit far under the diagnostic's
-#: 4.0 floor without inheriting the D7 false-rejection failure mode.
+#: never had, and it is why the gate below can sit under the 4.0 floor the
+#: integer-fed fit needed without inheriting the D7 false-rejection failure
+#: mode.
 STEP_RSS_RATIO = 0.25
 
 #: The gating tolerance, in samples, on a SUB-SAMPLE-fed fit.
