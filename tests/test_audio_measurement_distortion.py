@@ -664,6 +664,60 @@ def test_a_sidecar_without_gate_fields_is_refused_not_read_ungated():
         sys.modules.pop(spec.name, None)
 
 
+def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
+    """S2 (#2720 gate): the dump ring holds 16-bit phone captures AND 32-bit
+    wired captures (#2662 W2b). A width-blind int16 decode re-strides a
+    32-bit take into garbage the H2/H3 read then misattributes, so
+    ``load_mono`` reads the width from the container's own fmt chunk — and
+    refuses widths it does not support rather than mis-analyzing them.
+    (Twin pin for scripts/severed-twin-replay.py lives in
+    tests/test_crossover_v2_boost_scenarios.py.)"""
+    import importlib.util
+    import struct
+    import sys
+    import wave
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / (
+        "harmonic-distortion-replay.py"
+    )
+    spec = importlib.util.spec_from_file_location("_hd_replay_widths", path)
+    cli = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = cli
+    try:
+        spec.loader.exec_module(cli)
+
+        def _write(name, values, width):
+            wav_path = tmp_path / name
+            with wave.open(str(wav_path), "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(width)
+                writer.setframerate(48_000)
+                fmt = {2: f"<{len(values)}h", 4: f"<{len(values)}i"}[width]
+                writer.writeframes(struct.pack(fmt, *values))
+            return wav_path
+
+        sixteen = _write("phone.wav", [0, 16384, -16384, 32767], 2)
+        assert np.allclose(
+            cli.load_mono(sixteen), [0.0, 0.5, -0.5, 32767 / 2**15]
+        )
+        thirty_two = _write(
+            "wired.wav", [0, 2**30, -(2**30), 2**31 - 1], 4
+        )
+        assert np.allclose(
+            cli.load_mono(thirty_two), [0.0, 0.5, -0.5, (2**31 - 1) / 2**31]
+        )
+        eight = tmp_path / "unsupported.wav"
+        with wave.open(str(eight), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(1)
+            writer.setframerate(48_000)
+            writer.writeframes(bytes([128, 129, 127]))
+        with pytest.raises(ValueError, match="unsupported 8-bit WAV"):
+            cli.load_mono(eight)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+
 # --------------------------------------------------------------------------- #
 # corpus smoke — skipped wherever captures/ is not checked out (i.e. on CI)
 # --------------------------------------------------------------------------- #

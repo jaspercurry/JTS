@@ -135,8 +135,23 @@ class Capture:
 def load_mono(path: Path) -> np.ndarray:
     with wave.open(str(path)) as handle:
         channels, frames = handle.getnchannels(), handle.getnframes()
+        width = handle.getsampwidth()
         raw = handle.readframes(frames)
-    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
+    # Width from the container's own fmt chunk, never assumed: the dump ring
+    # holds 16-bit phone captures AND 32-bit wired captures (#2662 W2b), and
+    # decoding 32-bit frames as int16 re-strides every sample — the fidelity
+    # gate then misreports the garbage as drift, the exact misattribution
+    # this replay exists to prevent. Unsupported widths fail loudly
+    # (scripts/_wav_stats.py precedent), never as a wrong analysis.
+    if width == 2:
+        samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 2**15
+    elif width == 4:
+        samples = np.frombuffer(raw, dtype="<i4").astype(np.float64) / 2**31
+    else:
+        raise ValueError(
+            f"{path.name}: unsupported {width * 8}-bit WAV — this replay reads "
+            "the 16-bit (phone) and 32-bit (wired) captures the dump ring holds"
+        )
     return samples[::channels] if channels > 1 else samples
 
 
