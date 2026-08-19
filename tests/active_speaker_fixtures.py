@@ -252,6 +252,20 @@ def standard_driver_research(
         {
             "role": "tweeter",
             "model": "F110M-8",
+            # NOTE for the next author who writes an alternative-Fc test on this
+            # fixture: 2500 here is ALSO the crossover_candidates frequency_hz
+            # below, and since #2603 this one field IS the declared protection
+            # floor. So this speaker has zero downward headroom -- any test that
+            # nudges its crossover DOWN is proposing a crossover the driver's own
+            # declaration forbids, and the apply-time gate
+            # (camilla_yaml._assert_tweeter_crossover_honours_declared_floor)
+            # will refuse it. That is not a bug in the gate; it is this fixture
+            # declaring a floor it does not itself leave room under. The twin of
+            # this block in tests/test_active_speaker_baseline_profile.py::_research
+            # hit exactly that and now declares 2000; do the same here rather
+            # than re-deriving the diagnosis, if you need downward room. Left at
+            # 2500 for now because nothing built on THIS fixture moves the
+            # crossover, so changing it would churn golden output for no gain.
             "recommended_highpass_hz": 2500,
             "do_not_test_below_hz": 1200,
             "gain_offset_db": tweeter_gain_db,

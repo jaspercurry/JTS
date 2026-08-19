@@ -59,7 +59,10 @@ from jasper.active_speaker.camilla_yaml import (
     EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
     _assert_tweeter_crossover_honours_declared_floor,
     emit_active_speaker_baseline_config,
+    emit_active_speaker_commissioning_config,
     emit_active_speaker_driver_domain_config,
+    emit_active_speaker_program_config,
+    emit_active_speaker_startup_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import (
@@ -989,7 +992,9 @@ def test_the_gate_refuses_a_declared_floor_with_no_readable_crossover_corner(
     assert f"result={EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR}" in caplog.text
 
 
-def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose() -> None:
+def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose(
+    tmp_path: Path,
+) -> None:
     """The scope boundary, pinned so a later widening has to argue with a test.
 
     The gate deliberately does NOT run on the startup / commissioning / program
@@ -999,13 +1004,58 @@ def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose() ->
     replace that with a bare exception thrown from under the commissioning flow
     -- and would leave the load gate untestable against the one artifact it
     exists to catch, which is what sections (c)-(e) above depend on.
+
+    Exercised through ``_stage``, which really runs an ungated emitter
+    (``emit_active_speaker_commissioning_config`` — staging's emitter, NOT the
+    startup one, despite the artifact's name). The companion test below covers
+    the other two by calling them directly, because asserting a preset field
+    here would pass just as happily on a build that HAD widened the gate,
+    making this documentation rather than a pin.
     """
 
     topology = mono_output_topology()
     preview = _preview(topology, fc_hz=2000, tweeter_floor_hz=5000)
-
-    # Compiling the preset is what the commissioning flow does before staging;
-    # neither step may refuse, because the load gate owns that refusal.
     preset = _preset(topology, preview)
-
     assert preset.drivers["tweeter"].protection_highpass_floor_hz == 5000.0
+
+    staged = _stage(tmp_path, topology, preview)
+
+    assert (tmp_path / "active_staged.yml").exists()
+    # ...and it published both facts, which is what makes the load gate's
+    # refusal possible at all.
+    assert staged["config"]["tweeter_crossover_highpass_hz"] == 2000.0
+    assert staged["config"]["tweeter_protection_floor_hz"] == 5000.0
+
+
+@pytest.mark.parametrize("emitter", ["startup", "commissioning", "program"])
+def test_the_ungated_emitters_still_emit_a_below_floor_graph(emitter: str) -> None:
+    """The other half of the scope boundary — one case per ungated emitter.
+
+    The test above reaches only the emitter STAGING happens to call. Widening
+    the gate to either of the other two would leave it green, so each is called
+    here directly with the same below-floor preset. All three must emit: the
+    startup-load gate owns the refusal for these graphs, and it can only judge
+    an artifact that was allowed to exist.
+    """
+
+    topology = mono_output_topology()
+    preset = _below_floor_preset(topology)
+
+    if emitter == "startup":
+        text = emit_active_speaker_startup_config(
+            preset, playback_device=ACTIVE_PCM,
+        )
+    elif emitter == "commissioning":
+        text = emit_active_speaker_commissioning_config(
+            preset, playback_device=ACTIVE_PCM,
+        )
+    else:
+        text = emit_active_speaker_program_config(
+            preset,
+            role_channels={"woofer": 0, "tweeter": 1},
+            playback_device=ACTIVE_PCM,
+        )
+
+    # Emitted, not refused -- and carrying the below-floor corner, so this
+    # cannot pass by emitting some other graph.
+    assert "freq: 2000.0000" in text

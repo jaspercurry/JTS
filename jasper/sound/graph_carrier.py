@@ -512,7 +512,9 @@ def _recompose_active_baseline_with_eq(
     via ``recompose_applied_baseline_yaml`` rather than parsing the running config
     — so the crossover/limiter/protective-HP come from the canonical builder,
     not a lossy round-trip — and raises :class:`CarrierCannotHostEq` if that
-    snapshot can no longer produce a baseline. ``output_trim_db`` (the
+    snapshot can no longer produce a baseline, whether because the evidence is
+    gone, because the runtime contract rejects the rebuild, or because an L0
+    emit gate refuses it outright (see the re-raise below). ``output_trim_db`` (the
     household's manual headroom + loudness-match attenuation) is folded into the
     active headroom so the active path honours it like the stereo path. All
     imports are lazy: this only runs for a speaker that already IS an active
@@ -539,6 +541,7 @@ def _recompose_active_baseline_with_eq(
         recompose_applied_baseline_yaml,
     )
     from jasper.active_speaker.playback_route import resolve_live_active_endpoint
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.runtime_contract import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         classify_bass_extension_graph,
@@ -561,16 +564,38 @@ def _recompose_active_baseline_with_eq(
     bass_proof_profile = bass_evaluation.profile
     preference_filters = build_sound_filters(profile)
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
-    yaml, issues = recompose_applied_baseline_yaml(
-        topology,
-        applied_profile=applied_profile,
-        room_peqs=room_peqs or [],
-        preference_filters=preference_filters,
-        output_trim_db=output_trim_db,
-        out_path=None,
-        playback_device=live_endpoint,
-        bass_extension_profile=bass_emission_profile,
-    )
+    # The L0 emit gates inside emit_active_speaker_baseline_config raise
+    # ActiveSpeakerConfigError (a ValueError) rather than returning an issue
+    # list: an unprotected tweeter, or a crossover below that tweeter's own
+    # declared protection floor. Convert to CarrierCannotHostEq so a refusal
+    # travels this module's typed contract — the /eq/ and /sound/ handlers
+    # branch on reason_code and render `message`; an escaping ValueError falls
+    # to their generic branch instead and surfaces as a 502 with a raw
+    # exception string. Mirrors the ActiveLeaderError / ActiveFollowerError
+    # re-raises the bond prechecks added for this same gate family.
+    #
+    # This is not hypothetical for the floor gate: a speaker commissioned
+    # below its tweeter's declared floor keeps PLAYING that graph (the gate is
+    # on emit, not on load), so the household meets this refusal the next time
+    # they save preference EQ — which is exactly when they need a sentence
+    # naming the crossover, not a 502.
+    try:
+        yaml, issues = recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied_profile,
+            room_peqs=room_peqs or [],
+            preference_filters=preference_filters,
+            output_trim_db=output_trim_db,
+            out_path=None,
+            playback_device=live_endpoint,
+            bass_extension_profile=bass_emission_profile,
+        )
+    except ActiveSpeakerConfigError as exc:
+        raise CarrierCannotHostEq(
+            "active_baseline_recompose_unavailable",
+            "JTS couldn't rebuild this speaker's active baseline to add sound "
+            f"EQ: {exc}. Your crossover and driver protection are unchanged.",
+        ) from exc
     if yaml is None:
         detail = (issues[0].get("message") if issues else None) or (
             "the saved active-speaker measurement/crossover evidence is unavailable"
