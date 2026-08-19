@@ -383,6 +383,21 @@ def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
     )
 
 
+def test_a_resolved_stop_is_actually_frozen() -> None:
+    """`frozen=True` means the screen bag too, not just the fields.
+
+    A caller holding a resolved walk must not be able to edit the angle the
+    position gate is waiting for. It still compares equal to a plain dict, so
+    reading it is unchanged.
+    """
+    stop, = ac.resolve_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    with pytest.raises(TypeError):
+        stop.screen["position_deg"] = "45"  # type: ignore[index]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        stop.angle_deg = 45  # type: ignore[misc]
+    assert stop.screen == dict(stop.screen)
+
+
 def test_index_phase_map_matches_the_resolved_walk() -> None:
     """The map and the stops cannot describe different walks."""
     request = ac.both_at([0, 7], mover=ac.MOVER_ARM)

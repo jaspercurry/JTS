@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
@@ -402,6 +403,13 @@ class ResolvedStop:
     prompt: CloudPositionPrompt
     program_phase: str
     screen: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        # Frozen means frozen: the screen bag is handed out behind a read-only
+        # view, the same way ``SessionExcitation`` guards ``caps_dbfs``. It
+        # still compares equal to a plain dict, so callers and tests read it
+        # exactly as before.
+        object.__setattr__(self, "screen", MappingProxyType(dict(self.screen)))
 
 
 def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) -> dict[str, str]:
