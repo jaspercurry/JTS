@@ -113,10 +113,19 @@ STEP_RSS_RATIO = 0.25
 #: / 0.30 rows of the battery are stress margin two to three times beyond any
 #: capture ever observed.
 #:
-#: At that operating point 1.5 gives **0.00 % false rejection** and detects
-#: the two silent USB slips the Stage-0 bank actually recorded at **99.8 %**
-#: (+1.986 samples) and **100 %** (+7.008). It holds up under stress: still
-#: 0.00 % false rejection at sd = 0.20, and 1.09 % at sd = 0.30.
+#: Every figure below is measured through THIS module's own
+#: :func:`slip_rejects_capture` — gate and RSS rule together, n = 4000 clean
+#: captures per row. (An earlier draft of this block quoted a script that
+#: applied the size rule WITHOUT the RSS rule, so its numbers described
+#: something that does not run. Stated because the premise here is "measured,
+#: not chosen", and a figure from the wrong code path fails that premise
+#: exactly as a guessed one would.)
+#:
+#: False rejection on clean captures, by locate-noise sd:
+#: **0.00 %** at 0.05, **0.00 %** at 0.10 (the operating point), **0.00 %** at
+#: 0.20, and **0.78 %** at 0.30. Detection at the operating point:
+#: **99.83 %** of +1.986-sample slips and **100.00 %** of +7.008 — the two the
+#: Stage-0 bank actually recorded.
 #:
 #: What this buys, stated as the quantity that changed: the shipped spread
 #: guard reduces a step to roughly half its size before comparing against
@@ -126,9 +135,13 @@ STEP_RSS_RATIO = 0.25
 #: which is what brings the +1.986-sample (41 us) slip inside the net.
 #:
 #: The limit, because it is not the one originally asked for: **one-sample
-#: slips are NOT reliably caught** (0.1 % at the operating point). Reaching a
-#: 1-sample bar would need a gate near 0.6, which false-rejects 14 % of clean
-#: captures at sd = 0.30 — the D7 failure mode rebuilt on purpose. Six locate
+#: slips are NOT reliably caught** (0.20 % at the operating point, same n).
+#: Reaching a 1-sample bar would need a gate near 0.6, and that gate
+#: false-rejects **15.05 %** of clean captures at sd = 0.20 and **33.33 %** at
+#: sd = 0.30 — the D7 failure mode rebuilt on purpose, and worse than D7's
+#: own eight-in-twenty-eight. Note the cost is already unacceptable one full
+#: stress row BELOW the worst case, which is the part that settles it. Six
+#: locate
 #: positions and a best-of-five cut search do not carry the information for
 #: it; that requires adding signal to the capture (the Stage-0 dual timing
 #: pilot resolves 0.002 samples because it measures a known 2.2 s playback
@@ -234,11 +247,13 @@ def fit_timeline_step(
         if rss < best_rss:
             best_rss, best_step, best_cut = rss, float(coef[-1]), cut
 
-    # A perfectly-fitting no-step capture leaves nothing for a step to
-    # explain; guard the ratio rather than dividing by zero. `no_step_rss` is
-    # exactly 0.0 only on noiseless synthetic input, where a spurious step is
-    # also exactly 0.0, so this arm reports clean rather than suppressing a
-    # finding.
+    # Divide-by-zero guard only. It is genuinely unreachable on real input:
+    # even a noiseless synthetic capture leaves `no_step_rss` tiny-POSITIVE
+    # from float rounding rather than exactly 0.0, so the ratio is computed
+    # there (measured at 2.91 on such a capture, i.e. failing the RSS rule and
+    # reporting clean, which is the right answer for a capture with no step).
+    # Reporting 1.0 for a true zero is the same "clean" answer by another
+    # route, so neither arm can manufacture a finding.
     ratio = 1.0 if no_step_rss <= 0.0 else best_rss / no_step_rss
     return TimelineStepFit(
         step_samples=best_step,

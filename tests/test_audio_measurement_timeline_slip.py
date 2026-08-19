@@ -265,7 +265,9 @@ def test_detects_the_two_real_stage0_slips(step, label):
     the bank's own size-bounded subset is 71 MB and the full set ~870 MB,
     which is not a size a test suite should carry when the quantity under
     test is a sample count. ``+1.986`` is the one that matters most — 41 us,
-    twice the 20 us relative-phase bar, and inside today's guard's blind spot.
+    twice the 20 us relative-phase bar, and inside the SPREAD guard's blind
+    spot (it is the reason this gate exists; "today's guard" would read as
+    this one the moment this lands).
 
     Measured across 1000 seeds rather than one, because a single seed would
     hide a marginal detection rate.

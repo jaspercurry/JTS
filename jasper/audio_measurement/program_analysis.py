@@ -2722,22 +2722,27 @@ def _locate_discontinuity(
     # MEASURE program can produce one (``RoleBand.__post_init__`` refuses a
     # role that is not a non-empty string), so this is scope discipline, not
     # a live case.
-    by_role: dict[str, list[SegmentLocation]] = {}
-    for loc in ordered:
-        by_role.setdefault(loc.role or "", []).append(loc)
-    placed: dict[int, float] = {}
+    # Keyed by POSITION in `ordered`, not by object identity: two locations can
+    # legitimately compare equal, and an index needs no aliasing argument.
+    by_role: dict[str, list[int]] = {}
+    for index, loc in enumerate(ordered):
+        by_role.setdefault(loc.role or "", []).append(index)
+    placed: list[float] = [0.0] * len(ordered)
     for members in by_role.values():
-        reference = members[0]
+        reference = ordered[members[0]]
         ref_n = program.segment(reference.segment_id).n_samples
-        placed[id(reference)] = float(reference.located_start)
-        for loc in members[1:]:
-            placed[id(loc)] = float(reference.located_start) + _subsample_separation(
-                capture, reference.located_start, loc.located_start, ref_n
+        placed[members[0]] = float(reference.located_start)
+        for index in members[1:]:
+            placed[index] = float(reference.located_start) + _subsample_separation(
+                capture,
+                reference.located_start,
+                ordered[index].located_start,
+                ref_n,
             )
 
     fit = fit_timeline_step(
         [float(program.segment(loc.segment_id).start_sample) for loc in ordered],
-        [placed[id(loc)] for loc in ordered],
+        placed,
         [loc.role or "" for loc in ordered],
     )
     if not slip_rejects_capture(fit):
