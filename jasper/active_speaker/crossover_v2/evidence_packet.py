@@ -1,0 +1,646 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""One round's banked evidence, gathered into one document a reader can answer.
+
+The crossover domain's sibling of
+:func:`jasper.correction.evidence.build_evidence_packet`, which does exactly
+this job for room correction and has done since the calibration advisor
+shipped.  Same shape, same posture, same privacy vocabulary; different domain,
+different artifacts, and deliberately no import in either direction — the two
+domains bank to different roots in different formats, and a shared
+implementation would have to be told which one it was reading on every field.
+
+**Why it exists.**  A round already banks everything a reader needs: the
+receipt's verdicts and axes, the cloud's curve and per-position evidence, the
+spec's per-band honesty, the capture integrity per position, the identity of
+the speaker and the microphone.  What it does not have is ONE document.  Every
+session that wanted to reason about a round has re-walked that tree by hand —
+most recently 635 lines of throwaway glue in a captures directory, which
+recovered the mic angle by regex over a log file and hardcoded a measured
+delay as a literal.  This module is the promotion of the *reading* half of
+that glue, and nothing else: it computes no new number, grades nothing, and
+writes nothing.
+
+**Its one impurity, named.**  It reads JSON files under a directory.  That is
+the same bounded impurity :mod:`.round_anchor` declares, and it is the whole
+of it: no clock, no network, no CamillaDSP handle, no session.
+
+**The packet's first duty is to say what is NOT in it.**  Copying the honest
+fields verbatim is necessary and not sufficient — a reader also has to know
+which questions this round cannot answer at all.  Three examples this survey
+actually found on the shipped corpus, all carried as
+:data:`NOT_EVALUATED` entries rather than omitted:
+
+* **the microphone's angle at each position** is nowhere in the banked tree;
+  only a coarse ``role`` (``onax``/``offax``) is.  The lab recovered angles by
+  reading a walk-driver log.  A packet that quietly emitted ``role`` alone
+  would let a reader assume the angle was simply not interesting.
+* **per-branch verify claims** come back ``not_evaluated`` with the reason
+  ``no_per_branch_verify_capture``.  That string is copied through untouched.
+  Flattening it to a ``null`` — or worse, to a zero — would turn "we did not
+  look" into "we looked and found nothing".
+* **harmonic distortion** is computable but never banked, so no round in the
+  corpus carries one.
+
+**Absence has two flavours and they are never merged.**  ``source_absent``
+means the artifact was not handed to this builder; ``field_null`` means it was,
+and the field inside it is null.  The glue could not tell those apart (its
+``or {}`` chains collapsed both), and they send a reader to different places —
+"pass the state file too" versus "that stage did not run".
+
+**Redaction is an allowlist, and it reports what it dropped.**  Same mechanism
+as :func:`jasper.calibration_agent.advisor_context.build_advisor_context`:
+copy named fields, and publish the names of the fields that were withheld so
+the packet cannot quietly become a different document than the tree it came
+from.  Absolute filesystem paths, raw WAV bytes, and household-authored prose
+never enter.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from jasper.audio_measurement.evidence_identity import (
+    EvidenceIdentityError,
+    json_fingerprint,
+)
+
+from .blend_prescription import prescription_response_format
+
+__all__ = [
+    "PACKET_KIND",
+    "PACKET_SCHEMA_VERSION",
+    "CrossoverEvidencePacketError",
+    "build_crossover_evidence_packet",
+    "packet_positional_evidence",
+    "packet_region_band_hz",
+]
+
+#: Bumped when a reader that understood the previous version would misread this
+#: one. :func:`~.blend_prescription.read_blend_prescription` refuses a proposal
+#: answering a version it does not speak, so this number is load-bearing rather
+#: than decorative.
+PACKET_SCHEMA_VERSION = 1
+
+PACKET_KIND = "jts_crossover_v2_evidence_packet"
+
+GENERATED_BY = (
+    "jasper.active_speaker.crossover_v2.evidence_packet."
+    "build_crossover_evidence_packet"
+)
+
+#: Where a session bundle keeps its round artifacts. The ``<cap-id>`` directory
+#: under it is the relay session id, which is NOT the bundle's own
+#: ``session_id`` — the two namespaces are distinct on disk and conflating them
+#: is how a reader ends up joining the wrong round to the wrong bundle.
+_EVIDENCE_GLOB = "evidence/v1/artifacts/crossover_v2/*"
+
+#: Position fields copied verbatim. ``wav_path`` is deliberately absent — it is
+#: an absolute path on the speaker's filesystem, and ``wav_sha256`` identifies
+#: the same bytes without naming where they live.
+_POSITION_FIELDS = (
+    "position_id",
+    "index",
+    "attempt",
+    "role",
+    "take_id",
+    "wav_sha256",
+    "validity_floor_hz",
+    "gate_disclosure",
+    "gate_floor_source",
+    "gate_window_ms",
+    "gating_applied",
+    "glitch_detected",
+    "summed_ripple_db",
+    "echo",
+)
+
+#: Bundle identity fields copied verbatim from ``info.json``'s ``fingerprints``
+#: block. The mic sub-block is copied whole: it carries a calibration id and a
+#: content hash, never a serial (``household_mic`` keeps only a one-way
+#: ``serial_hash`` and a last-4 display, and neither is in this tree).
+_IDENTITY_FIELDS = (
+    "topology_id",
+    "topology_fingerprint",
+    "output_assignments",
+    "graph_fingerprint",
+    "mic",
+    "build_sha",
+)
+
+#: Verify-claim and state fields the packet carries. ``household_findings`` is
+#: NOT among them and never will be: it is household-authored prose, so it is
+#: both the one privacy-sensitive field in the tree and the only place a string
+#: from outside JTS could reach a reader's instructions.
+_STATE_WITHHELD = ("household_findings",)
+
+
+class CrossoverEvidencePacketError(ValueError):
+    """The named directory is not a crossover-v2 session bundle."""
+
+
+def _read_json(path: Path) -> tuple[Any, str]:
+    """One artifact, plus why it is missing when it is.
+
+    Never raises on a bad file: an unreadable artifact is a fact about the
+    round that the packet reports, not a reason to have no packet at all.
+    """
+    if not path.exists():
+        return None, "source_absent"
+    try:
+        return json.loads(path.read_text()), ""
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"unreadable: {type(exc).__name__}"
+    except json.JSONDecodeError as exc:
+        return None, f"not valid JSON: {exc.msg}"
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
+    """Which of the two absences this is, said explicitly.
+
+    ``source_absent`` when the artifact never arrived, ``field_null`` when it
+    did and the field inside it is null. Merging them is the reading defect
+    this packet exists partly to fix.
+    """
+    if source_reason:
+        return {"status": "not_evaluated", "reason": source_reason, "field": field}
+    if not present:
+        return {"status": "not_evaluated", "reason": "field_null", "field": field}
+    return {}
+
+
+def _copy_allowed(
+    raw: Any, allowed: tuple[str, ...]
+) -> tuple[dict[str, Any], list[str]]:
+    """Named fields through, and the names of everything held back.
+
+    The allowlist mechanism from ``advisor_context._copy_allowed``, reproduced
+    for this domain's records. Reporting the withheld NAMES is the part that
+    matters: a packet that silently narrowed its source would be a different
+    document wearing the same schema version.
+    """
+    if not isinstance(raw, dict):
+        return {}, []
+    kept = {key: raw[key] for key in allowed if key in raw}
+    withheld = sorted(key for key in raw if key not in allowed)
+    return kept, withheld
+
+
+def _find_round_dir(session_dir: Path) -> tuple[Path | None, str]:
+    matches = sorted(
+        path for path in session_dir.glob(_EVIDENCE_GLOB) if path.is_dir()
+    )
+    if not matches:
+        return None, "no crossover_v2 round artifacts under evidence/v1"
+    if len(matches) > 1:
+        # Fail closed rather than pick. Two round directories in one bundle
+        # means the caller has to say which round it is asking about, and
+        # guessing would silently grade a proposal against the wrong one.
+        names = ", ".join(path.name for path in matches)
+        return None, f"bundle carries more than one round ({names})"
+    return matches[0], ""
+
+
+def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
+    """Per-position curves and capture integrity, copied rather than derived.
+
+    The grid, the curves and the flat reference all come from ONE artifact, so
+    a reader (and :func:`~.blend_prescription.positional_support`) cannot end
+    up comparing a curve from one evaluation against a reference from another.
+    No re-smoothing and no re-derivation: the lab's own per-position readers
+    held that invariant and it is why their numbers could be trusted beside the
+    round's.
+    """
+    positions = _mapping(cloud.get("positions"))
+    grid = _mapping(positions.get("curve_grid"))
+    rows: list[dict[str, Any]] = []
+    withheld: set[str] = set()
+    for entry in positions.get("positions") or []:
+        if not isinstance(entry, dict):
+            continue
+        kept, dropped = _copy_allowed(entry, _POSITION_FIELDS + ("magnitude_db",))
+        withheld.update(dropped)
+        rows.append(kept)
+    return {
+        "available": bool(rows),
+        "schema": positions.get("schema"),
+        "n_positions": len(rows),
+        "curve_grid": {
+            "freqs_hz": grid.get("freqs_hz") or [],
+            "fractional_octave": grid.get("fractional_octave"),
+            "smoothing_fraction": grid.get("smoothing_fraction"),
+            "floor_hz": grid.get("floor_hz"),
+            "floor_source": grid.get("floor_source"),
+        },
+        "positions": rows,
+        "redacted_fields": sorted(withheld),
+        # The one fact a reader would otherwise assume was simply uninteresting.
+        "angle_deg": {
+            "status": "not_evaluated",
+            "reason": (
+                "no numeric microphone angle is banked anywhere in a round's "
+                "artifacts; only the coarse role below is. Recovering an angle "
+                "means reading the walk driver's own log, which is not part of "
+                "this bundle."
+            ),
+        },
+        "role_vocabulary": sorted({
+            str(row.get("role")) for row in rows if row.get("role")
+        }),
+    }
+
+
+def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
+    """The crossover region a proposal must sit inside.
+
+    ``round_measurements.blend.band_hz`` and nothing else. That field is the
+    VERIFY absolute claim's own band, which decision 10 also makes the region
+    the blend correction is solved and graded over — so a prescription checked
+    against it is checked against byte-identically the band the deterministic
+    solver was bounded by, rather than against a second derivation of "the
+    crossover region" that could drift from it.
+    """
+    blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
+    band = blend.get("band_hz")
+    absent = _absence(reason, band is not None, "round_measurements.blend.band_hz")
+    if absent:
+        return {"available": False, **absent}
+    return {
+        "available": True,
+        "band_hz": band,
+        "source": "round_receipt.round_measurements.blend.band_hz",
+        "note": (
+            "the VERIFY absolute claim's band, which is also the region the "
+            "deterministic blend correction is solved and graded over"
+        ),
+    }
+
+
+def _incumbent_block(
+    receipt: dict[str, Any], reason: str, state: dict[str, Any], state_reason: str
+) -> dict[str, Any]:
+    """What the measurement was taken THROUGH, from both places that record it.
+
+    Two records of one fact, deliberately reported side by side rather than
+    reconciled here: the receipt's ``round_measurements.blend.incumbent`` (what
+    the round said it derived from) and the applied profile's own
+    ``blend_correction`` (what the graph actually carried). They should agree,
+    and a packet that silently preferred one would hide the round where they
+    did not. Reconciling them is a judgement, and this module makes none.
+    """
+    blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
+    profile = _mapping(state.get("pre_apply_profile"))
+    from_receipt = blend.get("incumbent")
+    from_profile = profile.get("blend_correction")
+    return {
+        "from_round_receipt": (
+            from_receipt
+            if from_receipt is not None
+            else _absence(reason, False, "round_measurements.blend.incumbent")
+        ),
+        "from_applied_profile": (
+            from_profile
+            if from_profile is not None
+            else _absence(
+                state_reason,
+                bool(profile),
+                "pre_apply_profile.blend_correction",
+            )
+        ),
+        "note": (
+            "a prescription is a TOTAL, not a delta: prescribe the whole "
+            "correction the next round should apply, incumbent included"
+        ),
+    }
+
+
+def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
+    """Per-claim verdicts, copied verbatim including their ``not_evaluated``.
+
+    These live only in the flow state, never in the bundle — the receipt's own
+    ``verification`` block is a different, coarser record. The per-claim
+    ``status``/``reason`` pairs are the honest ones (``not_evaluated`` +
+    ``no_per_branch_verify_capture`` is the shipped answer for both per-branch
+    claims on every round in the corpus), and they are passed through
+    untouched.
+    """
+    verify = state.get("verify")
+    absent = _absence(reason, isinstance(verify, dict), "verify")
+    if absent:
+        return {"available": False, **absent}
+    verify = _mapping(verify)
+    return {
+        "available": True,
+        "outcome": verify.get("outcome"),
+        "graded_band_hz": verify.get("graded_band_hz"),
+        "claims": _mapping(verify.get("claims")),
+        "gate": _mapping(verify.get("gate")),
+        "delta_probe": _mapping(verify.get("delta_probe")),
+    }
+
+
+def _not_evaluated(
+    *,
+    receipt_reason: str,
+    cloud_reason: str,
+    state_reason: str,
+    findings: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Everything this packet could not answer, and why — one honest list.
+
+    A reader that scans only the fields present will draw conclusions from a
+    shape it cannot see the edges of. This block is the edges. Entries whose
+    absence is a property of the CORPUS (nothing banks a distortion reading)
+    are stated whether or not this particular session was complete.
+    """
+    entries: list[dict[str, Any]] = [
+        {
+            "field": "positions[].angle_deg",
+            "reason": (
+                "no numeric microphone angle is banked; only the coarse "
+                "onax/offax role is"
+            ),
+        },
+        {
+            "field": "first_reflection_ms",
+            "reason": (
+                "the reflection time is narrated inside verify.gate.disclosure "
+                "prose and is not banked as a number anywhere in a round's "
+                "artifacts"
+            ),
+        },
+        {
+            "field": "harmonic_distortion",
+            "reason": (
+                "H2/H3 are computable from banked captures but no round writes "
+                "them; there is no distortion record to carry"
+            ),
+        },
+        {
+            "field": "per_bin_minimum_phase_class",
+            "reason": (
+                "the excess-phase instrument that would separate a "
+                "minimum-phase dip from an interference null per bin is not "
+                "built. The positional bar in the response format is the "
+                "deterministic stand-in"
+            ),
+        },
+    ]
+    if receipt_reason:
+        entries.append({"field": "round_receipt", "reason": receipt_reason})
+    if cloud_reason:
+        entries.append({"field": "cloud_verify", "reason": cloud_reason})
+    if state_reason:
+        entries.append({
+            "field": "flow_state",
+            "reason": (
+                f"{state_reason}; fc_selection, per-claim verify verdicts and "
+                "the applied profile live only here"
+            ),
+        })
+    if isinstance(findings.get("findings"), list) and not findings["findings"]:
+        entries.append({
+            "field": "findings",
+            "reason": (
+                "the finding set was produced and is empty — no attributed "
+                "finding was promoted for this round"
+            ),
+        })
+    return entries
+
+
+def build_crossover_evidence_packet(
+    session_dir: Path,
+    *,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    """Assemble one round's banked evidence into one versioned document.
+
+    ``session_dir`` is a commissioning bundle: an ``info.json`` beside an
+    ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` directory
+    holding the round receipt, the cloud evidence, the finding set and the
+    per-position records.
+
+    ``state_path`` is the flow state file (``jts_crossover_v2_flow_state``),
+    which is banked separately because the bundle does not contain it. It is
+    OPTIONAL and its absence is reported rather than papered over — but a
+    packet without it cannot carry the per-claim verify verdicts, the Fc
+    selection, or the applied profile's own incumbent, and says so in
+    :data:`NOT_EVALUATED`.
+
+    Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
+    not a crossover-v2 session bundle at all. Every other missing or
+    unreadable artifact is reported inside the packet, because a partially
+    banked round is a normal thing to want to read.
+    """
+    if not session_dir.is_dir():
+        raise CrossoverEvidencePacketError(f"not a directory: {session_dir}")
+    info_raw, info_reason = _read_json(session_dir / "info.json")
+    if not isinstance(info_raw, dict):
+        raise CrossoverEvidencePacketError(
+            f"bundle missing a readable info.json ({info_reason}): {session_dir}"
+        )
+    round_dir, round_reason = _find_round_dir(session_dir)
+    if round_dir is None:
+        raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
+
+    receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
+    cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
+    findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
+    receipt = _mapping(receipt_raw)
+    cloud = _mapping(cloud_raw)
+    findings = _mapping(findings_raw)
+
+    state_raw: Any = None
+    state_reason = "no flow state file was supplied"
+    if state_path is not None:
+        state_raw, read_reason = _read_json(state_path)
+        state_reason = read_reason
+    state = _mapping(state_raw)
+    state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
+
+    identity, identity_withheld = _copy_allowed(
+        _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
+    )
+    spec = _mapping(cloud.get("spec"))
+
+    packet: dict[str, Any] = {
+        "artifact_schema_version": PACKET_SCHEMA_VERSION,
+        "kind": PACKET_KIND,
+        "generated_by": GENERATED_BY,
+        "privacy": {
+            "raw_audio_excluded": True,
+            "absolute_paths_excluded": True,
+            "household_prose_excluded": True,
+            "secrets_excluded": True,
+            "microphone_serials_excluded": True,
+            "withheld_state_fields": state_withheld,
+            "note": (
+                "captures are referenced by wav_sha256, never by path or "
+                "content"
+            ),
+        },
+        "session": {
+            "bundle_session_id": info_raw.get("session_id"),
+            "relay_session_id": round_dir.name,
+            "state": info_raw.get("state"),
+            "started_at": info_raw.get("started_at"),
+            "round_id": receipt.get("round_id"),
+            "note": (
+                "bundle_session_id and relay_session_id are different id "
+                "namespaces; the round artifacts are filed under the relay id"
+            ),
+        },
+        "identity": {
+            **identity,
+            "placement": _mapping(info_raw.get("placement")),
+            "redacted_fields": identity_withheld,
+            "calibration": _mapping(_mapping(state.get("evidence")).get("calibration")),
+        },
+        "round": {
+            "available": bool(receipt),
+            "schema_version": receipt.get("schema_version"),
+            "adoption": _mapping(receipt.get("adoption")),
+            "verification": _mapping(receipt.get("verification")),
+            "round_axes": _mapping(receipt.get("round_axes")),
+            "round_measurements": _mapping(receipt.get("round_measurements")),
+            "evidence_identities": _mapping(receipt.get("evidence_identities")),
+            "proposal_fingerprint": receipt.get("proposal_fingerprint"),
+            "proposal_fingerprint_kind": receipt.get("proposal_fingerprint_kind"),
+            "entry_graph_fingerprint": receipt.get("entry_graph_fingerprint"),
+            "applied_graph_fingerprint": receipt.get("applied_graph_fingerprint"),
+            **_absence(receipt_reason, bool(receipt), "round_receipt.json"),
+        },
+        "crossover_region": _region_block(receipt, receipt_reason),
+        "incumbent": _incumbent_block(receipt, receipt_reason, state, state_reason),
+        # Verbatim, every one of them. `spec.bands[]` carries `evaluable`,
+        # `n_excluded` and `graded_lo_hz`; `flatness` carries `n_excluded` and
+        # `evaluable`. Those are the fields that say how much of the band the
+        # number actually covers, and a packet that summarised over them would
+        # be easier to misread than the tools that print them.
+        "flatness": _mapping(cloud.get("flatness")),
+        "spec": spec,
+        "curve": _mapping(cloud.get("curve")),
+        "positions": _positions_block(cloud),
+        "honesty_mask": {
+            "merged_excluded_bands_hz": cloud.get("merged_excluded_bands_hz"),
+            "screen_excluded_bands_hz": cloud.get("screen_excluded_bands_hz"),
+            "null_registry": _mapping(cloud.get("null_registry")),
+            "null_registry_crossover_region": _mapping(
+                cloud.get("null_registry_crossover_region")
+            ),
+            "carve_outs": cloud.get("carve_outs") or [],
+            "geometry": _mapping(cloud.get("geometry")),
+            "trusted_floor_hz": cloud.get("trusted_floor_hz"),
+            "validity_floor_hz": cloud.get("validity_floor_hz"),
+            "note": (
+                "a bin the merged mask removed is not a bin a prescription may "
+                "correct; the mask is the only structural protection against "
+                "cutting an interference null"
+            ),
+        },
+        "findings": {
+            "findings": findings.get("findings") or [],
+            "field_descriptions": _mapping(findings.get("field_descriptions")),
+        },
+        "verify": _verify_block(state, state_reason),
+        "fc_selection": (
+            _mapping(state.get("fc_selection"))
+            if isinstance(state.get("fc_selection"), dict)
+            else _absence(state_reason, False, "fc_selection")
+        ),
+        "not_evaluated": _not_evaluated(
+            receipt_reason=receipt_reason,
+            cloud_reason=cloud_reason,
+            state_reason=state_reason,
+            findings=findings,
+        ),
+        "response_format": prescription_response_format(),
+    }
+    packet["packet_fingerprint"] = _fingerprint(packet)
+    return packet
+
+
+def _fingerprint(packet: dict[str, Any]) -> str:
+    """The content hash a prescription must echo back.
+
+    Through :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`
+    — this repository's one content hash — over the packet MINUS the
+    fingerprint field itself, which does not exist yet at this point. A
+    prescription naming this digest can only have been written against this
+    exact evidence.
+    """
+    try:
+        return json_fingerprint(packet, field_name="evidence_packet")
+    except EvidenceIdentityError as exc:  # pragma: no cover - defensive
+        raise CrossoverEvidencePacketError(
+            f"packet is not exact JSON data: {exc}"
+        ) from exc
+
+
+# --------------------------------------------------------------------------- #
+# the two readers the gate uses — named here so the packet owns its own shape
+# --------------------------------------------------------------------------- #
+
+
+def packet_region_band_hz(packet: Any) -> tuple[float, float] | None:
+    """The crossover region, or ``None`` when the packet does not carry one.
+
+    A reader rather than an attribute access, so
+    :mod:`.blend_prescription` never has to know where in the document the
+    band lives. The packet owns its own layout; the gate asks it questions.
+    """
+    if not isinstance(packet, dict):
+        return None
+    region = packet.get("crossover_region")
+    if not isinstance(region, dict) or not region.get("available"):
+        return None
+    band = region.get("band_hz")
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    try:
+        lo, hi = float(band[0]), float(band[1])
+    except (TypeError, ValueError):
+        return None
+    if not (lo > 0.0 and hi > lo):
+        return None
+    return (lo, hi)
+
+
+def packet_positional_evidence(
+    packet: Any,
+) -> tuple[list[dict[str, Any]], list[float], float] | None:
+    """The per-position curves, their shared grid, and the flat reference.
+
+    ``None`` when any of the three is missing — they are only meaningful
+    together, and a boost judged against two of them would be judged against a
+    reference that did not come from the same evaluation as the curves.
+    """
+    if not isinstance(packet, dict):
+        return None
+    positions = packet.get("positions")
+    spec = packet.get("spec")
+    if not isinstance(positions, dict) or not isinstance(spec, dict):
+        return None
+    rows = positions.get("positions")
+    grid = (positions.get("curve_grid") or {}).get("freqs_hz")
+    reference = spec.get("reference_db")
+    if not isinstance(rows, list) or not rows:
+        return None
+    if not isinstance(grid, list) or not grid:
+        return None
+    if isinstance(reference, bool) or not isinstance(reference, (int, float)):
+        return None
+    try:
+        freqs = [float(value) for value in grid]
+    except (TypeError, ValueError):
+        return None
+    return ([row for row in rows if isinstance(row, dict)], freqs, float(reference))

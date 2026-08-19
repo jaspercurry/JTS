@@ -99,7 +99,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -118,9 +118,18 @@ from .blend_correction import (
     blend_filters_from_mapping,
 )
 
+#: The three-part answer :func:`~.evidence_packet.packet_positional_evidence`
+#: returns: the per-position records, their shared frequency grid, and the flat
+#: reference they are read against. Aliased here because this module is the one
+#: that consumes it and a bare triple in a signature says nothing about why the
+#: three travel together — they are only meaningful as one evaluation's output.
+PositionalEvidence = tuple[list[dict[str, Any]], list[float], float]
+
 __all__ = [
+    "BLEND_CANDIDATE_FIELD",
     "BOOST_MIN_DIP_DB",
     "BOOST_MIN_TESTIFYING_POSITIONS",
+    "BOOST_ROUTE_UNAVAILABLE",
     "PRESCRIPTION_KIND",
     "PRESCRIPTION_MAX_BYTES",
     "PRESCRIPTION_MAX_FILTER_BOOST_DB",
@@ -130,11 +139,16 @@ __all__ = [
     "PRESCRIPTION_SCHEMA_VERSION",
     "BlendPrescription",
     "BlendPrescriptionRefused",
+    "PositionalEvidence",
     "PositionalSupport",
     "blend_prescription_from_mapping",
+    "blend_prescription_to_candidate_fields",
     "positional_support",
     "prescription_response_format",
+    "prescription_route",
+    "prescription_sha256",
     "read_blend_prescription",
+    "read_prescription_bytes",
 ]
 
 
@@ -283,6 +297,16 @@ INSUFFICIENT_POSITIONAL_EVIDENCE = "insufficient_positional_evidence"
 BOOST_DIP_NOT_STABLE = "boost_dip_not_stable"
 STRICT_READER_DISAGREEMENT = "strict_reader_disagreement"
 
+#: A boost that cleared every bar above and still has nowhere to go.
+#:
+#: This is a statement about the SEAM, not about the proposal, and it is
+#: deliberately the last gate rather than the first: a prescriber is told
+#: whether its boost would have qualified before it is told that no route
+#: carries one, because those are different pieces of information and the
+#: first is the one that decides whether the route is worth building. See
+#: :func:`prescription_route` for the two structural facts behind it.
+BOOST_ROUTE_UNAVAILABLE = "boost_route_unavailable"
+
 PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_TOO_LARGE,
     PRESCRIPTION_MALFORMED,
@@ -302,7 +326,17 @@ PRESCRIPTION_REFUSAL_REASONS = frozenset({
     INSUFFICIENT_POSITIONAL_EVIDENCE,
     BOOST_DIP_NOT_STABLE,
     STRICT_READER_DISAGREEMENT,
+    BOOST_ROUTE_UNAVAILABLE,
 })
+
+#: The candidate field a cut-class prescription lands in.
+#:
+#: :attr:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate.blend_correction`
+#: — the flat, pre-split, common-mode list the deterministic solver writes,
+#: which is exactly what a prescription of this region IS. Named here so a
+#: caller folding one onto a candidate does not spell the field itself, on
+#: :data:`~.alignment_prescription.ALIGNMENT_PRESCRIPTION_KEY`'s rule.
+BLEND_CANDIDATE_FIELD = "blend_correction"
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
 #: ignored, on :data:`~.alignment_prescription._PRESCRIPTION_FIELDS`' reason: a
@@ -699,3 +733,668 @@ def positional_support(
         n_with_dip=with_dip,
         excluded_reason="; ".join(reasons),
     )
+
+
+# --------------------------------------------------------------------------- #
+# the request gate
+# --------------------------------------------------------------------------- #
+
+
+def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
+    raise BlendPrescriptionRefused(reason, detail, evidence=evidence or None)
+
+
+def _finite_number(value: Any, *, reason: str, field: str) -> float:
+    """One numeric field, strictly — no coercion, ever.
+
+    ``bool`` is refused because it is an ``int`` in Python and ``gain=True``
+    would read as a +1 dB boost. Strings are refused because ``float("1900")``
+    succeeds: accepting one would make this reader's strictness depend on the
+    encoder's habits rather than on the contract, and the record would then
+    disagree with :func:`~.blend_correction.blend_filters_from_mapping`, which
+    refuses both. Deliberately STRICTER than the room advisor's
+    ``_numeric_in_range``, which does coerce — that reader hands its numbers to
+    a different substrate; this one hands them to a reader that will refuse
+    them.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _refuse(reason, f"{field} must be a number, got {type(value).__name__}")
+    number = float(value)
+    if not math.isfinite(number):
+        _refuse(reason, f"{field} must be finite, got {number!r}")
+    return number
+
+
+def _find_prohibited(value: Any, *, depth: int = 0) -> list[str]:
+    """Every blocked key anywhere in the document, at any depth.
+
+    Recursive like ``calibration_agent.response._find_prohibited_keys``, and
+    depth-bounded unlike it: this reader is pointed at operator-supplied files,
+    and a deeply nested document is a cheap way to spend a recursion limit in a
+    process that is about to touch the DSP graph.
+    """
+    if depth > 12:
+        return ["<nesting too deep>"]
+    found: list[str] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key).strip().lower() in _PROHIBITED_KEYS:
+                found.append(str(key).strip().lower())
+            found.extend(_find_prohibited(child, depth=depth + 1))
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for child in value:
+            found.extend(_find_prohibited(child, depth=depth + 1))
+    return found
+
+
+def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
+    """The filter list's SHAPE, and none of its bounds.
+
+    Split from the bounds for :func:`~.alignment_prescription._parse_prescription`'s
+    reason: the shape is what a durable read-back must also re-check, and the
+    bounds are what only the request boundary applies.
+    """
+    if raw is None:
+        _refuse(FILTER_MALFORMED, "a prescription must state a filters list")
+    if isinstance(raw, Mapping) or isinstance(raw, (str, bytes)):
+        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+    if not isinstance(raw, Sequence):
+        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+    if len(raw) > BLEND_MAX_FILTERS:
+        _refuse(
+            FILTER_COUNT_EXCEEDED,
+            f"a prescription may carry at most {BLEND_MAX_FILTERS} filters, "
+            f"got {len(raw)}",
+            n_filters=len(raw),
+            max_filters=BLEND_MAX_FILTERS,
+        )
+    out: list[dict[str, Any]] = []
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} must be an object, got {type(entry).__name__}",
+            )
+        unknown = sorted(set(entry) - _FILTER_FIELDS)
+        if unknown:
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} carries unknown field(s): {', '.join(unknown)}",
+            )
+        if entry.get("biquad_type") != "Peaking":
+            # Peaking only, matching the emitter's own type allowlist. A shelf
+            # across the blend region re-levels it, which is the trim's fact.
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} must be a Peaking biquad, got "
+                f"{entry.get('biquad_type')!r}",
+            )
+        freq = _finite_number(
+            entry.get("freq"), reason=FILTER_MALFORMED, field=f"filter {position} freq"
+        )
+        q = _finite_number(
+            entry.get("q"), reason=FILTER_MALFORMED, field=f"filter {position} q"
+        )
+        gain = _finite_number(
+            entry.get("gain"), reason=FILTER_MALFORMED, field=f"filter {position} gain"
+        )
+        if freq <= 0.0:
+            _refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
+        out.append({"biquad_type": "Peaking", "freq": freq, "q": q, "gain": gain})
+    return tuple(out)
+
+
+def _check_bounds(
+    filters: tuple[dict[str, Any], ...], band_hz: tuple[float, float]
+) -> str:
+    """Every per-filter bound, and the class the gains add up to."""
+    lo, hi = band_hz
+    boosts = 0
+    for position, entry in enumerate(filters):
+        freq = float(entry["freq"])
+        q = float(entry["q"])
+        gain = float(entry["gain"])
+        if not lo <= freq <= hi:
+            _refuse(
+                FILTER_OUTSIDE_REGION,
+                f"filter {position} at {freq:.1f} Hz is outside the crossover "
+                f"region {lo:.1f}-{hi:.1f} Hz",
+                freq_hz=freq,
+                band_hz=[lo, hi],
+            )
+        if not PRESCRIPTION_MIN_Q <= q <= PRESCRIPTION_MAX_Q:
+            _refuse(
+                FILTER_Q_OUT_OF_RANGE,
+                f"filter {position} Q {q:g} is outside "
+                f"{PRESCRIPTION_MIN_Q:g}-{PRESCRIPTION_MAX_Q:g}",
+                q=q,
+                q_min=PRESCRIPTION_MIN_Q,
+                q_max=PRESCRIPTION_MAX_Q,
+            )
+        if gain < -BLEND_MAX_FILTER_CUT_DB:
+            _refuse(
+                FILTER_CUT_TOO_DEEP,
+                f"filter {position} cuts {-gain:.2f} dB, past the "
+                f"{BLEND_MAX_FILTER_CUT_DB:g} dB per-filter ceiling",
+                gain_db=gain,
+                max_cut_db=BLEND_MAX_FILTER_CUT_DB,
+            )
+        if gain > PRESCRIPTION_MAX_FILTER_BOOST_DB:
+            _refuse(
+                FILTER_BOOST_TOO_HIGH,
+                f"filter {position} boosts {gain:.2f} dB, past the "
+                f"{PRESCRIPTION_MAX_FILTER_BOOST_DB:g} dB per-filter ceiling",
+                gain_db=gain,
+                max_boost_db=PRESCRIPTION_MAX_FILTER_BOOST_DB,
+            )
+        if gain > 0.0:
+            boosts += 1
+    return "boost" if boosts else "cut"
+
+
+def _check_composed(
+    filters: tuple[dict[str, Any], ...],
+    band_hz: tuple[float, float],
+    freqs_hz: Sequence[float] | None,
+) -> None:
+    """The composed caps, on the EVALUATED cascade rather than a sum of gains.
+
+    Two filters whose skirts overlap deliver more than either alone, which is
+    why :func:`~.blend_correction._fit_cuts` enforces its own composed ceiling
+    the same way. Through
+    :func:`~jasper.active_speaker.branch_chain.chain_response` — the ONE biquad
+    evaluator in this codebase — so this gate and the emitter's own headroom
+    charge cannot disagree about what CamillaDSP will realize.
+
+    ``freqs_hz`` is the packet's own grid when it has one. A packet with no
+    usable grid falls back to a dense log sweep over the region: the composed
+    cap is a safety bound, and skipping it because the evidence document was
+    thin would make the bound depend on the completeness of an artifact rather
+    than on the filters.
+    """
+    if not filters:
+        return
+    lo, hi = band_hz
+    grid = None
+    if freqs_hz:
+        candidate = np.asarray(list(freqs_hz), dtype=np.float64)
+        inside = candidate[(candidate >= lo) & (candidate <= hi)]
+        if inside.size >= 8:
+            grid = inside
+    if grid is None:
+        grid = np.geomspace(lo, hi, 512)
+    composed = 20.0 * np.log10(
+        np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
+    )
+    worst_cut = float(np.min(composed))
+    peak_boost = float(np.max(composed))
+    if worst_cut < -BLEND_MAX_TOTAL_CUT_DB:
+        _refuse(
+            COMPOSED_CUT_EXCEEDED,
+            f"the composed cascade cuts {-worst_cut:.2f} dB at its worst over "
+            f"the region, past the {BLEND_MAX_TOTAL_CUT_DB:g} dB ceiling",
+            composed_cut_db=worst_cut,
+            max_composed_cut_db=BLEND_MAX_TOTAL_CUT_DB,
+        )
+    if peak_boost > PRESCRIPTION_MAX_TOTAL_BOOST_DB:
+        _refuse(
+            COMPOSED_BOOST_EXCEEDED,
+            f"the composed cascade boosts {peak_boost:.2f} dB at its peak over "
+            f"the region, past the {PRESCRIPTION_MAX_TOTAL_BOOST_DB:g} dB ceiling",
+            composed_boost_db=peak_boost,
+            max_composed_boost_db=PRESCRIPTION_MAX_TOTAL_BOOST_DB,
+        )
+
+
+def _check_boost_evidence(
+    filters: tuple[dict[str, Any], ...],
+    evidence: PositionalEvidence | None,
+) -> tuple[PositionalSupport, ...]:
+    """The positional bar, per boosting filter.
+
+    Refuses with :data:`INSUFFICIENT_POSITIONAL_EVIDENCE` when the packet
+    cannot answer at all — an instruction to go and measure, not a verdict on
+    the proposal — and with :data:`BOOST_DIP_NOT_STABLE` when it answered no.
+    """
+    if evidence is None:
+        _refuse(
+            INSUFFICIENT_POSITIONAL_EVIDENCE,
+            "this packet carries no usable per-position curves, so a boost's "
+            "stability across positions cannot be judged. Measure a cloud of at "
+            f"least {BOOST_MIN_TESTIFYING_POSITIONS} positions and propose again.",
+            min_testifying_positions=BOOST_MIN_TESTIFYING_POSITIONS,
+        )
+    positions, freqs_hz, reference_db = evidence
+    if len(positions) < BOOST_MIN_TESTIFYING_POSITIONS:
+        _refuse(
+            INSUFFICIENT_POSITIONAL_EVIDENCE,
+            f"this packet carries {len(positions)} position(s); "
+            f"{BOOST_MIN_TESTIFYING_POSITIONS} are needed before "
+            '"present at all but one" can refuse anything',
+            n_positions=len(positions),
+            min_testifying_positions=BOOST_MIN_TESTIFYING_POSITIONS,
+        )
+    findings: list[PositionalSupport] = []
+    for entry in filters:
+        if float(entry["gain"]) <= 0.0:
+            continue
+        support = positional_support(
+            float(entry["freq"]),
+            positions=positions,
+            freqs_hz=freqs_hz,
+            reference_db=reference_db,
+        )
+        findings.append(support)
+        if support.n_testifying < BOOST_MIN_TESTIFYING_POSITIONS:
+            _refuse(
+                INSUFFICIENT_POSITIONAL_EVIDENCE,
+                f"only {support.n_testifying} position(s) can testify about "
+                f"{support.evaluated_at_hz:.1f} Hz, and "
+                f"{BOOST_MIN_TESTIFYING_POSITIONS} are needed before "
+                '"present at all but one" can refuse anything'
+                + (f" ({support.excluded_reason})" if support.excluded_reason else ""),
+                **support.to_dict(),
+            )
+        if not support.supported:
+            _refuse(
+                BOOST_DIP_NOT_STABLE,
+                f"the dip at {support.evaluated_at_hz:.1f} Hz appears at "
+                f"{support.n_with_dip} of {support.n_testifying} testifying "
+                "positions; a dip that moves with the microphone is presumed to "
+                "be an interference null, which swallows added energy instead of "
+                "being filled by it",
+                **support.to_dict(),
+            )
+    return tuple(findings)
+
+
+def _prescriber(raw: Any) -> tuple[str, str]:
+    """Who authored this, strictly and non-blank.
+
+    Both halves required. A model with no operator cannot be asked what it was
+    told; an operator with no model cannot be compared against the next run.
+    This is :data:`PRESCRIPTION_PROVENANCE_MISSING` applied to authorship
+    rather than to a measured basis — the packet fingerprint carries the basis.
+    """
+    if not isinstance(raw, Mapping):
+        _refuse(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            "a prescription must carry a prescriber object naming its model "
+            "and operator",
+        )
+    unknown = sorted(set(raw) - {"model", "operator"})
+    if unknown:
+        _refuse(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            f"prescriber carries unknown field(s): {', '.join(unknown)}",
+        )
+    values: list[str] = []
+    for field in ("model", "operator"):
+        value = raw.get(field)
+        if not isinstance(value, str) or not value.strip():
+            _refuse(
+                PRESCRIPTION_PROVENANCE_MISSING,
+                f"prescriber.{field} must be a non-blank name",
+            )
+        values.append(" ".join(value.split()))
+    return values[0], values[1]
+
+
+def _rationale(raw: Any) -> str:
+    """The prescriber's own words, bounded and never parsed."""
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        _refuse(
+            PRESCRIPTION_MALFORMED, f"rationale must be text, got {type(raw).__name__}"
+        )
+    text = " ".join(raw.split())
+    if len(text) > RATIONALE_MAX_CHARS:
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"rationale must be at most {RATIONALE_MAX_CHARS} characters, got "
+            f"{len(text)}",
+        )
+    return text
+
+
+def _parse_prescription(
+    raw: Mapping[str, Any],
+) -> tuple[tuple[dict[str, Any], ...], str, str, str, str]:
+    """Shape, identity and provenance — and none of the bounds.
+
+    Shared whole between the request gate and the durable read-back, so the
+    only thing that differs between those two is their gate policy.
+    """
+    if not isinstance(raw, Mapping):
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"a prescription must be a mapping, got {type(raw).__name__}",
+        )
+    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
+    if unknown:
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"unknown prescription field(s): {', '.join(unknown)}",
+        )
+    prohibited = sorted(set(_find_prohibited(raw)))
+    if prohibited:
+        _refuse(
+            PRESCRIPTION_PROHIBITED_FIELD,
+            f"a prescription may not name {', '.join(prohibited)}: it supplies "
+            "numbers into a fixed shape, never configuration, coefficients, or "
+            "a per-role value",
+            prohibited=prohibited,
+        )
+    if raw.get("kind") != PRESCRIPTION_KIND:
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"a prescription must name kind={PRESCRIPTION_KIND!r}, got "
+            f"{raw.get('kind')!r}",
+        )
+    version = raw.get("artifact_schema_version")
+    if version != PRESCRIPTION_SCHEMA_VERSION:
+        _refuse(
+            PRESCRIPTION_SCHEMA_UNSUPPORTED,
+            f"this build speaks prescription schema {PRESCRIPTION_SCHEMA_VERSION}, "
+            f"got {version!r}",
+            supported=PRESCRIPTION_SCHEMA_VERSION,
+        )
+    fingerprint = raw.get(PACKET_FINGERPRINT_FIELD)
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        _refuse(
+            PRESCRIPTION_PROVENANCE_MISSING,
+            f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
+        )
+    model, operator = _prescriber(raw.get("prescriber"))
+    return (
+        _parse_filters(raw.get("filters")),
+        fingerprint.strip(),
+        model,
+        operator,
+        _rationale(raw.get("rationale")),
+    )
+
+
+def read_blend_prescription(
+    raw: Mapping[str, Any] | None,
+    *,
+    packet_fingerprint: Any,
+    band_hz: tuple[float, float] | None,
+    positional_evidence: PositionalEvidence | None,
+) -> BlendPrescription | None:
+    """THE request gate. One point, and the one place every bound is applied.
+
+    ``None`` when there is no prescription — the deterministic path, untouched.
+    Otherwise a validated :class:`BlendPrescription`, or
+    :class:`BlendPrescriptionRefused` naming which gate said no.
+
+    The three keyword arguments are the evidence packet's own answers, read out
+    of it by :mod:`.evidence_packet`'s three named readers
+    (``packet["packet_fingerprint"]``, ``packet_region_band_hz``,
+    ``packet_positional_evidence``). Taking VALUES rather than the packet is
+    what keeps this module a leaf of the DAG — the packet imports the response
+    format from here, so importing the packet back would be a cycle — and it
+    is exactly the shape
+    :func:`~.alignment_prescription.read_alignment_prescription` already has,
+    for the reason stated there: that module may not import the flow, so the
+    caller derives the bound's inputs from their single owner and hands them
+    in.
+
+    **All three are required and undefaulted**, on that same function's rule.
+    Every other bound in this gate rests on a number the prescriber itself
+    supplied; these three are the only inputs a prescriber willing to lie
+    cannot forge. A caller that forgot one would lose the evidence's own
+    opinion and never know, which is precisely what a defaulted keyword hides.
+
+    **Order is deliberate.** Shape, then identity, then the region, then the
+    per-filter bounds, then the composed cascade, then — for a boost — the
+    positional bar, and last the route. Each stage sends a prescriber somewhere
+    different, and reporting a later failure for an earlier cause would send it
+    to re-derive a number that was fine.
+
+    **The bounds are inclusive.** A filter exactly at a ceiling is legal; one
+    past it is refused. Exactness is legal in this repository's gates, and a
+    strict comparison would make a round's legality depend on floating-point
+    noise in the sixth decimal of a frequency.
+    """
+    if raw is None:
+        return None
+    filters, fingerprint, model, operator, rationale = _parse_prescription(raw)
+
+    if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
+        _refuse(
+            PRESCRIPTION_PACKET_MISMATCH,
+            "the evidence packet carries no fingerprint to compare against",
+        )
+    if fingerprint != packet_fingerprint:
+        _refuse(
+            PRESCRIPTION_PACKET_MISMATCH,
+            "this prescription answers a different evidence packet "
+            f"({fingerprint[:12]}...) than the one supplied "
+            f"({packet_fingerprint[:12]}...)",
+            prescription_answers=fingerprint,
+            packet_is=packet_fingerprint,
+        )
+
+    if band_hz is None:
+        _refuse(
+            REGION_UNAVAILABLE,
+            "this packet establishes no crossover region, so there is no band a "
+            "prescription could be checked against",
+        )
+    band = band_hz
+
+    prescription_class = _check_bounds(filters, band)
+    _check_composed(
+        filters, band, positional_evidence[1] if positional_evidence else None
+    )
+
+    support: tuple[PositionalSupport, ...] = ()
+    if prescription_class == "boost":
+        support = _check_boost_evidence(filters, positional_evidence)
+
+    # Belt and braces, and the braces are the shipped reader. Everything above
+    # is a DIAGNOSTIC layer whose job is to say WHY; the authority on whether a
+    # cut list is acceptable remains `blend_filters_from_mapping`, a predicate
+    # with no reason. Asking it last means this module can never accept a cut
+    # the shipped reader would refuse, however this module's own bounds drift —
+    # and the mutation battery proves that relationship rather than asserting
+    # it.
+    if prescription_class == "cut":
+        vouched = blend_filters_from_mapping([dict(f) for f in filters])
+        if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
+            _refuse(
+                STRICT_READER_DISAGREEMENT,
+                "the shipped persisted-correction reader would not vouch for "
+                "this filter list, so it is not one this system can persist",
+            )
+
+    prescription = BlendPrescription(
+        filters=filters,
+        prescription_class=prescription_class,
+        packet_fingerprint=fingerprint,
+        prescriber_model=model,
+        prescriber_operator=operator,
+        band_hz=band,
+        positional_support=support,
+        rationale=rationale,
+    )
+    prescription_route(prescription)
+    return prescription
+
+
+def prescription_route(prescription: BlendPrescription) -> str:
+    """Which candidate field this prescription lands in, or a refusal.
+
+    **A cut routes.** :data:`BLEND_CANDIDATE_FIELD` is the flat, pre-split,
+    common-mode list the deterministic solver already writes, so a prescribed
+    cut is byte-shaped like a solved one and passes the same emitter gates.
+
+    **A boost does not route, and the reason is structural rather than
+    procedural.** Two independent facts, either alone sufficient:
+
+    1. **The summed region has no boosting seam, and opening one is a
+       hearing-safety change.** ``camilla_yaml.MAX_BLEND_CORRECTION_GAIN_DB``
+       is ``0.0`` and ``_validated_blend_correction`` refuses rather than
+       clamps — but the load-bearing fact is one layer down: the blend stage is
+       deliberately **not a term in** ``camilla_yaml.total_headroom_db``. It is
+       absent because a cuts-only stage needs no absorption. A boost there
+       would be un-absorbed and would silently spend the room layer's headroom
+       allocation instead of charging its own. Adding that term is a change to
+       the gain-structure accounting, reviewed as such; it is not something an
+       intake may route around.
+    2. **The one seam that DOES carry a positive gain is per-role, and this
+       packet is summed evidence.**
+       :attr:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate.linearization`
+       carries per-driver boosts to 12 dB, absorbed correctly by
+       ``linearization_headroom_db``. But the fit that fills it is derived from
+       the per-branch MEASURE sweeps, and ``LinearizationRequest`` raises
+       rather than accept a role with no measured response. A summed cloud
+       cannot say how much of a region's deficit belongs to the woofer — that
+       is :mod:`.blend_correction`'s scope tripwire verbatim — and every round
+       in the shipped corpus reports both per-branch verify claims as
+       ``not_evaluated``/``no_per_branch_verify_capture``. Writing a per-driver
+       boost inferred from summed evidence into a FINGERPRINTED field would
+       persist an attribution nothing measured.
+
+    So the refusal is honest rather than conservative: no route exists that
+    does not either weaken a pinned invariant or bank an unmeasured claim. The
+    bars above still run first, on purpose — a prescriber, and an owner
+    deciding whether to fund the seam, learns whether the boost would have
+    qualified, which is the evidence that decision needs.
+    """
+    if not prescription.is_boost:
+        return BLEND_CANDIDATE_FIELD
+    _refuse(
+        BOOST_ROUTE_UNAVAILABLE,
+        "this boost clears every shape and evidence bar, and there is still no "
+        "seam that can carry it: the summed blend stage refuses a positive gain "
+        "and is not a headroom term (opening it is a gain-structure change), and "
+        "the per-driver linearization seam that does carry boosts needs "
+        "per-branch sweeps this summed packet does not contain",
+        blocked_by=[
+            "blend_stage_is_not_a_headroom_term",
+            "per_driver_seam_needs_per_branch_evidence",
+        ],
+        bars_cleared=True,
+    )
+
+
+def blend_prescription_to_candidate_fields(
+    prescription: BlendPrescription | None,
+) -> dict[str, Any]:
+    """The candidate fields a validated prescription contributes.
+
+    The sibling of :func:`~.planning.alignment_to_candidate_fields`, and it
+    exists for the same reason: a caller folding an outside value onto a
+    candidate should not spell the field, and the value must enter **at
+    candidate-build time** rather than be stamped on afterwards.
+
+    That entry point is not a style choice.
+    :attr:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate.fingerprint`
+    is ``field(init=False)`` — a content hash the caller cannot set, re-derived
+    on read and refused as ``candidate_tampered``. A prescription applied after
+    construction would either be invisible to the fingerprint or would break
+    it; entering here makes a prescribed correction tamper-protected exactly
+    like a solved one, which is what lets the next round read it back as its
+    own incumbent.
+
+    ``{}`` for ``None``, so a caller can splat it unconditionally and the
+    no-prescription path stays byte-identical to today's.
+    """
+    if prescription is None:
+        return {}
+    return {BLEND_CANDIDATE_FIELD: [dict(f) for f in prescription.filters]}
+
+
+def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
+    """A prescription read back out of this repository's own durable state.
+
+    The read-back half of the pair, on
+    :func:`~.alignment_prescription.alignment_prescription_from_mapping`'s
+    rule: the same shape and provenance checks, deliberately NOT the bounds,
+    and ``None`` instead of a raise.
+
+    Why no bounds. The only mappings that reach here were written by
+    :func:`read_blend_prescription` accepting them, so re-applying a bound
+    could not catch anything the boundary let through — it could only refuse a
+    prescription whose region moved between the round that measured it and the
+    stage that grades it, and refusing there would discard the evidence of a
+    round that really ran. The bounds have one owner and it is the boundary.
+
+    Why still strict about shape. A hand-edited state file is a real input, and
+    a receipt that banked half a prescription would claim provenance it does
+    not have.
+    """
+    if raw is None:
+        return None
+    try:
+        filters, fingerprint, model, operator, rationale = _parse_prescription(raw)
+    except BlendPrescriptionRefused:
+        return None
+    band_raw = raw.get("band_hz") if isinstance(raw, Mapping) else None
+    band: tuple[float, float] | None = None
+    if isinstance(band_raw, (list, tuple)) and len(band_raw) == 2:
+        try:
+            lo, hi = float(band_raw[0]), float(band_raw[1])
+        except (TypeError, ValueError):
+            band = None
+        else:
+            if math.isfinite(lo) and math.isfinite(hi) and 0.0 < lo < hi:
+                band = (lo, hi)
+    if band is None:
+        return None
+    return BlendPrescription(
+        filters=filters,
+        prescription_class=(
+            "boost" if any(float(f["gain"]) > 0.0 for f in filters) else "cut"
+        ),
+        packet_fingerprint=fingerprint,
+        prescriber_model=model,
+        prescriber_operator=operator,
+        band_hz=band,
+        rationale=rationale,
+    )
+
+
+def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
+    """Decode one proposal document, treating every byte as hostile.
+
+    The size cap is applied to the BYTES, before ``json.loads`` ever sees them:
+    a cap enforced after parsing has already paid the cost it exists to avoid.
+    Same posture as the web layer's ``read_json_object(max_bytes=)``, owned
+    here because this reader is reached from a file and from stdin as well, and
+    a cap only one caller enforced would be a cap the others lack.
+    """
+    if len(payload) > PRESCRIPTION_MAX_BYTES:
+        _refuse(
+            PRESCRIPTION_TOO_LARGE,
+            f"a prescription may be at most {PRESCRIPTION_MAX_BYTES} bytes, got "
+            f"{len(payload)}",
+            max_bytes=PRESCRIPTION_MAX_BYTES,
+            got_bytes=len(payload),
+        )
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        _refuse(PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
+    except json.JSONDecodeError as exc:
+        _refuse(PRESCRIPTION_MALFORMED, f"a prescription must be valid JSON: {exc.msg}")
+    if not isinstance(document, dict):
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"a prescription must be a JSON object, got {type(document).__name__}",
+        )
+    return document
+
+
+def prescription_sha256(payload: bytes) -> str:
+    """The digest of the bytes actually parsed.
+
+    Provenance for what was read rather than for what was meant — the shape
+    ``route_latency_artifact._read_sample_text`` already uses. It goes on the
+    receipt beside the prescriber's name so a later reader can prove which
+    document produced a round.
+    """
+    return hashlib.sha256(payload).hexdigest()
