@@ -608,7 +608,7 @@ def packet_region_band_hz(packet: Any) -> tuple[float, float] | None:
         return None
     try:
         lo, hi = float(band[0]), float(band[1])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not (lo > 0.0 and hi > lo):
         return None
@@ -639,8 +639,13 @@ def packet_positional_evidence(
         return None
     if isinstance(reference, bool) or not isinstance(reference, (int, float)):
         return None
+    # `reference` is coerced inside the same guard as the grid: an
+    # arbitrary-precision int passes the isinstance check above and then
+    # raises on `float()`, so leaving it outside would reintroduce the escape
+    # this guard exists to close.
     try:
         freqs = [float(value) for value in grid]
-    except (TypeError, ValueError):
+        reference_db = float(reference)
+    except (TypeError, ValueError, OverflowError):
         return None
-    return ([row for row in rows if isinstance(row, dict)], freqs, float(reference))
+    return ([row for row in rows if isinstance(row, dict)], freqs, reference_db)

@@ -730,11 +730,18 @@ def positional_support(
         ):
             below_floor += 1
             continue
-        value = magnitude[index]
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raw_value = magnitude[index]
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             unreadable += 1
             continue
-        value = float(value)
+        try:
+            value = float(raw_value)
+        except OverflowError:
+            # Same class as `_finite_number`'s: a bignum in a hand-edited
+            # banked curve passes the isinstance check and raises here. An
+            # unreadable bin, not a crash.
+            unreadable += 1
+            continue
         if not math.isfinite(value):
             unreadable += 1
             continue
@@ -784,7 +791,17 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _refuse(reason, f"{field} must be a number, got {type(value).__name__}")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        # An arbitrary-precision int passes the isinstance check above and then
+        # cannot be made a float: `10 ** 400` is a legal JSON number and a legal
+        # Python int, and `float()` raises rather than returning inf. Refusing
+        # here keeps it inside the closed vocabulary; without this it escaped
+        # the gate entirely as an OverflowError, which the CLI then reported
+        # with the evidence-unreadable exit code — blaming the round for a
+        # fault in the document.
+        _refuse(reason, f"{field} is too large to be a filter coefficient")
     if not math.isfinite(number):
         _refuse(reason, f"{field} must be finite, got {number!r}")
     return number
@@ -931,23 +948,25 @@ def _check_composed(
     evaluator in this codebase — so this gate and the emitter's own headroom
     charge cannot disagree about what CamillaDSP will realize.
 
-    ``freqs_hz`` is the packet's own grid when it has one. A packet with no
-    usable grid falls back to a dense log sweep over the region: the composed
-    cap is a safety bound, and skipping it because the evidence document was
-    thin would make the bound depend on the completeness of an artifact rather
-    than on the filters.
+    Evaluated on the **denser** of the packet's own grid and a dense log sweep
+    over the region — never on whichever happens to be supplied. A coarse axis
+    can step over a narrow filter's peak: at the eight-bin floor an earlier cut
+    of this function under-read the composed extreme by up to 0.43 dB, which is
+    a safety bound reading low because the evidence document was thin. Taking
+    the denser makes the bound a property of the filters instead. The packet
+    grid is preferred when it IS denser, so a well-populated round is still
+    judged on the system's own axis.
     """
     if not filters:
         return
     lo, hi = band_hz
-    grid = None
+    fallback = np.geomspace(lo, hi, 512)
+    grid = fallback
     if freqs_hz:
         candidate = np.asarray(list(freqs_hz), dtype=np.float64)
         inside = candidate[(candidate >= lo) & (candidate <= hi)]
-        if inside.size >= 8:
+        if inside.size > fallback.size:
             grid = inside
-    if grid is None:
-        grid = np.geomspace(lo, hi, 512)
     composed = 20.0 * np.log10(
         np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
     )
@@ -1333,10 +1352,23 @@ def blend_prescription_to_candidate_fields(
 
     ``{}`` for ``None``, so a caller can splat it unconditionally and the
     no-prescription path stays byte-identical to today's.
+
+    **It re-asks the route rather than trusting that the gate already did.**
+    :func:`read_blend_prescription` calls :func:`prescription_route` before it
+    returns, so today every prescription reaching here is already a cut — but
+    "today" is a fact about one caller, and this function is the last thing
+    between a prescription and a fingerprinted candidate field. A
+    :class:`BlendPrescription` can also be built directly, or read back by
+    :func:`blend_prescription_from_mapping`, neither of which routes. Asking
+    the one owner of the rule again costs a function call and makes the
+    docstring's promise — a boost can never populate ``blend_correction`` —
+    true of the FUNCTION rather than of the current call graph.
     """
     if prescription is None:
         return {}
-    return {BLEND_CANDIDATE_FIELD: [dict(f) for f in prescription.filters]}
+    return {
+        prescription_route(prescription): [dict(f) for f in prescription.filters]
+    }
 
 
 def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
@@ -1357,6 +1389,18 @@ def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
     Why still strict about shape. A hand-edited state file is a real input, and
     a receipt that banked half a prescription would claim provenance it does
     not have.
+
+    **Who reads it.** ``jasper-crossover-prescriber propose`` already writes
+    exactly the shape this parses (``BlendPrescription.to_dict``), so the pair
+    round-trips today. Its second consumer is the live-flow wiring PR, which
+    rehydrates a banked prescription off the round state to report what a round
+    was prescribed — the same job
+    :func:`~.alignment_prescription.alignment_prescription_from_mapping` does
+    for the delay. Note that this reader does NOT route: it re-derives
+    ``prescription_class`` from the gains but applies no bound and no seam
+    check, which is why
+    :func:`blend_prescription_to_candidate_fields` asks
+    :func:`prescription_route` itself rather than assuming its input was gated.
     """
     if raw is None:
         return None
@@ -1369,7 +1413,7 @@ def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
     if isinstance(band_raw, (list, tuple)) and len(band_raw) == 2:
         try:
             lo, hi = float(band_raw[0]), float(band_raw[1])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             band = None
         else:
             if math.isfinite(lo) and math.isfinite(hi) and 0.0 < lo < hi:
@@ -1412,6 +1456,15 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
         _refuse(PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
     except json.JSONDecodeError as exc:
         _refuse(PRESCRIPTION_MALFORMED, f"a prescription must be valid JSON: {exc.msg}")
+    except RecursionError:
+        # Deeply nested arrays exhaust the interpreter stack inside the parser
+        # itself, well under the byte cap: ~20 KB of `[[[[...]]]]` does it. A
+        # RecursionError is a RuntimeError, so it matched neither arm above and
+        # escaped as an uncaught exception. Caught by its own name rather than
+        # by widening either arm, because it is a fact about the document's
+        # SHAPE rather than about its encoding or its syntax. The refusal path
+        # from here is shallow, so it runs on the unwound stack.
+        _refuse(PRESCRIPTION_MALFORMED, "a prescription is nested too deeply to parse")
     if not isinstance(document, dict):
         _refuse(
             PRESCRIPTION_MALFORMED,
