@@ -515,18 +515,67 @@ runs AFTER the flattening peaking loop:
   (runs 4/5), so isolated 1.5–2.0 dB excursions at the smoothing scale are curve
   raggedness rather than shape failure.
 - **Anchored give-back (the trim).** Each branch's linearized trim is its own
-  COMMITTED raw trim plus `LinearizationFit.correction_giveback_db` — the fit
-  engine's SSOT: the **measured before-vs-after level delta** of that branch's
-  reference (core) band (power-domain average of the pre-correction curve minus
-  the same average of the corrected curve, over the `_core_or_fallback_mask`
-  region, positive, computed for every fit with filters). Because the quantity
-  added back *is* the measured level change of the band being restored, it is
-  exact by definition — no flat-core assumption. (Averaging the *correction*
-  alone would be power-domain-approximate instead: exact only for a flat core,
-  and up to ~1.1 dB under-return on a 12 dB-tilted woofer-shaped core.) A shared
-  shift then normalizes the pair non-positive so a branch whose give-back exceeds
-  its raw attenuation can never become a boost; the shift preserves relative
-  leveling exactly and is honest extra ledger.
+  COMMITTED raw trim plus that branch's **level-band give-back**: the measured
+  before-vs-after level delta read by `solve_branch_trims` over
+  `branch_level_bands_hz` — the same estimator, averaging domain, and bands that
+  solved `raw_trim_db` and that `realized_level_match` uses to grade the
+  committed pair. A shared shift then normalizes the pair non-positive so a
+  branch whose give-back exceeds its raw attenuation can never become a boost;
+  the shift preserves relative leveling exactly and is honest extra ledger.
+
+  **The invariant, and why the band is load-bearing.** A give-back spent against
+  a trim must be measured in that trim's frame. The committed pair then lands
+  level by construction: `realized = (level_t_pre − level_w_pre) + (raw_t −
+  raw_w)`, which `raw` is defined to zero. The estimator's known +0.54 dB
+  linear-grid systematic cannot reach that result — it *telescopes out*, since
+  every term comes from the same call, which is a stronger property than
+  partial cancellation (the per-role biases actually differ by ≈0.45 dB).
+
+  **The invariant has a precondition, and it is not always met.** The give-back
+  is the right adjustment for a base that came from this same solve. Usually
+  `raw_trim_db` did — `solve_branch_trims` over these bands produces
+  `trim_t_band_average`. But the MEASURE path may hand over the **ripple-polished**
+  tweeter trim instead (`solve_ripple_optimal_trim`, a *flatness* choice),
+  admitted whenever it sits within `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB) of the
+  band average. When it fires, δ of polish becomes exactly δ of realized
+  inter-driver level error — and **that bound is double the 3.0 dB realized-level
+  tolerance**, so a polish legal by its own guard can still push the pair past the
+  level gate. The gate is the arbiter and fails closed; the polish delta is
+  published on every round (`polish_delta_db`) so the precondition is observed
+  rather than assumed. Whether the anchor should bind to `trim_band_average_db`
+  instead is an open design question, filed for the architect.
+
+  **What the fix does is level-match, not quieten.** It is tempting to read this
+  as "the tweeter gets quieter"; it does not. The committed trim moves by exactly
+  the realized level error the old anchor was carrying — in whichever direction
+  that error sat. A branch whose correction lives inside the graded band can
+  legitimately end up **hotter** than before, still under the non-positive clamps
+  and still level-correct. The property being restored is equality between the two
+  branches at the handoff, not a monotone reduction in level.
+
+  Reproducible: **+8.13 dB** hotter on a correction confined to the graded span
+  (level-band give-back 9.000 dB against the core band's 0.870 dB), pinned by
+  `test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct`, which also
+  asserts that the *quieter* old pair is the one that mis-levels there. A larger
+  **+9.21 dB** worst case was reported by the hearing-safety review's adversarial
+  corpus; that corpus is not banked in this repo, so it is cited as their
+  measurement rather than reproduced. The direction claim rests on the algebra,
+  not on either figure.
+
+  **What this replaced (2026-08-19).** The anchor used to take
+  `LinearizationFit.correction_giveback_db`, the same measured delta over each
+  driver's own CORE band. That number is still computed and still published —
+  as `core_band_giveback_db`, answering the audible-band question — but it does
+  not place the trim, because the core band is not the band the verdict grades.
+  On a compression-horn tweeter the two barely overlap (core 2077–7949 Hz
+  against a graded 1649–3297 Hz), so the horn's 3–8 kHz correction bought back
+  level where nothing is measured and the pair shipped carrying
+  `giveback_t − giveback_w` as pure inter-driver error: +3.67 dB hot on jts3,
+  a realized level 3.01 dB apart against a 3.0 dB tolerance, and a round refused
+  by 0.01 dB. It mis-levels in EITHER direction depending on where a
+  correction's energy sits — the same defect reads 1.835 dB *dull* on the
+  synthetic conductor fixture. Evidence chain:
+  `captures/wired-night-2026-08-19/run-log.md` §10.9.
 
   The realization gate bounds the correction's *shape* only over
   [onset, ceiling]; below-onset divergence (e.g. a clamped shelf the residual

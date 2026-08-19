@@ -194,6 +194,7 @@ from jasper.audio_measurement.program_analysis import (
     _verify_capture_integrity,
     overlap_band_hz,
     predicted_branch_sum,
+    realized_branch_level_match,
     solve_branch_trims,
     summed_model_residual_delay_us,
 )
@@ -7968,18 +7969,121 @@ def test_eligible_candidate_fits_both_roles_and_moves_trim_toward_ripple_optimal
         assert role_fit["driver_class"] == "unknown"
 
 
+def _measured_level_frame(conductor, *, woofer_db=None, tweeter_db=None):
+    """The trim's OWN level frame, re-measured by the test from published inputs.
+
+    The anchor's give-back is measured over ``branch_level_bands_hz`` — the
+    same estimator, averaging domain and half-bands that solved ``raw_trim_db``
+    and that grade the committed pair — because a give-back spent against a
+    trim has to be measured in that trim's frame. A give-back read over each
+    driver's own CORE band (``LinearizationFit.correction_giveback_db``)
+    answers a different question, and its per-role DIFFERENCE lands as pure
+    inter-driver level error: on the jts3 horn tweeter, 2026-08-19, that was
+    3.67 dB of hot tweeter.
+
+    **Every input is sourced independently of the planner**, which is what
+    stops this being a restatement of ``plan_linearization``'s own arithmetic:
+    the spans come from the conductor's OWN MEASURE program, the
+    pre-correction pair is the fixture's own declared branch curves, and the
+    post-correction pair is those curves times the correction the candidate
+    PUBLISHES. Nothing is read back out of the planner, so a change of band,
+    of estimator, of sign, or of which pair is pre and which is post fails
+    here rather than being absorbed.
+
+    Returns the frame as a namespace: ``giveback_db`` (per role),
+    ``linearized`` (the post-correction pair), ``spans``, and ``freqs``.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        LinearizationFilter,
+        complex_correction_response,
+    )
+
+    default_woofer_db, default_tweeter_db = _fixture_branch_db()
+    curves = {
+        "woofer": default_woofer_db if woofer_db is None else woofer_db,
+        "tweeter": default_tweeter_db if tweeter_db is None else tweeter_db,
+    }
+    freqs = _LINEARIZABLE_FREQS_HZ
+    program = conductor.program_for_phase(PHASE_MEASURE)
+    spans = {
+        role: (program.segment(seg).f1_hz, program.segment(seg).f2_hz)
+        for role, seg in (("woofer", "sweep_w"), ("tweeter", "sweep_t"))
+    }
+    raw = {
+        role: (10.0 ** (np.asarray(curve) / 20.0)).astype(complex)
+        for role, curve in curves.items()
+    }
+    linearized = {
+        role: raw[role] * complex_correction_response(
+            [
+                LinearizationFilter(**f)
+                for f in conductor.candidate.linearization[role]["filters"]
+            ],
+            freqs,
+        )
+        for role in ("woofer", "tweeter")
+    }
+
+    def _levels(pair):
+        _residual_w, _residual_t, level_w, level_t = solve_branch_trims(
+            freqs, pair["woofer"], pair["tweeter"], FC_HZ,
+            woofer_span_hz=spans["woofer"], tweeter_span_hz=spans["tweeter"],
+        )
+        return {"woofer": level_w, "tweeter": level_t}
+
+    before, after = _levels(raw), _levels(linearized)
+    return types.SimpleNamespace(
+        freqs=freqs,
+        spans=spans,
+        linearized=linearized,
+        giveback_db={
+            role: before[role] - after[role] for role in ("woofer", "tweeter")
+        },
+    )
+
+
+def _inter_driver_level_error_db(frame, trim_db):
+    """One trim pair's REALIZED inter-driver level error on the linearized pair.
+
+    The anchor's defining property, and the one the band-matched give-back
+    buys: ``raw_trim`` level-matches the PRE-correction pair, and adding back
+    exactly what the correction removed FROM THAT SAME BAND puts the
+    POST-correction pair at the same handoff level. The residual is therefore
+    not "close to zero" by luck — it is zero up to the 3-decimal rounding
+    ``_solve_fixture_raw_trim`` applies to the fixture's own raw trim, which
+    bounds it at 1e-3 dB.
+    """
+    return realized_branch_level_match(
+        frame.freqs, frame.linearized["woofer"], frame.linearized["tweeter"],
+        FC_HZ,
+        trim_w_db=trim_db["woofer"], trim_t_db=trim_db["tweeter"],
+        woofer_span_hz=frame.spans["woofer"],
+        tweeter_span_hz=frame.spans["tweeter"],
+    ).difference_db
+
+
 def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     monkeypatch,
 ):
     """#1668 anchored give-back: `_fit_linearization`'s ripple fine-tune must be
     seeded by the ANCHORED trim — each branch's own raw candidate trim plus the
-    level its emitted cascade removed from its reference band
-    (`LinearizationFit.correction_giveback_db`), normalized non-positive — NOT
-    the old `solve_branch_trims` overlap-band average on the linearized pair
-    (which under-returned the give-back on the live JTS3 runs). Spies on the
+    level its emitted cascade removed, normalized non-positive — NOT the old
+    `solve_branch_trims` OVERLAP-band average on the linearized pair (which
+    under-returned the give-back on the live JTS3 runs). Spies on the
     module-level imported name to pin that the call happened exactly once, with
     the anchored woofer trim held fixed and the analysis's own polarity sign
-    passed through."""
+    passed through.
+
+    **Which band that give-back is read in moved, and the expectation moved
+    with it.** It used to be `LinearizationFit.correction_giveback_db`, a power
+    mean over each driver's own CORE band. It is now measured over
+    ``branch_level_bands_hz`` — the bands that solved the raw trim and that
+    grade the committed pair — so the give-back is spent in the frame it was
+    measured in. The old overlap-band objection does not carry to those bands:
+    PR-L3 deleted the shared overlap frame, and each branch is now read only on
+    its own side of Fc. ``_measured_level_frame`` re-measures the new give-back
+    from the fixture's own curves and the candidate's PUBLISHED filters, so the
+    expectation below is derived rather than transcribed."""
 
     calls = []
     real_solve = iv.solve_ripple_optimal_trim
@@ -8014,11 +8118,13 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # one design SSOT — docs/active-speaker-tuning-layers-design.md, "Anchored
     # give-back (the trim)": the committed RAW trim plus that branch's own
     # measured give-back, shared-shift normalized non-positive, no third term.
+    #
+    # The give-back is re-measured here in the TRIM'S OWN FRAME — see
+    # ``_measured_level_frame`` — rather than read off the fit's core-band
+    # number, because that is the band the anchor now spends it in.
     base = dict(_FIXTURE_RAW_TRIM_DB)
-    giveback = {
-        role: c.candidate.linearization[role]["correction_giveback_db"]
-        for role in ("woofer", "tweeter")
-    }
+    frame = _measured_level_frame(c)
+    giveback = frame.giveback_db
     unnormalized = {
         r: base[r] + giveback[r] for r in ("woofer", "tweeter")
     }
@@ -8026,6 +8132,13 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     expected_anchored = {r: v - shift for r, v in unnormalized.items()}
     assert call["trim_w_db"] == pytest.approx(expected_anchored["woofer"])
     assert call["seed_trim_db"] == pytest.approx(expected_anchored["tweeter"])
+    # …and the property that band-matching buys, asserted independently of the
+    # arithmetic above: the seeded pair hands the two linearized branches off
+    # at the SAME level. A give-back read in any other band leaves
+    # ``giveback_t - giveback_w`` of inter-driver error here instead.
+    assert abs(_inter_driver_level_error_db(frame, {
+        "woofer": call["trim_w_db"], "tweeter": call["seed_trim_db"],
+    })) <= 1e-3
 
     # What ships is one of the TWO pairs `_fit_linearization` grades — the
     # anchor, or the scan's ripple polish — never the raw trim ("Never the RAW
@@ -8036,9 +8149,8 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # and_moves_trim_toward_ripple_optimal for the polish, test_a_disagreeing_
     # frame_whose_realized_check_passes_banks_and_proceeds for the grading).
     #
-    # This fixture used to land on the polish and now lands on the anchor, for a
-    # reason worth recording rather than papering over: R10b (panel CC-2(b))
-    # made the
+    # Which pair this fixture lands on has moved more than once, each move
+    # worth recording rather than papering over. R10b (panel CC-2(b)) made the
     # fit's `correction_giveback_db` grade the REALIZED biquad cascade instead
     # of `predicted_response`'s Lorentzian, which moved this pair's anchor by
     # +0.124 dB (tweeter -1.383 -> -1.260). BOTH graded pairs moved with it (the
@@ -8046,11 +8158,18 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # realized level error |-0.258| -> |-0.134| dB, the polish's |0.142| ->
     # |0.166| dB. That is what crossed them over. No filter moved.
     #
-    # #2106 then collapsed the two pairs into one. The boost the ruling permits
+    # #2106 then collapsed the two pairs into one: the boost the ruling permits
     # (+3.72 dB at 399 Hz on the woofer here) reshapes the linearized branches
-    # whose SUMMED ripple the scan minimizes, and the minimum now sits exactly
-    # on the anchored seed — so the scan's walk is 0.000 dB and there are no
-    # longer two candidates to cross over. Asserted below.
+    # whose SUMMED ripple the scan minimizes, and for a while the minimum sat
+    # exactly on the anchored seed, so the scan's walk was 0.000 dB.
+    #
+    # Moving the give-back into the trim's own band moved the seed again, and
+    # the two pairs are two numbers once more: the scan walks +0.300 dB off the
+    # anchor. The adjudication then commits the ANCHOR, and by the mechanism
+    # this whole change is about — the band-matched give-back leaves the
+    # anchored pair at a realized inter-driver level error of 0.000 dB (the
+    # assertion above), against the scan's 0.300 dB, so the level instrument
+    # scores the anchor better outright. Asserted below.
     resolved_trim_t, _ripple, _seed = real_solve(
         call["freqs"], call["w_tf"], call["t_tf"], FC_HZ,
         lo_hz=call["lo_hz"], hi_hz=call["hi_hz"],
@@ -8067,12 +8186,9 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     )
     assert committed_t != pytest.approx(_FIXTURE_RAW_TRIM_DB["tweeter"])
     # …and the fixture-specific outcome, stated precisely rather than hedged, so
-    # a future flip back is visible here rather than silent. Since #2106 the
-    # scan does not move AT ALL on this pair — it returns its own seed, so the
-    # anchor and the polish are one number and `committed_t == anchored` is
-    # true without discriminating between them. That is asserted here as the
-    # equality it now is, rather than left as an inequality that would fail
-    # for a reason the reader has to reconstruct.
+    # a future flip back is visible here rather than silent. The two pairs are
+    # genuinely two numbers again (the scan walks +0.300 dB off its seed), so
+    # this equality does discriminate between them: what ships is the anchor.
     #
     # WHICH pair the adjudication would pick when they DO differ is not this
     # test's claim and never was (see the paragraph above); its own pins are
@@ -8085,14 +8201,17 @@ def test_fit_linearization_wires_ripple_optimal_seeded_by_anchored_giveback(
     # (asserted on `seed_trim_db`/`trim_w_db` above) and what ships is never
     # the raw trim.
     #
-    # The two pairs USED to coincide on this fixture, so this asserted equality
-    # with the anchor. They no longer do: deleting PR-L5's offset moved the
-    # anchor ~2.2 dB and the level adjudication now scores the polished pair
-    # better, so the committed value is the scan's. That is the adjudication
+    # This equality has been written both ways as the fixture moved: against
+    # the anchor while the two pairs coincided, then against the scan after
+    # deleting PR-L5's offset moved the anchor ~2.2 dB and the level
+    # adjudication preferred the polish. Measuring the give-back in the trim's
+    # own band moves it back to the anchor, because that give-back is what
+    # makes the anchored pair the level-matched one. That is the adjudication
     # working, not a regression — and per the paragraph above, WHICH pair wins
     # is explicitly not this test's claim. What is asserted is the claim it
     # does make.
-    assert committed_t == pytest.approx(resolved_trim_t)
+    assert committed_t == pytest.approx(expected_anchored["tweeter"])
+    assert committed_t != pytest.approx(resolved_trim_t)
     assert committed_t != pytest.approx(_FIXTURE_RAW_TRIM_DB["tweeter"])
     assert committed_t in (
         pytest.approx(expected_anchored["tweeter"]),
@@ -8183,10 +8302,14 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
     # with it only because both sides shared the same wrong number.
     default_woofer_db, _default_tweeter_db = _fixture_branch_db()
     raw_trim = _solve_fixture_raw_trim(default_woofer_db, _one_sided_tweeter_db)
-    giveback = {
-        role: c.candidate.linearization[role]["correction_giveback_db"]
-        for role in ("woofer", "tweeter")
-    }
+    # The give-back is measured in the band the TRIM is read in — the same
+    # estimator and half-bands that solved ``raw_trim`` above — not over each
+    # driver's own core band. ``_measured_level_frame`` re-measures it from the
+    # fixture's own curves and this candidate's PUBLISHED filters, so the
+    # expectation is derived from the same physics the planner saw rather than
+    # read back out of it.
+    frame = _measured_level_frame(c, tweeter_db=_one_sided_tweeter_db)
+    giveback = frame.giveback_db
     # No summed capture in hand (see the docstring), so ``anchor_trims``
     # (single-datum-owner migration, #2609) falls back unconditionally to the
     # raw measured trim: the anchor is ``raw_trim + giveback``, with no third
@@ -8197,8 +8320,21 @@ def test_linearized_ripple_polish_is_skipped_on_a_one_sided_band(caplog, monkeyp
         assert c.candidate.role_attenuations_db[role] == pytest.approx(
             unnormalized[role] - shift
         )
+    # With no scan to move it, the pair that ships IS the anchor — so the
+    # property the band-matched give-back buys is directly observable on the
+    # emitted gains: the two linearized branches hand off at the same level.
+    # This is computed here rather than read off the plan because the realized
+    # verdict is supplied by the stub above.
+    assert abs(_inter_driver_level_error_db(
+        frame, dict(c.candidate.role_attenuations_db)
+    )) <= 1e-3
+    # The magnitude, as a coarse guard on the fixture itself. It was -7.960 dB
+    # while the anchor spent the CORE-band give-back; measuring that give-back
+    # in the trim's own band instead moves this horn-shaped tweeter's anchor to
+    # -4.918 dB — the same direction and roughly the same size as the jts3
+    # correction this change was made for.
     assert c.candidate.role_attenuations_db["tweeter"] == pytest.approx(
-        -7.960, abs=0.02
+        -4.918, abs=0.02
     )
     # ...and the guard never fired, because the trim never left the anchor.
     assert (
@@ -8438,11 +8574,17 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
     # The guard fires (see the docstring): the anchor carries the raw −20 dB
-    # trim untouched, and the scan sits 9.700 dB away. Asserted with its
-    # drift, because "the guard fired" without the number is the shape of
-    # telemetry nobody can check.
+    # trim almost untouched — this fixture's level-band give-back is 0.917 dB,
+    # so the anchor lands at −19.083 — and the scan sits 9.800 dB away.
+    # Asserted with its drift, because "the guard fired" without the number is
+    # the shape of telemetry nobody can check.
+    #
+    # (Was 9.700 against an anchor of −20.0 while the give-back was measured
+    # over the driver's core band. The band-matched give-back moved this
+    # fixture 0.917 dB and the drift with it; the guard's behaviour — fires,
+    # commits the anchored pair, and lets item 1 refuse — is unchanged.)
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
-    assert "drift_db=9.7" in caplog.text
+    assert "drift_db=9.8" in caplog.text
     assert "committed=anchored" in caplog.text
     # …and the refusal is item 1's own realized-level check.
     assert "event=correction.crossover_v2_level_match_refused" in caplog.text
@@ -8463,13 +8605,21 @@ def _neutralize_improvement_floor(monkeypatch) -> None:
     predicts a smaller improvement, and these fixtures then trip
     ``correction_not_an_improvement`` before reaching what they are about.
 
-    **The refusal is correct and is pinned on its own** — see
-    ``test_the_deleted_offset_can_cost_a_session_the_improvement_floor``. A
-    candidate that cleared the 0.5 dB floor only because the arbitration's
-    offset adjusted the prediction was prediction-flattered shipping, which is
-    the class the ratified direction deletes (2026-08-17 conductor ruling on
-    PR #2652). The floor itself is unchanged; the prediction is now computed
-    from the measured raw solve.
+    **That refusal has since been un-flipped, and the neutralize stays anyway.**
+    The band-matched give-back lands this fixture's pair exactly level, so it
+    clears the floor on its own again — see
+    ``test_a_correctly_levelled_pair_clears_the_improvement_floor``, which now
+    pins the SHIPPING half and explains why the old rule's 1.835 dB-dull pair
+    was what dragged the prediction under. The floor's refusal arm keeps its
+    coverage where the decision is owned
+    (``test_crossover_v2_accountability.py``) and where it is spoken
+    (``test_correction_crossover_v2_endpoints.py``).
+
+    Kept rather than deleted because these five still have nothing to say about
+    the floor, and a fixture that clears it by only 0.24 dB against a 0.5 dB bar
+    could stop clearing it on any unrelated fit change — which would fail five
+    tests for a reason none of them is about. The neutralize is what makes that
+    impossible.
 
     Neutralizing it HERE rather than re-deriving these five to expect a refusal
     keeps each one testing its own subject — the wild-drift guard, the rejected
@@ -8642,9 +8792,28 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
 
 def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     """#1668 anchored give-back, the core math: each role's committed trim is
-    its raw trim plus that branch's own measured `correction_giveback_db`, with
-    a shared shift applied so no role lands POSITIVE (a boost the emitter would
-    refuse). Pinned end-to-end against the conductor's committed trims."""
+    its raw trim plus that branch's own measured LEVEL-BAND give-back, with a
+    shared shift applied so no role lands POSITIVE (a boost the emitter would
+    refuse). Pinned end-to-end against the conductor's committed trims.
+
+    **This test was INERT until 2026-08-19, and how it was inert is the useful
+    part.** It computed its expectation from ``correction_giveback_db`` — the
+    core-band number that no longer places the trim — and then compared the
+    tweeter against it under ``LINEARIZATION_TRIM_SANITY_MARGIN_DB``, a **6.0 dB**
+    tolerance. The two RULES' committed anchors differ by 1.835 dB on this
+    fixture (−2.691 core-band against −0.856 level-band; the 0.918 dB figure is
+    the give-back *differential*, which is a different quantity and not what
+    this assertion compared). Either way both sit far inside 6.0, so the
+    tolerance swallowed the whole difference and the test passed on BOTH sides
+    of the band change: mutating the production anchor did not move it. Its
+    woofer leg was degenerate too (raw 0.0, shift equal to the woofer's own
+    give-back, so it asserted 0.0 == 0.0 whatever the give-back was).
+
+    It now reads the same frame production does (``_measured_level_frame``,
+    shared with this file's other anchor tests) and grades to 1e-9, so the
+    arithmetic is actually pinned. The 6.0 dB constant it used to lean on is a
+    SCAN-drift guard and was never a tolerance on the anchor's own math.
+    """
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8653,10 +8822,8 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     assert verdict["accepted"] is True
 
     raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
-    giveback = {
-        role: c.candidate.linearization[role]["correction_giveback_db"]
-        for role in ("woofer", "tweeter")
-    }
+    frame = _measured_level_frame(c)
+    giveback = frame.giveback_db
     # Every branch that emitted filters reports a positive give-back.
     assert giveback["tweeter"] > 0.0
     # ``anchor_trims`` (single-datum-owner migration, #2609) has no summed
@@ -8670,17 +8837,15 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     anchored = {r: v - shift for r, v in unnormalized.items()}
 
     committed = c.candidate.role_attenuations_db
-    # No committed trim is a boost.
+    # No committed trim is a boost. The hearing-safety invariant.
     assert all(v <= 1e-9 for v in committed.values())
-    # The woofer is committed at its anchor exactly (only the tweeter is scanned).
-    assert committed["woofer"] == pytest.approx(anchored["woofer"])
-    # The tweeter sits at/near its anchor (the scan only fine-tunes around it).
-    assert abs(committed["tweeter"] - anchored["tweeter"]) <= (
-        LINEARIZATION_TRIM_SANITY_MARGIN_DB
-    )
-    # And the give-back genuinely moved it up from the raw trim toward level
-    # preservation -- the whole point of the anchor.
-    assert committed["tweeter"] > raw_trim["tweeter"] - 1e-9
+    # Both roles are committed at their anchor exactly on this fixture — the
+    # scan walks off it and the level adjudication commits the anchor.
+    assert committed["woofer"] == pytest.approx(anchored["woofer"], abs=1e-9)
+    assert committed["tweeter"] == pytest.approx(anchored["tweeter"], abs=1e-9)
+    # And the property the arithmetic exists to produce, asserted independently
+    # of it: the committed pair hands the two branches off at the same level.
+    assert abs(_inter_driver_level_error_db(frame, committed)) <= 1e-3
 
 
 def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
@@ -8732,10 +8897,13 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
 
-    giveback = {
-        role: c.candidate.linearization[role]["correction_giveback_db"]
-        for role in ("woofer", "tweeter")
-    }
+    # The anchor's give-back is measured over the bands the trim is read in,
+    # not over each driver's own core band; ``_measured_level_frame``
+    # re-measures it from the fixture's own curves and the candidate's
+    # PUBLISHED filters. The premise this test needs — a woofer give-back that
+    # exceeds its raw attenuation — is asserted below rather than assumed, so a
+    # band that stopped producing one would fail here loudly.
+    giveback = _measured_level_frame(c).giveback_db
     # No summed capture in hand, so the anchor is unconditionally
     # ``raw_trim + giveback`` (single-datum-owner migration, #2609) — no
     # third term to add.
@@ -11917,40 +12085,53 @@ def test_a_hole_centred_BOOST_makes_the_blind_zone_emit_a_warning(caplog):
         assert "1404.4032" in record.getMessage()
 
 
-def test_the_deleted_offset_can_cost_a_session_the_improvement_floor(
+def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     caplog, monkeypatch,
 ):
-    """#2609's user-visible flip: this fixture now REFUSES where it shipped.
+    """This fixture SHIPS again, and the reason is that it now levels exactly.
 
-    **The mechanism, located.** On this fixture the two per-driver level
-    estimates are identical (``trim_db`` and ``trim_band_average_db`` are both
-    ``{woofer: 0.0, tweeter: -1.773}``), so the anchor's BASE never moved.
-    What moved is PR-L5's ``level_frame_offset_db``, ~2.2 dB on the tweeter.
-    A louder tweeter predicts a smaller improvement, and the prediction now
-    lands under item 2's 0.5 dB material-improvement floor.
+    **History, because this assertion has been inverted once before.** Until
+    #2609 this fixture shipped. #2609 deleted PR-L5's ``level_frame_offset_db``
+    and it began REFUSING under item 2's 0.5 dB material-improvement floor —
+    correctly at the time, since the offset had been flattering the prediction.
+    The band-matched give-back now lands the pair exactly level, the prediction
+    is honest on its own terms, and it clears the floor without help.
 
-    **Why that is correct, not a regression** (2026-08-17 conductor ruling on
-    PR #2652). A candidate that cleared the floor only because the
-    arbitration's offset adjusted the prediction was prediction-FLATTERED
-    shipping — the exact class the ratified direction deletes. The floor itself
-    is unchanged at ``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``; what changed is
-    that the prediction is computed from the measured raw solve.
+    **The mechanism, measured on this fixture.** The two give-backs disagree by
+    0.918 dB here, and in the OPPOSITE direction to the jts3 horn that motivated
+    the fix::
 
-    **The household story has to stay coherent, so this pins both halves of
-    it.** The refusal is PRE-APPLY — the reigning graph is untouched and the
-    household keeps their current sound — and it answers "why" on two
-    surfaces: the journal names the numbers, and the refusal carries household
-    copy rather than a bare code. The five fit/anchor tests above neutralize
-    this floor precisely because they have nothing to say about it; this test
-    is where it is said.
+        level-band (anchor)   woofer 1.147   tweeter 2.064
+        core-band             woofer 2.104   tweeter 1.186
+        raw trim              woofer 0.0     tweeter -1.773
+        committed OLD (core)  woofer 0.0     tweeter -2.691   <- 1.835 dB DULL
+        committed NEW (level) woofer 0.0     tweeter -0.856   <- realized 0.0
+
+    That two-way behaviour is itself evidence about the defect's nature: a band
+    MISMATCH mis-levels in whichever direction the correction's energy happens
+    to sit relative to the graded span — hot on a horn whose shelf lives above
+    it, dull here. A sign error could not do that.
+
+    So the candidate the old rule refused was not a bad candidate; it was a
+    correctly-shaped candidate whose predicted improvement was being scored
+    against a pair mis-levelled 1.835 dB dull. Refusing it was the floor doing
+    its job on a corrupted input.
+
+    **What this test no longer covers, and where that lives instead.** It no
+    longer exercises the floor's REFUSAL arm. That arm keeps its coverage at
+    the layer that owns the decision —
+    ``test_crossover_v2_accountability.py`` pins
+    ``decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT`` — and
+    its household-copy/journal surface is pinned in
+    ``test_correction_crossover_v2_endpoints.py``. Nothing was dropped by
+    flipping this one; it was always a FIXTURE-flip test, and the fixture
+    flipped back for a reason worth stating.
     """
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
 
-    # Force the ANCHOR to be the committed pair, which is the population the
-    # flip is scoped to: a wild scan drift trips the sanity guard and the
-    # anchored pair ships. On the ordinary path the ripple polish moves the
-    # pair and the prediction still clears the floor — this is NOT every
-    # session, and the narrowness is the point.
+    # Force the ANCHOR to be the committed pair, which is the population this
+    # is scoped to: a wild scan drift trips the sanity guard and the anchored
+    # pair ships, so what the anchor computes is what gets predicted.
     monkeypatch.setattr(
         iv, "solve_ripple_optimal_trim",
         lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
@@ -11960,26 +12141,44 @@ def test_the_deleted_offset_can_cost_a_session_the_improvement_floor(
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    with pytest.raises(CaptureBeginRefused) as refused:
-        _run_phase(c, 2, 2)
+    # No refusal: the candidate ships.
+    _run_phase(c, 2, 2)
+    assert c.last_failure_code != REASON_CORRECTION_NOT_AN_IMPROVEMENT
 
-    # Leg 1 — the household sentence, not a bare code. TEMPLATE_HARD_STOP, so
-    # it says what happened and what would change the outcome.
-    assert c.last_failure_code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    message = str(refused.value)
-    assert "would not have made this speaker measure better" in message
-    assert "was not applied" in message
+    # Leg 1 — WHY it ships: the committed pair lands EXACTLY level. This is the
+    # band-matched give-back's invariant showing up end-to-end in the planner,
+    # not just in its unit test.
+    assert "event=correction.crossover_v2_realized_level_match" in caplog.text
+    assert "matched=true" in caplog.text
+    assert "difference_db=0.0" in caplog.text
 
-    # Leg 2 — the journal names the numbers a support read needs: which floor,
-    # what the prediction scored against it, and both sides of the comparison.
+    # Leg 2 — the two give-backs, side by side, showing the 0.918 dB this
+    # fixture's bands disagree by. The old anchor spent the core-band pair and
+    # committed the tweeter at -2.691; the level-band pair commits -0.856.
+    assert (
+        'level_band_giveback_db="{\'woofer\': 1.147, \'tweeter\': 2.064}"'
+        in caplog.text
+    )
+    assert (
+        'core_band_giveback_db="{\'woofer\': 2.104, \'tweeter\': 1.186}"'
+        in caplog.text
+    )
+    assert 'anchored_trim_db="{\'woofer\': 0.0, \'tweeter\': -0.856}"' in caplog.text
+    # The precondition's instrumentation, on the ORDINARY path: this fixture's
+    # base IS the band-average solve, so the polish delta is zero and the
+    # invariant holds exactly. Pinned here for the zero case only — a literal
+    # zero cannot distinguish "measured zero" from "hard-coded zero", so the
+    # value assertion that kills that mutation lives where a NON-zero delta can
+    # be driven (``test_the_journal_reports_the_polish_delta_it_measured`` in
+    # test_crossover_v2_intervention_dual_run.py, mutation-verified).
+    assert (
+        'band_average_trim_db="{\'woofer\': 0.0, \'tweeter\': -1.773}"' in caplog.text
+    )
+    assert 'polish_delta_db="{\'woofer\': 0.0, \'tweeter\': 0.0}"' in caplog.text
+
+    # Leg 3 — the prediction gate ran and passed on its own terms.
     assert "event=correction.crossover_v2_prediction_gate" in caplog.text
-    assert f"reason={REASON_CORRECTION_NOT_AN_IMPROVEMENT}" in caplog.text
-    for field in ("before_rms_db=", "after_rms_db=", "improvement_db=",
-                  "required_db="):
-        assert field in caplog.text, field
-
-    # PRE-APPLY: nothing was committed, so the reigning graph is untouched.
-    assert c.candidate is None
+    assert "after_passed=true" in caplog.text
 
 
 @dataclasses.dataclass(frozen=True)

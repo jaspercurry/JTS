@@ -785,25 +785,53 @@ class LinearizationFit:
     # power-domain-approximate — exact only for a flat core, up to ~1.1 dB
     # under-return on a 12 dB-tilted woofer-shaped core.)
     #
-    # This is the SSOT for the trim give-back: ``crossover_v2.intervention.
-    # plan_linearization`` anchors each branch's linearized trim at
-    # ``raw_trim + correction_giveback_db``, returning the branch's audible band
-    # to its pre-correction system level — no solver prediction, no overlap-band
-    # averaging (measured live on JTS3 2026-07-24: the overlap-band route
-    # returned only 5.81 dB of a 9.27 dB spend, because the tweeter's LR4 skirt
-    # power-weights that average toward the least-cut region and the shelf's
-    # wide RBJ transition is not at full depth there).
+    # This is the SSOT for the AUDIBLE-BAND give-back: what this branch's own
+    # correction removed across the driver's own core band, returning that band
+    # to its pre-correction system level.
+    #
+    # **It does NOT place the trim, and has not since the band-mismatch fix.**
+    # ``crossover_v2.intervention.plan_linearization`` anchors the trim on a
+    # give-back measured over ``branch_level_bands_hz`` — the bands that solved
+    # the raw trim and that grade the committed pair — because a give-back spent
+    # against a trim must be measured in that trim's frame. This number is
+    # published beside it as ``core_band_giveback_db`` and answers the
+    # audible-band question instead. On a driver whose correction sits mostly
+    # outside the graded band the two legitimately diverge, and using this one
+    # to place the trim shipped the jts3 horn tweeter 3.67 dB hot. Full
+    # account: that module's anchor block.
+    #
+    # (The size of that divergence is INFERRED, not banked. What the 2026-08-19
+    # journal recorded is this number, 6.656 dB, and the 3.671 dB of committed
+    # inter-driver error it produced. The level-band give-back that would have
+    # been read instead did not exist on that box — this change is what
+    # introduces the estimator — so no measurement of it is available for that
+    # session, and any figure quoted for it is arithmetic on the other two
+    # rather than a reading. Do not confuse it with the woofer's own core-band
+    # give-back of 2.985 dB from the same line, which is a different driver
+    # answering a different question and merely lands nearby.)
+    #
+    # (Historical note, because it is the reason this band was chosen: the
+    # pre-PR-L3 alternative averaged over the shared CROSSOVER OVERLAP band and
+    # returned only 5.81 dB of a 9.27 dB spend on JTS3 2026-07-24, because the
+    # tweeter's LR4 skirt power-weights that average toward the least-cut region
+    # and the shelf's wide RBJ transition is not at full depth there. PR-L3
+    # deleted that frame — the estimator now reads each branch on its own side
+    # of Fc — so the objection does not carry to the level-band route above.)
     #
     # Note the realization fit-quality gate bounds the correction's SHAPE only
     # over [onset, ceiling]; below the onset the realized cascade may diverge
     # from cut_target (e.g. a clamped shelf the residual only partly absorbs).
-    # That is safe here precisely because the anchor consumes this MEASURED
-    # delta: an under-realized plateau shrinks the achieved lift, it never
-    # breaks the leveling.
+    # That is safe for THIS number because it is a MEASURED before-vs-after
+    # delta rather than a prediction: an under-realized plateau shrinks the
+    # measured lift, and this number simply reports the smaller figure. (It
+    # used to say "safe because the anchor consumes this measured delta" — the
+    # anchor no longer consumes it; the safety came from the measurement, not
+    # from the consumer, so the argument survives losing that clause.)
     #
     # Computed for EVERY fit that emitted filters (0.0 when none), so a woofer
-    # carrying only flattening cuts anchors correctly too. When the CD-horn
-    # stage fires this reads ≈ spend + the flattening peaks' own in-band share.
+    # carrying only flattening cuts still reports its own audible-band figure
+    # rather than a gap. When the CD-horn stage fires this reads ≈ spend + the
+    # flattening peaks' own in-band share.
     correction_giveback_db: float = 0.0
     # --- PR-L5 disclosure, #1808 charge ----------------------------------
     # "This correction costs N dB of maximum level" — the realized peak of the
@@ -1080,12 +1108,22 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     module's top docstring for the no-cross-module-private-imports convention),
     evaluated against a boolean mask on this module's own fit grid rather than
     a (lo, hi) frequency pair. LOCKSTEP REQUIREMENT: this MUST stay the same
-    power-domain mean the trim solver uses, because
-    :attr:`LinearizationFit.correction_giveback_db` is consumed by
-    ``crossover_v2.intervention.plan_linearization`` as the level a branch's own
-    correction removed — if the two averaging domains disagreed, the anchored
-    trim would systematically mis-level the branch (a linear-dB mean here
-    would read ~0.3 dB different on a non-flat correction).
+    power-domain mean the trim solver uses, so that
+    :attr:`LinearizationFit.correction_giveback_db` and the trim frame remain
+    directly comparable quantities (a linear-dB mean here would read ~0.3 dB
+    different on a non-flat correction).
+
+    **The reason this requirement exists is now enforced one layer up, and
+    completely.** Its original wording said the domains must match or "the
+    anchored trim would systematically mis-level the branch" — correct, and it
+    guarded ~0.3 dB of averaging-domain error while leaving the BAND unmatched,
+    which cost 3.67 dB on a horn tweeter (jts3, 2026-08-19). The anchor no
+    longer consumes this number: it measures its own give-back over
+    ``branch_level_bands_hz`` with the trim solver's own estimator, so the
+    domain, the band, and the estimator all match by construction rather than
+    by a comment asking them to. This requirement is kept anyway — the two
+    give-backs are published side by side and a reader compares them, which is
+    only meaningful while they share an averaging domain.
 
     Returns 0.0 for an empty mask (no band to average — an honest no-op).
     """
@@ -3039,9 +3077,15 @@ def fit_driver_linearization(
     # budget that would have corrected (and so given back) the CORE band went
     # out of band instead. (Under this bound the floored fixture reads 2.1112,
     # i.e. back with its floor-free twin, which is the invariance the test
-    # asserts.) That number is the SSOT the flow anchors each branch's
-    # linearized trim on, so the whole 2.15 dB lands in an emitted trim and in
-    # the ripple scan that grades it.
+    # asserts.) That number WAS the SSOT the flow anchored each branch's
+    # linearized trim on when this was written, which is what made the whole
+    # 2.15 dB land in an emitted trim. Since the 2026-08-19 band fix the anchor
+    # measures its own give-back over ``branch_level_bands_hz`` and this number
+    # is the audible-band disclosure beside it, so the 2.15 dB no longer reaches
+    # a trim by this route. **The defect this paragraph records is unchanged
+    # either way**: a solve fed demand it cannot realize spends its slots out of
+    # band, and every band-limited reading of the result goes with them — which
+    # is the point, and it does not depend on who consumes the reading.
     #
     # **The bound is on what the solver is FED, never on how its output is
     # judged.** Every honesty guard downstream is untouched: the cut-only and
@@ -3268,11 +3312,21 @@ def fit_driver_linearization(
     # stage's input changes what it DECIDES, which needs its own evidence and
     # its own review; #2013 owns it.
     #
-    # One of the numbers below is not report-only, and saying so is the point of
-    # this note: ``correction_giveback_db`` below is the SSOT
-    # ``crossover_v2.intervention.plan_linearization`` anchors each branch's linearized
-    # TRIM on. Grading it exactly therefore moves an emitted trim — measured on
-    # the banked 2026-07-30 JTS3 session at up to 0.124 dB of give-back and
+    # This note used to say that one of the numbers below is not report-only,
+    # because ``correction_giveback_db`` was the SSOT the crossover_v2 anchor
+    # placed each branch's linearized TRIM on. **That is no longer true**: the
+    # anchor measures its own give-back over ``branch_level_bands_hz`` and this
+    # number is now the audible-band disclosure beside it, so grading it
+    # exactly no longer moves an emitted trim.
+    #
+    # The ARGUMENT survives the move intact, which is why it is kept rather
+    # than deleted. It applies now to the level-band give-back, which does place
+    # the trim and which is computed from the same realized cascade
+    # (``complex_correction_response`` over the emitted filters, not the
+    # Lorentzian) — so "grade the biquads you actually ship" is still a claim
+    # about an emitted trim, just at a different seam. The magnitudes recorded
+    # below are the ones that motivated it — measured on the banked 2026-07-30
+    # JTS3 session at up to 0.124 dB of give-back and
     # 0.040 dB of committed trim (cut-only vocabulary;
     # ``captures/r10b-alignment-20260801/lorentzian_gap_probe.py``). That is the
     # anchor becoming correct, not a new degree of freedom: the give-back's
@@ -3311,7 +3365,9 @@ def fit_driver_linearization(
         raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 
     # The give-back this driver's correction actually removed from its own
-    # reference (core) band — the SSOT the flow anchors its linearized trim on.
+    # reference (core) band — the SSOT for the AUDIBLE-BAND question, published
+    # as ``core_band_giveback_db``. It does not anchor a trim; the anchor
+    # measures its own give-back over ``branch_level_bands_hz``.
     # The MEASURED before-vs-after core-band level delta: the power-domain band
     # average of the curve BEFORE correction minus the same average AFTER
     # (``working_db`` is ``smoothed_db`` plus the cascade). Averaging the
@@ -3319,8 +3375,11 @@ def fit_driver_linearization(
     # for a flat core band, and up to ~1.1 dB under-return on a 12 dB-tilted
     # (woofer-shaped) core, because a power-domain mean of the correction cannot
     # know which bins carry the level it is being subtracted from. This
-    # formulation is exact by definition of the quantity being restored: it IS
-    # the level change of the band whose level the anchor restores.
+    # formulation is exact by definition of the quantity it measures: it IS the
+    # level change of THIS branch's own core band. (It used to be described as
+    # "the band whose level the anchor restores" — that band is now
+    # ``branch_level_bands_hz``, which the anchor measures for itself; this is
+    # the audible-band answer, exact for the band it names.)
     correction_giveback_db = 0.0
     if filters:
         correction_giveback_db = (

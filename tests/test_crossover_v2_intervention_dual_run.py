@@ -78,7 +78,14 @@ from tests.test_crossover_v2_incident_replay import (
 )
 
 #: The incident's own scan drift: the ripple optimum sat this far below the
-#: level-preserving anchor, 0.300 dB past the 6.0 dB sanity margin.
+#: level-preserving anchor, 0.612 dB past the 6.0 dB sanity margin.
+#:
+#: DERIVED from the anchor rather than written down, and that is load-bearing.
+#: The scan's ABSOLUTE result is the banked −13.013 dB; the stub reproduces it
+#: as ``seed + delta``, so the delta has to move whenever the anchor does. It
+#: has moved twice — 6.300 dB when the anchor carried PR-L5's offset, 7.864 dB
+#: after #2609 deleted it, 6.612 dB now that the give-back is measured in the
+#: trim's own band — and the banked −13.013 dB never moved at all.
 INCIDENT_SCAN_DELTA_DB = float(COMMITTED_DB["tweeter"]) - float(
     ANCHORED_DB["tweeter"]
 )
@@ -167,6 +174,96 @@ def _pure(sections: dict[str, Any]) -> iv.LinearizationPlan:
     return iv.plan_linearization(_planner_request(sections))
 
 
+def _giveback_record(plan: iv.LinearizationPlan) -> dict[str, Any]:
+    """The anchor's own journal line, as fields."""
+    for record in plan.journal:
+        if record.event == "correction.crossover_v2_linearization_giveback":
+            return dict(record.fields)
+    raise AssertionError("the planner emitted no give-back record")
+
+
+@pytest.mark.parametrize("injected_delta_db", [0.75, -1.25])
+def test_the_journal_reports_the_polish_delta_it_measured(
+    monkeypatch, injected_delta_db,
+):
+    """``polish_delta_db`` is INSTRUMENTATION, so it needs a value assertion.
+
+    The invariant's precondition — that the anchor's base came from the same
+    band-average solve the give-back is calibrated to — is not enforced in code.
+    It is *published*, and both ``intervention.py``'s invariant and the design
+    doc promise it is "published on every round so the precondition is observed
+    rather than assumed". A field that silently reported ``0.0`` would restore
+    exactly the invisibility this whole change removes, and would do it while
+    every existing test stayed green.
+
+    **Presence assertions cannot catch that**, and on the ordinary fixture
+    neither can a literal: the honest value there IS ``0.0`` (no polish), so
+    pinning the literal would pass against a hard-coded zero too. This drives a
+    base that DIFFERS from the band-average solve by a known amount and asserts
+    the journal reports that amount — the mutation that forces the field to
+    ``0.0`` fails here and nowhere else.
+
+    Asserted as the RELATION rather than a magic number, because the
+    band-average solve is the fixture's to produce, not this test's to restate:
+    ``polish_delta_db == raw_trim_db − band_average_trim_db``, per role.
+
+    **This fixture reports a non-zero delta of 2.688 dB, and it is a FIXTURE
+    ARTIFACT rather than anything the 2026-08-10 session did.** Saying so
+    precisely, because an earlier version of this paragraph had it backwards and
+    the mistake would have overstated the evidence behind #2734:
+
+    * the banked incident did NOT violate the precondition. Its
+      ``analysis.trim_db['tweeter']`` and ``analysis.trim_band_average_db['tweeter']``
+      are **both −10.8846** — the base IS the band average, difference
+      ``+0.000000``;
+    * the 2.688 appears because the planner re-solves the band average on this
+      replay's **synthetic** branches (−13.573), and those exist only because the
+      incident's per-driver responses were never retained — this file's own
+      module docstring says so;
+    * so ``raw − band_average == the replay's residual realized level error``
+      holds exactly (to 12 decimals) as a property of how the replay is
+      CONSTRUCTED, not as a measurement of that session.
+
+    **The honest evidence base, which is the stronger claim anyway: a
+    precondition violation has never been observed in banked production data.**
+    The only non-zero polish delta this repo holds is the artifact above. That
+    is materially different from "seen in the wild", and #2734 should be read
+    against the weaker premise — the concern is a reachable path with a bound
+    twice the gate, not an incident we have caught.
+
+    The assertion below is therefore on the SHIFT between an unpolished and a
+    polished run rather than on an absolute value: it needs no view on where the
+    fixture's own offset came from, and a hard-coded ``0.0`` collapses the shift
+    to zero and fails.
+    """
+    request = _planner_request(_sections_at(SELECTED_FC_HZ))
+    tweeter = request.tweeter.role
+
+    baseline = _giveback_record(iv.plan_linearization(request))
+    polished_trims = dict(request.raw_trim_db)
+    polished_trims[tweeter] = polished_trims[tweeter] + injected_delta_db
+    polished = _giveback_record(
+        iv.plan_linearization(replace(request, raw_trim_db=polished_trims))
+    )
+
+    # The field tracks the base it was handed, per role, in BOTH runs.
+    for fields in (baseline, polished):
+        for role in (request.woofer.role, tweeter):
+            assert fields["polish_delta_db"][role] == pytest.approx(
+                fields["raw_trim_db"][role] - fields["band_average_trim_db"][role],
+                abs=1e-3,
+            ), f"{role}: polish delta does not match raw − band-average"
+
+    # Moving the base by δ moves the reported delta by exactly δ — the
+    # assertion a constant-valued field cannot survive.
+    shift = polished["polish_delta_db"][tweeter] - baseline["polish_delta_db"][tweeter]
+    assert shift == pytest.approx(injected_delta_db, abs=1e-3)
+    # The untouched role does not move with it.
+    assert polished["polish_delta_db"][request.woofer.role] == pytest.approx(
+        baseline["polish_delta_db"][request.woofer.role], abs=1e-9
+    )
+
+
 # --------------------------------------------------------------------------- #
 # class (b) — the trim policy, isolated
 # --------------------------------------------------------------------------- #
@@ -176,8 +273,14 @@ def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkey
     """#2291's literal acceptance criterion, as one assertion.
 
     "The exact jts3 replay cannot emit the −13.013 dB tweeter trim through a
-    'trim_rejected' path." It emits −6.713 dB with a strategy that says the
+    'trim_rejected' path." It emits −6.401 dB with a strategy that says the
     scan was rejected and the anchor committed.
+
+    That anchored number has moved as the anchor's own definition did, most
+    recently −5.149 → −6.401 when the give-back moved into the band the trim is
+    read in — 1.252 dB CLOSER to the −10.885 this session's own raw solve asked
+    for. The criterion it serves has not moved: whatever the anchor is, it is
+    not the rejected scan's pair.
     """
     _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
     plan = _pure(_sections_at(SELECTED_FC_HZ))
@@ -722,23 +825,112 @@ def test_both_roles_carrying_sections_names_nobody(monkeypatch):
 def test_no_committed_trim_is_ever_positive_however_large_the_giveback(
     monkeypatch, giveback_db
 ):
-    """The hearing-safety invariant, driven at the input that can break it.
+    """The hearing-safety invariant, on a fixture that reaches it.
 
     A branch whose own cuts give back more than its raw attenuation lands
     POSITIVE before ``normalize_shift_db`` subtracts the common shift — a boost
-    the emitter refuses and the hardware must never see. The earlier assertion
-    read the incident fixture's own trims, which can only ever confirm that
-    fixture; this drives the give-back up until the unnormalized anchor is
-    positive and asserts the output stays cut-only anyway.
+    the emitter refuses and the hardware must never see. This fixture does land
+    there on its own: the anchor's unnormalized woofer is ``+3.916`` dB and the
+    shared shift subtracts exactly that, so the clamp is genuinely exercised
+    below.
+
+    **The parametrization drives the give-back at the ESTIMATOR, and it has to.**
+    It was originally written to raise ``LinearizationFit.correction_giveback_db``.
+    The 2026-08-19 band fix moved the anchor's give-back onto
+    ``solve_branch_trims`` over ``branch_level_bands_hz``, and that stub then
+    stopped reaching the anchor at all: measured before this was repaired, all
+    four values handed ``anchor_trims`` the identical
+    ``{'woofer': 3.916, 'tweeter': 8.400}`` and committed the identical pair
+    (``tweeter`` −6.400575020419777). One case four times, wearing the name of a
+    ladder.
+
+    It now injects where the anchor actually reads, the way the sibling
+    ``test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it`` does:
+    the POST-correction level read is lowered by ``giveback_db``, so the
+    measured give-back — ``level_pre − level_post`` — rises by exactly that on
+    both roles and the unnormalized anchor is pushed arbitrarily far positive.
+    At 60 dB it is nowhere near legal, which is the point: the clamp, not the
+    fixture, is what has to hold.
+
+    **Why the COMMITTED pair is the wrong thing to watch, and the anchor's
+    inputs are the right thing.** The injection raises both roles' give-back by
+    the same amount, and the shared shift subtracts the same amount from both —
+    so the committed pair is *identical* at every rung (tweeter
+    −6.400575020419777 throughout). That is the normalize doing exactly its job:
+    it preserves relative leveling and spends only ledger. Asserting on the
+    committed pair would therefore look green whether or not the ladder ran,
+    which is precisely how this test was inert before. The assertions below
+    watch the anchor's own inputs and the shift, where the ladder is visible.
+
+    **The call-count assertion is not decoration.** This test went inert once
+    because production stopped calling what it stubbed, silently. Pinning that
+    the planner made exactly the two estimator reads this injection assumes
+    means the next such move fails here loudly instead of quietly returning to
+    one case four times.
     """
     _install_stubs(monkeypatch, scan_delta_db=0.0)
 
-    def generous(resp, envelope, **kwargs):
-        return replace(_incident_fit(resp.role), correction_giveback_db=giveback_db)
+    real_solve = iv.solve_branch_trims
+    reads = {"n": 0}
 
-    monkeypatch.setattr(iv, "fit_driver_linearization", generous)
+    def laddered(*args, **kwargs):
+        trim_w, trim_t, level_w, level_t = real_solve(*args, **kwargs)
+        reads["n"] += 1
+        # Call 1 is the PRE-correction read, call 2 the POST-correction one.
+        # Lowering only the second raises `pre - post` by exactly `giveback_db`.
+        if reads["n"] == 2:
+            return trim_w, trim_t, level_w - giveback_db, level_t - giveback_db
+        return trim_w, trim_t, level_w, level_t
+
+    monkeypatch.setattr(iv, "solve_branch_trims", laddered)
+
+    # Capture what the anchor was actually handed, so the ladder's effect is
+    # asserted at the seam it acts on rather than inferred from the committed
+    # pair (which, correctly, does not move — see below).
+    anchor_inputs: dict[str, float] = {}
+    real_anchor = iv.anchor_trims
+
+    def spy(*, roles, anchor_base_db, giveback_db):
+        anchored, shift = real_anchor(
+            roles=roles, anchor_base_db=anchor_base_db, giveback_db=giveback_db,
+        )
+        anchor_inputs.update(
+            {
+                f"unnormalized_{role}": float(
+                    anchor_base_db.get(role, 0.0) + giveback_db.get(role, 0.0)
+                )
+                for role in roles
+            },
+            shift=float(shift),
+        )
+        return anchored, shift
+
+    monkeypatch.setattr(iv, "anchor_trims", spy)
     plan = _pure(_sections_at(SELECTED_FC_HZ))
 
+    assert reads["n"] == 2, (
+        f"the anchor made {reads['n']} estimator reads, not 2 — this injection "
+        "no longer lands where the give-back is measured, and the sweep below "
+        "is inert again"
+    )
+    # The injection reached the anchor and the clamp scaled with it. Measured
+    # across the ladder: the unnormalized TWEETER anchor runs -2.485 dB (needing
+    # no clamp) up to +57.515 dB (needing a very large one), and the shared
+    # shift tracks at 3.916 + giveback_db.
+    assert anchor_inputs["shift"] >= giveback_db, (
+        f"shift {anchor_inputs['shift']:.3f} did not absorb an injected "
+        f"give-back of {giveback_db:.1f} dB — the ladder is not reaching the "
+        "clamp"
+    )
+    # At the top of the ladder the TWEETER's own unnormalized anchor is far
+    # positive, which is the give-back-exceeds-attenuation case this test is
+    # named for. Pinned so the ladder cannot quietly shrink to values the
+    # fixture would have cleared anyway.
+    if giveback_db >= 20.0:
+        assert anchor_inputs["unnormalized_tweeter"] > 10.0, (
+            "the ladder no longer pushes the tweeter's unnormalized anchor "
+            "well positive, so the clamp is not being exercised by the sweep"
+        )
     assert plan.role_attenuations_db
     for role, trim_db in plan.role_attenuations_db.items():
         assert trim_db <= 0.0, f"{role} committed a boost of {trim_db:+.3f} dB"
@@ -905,7 +1097,11 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
 # goes to the emitter. Since #2609 made the raw measured trim the anchor's
 # base, the complete set of doors is ``raw_trim_db`` and
 # ``trim_band_average_db`` (guarded in ``LinearizationRequest.__post_init__``)
-# plus ``correction_giveback_db`` (guarded at the anchor's own call site).
+# plus the anchor's give-back term (guarded at the anchor's own call site).
+# That third door moved bands on 2026-08-19: it is the LEVEL-BAND give-back
+# ``solve_branch_trims`` measures over ``branch_level_bands_hz``, not
+# ``LinearizationFit.correction_giveback_db``, which no longer reaches the
+# anchor at all.
 #
 # The safety delta caught these guards UNPINNED: deleting the whole
 # trim-finiteness loop left 432 tests green. The three ``match="finite"``
@@ -937,16 +1133,26 @@ def test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it(
 ):
     """The anchor's OTHER term, guarded at its own call site.
 
-    ``correction_giveback_db`` is produced by the fit rather than handed in, so
-    it cannot be guarded in ``__post_init__`` with the trims — the check lives
-    where the value enters the anchor. Driven here by making the fit return the
-    bad value, which is the only way to reach that door.
+    The give-back is measured rather than handed in, so it cannot be guarded in
+    ``__post_init__`` with the trims — the check lives where the value enters
+    the anchor. Driven here by making the measurement return the bad value,
+    which is the only way to reach that door.
+
+    **The term this guards moved bands, and the guard moved with it.** It used
+    to read ``LinearizationFit.correction_giveback_db`` (the fit's core-band
+    number) and is now the level-band give-back measured through
+    ``solve_branch_trims`` over the bands the verdict grades — so the injection
+    site is the estimator, not the fit. The property under test is unchanged:
+    a non-finite give-back must be refused BEFORE ``anchor_trims``, because the
+    non-positive normalize is a ``max`` and a ``max`` against NaN is inert
+    (demonstrated in the sibling test above).
     """
-    real_fit = iv.fit_driver_linearization
+    real_solve = iv.solve_branch_trims
 
-    def _bad_giveback(*args, **kwargs):
-        return replace(real_fit(*args, **kwargs), correction_giveback_db=bad)
+    def _bad_level(*args, **kwargs):
+        trim_w, trim_t, _level_w, _level_t = real_solve(*args, **kwargs)
+        return trim_w, trim_t, 0.0, bad
 
-    monkeypatch.setattr(iv, "fit_driver_linearization", _bad_giveback)
+    monkeypatch.setattr(iv, "solve_branch_trims", _bad_level)
     with pytest.raises(iv.PlannerInputError, match="finite"):
         _pure(_sections_at(SELECTED_FC_HZ))

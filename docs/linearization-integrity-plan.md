@@ -268,10 +268,18 @@ order's plain reading and are recorded here rather than only in the code:
      no cut-only cascade can realize, and the greedy search spent filter slots
      on it. Measured on the reconstructed fixture: all eight slots between 9.7
      and 11.8 kHz on a branch declared to radiate to 1282.3 Hz, and
-     `correction_giveback_db` (the SSOT the linearized trim anchors on) reading
-     0.0136 dB against the 2.1668 dB the *same unbounded solve* returns on the
-     same fixture without its stopband floor — 2.15 dB of anchor, bought by
-     out-of-band content alone.
+     `correction_giveback_db` (the measured level this branch's own correction
+     removed across its core band) reading 0.0136 dB against the 2.1668 dB the
+     *same unbounded solve* returns on the same fixture without its stopband
+     floor — 2.15 dB of measured give-back,
+     bought by out-of-band content alone. That number was the linearized trim's
+     anchor term when this was written; since the 2026-08-19 band fix the anchor
+     measures its own give-back over `branch_level_bands_hz` (the bands
+     `realized_level_match` grades) and `correction_giveback_db` is the
+     audible-band disclosure published beside it as `core_band_giveback_db`. The
+     defect this bullet records is unchanged either way: a solve fed demand it
+     cannot realize spends its slots out of band, and every band-limited reading
+     of the result goes with them.
   3. `LinearizationFit.headroom_cost_db` is **stamped by the composer**, not
      computed by the fit core: a correction's cost is a property of the chain
      it is emitted into, and the topology-agnostic core knows neither the
@@ -301,7 +309,10 @@ order's plain reading and are recorded here rather than only in the code:
     band that scalar is the median of, so the residual claim, VERIFY, OBSERVE,
     the shared level frame and the trim anchor all read the number they always
     did. Level questions and shape questions stayed separate — the same seam
-    #1809 and #1929 each found from their own side.
+    #1809 and #1929 each found from their own side. (The trim anchor has since
+    left that list: the 2026-08-19 band fix measures its give-back over
+    `branch_level_bands_hz` rather than the fit's core band, so it no longer
+    reads a fit-frame level at all.)
 
   **Cross-era disclosure.** A candidate persisted BEFORE this amendment
   carries a `headroom_cost_db` stamped under the sum-of-positives rule, so it

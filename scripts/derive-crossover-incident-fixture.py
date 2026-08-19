@@ -22,7 +22,12 @@ Usage (laptop-side, offline — it reads files and nothing else)::
 ``--check`` re-derives in memory and diffs against the committed files; it is an
 operator tool, not a CI gate, because the bundle it needs is gitignored and
 lives only on the machine that pulled it. It exits 2 when the bundle is absent
-(so "I could not check" never reads as "the check passed"), 1 on a mismatch.
+(so "I could not check" never reads as "the check passed"), and 1 on a
+mismatch OR on a hand-banked field (:data:`HAND_BANKED_KEYS`) having gone
+missing from the committed fixture. That second case is the same principle
+read the other way: a guarded value this script cannot regenerate disappearing
+must never read as "the check passed" either, and the diff loop structurally
+cannot see it — absent from both sides compares equal.
 
 What this script does NOT emit, and why (issue #2291 Phase 0):
 
@@ -259,26 +264,30 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
         "source_preset": candidate["source_preset"],
     }
 
-    # The trim anchor, recomputed from the banked scalars with the formula
-    # anchor_trims documents: anchor_base plus giveback, no third term. This
-    # incident predates the single-datum-owner migration's summed-capture
-    # datum, so anchor_base is the raw measured trim — anchor_trims' own
-    # no-summed-capture fallback, byte for byte — which is this banked
-    # session's ``trim_band_average_db``.
+    # ``anchor_replay`` IS NOT DERIVED HERE ANY MORE, and it cannot be.
     #
-    # Recorded here as an EXPECTATION, not as an authority. The replay test
-    # asserts production's own anchor equals it, so a drift in either this
-    # script or anchor_trims fails that test; --check catches a drift in this
-    # script alone.
-    unnormalized = {
-        role: (
-            float(analysis["trim_band_average_db"][role])
-            + float(candidate["linearization"][role]["correction_giveback_db"])
-        )
-        for role in ROLES
-    }
-    shift = max(0.0, max(unnormalized.values()))
-    anchored = {role: value - shift for role, value in unnormalized.items()}
+    # This script used to recompute it as ``trim_band_average_db +
+    # correction_giveback_db``, normalized. That formula stopped describing
+    # production on 2026-08-19: the anchor's give-back is now measured over
+    # ``branch_level_bands_hz`` by ``solve_branch_trims``, which needs the
+    # per-driver COMPLEX RESPONSES — and this bundle never retained them (see
+    # the replay test's own module docstring: they were dropped for size, not
+    # by accident). There is no arithmetic over the banked scalars that can
+    # reach the new number, so a derivation kept here would report drift on a
+    # correct fixture forever.
+    #
+    # A checker that is known to fail is worse than no checker: it trains a
+    # reader to ignore ``--check``. So the field is now HAND-BANKED in
+    # ``expected_outcome.json`` carrying its own provenance note, and this
+    # script does not derive it or validate its VALUE — only its presence,
+    # which ``--check`` requires and ``main`` preserves by carrying the
+    # committed block through verbatim, so neither a re-run nor a check can
+    # quietly lose a value this script can no longer regenerate.
+    #
+    # What still guards the number: the replay test asserts production's own
+    # anchor equals the banked value, so a drift in ``anchor_trims`` fails
+    # there. What is lost is only this script's independent second opinion on
+    # it, and that opinion was arithmetic this bundle can no longer support.
     committed = candidate["role_attenuations_db"]
     verify_claims = state["verify"]["claims"]
     flatness = state["cloud"]["cloud_verify"]["pipeline"]["flatness"]
@@ -288,18 +297,10 @@ def derive(bundle: Path) -> dict[str, dict[str, Any]]:
             sources,
             bundle,
             "What the incident actually emitted, and what the speaker then "
-            "measured. anchor_replay is DERIVED from the banked scalars; every "
-            "other number here is banked verbatim.",
+            "measured. Every number here is banked verbatim. anchor_replay is "
+            "NOT derived by this script — see the comment above it — and is "
+            "carried through from the committed fixture unchanged.",
         ),
-        "anchor_replay": {
-            "derived": True,
-            "anchored_trim_db": anchored,
-            "anchor_drift_db": abs(
-                float(committed["tweeter"]) - float(anchored["tweeter"])
-            ),
-            "normalize_shift_db": shift,
-            "unnormalized_anchor_db": unnormalized,
-        },
         "applied": {
             "applied_at": profile["applied_at"],
             "config_basename": profile["config"]["basename"],
@@ -356,6 +357,36 @@ def _without_bundle_name(text: str) -> Any:
     return payload
 
 
+#: The one key this script no longer owns. See the comment at its former
+#: derivation site in :func:`derive`.
+HAND_BANKED_KEYS = ("anchor_replay",)
+
+
+def _carry_hand_banked(
+    out: Path, derived: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Splice hand-banked keys from the committed fixture into ``derived``.
+
+    Returns what was carried, or ``None`` when there is no committed fixture to
+    carry from (a first-ever derivation). Mutates ``derived`` in place. Key
+    order is not load-bearing — :func:`_render` sorts — but the merge is built
+    sorted anyway so an in-memory payload reads the way the file does.
+    """
+    name = "expected_outcome.json"
+    target = out / name
+    if name not in derived or not target.exists():
+        return None
+    committed = _read_json(target)
+    carried = {
+        key: committed[key] for key in HAND_BANKED_KEYS if key in committed
+    }
+    if not carried:
+        return None
+    merged = {**derived[name], **carried}
+    derived[name] = {key: merged[key] for key in sorted(merged)}
+    return carried
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
@@ -377,7 +408,41 @@ def main(argv: list[str] | None = None) -> int:
 
     derived = derive(args.bundle)
 
+    # Carry the hand-banked ``anchor_replay`` through from the committed
+    # fixture. `derive` cannot regenerate it (its comment says why), so without
+    # this a plain re-run would WRITE a fixture with the field missing and
+    # delete a value nothing can rebuild. Splicing it here rather than in
+    # `derive` keeps that function a pure bundle->facts mapping, and makes the
+    # field match by construction under ``--check`` instead of being silently
+    # skipped by a special case in the diff loop.
+    _carry_hand_banked(args.out, derived)
+    # Ask the PAYLOAD what it ended up holding, not the carry what it found.
+    # The carry returns ``None`` for three different reasons — no committed
+    # fixture, a committed fixture with the key deleted, no derived entry to
+    # splice into — and they all land in the same place: the payload this run
+    # is about to write or compare carries no value for a field nothing can
+    # rebuild. Asking per key also keeps a partial carry from reading as a
+    # complete one if ``HAND_BANKED_KEYS`` ever grows.
+    missing_banked = [
+        key
+        for key in HAND_BANKED_KEYS
+        if key not in derived.get("expected_outcome.json", {})
+    ]
+    banked_list = ", ".join(repr(key) for key in missing_banked)
+
     if not args.check:
+        if missing_banked:
+            # Loud, but not fatal. A fixture written without the field is
+            # recoverable by restoring the field, and refusing to write would
+            # also block the first-ever derivation, which legitimately has
+            # nothing to carry from.
+            print(
+                f"warning: nothing to carry {banked_list} from, so the fixture "
+                f"written to {args.out} will not have it. This script cannot "
+                "regenerate it — restore it by hand, with its provenance note, "
+                "before committing.",
+                file=sys.stderr,
+            )
         args.out.mkdir(parents=True, exist_ok=True)
         for name, payload in derived.items():
             (args.out / name).write_text(_render(payload), encoding="utf-8")
@@ -416,6 +481,20 @@ def main(argv: list[str] | None = None) -> int:
             else "fixture does not match the bundle it claims to come from",
             file=sys.stderr,
         )
+    if missing_banked:
+        # The one failure a re-run does not repair, so the message must not
+        # suggest one: this script gave up deriving the field precisely
+        # because the bundle cannot reach it.
+        print(
+            f"hand-banked {banked_list} missing from "
+            f"{args.out / 'expected_outcome.json'} — this script cannot "
+            "regenerate it (the bundle never retained the per-driver complex "
+            "responses its give-back band needs), so re-deriving will not "
+            "bring it back. Restore it by hand from git history, with its "
+            "provenance note.",
+            file=sys.stderr,
+        )
+    if drifted or missing_banked:
         return 1
     print(f"fixture matches the banked bundle ({len(derived)} files)")
     return 0

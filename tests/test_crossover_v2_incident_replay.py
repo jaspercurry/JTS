@@ -49,11 +49,22 @@ JSON set these tests read is derived from it by
 ``scripts/derive-crossover-incident-fixture.py``, which has a ``--check`` mode.
 
 **What replays exactly, and what does not.** Every scalar the decision path
-consumes — the raw trim, both fits' give-back, the correction filters, the
-ripple scan's own result, the session and candidate corners — is the
-incident's, so the anchor, the drift verdict, the outcome string, the commit
-choice and the committed pair are all computed by production from banked
-numbers and match the incident exactly.
+consumes — the raw trim, both fits' core-band give-back, the correction
+filters, the ripple scan's own result, the session and candidate corners — is
+the incident's, so the drift verdict, the outcome string, the commit choice
+and the committed pair are all computed by production from banked numbers and
+match the incident exactly.
+
+**One term stopped being purely banked on 2026-08-19, and it is the anchor's.**
+The give-back the anchor spends is now MEASURED over ``branch_level_bands_hz``
+rather than read off the fit, so it is computed from the synthetic branches
+below rather than from a banked scalar. Two things follow. The anchored trim
+here is production's arithmetic over a fixture, not a bit-for-bit reproduction
+of a number the incident emitted — and it could not be either way, because the
+incident predates the band it is now measured in. What the anchor is still
+anchored to IS banked: the raw measured trim (−10.8846), which is why the
+DIRECTION the fix moves it — 1.252 dB closer to that trim — is a claim about
+this incident and not about the fixture.
 
 The per-driver measured RESPONSES do not replay, and the reason is size, not
 absence. They were never retained as arrays; re-deriving them offline from
@@ -145,9 +156,8 @@ SELECTED_FC_HZ = SESSION_CONTEXT["selected_fc_hz"]
 COMMITTED_DB = EXPECTED_OUTCOME["committed_attenuations_db"]
 # The anchor these numbers pin is the one design SSOT:
 # docs/active-speaker-tuning-layers-design.md, "Anchored give-back (the trim)"
-# — the committed RAW trim plus that branch's measured
-# ``correction_giveback_db``, shared-shift normalized non-positive. No third
-# term.
+# — the committed RAW trim plus that branch's measured give-back, shared-shift
+# normalized non-positive. No third term.
 #
 # Re-derived 2026-08-17 (#2609). The prior banked pair carried PR-L5's
 # ``level_frame_offset_db`` (woofer +1.5644, tweeter 0.0), which was the
@@ -156,7 +166,27 @@ COMMITTED_DB = EXPECTED_OUTCOME["committed_attenuations_db"]
 # tweeter -6.713 -> -5.149 and the shift 2.900 -> 1.335. The tweeter's raw
 # measured trim here is -10.8846 — and #2609's conviction is that THAT was the
 # right number all along (the reigning tune sat at -10.214).
+#
+# Re-derived again 2026-08-19 for the give-back BAND fix, which is downstream
+# of #2609 rather than a revision of it. The give-back the anchor spends is now
+# measured over ``branch_level_bands_hz`` — the bands that solved the raw trim
+# and that grade the committed pair — instead of over each driver's own CORE
+# band, and on this incident that moves the tweeter -5.149 -> -6.401 and the
+# shift 1.335 -> 3.916. **The anchor moved 1.252 dB CLOSER to the raw measured
+# -10.8846 this session's own solve asked for**: the core-band term had been
+# handing a horn tweeter back level from a band the verdict never reads, which
+# is precisely the hot-tweeter error the fix removes, showing up here on an
+# incident that was captured long before it.
 ANCHORED_DB = EXPECTED_OUTCOME["anchor_replay"]["anchored_trim_db"]
+
+#: The same replay at the ONE-SIDED Fc (the tweeter's sweep floor), where the
+#: ripple polish is skipped. It gets its own number because the give-back is
+#: now Fc-DEPENDENT: it is measured over ``branch_level_bands_hz``, and those
+#: bands are mirrored halves about Fc, so moving Fc moves the band the
+#: give-back is read in. Under the old core-band rule the give-back ignored Fc
+#: entirely and both paths landed on one value — that they now differ by
+#: 0.043 dB is the fix working, not two fixtures disagreeing.
+ANCHORED_AT_ONE_SIDED_FC_DB = {"woofer": 0.0, "tweeter": -6.443080668475005}
 
 
 # --------------------------------------------------------------------------- #
@@ -627,16 +657,16 @@ def _one_event_line(caplog, name: str) -> str:
 def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     """The other #2291 acceptance criterion, through the PRODUCTION path.
 
-    The scan drifts 6.300 dB from the anchor, past the 6.0 dB sanity margin, so
+    The scan drifts 6.612 dB from the anchor, past the 6.0 dB sanity margin, so
     the outcome stamped on the candidate is ``trim_rejected`` — and the pair
-    that ships is now the level-preserving ANCHOR, −6.713 dB, under the
+    that ships is now the level-preserving ANCHOR, −6.401 dB, under the
     strategy ``ANCHORED_COMMITTED_AFTER_SANITY_DRIFT``. The household-visible
     artifact and the emitted gain say the same thing.
 
     **What this pinned before Phase 2b:** the same outcome string against the
     scan's own −13.013 dB, because the grading committed whichever pair levelled
     better *regardless of whether the scan had been rejected*. The extra
-    6.300 dB of tweeter cut is the largest single term in the dark upper half
+    6.612 dB of tweeter cut is the largest single term in the dark upper half
     the household then measured.
 
     The outcome string did not change and did not need to: ``"trim_rejected"``
@@ -644,9 +674,11 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     because the behaviour changed to match it rather than because it was
     renamed.
 
-    Everything asserted here is production's own arithmetic on banked inputs:
-    the anchor from the incident's give-back, the drift against the shipped
-    margin constant, and the commit choice.
+    Everything asserted here is production's own arithmetic: the anchor from
+    the incident's banked raw trim plus the give-back re-measured in that
+    trim's own band (see the module docstring on what that changed about
+    "banked"), the drift against the shipped margin constant, and the commit
+    choice.
     """
     caplog.set_level("WARNING", logger="jasper.active_speaker.crossover_v2_flow")
     replay = _run_replay(monkeypatch)
@@ -699,28 +731,61 @@ def test_a_rejected_trim_is_not_the_trim_that_ships(monkeypatch, caplog):
     # the anchor here.
     #
     # That is not an argument for dropping the fallback policy, and the number
-    # above says why: the drift is 7.864 dB against a 6.0 dB margin, so the
+    # above says why: the drift is 6.612 dB against a 6.0 dB margin, so the
     # anchor is committed under ANCHORED_COMMITTED_AFTER_SANITY_DRIFT — the
     # REJECTION, not the grading — and the policy is what covers the
     # session-corner-wild regime where the grading points the other way.
     #
-    # The two pairs now grade to a TIE, and that is the honest pin (#2609
-    # re-derivation). With PR-L5's offset term deleted the anchor levels at
-    # 3.940 dB against the scan's 3.924 — 0.016 dB apart, where the banked
-    # arbitration numbers had the anchor clearly ahead. A strict inequality on
-    # a 0.016 dB margin pins nothing but rounding, so what is asserted is the
-    # tie plus the mechanism that actually decides: the drift policy, not the
-    # grading. Both pairs miss the 3.0 dB realized-level tolerance, which is
-    # why this session refuses either way — the fail-closed direction, and the
-    # thing this replay exists to reproduce.
-    assert abs(abs(anchor["difference_db"]) - abs(scan["difference_db"])) < 0.1, (
-        "the two pairs should grade to a tie at the candidate's corner; a "
-        "wide separation means this replay has drifted from the corner it "
-        "claims to be planning at"
+    # The anchor now grades CLEARLY AHEAD, and the margin is the fix's own
+    # doing. This assertion has been written three ways as the anchor moved,
+    # which is worth stating rather than quietly re-tuning:
+    #
+    #   * banked arbitration      anchor clearly ahead
+    #   * #2609 (offset deleted)  a TIE — 3.940 against the scan's 3.924, and
+    #                             a strict inequality on 0.016 dB would have
+    #                             pinned nothing but rounding
+    #   * band-matched give-back  anchor 2.688 against the scan's 3.924
+    #
+    # The give-back moved into the trim's own band, so the anchored pair is the
+    # one that actually level-matches and it grades 1.236 dB better. That is a
+    # real margin rather than rounding, so a strict inequality is now the
+    # honest pin — and it is the fix's mechanism showing up on an independent
+    # incident, not a fixture drifting.
+    #
+    # (What used to stand here — "both pairs still miss the 3.0 dB tolerance" —
+    # was true of the old anchor and is contradicted 25 lines below by this same
+    # block's own assertions: the band-matched anchor CLEARS it at 2.688 while
+    # the scan pair still misses at 3.924. Deleted rather than softened.)
+    assert abs(anchor["difference_db"]) < abs(scan["difference_db"]), (
+        "the band-matched anchor should grade BETTER than the scan pair at "
+        "the candidate's corner; if the scan wins, the give-back is no longer "
+        "being measured in the band the level instrument grades"
     )
-    assert abs(anchor["difference_db"]) > REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
-        "the incident's anchor misses the realized-level tolerance, which is "
-        "what makes this a refusing session"
+    assert abs(abs(anchor["difference_db"]) - abs(scan["difference_db"])) == (
+        pytest.approx(1.236, abs=1e-3)
+    ), "the anchor's margin over the scan is the give-back band fix's own size"
+    # **The anchor now lands INSIDE the realized-level tolerance, and that is
+    # the most consequential thing this replay says about the fix.** The
+    # incident's anchored pair used to miss the 3.0 dB bar (3.940 dB); measured
+    # in the trim's own band it lands at 2.688 dB — it would have cleared the
+    # level gate this incident failed. The scan pair still misses at 3.924 dB.
+    #
+    # The session still REFUSES, and that is asserted elsewhere in this file
+    # rather than inferred here: the trim is rejected on SCAN DRIFT
+    # (6.612 dB against a 6.0 dB margin, ``strategy=
+    # anchored_committed_after_sanity_drift``), which is a different mechanism
+    # from the level gate and is untouched by this change. What moved is that
+    # the level instrument no longer independently condemns the pair — so the
+    # refusal now rests on the drift policy alone, where before it had two
+    # reasons.
+    assert abs(anchor["difference_db"]) < REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
+        "the band-matched anchor should clear the realized-level tolerance on "
+        "this incident; if it misses, the give-back is not being measured in "
+        "the band the level instrument grades"
+    )
+    assert abs(scan["difference_db"]) > REALIZED_LEVEL_MATCH_TOLERANCE_DB, (
+        "the scan pair still misses it — the anchor's advantage is not that "
+        "the bar moved"
     )
 
 
@@ -820,8 +885,11 @@ def test_the_straddle_and_its_skip_journal_read_the_candidates_corner(
     assert "reason=ripple_band_one_sided" in skipped
 
     # With no scan there is no drift, so the anchor is committed on its own
-    # terms rather than through the sanity fallback.
+    # terms rather than through the sanity fallback. At THIS Fc the give-back
+    # is read over a different pair of mirrored halves, so the anchor differs
+    # from the configured-Fc replay's by 0.043 dB — see
+    # ``ANCHORED_AT_ONE_SIDED_FC_DB``.
     assert replay.candidate.role_attenuations_db["tweeter"] == pytest.approx(
-        ANCHORED_DB["tweeter"], abs=1e-12
+        ANCHORED_AT_ONE_SIDED_FC_DB["tweeter"], abs=1e-12
     )
     assert replay.candidate.linearization_outcome == "fitted"
