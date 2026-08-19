@@ -218,15 +218,19 @@ def test_a_relay_session_requires_the_relay_at_the_source_gate(monkeypatch):
     assert v2host._resolve_prepare_capture_source() == (SOURCE_WIRED, device)
 
 
+@pytest.mark.parametrize("preparer", ["session", "verify"])
 def test_a_refused_prepare_leaves_the_bundle_store_untouched(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, preparer,
 ):
-    """S3's behavioral pin: the relay-precondition refusal fires BEFORE
-    ``open_v2_evidence_store`` — a refused start on a relay-less Pi must not
-    abandon the prior bundle and write a new one on its way to the 400 (the
-    side effect the dispatch-level gate ordering used to prevent, and this
-    PR's reorder briefly lost). The gates ahead of the source resolution are
-    stubbed to pass; the evidence store is a bomb."""
+    """S3's behavioral pin, BOTH preparers: the relay-precondition refusal
+    fires BEFORE ``open_v2_evidence_store`` — a refused start on a relay-less
+    Pi must not abandon the prior bundle and write a new one on its way to
+    the 400 (the side effect the dispatch-level gate ordering used to
+    prevent; this PR's reorder briefly lost it on stage 1, and the gate's
+    delta round found stage 2 had it 71 lines late). The gates ahead of the
+    source resolution are stubbed to pass — for verify that is the
+    recovery gate (needs_recovery False) and the applied-state gate (state
+    applied True); the evidence store is a bomb."""
     import jasper.active_speaker.branch_chain as branch_chain
     from jasper.active_speaker.crossover_v2 import (
         alignment_prescription as prescription_mod,
@@ -260,6 +264,9 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
             prescription_mod, "read_alignment_prescription",
             lambda raw, *, fc_hz, declared_bounds_us: None,
         )
+        if preparer == "verify":
+            # Stage 2's own preceding gate: an applied durable state.
+            v2host.save_v2_state({"applied": True, "tier": ""})
 
         def _bomb(topology):
             raise AssertionError(
@@ -267,12 +274,14 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
             )
 
         monkeypatch.setattr(v2host, "open_v2_evidence_store", _bomb)
+        prepare = (
+            v2host.prepare_v2_session if preparer == "session"
+            else v2host.prepare_v2_verify
+        )
         with pytest.raises(
             v2host.CrossoverV2Refused, match="relay capture is not configured"
         ):
-            v2host.prepare_v2_session(
-                {}, status={}, run_async=None, camilla_factory=None,
-            )
+            prepare({}, status={}, run_async=None, camilla_factory=None)
     finally:
         v2host.set_state_path_for_tests(None)
 

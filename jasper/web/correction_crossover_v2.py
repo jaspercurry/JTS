@@ -7249,6 +7249,12 @@ def prepare_v2_verify(
     )
     plan_shape = _verify_plan_shape(raw, state)
     context = resolve_conductor_context(status)
+    # #2662 W2b: the same one-decision source resolution stage 1 makes, in
+    # the same position — after the speaker-level gates, BEFORE the evidence
+    # bundle opens, so a refused verify-start (relay-less Pi, unplugged mic
+    # under an explicit wired override) costs no side effects (gate S3, both
+    # preparers).
+    capture_source, wired_device = _resolve_prepare_capture_source()
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     priors_raw = state.get("verify_priors") or {}
     sum_raw = priors_raw.get("predicted_sum") if isinstance(priors_raw, Mapping) else None
@@ -7318,9 +7324,6 @@ def prepare_v2_verify(
     # ``CrossoverV2Session.__init__`` so the "values plus a date, or
     # nothing" rule has one owner.
     pilot_transfer_prior = pilot_transfer_prior_from_state(state)
-    # #2662 W2b: the same one-decision source resolution stage 1 makes, in the
-    # same position — after the speaker-level gates, before any state opens.
-    capture_source, wired_device = _resolve_prepare_capture_source()
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()

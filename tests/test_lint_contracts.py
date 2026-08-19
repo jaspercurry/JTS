@@ -742,7 +742,12 @@ MAX_LINES_BY_PATH = {
     # the dispatch-order reorder had silently cost (a refused start
     # abandoned the prior bundle) and why the dispatch's later read is now a
     # plain re-read. 8,571 + 21 = 8,592.
-    "jasper/web/correction_crossover_v2.py": 8_592,
+    # ...and 8,592 -> 8,595 (#2720 delta round): +3 net, the SAME gate moved
+    # to the same position in `prepare_v2_verify` — the delta review found
+    # stage 2 still opened its bundle 71 lines before resolving the source,
+    # so a refused verify-start cost the side effect stage 1 had just been
+    # cured of. The bundle-untouched pin now runs both preparers.
+    "jasper/web/correction_crossover_v2.py": 8_595,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
