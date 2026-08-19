@@ -462,6 +462,57 @@ The cross-provider invariant is owned by
 provider cancel/truncate follows the local TTS flush and final
 playout-ledger acknowledgement.
 
+## Turn Release Contract
+
+The invariant: **no uncommitted input from turn N may reach turn N+1.**
+Both realtime protocols keep a server-side input buffer that outlives
+`release()` unless the adapter actively empties it, so a turn the
+daemon rejects (a no-speech abort, a manual-endpoint teardown before
+`end_input()`, an interrupt) must not leave its audio where the next
+turn can inherit it. Each provider's wire protocol gives the adapter a
+different tool for that, with a different residual risk.
+
+| Provider | Discard primitive | JTS adapter obligation |
+| --- | --- | --- |
+| OpenAI Realtime (Grok inherits) | `input_audio_buffer.clear` — an explicit, documented "empty the buffer without committing" event. | `OpenAIRealtimeTurn.release()` sends it whenever the turn releases uncommitted under manual VAD; `OpenAIRealtimeConnection._on_turn_released()` sends it before restoring manual VAD when a server-VAD turn released without a server-side commit. Motivating bug: a rejected "volume down" utterance's audio persisted in the buffer and fired on a later turn before this existed. |
+| Gemini Live | None. `LiveClientRealtimeInput` (verified against the installed `google-genai` SDK) offers only `activity_start` / `activity_end` as turn-boundary markers — no "close without committing" event exists. | `GeminiLiveTurn.release()` never sends `activity_end` for a turn `mark_uncommitted()` marked rejected, leaving that turn's `activity_start` deliberately unmatched on the wire. Manual VAD only streams mic frames inside an active turn either way, so nothing audio-level desyncs between turns — the residual risk is confined to the server's turn-boundary bookkeeping. |
+
+**Gemini's risk is open, not resolved.** Two in-repo comments raise the
+prior that a malformed turn boundary can silently break the next turn:
+`GeminiLiveConnection._send_activity_end`'s "Required for multi-turn"
+note, and `GeminiLiveConnection._build_config`'s manual-VAD block, which
+documents a same-shape precedent failure — auto-VAD pause/resume
+"silently breaks on turn 2 ... drops turn-2's audio entirely
+(0 input_tokens, 0 chunks back)". Both describe the *paired*-marker flow
+and are silent on a start with no end ever, so neither is an incident
+report for this exact case — but they establish that "malformed
+boundary → silent next-turn failure" is a real failure mode in this
+system, via a different mechanism. Counter-evidence: the receive loop's
+stale-response bookkeeping (`GeminiLiveConnection._receive_loop`'s
+`is_stale` block) shows the server tolerating a fresh `activity_start`
+for turn N while turn N-1's own `activity_end` is still unacknowledged
+— a belated `turn_complete` routinely arrives ~30 ms after the next
+`activity_start` — so the server's state machine is not known to be a
+rigid single-slot design that any overlapping `activity_start` trips.
+Whether that tolerance extends to a turn whose `activity_start` was
+never closed at all is exactly what neither comment nor any other
+in-repo evidence answers, and Google's own docs were unreachable when
+this was decided, so the question is treated as genuinely open.
+`GeminiLiveConnection._send_activity_start` logs a correlator line
+("activity_start sent after a prior turn was released WITHOUT
+committing") on the very next turn specifically so a real failure, if
+it happens, surfaces as one grep instead of a timestamp-by-timestamp
+log reconstruction — the theory is written to be falsifiable, not just
+asserted.
+
+The alternative that would close the risk outright — never sending
+`activity_start` until real speech is confirmed, instead of opening it
+on every wake — is a larger, cross-cutting change (the
+`LiveTurn`/`LiveConnection` Protocol, the live-frame routing path in
+`voice_daemon.py`, idle-watchdog anchoring, wake-telemetry stage
+timing) that overlaps a separate workstream and was deliberately not
+attempted alongside this fix.
+
 ## Adding a fourth provider
 
 When a new real-time backend lands (a self-hostable Ultravox-class
@@ -692,7 +743,11 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
 
-Last verified: 2026-07-27 (provider-neutral response/tool telemetry ownership
+Last verified: 2026-08-19 (added the "Turn Release Contract" section,
+verified against `jasper/voice/gemini_session.py`'s `mark_uncommitted`/
+`release`/`_send_activity_start` and `jasper/voice/openai_session.py`'s
+`release`/`_on_turn_released`; prior 2026-07-27 pass: provider-neutral
+response/tool telemetry ownership
 rechecked against `jasper/voice/turn_playback.py`,
 `jasper/tools/__init__.py`, `jasper/voice/daemon_main.py`, and
 `jasper/voice_daemon.py`; prior 2026-07-12 pass: Gemini switcher

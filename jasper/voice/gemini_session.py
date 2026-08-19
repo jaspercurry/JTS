@@ -201,14 +201,10 @@ class GeminiLiveTurn:
         self._activity_end_sent = False
         self._released = False
         self._turn_lost = False
-        # Whether release() is allowed to commit this turn to the server
-        # (send activity_end as a fallback if end_input() was never
-        # called). Defaults True — legacy/normal behaviour for turns that
-        # legitimately complete. The daemon calls mark_uncommitted() for a
-        # turn it has decided to reject (e.g. a no-speech abort) so
-        # release() abandons the still-open activity_start instead of
-        # committing it — see mark_uncommitted() and release() docstrings
-        # for why this matters and what it does NOT protect against.
+        # Whether release() is allowed to commit this turn (send
+        # activity_end as a fallback if end_input() was never called).
+        # Defaults True; mark_uncommitted() flips it False for a turn the
+        # daemon has decided to reject. See mark_uncommitted()'s docstring.
         self._committed = True
         # Set when the server emits server_content.turn_complete — the
         # explicit "model is done speaking" signal. Used by the daemon's
@@ -258,88 +254,18 @@ class GeminiLiveTurn:
         """Tell release() this turn must NOT be committed to the server.
 
         Called by the daemon for a turn it has decided to reject (a
-        no-speech abort — wake fired but the user never spoke) before
-        calling release(). Without this, release()'s "best effort, send
-        activity_end if it hasn't gone out yet" fallback would commit the
-        rejected utterance anyway: under Gemini's manual VAD,
-        activity_start + audio + activity_end IS a complete turn — the
-        server generates a response (billed, unheard — playback is
-        already cancelled by the time release() runs) and folds it into
-        the persistent session's conversation context, where it can
-        resurface in a later turn. It also leaves an unacked activity_end
-        in `_unack_activity_end_times` that the receive loop's
-        stale-response filter must wait out before it will route ANY
-        response to the next real turn (see `_receive_loop`'s "is_stale"
-        block).
-
-        Gemini Live's manual-VAD wire protocol (`LiveClientRealtimeInput`
-        — verified against the installed `google-genai` SDK) offers only
-        `activity_start` / `activity_end` as turn-boundary markers; there
-        is no separate "close without committing" signal. So the only way
-        to avoid committing is to never send `activity_end` for this
-        turn's still-open `activity_start` — release() below skips it
-        entirely rather than sending a marker that would commit. This
-        intentionally leaves the activity_start unmatched on the wire.
-
-        This repo's own comments raise the prior on that being risky, and
-        this docstring names them rather than treating the question as a
-        blank slate: `_send_activity_end` says the marker is "Required
-        for multi-turn: each turn ends with this marker; the next turn
-        opens with a fresh activity_start", and `_build_config`'s manual-
-        VAD block calls the activity_start/activity_end pair "the
-        canonical multi-turn pattern... the server uses them as the
-        unambiguous turn signal" and documents a *precedent failure* of
-        the same SHAPE — auto-VAD pause/resume "silently breaks on turn
-        2: the server never sees a clean turn boundary so it drops
-        turn-2's audio entirely (0 input_tokens, 0 chunks back)". Both
-        describe the NORMAL, paired-marker flow and are silent on this
-        exact case (a start with no end, ever, followed by a fresh
-        start) — they are not an incident report for it — but the
-        precedent establishes that "malformed boundary → silent next-
-        turn failure" is a real, previously-observed failure MODE in
-        this exact system, via a different mechanism (the wrong marker
-        type, not a missing one). That raises rather than resolves the
-        risk. Cutting the other way: the receive loop's stale-response
-        bookkeeping (`_receive_loop`'s "is_stale" block) documents the
-        server tolerating a fresh activity_start for turn N while turn
-        N-1's OWN activity_end is still unacknowledged — "a belated
-        turn_complete from turn N-1 ... typically arriving 30 ms after
-        we sent activity_start for turn N" — so the server's state
-        machine is not known to be a rigid single-slot design that a new
-        activity_start would trip over; it tolerates overlap for a
-        turn that WAS properly closed. Whether that tolerance extends to
-        a turn whose activity_start was never closed at all is exactly
-        the part neither comment nor any other in-repo evidence answers,
-        and network access to Google's own docs was unavailable when
-        this was written, so the question is treated as genuinely open,
-        not resolved either way.
-
-        Given that, this is a deliberate, evidence-bounded choice, not a
-        confirmed-safe one. It is judged lower-risk than always
-        committing because: (a) no audio streams between turns (manual
-        VAD only forwards mic frames inside an active turn), so there's
-        nothing further to desync before the next activity_start; (b) if
-        the server ever does drop the following turn's audio because of
-        this, that shows up as the existing, already-logged "SILENT
-        RESPONSE" / "RECORDING TIMEOUT" no-chunks-received cases in
-        voice_daemon.py, not as a new silent failure mode — and
-        `_send_activity_start` logs a correlator line
-        ("activity_start sent after a prior turn was released WITHOUT
-        committing") on the very next turn specifically so that
-        confirmation, if it ever happens, is one grep away rather than a
-        timestamp reconstruction; and (c) a wedged connection self-heals
-        through the existing reconnect supervisor. Always committing, by
-        contrast, is a GUARANTEED cost on every no-speech reject (billed
-        response, history pollution, and the stale-response bug that can
-        silently drop the next real turn's response for up to
-        UNACK_AGE_OUT_SEC) versus this being a theorized one bounded by
-        (a)-(c). The clean fix — never open the activity at all for a
-        turn that gets rejected, by deferring activity_start until real
-        speech is confirmed — is a larger, cross-cutting change (the
-        `LiveTurn`/`LiveConnection` Protocol, the live-frame routing path
-        in voice_daemon.py, idle-watchdog anchoring, wake-telemetry
-        stage timing) that overlaps a separate workstream and is
-        deliberately not attempted here.
+        no-speech abort) before calling release(). Under Gemini's manual
+        VAD, activity_start + audio + activity_end is a complete, billed,
+        history-committing turn, so release()'s normal best-effort
+        activity_end send must be skipped for a turn already decided
+        rejected — release() below checks `_committed` for that. Gemini's
+        wire protocol has no "close without committing" marker, so the
+        only way to avoid committing is to leave this turn's
+        activity_start permanently unmatched, which carries a residual,
+        evidence-bounded but unresolved risk to the next turn's opening
+        activity_start. Full rationale, the supporting/counter evidence,
+        and why the risk is judged acceptable:
+        docs/HANDOFF-voice-providers.md "Turn Release Contract".
         """
         self._committed = False
 
@@ -370,11 +296,9 @@ class GeminiLiveTurn:
         # iterator wakes up promptly.
         await self._audio_q.put(None)
         # Best-effort: tell the server the turn is over so it doesn't
-        # keep waiting for more user audio. Skipped when the daemon
-        # called mark_uncommitted() — sending activity_end here would
-        # commit a turn the daemon has already decided to reject (see
-        # mark_uncommitted()'s docstring for the full rationale and the
-        # residual risk of the activity_start being left unmatched).
+        # keep waiting for more user audio. Skipped when uncommitted
+        # (mark_uncommitted() — a rejected turn) since sending activity_end
+        # here would commit it anyway; see mark_uncommitted()'s docstring.
         if self._committed and not self._activity_end_sent and not self._turn_lost:
             try:
                 await self._conn._send_activity_end()
@@ -728,16 +652,11 @@ class GeminiLiveConnection:
         # docstring on _prune_unack_activity_ends for the design.
         self._unack_activity_end_times: list[float] = []
 
-        # Set when a turn is released via mark_uncommitted() (a no-speech
-        # reject) — its activity_start was left without a matching
-        # activity_end (see GeminiLiveTurn.mark_uncommitted()'s
-        # docstring for why, and the residual risk that decision
-        # carries). Read once by the NEXT _send_activity_start() to log
-        # a correlator line, then cleared — this is purely an
-        # observability aid: if that "left unmatched" theory is ever
-        # wrong in a way that breaks the following turn, this line puts
-        # cause and effect one grep apart instead of requiring a
-        # timestamp-by-timestamp reconstruction from separate log lines.
+        # Set when a turn was released via mark_uncommitted() — its
+        # activity_start was left unmatched (see mark_uncommitted()'s
+        # docstring). Read once by the NEXT _send_activity_start() to log
+        # a correlator line, then cleared — pure observability, so a
+        # failure caused by that unmatched marker is one grep away.
         self._last_release_uncommitted = False
 
         # Background tasks: receive loop, keepalive, reconnect supervisor.
@@ -994,16 +913,10 @@ class GeminiLiveConnection:
         if self._session is None:
             return
         if self._last_release_uncommitted:
-            # Correlator line: the immediately preceding turn was
-            # released via mark_uncommitted() (a no-speech reject) and
-            # left ITS activity_start unmatched — see that turn's
-            # release() and mark_uncommitted()'s docstring for the
-            # documented-but-not-confirmed risk this carries. If THIS
-            # turn (the one we're opening now) comes back with 0 chunks
-            # (the existing "SILENT RESPONSE"/"RECORDING TIMEOUT"
-            # diagnostics in voice_daemon.py), this line is the evidence
-            # that would confirm the risk instead of requiring a
-            # timestamp-by-timestamp reconstruction across log lines.
+            # Correlator line: the immediately preceding turn released
+            # uncommitted, leaving ITS activity_start unmatched (see
+            # mark_uncommitted()'s docstring). If THIS turn comes back
+            # with 0 chunks, this line ties that failure to the cause.
             logger.info(
                 "activity_start sent after a prior turn was released "
                 "WITHOUT committing (activity boundary left unmatched); "

@@ -448,20 +448,13 @@ class OpenAIRealtimeTurn:
                     type(e).__name__, e,
                 )
         elif not self._committed and not self._turn_lost and not self._server_vad_active:
-            # Manual VAD (no server VAD) never auto-empties the server's
-            # input_audio_buffer — only commit() or an explicit clear does.
-            # A turn that never called end_input() (rejected as no-speech,
-            # interrupted, or torn down early) leaves whatever audio it
-            # appended sitting in that buffer, where it would silently
-            # prepend onto the NEXT turn's audio and can resurface and
-            # execute later (observed: two rejected "volume down"
-            # utterances fired on a subsequent turn). Clear it here so a
-            # rejected turn's audio dies with the turn. Skipped when
-            # turn_lost (the send already failed — another send is
-            # unlikely to land, and a reconnect starts with a clean
-            # buffer anyway) and when this turn ran under server VAD,
-            # whose buffer is connection-wide and is handled instead by
-            # `_on_turn_released`'s restore-to-manual path below.
+            # Manual VAD leaves appended audio in the server's
+            # input_audio_buffer until commit() or an explicit clear, so a
+            # turn released without end_input() must clear it or the audio
+            # persists into the NEXT turn (see docs/HANDOFF-voice-providers.md
+            # "Turn Release Contract"). Skipped when turn_lost (send already
+            # failed) and under server VAD, whose connection-wide buffer is
+            # handled by `_on_turn_released`'s restore-to-manual path below.
             try:
                 await self._conn._send_event({"type": "input_audio_buffer.clear"})
             except Exception as e:  # noqa: BLE001
@@ -1308,16 +1301,13 @@ class OpenAIRealtimeConnection:
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
         if self._server_vad_active:
             if not turn._committed:
-                # The server never reached input_audio_buffer.committed for
-                # this turn (released early — interrupted, timed out, or
-                # torn down before speech_stopped) so whatever audio it
-                # appended is still sitting in the buffer. set_turn_detection
-                # only clears when switching manual->server, not on the
-                # restore-to-manual path below, so without this the
-                # leftover audio would carry into the next (manual VAD)
-                # turn. Skip when committed — the buffer is already
-                # consumed and a redundant clear only adds a noisy
-                # server-error round trip on the common (normal) path.
+                # The server never committed this turn's buffer (released
+                # early — interrupted, timed out, torn down before
+                # speech_stopped). set_turn_detection only clears on
+                # manual->server, not on this restore-to-manual path, so
+                # without this the leftover audio carries into the next
+                # turn (see docs/HANDOFF-voice-providers.md "Turn Release
+                # Contract"). Skip when committed — nothing left to clear.
                 try:
                     await self._send_event({"type": "input_audio_buffer.clear"})
                 except Exception as e:  # noqa: BLE001
