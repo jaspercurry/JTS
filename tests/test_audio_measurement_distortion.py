@@ -781,8 +781,8 @@ def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
     bands = {"woofer": WOOFER_BAND_HZ, "tweeter": TWEETER_BAND_HZ}
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     try:
-        # A capture banked TODAY: the product's own rule reproduces it, and the
-        # solve reports the grid point the program was built at.
+        # A capture banked under the SHIPPED rule: the product's own answer
+        # reproduces it, and the solve reports the grid point it was built at.
         current = _measure_program_at(-20.0, courtesy_prelude=shipped)
         program, downstream, prelude = cli.rebuild_program(
             {"gain_plan_db": GAIN_PLAN_DB,
@@ -795,8 +795,8 @@ def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
 
         # A capture banked the other side of #2715 — the corpus this file's own
         # smoke test reads, and the one the CLI's usage names. Its id is
-        # unreachable under today's rule, so a tool pinned to that rule alone
-        # could not read its own documented corpus.
+        # unreachable under the shipped rule, so a tool pinned to that rule
+        # alone could not read its own documented corpus.
         legacy = _measure_program_at(-12.5, courtesy_prelude=not shipped)
         assert legacy.program_id != current.program_id
         program, downstream, prelude = cli.rebuild_program(

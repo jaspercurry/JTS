@@ -194,8 +194,8 @@ def rebuild_program(state: dict[str, Any], bands: dict[str, tuple[float, float]]
     commit reproduces under exactly one of the two values: measured on
     2026-08-19, ``captures/wired-night-2026-08-19`` solves at ``False`` and the
     ``captures/xover-series2-2026-08-17`` corpus this file's usage names solves
-    at ``True``. Pinning today's rule alone would therefore leave the tool
-    unable to read its own documented corpus. The shipped rule is tried FIRST
+    at ``True``. Pinning the shipped rule alone would therefore leave the tool
+    unable to read its own documented corpus. That rule is tried FIRST
     so a current capture is answered by the product's own answer, and the
     search is safe in both directions because the ``program_id`` hash is what
     accepts it: a wrong prelude cannot match, it can only fail to.
