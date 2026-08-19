@@ -201,6 +201,15 @@ class GeminiLiveTurn:
         self._activity_end_sent = False
         self._released = False
         self._turn_lost = False
+        # Whether release() is allowed to commit this turn to the server
+        # (send activity_end as a fallback if end_input() was never
+        # called). Defaults True — legacy/normal behaviour for turns that
+        # legitimately complete. The daemon calls mark_uncommitted() for a
+        # turn it has decided to reject (e.g. a no-speech abort) so
+        # release() abandons the still-open activity_start instead of
+        # committing it — see mark_uncommitted() and release() docstrings
+        # for why this matters and what it does NOT protect against.
+        self._committed = True
         # Set when the server emits server_content.turn_complete — the
         # explicit "model is done speaking" signal. Used by the daemon's
         # idle watchdog to close the turn promptly without racing
@@ -245,6 +254,52 @@ class GeminiLiveTurn:
             self._turn_lost = True
             await self._audio_q.put(None)
 
+    def mark_uncommitted(self) -> None:
+        """Tell release() this turn must NOT be committed to the server.
+
+        Called by the daemon for a turn it has decided to reject (a
+        no-speech abort — wake fired but the user never spoke) before
+        calling release(). Without this, release()'s "best effort, send
+        activity_end if it hasn't gone out yet" fallback would commit the
+        rejected utterance anyway: under Gemini's manual VAD,
+        activity_start + audio + activity_end IS a complete turn — the
+        server generates a response (billed, unheard — playback is
+        already cancelled by the time release() runs) and folds it into
+        the persistent session's conversation context, where it can
+        resurface in a later turn. It also leaves an unacked activity_end
+        in `_unack_activity_end_times` that the receive loop's
+        stale-response filter must wait out before it will route ANY
+        response to the next real turn (see `_receive_loop`'s "is_stale"
+        block).
+
+        Gemini Live's manual-VAD wire protocol (`LiveClientRealtimeInput`
+        — verified against the installed `google-genai` SDK) offers only
+        `activity_start` / `activity_end` as turn-boundary markers; there
+        is no separate "close without committing" signal. So the only way
+        to avoid committing is to never send `activity_end` for this
+        turn's still-open `activity_start` — release() below skips it
+        entirely rather than sending a marker that would commit. This
+        intentionally leaves the activity_start unmatched on the wire.
+        What that does server-side once the next real turn's
+        activity_start arrives is NOT verifiable from the SDK (it's a
+        server-side state machine, undocumented for this exact case) —
+        this is a deliberate, evidence-bounded choice, not a confirmed-
+        safe one. It is judged lower-risk than always committing because:
+        (a) no audio streams between turns (manual VAD only forwards mic
+        frames inside an active turn), so there's nothing further to
+        desync before the next activity_start; (b) if the server ever
+        does drop the following turn's audio because of this, that shows
+        up as the existing, already-logged "SILENT RESPONSE" / "RECORDING
+        TIMEOUT" no-chunks-received cases in voice_daemon.py, not as a
+        new silent failure mode; and (c) a wedged connection self-heals
+        through the existing reconnect supervisor. If field evidence ever
+        shows the following turn's audio going silently missing right
+        after a no-speech reject, that is the signal this assumption was
+        wrong and this turn's activity boundary needs an explicit
+        reconnect instead of being left open.
+        """
+        self._committed = False
+
     async def audio_out(self) -> AsyncIterator[bytes]:
         async for chunk in self.audio_out_chunks():
             yield chunk.pcm
@@ -261,8 +316,9 @@ class GeminiLiveTurn:
 
     async def release(self) -> None:
         """Release the turn. Idempotent. Sends `activity_end` if not
-        already sent, then closes the audio iterator (sentinel None)
-        and detaches from the connection."""
+        already sent AND the turn is still committed (see
+        `mark_uncommitted()`), then closes the audio iterator (sentinel
+        None) and detaches from the connection."""
         if self._released:
             return
         self._released = True
@@ -271,8 +327,12 @@ class GeminiLiveTurn:
         # iterator wakes up promptly.
         await self._audio_q.put(None)
         # Best-effort: tell the server the turn is over so it doesn't
-        # keep waiting for more user audio.
-        if not self._activity_end_sent and not self._turn_lost:
+        # keep waiting for more user audio. Skipped when the daemon
+        # called mark_uncommitted() — sending activity_end here would
+        # commit a turn the daemon has already decided to reject (see
+        # mark_uncommitted()'s docstring for the full rationale and the
+        # residual risk of the activity_start being left unmatched).
+        if self._committed and not self._activity_end_sent and not self._turn_lost:
             try:
                 await self._conn._send_activity_end()
                 self._activity_end_sent = True
@@ -281,6 +341,13 @@ class GeminiLiveTurn:
                     "live turn: release activity_end ignored (%s: %s)",
                     type(e).__name__, e,
                 )
+        elif not self._committed and not self._activity_end_sent:
+            logger.info(
+                "live turn: released WITHOUT committing (rejected turn — "
+                "no activity_end sent, server activity boundary left "
+                "unmatched); sent=%dB",
+                self._bytes_sent,
+            )
         await self._conn._on_turn_released(self)
         logger.info(
             "live turn: ended in %.0fms, %d chunks received (sent=%dB)",

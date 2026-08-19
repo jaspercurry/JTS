@@ -843,6 +843,7 @@ class _TeardownTurn:
     def __init__(self, *, chunks: int = 3) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
+        self.mark_uncommitted_calls = 0
         self._chunks = chunks
 
     def last_chunk_at(self) -> float:
@@ -865,6 +866,9 @@ class _TeardownTurn:
 
     async def end_input(self) -> None:
         self.end_input_calls += 1
+
+    def mark_uncommitted(self) -> None:
+        self.mark_uncommitted_calls += 1
 
     async def release(self) -> None:
         self.release_calls += 1
@@ -949,6 +953,26 @@ async def test_teardown_skips_end_input_when_nothing_in_the_gate_is_set():
     a gate that was already true."""
     turn = await _torn_down_mid_hold(manual=False)
     assert turn.end_input_calls == 0
+
+
+async def test_teardown_marks_uncommitted_on_a_rejected_turn():
+    """The exact no-speech-abort shape (no input_ended, no user speech,
+    no manual endpoint) must tell a provider adapter that supports it
+    (mark_uncommitted — Gemini) not to commit this turn at release()
+    time, so a rejected utterance doesn't get sent to the server as a
+    complete turn. Regression for the bug where GeminiLiveTurn.release()
+    unconditionally sent activity_end regardless of why the daemon was
+    releasing the turn."""
+    turn = await _torn_down_mid_hold(manual=False)
+    assert turn.mark_uncommitted_calls == 1
+
+
+async def test_teardown_does_not_mark_uncommitted_when_end_input_fires():
+    """The control case: a turn that legitimately closes input (here via
+    the button/manual-endpoint gate) must NOT be marked uncommitted —
+    only the reject path should suppress the provider's commit."""
+    turn = await _torn_down_mid_hold(manual=True)
+    assert turn.mark_uncommitted_calls == 0
 
 
 def test_teardown_gate_includes_the_manual_term():

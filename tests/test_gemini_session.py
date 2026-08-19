@@ -258,3 +258,88 @@ async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():
     # "a turn is already active" wedge.
     with pytest.raises(RuntimeError, match="ws closed mid-send"):
         await conn.acquire_turn()
+
+
+class _FakeSendSession:
+    """Records every `send_realtime_input` call so tests can assert
+    whether a wire-level `activity_end` marker went out, without a real
+    SDK session/network connection."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def send_realtime_input(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_release_rejected_turn_does_not_commit():
+    """A no-speech/rejected turn (daemon calls mark_uncommitted() before
+    release(), mirroring `_end_turn_inner`'s no-speech-abort path) must
+    NOT send activity_end. Under Gemini's manual VAD, activity_start +
+    audio + activity_end is a complete, billed, history-committing turn
+    — sending it for a turn the daemon has already decided to reject
+    pollutes conversation history, bills for an unheard response, and
+    (via `_unack_activity_end_times`) can silently drop the NEXT real
+    turn's response. Regression for that bug."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._session = _FakeSendSession()
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    turn.mark_uncommitted()
+    await turn.release()
+
+    assert conn._session.calls == []
+    assert turn._activity_end_sent is False
+    assert conn._unack_activity_end_times == []
+    # The turn must still detach cleanly so the next acquire_turn() can
+    # proceed — rejecting a commit must not wedge the connection.
+    assert conn._active_turn is None
+
+
+@pytest.mark.asyncio
+async def test_release_completed_turn_still_commits():
+    """A turn released normally (no mark_uncommitted() call — the
+    legitimate-completion path) must still send activity_end exactly as
+    before. This is the control case: the fix must not silently stop
+    committing turns that actually ended with user speech."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._session = _FakeSendSession()
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    await turn.release()
+
+    assert len(conn._session.calls) == 1
+    assert "activity_end" in conn._session.calls[0]
+    assert turn._activity_end_sent is True
+    assert len(conn._unack_activity_end_times) == 1
+    assert conn._active_turn is None
+
+
+@pytest.mark.asyncio
+async def test_release_rejected_turn_after_end_input_still_commits():
+    """mark_uncommitted() only suppresses release()'s own best-effort
+    send. If end_input() already ran (activity_end already on the wire —
+    a turn that legitimately ended, then had release() called on it), a
+    later mark_uncommitted() call must not un-send it or desync
+    `_activity_end_sent` from what the server actually received."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._session = _FakeSendSession()
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+
+    await turn.end_input()
+    turn.mark_uncommitted()
+    await turn.release()
+
+    assert len(conn._session.calls) == 1
+    assert turn._activity_end_sent is True
+    assert len(conn._unack_activity_end_times) == 1

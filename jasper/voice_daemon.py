@@ -5549,12 +5549,25 @@ class WakeLoop:
             # mid-hold — idle watchdog, stop event, the release that never
             # came — would stop calling end_input(), which it did before
             # local VAD was taken off this path.
-            if (self._input_ended or self._user_speech_seen
-                    or self._manual_endpoint_this_turn):
+            turn_committed = (
+                self._input_ended or self._user_speech_seen
+                or self._manual_endpoint_this_turn
+            )
+            if turn_committed:
                 try:
                     await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
                 except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
                     logger.debug("end_input ignored: %s", e)
+            else:
+                # Tell providers that support it (Gemini) not to commit
+                # this rejected turn as a release()-time fallback — see
+                # GeminiLiveTurn.mark_uncommitted(). Duck-typed like
+                # usage_breakdown() below: turns that predate/lack this
+                # hook (OpenAI already refuses to commit an uncalled
+                # end_input() on its own) are untouched.
+                marker = getattr(self._turn, "mark_uncommitted", None)
+                if callable(marker):
+                    marker()
             try:
                 await self._turn.release()
             except Exception as e:  # noqa: BLE001
