@@ -22,6 +22,10 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1265,3 +1269,112 @@ def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
     assert cli.main(["propose", *argv]) == cli.EXIT_OK
     assert cli.main(["stage", *argv]) == cli.EXIT_OK
     assert reached == ["propose", "stage"]
+
+
+# --------------------------------------------------------------------------- #
+# 7. A10 — the staged event has to be observable where an operator looks
+#
+# Found on jts3: ``stage_prescription`` emits
+# ``event=crossover_v2.prescription_staged`` right after the atomic write, and
+# the CLI configured no logging at all — so ``logging.lastResort`` (WARNING and
+# above) dropped it, and the tool's one state transition reached neither the
+# journal nor the operator's terminal.
+#
+# These run the entrypoint in a SUBPROCESS on purpose. pytest installs its own
+# root handler for every test, so an in-process ``caplog`` assertion captures
+# the record whether or not anything configured logging — it would have passed
+# against the broken shape, which is the one thing this pin may not do.
+# --------------------------------------------------------------------------- #
+
+#: Runs the REAL ``cli.main`` with only the evidence gate stubbed, so the
+#: logging wiring under test is the shipped one. Nothing in this script
+#: configures a logger: if the entrypoint does not, the event has nowhere to go.
+_STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+
+    from jasper.active_speaker.crossover_v2 import prescription_spool as spool
+    from jasper.active_speaker.crossover_v2.blend_prescription import (
+        read_blend_prescription,
+        read_prescription_bytes,
+    )
+    from jasper.cli import crossover_prescriber as cli
+
+    spool_path, doc_path, state_path, fingerprint, lo, hi = sys.argv[1:7]
+    spool.set_prescription_spool_path_for_tests(Path(spool_path))
+    document = Path(doc_path).read_bytes()
+    prescription = read_blend_prescription(
+        read_prescription_bytes(document),
+        packet_fingerprint=fingerprint,
+        band_hz=(float(lo), float(hi)),
+        positional_evidence=None,
+    )
+    cli._gate = lambda _args: (document, prescription, {})
+    raise SystemExit(
+        cli.main([
+            "stage", str(Path(doc_path).parent),
+            "--state", state_path, "--prescription", doc_path,
+        ])
+    )
+    """
+)
+
+
+def _stage_in_a_real_process(tmp_path: Path) -> subprocess.CompletedProcess:
+    document = tmp_path / "prescription.json"
+    document.write_bytes(_document())
+    state = _write_state(tmp_path, ordinal=8)
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    return subprocess.run(
+        [
+            sys.executable, "-c", _STAGE_IN_A_REAL_PROCESS,
+            str(tmp_path / "staged.json"), str(document), str(state),
+            _PACKET_FINGERPRINT, str(_BAND_HZ[0]), str(_BAND_HZ[1]),
+        ],
+        cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_the_staged_event_reaches_stderr_from_the_real_entrypoint(tmp_path):
+    """A10: the one state transition this CLI performs is observable.
+
+    Asserted on a real process's stderr, which is exactly what an operator sees
+    over SSH and what systemd hands the journal. Without the entrypoint's
+    logging configuration this line does not exist anywhere — the record is
+    created and dropped, because ``logging.lastResort`` starts at WARNING.
+    """
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "event=crossover_v2.prescription_staged" in result.stderr
+    # The fields an operator needs to tell one staging from another: which round
+    # it is for, which document it was, and whether it replaced one.
+    assert "for_round_ordinal=9" in result.stderr
+    assert f"prescription_sha256={prescription_sha256(_document())}" in result.stderr
+    assert "replaced=false" in result.stderr
+
+
+def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
+    """stdout is the machine channel; a log line there would corrupt ``--json``.
+
+    The same split every other verb keeps — the packet and the accepted result
+    are stdout, the human and structured lines are stderr — so a caller piping
+    this command's stdout into ``jq`` is never handed a log line.
+    """
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert "event=crossover_v2.prescription_staged" not in result.stdout
+
+
+def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
+    """The control: the non-JSON summary an operator reads still prints.
+
+    A logging change that captured or reformatted the command's own stderr
+    writes would trade one observability defect for another.
+    """
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert "staged cut prescription for round 9" in result.stderr
+    assert "the next round takes it once and consumes it" in result.stderr

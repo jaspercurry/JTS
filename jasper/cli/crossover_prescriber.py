@@ -39,9 +39,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
+
+from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_MALFORMED,
@@ -404,6 +407,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A10. Without this the tool's structured events have no handler at all:
+    # ``logging.lastResort`` emits WARNING and above, so
+    # ``event=crossover_v2.prescription_staged`` — written by
+    # ``stage_prescription`` at INFO, right after the atomic write — reached
+    # neither an operator's terminal nor the journal. This CLI is the only
+    # supported staging path, so that made the one state transition it performs
+    # unobservable: a prescription could be banked, or silently REPLACE another,
+    # with nothing anywhere saying so.
+    #
+    # ``basicConfig`` at INFO in ``main``, which is what the seven sibling CLIs
+    # that emit ``event=`` lines do (``sound``, ``aec_commission``,
+    # ``aec_init``, …) rather than something new. Deliberately NOT
+    # ``_logging.configure_verbose_logging``: that helper is for CLIs with a
+    # ``--verbose`` flag and floors at WARNING without one, which is exactly the
+    # level that hid this event. Its FORMAT is reused, so the one place the
+    # shared shape is written down stays the only place.
+    #
+    # In ``main`` rather than at import, because a module that configures the
+    # root logger on import imposes its choice on every importer — including
+    # the test suite and any tool that reaches in for ``read_prescription_bytes``.
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     args = build_parser().parse_args(argv)
     result: int = args.func(args)
     return result
