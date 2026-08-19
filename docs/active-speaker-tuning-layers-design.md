@@ -1045,9 +1045,17 @@ per-angle replay is PAUSED, the search and its guards are MISSING.** No
 crossover parameter is chosen by measurement today. But the per-driver complex
 capture this stage consumes is already shipped **at the mark** — see "how much
 of it already exists" below — so the gap is narrower and differently shaped than
-a reading of "P2 is unbuilt" suggests. Off the mark it is a flag flip plus a
-cleared re-introduction bar, which is a different kind of work from the search
-and guards, and is neither free nor already done.
+a reading of "P2 is unbuilt" suggests. Off the mark there are **two** routes and
+only one of them is gated: un-pausing the lateral WALK is a flag flip plus a
+cleared re-introduction bar, while capturing per-driver responses at angles as
+**forward-model input** needs neither, because it computes no pose-ratio
+statistic for the bar to govern. Since 2026-08-19 the second route has a seam —
+[`angle_capture.py`](../jasper/active_speaker/angle_capture.py) resolves
+`{per-driver | summed} x {angles} x {arm | human-guided}` onto the shipped
+program, pose and gate machinery — but **nothing calls it in a session yet**, so
+the bullet below stays literally true: no per-driver data is captured off the
+mark today. What remains for this route is wiring, not a flag flip; the search
+and its guards are unaffected either way and are neither free nor already done.
 
 **The goal, stated as a stopping condition.** Drive the non-EQ parameters —
 polarity, per-branch delay, Fc, slopes/order, and branch gains — to the point
