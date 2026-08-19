@@ -403,10 +403,10 @@ install_jts_ring_platform() {
     #     (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
     #     Unlinking those three is MANDATORY: not unlinking them costs a
     #     reboot loop.
-    #   - jasper-snapclient.service carries StartLimitBurst=4 and NO
+    #   - jasper-snapclient.service carries StartLimitBurst=6 and NO
     #     StartLimitAction, by explicit design — its own unit comment says
     #     "follower degrades, visible; never reboots the household." A stale
-    #     grouping.ring therefore costs four retries and one `failed` unit,
+    #     grouping.ring therefore costs six retries and one `failed` unit,
     #     surfaced on /state and by jasper-doctor. Unlinking buys nothing
     #     against an outcome that is already bounded and already visible.
     #
