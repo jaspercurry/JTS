@@ -64,6 +64,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     BENEFIT_POST_UNAVAILABLE,
     BENEFIT_PROGRAM_MISMATCH,
     evaluate_benefit,
+    pooled_residual,
 )
 
 _MARK = "design_axis_mark"
@@ -767,7 +768,8 @@ def test_the_pooled_residual_survives_a_round_with_no_comparable_baseline():
     its verdict is indeterminate, and the journal line says both.
 
     (This used to claim the residual feeds the attempts ledger. It does not —
-    #2433; see ``_post_residual`` for where the ledger's grade comes from.)
+    #2433; see ``RoundEvaluation.post_residual_db``'s own docstring for where
+    the ledger's grade comes from.)
     """
     evaluation = _round(_post(), None)
 
@@ -778,20 +780,52 @@ def test_the_pooled_residual_survives_a_round_with_no_comparable_baseline():
     assert evaluation.post_residual_db > 0.0
 
 
-def test_the_pooled_residual_is_the_number_the_benefit_verdict_used():
-    """Two computations, one shipped evaluator — pinned so they cannot
-    disagree about what "the post-apply residual" is. (Not one computation
-    with two readers: ``_post_residual`` and ``evaluate_benefit``'s
-    ``_pooled_residual`` each call ``evaluate_flat_spec`` on the post side,
-    which is exactly why this assertion is worth making.)"""
-    baseline = _baseline_from(_flatter(_post(), factor=3.0))
+def test_the_rounds_residual_is_the_union_masked_number_the_benefit_axis_graded():
+    """The field is fed the comparand the benefit axis graded — union mask and
+    all — not the post capture's own screen.
 
-    evaluation = _round(_post(), baseline)
+    There is one reduction with one owner now
+    (``verification.pooled_residual``), so "the two computations agree" is no
+    longer a claim a test could falsify. The WIRING still is: ``evaluate_round``
+    picks which comparand to hand that owner, and handing it the un-unioned
+    post would grade the round's own number on a different denominator from the
+    verdict printed beside it in the journal line.
 
-    assert evaluation.benefit.evidence["post_residual_db"] == pytest.approx(
-        evaluation.post_residual_db
+    So the two masks are made to DIFFER — the baseline carries a validity floor
+    the post does not — and the expectation is computed by calling the owners
+    rather than baked. The previous fixture could not tell the two apart: both
+    sides set ``validity_floor_hz=None``, so the union degenerated to the post's
+    own mask and the un-unioned comparand passed just as well.
+    """
+    flatter = _flatter(_post(), factor=3.0)
+    flatter.summed_response.validity_floor_hz = 800.0
+    baseline = _baseline_from(flatter)
+    post = _post()
+
+    evaluation = _round(post, baseline)
+
+    reduced = measured_response_from_analysis(post, reference_mark=_MARK)
+    assert reduced is not None
+    _, union_side = benefit_comparands(
+        baseline=baseline.as_measurement(), post=reduced
     )
-    assert evaluation.benefit.evidence["n_bins"] == evaluation.post_residual_bins
+    # The no-baseline arm IS the un-unioned post comparand, so the losing
+    # candidate is the same function's other answer rather than a hand-built
+    # double.
+    _, post_only_side = benefit_comparands(baseline=None, post=reduced)
+    assert union_side is not None and post_only_side is not None
+    union = pooled_residual(union_side)
+    post_only = pooled_residual(post_only_side)
+    assert union is not None and post_only is not None
+    # Without this the fixture is toothless and both candidates pass.
+    assert union != post_only
+
+    assert evaluation.post_residual_db == pytest.approx(union[0])
+    assert evaluation.post_residual_bins == union[1]
+    assert evaluation.benefit.evidence["post_residual_db"] == pytest.approx(
+        union[0]
+    )
+    assert evaluation.benefit.evidence["n_bins"] == union[1]
 
 
 #: Every production read of :attr:`RoundEvaluation.post_residual_db` /

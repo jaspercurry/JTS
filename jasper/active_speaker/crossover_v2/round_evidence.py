@@ -74,12 +74,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from ..flat_spec import (
-    FlatSpecReport,
-    GradedSpec,
-    evaluate_flat_spec,
-    spec_convergence_residual,
-)
+from ..flat_spec import FlatSpecReport, GradedSpec
 from .contracts import (
     AdoptionDecision,
     BenefitStatus,
@@ -546,17 +541,24 @@ class RoundEvaluation:
     adoption: AdoptionDecision
     #: The post-apply pooled spec residual, lower-is-better, or ``None``.
     #: Separated out so the round's own pooled number is legible without
-    #: re-deriving it from the curve.
+    #: re-deriving it from the curve. It IS the benefit axis's own reduction —
+    #: :func:`~.verification.pooled_residual` over the post side of
+    #: :func:`benefit_comparands` — so this number and the one that axis
+    #: graded cannot disagree about what "the post-apply residual" is.
     #:
     #: **Its readership is the round's journal line, and that is the whole
     #: list.** Earlier text here claimed a second consumer — that
     #: :func:`~jasper.active_speaker.attempts_loop.decide_next` differences it
-    #: across attempts — which is false and was checked: the attempts ledger's
-    #: ``grade_db`` is read from ``analysis.verify_tracking``'s
-    #: ``max_db_notch_excluded`` by ``crossover_v2_flow.
-    #: attempt_record_from_verify``, never from here. The claim is corrected
-    #: rather than deleted because it is the kind a reader would otherwise
-    #: re-invent (the design brief's §4.2 loose end).
+    #: across attempts — which is false and was checked: that function takes
+    #: no residual argument at all, and the attempts ledger's ``grade_db`` is
+    #: read from ``analysis.verify_tracking``'s ``max_db_notch_excluded`` by
+    #: ``crossover_v2_flow.attempt_record_from_verify``, never from here. The
+    #: claim is corrected rather than deleted because it is the kind a reader
+    #: would otherwise re-invent (the design brief's §4.2 loose end).
+    #:
+    #: Nor is it the same-named ``post_residual_db`` KEY on
+    #: :func:`~.verification.evaluate_region_benefit`'s evidence: that is a
+    #: different instrument's number over a different band.
     post_residual_db: float | None = None
     post_residual_bins: int | None = None
     #: Decision 10's blend-region prescription for the NEXT round, and the
@@ -726,6 +728,7 @@ def evaluate_round(
         evaluate_round_quality,
         evaluate_spec,
         flatness_objectives,
+        pooled_residual,
         verification_result,
     )
 
@@ -763,11 +766,7 @@ def evaluate_round(
             entry_baseline=before, post=after, margin_db=margin_db
         )
         spec = evaluate_spec(spec_report)
-        post_residual = (
-            None
-            if after is None
-            else _post_residual(after, benefit_reason=benefit.reason)
-        )
+        post_residual = None if after is None else pooled_residual(after)
         # The band is the VERIFY absolute claim's own — which is
         # ``program_analysis.crossover_region_band_hz``'s output, reached
         # through that function's existing production consumer rather than
@@ -884,47 +883,6 @@ def _crossover_region_band_hz(
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
         return None
     return (lo, hi)
-
-
-def _post_residual(
-    post: MeasurementComparand, *, benefit_reason: str
-) -> tuple[float, int] | None:
-    """The post side's own pooled residual, for the round's journal line.
-
-    **Not the attempts ledger's grade, and never was.** Earlier text here said
-    it was, which is false and was checked: the ledger's ``grade_db`` is read
-    from ``analysis.verify_tracking``'s ``max_db_notch_excluded`` by
-    ``crossover_v2_flow.attempt_record_from_verify``, and
-    :func:`~jasper.active_speaker.attempts_loop.decide_next` takes no residual
-    argument at all. Corrected rather than deleted for the reason the same
-    correction on :attr:`RoundEvaluation.post_residual_db` gives — it is the
-    kind of claim a reader would otherwise re-invent. That FIELD is this
-    value's one destination, and its readership is the journal line; the
-    region-masked ``post_residual_db`` KEY on ``region_benefit``'s evidence is
-    a different instrument's number over a different band, and this is not it.
-
-    What that paragraph got right, and this function's reason to exist: it is
-    computed whether or not a *comparison* was possible, so a round with no
-    comparable entry baseline still records a pooled number of its own while
-    its benefit verdict is indeterminate.
-
-    Computed through the same shipped evaluator the benefit verdict uses, so
-    the two numbers cannot disagree about what "the post-apply residual" is.
-    """
-
-    del benefit_reason  # the reason belongs to the verdict, not to the grade
-    try:
-        report = evaluate_flat_spec(
-            np.asarray(post.curve.hz, dtype=np.float64),
-            np.asarray(post.curve.db, dtype=np.float64),
-            np.asarray(post.exclusion_mask, dtype=bool),
-        )
-    except ValueError:
-        return None
-    residual = spec_convergence_residual(report)
-    if not residual.evaluable or residual.rms_db is None:
-        return None
-    return float(residual.rms_db), int(residual.n_bins)
 
 
 def build_round_receipt(
