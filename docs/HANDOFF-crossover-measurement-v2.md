@@ -372,7 +372,8 @@ re-derivation is worth recording because the two look interchangeable:
   > the woofer-vs-tweeter timing that per-driver phase and the `M*C/P`
   > composition depend on. It moved the rejected step from about 4 samples to
   > 2 (83 µs → 41 µs). **A ~1-sample slip (20.8 µs) still passes**, which is
-  > at the 20 µs relative-phase bar — roughly 7° at 2 kHz. That floor is a
+  > at the 20 µs relative-phase bar — 15° at 2 kHz, which is the entire
+  > 10–15° summation budget. That floor is a
   > structural property of the analysis, not a tuning choice, and it is pinned
   > by test: six locate positions and a best-of-five cut search cannot resolve
   > below it, and tightening the gate to try costs 15 % false rejection one
