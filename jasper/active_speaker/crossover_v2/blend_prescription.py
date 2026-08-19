@@ -77,6 +77,19 @@ null-exclusion rule without the null instrument — and
 :data:`BOOST_MIN_TESTIFYING_POSITIONS` says why "all but one" needs three
 positions to mean anything.
 
+**And the stand-in is weaker than the instrument it stands in for, measured
+rather than assumed.**  Run over the 2026-08-18 blend round (four positions,
+roughly ±7° and ±22°), the bar discriminates sharply at most frequencies — 1
+of 4 positions at 1210 Hz, 0 of 4 at 3232 Hz — and passes 4 of 4 at 1018 Hz
+and 1616 Hz.  It is a *spatial* test, so its power is bounded by the angular
+spread of the cloud it reads: a feature that moves with the microphone more
+slowly than that spread reads as stable.  A tightly-clustered walk can
+therefore support a boost the excess-phase instrument might later classify as
+interference.  That is one of the two reasons
+:func:`prescription_route` refuses the boost class outright today rather than
+treating this bar as sufficient — the bar's job is to say whether a proposal
+*would* qualify, not to authorize it.
+
 **Denominator visibility is not decoration here.**  A position whose own gate
 put its validity floor above the proposed frequency cannot testify about that
 frequency, so it is removed from the denominator rather than counted as a
