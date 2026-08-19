@@ -1276,8 +1276,10 @@ directions.
 **It validates itself twice and refuses when it cannot.** The program is rebuilt
 from the round's banked `gain_plan_db` and must reproduce the session's recorded
 `program_id` (a SHA-256 over the whole schedule, so a match proves the sweep `L`
-the offsets derive from); the session volume, which no artifact records, is
-*solved* against that same id. Then the shipped `analyze_program_capture` is
+the offsets derive from); the two parameters no artifact records — the session
+volume, and the courtesy-prelude vintage whose MEASURE value #2715 flipped —
+are *solved* against that same id, shipped rule first, and each run names which
+prelude reproduced. Then the shipped `analyze_program_capture` is
 re-run and its diagnostics compared on whatever gate fields the sidecar
 carries — fail-closed: a sidecar carrying none of them is refused rather than
 read ungated, and the summary prints the count actually compared, never the

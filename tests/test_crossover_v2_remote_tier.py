@@ -87,6 +87,19 @@ from tests.crossover_v2_fixtures import (
     _walk,
 )
 
+# The stage-bridge harness: one definition of "what a real preparer needs
+# stubbed", borrowed exactly as ``tests/test_crossover_v2_round_wiring.py``
+# borrows it, so the journal pin at the bottom of this file reads a REAL
+# ``prepare_v2_session`` rather than a restatement of its source. The two
+# autouse fixtures come with it by name, under the redundant-alias form that
+# says the module-level name is deliberate.
+from tests.test_crossover_v2_stage_bridge import (
+    _isolated_v2_state as _isolated_v2_state,
+    _open_prepared,
+    _production_host_seams as _production_host_seams,
+    _status,
+)
+
 HAND_WALKED = (TIER_FULL, TIER_EXPRESS)
 
 #: The bearings the target run is specified in — the whole point of the tier, so
@@ -1143,3 +1156,57 @@ def test_a_first_session_with_nothing_to_inherit_keeps_the_shipped_default(
     string the strict half would refuse."""
     from jasper.web import correction_crossover_v2 as v2host  # noqa: F401
     assert _tier_resolved_by_prepare({}, {"session_id": "cap_first"}, tmp_path) is None
+
+
+def _walked_index_map(conductor):
+    """The index→phase map this conductor was OPENED with.
+
+    Reached past the session's public surface because the count it carries has
+    no public reader — ``session_phases`` de-duplicates, so it answers "which
+    phases" and never "how many captures". Named for the fact so a future
+    public property can replace the body.
+    """
+    return conductor._journey.plan.index_phase_map
+
+
+def test_a_remote_session_open_announces_the_captures_it_will_actually_take(
+    caplog, monkeypatch,
+):
+    """The positioner's only sizing surface must be the plan, not the shape.
+
+    ``crossover_v2_remote_session_open`` is emitted for an externally
+    positioned session and read by whoever is driving the arm. Why the old
+    value was wrong, which direction it fails in, and the 2026-08-19 near-miss
+    are written ONCE, at the emitter — ``prepare_v2_session``'s comment on this
+    field. Deliberately not restated here: a fact restated in a second place is
+    a fact that drifts, and this one already did.
+
+    Driven through the REAL preparer and compared against the map the conductor
+    is actually opened with, so the pin is "these two agree" rather than "the
+    line prints a 3". The control underneath is what makes that meaningful: the
+    shape target is a genuinely DIFFERENT number, so a regression to it fails
+    here instead of tying.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+
+    prepared = v2host.prepare_v2_session(
+        {"tier": TIER_REMOTE}, status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    opens = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+    assert len(opens) == 1, opens
+    assert "stage=1" in opens[0]
+    announced = int(re.search(r"captures=(\d+)", opens[0]).group(1))
+
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    walked = len(_walked_index_map(conductor))
+
+    assert announced == walked
+    # The discriminating control, and the defect in one line: the number this
+    # journal used to carry is not the number of captures anyone walks.
+    assert resolve_plan_shape(TIER_REMOTE).measure_capture_target != walked

@@ -1246,13 +1246,13 @@ class V2PlanShape:
 
     @property
     def measure_capture_target(self) -> int:
-        """Accepted captures STAGE 1 runs (``1 + N``) — CHECK plus the
-        pre-apply cloud (MEASURE's design-axis anchor plus ``N − 1`` prompted
-        positions). 10 at the Full tier's shipped defaults, 6 for express.
-
-        Stage 1 ends at the group-close confirm and applies nothing (two-stage
-        commission work order D1), so it carries no post-apply entry at all.
-        """
+        """The cloud-INCLUSIVE shape target (``1 + N``) — CHECK plus the
+        pre-apply cloud (anchor plus ``N − 1`` prompted positions), 10 at
+        Full's defaults, 6 for express. NOT what stage 1 runs: the
+        ``STAGE1_INCLUDES_*`` flags decide that, and the real count is
+        :func:`_stage1_capture_target` — two readers have been misled by the
+        older wording (#2098, and the remote session-open journal). Stage 1
+        applies nothing (D1), so it carries no post-apply entry at all."""
         return 1 + self.cloud_measure_positions
 
     @property

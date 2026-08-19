@@ -6927,6 +6927,14 @@ def prepare_v2_session(
     # captures this session runs, and reading the flag twice is how they get to
     # disagree.
     include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
+    # ...and the map those three flags decide, built ONCE: the journal line
+    # below and the conductor's walk read one plan, not two readings of it.
+    stage1_index_phase = build_v2_cloud_index_phase_map(
+        plan_shape=plan_shape,
+        include_cloud_measure=include_cloud_measure,
+        include_lateral=include_lateral,
+        include_entry_baseline=include_entry_baseline,
+    )
     # #2662 W2b: which capture source answers this session's asks. After the
     # speaker-level gates (they are prior questions), before any state is
     # opened (an explicit-override refusal must cost nothing).
@@ -6946,7 +6954,17 @@ def prepare_v2_session(
             "correction.crossover_v2_remote_session_open",
             stage=1,
             tier=plan_shape.tier,
-            captures=plan_shape.measure_capture_target,
+            # The captures this session will ACTUALLY take, off that plan. It
+            # logged ``plan_shape.measure_capture_target`` — the cloud-INCLUSIVE
+            # shape target, 10 where the shipped stage 1 walks 3. The reader is
+            # an external positioner with no screen to check it against, and
+            # OVER-reporting is the direction that STALLS a walk: a driver sized
+            # at 10 waits for seven captures that are never coming, until the
+            # session ceiling expires (#2506). On 2026-08-19 a wired-night
+            # driver met exactly that contradiction — its own
+            # ``--complete-after 3`` against this line's 10 — and settled it by
+            # re-deriving the count by hand on the live box.
+            captures=len(stage1_index_phase),
         )
 
     prior_raw = load_v2_state()
@@ -7041,21 +7059,17 @@ def prepare_v2_session(
             on_playback_started=playback_started.fire,
         )
         # This stage's journey, resolved once (#2291 Phase 4). The index→phase
-        # map is built from the SAME resolved plan shape the emitted spec used
-        # — not merely the same function at its own defaults — so the prompt an
-        # entry carries and the phase the conductor runs for that index can
-        # never disagree. ``verify_capture_target`` is the tier's own number,
-        # handed over as a fact: the boost-permission rule that reads it (work
+        # map is the one built above from the SAME resolved plan shape the
+        # emitted spec used — not merely the same function at its own defaults
+        # — so the prompt an entry carries, the phase the conductor runs for
+        # that index, and the count the journal announced can never disagree.
+        # ``verify_capture_target`` is the tier's own number, handed over as a
+        # fact: the boost-permission rule that reads it (work
         # order D2's consequence — this session's phases carry no VERIFY,
         # because the post-apply sweep is stage 2) belongs to the journey.
         opening = open_stage(
             STAGE_MEASURE_CAPABILITIES,
-            index_phase_map=build_v2_cloud_index_phase_map(
-                plan_shape=plan_shape,
-                include_cloud_measure=include_cloud_measure,
-                include_lateral=include_lateral,
-                include_entry_baseline=include_entry_baseline,
-            ),
+            index_phase_map=stage1_index_phase,
             verify_capture_target=plan_shape.verify_capture_target,
         )
         conductor = CrossoverV2Session.hydrate(
