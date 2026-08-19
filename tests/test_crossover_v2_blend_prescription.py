@@ -28,13 +28,17 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import numpy as np
 import pytest
 
+from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.crossover_v2.blend_correction import (
     BLEND_FILTER_Q,
     BLEND_MAX_FILTER_CUT_DB,
@@ -47,9 +51,10 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
     BOOST_MIN_TESTIFYING_POSITIONS,
     PRESCRIPTION_KIND,
+    PRESCRIPTION_MAX_BOOST_Q,
     PRESCRIPTION_MAX_BYTES,
+    PRESCRIPTION_MAX_CUT_Q,
     PRESCRIPTION_MAX_FILTER_BOOST_DB,
-    PRESCRIPTION_MAX_Q,
     PRESCRIPTION_MAX_TOTAL_BOOST_DB,
     PRESCRIPTION_MIN_Q,
     PRESCRIPTION_REFUSAL_REASONS,
@@ -57,6 +62,7 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BlendPrescriptionRefused,
     blend_prescription_from_mapping,
     blend_prescription_to_candidate_fields,
+    max_q_for_gain,
     positional_support,
     prescription_response_format,
     read_blend_prescription,
@@ -74,6 +80,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.camilla_emit import emit_peaking_biquad
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -507,7 +514,8 @@ def test_a_document_that_is_not_a_prescription_is_refused(packet, document, reas
     pytest.param([_cut(freq=100.0)], "filter_outside_region", id="below-region"),
     pytest.param([_cut(freq=9000.0)], "filter_outside_region", id="above-region"),
     pytest.param(
-        [_cut(q=PRESCRIPTION_MAX_Q + 0.1)], "filter_q_out_of_range", id="q-too-narrow",
+        [_cut(q=PRESCRIPTION_MAX_CUT_Q + 0.1)], "filter_q_out_of_range",
+        id="q-too-narrow",
     ),
     pytest.param([_cut(q=0.1)], "filter_q_out_of_range", id="q-too-wide"),
     pytest.param([_cut()] * (BLEND_MAX_FILTERS + 1), "filter_count_exceeded", id="count"),
@@ -1087,12 +1095,25 @@ def test_the_bounds_are_the_numbers_the_ruling_and_the_evidence_earned():
     literals below are what makes the cases beneath them load-bearing.
     """
     # Imported from the deterministic solver, so a prescriber can never be
-    # granted a cut the shipped solver would refuse to emit.
+    # granted a cut DEEPER than the shipped solver would emit.
     assert BLEND_MAX_FILTERS == 2
     assert BLEND_MAX_FILTER_CUT_DB == 3.0
     assert BLEND_MAX_TOTAL_CUT_DB == 4.0
-    assert PRESCRIPTION_MAX_Q == 2.0
-    assert PRESCRIPTION_MAX_Q is BLEND_FILTER_Q, "the Q ceiling must stay the solver's"
+    # Q is split by sign by owner ruling of 2026-08-19 (the two-arm
+    # experiment). The cut ceiling is the fit engine's own peaking ceiling
+    # (8.0), NOT the solver's fixed emitted Q: the three IN-WINDOW features
+    # measured that night had natural Q 3.9-6.6, so a Q-2.0 cut aimed at one
+    # is two to three times too wide and spends its action on the skirts. The
+    # campaign supplied that evidence and declined to lift the clamp itself;
+    # the ruling is what authorizes this number.
+    assert PRESCRIPTION_MAX_CUT_Q == 8.0
+    assert PRESCRIPTION_MAX_CUT_Q is not BLEND_FILTER_Q
+    # The boost ceiling did stay the solver's — the ruling did not reach it and
+    # that evidence was measured on cuts, a class whose risk is not headroom.
+    assert PRESCRIPTION_MAX_BOOST_Q == 2.0
+    assert PRESCRIPTION_MAX_BOOST_Q is BLEND_FILTER_Q, (
+        "the BOOST Q ceiling must stay the solver's"
+    )
     assert PRESCRIPTION_MIN_Q == 0.5
     # Opened by owner ruling 2026-08-18, and deliberately separate constants
     # from the cut ceilings they happen to equal.
@@ -1117,12 +1138,103 @@ def test_a_cut_past_the_solvers_ceiling_is_refused_at_a_literal_depth(packet, ga
     assert excinfo.value.reason == "filter_cut_too_deep"
 
 
-@pytest.mark.parametrize("q", [2.1, 4.0, 8.0])
-def test_a_filter_narrower_than_the_solver_emits_is_refused(packet, q):
-    """Literal Q values: the region's evidence cannot resolve a narrower shape."""
+@pytest.mark.parametrize("q", [8.1, 12.0, 40.0, 2000.0])
+def test_a_cut_narrower_than_the_fit_engines_ceiling_is_refused(packet, q):
+    """Literal Q values, so widening PRESCRIPTION_MAX_CUT_Q fails here."""
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(q=q)], packet))
     assert excinfo.value.reason == "filter_q_out_of_range"
+
+
+@pytest.mark.parametrize("q", [2.1, 3.9, 5.1, 6.6, 7.9, 8.0])
+def test_a_cut_as_narrow_as_the_feature_it_targets_is_accepted(packet, q):
+    """The whole point of the change, at literal Q values.
+
+    3.9, 5.1 and 6.6 are the MEASURED natural Q of the three in-window
+    features on jts3, 2026-08-19 (2057, 1406 and 1037 Hz respectively), read
+    off the pooled 7 ms detrended curve — the classification record's
+    ``test2_null_model``, not a filter Q and not a smoothing-floored reading.
+    Every one of them was refused before this ceiling moved. 8.0 is the
+    boundary itself, which is inclusive.
+    """
+    accepted = _gate(packet, _document([_cut(q=q)], packet))
+    assert accepted.filters[0]["q"] == q
+    assert accepted.prescription_class == "cut"
+
+
+def test_the_filter_q_the_round_18_gate_actually_refused_is_now_accepted(packet):
+    """3.6 is a FILTER Q, not a measurement — kept apart on purpose.
+
+    It is the value in the refusal string observed live on 2026-08-19
+    (``filter 0 Q 3.6 is outside 0.5-2``): what a prescriber asked for, not
+    the width of anything. The measured widths are the parametrization above.
+    Confusing the two is how a refusal string gets cited as evidence.
+    """
+    accepted = _gate(packet, _document([_cut(q=3.6)], packet))
+    assert accepted.filters[0]["q"] == 3.6
+
+
+@pytest.mark.parametrize("q", [2.1, 3.6, 8.0, 12.0])
+def test_a_boost_keeps_the_narrower_ceiling_the_cut_class_left_behind(packet, q):
+    """The sign split, from the side that did NOT move.
+
+    Literal Q values that a CUT is now allowed (2.1-8.0) and a boost is not.
+    Refused at the Q gate specifically — before the positional bar and before
+    the route — so this cannot pass for the wrong reason once a boost route
+    exists.
+    """
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(gain=1.5, q=q)], packet))
+    assert excinfo.value.reason == "filter_q_out_of_range"
+    assert excinfo.value.evidence["q_max"] == 2.0
+
+
+@pytest.mark.parametrize("q", [0.4, 0.1, 0.01])
+@pytest.mark.parametrize("gain", [-1.5, 1.5])
+def test_a_filter_wider_than_the_floor_is_refused_whatever_its_sign(packet, q, gain):
+    """The floor did not split: broadband level is the trim's fact either way."""
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(gain=gain, q=q)], packet))
+    assert excinfo.value.reason == "filter_q_out_of_range"
+    assert excinfo.value.evidence["q_min"] == 0.5
+
+
+def test_the_q_refusal_names_the_ceiling_that_actually_applied(packet):
+    """A prescriber refused at a stale range cannot correct itself.
+
+    The message and the machine-readable evidence must both carry the bound
+    for the filter's OWN sign — a Q-3.6 cut told "outside 0.5-2" would read as
+    "this region does not do narrow", which is now false and is the exact
+    misreading that kept every measured feature un-targetable.
+    """
+    with pytest.raises(BlendPrescriptionRefused) as cut_refusal:
+        _gate(packet, _document([_cut(q=9.0)], packet))
+    assert "0.5-8 for a cut" in str(cut_refusal.value)
+    assert cut_refusal.value.evidence["q_max"] == PRESCRIPTION_MAX_CUT_Q
+
+    with pytest.raises(BlendPrescriptionRefused) as boost_refusal:
+        _gate(packet, _document([_cut(gain=1.5, q=9.0)], packet))
+    assert "0.5-2 for a boost" in str(boost_refusal.value)
+    assert boost_refusal.value.evidence["q_max"] == PRESCRIPTION_MAX_BOOST_Q
+
+
+@pytest.mark.parametrize("gain,expected", [
+    (-3.0, 8.0), (-0.5, 8.0), (0.0, 8.0), (-0.0, 8.0), (0.5, 2.0), (3.0, 2.0),
+])
+def test_the_q_ceiling_splits_on_the_same_predicate_the_class_receipt_does(
+    gain, expected,
+):
+    """``gain > 0`` decides both, so no filter is a cut for one and a boost for
+    the other. Zero is inert and takes the cut arm, matching ``_check_bounds``.
+    """
+    assert max_q_for_gain(gain) == expected
+
+
+def test_a_zero_gain_filter_takes_the_cut_ceiling_and_the_cut_class(packet):
+    """The predicate agreement above, exercised end to end rather than asserted."""
+    accepted = _gate(packet, _document([_cut(gain=0.0, q=7.0)], packet))
+    assert accepted.prescription_class == "cut"
+    assert accepted.filters[0]["q"] == 7.0
 
 
 @pytest.mark.parametrize("size", [65537, 100_000, 1_000_000])
@@ -1136,6 +1248,95 @@ def test_a_document_past_a_literal_byte_ceiling_is_refused(size):
     assert excinfo.value.reason == "prescription_too_large"
 
 
+def _max_pole_radius(freq: float, q: float, gain_db: float, fs: float = 48_000.0) -> float:
+    """The RBJ Peaking denominator's larger pole radius, from the cookbook.
+
+    Written out here rather than taken from this codebase's evaluator, so the
+    stability check is independent of the thing it is vouching for.
+    """
+    amp = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * math.pi * freq / fs
+    alpha = math.sin(w0) / (2.0 * q)
+    a0, a1, a2 = 1.0 + alpha / amp, -2.0 * math.cos(w0), 1.0 - alpha / amp
+    # Poles of 1 / (a0 + a1 z^-1 + a2 z^-2), i.e. roots of a0 z^2 + a1 z + a2.
+    disc = complex(a1 * a1 - 4.0 * a0 * a2, 0.0) ** 0.5
+    return max(abs((-a1 + disc) / (2.0 * a0)), abs((-a1 - disc) / (2.0 * a0)))
+
+
+#: The lowest frequency a prescribed filter can reach. `PRESCRIPTION_MAX_CUT_Q`
+#: is global while a filter's frequency is bounded per-packet by the region, so
+#: the pin below sweeps the whole band the campaign trusted (357 Hz up) rather
+#: than only the fixture's own region — otherwise it would pin the fixture and
+#: call it the constant.
+_TRUSTED_BAND_LO_HZ = 357.0
+
+
+@pytest.mark.parametrize("freq", [
+    _TRUSTED_BAND_LO_HZ, BAND[0], 1037.0, 1406.0, 2057.0, BAND[1], 8000.0, 16000.0,
+])
+@pytest.mark.parametrize("gain_db", [0.0, -0.5, -3.0])
+def test_a_cut_at_the_new_ceiling_emits_a_stable_biquad_at_48_kHz(freq, gain_db):
+    """The widened ceiling asks the emitter for nothing it cannot realize.
+
+    At ``PRESCRIPTION_MAX_CUT_Q`` and 48 kHz the denominator's poles sit
+    strictly inside the unit circle with room to spare, everywhere a prescribed
+    filter can legally sit and at every legal cut depth. Q enters the RBJ
+    coefficients only through ``alpha = sin(w0) / (2Q)``, so nothing about a
+    narrow PEAKING section is conditionally unstable — but "there is no hazard"
+    is a claim, and this is the arithmetic behind it.
+    """
+    assert _max_pole_radius(freq, PRESCRIPTION_MAX_CUT_Q, gain_db) < 0.999
+    # And the ONE evaluator the emitter, gate and headroom charge share agrees
+    # the section realizes the depth that was asked for, at its own centre.
+    realized = 20.0 * math.log10(
+        abs(chain_response(
+            [_cut(gain=gain_db, freq=freq, q=PRESCRIPTION_MAX_CUT_Q)], np.array([freq]),
+        )[0])
+    )
+    assert realized == pytest.approx(gain_db, abs=1e-9)
+
+
+def test_the_pole_radius_margin_is_a_low_frequency_story_and_the_region_clears_it():
+    """WHY the sweep above starts at 357 Hz rather than at 1 Hz.
+
+    Pole radius rises as centre frequency falls, so the 0.999 line is crossed
+    somewhere — near 122 Hz at Q 8 and the WORST legal cut depth, which is the
+    shallowest one (a deeper cut pushes the poles further in, so bounding the
+    inert 0 dB case bounds every legal cut). A blend region is a crossover
+    region: its lower edge is a crossover frequency, an order above that. The
+    numbers are pinned rather than asserted in prose so a future reader can see
+    the margin instead of trusting this paragraph.
+    """
+    q = PRESCRIPTION_MAX_CUT_Q
+    assert _max_pole_radius(120.0, q, 0.0) > 0.999 > _max_pole_radius(125.0, q, 0.0)
+    # The shallowest cut is the worst case, monotonically.
+    radii = [_max_pole_radius(1000.0, q, g) for g in (0.0, -0.5, -1.0, -2.0, -3.0)]
+    assert radii == sorted(radii, reverse=True)
+    # And the trusted band's own floor clears the line with margin to spare.
+    assert _max_pole_radius(_TRUSTED_BAND_LO_HZ, q, 0.0) < 0.998
+    # A cut sits FURTHER from the circle than a boost of the same size and Q,
+    # so the sign this change widened is the one with more margin, not less.
+    assert _max_pole_radius(1000.0, q, -3.0) < _max_pole_radius(1000.0, q, 3.0)
+
+
+def test_a_cut_at_the_new_ceiling_survives_the_emitters_own_re_validation(packet):
+    """The gate is not the last word: the emitter re-validates independently.
+
+    A widened bound here that the emitter still refused would produce an
+    accepted prescription that cannot be applied — a refusal moved from intake
+    to apply time, which is strictly worse. ``blend_filters_from_mapping`` is
+    the durable-read half of the same round trip.
+    """
+    accepted = _gate(packet, _document([_cut(gain=-2.0, q=PRESCRIPTION_MAX_CUT_Q)], packet))
+    filters = list(accepted.filters)
+    assert blend_filters_from_mapping(filters) == tuple(filters)
+    revalidated = camilla_yaml._validated_blend_correction(filters)
+    assert revalidated[0]["q"] == PRESCRIPTION_MAX_CUT_Q
+    assert "q: 8.0000" in "\n".join(
+        emit_peaking_biquad("blend1", freq=1400.0, q=PRESCRIPTION_MAX_CUT_Q, gain=-2.0)
+    )
+
+
 def test_the_response_format_states_every_bound_the_gate_applies():
     """One owner: instructions a prescriber gets and the gate it faces."""
     fmt = prescription_response_format()
@@ -1143,7 +1344,13 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert fmt["bounds"]["max_filter_cut_db"] == BLEND_MAX_FILTER_CUT_DB
     assert fmt["bounds"]["max_composed_cut_db"] == BLEND_MAX_TOTAL_CUT_DB
     assert fmt["bounds"]["max_filter_boost_db"] == PRESCRIPTION_MAX_FILTER_BOOST_DB
-    assert fmt["bounds"]["q_max"] == PRESCRIPTION_MAX_Q
+    assert fmt["bounds"]["q_min"] == PRESCRIPTION_MIN_Q
+    # Both ceilings, because the gate applies both. A single `q_max` would
+    # necessarily be one class's bound presented as the contract, which is how
+    # a prescriber ends up proposing a shape the gate will refuse.
+    assert fmt["bounds"]["q_max_cut"] == PRESCRIPTION_MAX_CUT_Q
+    assert fmt["bounds"]["q_max_boost"] == PRESCRIPTION_MAX_BOOST_Q
+    assert "q_max" not in fmt["bounds"], "one q_max would hide the sign split"
     assert fmt["boost_bar"]["min_testifying_positions"] == BOOST_MIN_TESTIFYING_POSITIONS
     assert set(fmt["refusal_reasons"]) == PRESCRIPTION_REFUSAL_REASONS
     assert fmt["execution_boundary"]["model_may_execute"] is False

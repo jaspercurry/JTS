@@ -144,7 +144,9 @@ __all__ = [
     "BOOST_MIN_TESTIFYING_POSITIONS",
     "BOOST_ROUTE_UNAVAILABLE",
     "PRESCRIPTION_KIND",
+    "PRESCRIPTION_MAX_BOOST_Q",
     "PRESCRIPTION_MAX_BYTES",
+    "PRESCRIPTION_MAX_CUT_Q",
     "PRESCRIPTION_MAX_FILTER_BOOST_DB",
     "PRESCRIPTION_MAX_TOTAL_BOOST_DB",
     "PRESCRIPTION_MIN_Q",
@@ -156,6 +158,7 @@ __all__ = [
     "PositionalSupport",
     "blend_prescription_from_mapping",
     "blend_prescription_to_candidate_fields",
+    "max_q_for_gain",
     "positional_support",
     "prescription_response_format",
     "prescription_route",
@@ -207,30 +210,124 @@ RATIONALE_MAX_CHARS = 1_200
 
 
 # --------------------------------------------------------------------------- #
-# bounds — the cut bounds are IMPORTED, the boost bounds are new
+# bounds — the cut DEPTH bounds are IMPORTED, the Q ceiling is split by sign
 # --------------------------------------------------------------------------- #
 
-# A prescribed CUT is bounded by exactly what the deterministic solver bounds
-# itself by. These are imported rather than restated so that a prescriber can
-# never be granted a cut the shipped solver would refuse to emit, and so that
-# re-deriving one of those bounds moves both users at once. Re-exported under
-# their own names would be a second vocabulary for one fact; the module refers
-# to `BLEND_*` throughout instead.
+# A prescribed cut's DEPTH is bounded by exactly what the deterministic solver
+# bounds itself by. Those are imported rather than restated so that a
+# prescriber can never be granted a cut deeper than the shipped solver would
+# emit, and so that re-deriving one of them moves both users at once.
+# Re-exported under their own names would be a second vocabulary for one fact;
+# the module refers to `BLEND_*` throughout instead.
+#
+# Its WIDTH is not, by owner ruling of 2026-08-19: `BLEND_FILTER_Q` is the
+# single Q the solver's fixed-Q fit emits, not a claim about the narrowest
+# shape this region may carry, and hardware sized the cost of treating the two
+# as one fact. See `PRESCRIPTION_MAX_CUT_Q`.
 
-#: Widest Q one prescribed filter may use — the deterministic solver's own
+#: Widest Q one prescribed CUT may use — ``linearization_fit._PEAKING_Q_MAX``,
+#: the fit engine's PEAKING ceiling. That constant bounds the fit engine's
+#: boosts as well as its cuts; what this seam adopts from it is cut parity, so
+#: the prescription intake stops being stricter about cut width than the engine
+#: that has been emitting up to it for the in-band linearization all along.
+#:
+#: **Owner ruling, 2026-08-19.** The ratified two-arm experiment — narrow-Q EQ
+#: against crossover tuning, both graded on the same frozen-reference bar with
+#: rollback — authorizes this restoration as Arm B. The campaign evidence below
+#: is the BASIS; the ruling is the AUTHORIZATION, and conflating them would
+#: misreport the record: the campaign explicitly declined to lift the clamp
+#: itself ("This section does not recommend lifting it — that needs its own
+#: evidence", run-log §9.5, which left §8.4's EQ floor operative). What the
+#: hardware retired was one REASON to leave it alone, not the decision.
+#:
+#: **It used to be** :data:`~.blend_correction.BLEND_FILTER_Q` — 2.0, the Q the
+#: deterministic solver emits — on the argument that a prescriber allowed past
+#: the solver's own shape would weaken the region contract by the back door.
+#: The 2026-08-19 hardware (jts3, wired night) sized the cost of that coupling:
+#:
+#: * The blend region's own features — the **three** classified ``in-window``;
+#:   the other six sit outside ``band_hz`` and are refused
+#:   :data:`FILTER_OUTSIDE_REGION` at any Q, so they bear on nothing here — all
+#:   classified MINIMUM-PHASE under the controls-verified excess-group-delay
+#:   test. They are the kind of feature a point EQ can cancel rather than a
+#:   spatial null it would only feed.
+#: * Their measured natural Q was **6.6 / 5.1 / 3.9** (1037 / 1406 / 2057 Hz),
+#:   read off the pooled 7 ms detrended curve per the classification record
+#:   (``analysis/classify-features.json`` → ``test2_null_model``), the 1037
+#:   value corroborated independently by the run log's own direct width
+#:   derivation. Every one of them is narrower than 2.0, so a Q-2.0 filter
+#:   aimed at any of them is roughly two to three times too wide.
+#: * Measured on-target efficiency of the Q-2.0 filters that were actually
+#:   played was **28–43 %**: most of what the filter did, it did somewhere the
+#:   measurement did not ask for. Both prescribed rounds were rolled back on
+#:   skirt damage (+8.2 σ and +15.2 σ against the frozen reference), not on
+#:   depth at the target.
+#:
+#: So the clamp was a parameter and not physics, and it was the binding one: a
+#: cut could not be as narrow as the feature it was aimed at.
+#:
+#: **The region-contract limb, answered directly.** The coupling's own worry
+#: was that a shape the solver forbids itself weakens the region contract. It
+#: does the opposite: a Peaking filter's action radius is a function of Q
+#: alone, so a NARROWER cut leaks LESS energy outside ``band_hz`` than the
+#: Q-2.0 one the gate already accepts. Containment improves with this change.
+#: :func:`~jasper.active_speaker.branch_chain._evaluation_grid` covers the
+#: other half — it states the evaluator's own between-bin error at Q 8 (at most
+#: 0.21 dB, inside the headroom margin) — so nothing downstream is being asked
+#: to do something new.
+#:
+#: **Why the cut class alone.** A cut cannot clip: it only ever removes level,
+#: so a narrow one carries no headroom hazard however sharp it is, and the
+#: depth ceilings that DO bound it (:data:`~.blend_correction.BLEND_MAX_FILTER_CUT_DB`
+#: per filter, :data:`~.blend_correction.BLEND_MAX_TOTAL_CUT_DB` composed) are
+#: untouched — narrowing a cut can only shrink the composed extreme, never grow
+#: it. Boosts keep the conservative ceiling: see
+#: :data:`PRESCRIPTION_MAX_BOOST_Q`.
+PRESCRIPTION_MAX_CUT_Q = 8.0
+
+#: Widest Q one prescribed BOOST may use — the deterministic solver's own
 #: emitted Q, imported. That number is not arbitrary in
 #: :mod:`.blend_correction`: a narrower filter "chases a feature this
 #: instrument cannot resolve and the room will not reproduce off-axis", and
-#: 2.0 is the Q every series-1 fit actually realized on hardware. A prescriber
-#: allowed past it would be allowed a shape the shipped solver forbids itself,
-#: which is a weakening of the region contract by the back door.
-PRESCRIPTION_MAX_Q = BLEND_FILTER_Q
+#: 2.0 is the Q every series-1 fit actually realized on hardware.
+#:
+#: The 2026-08-19 ruling that widened the CUT ceiling did not reach this one,
+#: and its evidence does not either: that was measured on features being cut,
+#: and the risk it sizes — a filter wider than its target wasting most of its
+#: action on the skirts — is a quality risk, whereas a narrow boost is a
+#: headroom one: every dB of boost is charged against the graph's finite
+#: budget, and a sharp boost aimed at an interference null feeds the null
+#: instead of filling it. The boost class is
+#: additionally refused outright by :func:`prescription_route` today, so this
+#: ceiling binds nothing that ships; it is here so the bound is stated rather
+#: than inherited when that route opens.
+PRESCRIPTION_MAX_BOOST_Q = BLEND_FILTER_Q
 
-#: Narrowest Q one prescribed filter may use. Below this a Peaking filter is a
-#: broadband tilt rather than a shape correction, and broadband level is the
-#: trim's fact (decision 10 clause (c)) — a prescriber reaching for it is
-#: answering a question this seam does not own.
+#: Narrowest Q one prescribed filter may use, either class. Below this a
+#: Peaking filter is a broadband tilt rather than a shape correction, and
+#: broadband level is the trim's fact (decision 10 clause (c)) — a prescriber
+#: reaching for it is answering a question this seam does not own.
 PRESCRIPTION_MIN_Q = 0.5
+
+
+def max_q_for_gain(gain_db: float) -> float:
+    """The widest Q one prescribed filter may use, by the SIGN of its gain.
+
+    The ONE place the split is decided, so the validator, the refusal message
+    it prints, and the response format a prescriber is handed cannot disagree
+    about which ceiling applies to which filter.
+
+    ``gain_db > 0`` is a boost and gets :data:`PRESCRIPTION_MAX_BOOST_Q`;
+    everything else — including exactly ``0.0`` — gets
+    :data:`PRESCRIPTION_MAX_CUT_Q`. That is deliberately the same predicate
+    :func:`_check_bounds` derives :attr:`BlendPrescription.prescription_class`
+    from, so a filter can never be a cut for the class receipt and a boost for
+    its Q bound. A zero-gain filter is inert whatever its Q, and giving it the
+    wider ceiling keeps the rule "positive gain is the special case" rather
+    than adding a third arm nothing measures.
+    """
+    return PRESCRIPTION_MAX_BOOST_Q if gain_db > 0.0 else PRESCRIPTION_MAX_CUT_Q
+
 
 #: Per-filter BOOST ceiling, dB. Owner ruling, 2026-08-18: the boost class is
 #: opened at 3.0 dB rather than at the 12.0 dB the established in-band
@@ -620,7 +717,16 @@ def prescription_response_format() -> dict[str, Any]:
             "max_filters": BLEND_MAX_FILTERS,
             "biquad_type": "Peaking",
             "q_min": PRESCRIPTION_MIN_Q,
-            "q_max": PRESCRIPTION_MAX_Q,
+            "q_max_cut": PRESCRIPTION_MAX_CUT_Q,
+            "q_max_boost": PRESCRIPTION_MAX_BOOST_Q,
+            "q_ceiling_depends_on_sign": (
+                "the Q ceiling is the one for the filter's own gain sign: a "
+                f"cut (gain <= 0) may be as narrow as Q {PRESCRIPTION_MAX_CUT_Q:g}, "
+                f"a boost (gain > 0) only Q {PRESCRIPTION_MAX_BOOST_Q:g}. Match a "
+                "cut to the natural Q of the feature you are aiming it at — a "
+                "filter wider than its target spends most of its action on the "
+                "skirts, which is measured as damage there"
+            ),
             "freq_must_be_inside": "the packet's crossover_region.band_hz",
             "max_filter_cut_db": BLEND_MAX_FILTER_CUT_DB,
             "max_composed_cut_db": BLEND_MAX_TOTAL_CUT_DB,
@@ -951,14 +1057,20 @@ def _check_bounds(
                 freq_hz=freq,
                 band_hz=[lo, hi],
             )
-        if not PRESCRIPTION_MIN_Q <= q <= PRESCRIPTION_MAX_Q:
+        # The ceiling is the one for THIS filter's sign, and the message says
+        # so: a prescriber told "outside 0.5-2" after proposing a Q-3.6 cut
+        # cannot tell that the same Q would have been accepted with the sign
+        # it actually meant. `max_q_for_gain` owns the split.
+        q_max = max_q_for_gain(gain)
+        if not PRESCRIPTION_MIN_Q <= q <= q_max:
             _refuse(
                 FILTER_Q_OUT_OF_RANGE,
                 f"filter {position} Q {q:g} is outside "
-                f"{PRESCRIPTION_MIN_Q:g}-{PRESCRIPTION_MAX_Q:g}",
+                f"{PRESCRIPTION_MIN_Q:g}-{q_max:g} for a "
+                f"{'boost' if gain > 0.0 else 'cut'}",
                 q=q,
                 q_min=PRESCRIPTION_MIN_Q,
-                q_max=PRESCRIPTION_MAX_Q,
+                q_max=q_max,
             )
         if gain < -BLEND_MAX_FILTER_CUT_DB:
             _refuse(

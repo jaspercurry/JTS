@@ -161,11 +161,25 @@ __all__ = [
 #: a cuts-first posture can honestly claim.
 BLEND_MAX_FILTERS = 2
 
-#: Q of every emitted blend cut. A deliberate tightening against the fit
-#: engine's own ``Q ≤ 8`` ceiling for cuts: a narrower cut chases a feature
-#: this instrument cannot resolve and the room will not reproduce off-axis.
-#: 2.0 is also the Q every peaking filter the series-1 fits actually emitted
-#: used, so the shape is one the loop has already realized on hardware.
+#: Q of every emitted blend cut — THIS solver's, and no longer the whole
+#: region's. A deliberate tightening against the fit engine's own ``Q ≤ 8``
+#: peaking ceiling: a narrower cut chases a feature this instrument cannot
+#: resolve and the room will not reproduce off-axis. 2.0 is also the Q every
+#: peaking filter the series-1 fits actually emitted used, so the shape is one
+#: the loop has already realized on hardware.
+#:
+#: **Scope, since 2026-08-19.** That first sentence was measured and found too
+#: strong for a PRESCRIBED cut, and the prescription intake's own ceiling moved
+#: out from under this constant to
+#: :data:`~.blend_prescription.PRESCRIPTION_MAX_CUT_Q`, which carries the
+#: evidence and the ruling. This constant did not move, and does not need that
+#: argument to hold: its second leg is sufficient on its own — the narrow-defect
+#: convergence stop in :func:`solve_blend_correction`'s docstring, which is
+#: untouched, and which is why a FIXED-Q iterating solver still wants 2.0 even
+#: where a one-shot prescription may go narrower. Worth reading rather than
+#: re-derived here: it predicted this campaign's outcome before the campaign
+#: measured it — a cut wider than its defect "over-corrects the shoulders" —
+#: which is the skirt damage both prescribed rounds were rolled back on.
 BLEND_FILTER_Q = 2.0
 
 #: Per-filter cut ceiling, dB. Derived rather than chosen: the woofer's own
