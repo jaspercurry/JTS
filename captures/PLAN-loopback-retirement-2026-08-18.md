@@ -908,3 +908,57 @@ card NOTHING uses) → Phase-2 inputs; (4) "armed" means two different things
 and no document says so → PR-6 vocabulary fix. Calibration honesty kept:
 AXIS-2/3-survive claims HOLD as code claims; the survivors are DORMANT on
 this fleet — the cartographer corrected its own subagents' over-calls.
+
+### 2026-08-19 — **CLOUD SESSION PICKUP (waves PR-2..PR-6).** Conductor is a
+cloud Claude Code session on branch claude/loopback-retirement-phase1-survey-7bg0mu
+(cut from main 4b7e76d); builders/gates are sub-agents per the method. No Pi
+access — the hardware pass runs later via an operator-run Pi-side agent from a
+brief this session will produce; gh CLI absent (GitHub MCP instead); the laptop
+trap catalog re-derived for container paths (/home/user/JTS; owned no-.git
+exports for gates unchanged). captures/ (gitignored, laptop-local) transported
+onto the branch as commit 2f3640e9f (7 docs, TEMPORARY — drop before merge;
+harvest lifeline appends from branch history back to the laptop copy). State
+verified fresh: PR-0/PR-1 merged with dispositions confirmed by comment id;
+#2481/#2508/#2581/#2697 open, no post-08-18 scope changes; no PR-2..6 work
+anywhere (no branches, no PRs, wave markers all pre-PR-2: no
+_OUTPUTD_CONTENT_ALOOP_PCM, clamp present, snapclient on hw:Loopback,0,6,
+StartLimitBurst=4, no UMask, header enumerates five writers).
+
+**POST-SEAL DRIFT (design pin 6e569e8dc is an ancestor of HEAD; PR #2719
+landed 08-18 21:39, after seal):** (1) `_active_speaker_box_state()` →
+`_output_topology_state()` returning `(active, flat_allowed)`;
+(2) `outputd_grouping_env` gained `flat_output_allowed` — the clearing branch
+is now `if active_endpoint or not flat_output_allowed:`, so §5.2(b)'s
+two-input predicate can no longer mirror the writer BY CONSTRUCTION. PR-5
+carries this as required analysis: the predicate gains the third input sourced
+the same way as the writer's caller; C-16's import-direction constraint
+preserved; T-5 fixtures widened to the third input. (3) `ring_topology_ready`
+now refuses CONTRACT_UNCONFIGURED (+ a new strict variant) — the design never
+cites it; context only, no claim falsified. Citation drift: camilla_yaml.py
+±182 lines (bake emitter def now :3978, clamp :3839-3843; signature
+byte-identical so T-8b's TypeError kill holds); graph_carrier.py:414→:440;
+setup_status.py grouping_allowed sites → :719/:836/:1210 (re-read before
+hardware step 0.2); the web-wizard resolver call sites moved;
+tests/test_fanin_coupling_reconcile.py churned +204/−101 since seal — re-read
+the #2672 pins at PR-5 time.
+
+**Design errata 3 → 6** (conductor-found, ride the same errata message):
+(4) §10.1's PR-3 row says "four test modules"; §8.2's own table names SIX on
+PR-3 — the table governs. (5) §10.1's PR-6 row lists "EG-3/EG-4",
+contradicting §12's EG-4 disposition "Fix in passing in PR-3" — §12 governs;
+EG-4 moves to PR-3's brief, PR-6 verifies it landed. (6) §5.2(b)'s "gate and
+writer cannot disagree" is false at HEAD post-#2719 (third input) —
+adaptation above.
+
+**CONDUCTOR RULING — §6.1(b) split across PR-2/PR-5** (ambiguity found by the
+design-reader): PR-2 = §6.1(a) + the C1-costed contributor drop / signature
+change (required by T-4's "retargeted to the NEW second return value" and the
+§8.2 breaks-table's test_doctor_grouping_remnant.py→PR-2); PR-5 = the rename +
+re-home (its row claims those verbs). PR-2's builder escalates if the code
+makes the split incoherent rather than improvising.
+
+**Execution shape:** waves land as commit series on THIS branch (owner
+topology ruling pending — commits stay sliceable into per-wave branches);
+NOTHING merges until the owner's Pi agent validates the deployed stack (owner
+re-sequencing of §10.1's merge-then-deploy order). Dispositions recorded here
+when each review returns; posted to PRs when PRs exist.
