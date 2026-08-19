@@ -226,6 +226,21 @@ def _print_walk(payload: dict[str, Any]) -> None:
     )
 
 
+def _fs_failure(detail: str, *, as_json: bool) -> int:
+    """A filesystem failure, on both channels, as :data:`EXIT_STAGE_FAILED`.
+
+    Shared by the two verbs that touch the slot, so the exit-code contract this
+    module states is answered from one place rather than restated per verb.
+    """
+    if as_json:
+        print(
+            json.dumps({"ok": False, "reason": "stage_failed", "detail": detail},
+                       indent=2)
+        )
+    print(detail, file=sys.stderr)
+    return EXIT_STAGE_FAILED
+
+
 def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
     """One refusal, on both channels, with the sentence its raiser wrote."""
     detail = getattr(exc, "detail", None) or str(exc)
@@ -260,11 +275,11 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     except AngleRequestRefused as exc:
         return _refuse(exc, as_json=args.json)
     except OSError as exc:
-        detail = f"the request could not be written to {angle_request_spool_path()}: {exc}"
-        if args.json:
-            print(json.dumps({"ok": False, "reason": "stage_failed", "detail": detail}, indent=2))
-        print(detail, file=sys.stderr)
-        return EXIT_STAGE_FAILED
+        return _fs_failure(
+            f"the request could not be written to "
+            f"{angle_request_spool_path()}: {exc}",
+            as_json=args.json,
+        )
     if args.json:
         print(json.dumps({"ok": True, "staged_at_path": str(path), **payload}, indent=2))
     else:
@@ -274,7 +289,20 @@ def _cmd_stage(args: argparse.Namespace) -> int:
 
 
 def _cmd_withdraw(args: argparse.Namespace) -> int:
-    removed = withdraw_staged_angle_request()
+    try:
+        removed = withdraw_staged_angle_request()
+    except OSError as exc:
+        # The same exit code and the same channel split as ``stage``'s write
+        # failure, because it is the same class of problem: an unwritable slot
+        # directory. Without this the module's own exit-code contract is false
+        # for one verb -- an unlink that cannot proceed would exit ``1`` with a
+        # traceback, which tells a script neither "fix the request" nor "fix the
+        # filesystem".
+        return _fs_failure(
+            f"the staged walk could not be withdrawn from "
+            f"{angle_request_spool_path()}: {exc}",
+            as_json=args.json,
+        )
     if args.json:
         print(json.dumps({"ok": True, "withdrawn": removed}, indent=2))
     else:

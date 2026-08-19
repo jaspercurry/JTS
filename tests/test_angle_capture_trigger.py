@@ -16,6 +16,12 @@ refusal the trigger produces comes FROM that seam, in the seam's own words.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import pathlib
+import subprocess
+import sys
+import textwrap
 import time
 
 import pytest
@@ -407,6 +413,91 @@ def test_a_walk_longer_than_the_bound_is_refused_at_both_ends(slot):
     assert excinfo.value.reason == spool.SPOOL_TOO_MANY_STOPS
 
 
+def test_an_oversized_walk_is_refused_WITHOUT_being_read(slot, monkeypatch):
+    """The cap is applied on the STAT, so the pathological file is never loaded.
+
+    A cap applied after the read has already paid what it exists to avoid, and
+    this gate runs on a 1 GB Pi. The pin is the honest one: ``read_bytes`` is
+    made to explode if it is ever called on the slot, so a refusal that reached
+    it fails here rather than merely being slow. The refusal must also report
+    ``st_size`` — the number this arm actually judged.
+    """
+    path, _ = slot
+    oversize = spool.SPOOL_MAX_BYTES + 4096
+    path.write_bytes(b"{" + b"x" * (oversize - 1))
+
+    def _explode(self, *a, **k):
+        if self == path:
+            raise AssertionError(
+                "the oversized document was READ — the cap ran after the load"
+            )
+        return b""
+
+    monkeypatch.setattr(type(path), "read_bytes", _explode)
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        spool.take_staged_angle_request()
+
+    assert excinfo.value.reason == spool.SPOOL_TOO_LARGE
+    assert str(oversize) in excinfo.value.detail
+    # …and it WAS consumed: an oversized document is still a document that has
+    # had its session.
+    assert not spool.staged_angle_request_pending()
+
+
+def test_a_document_at_the_cap_is_read_normally(slot):
+    """The positive control for the stat gate: the boundary is not off by one."""
+    path, _ = slot
+    spool.stage_angle_request(per_driver_at([7]))
+    assert path.stat().st_size <= spool.SPOOL_MAX_BYTES
+    assert spool.take_staged_angle_request() is not None
+
+
+def test_consume_falls_back_to_unlink_when_the_rename_fails(slot, monkeypatch, caplog):
+    """Single-use rests on the slot emptying, and this spool has no ordinal.
+
+    ``prescription_spool`` can afford a purely best-effort rename because its
+    ordinal check refuses a leftover anyway. A walk carries no ordinal, so a
+    slot the rename left full is the same walk running again next session —
+    which is why the unlink backstop is here and pinned rather than inherited
+    as a comment.
+    """
+    path, _ = slot
+    spool.stage_angle_request(per_driver_at([7]))
+
+    def _no_rename(self, *a, **k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(type(path), "replace", _no_rename)
+    with caplog.at_level(
+        logging.WARNING, logger="jasper.active_speaker.angle_capture_spool"
+    ):
+        assert spool.take_staged_angle_request() is not None
+
+    # The slot IS empty — which is the property — even though the document
+    # could not be filed for the operator.
+    assert not spool.staged_angle_request_pending()
+    assert not path.with_name(path.name + spool.CONSUMED_SUFFIX).exists()
+    # …and losing the document is not silent: the operator is told the slot was
+    # emptied the destructive way rather than the recoverable one.
+    assert "event=angle_capture.request_consume_unlinked" in caplog.text
+
+
+def test_a_consume_that_cannot_clear_the_slot_at_all_says_so(slot, monkeypatch, caplog):
+    """A slot that will not clear can re-run a session's worth of captures."""
+    path, _ = slot
+    spool.stage_angle_request(per_driver_at([7]))
+
+    monkeypatch.setattr(
+        type(path), "replace", lambda self, *a, **k: (_ for _ in ()).throw(OSError("nope"))
+    )
+    monkeypatch.setattr(
+        type(path), "unlink", lambda self, *a, **k: (_ for _ in ()).throw(OSError("also nope"))
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.active_speaker.angle_capture_spool"):
+        assert spool.take_staged_angle_request() is not None
+    assert "event=angle_capture.request_consume_failed" in caplog.text
+
+
 def test_staging_twice_is_last_wins_and_withdraw_clears(slot):
     spool.stage_angle_request(per_driver_at([7]))
     spool.stage_angle_request(summed_at([22, -22]))
@@ -535,8 +626,124 @@ def test_a_filesystem_failure_is_its_own_exit_code(slot, monkeypatch, capsys):
     assert "read-only file system" in capsys.readouterr().err
 
 
+def test_withdraw_honors_the_same_exit_code_contract(slot, monkeypatch, capsys):
+    """Every verb that touches the slot answers ``3``, or the contract is false.
+
+    An unwritable slot directory made ``withdraw`` exit ``1`` with a
+    ``PermissionError`` traceback, which tells a script neither "fix the
+    request" nor "fix the speaker's filesystem" — the two things this module's
+    documented exit codes exist to separate.
+    """
+    path, _ = slot
+    spool.stage_angle_request(per_driver_at([0]))
+
+    def _deny(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(type(path), "unlink", _deny)
+    args = cli.build_parser().parse_args(["withdraw", "--json"])
+    assert cli._cmd_withdraw(args) == cli.EXIT_STAGE_FAILED
+    out = capsys.readouterr()
+    assert json.loads(out.out)["reason"] == "stage_failed"
+    assert "Permission denied" in out.err
+
+
+def test_withdraw_is_quiet_and_zero_when_nothing_is_staged(slot, capsys):
+    """The control for the arm above: an empty slot is not a failure."""
+    args = cli.build_parser().parse_args(["withdraw", "--json"])
+    assert cli._cmd_withdraw(args) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "withdrawn": False}
+
+
 # --------------------------------------------------------------------------- #
-# 5. mutation on the dispatch
+# 5. the staged event has to be observable where an operator looks
+#
+# The same pin #2728 (A10) carries for the prescriber CLI, for the same defect:
+# `stage_angle_request` emits `event=angle_capture.request_staged` right after
+# the atomic write, and if the entrypoint configures no logging then
+# `logging.lastResort` (WARNING and above) drops it — the tool's one state
+# transition reaches neither the journal nor the operator's terminal, and a
+# walk can be banked, or silently REPLACE another, with nothing saying so.
+#
+# These run the entrypoint in a SUBPROCESS on purpose. pytest installs its own
+# root handler for every test, so an in-process `caplog` assertion captures the
+# record whether or not anything configured logging — it would pass against the
+# broken shape, which is the one thing this pin may not do.
+# --------------------------------------------------------------------------- #
+
+#: Runs the REAL ``cli.main`` with nothing but the slot path redirected, so the
+#: logging wiring under test is the shipped one. Nothing in this script
+#: configures a logger: if the entrypoint does not, the event has nowhere to go.
+_STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+
+    from jasper.active_speaker import angle_capture_spool as spool
+    from jasper.cli import angle_capture as cli
+
+    slot, volume_state = sys.argv[1:3]
+    spool.set_angle_request_spool_path_for_tests(Path(slot))
+    import jasper.active_speaker.session_volume_plan as svp
+    svp.DEFAULT_SESSION_VOLUME_STATE_PATH = Path(volume_state)
+    raise SystemExit(
+        cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
+    )
+    """
+)
+
+
+def _stage_in_a_real_process(tmp_path) -> subprocess.CompletedProcess:
+    root = pathlib.Path(__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    return subprocess.run(
+        [
+            sys.executable, "-c", _STAGE_IN_A_REAL_PROCESS,
+            str(tmp_path / "staged.json"), str(tmp_path / "absent-volume.json"),
+        ],
+        cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_the_staged_event_reaches_stderr_from_the_real_entrypoint(tmp_path):
+    """The one state transition this CLI performs is observable.
+
+    Asserted on a real process's stderr, which is exactly what an operator sees
+    over SSH and what systemd hands the journal. Without the entrypoint's
+    logging configuration this line does not exist anywhere — the record is
+    created and dropped, because ``logging.lastResort`` starts at WARNING.
+    """
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "event=angle_capture.request_staged" in result.stderr
+    # The fields an operator needs to tell one staging from another: how long
+    # the walk is, who moves the microphone, what it plays, and — the one that
+    # matters most — whether it silently replaced a walk already staged.
+    assert "stops=5" in result.stderr
+    assert "mover=human" in result.stderr
+    assert "regimes=per_driver" in result.stderr
+    assert "replaced=false" in result.stderr
+
+
+def test_the_staged_event_goes_to_stderr_and_never_to_stdout(tmp_path):
+    """stdout is the machine channel; a log line there would corrupt ``--json``."""
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert "event=angle_capture.request_staged" not in result.stdout
+    assert "staged at" in result.stdout
+
+
+def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
+    """The control: the walk an operator reads still prints, on stdout."""
+    result = _stage_in_a_real_process(tmp_path)
+
+    assert "5 stops, moved by human" in result.stdout
+    assert "+22 deg" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# 6. mutation on the dispatch
 # --------------------------------------------------------------------------- #
 #
 # Each case below is the SHAPE of a plausible wrong implementation, asserted

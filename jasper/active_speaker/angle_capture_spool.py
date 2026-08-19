@@ -387,27 +387,51 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
     """
     pending = angle_request_spool_path()
     try:
-        raw = pending.read_bytes()
+        stat = pending.stat()
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        _refuse(SPOOL_MALFORMED, f"the staged walk could not be read: {exc}")
+    if stat.st_size > SPOOL_MAX_BYTES:
+        # Refused on the STAT, before the bytes are read. **A cap applied after
+        # the read has already paid what it exists to avoid** -- and this runs
+        # on a 1 GB Pi, at a gate whose whole purpose is to fail closed, so a
+        # pathological or hostile file would otherwise be loaded into memory in
+        # full precisely when the system can least afford it. The size reported
+        # is ``st_size`` because that is the number this arm actually judged.
+        # Consumed first, for the reason every other document refusal here is:
+        # it has had its session.
+        _consume(pending)
+        _refuse(
+            SPOOL_TOO_LARGE,
+            f"the staged walk is {stat.st_size} bytes, over the "
+            f"{SPOOL_MAX_BYTES}-byte ceiling",
+        )
+    try:
+        raw = pending.read_bytes()
     except OSError as exc:
         # Unreadable is not absent: an unreadable slot must not look like an
         # ordinary session, or a permissions mistake becomes a walk that
         # silently never runs.
         #
-        # **This is the one refusal that does NOT consume, and the exception is
-        # deliberate rather than an oversight of the rule below.** Consuming
-        # exists so a bad DOCUMENT refuses once instead of every session; this
-        # arm has no document — the bytes were never read — and the fault is in
-        # the filesystem, not in what somebody staged. A process that cannot
-        # read the file almost certainly cannot rename it either, and a
-        # best-effort rename that happened to succeed would destroy the only
-        # evidence of a permissions mistake while leaving the operator with a
-        # walk that never ran and no file to look at. So this one refuses
-        # loudly and repeatedly until the permissions are fixed.
+        # **The two unreadable arms are the only refusals that do NOT consume,
+        # and that is deliberate rather than an oversight of the rule below.**
+        # Consuming exists so a bad DOCUMENT refuses once instead of every
+        # session; these arms have no document -- the bytes were never read --
+        # and the fault is in the filesystem, not in what somebody staged. A
+        # process that cannot read the file almost certainly cannot rename or
+        # unlink it either, and a best-effort removal that happened to succeed
+        # would destroy the only evidence of a permissions mistake while leaving
+        # the operator with a walk that never ran and no file to look at. So
+        # these refuse loudly and repeatedly until the permissions are fixed.
         _refuse(SPOOL_MALFORMED, f"the staged walk could not be read: {exc}")
     _consume(pending)
     if len(raw) > SPOOL_MAX_BYTES:
+        # The stat above is what stops a huge file being LOADED; this is what
+        # makes the cap a property of the BYTES. A file that grew between the
+        # two calls would otherwise be capped on a size it no longer had, and
+        # "the number I checked is not the number I used" is the whole failure
+        # mode a cap exists to close.
         _refuse(
             SPOOL_TOO_LARGE,
             f"the staged walk is {len(raw)} bytes, over the "
@@ -417,21 +441,52 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
 
 
 def _consume(pending: Path) -> None:
-    """Move the pending document aside. Best-effort by design.
+    """Empty the slot, atomically, and never leave it filled quietly.
 
-    A failed rename must not turn a valid walk into a refusal -- the document
-    has already been read, so the session can run it -- but it also must not go
-    unnoticed, because a slot that will not clear is a walk that runs again next
-    session. Logged at WARNING with the error, exactly as
-    ``prescription_spool._consume`` does.
+    ``replace`` rather than ``unlink`` first, so the document survives for the
+    operator and the slot is emptied in one step a concurrent reader cannot
+    observe half-done.
+
+    **Then ``unlink`` when the rename fails, and this spool needs that fallback
+    more than the pattern it is modelled on.** ``prescription_spool._consume``
+    can afford a purely best-effort consume because a document its rename left
+    behind is refused anyway by the ordinal check —
+    ``prescription_not_staged_for_this_round`` — so single-use there does not
+    rest on the rename at all. **This slot has no ordinal analog**: a walk is
+    not stamped for a particular session, so if the slot is still full the next
+    session takes the same walk again. Single-use would rest entirely on
+    ``replace`` succeeding. The unlink is therefore the backstop that makes
+    single-use a property rather than a hope, and losing the document to look at
+    is the right trade against silently re-running a measurement.
+
+    Still best-effort at the end: a failed consume must not turn a walk that WAS
+    read into a refusal. But unlike the reference it is **logged at WARNING**,
+    because with no ordinal check behind it a slot that will not clear is the
+    one condition that can re-run a session's worth of captures, and nothing
+    else in this design would say so.
     """
     try:
         pending.replace(_consumed_path(pending))
+        return
+    except OSError as exc:
+        # Bound to a plain local INSIDE the block on purpose: Python deletes
+        # the ``as`` name when the except block exits, so reading it after the
+        # block is an ``UnboundLocalError`` on the one path that only runs when
+        # something has already gone wrong.
+        replace_error = str(exc)
+    try:
+        pending.unlink()
     except OSError as exc:
         log_event(
             logger, "angle_capture.request_consume_failed",
-            level=logging.WARNING, error=str(exc),
+            level=logging.WARNING,
+            error=replace_error, unlink_error=str(exc),
         )
+        return
+    log_event(
+        logger, "angle_capture.request_consume_unlinked",
+        level=logging.WARNING, error=replace_error,
+    )
 
 
 def _validate(raw: bytes) -> AngleCaptureRequest:
