@@ -314,18 +314,27 @@ def test_start_confirms_audio_before_returning():
     recorder.abort()
 
 
-def test_budget_stops_the_reader_and_reports_truncated():
+def test_budget_stops_the_reader_and_a_truncated_take_fails_the_ladder():
+    """S4 (#2720 gate): truncation is graded, never a bare disclosure — a
+    truncated take is a splice by another name, so it books a discontinuity
+    and FAILS the same render-gap check an overrun fails."""
     recording = _record(
         [(4800, [(1, 1)] * 4800), (4800, [(1, 1)] * 4800)],
         max_capture_s=0.1,  # 4,800 frames at 48 kHz
     )
     assert recording.truncated is True
     assert recording.frames == 4800
+    assert recording.gap_count == 1
+    assert recording.gap_frames >= 1
     report = build_capture_integrity_report(
         recording, encoded_frames=recording.frames,
         zero_run_count=0, zero_runs=[],
     )
     assert report["truncated"] is True
+    ledger = reconcile_capture_frames(report, received_frames=recording.frames)
+    assert ledger.render_gap_evaluated
+    assert ledger.render_gap_frames >= 1  # FAIL material — never clean
+    assert "render_graph" in ledger.lost_at
 
 
 def test_open_failure_raises_wired_capture_error():

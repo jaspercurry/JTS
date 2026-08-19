@@ -92,9 +92,13 @@ isn't.
 capture devices are exclusive-open, so a second recorder fails loudly with
 EBUSY. Memory is bounded by ``max_capture_s`` (the caller sizes it from the
 plan entry's declared duration plus named allowances); the reader stops
-filling at the budget and the result says so (``truncated``). Every wait is
-bounded: start fails loudly if the first chunk does not arrive, and a reader
-thread that will not join is an error, never a hang.
+filling at the budget, and the truncation is GRADED, not merely disclosed —
+it books one discontinuity (floor 1 frame, the unmeasurable-loss rule
+above), so the same render-gap check that fails an overrun fails the
+truncated take, with ``truncated`` on the report naming which discontinuity
+class it was. Every wait is bounded: start fails loudly if the first chunk
+does not arrive, and a reader thread that will not join is an error, never a
+hang.
 """
 from __future__ import annotations
 
@@ -416,10 +420,20 @@ class WiredRecorder:
                 self._first_chunk.set()
                 if self._frames >= self._max_frames:
                     # Budget guard, not a normal stop: the caller's play/tail
-                    # schedule should always finish first. Stop filling and
-                    # say so; the short/odd capture is then the analyzer's to
-                    # refuse.
+                    # schedule should always finish first, so tripping this
+                    # means the schedule broke. A truncated take is a splice
+                    # by another name — everything after the stop is missing
+                    # — so it is BOOKED as a discontinuity and graded by the
+                    # same render-gap check that fails an overrun (gate fix
+                    # round S4: graded, never a bare disclosure). The size is
+                    # unknowable (the loss is the whole un-recorded tail), so
+                    # it books the same ≥1 floor an unmeasurable overrun
+                    # gets: any nonzero fails identically. ``truncated``
+                    # stays on the report as the disclosure naming WHICH
+                    # discontinuity class this was.
                     self._truncated = True
+                    self._gap_count += 1
+                    self._gap_frames += 1
                     return
         except WiredCaptureError as exc:
             self._reader_error = exc
