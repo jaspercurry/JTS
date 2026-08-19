@@ -126,6 +126,15 @@ CLIP_RUN_SAMPLES = 3
 CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
 DBFS_FLOOR = -120.0
 ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding"
+# The conditioning floor on the emitted protection `P`, dB: below it, dividing
+# `P` out amplifies the capture's noise faster than it recovers signal, so the
+# ratio is refused rather than saturated. TWO readers divide by the same `P` and
+# must agree where that becomes dishonest — `_compose_configured_path_ir` below,
+# which composes the measured IR onto the configured crossover, and
+# `active_speaker.crossover_v2.forward_model.driver_plants`, which divides the
+# same protection out in the transfer-function domain so an offline search can
+# apply a different crossover per candidate. One number, one owner.
+CONFIGURED_PATH_PROTECTION_FLOOR_DB: float = -12.0
 
 
 class ConfiguredPathConditioningError(ValueError):
@@ -5927,10 +5936,11 @@ def _compose_configured_path_ir(
     for label, response in (("P", protection), ("C", configured)):
         if not np.all(np.isfinite(response[required])):
             raise ConfiguredPathConditioningError(f"non-finite {label} for {role}")
-    minimum = 10.0 ** (-12.0 / 20.0)
+    minimum = 10.0 ** (CONFIGURED_PATH_PROTECTION_FLOOR_DB / 20.0)
     if np.any(np.abs(protection[required]) < minimum):
         raise ConfiguredPathConditioningError(
-            f"P below -12 dB for {role}", protection_floor=True,
+            f"P below {CONFIGURED_PATH_PROTECTION_FLOOR_DB:g} dB for {role}",
+            protection_floor=True,
         )
     ratio = np.divide(
         configured, protection,

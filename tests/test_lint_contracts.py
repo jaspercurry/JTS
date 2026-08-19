@@ -998,7 +998,23 @@ MAX_LINES_BY_PATH = {
     # a reader of those two fields now has to know -- they populate exactly
     # when the gate fires, and their sign and segment id are ambiguous at an
     # even cut, so the magnitude is the part to read.
-    "jasper/audio_measurement/program_analysis.py": 7_252,
+    # 2026-08-19 (crossover forward model, PR-2): 7,252 -> 7,262, +10, and the
+    # plan that asked for it predicted +0. Its words were "the edit is
+    # line-neutral (a literal becomes a name)", which is only true of the USE
+    # site; the DEFINITION has to land somewhere, and this file had zero slack.
+    # Counted rather than estimated: 9 for `CONFIGURED_PATH_PROTECTION_FLOOR_DB`
+    # and the argument beside it, 1 for the refusal message re-reading the
+    # constant instead of restating `-12` in prose. Executable change: zero —
+    # the same float, the same refusal, the same rendered text.
+    # Why it is worth ten lines. `crossover_v2.forward_model.driver_plants`
+    # divides the SAME `P` out of the SAME measurements, in the
+    # transfer-function domain, so an offline search can apply a different
+    # crossover per candidate. Without a named owner the second reader spells
+    # `-12.0` again, and a conditioning policy with two writers is the shape
+    # this repo has already paid for. The cheaper-looking alternative — leave
+    # the literal and let the new module restate it — buys this integer back by
+    # creating exactly the drift the ratchet is downstream of.
+    "jasper/audio_measurement/program_analysis.py": 7_262,
 }
 
 

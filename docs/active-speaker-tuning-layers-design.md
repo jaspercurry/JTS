@@ -1260,9 +1260,19 @@ heading: what is absent there is a *guard*, not the capture it guards.
    vertical offsets, the household string-and-protractor method does not
    generalize as stated, and the lab arm's elevation capability is undetermined.
    P2 is the consumer that turns that deferral from tidy-later into blocking.
-3. **The forward model and the optimizer — MISSING.** Neither the
-   complex-summation predictor nor the enumeration/optimization search exists in
-   the tree.
+3. **The forward model — PRESENT since 2026-08-19; the optimizer — MISSING.**
+   The complex-summation predictor is
+   [`crossover_v2/forward_model.py`](../jasper/active_speaker/crossover_v2/forward_model.py)
+   (`driver_plants` / `branch_operator` / `predict_sum`), with the candidate it
+   predicts for, and that candidate's legality, in
+   [`crossover_v2/candidate_space.py`](../jasper/active_speaker/crossover_v2/candidate_space.py).
+   Both are pure and fixture-tested; **nothing consumes them yet**, and the
+   enumeration/optimization search still does not exist. Two things the
+   predictor's presence does NOT buy, stated here because presence reads as
+   readiness: it has no objective in the grade's own currency, and its delay
+   axis has never been graded against measurement — so it may not yet rank
+   candidates. The bar for that vote is the one the paragraph above sets, and
+   it is unmet.
 4. **A Stage-0 timing acceptance test — MISSING; its bar is declared and its
    precondition is measured.** Pass bar: **relative-phase alignment residual
    ≤ 20 µs (3σ)** — the ~15° at 2 kHz that a ±0.5 dB summation prediction near
