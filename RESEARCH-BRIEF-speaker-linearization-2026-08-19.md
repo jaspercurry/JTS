@@ -126,8 +126,8 @@ magnitude EQ, was "the lever."
    (not-common-mode; sizing-to-detrended-excursion; directivity trade;
    skirt-deepens-dip in the per-config frame; metric-hides-improvement).
    The surviving *unconfirmed* candidate: with Q clamped to 2.0, only
-   ~28–43% of a filter's depth lands on the target feature (features have
-   natural Q 3.6–6.6); the wide skirts depress already-below-reference
+   ~28–43% of a filter's depth lands on the target feature (in-window
+   features measure natural Q 3.9–6.6); the wide skirts depress already-below-reference
    neighbors (e.g., a −1.2 dB @ 1400 Q 2.0 filter puts ≈ −0.5 dB on the
    1037 dip), netting a loss under honest grading.
 4. **Boosts were never played.** The only in-window dip (1037 Hz) is too
@@ -257,8 +257,14 @@ the text above.
    identical pipeline; verdicts angle-invariant; all gate-stable). The
    hypothesis that the in-window features live in a non-minimum-phase
    summation zone is **not supported**. The EQ failures in §5 re-attribute
-   to *selectivity*: features have natural Q 3.6–6.6 (some reading Q≈12
-   at the smoothing floor), while the correction stage clamps filters to
+   to *selectivity*: in-window features measure natural Q 3.9/5.1/6.6
+   (1037/1406/2057 Hz); out-of-window features measure 10.4–18.4, with
+   repeated 12.1 and 18.4 readings sitting at the 1/12-oct smoothing
+   floor — lower bounds on narrowness, so the all-nine span is 3.9–18.4+.
+   (An earlier revision of this erratum said “3.6–6.6”: 3.6 was the
+   authored Q of a *refused filter*, never a feature width — the exact
+   filter-vs-feature conflation this correction exists to prevent.)
+   The correction stage clamps filters to
    Q ≤ 2.0 — every filter was ~3× wider than its target, and measured
    filter efficiency at Q 2.0 was 28–43%, so skirt damage exceeded center
    repair. This makes the Q clamp a *parameter under suspicion*, not
