@@ -1437,13 +1437,26 @@ def blend_prescription_from_mapping(raw: Any) -> BlendPrescription | None:
     a receipt that banked half a prescription would claim provenance it does
     not have.
 
-    **Who reads it.** ``jasper-crossover-prescriber propose`` already writes
-    exactly the shape this parses (``BlendPrescription.to_dict``), so the pair
-    round-trips today. Its second consumer is the live-flow wiring PR, which
-    rehydrates a banked prescription off the round state to report what a round
-    was prescribed — the same job
-    :func:`~.alignment_prescription.alignment_prescription_from_mapping` does
-    for the delay. Note that this reader does NOT route: it re-derives
+    **Who reads it.** ``jasper-crossover-prescriber propose`` and ``stage``
+    both write exactly the shape this parses (``BlendPrescription.to_dict``),
+    so the pair round-trips today.
+
+    An earlier draft of this paragraph predicted a second consumer: "the
+    live-flow wiring PR, which rehydrates a banked prescription off the round
+    state". That PR is A9 and it did NOT need one. What a round banks is a
+    provenance RECORD — the prescription's view plus the digest of the document
+    that carried it — and nothing reads it back as a
+    :class:`BlendPrescription`, because the correction it describes is already
+    on the candidate by then. The re-read A9 does need is of a document that
+    has NOT been through the gate this process, and that one goes through
+    :func:`read_blend_prescription` with the bounds (see
+    :mod:`.prescription_spool`), not through this laxer reader. So this stays
+    the CLI's round-trip partner and the guard against a hand-edited durable
+    block claiming provenance it does not have; the prediction is recorded
+    rather than deleted because "who reads this" is the question a later author
+    will ask again.
+
+    Note that this reader does NOT route: it re-derives
     ``prescription_class`` from the gains but applies no bound and no seam
     check, which is why
     :func:`blend_prescription_to_candidate_fields` asks

@@ -670,7 +670,7 @@ MAX_LINES_BY_PATH = {
     #       saying why it goes THROUGH `blend_prescription_to_candidate_fields`
     #       rather than off `.filters`. That is the one-door property: the seam
     #       re-asks the route, so "a boost can never populate this field" stays
-    #       true of the function instead of of today's call graph
+    #       true of the function rather than of today's call graph
     #   23  `blend_prescription_record`, the sibling of
     #       `alignment_prescription_record` — 5 executing, the rest the
     #       None-means-solved rule (without it a series cannot tell a prescribed

@@ -79,7 +79,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from jasper.atomic_io import atomic_write_text
 
@@ -231,7 +231,15 @@ def _consumed_path(pending: Path) -> Path:
     return pending.with_suffix(CONSUMED_SUFFIX + pending.suffix)
 
 
-def _refuse(reason: str, detail: str, **evidence: Any) -> None:
+def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
+    """``NoReturn``, matching :mod:`.blend_prescription`'s own ``_refuse``.
+
+    Every call site here is a guard, and the line after it assumes the guard
+    passed. Typed as returning ``None`` the guards read as fall-throughs, so a
+    checker widens everything downstream to include the failed case — which is
+    how a refusal that stopped raising would surface as a type complaint on
+    innocent code instead of on itself.
+    """
     raise BlendPrescriptionRefused(reason, detail, evidence=evidence)
 
 
