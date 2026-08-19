@@ -2646,6 +2646,140 @@ async def test_turn_release_restores_manual_vad():
         await conn.stop()
 
 
+async def test_release_uncommitted_manual_turn_clears_buffer():
+    """Manual VAD keeps appended audio in the server's
+    input_audio_buffer until commit() or an explicit clear. A turn
+    that is released without ever calling end_input() (a no-speech
+    abort, an interrupt, or early teardown) must clear that buffer —
+    otherwise the audio silently persists and gets prepended to the
+    NEXT turn, letting a rejected utterance resurface and execute
+    later."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+        baseline = len(sess.sent)
+
+        await turn.release()
+
+        new_types = [e["type"] for e in sess.sent[baseline:]]
+        assert new_types.count("input_audio_buffer.clear") == 1
+        assert "input_audio_buffer.commit" not in new_types
+    finally:
+        await conn.stop()
+
+
+async def test_release_committed_manual_turn_does_not_clear_buffer():
+    """A committed turn already consumed the buffer into a
+    conversation item — release() must not send a redundant clear
+    (it would just be a noisy no-op server round trip on the common,
+    successful path)."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"\x00\x00" * 1280)
+        await turn.end_input()
+        baseline = len(sess.sent)
+
+        await turn.release()
+
+        new_types = [e["type"] for e in sess.sent[baseline:]]
+        assert "input_audio_buffer.clear" not in new_types
+    finally:
+        await conn.stop()
+
+
+async def test_release_turn_lost_does_not_attempt_buffer_clear():
+    """A turn marked lost already failed a send on this connection —
+    release() should not try another send that will likely also
+    fail; a reconnect starts with a fresh, empty buffer anyway."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        turn._turn_lost = True
+        baseline = len(sess.sent)
+
+        await turn.release()
+
+        new_types = [e["type"] for e in sess.sent[baseline:]]
+        assert "input_audio_buffer.clear" not in new_types
+    finally:
+        await conn.stop()
+
+
+async def test_server_vad_turn_released_uncommitted_clears_buffer_before_restoring_manual():
+    """A server_vad turn released before the server ever committed
+    (interrupted / torn down mid-utterance) must clear the shared
+    input_audio_buffer before restoring manual VAD, or the leftover
+    audio would carry into the next manual-VAD turn's buffer."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        await conn.set_turn_detection({"type": "server_vad"})
+        turn = await conn.acquire_turn()
+        turn.mark_server_vad()
+        assert turn._committed is False
+        baseline = len(sess.sent)
+
+        await turn.release()
+
+        new = sess.sent[baseline:]
+        new_types = [e["type"] for e in new]
+        assert new_types.count("input_audio_buffer.clear") == 1
+        clear_idx = new_types.index("input_audio_buffer.clear")
+        restore_idx = next(
+            i for i, e in enumerate(new)
+            if e.get("type") == "session.update"
+            and e.get("session", {}).get("audio", {}).get("input", {}).get("turn_detection") is None
+        )
+        assert clear_idx < restore_idx
+        assert conn._server_vad_active is False
+    finally:
+        await conn.stop()
+
+
+async def test_server_vad_turn_released_committed_does_not_clear_buffer():
+    """A server_vad turn where the server already committed the
+    buffer (normal end-of-utterance) must not send a redundant clear
+    when manual VAD is restored — that path runs on every turn, so a
+    needless clear would spam the journal with server round trips."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        await conn.set_turn_detection({"type": "server_vad"})
+        turn = await conn.acquire_turn()
+        turn.mark_server_vad()
+        turn._on_server_committed()
+        baseline = len(sess.sent)
+
+        await turn.release()
+
+        new = sess.sent[baseline:]
+        new_types = [e["type"] for e in new]
+        assert "input_audio_buffer.clear" not in new_types
+        assert any(
+            e.get("type") == "session.update"
+            and e.get("session", {}).get("audio", {}).get("input", {}).get("turn_detection") is None
+            for e in new
+        )
+        assert conn._server_vad_active is False
+    finally:
+        await conn.stop()
+
+
 async def test_committed_stops_send_audio():
     """After the server commits the audio buffer, further send_audio
     calls are no-ops (the buffer is closed)."""

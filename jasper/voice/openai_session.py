@@ -447,6 +447,28 @@ class OpenAIRealtimeTurn:
                     "openai turn: release cancel ignored (%s: %s)",
                     type(e).__name__, e,
                 )
+        elif not self._committed and not self._turn_lost and not self._server_vad_active:
+            # Manual VAD (no server VAD) never auto-empties the server's
+            # input_audio_buffer — only commit() or an explicit clear does.
+            # A turn that never called end_input() (rejected as no-speech,
+            # interrupted, or torn down early) leaves whatever audio it
+            # appended sitting in that buffer, where it would silently
+            # prepend onto the NEXT turn's audio and can resurface and
+            # execute later (observed: two rejected "volume down"
+            # utterances fired on a subsequent turn). Clear it here so a
+            # rejected turn's audio dies with the turn. Skipped when
+            # turn_lost (the send already failed — another send is
+            # unlikely to land, and a reconnect starts with a clean
+            # buffer anyway) and when this turn ran under server VAD,
+            # whose buffer is connection-wide and is handled instead by
+            # `_on_turn_released`'s restore-to-manual path below.
+            try:
+                await self._conn._send_event({"type": "input_audio_buffer.clear"})
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "openai turn: release buffer clear ignored (%s: %s)",
+                    type(e).__name__, e,
+                )
         await self._conn._on_turn_released(self)
         assistant_text = self.assistant_transcript().strip()
         if assistant_text:
@@ -1285,6 +1307,24 @@ class OpenAIRealtimeConnection:
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
         if self._server_vad_active:
+            if not turn._committed:
+                # The server never reached input_audio_buffer.committed for
+                # this turn (released early — interrupted, timed out, or
+                # torn down before speech_stopped) so whatever audio it
+                # appended is still sitting in the buffer. set_turn_detection
+                # only clears when switching manual->server, not on the
+                # restore-to-manual path below, so without this the
+                # leftover audio would carry into the next (manual VAD)
+                # turn. Skip when committed — the buffer is already
+                # consumed and a redundant clear only adds a noisy
+                # server-error round trip on the common (normal) path.
+                try:
+                    await self._send_event({"type": "input_audio_buffer.clear"})
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        "openai connection: post-turn buffer clear ignored (%s: %s)",
+                        type(e).__name__, e,
+                    )
             try:
                 await self.set_turn_detection(None)
             except Exception as e:  # noqa: BLE001
