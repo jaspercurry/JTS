@@ -747,7 +747,19 @@ MAX_LINES_BY_PATH = {
     # stage 2 still opened its bundle 71 lines before resolving the source,
     # so a refused verify-start cost the side effect stage 1 had just been
     # cured of. The bundle-untouched pin now runs both preparers.
-    "jasper/web/correction_crossover_v2.py": 8_595,
+    # ...and 8,595 -> 8,606 (A4, the remote session-open count): +11, of which
+    # 9 are prose. `crossover_v2_remote_session_open` announced the
+    # cloud-INCLUSIVE shape target (10) where the shipped stage 1 walks 3, and
+    # its reader is an external positioner with no screen to check it against —
+    # a wired-night driver came within one `--complete-after` of closing a held
+    # position-set seven captures early on 2026-08-19. The executable half is
+    # a MOVE, not growth: the index->phase map `_open` used to build inline is
+    # hoisted beside the three `STAGE1_INCLUDES_*` flags that decide it, so the
+    # announced count and the walked plan are one object (+9 at the hoist, -6
+    # at the call site it replaced). The rest is the incident note, which is
+    # the whole reason a future reader will not "simplify" this back to the
+    # shape target.
+    "jasper/web/correction_crossover_v2.py": 8_606,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

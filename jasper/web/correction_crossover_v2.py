@@ -6927,9 +6927,8 @@ def prepare_v2_session(
     # captures this session runs, and reading the flag twice is how they get to
     # disagree.
     include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
-    # ...and the map those three flags decide, built ONCE here: the journal line
-    # below and the conductor's walk further down are then the same plan rather
-    # than two readings of it.
+    # ...and the map those three flags decide, built ONCE: the journal line
+    # below and the conductor's walk read one plan, not two readings of it.
     stage1_index_phase = build_v2_cloud_index_phase_map(
         plan_shape=plan_shape,
         include_cloud_measure=include_cloud_measure,
@@ -6955,16 +6954,13 @@ def prepare_v2_session(
             "correction.crossover_v2_remote_session_open",
             stage=1,
             tier=plan_shape.tier,
-            # The captures this session will ACTUALLY take, off the plan it just
-            # built. It used to log ``plan_shape.measure_capture_target``, the
-            # cloud-INCLUSIVE shape target, which is 10 while the shipped stage 1
-            # runs 3 — a number nobody walks, since the three
-            # ``STAGE1_INCLUDES_*`` flags above decide what the session really
-            # holds. An external positioner is the reader here, and on
-            # 2026-08-19 this line nearly closed a held position-set seven
-            # captures early: the driver sized its walk from the journal, and
-            # only re-derived the count by hand before its ``--complete-after``
-            # could fire.
+            # The captures this session will ACTUALLY take, off that plan. It
+            # logged ``plan_shape.measure_capture_target`` — the cloud-INCLUSIVE
+            # shape target, 10 where the shipped stage 1 walks 3. The reader is
+            # an external positioner with no screen to check it against: on
+            # 2026-08-19 a wired-night driver sized its walk from this line and
+            # came within one ``--complete-after`` of closing a held
+            # position-set seven captures early.
             captures=len(stage1_index_phase),
         )
 
@@ -7064,8 +7060,8 @@ def prepare_v2_session(
         # emitted spec used — not merely the same function at its own defaults
         # — so the prompt an entry carries, the phase the conductor runs for
         # that index, and the count the journal announced can never disagree.
-        # ``verify_capture_target`` is the tier's own number,
-        # handed over as a fact: the boost-permission rule that reads it (work
+        # ``verify_capture_target`` is the tier's own number, handed over as a
+        # fact: the boost-permission rule that reads it (work
         # order D2's consequence — this session's phases carry no VERIFY,
         # because the post-apply sweep is stage 2) belongs to the journey.
         opening = open_stage(
