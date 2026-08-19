@@ -136,11 +136,12 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
 
     assert prescription is not None  # read_prescription_bytes rejects a null body
-    result = {
+    candidate_fields = blend_prescription_to_candidate_fields(prescription)
+    result: dict[str, Any] = {
         "accepted": True,
         "prescription": prescription.to_dict(),
         "prescription_sha256": prescription_sha256(payload),
-        "candidate_fields": blend_prescription_to_candidate_fields(prescription),
+        "candidate_fields": candidate_fields,
     }
     if args.out:
         Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
@@ -160,8 +161,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         print(
-            "  these become the candidate's "
-            f"{sorted(result['candidate_fields'])} at build time",
+            f"  these become the candidate's {sorted(candidate_fields)} at build time",
             file=sys.stderr,
         )
     return EXIT_OK
