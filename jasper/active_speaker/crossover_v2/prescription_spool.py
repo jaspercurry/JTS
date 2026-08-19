@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import time
 from dataclasses import dataclass
@@ -580,39 +579,44 @@ def _band(raw: Any) -> tuple[float, float] | None:
     (:data:`~.blend_prescription.REGION_UNAVAILABLE`), and a second spelling of
     it here would be a second owner of the same refusal.
 
-    **Two guards, and both were escapes rather than tidiness.** A band read off
-    disk is handed straight to the gate, which EVALUATES biquads across it —
+    **The Nyquist bound is the guard, and it was a real escape.** A band read
+    off disk is handed straight to the gate, which EVALUATES biquads across it,
     so an edge this reader lets through is an edge ``chain_response`` has to
-    survive, and it does not survive either of these:
+    survive. The shipped version checked only ``0.0 < lo < hi``, which is true
+    for ``(1.0, inf)`` — and an infinite upper edge reached
+    ``np.geomspace(lo, inf, 512)`` and produced a math domain error, an unnamed
+    exception out of a REFUSAL path, aborting session start with a programmer
+    string in the wizard's 400.
 
-    * ``isfinite``. ``0.0 < lo < hi`` is true for ``(1.0, inf)``, and a NaN edge
-      is false everywhere so it escaped as ``None`` by luck rather than by rule.
-      An infinite upper edge reached ``np.geomspace(lo, inf, 512)`` and produced
-      a math domain error. The stricter of the two readers of this shape,
-      :func:`~.blend_prescription.blend_prescription_from_mapping`, already
-      guarded exactly this and this one had copied the laxer; they now agree
-      instead of differing by which reader you happened to reach.
-    * **Nyquist.** ``isfinite`` alone is not enough: ``(1.0, 1e308)`` is finite,
-      passes every ordering test, and raises the SAME math domain error one
-      layer down, in ``math.cos(2πf/fs)``. The bound is the evaluator's own —
-      :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` divided by two,
-      IMPORTED rather than restated, on the rule the cut ceilings in
-      :mod:`.blend_prescription` follow. A response above half the sample rate
-      is not a conservative refusal, it is an undefined quantity. It is also a
-      very loose bound in practice — a real crossover region is a few hundred to
-      a few thousand Hz — so it constrains no legitimate document and exists
-      only to keep an unnamed exception out of a refusal path.
+    ``isfinite`` was the obvious repair and it is NOT what is written here,
+    because it does not close the class: ``(1.0, 1e308)`` is finite, passes
+    every ordering test, and raises the SAME error one layer down in
+    ``math.cos(2πf/fs)``. The bound that does close it is the evaluator's own —
+    :data:`~jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ` divided by two,
+    IMPORTED rather than restated, on the rule :mod:`.blend_prescription`
+    follows for the cut ceilings it takes from the deterministic solver. A
+    response above half the sample rate is not a conservative refusal, it is an
+    undefined quantity. It is also very loose in practice — a real crossover
+    region is a few hundred to a few thousand Hz — so it constrains no
+    legitimate document and exists only to keep an unnamed exception out of a
+    refusal path.
 
-    Both edges are checked, not just the upper one: a band sitting entirely
-    above Nyquist is the same nonsense arriving in a different order.
+    **And it subsumes ``isfinite``, which is why there is no isfinite call.** A
+    guard was added here and then removed once the mutation battery showed it
+    could not change an answer: ``inf`` fails ``hi <= _EVALUABLE_MAX_HZ``,
+    ``-inf`` and a NaN edge fail ``0.0 < lo < hi`` (every NaN comparison is
+    false), and a huge finite edge fails Nyquist. Two guards where one decides
+    is not defence in depth, it is a line no test can justify. The sibling
+    reader :func:`~.blend_prescription.blend_prescription_from_mapping` keeps
+    its ``isfinite`` correctly: it has no Nyquist bound because it evaluates
+    nothing, so there the check is the only thing standing between an infinity
+    and a band nobody can use.
     """
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
         return None
     try:
         lo, hi = float(raw[0]), float(raw[1])
     except (TypeError, ValueError, OverflowError):
-        return None
-    if not (math.isfinite(lo) and math.isfinite(hi)):
         return None
     if not (0.0 < lo < hi):
         return None

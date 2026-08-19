@@ -314,6 +314,45 @@ def test_stage_two_does_not_erase_the_provenance_stage_one_banked(monkeypatch):
     assert priors["blend_prescription_sha256"] == prescription_sha256(payload)
 
 
+def test_the_record_stage_one_writes_is_one_stage_two_can_read(monkeypatch):
+    """The round trip, end to end, with no seeded record in the middle.
+
+    The two tests either side of this one each hold half: one proves stage 1
+    WRITES a record, the other proves stage 2 REHYDRATES a record. Both passed
+    while the written record was unreadable by the reader that rehydrates it —
+    because the stage-2 fixture seeded its own. That is the gap this closes: the
+    record that actually gets written is fed to the actual reader.
+
+    The failure it pins is the one the gate found and the one this fix round
+    caused: `blend_prescription_from_mapping` refuses an UNKNOWN FIELD, so a
+    single extra key in the record — the document digest, folded in beside the
+    prescription, which is exactly where it started — makes the whole thing
+    read back as ``None``. Silently: the reader returns ``None`` for "no
+    prescription", which is indistinguishable from an ordinary round.
+    """
+    from jasper.active_speaker.crossover_v2.blend_prescription import (
+        blend_prescription_from_mapping,
+    )
+
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage(for_round_ordinal=9)
+    _prepare(monkeypatch)
+
+    written = (
+        (v2host.load_v2_state() or {}).get("verify_priors") or {}
+    ).get("blend_prescription")
+    assert written is not None
+
+    rehydrated = blend_prescription_from_mapping(written)
+    assert rehydrated is not None, (
+        "the record stage 1 wrote is not one the stage-2 reader accepts"
+    )
+    assert [dict(f) for f in rehydrated.filters] == [
+        dict(f) for f in _ACCEPTED_FILTERS
+    ]
+    assert rehydrated.packet_fingerprint == _PACKET_FINGERPRINT
+
+
 def test_the_stage_two_conductor_can_name_what_the_round_was_prescribed(
     monkeypatch,
 ):
