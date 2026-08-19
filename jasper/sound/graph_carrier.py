@@ -652,6 +652,7 @@ def recompose_active_baseline_for_bass_extension(
         recompose_applied_baseline_yaml,
     )
     from jasper.active_speaker.playback_route import resolve_live_active_endpoint
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.sound.profile import PROFILE_PATH, SoundProfile, build_sound_filters
     from jasper.sound.settings import (
         SETTINGS_PATH,
@@ -707,16 +708,33 @@ def recompose_active_baseline_for_bass_extension(
     # endpoint inherited from the snapshot would pass that check and still hand
     # an armed box a graph on the wrong transport.
     live_endpoint, _endpoint_source = resolve_live_active_endpoint(topology)
-    yaml, issues = recompose_applied_baseline_yaml(
-        topology,
-        applied_profile=applied_profile,
-        room_peqs=room_peqs,
-        preference_filters=build_sound_filters(preference),
-        output_trim_db=output_trim_db(preference, settings),
-        out_path=None,
-        playback_device=live_endpoint,
-        bass_extension_profile=desired_profile,
-    )
+    # Same L0-emit-gate conversion as the preference-EQ recompose above, and
+    # for the same reason: an ActiveSpeakerConfigError from the emitter is a
+    # fail-closed refusal, not a server error, and every other failure in this
+    # function already leaves by the typed door. LATENT TODAY — this seam has
+    # no production caller yet — but converting it now is cheaper than the
+    # incident it becomes the day bass extension is wired, which would be the
+    # /eq/ defect above repeated verbatim. Uses THIS function's own reason code
+    # (its siblings all raise bass_extension_recompose_unavailable), not the
+    # preference-EQ one, so a caller branching on reason_code still learns
+    # which seam refused.
+    try:
+        yaml, issues = recompose_applied_baseline_yaml(
+            topology,
+            applied_profile=applied_profile,
+            room_peqs=room_peqs,
+            preference_filters=build_sound_filters(preference),
+            output_trim_db=output_trim_db(preference, settings),
+            out_path=None,
+            playback_device=live_endpoint,
+            bass_extension_profile=desired_profile,
+        )
+    except ActiveSpeakerConfigError as exc:
+        raise CarrierCannotHostEq(
+            "bass_extension_recompose_unavailable",
+            f"JTS could not rebuild this speaker's active baseline: {exc}. Its "
+            "current DSP state is unchanged.",
+        ) from exc
     if yaml is not None:
         if _active_program_overlay_projection(yaml) != current_program:
             raise CarrierCannotHostEq(

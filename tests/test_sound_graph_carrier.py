@@ -1681,3 +1681,51 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path)
     assert "1500 Hz" in message and "2000 Hz" in message
     assert "required_protection_filters" in message
     assert "crossover and driver protection are unchanged" in message
+
+
+def test_bass_extension_recompose_also_refuses_below_floor_by_type(tmp_path):
+    """The sibling seam's conversion, pinned while it is still latent.
+
+    ``recompose_active_baseline_for_bass_extension`` has no production caller
+    yet, so this refusal cannot reach a household today. It is pinned anyway
+    because the seam converts EVERY other failure to :class:`CarrierCannotHostEq`
+    and an unconverted ``ActiveSpeakerConfigError`` here would be the /eq/ defect
+    above repeated verbatim on the day bass extension is wired — and a
+    half-guarded pair reads as a guarded one to the next reader.
+
+    The reason code is this seam's own (``bass_extension_recompose_unavailable``,
+    what its siblings raise), not the preference-EQ seam's, so a caller
+    branching on reason_code still learns which seam refused.
+    """
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    preset = applied["recomposition_snapshot"]["preset"]
+    assert preset["drivers"]["tweeter"]["protection_highpass_floor_hz"] == 2000.0
+    preset["crossover_regions"][0]["fc_hz"] = 1500.0
+
+    selected = tmp_path / "selected.yml"
+    selected.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(SoundProfile(enabled=False).to_dict()), encoding="utf-8",
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(CarrierCannotHostEq) as err:
+        recompose_active_baseline_for_bass_extension(
+            topology,
+            applied_profile=applied,
+            desired_profile=None,
+            current_config_path=selected,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
+        )
+
+    assert err.value.reason_code == "bass_extension_recompose_unavailable"
+    message = str(err.value)
+    assert "1500 Hz" in message and "2000 Hz" in message
+    assert "current DSP state is unchanged" in message

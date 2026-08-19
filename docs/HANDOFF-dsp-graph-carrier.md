@@ -102,8 +102,16 @@ existing layering):
     NEVER through the stereo template (invariant 3). Startup/commissioning still
     refuse `eq_on_active_not_wired`; a **bonded** baseline refuses
     `eq_on_active_bonded_member` (invariant 7 — the active×grouping decision is
-    deferred); a baseline whose applied snapshot is missing, stale, or invalid refuses
-    `active_baseline_recompose_unavailable`. Active re-emit preserves existing
+    deferred); and `active_baseline_recompose_unavailable` covers **three
+    distinct causes**, not just missing evidence — (a) the applied snapshot is
+    missing, stale, or invalid, (b) the rebuild succeeded but the runtime
+    contract rejected the resulting graph, and (c) an L0 emit gate refused to
+    build it at all (an unprotected tweeter, or a crossover below that
+    tweeter's declared protection floor). Cause (c) is the one an operator is
+    most likely to misdiagnose: the evidence is perfectly valid and the
+    speaker is playing that graph right now — it was commissioned before the
+    floor gate existed — so read the message, which names the crossover and
+    the floor, rather than hunting for corrupt evidence. Active re-emit preserves existing
     `room_peq_*` filters by default; callers pass an explicit `room_peqs=[]`
     when they are intentionally measuring or resetting with Layer B cleared.
     All four are 200-with-body blocked outcomes, never a 5xx, and the durable
@@ -464,8 +472,11 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
   baseline with EQ from the immutable applied-profile snapshot; `_ActiveGraphCarrier` flips
   refuse→emit for the SOLO baseline (keyed on `ACTIVE_BASELINE_SOURCE`),
   refuses startup/commissioning (`eq_on_active_not_wired`), bonded
-  (`eq_on_active_bonded_member`), and missing-evidence
-  (`active_baseline_recompose_unavailable`); the durable apply pre-check
+  (`eq_on_active_bonded_member`), and un-rebuildable
+  (`active_baseline_recompose_unavailable` — missing/stale/invalid evidence,
+  OR a runtime-contract rejection of the rebuilt graph, OR an L0 emit-gate
+  refusal such as a crossover below the tweeter's declared protection floor;
+  see the fuller enumeration in the PR-3 bullet above); the durable apply pre-check
   dry-runs the active carrier (SF-2). Tests 2, 4, 5, 7 landed
   (`tests/test_active_speaker_runtime_contract.py`,
   `tests/test_active_speaker_baseline_profile.py`,

@@ -263,9 +263,11 @@ def standard_driver_research(
             # declaring a floor it does not itself leave room under. The twin of
             # this block in tests/test_active_speaker_baseline_profile.py::_research
             # hit exactly that and now declares 2000; do the same here rather
-            # than re-deriving the diagnosis, if you need downward room. Left at
-            # 2500 for now because nothing built on THIS fixture moves the
-            # crossover, so changing it would churn golden output for no gain.
+            # than re-deriving the diagnosis, if you need downward room.
+            # Left at 2500 because nothing currently CONSUMES this floor —
+            # measured, not assumed: changing it to 2000 and running all 51
+            # importers passes 2733 tests with nothing churning — so moving it
+            # today would buy nothing. Change it freely when you need the room.
             "recommended_highpass_hz": 2500,
             "do_not_test_below_hz": 1200,
             "gain_offset_db": tweeter_gain_db,

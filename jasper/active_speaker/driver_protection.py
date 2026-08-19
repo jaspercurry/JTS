@@ -280,10 +280,11 @@ def protection_highpass_floor_satisfied(
     """Whether a high-pass corner honours a declared protection floor.
 
     The single comparison rule every protection-floor consumer shares (the
-    derived-protection clamp, the crossover-preview disclosure, and the
-    path-safety load gate), so the three surfaces cannot drift apart on the
-    boundary case. An absent floor is satisfied; an absent high-pass against a
-    real floor is not.
+    derived-protection clamp in ``_highpass_satisfied``, the crossover-preview
+    disclosure, the path-safety load gate, and the L0 emit gate
+    ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), so the
+    four surfaces cannot drift apart on the boundary case. An absent floor is
+    satisfied; an absent high-pass against a real floor is not.
     """
 
     if floor_hz is None:
@@ -294,9 +295,9 @@ def protection_highpass_floor_satisfied(
 def format_protection_hz(value: float) -> str:
     """Render one protection-floor frequency for an operator-facing message.
 
-    Shared by the crossover-preview disclosure and the path-safety refusal so a
-    non-integer declared floor cannot render as two different numbers on the
-    two surfaces a household compares.
+    Shared by the crossover-preview disclosure, the path-safety refusal, and
+    the L0 emit gate's refusal so a non-integer declared floor cannot render as
+    three different numbers on the surfaces a household compares.
     """
 
     return f"{float(value):g} Hz"
