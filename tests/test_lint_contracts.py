@@ -732,7 +732,17 @@ MAX_LINES_BY_PATH = {
     # `audio_measurement/wired_capture.py`, both capped below), which is
     # where a ratchet-respecting change puts them; this file learned no new
     # fact about ALSA. 8,395 + 176 = 8,571.
-    "jasper/web/correction_crossover_v2.py": 8_571,
+    #
+    # ...and 8,571 -> 8,592 (#2720 gate round 1, S3): +21, the relay
+    # precondition moved INTO the source gate — `_resolve_prepare_capture_
+    # source` now asks correction_setup's `_require_relay_base` (the one
+    # owner of the question and its message) for a relay-resolved session
+    # BEFORE any evidence bundle opens, restoring refuse-before-side-effects
+    # for a relay-less Pi. Ten of the lines are the docstring recording what
+    # the dispatch-order reorder had silently cost (a refused start
+    # abandoned the prior bundle) and why the dispatch's later read is now a
+    # plain re-read. 8,571 + 21 = 8,592.
+    "jasper/web/correction_crossover_v2.py": 8_592,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
@@ -755,8 +765,18 @@ MAX_LINES_BY_PATH = {
     # mint. Its ALSA/scan/encode mechanics live in
     # `jasper/audio_measurement/wired_capture.py` (the measurement kernel,
     # importable by non-web callers, capped below), so this module should
-    # grow only when the wired SESSION choreography grows.
-    "jasper/web/correction_crossover_v2_wired.py": 747,
+    # grow only when the wired SESSION choreography grows. 747 at birth;
+    # #2720 gate round 1 adds +8 (S1's refusal-code precedence argument —
+    # the freshest fact wins over a stale rejection stamp, and the comment
+    # carries why the relay's inverted twin is flagged-not-changed).
+    "jasper/web/correction_crossover_v2_wired.py": 755,
+    # Born 2026-08-18 (#2662 W2b, capped in the #2720 gate fix round) at
+    # exactly this size: the wired capture ENGINE — the measurement-kernel
+    # half (device probe, S32 recorder, gap accounting, zero-run scan, WAV
+    # encode). It should grow only when the CAPTURE MECHANICS grow; session
+    # choreography belongs in the provider above, and analysis belongs in
+    # `program_analysis`.
+    "jasper/audio_measurement/wired_capture.py": 646,
     # ...and 4,103 -> 4,107 (lateral pause), +4 net: the entry-baseline screen
     # said the household is "BACK on the mark", true only after a walk. With
     # the walk paused this capture follows MEASURE, where the microphone never
