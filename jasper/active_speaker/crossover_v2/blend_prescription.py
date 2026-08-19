@@ -362,6 +362,18 @@ _PRESCRIPTION_FIELDS = frozenset({
     "prescriber",
     "filters",
     "rationale",
+    # Written BY the gate, not supplied to it — but accepted on the way back in
+    # so a durable block round-trips through the SAME parser rather than
+    # needing a second, laxer one. A request that supplies them is harmless:
+    # `read_blend_prescription` re-derives the class from the gains it just
+    # validated, takes the band from the packet rather than from the document,
+    # and recomputes the positional finding. Exactly
+    # `alignment_prescription`'s treatment of `checked_at_fc_hz`/`lobe_us`,
+    # and pinned by
+    # `test_a_supplied_gate_written_field_is_ignored_not_trusted`.
+    "prescription_class",
+    "band_hz",
+    "positional_support",
 })
 
 #: Fields ONE filter may carry — the reduced record
@@ -1084,12 +1096,12 @@ def _parse_prescription(
             PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
-    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
-    if unknown:
-        _refuse(
-            PRESCRIPTION_MALFORMED,
-            f"unknown prescription field(s): {', '.join(unknown)}",
-        )
+    # The blocklist runs BEFORE the unknown-field check, and the order is the
+    # point: every prohibited key is also an unknown one, so checking shape
+    # first would report a prescriber reaching for `volume_db` or
+    # `role_attenuations_db` as a typo. Those are different facts — one is a
+    # misspelling, the other is an attempt to reach past "numbers into a fixed
+    # shape" — and only the second is worth a distinct slug.
     prohibited = sorted(set(_find_prohibited(raw)))
     if prohibited:
         _refuse(
@@ -1098,6 +1110,12 @@ def _parse_prescription(
             "numbers into a fixed shape, never configuration, coefficients, or "
             "a per-role value",
             prohibited=prohibited,
+        )
+    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
+    if unknown:
+        _refuse(
+            PRESCRIPTION_MALFORMED,
+            f"unknown prescription field(s): {', '.join(unknown)}",
         )
     if raw.get("kind") != PRESCRIPTION_KIND:
         _refuse(
