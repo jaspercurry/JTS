@@ -151,5 +151,18 @@ armrun (`captures/xover-armrun-2026-08-18/`), and the PR dispositions on
   for the offline search, gated by #2736's floor and the breakup check —
   never a ruling.
 
+- **c-t-c spacing (owner-declared 2026-08-19): 8.5 in = 215.9 mm** between
+  tweeter and woofer centers. Consequences it arms: the shipped-but-inert
+  `MeasurementGeometry.driver_spacing_m` parallax correction (error
+  self-cancels at the mic, carries to the listening position); vertical-null
+  placement predictions and the modeled vertical-synthesis rung (labeled
+  MODELED); the spacing-vs-wavelength prior — c-t-c ≈ 1.0λ at 1.6 kHz,
+  ≈ 1.2λ at ~1.9 kHz (Saunisto's integration optimum, literature),
+  ≈ 1.57λ at 2.5 kHz. Note: the external Fc-move message called 2.5 kHz
+  "optimum" for spacing; 1.57λ sits OUTSIDE Saunisto's 1.1–1.3λ band —
+  the two external sources disagree, which is itself a prior, not a verdict.
+
 `Last drafted: 2026-08-19 (session context; productization into
-docs/crossover-agent/ with runtime wiring is the named next-session PR).`
+docs/crossover-agent/ with runtime wiring is the named next-session PR;
+this file is per-speaker memory (jts3) per the owner's 2026-08-19 ruling,
+NOT universal-pack content).`
