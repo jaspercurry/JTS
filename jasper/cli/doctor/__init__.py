@@ -339,6 +339,7 @@ from .grouping import (
     check_grouping_pair_channels,
     check_grouping_pair_lock,
     check_grouping_snapcast_installed,
+    check_grouping_snapcast_version,
     check_grouping_tts_lane,
     check_grouping_rate_adjust,
 )
@@ -649,6 +650,7 @@ __all__ = [
     "check_grouping_pair_channels",
     "check_grouping_pair_lock",
     "check_grouping_snapcast_installed",
+    "check_grouping_snapcast_version",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
     "_PROBE_REF_PASS_THRESHOLD",

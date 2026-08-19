@@ -78,6 +78,61 @@ def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
     assert "apt install" in r.detail
 
 
+# --- §8.1: snapclient version drift (T-9) — a RECORD compare, never a
+# live re-probe; independent of grouping.enabled (see the check's docstring).
+
+
+def test_check_snapcast_version_registered():
+    assert "check_grouping_snapcast_version" in _registered_check_names()
+
+
+def test_check_snapcast_version_not_installed_skips(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "not installed" in r.detail
+
+
+def test_check_snapcast_version_not_recorded_skips(monkeypatch):
+    """A pre-existing install from before this probe shipped (or a provision
+    whose probe itself failed) has no recorded version — skip, never warn on
+    a fact we do not have."""
+    import jasper.multiroom.provision as provision
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(provision, "read_provision_status", lambda *a, **k: {})
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "no recorded" in r.detail
+
+
+def test_check_snapcast_version_match_is_ok(monkeypatch):
+    import jasper.multiroom.provision as provision
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        provision, "read_provision_status", lambda *a, **k: {"version": "0.31.0"},
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "0.31.0" in r.detail
+
+
+def test_check_snapcast_version_mismatch_warns(monkeypatch):
+    """The T-9 drift case: a recorded version that differs from
+    VALIDATED_SNAPCAST_VERSION warns (visibility), it does not fail — no
+    apt pin exists to enforce it."""
+    import jasper.multiroom.provision as provision
+
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        provision, "read_provision_status", lambda *a, **k: {"version": "0.32.1"},
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "warn"
+    assert "0.32.1" in r.detail and "0.31.0" in r.detail
+
+
 def test_check_household_credential_solo_is_ok(monkeypatch):
     # Solo short-circuits before reading the secret file (a lone speaker needs
     # no household credential).

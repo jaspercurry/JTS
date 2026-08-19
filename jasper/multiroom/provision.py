@@ -33,12 +33,23 @@ common Pi apt failures); if it still fails — genuinely offline, a broken mirro
 continues, the snap units simply fail to start, and the box stays solo-safe (the
 same fail-closed posture the #965 active-leader gate guarantees). Offline, apt
 fails fast (no multi-minute boot hang); the next reconcile / boot retries.
+
+**Version visibility, not a version pin.** The apt install above is
+deliberately UNPINNED — a pin would turn a routine Trixie point release into a
+failed install, at a cost (blocking security updates, and grouping itself)
+disproportionate to a mismatch that is not a safety hazard. Instead,
+:func:`ensure_snapcast_installed` probes ``snapclient --version`` at the
+moment it actually installs the package and records it in this same status
+file, so ``jasper.cli.doctor.grouping.check_grouping_snapcast_version`` can
+warn on drift from :data:`VALIDATED_SNAPCAST_VERSION` without ever
+re-probing live.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,8 +61,18 @@ logger = logging.getLogger(__name__)
 
 # The two binaries grouping needs: snapserver (the leader's timing master) and
 # snapclient (every member's player). Both are in Trixie's apt repos
-# (`snapserver` / `snapclient`, v0.31.0).
+# (`snapserver` / `snapclient`).
 SNAPCAST_BINARIES = ("snapserver", "snapclient")
+
+# The snapclient version this design was validated against (Trixie's apt repo
+# at authoring time). Deliberately NOT pinned into the apt install below — a
+# pin would turn a routine Trixie point release into a failed install (the
+# household loses grouping, and security updates get blocked for something
+# that is not a safety hazard). Instead, `ensure_snapcast_installed` probes
+# and records the version it actually got, and
+# `jasper.cli.doctor.grouping.check_grouping_snapcast_version` warns on drift
+# from this constant — visibility, not a gate.
+VALIDATED_SNAPCAST_VERSION = "0.31.0"
 
 # Live progress status for the /rooms wizard. /run (transient) — the durable
 # truth is the binaries themselves (the doctor reads those directly); this file
@@ -78,6 +99,11 @@ _APT_UPDATE_TIMEOUT_SEC = 120  # best-effort index refresh; result IGNORED
 _APT_LOCK_TIMEOUT_SEC = 120    # apt waits this long for the dpkg lock
 _APT_TIMEOUT_SEC = 300         # install subprocess ceiling (covers the lock wait)
 
+# The version probe is a visibility check, not a gate — bounded well short of
+# the apt timeouts above so a hung `snapclient --version` can never meaningfully
+# delay a reconcile pass.
+_SNAPCLIENT_VERSION_PROBE_TIMEOUT_SEC = 5
+
 
 def snapcast_present(*, which=shutil.which) -> bool:
     """True when BOTH snapcast binaries resolve on PATH. ``which`` is injectable
@@ -87,8 +113,10 @@ def snapcast_present(*, which=shutil.which) -> bool:
 
 
 def read_provision_status(path: str = PROVISION_STATUS_FILE) -> dict[str, str]:
-    """Fresh-read the provision progress for ``/state`` / the wizard, or ``{}``
-    when absent/unreadable. Total + fail-soft; never raises."""
+    """Fresh-read the provision progress for ``/state`` / the wizard / the
+    doctor's version-drift check, or ``{}`` when absent/unreadable. Total +
+    fail-soft; never raises. ``version`` is ``""`` when nothing has been
+    probed yet (see :func:`ensure_snapcast_installed`)."""
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -98,16 +126,22 @@ def read_provision_status(path: str = PROVISION_STATUS_FILE) -> dict[str, str]:
     return {
         "state": str(raw.get("state") or ""),
         "detail": str(raw.get("detail") or ""),
+        "version": str(raw.get("version") or ""),
     }
 
 
-def _write_status(path: str, state: str, detail: str) -> None:
-    """Atomically record the install progress. Fail-soft — a lost status write
-    must not affect the install or the reconcile (the binaries are the truth)."""
+def _write_status(path: str, state: str, detail: str, *, version: str = "") -> None:
+    """Atomically record the install progress, plus the last probed
+    snapclient version when one is known. Fail-soft — a lost status write
+    must not affect the install or the reconcile (the binaries are the
+    truth)."""
     try:
         atomic_io.atomic_write_text(
             path,
-            json.dumps({"state": state, "detail": detail}, sort_keys=True) + "\n",
+            json.dumps(
+                {"state": state, "detail": detail, "version": version},
+                sort_keys=True,
+            ) + "\n",
             mode=0o644,
         )
     except OSError as e:
@@ -175,6 +209,48 @@ def _apt_update(runner, *, timeout) -> None:
         )
 
 
+def _probe_snapclient_version(
+    runner, *, timeout: int = _SNAPCLIENT_VERSION_PROBE_TIMEOUT_SEC,
+) -> str:
+    """Bounded, fail-soft ``snapclient --version`` probe — a visibility check,
+    never a precondition. Returns the parsed ``MAJOR.MINOR.PATCH`` string, or
+    ``""`` on ANY failure: the binary vanishing between install and probe, a
+    timeout, a non-zero exit, or output with no version-shaped token. NEVER
+    raises — a probe failure must not fail the install it only observes, and
+    an empty return degrades the doctor's drift check to its skip branch
+    rather than manufacturing a false warning."""
+    try:
+        result = runner(
+            ["snapclient", "--version"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        log_event(
+            logger,
+            "multiroom.provision.snapclient_version_probe_failed",
+            error=str(e),
+            level=logging.WARNING,
+        )
+        return ""
+    if result.returncode != 0:
+        log_event(
+            logger,
+            "multiroom.provision.snapclient_version_probe_failed",
+            rc=result.returncode,
+            level=logging.WARNING,
+        )
+        return ""
+    match = re.search(r"\d+\.\d+\.\d+", (result.stdout or "") + (result.stderr or ""))
+    if match is None:
+        log_event(
+            logger,
+            "multiroom.provision.snapclient_version_probe_unparseable",
+            level=logging.WARNING,
+        )
+        return ""
+    return match.group(0)
+
+
 def ensure_snapcast_installed(
     *,
     runner=subprocess.run,
@@ -183,22 +259,38 @@ def ensure_snapcast_installed(
     apt_timeout: int = _APT_TIMEOUT_SEC,
     apt_update_timeout: int = _APT_UPDATE_TIMEOUT_SEC,
     apt_lock_timeout: int = _APT_LOCK_TIMEOUT_SEC,
+    version_probe_timeout: int = _SNAPCLIENT_VERSION_PROBE_TIMEOUT_SEC,
 ) -> dict[str, str]:
     """Install the snapcast binaries if missing — the grouping opt-in.
 
-    TOTAL + FAIL-SOFT: never raises. Returns ``{"state": ..., "detail": ...}``
-    where ``state`` is one of ``present`` (already installed, no-op), ``installed``
-    (just installed OK), or ``failed`` (apt error / missing after install — the
-    detail carries the reason). Idempotent: a present install short-circuits to
-    a ``snapcast_present`` check with no apt call. Writes the live progress to
-    ``status_path`` for the ``/rooms`` wizard.
+    TOTAL + FAIL-SOFT: never raises. Returns ``{"state": ..., "detail": ...,
+    "version": ...}`` where ``state`` is one of ``present`` (already installed,
+    no-op), ``installed`` (just installed OK), or ``failed`` (apt error /
+    missing after install — the detail carries the reason). ``version`` is the
+    snapclient version last probed at the moment it was ACTUALLY installed
+    (``""`` when nothing has been probed successfully yet — a pre-existing
+    install from before this probe shipped, or a probe that itself failed).
+    Idempotent: a present install short-circuits to a ``snapcast_present``
+    check with no apt call and no subprocess at all — the version is only
+    ever probed in the ``installed`` branch below, so a present pass instead
+    carries forward whatever a prior install already recorded. Writes the
+    live progress (plus the version) to ``status_path`` for the ``/rooms``
+    wizard and ``jasper.cli.doctor.grouping.check_grouping_snapcast_version``.
 
-    ``runner`` / ``which`` / ``status_path`` / ``apt_timeout`` are injectable for
-    tests; production drives real ``apt-get`` + ``shutil.which``.
+    ``runner`` / ``which`` / ``status_path`` / ``apt_timeout`` /
+    ``version_probe_timeout`` are injectable for tests; production drives
+    real ``apt-get`` + ``shutil.which``.
     """
     if snapcast_present(which=which):
-        _write_status(status_path, "present", "snapserver + snapclient already installed")
-        return {"state": "present", "detail": ""}
+        # A pure re-read of the status file — no subprocess — so this stays
+        # the true no-op the docstring promises (called on every reconcile
+        # pass while grouping is active).
+        version = read_provision_status(status_path).get("version", "")
+        _write_status(
+            status_path, "present", "snapserver + snapclient already installed",
+            version=version,
+        )
+        return {"state": "present", "detail": "", "version": version}
 
     _write_status(status_path, "installing", "installing snapserver + snapclient (~1-2 min)")
     log_event(logger, "multiroom.provision.snapcast_install_start")
@@ -226,7 +318,7 @@ def ensure_snapcast_installed(
             error=str(e),
             level=logging.ERROR,
         )
-        return {"state": "failed", "detail": detail}
+        return {"state": "failed", "detail": detail, "version": ""}
 
     if result.returncode != 0:
         detail = (
@@ -241,7 +333,7 @@ def ensure_snapcast_installed(
             detail=detail,
             level=logging.ERROR,
         )
-        return {"state": "failed", "detail": detail}
+        return {"state": "failed", "detail": detail, "version": ""}
 
     # apt-get returned 0 — but verify the binaries actually resolve (a partial
     # index / held package can exit 0 without providing the binary).
@@ -254,9 +346,17 @@ def ensure_snapcast_installed(
             detail=detail,
             level=logging.ERROR,
         )
-        return {"state": "failed", "detail": detail}
+        return {"state": "failed", "detail": detail, "version": ""}
 
     _neutralise_distro_units(runner)
-    _write_status(status_path, "installed", "snapserver + snapclient installed")
+    # §8.1: probe + record the ACTUAL version we just got, rather than pinning
+    # the apt package to one — a pin would turn a routine Trixie point release
+    # into a failed install. The doctor's drift check compares this recording
+    # against VALIDATED_SNAPCAST_VERSION.
+    version = _probe_snapclient_version(runner, timeout=version_probe_timeout)
+    _write_status(
+        status_path, "installed", "snapserver + snapclient installed",
+        version=version,
+    )
     log_event(logger, "multiroom.provision.snapcast_install_ok")
-    return {"state": "installed", "detail": ""}
+    return {"state": "installed", "detail": "", "version": version}

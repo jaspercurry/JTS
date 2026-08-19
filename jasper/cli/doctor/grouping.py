@@ -233,6 +233,56 @@ def check_grouping_snapcast_installed() -> CheckResult:
     return CheckResult(label, "ok", "snapserver + snapclient present")
 
 
+@doctor_check(order=71.6, group="grouping")
+def check_grouping_snapcast_version() -> CheckResult:
+    """Warn when the snapclient actually provisioned differs from the version
+    this design validated against (the loopback-retirement grouping-ring
+    campaign's snapclient-hardening decision). The apt package is
+    deliberately UNPINNED (a pin would turn a routine Trixie point release
+    into a failed install — the household loses grouping, and it blocks
+    security updates for something that is not a safety hazard), so the
+    mitigation is visibility, not a gate:
+    ``jasper.multiroom.provision.ensure_snapcast_installed`` probes
+    ``snapclient --version`` once, at the moment it actually installs the
+    package, and records it.
+
+    This check is a RECORD COMPARE against that recording — it never
+    re-probes live, the same reason ``ring_wire_caps_ready`` (fanin's shm_ring
+    preflight) compares a recorded install-time fact rather than re-opening a
+    device: the repo prefers a record already on file to a fresh runtime
+    probe wherever one exists.
+
+    Skips (``ok``) when snapclient is not installed, or when nothing has
+    been recorded yet (a pre-existing install from before this check
+    shipped, or a provision whose probe itself failed) — a fact we do not
+    have is not evidence of a problem."""
+    from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION, read_provision_status
+
+    label = "grouping: snapcast version"
+    if shutil.which("snapclient") is None:
+        return CheckResult(label, "ok", "snapclient not installed (n/a)")
+
+    recorded = read_provision_status().get("version", "")
+    if not recorded:
+        return CheckResult(
+            label, "ok",
+            "no recorded snapclient version yet (opt in via /rooms to "
+            "provision and record one)",
+        )
+    if recorded != VALIDATED_SNAPCAST_VERSION:
+        return CheckResult(
+            label, "warn",
+            f"provisioned snapclient {recorded} differs from the "
+            f"{VALIDATED_SNAPCAST_VERSION} this design validated against — "
+            "not pinned by design (a pin would block security updates and "
+            "fail installs on routine Trixie point releases); this is "
+            "visibility only, not a fault",
+        )
+    return CheckResult(
+        label, "ok", f"provisioned snapclient matches validated {recorded}",
+    )
+
+
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
     """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond LEADER's local
