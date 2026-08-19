@@ -40,6 +40,8 @@
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
+| See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
+| Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -1775,6 +1777,66 @@ prescriber is given and the bar it is judged by cannot describe different
 shapes. Hardware-free coverage, including a hostile-input battery and a golden
 against a real banked round when `captures/` is present, lives in
 [`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py).
+
+---
+
+## Angle-walk door
+
+`jasper-angle-capture`
+([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py)) is how an
+operator states a capture walk at stated angles —
+`{per-driver | summed} x {angles} x {arm | human-guided}` — and sees exactly
+what it resolves to before anything plays. It is the door onto the #2732 seam
+([`angle_capture.py`](../jasper/active_speaker/angle_capture.py)), which had no
+way for anybody to state a request.
+
+```sh
+# the read side: resolve a walk and print it. Writes nothing, plays nothing.
+jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover human
+
+# the door: same resolution, and the request is left for the next session
+jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
+
+# the undo
+jasper-angle-capture withdraw
+```
+
+`plan` is the **dry run of** `stage` — the same constructors, the same
+refusals, the same resolved walk — exactly as `propose` is the dry run of the
+prescriber's `stage` above. Its output names, per stop, the capture index, the
+signed bearing, the pose in the centimetres every shipped consumer reads, the
+program that stop plays, the advance policy the mover implies, and (for an arm)
+the `position_deg` the position gate will wait for.
+
+**Angles are stated in whole degrees, negative LEFT and positive RIGHT facing
+the speaker, and nothing is coerced.** `7.5`, `0.4` and `+7 deg` are all
+refused, in the seam's own words: `int(0.4)` is `0`, so a truncating parser
+would silently turn a just-off-axis request into an **on-axis** capture. There
+is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
+the regime vocabulary and the mover vocabulary are all
+[`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
+
+`stage` refuses while a measurement session already holds the speaker, read off
+the durable session-volume state — the one cross-process fact, since the
+correction web's own relay slot and measurement interlock are module-globals a
+CLI cannot see. A *stale* active state is a crashed session, not a live one, and
+does not block: the flow force-drains it at the next open.
+
+**Exit codes are the contract**: `0` accepted, `2` refused (a bad angle, an
+unknown regime or mover, or a session already running), `3` an accepted request
+could not be banked. `2` means fix the request; `3` means fix the speaker's
+filesystem.
+
+**What it does not do**: it runs no capture and opens no session. `stage` writes
+one document to `/var/lib/jasper/active_speaker_angle_capture_request.json`,
+single-use and last-wins, logged as `event=angle_capture.request_staged`. **No
+session takes it yet** — what remains, and the bar-gated ruling it waits on, is
+recorded in
+[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+under "Stage P2". Owner:
+[`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py).
+Hardware-free coverage, including a mutation battery on the dispatch, lives in
+[`tests/test_angle_capture_trigger.py`](../tests/test_angle_capture_trigger.py).
 
 ---
 

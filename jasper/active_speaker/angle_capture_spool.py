@@ -59,7 +59,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Mapping, NoReturn
+from typing import Mapping, NoReturn
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event

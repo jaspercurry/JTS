@@ -1101,10 +1101,30 @@ cleared re-introduction bar, while capturing per-driver responses at angles as
 statistic for the bar to govern. Since 2026-08-19 the second route has a seam —
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py) resolves
 `{per-driver | summed} x {angles} x {arm | human-guided}` onto the shipped
-program, pose and gate machinery — but **nothing calls it in a session yet**, so
-the bullet below stays literally true: no per-driver data is captured off the
-mark today. What remains for this route is wiring, not a flag flip; the search
-and its guards are unaffected either way and are neither free nor already done.
+program, pose and gate machinery — and, since the same day, a **door**: an
+operator states a walk with `jasper-angle-capture`
+([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py)), which resolves
+it through that seam and banks it in a single-use mailbox
+([`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py))
+for a session to take. **No session takes it yet**, so the bullet below stays
+literally true: no per-driver data is captured off the mark today.
+
+**What remains is one ruling and its wiring, and the ruling is the load-bearing
+half.** A per-driver stop at a pose is a real, shipped capture path — the
+conductor's `_consume_lateral_pose` screens it, builds its per-driver curves and
+retains it — but that path is reached only through `PHASE_LATERAL`, and the
+walk's **last** index runs `_close_lateral_walk`, where R17's paused selector
+adjudicates. So a session wired naively onto the shipped per-driver-at-a-pose
+machinery would reach the statistic
+[#2711](https://github.com/jaspercurry/JTS/issues/2711) bars, which is precisely
+the bar-dodge #2732 built the seam to avoid. The two ways out are (a) suppress
+the close for a walk that is not a stage-1 lateral walk, or (b) give the walk
+its own group phase; both edit `crossover_v2_flow.py` and
+`web/correction_crossover_v2.py`, which sit **exactly** at their
+`MAX_LINES_BY_PATH` caps. That is a decision about a bar-gated capability, not
+an implementation detail, and it is why the door landed without the take. The
+search and its guards are unaffected either way and are neither free nor already
+done.
 
 **The goal, stated as a stopping condition.** Drive the non-EQ parameters —
 polarity, per-branch delay, Fc, slopes/order, and branch gains — to the point
