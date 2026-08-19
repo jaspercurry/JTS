@@ -1020,4 +1020,6 @@ reconstructed base, tense+subject sweeps, docs-impact (no doc update owed),
 linkcheck clean. Disposition replicates onto the PR when PRs exist (venue
 ruling pending). Branch rebased onto current origin/main at this seal —
 wave-boundary currency, the campaign-branch adaptation of the design's
-per-push rebase rule.
+per-push rebase rule. Post-rebase object map (the reviewed pre-rebase SHAs
+above are historical): transport=77fe01f, pickup=b208184, baseline=ef2f657,
+PR-2=be738fd, errata=23e35c0, fix=8fbe723; base=412fdc6.
