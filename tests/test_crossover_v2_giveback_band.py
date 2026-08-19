@@ -347,6 +347,72 @@ def test_the_giveback_carries_no_cross_branch_coupling():
     )
 
 
+def test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct():
+    """The direction claim, made reproducible instead of asserted.
+
+    It is tempting to read this change as "the tweeter gets quieter" — it did on
+    the jts3 horn, and a safety reviewer who generalised from that one case
+    would be wrong in the dangerous direction. What the fix restores is
+    EQUALITY at the handoff, and the committed trim moves by whatever the old
+    anchor's realized error was, in whichever direction it sat.
+
+    Here the tweeter's correction lies entirely INSIDE the graded band, so the
+    level-band give-back sees all of it while the core band — three times wider
+    — averages it away. The level-band rule therefore gives back MORE, and the
+    committed tweeter lands **hotter** than the old rule left it, while still
+    being the level-correct pair and still under the non-positive clamp.
+
+    A ``+9.21 dB`` worst case is quoted in the design doc and in
+    ``intervention.py``'s invariant. That number comes from the hearing-safety
+    lens's own adversarial corpus, which is not banked in this repo, so it is
+    cited as THEIR measurement and is not reproduced here. What this test
+    contributes is the same claim on ground anyone can re-run: the direction is
+    real, it is large, and it is safe.
+    """
+    freqs = _grid()
+    W = _flat(freqs, 0.0)
+    T = _flat(freqs, TWEETER_EXCESS_DB)
+    # A deep cut confined to the graded span. `_shelf` cuts ABOVE its corner, so
+    # two of them subtract to leave a band-limited notch over [Fc, 2Fc].
+    inside = np.ones(freqs.size)
+    graded = (freqs >= TWEETER_SPAN_HZ[0]) & (freqs <= TWEETER_SPAN_HZ[1])
+    inside[graded] = 10.0 ** (-9.0 / 20.0)
+    t_lin = T * inside.astype(complex)
+
+    raw = _raw_trim_db(freqs, W, T)
+    level_band = _level_band_giveback_db(freqs, W, T, W, t_lin)
+    core_band = {
+        WOOFER: _core_band_giveback_db(freqs, W, W, WOOFER_CORE_BAND_HZ),
+        TWEETER: _core_band_giveback_db(freqs, T, t_lin, TWEETER_CORE_BAND_HZ),
+    }
+
+    # The graded band sees the whole cut; the wider core band dilutes it.
+    assert level_band[TWEETER] > core_band[TWEETER] + 3.0
+
+    committed_new, _s1 = anchor_trims(
+        roles=(WOOFER, TWEETER), anchor_base_db=raw, giveback_db=level_band,
+    )
+    committed_old, _s2 = anchor_trims(
+        roles=(WOOFER, TWEETER), anchor_base_db=raw, giveback_db=core_band,
+    )
+
+    hotter_by_db = committed_new[TWEETER] - committed_old[TWEETER]
+    assert hotter_by_db > 3.0, (
+        "this fixture is supposed to demonstrate the HOTTER direction; if it "
+        "stops doing so the direction claim in the invariant loses its example"
+    )
+    # Still clamped, and still the level-correct pair — hotter is not unsafe.
+    assert all(v <= 0.0 for v in committed_new.values())
+    assert _realized_error_db(freqs, W, t_lin, committed_new) == pytest.approx(
+        0.0, abs=1e-9
+    )
+    # …and the OLD rule, which committed the quieter trim, is the one that
+    # mis-levels here. Quieter was never the safe direction; correct was.
+    assert abs(_realized_error_db(freqs, W, t_lin, committed_old)) == pytest.approx(
+        hotter_by_db, abs=1e-6
+    )
+
+
 # --------------------------------------------------------------------------- #
 # the invariant's PRECONDITION — a polished base passes straight through
 # --------------------------------------------------------------------------- #

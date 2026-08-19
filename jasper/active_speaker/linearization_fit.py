@@ -3077,9 +3077,15 @@ def fit_driver_linearization(
     # budget that would have corrected (and so given back) the CORE band went
     # out of band instead. (Under this bound the floored fixture reads 2.1112,
     # i.e. back with its floor-free twin, which is the invariance the test
-    # asserts.) That number is the SSOT the flow anchors each branch's
-    # linearized trim on, so the whole 2.15 dB lands in an emitted trim and in
-    # the ripple scan that grades it.
+    # asserts.) That number WAS the SSOT the flow anchored each branch's
+    # linearized trim on when this was written, which is what made the whole
+    # 2.15 dB land in an emitted trim. Since the 2026-08-19 band fix the anchor
+    # measures its own give-back over ``branch_level_bands_hz`` and this number
+    # is the audible-band disclosure beside it, so the 2.15 dB no longer reaches
+    # a trim by this route. **The defect this paragraph records is unchanged
+    # either way**: a solve fed demand it cannot realize spends its slots out of
+    # band, and every band-limited reading of the result goes with them — which
+    # is the point, and it does not depend on who consumes the reading.
     #
     # **The bound is on what the solver is FED, never on how its output is
     # judged.** Every honesty guard downstream is untouched: the cut-only and
@@ -3359,7 +3365,9 @@ def fit_driver_linearization(
         raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 
     # The give-back this driver's correction actually removed from its own
-    # reference (core) band — the SSOT the flow anchors its linearized trim on.
+    # reference (core) band — the SSOT for the AUDIBLE-BAND question, published
+    # as ``core_band_giveback_db``. It does not anchor a trim; the anchor
+    # measures its own give-back over ``branch_level_bands_hz``.
     # The MEASURED before-vs-after core-band level delta: the power-domain band
     # average of the curve BEFORE correction minus the same average AFTER
     # (``working_db`` is ``smoothed_db`` plus the cascade). Averaging the

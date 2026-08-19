@@ -174,6 +174,77 @@ def _pure(sections: dict[str, Any]) -> iv.LinearizationPlan:
     return iv.plan_linearization(_planner_request(sections))
 
 
+def _giveback_record(plan: iv.LinearizationPlan) -> dict[str, Any]:
+    """The anchor's own journal line, as fields."""
+    for record in plan.journal:
+        if record.event == "correction.crossover_v2_linearization_giveback":
+            return dict(record.fields)
+    raise AssertionError("the planner emitted no give-back record")
+
+
+@pytest.mark.parametrize("injected_delta_db", [0.75, -1.25])
+def test_the_journal_reports_the_polish_delta_it_measured(
+    monkeypatch, injected_delta_db,
+):
+    """``polish_delta_db`` is INSTRUMENTATION, so it needs a value assertion.
+
+    The invariant's precondition — that the anchor's base came from the same
+    band-average solve the give-back is calibrated to — is not enforced in code.
+    It is *published*, and both ``intervention.py``'s invariant and the design
+    doc promise it is "published on every round so the precondition is observed
+    rather than assumed". A field that silently reported ``0.0`` would restore
+    exactly the invisibility this whole change removes, and would do it while
+    every existing test stayed green.
+
+    **Presence assertions cannot catch that**, and on the ordinary fixture
+    neither can a literal: the honest value there IS ``0.0`` (no polish), so
+    pinning the literal would pass against a hard-coded zero too. This drives a
+    base that DIFFERS from the band-average solve by a known amount and asserts
+    the journal reports that amount — the mutation that forces the field to
+    ``0.0`` fails here and nowhere else.
+
+    Asserted as the RELATION rather than a magic number, because the
+    band-average solve is the fixture's to produce, not this test's to restate:
+    ``polish_delta_db == raw_trim_db − band_average_trim_db``, per role.
+
+    **This fixture's own base is already 2.688 dB off its band-average solve**,
+    which is worth knowing rather than normalising away: it means the banked
+    2026-08-10 incident violated the precondition, and 2.688 dB is exactly the
+    residual realized level error that incident's anchor still carries in
+    ``test_crossover_v2_incident_replay``. The δ→δ pass-through, on real banked
+    data rather than a synthetic pair. So the assertion below is on the SHIFT
+    between an unpolished and a polished run, not on an absolute value — a
+    hard-coded ``0.0`` moves the shift to zero and fails, while the fixture's
+    pre-existing offset is left as the fact it is.
+    """
+    request = _planner_request(_sections_at(SELECTED_FC_HZ))
+    tweeter = request.tweeter.role
+
+    baseline = _giveback_record(iv.plan_linearization(request))
+    polished_trims = dict(request.raw_trim_db)
+    polished_trims[tweeter] = polished_trims[tweeter] + injected_delta_db
+    polished = _giveback_record(
+        iv.plan_linearization(replace(request, raw_trim_db=polished_trims))
+    )
+
+    # The field tracks the base it was handed, per role, in BOTH runs.
+    for fields in (baseline, polished):
+        for role in (request.woofer.role, tweeter):
+            assert fields["polish_delta_db"][role] == pytest.approx(
+                fields["raw_trim_db"][role] - fields["band_average_trim_db"][role],
+                abs=1e-3,
+            ), f"{role}: polish delta does not match raw − band-average"
+
+    # Moving the base by δ moves the reported delta by exactly δ — the
+    # assertion a constant-valued field cannot survive.
+    shift = polished["polish_delta_db"][tweeter] - baseline["polish_delta_db"][tweeter]
+    assert shift == pytest.approx(injected_delta_db, abs=1e-3)
+    # The untouched role does not move with it.
+    assert polished["polish_delta_db"][request.woofer.role] == pytest.approx(
+        baseline["polish_delta_db"][request.woofer.role], abs=1e-9
+    )
+
+
 # --------------------------------------------------------------------------- #
 # class (b) — the trim policy, isolated
 # --------------------------------------------------------------------------- #

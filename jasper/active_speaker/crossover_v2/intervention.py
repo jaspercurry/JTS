@@ -1664,12 +1664,21 @@ def plan_linearization(
     # safety direction.** The committed trim moves by exactly the realized level
     # error the old anchor was carrying, in whichever direction that error sat.
     # A branch whose correction lives INSIDE the graded band legitimately ends
-    # up HOTTER than the old rule left it — measured worst case on the corpus,
-    # +9.21 dB — still under the non-positive clamps below, and still level-
-    # correct. What is restored is equality between the two branches at the
-    # handoff, not a monotone reduction in level. Anyone reasoning about
-    # hearing safety here should reason about the clamps and the realized gate,
-    # which are unchanged, and not about a direction this change does not have.
+    # up HOTTER than the old rule left it — still under the non-positive clamps
+    # below, and still level-correct. What is restored is equality between the
+    # two branches at the handoff, not a monotone reduction in level. Anyone
+    # reasoning about hearing safety here should reason about the clamps and the
+    # realized gate, which are unchanged, and not about a direction this change
+    # does not have.
+    #
+    # Reproducible: ``+8.13 dB`` hotter on a correction confined to the graded
+    # span (level-band give-back 9.000 dB against the core band's 0.870 dB),
+    # pinned by ``test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct``
+    # — which also asserts that the QUIETER old pair is the one that mis-levels
+    # there. A larger ``+9.21 dB`` worst case was reported by the hearing-safety
+    # review's own adversarial corpus; that corpus is not banked in this repo,
+    # so it is cited as their measurement rather than reproduced here. The
+    # direction claim rests on the algebra above, not on either figure.
     #
     # Two of the invariant's three legs were already enforced and the third was
     # not. ``linearization_fit``'s give-back carries a LOCKSTEP REQUIREMENT that

@@ -8800,7 +8800,10 @@ def test_anchored_trim_is_raw_plus_giveback_and_normalized_non_positive():
     part.** It computed its expectation from ``correction_giveback_db`` — the
     core-band number that no longer places the trim — and then compared the
     tweeter against it under ``LINEARIZATION_TRIM_SANITY_MARGIN_DB``, a **6.0 dB**
-    tolerance. The two give-backs differ by 0.918 dB on this fixture, so the
+    tolerance. The two RULES' committed anchors differ by 1.835 dB on this
+    fixture (−2.691 core-band against −0.856 level-band; the 0.918 dB figure is
+    the give-back *differential*, which is a different quantity and not what
+    this assertion compared). Either way both sit far inside 6.0, so the
     tolerance swallowed the whole difference and the test passed on BOTH sides
     of the band change: mutating the production anchor did not move it. Its
     woofer leg was degenerate too (raw 0.0, shift equal to the woofer's own
@@ -12161,6 +12164,17 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
         in caplog.text
     )
     assert 'anchored_trim_db="{\'woofer\': 0.0, \'tweeter\': -0.856}"' in caplog.text
+    # The precondition's instrumentation, on the ORDINARY path: this fixture's
+    # base IS the band-average solve, so the polish delta is zero and the
+    # invariant holds exactly. Pinned here for the zero case only — a literal
+    # zero cannot distinguish "measured zero" from "hard-coded zero", so the
+    # value assertion that kills that mutation lives where a NON-zero delta can
+    # be driven (``test_the_journal_reports_the_polish_delta_it_measured`` in
+    # test_crossover_v2_intervention_dual_run.py, mutation-verified).
+    assert (
+        'band_average_trim_db="{\'woofer\': 0.0, \'tweeter\': -1.773}"' in caplog.text
+    )
+    assert 'polish_delta_db="{\'woofer\': 0.0, \'tweeter\': 0.0}"' in caplog.text
 
     # Leg 3 — the prediction gate ran and passed on its own terms.
     assert "event=correction.crossover_v2_prediction_gate" in caplog.text

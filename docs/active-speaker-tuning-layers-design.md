@@ -549,10 +549,18 @@ runs AFTER the flattening peaking loop:
   as "the tweeter gets quieter"; it does not. The committed trim moves by exactly
   the realized level error the old anchor was carrying — in whichever direction
   that error sat. A branch whose correction lives inside the graded band can
-  legitimately end up **hotter** than before (measured worst case on the corpus:
-  +9.21 dB), still under the non-positive clamps and still level-correct. The
-  property being restored is equality between the two branches at the handoff,
-  not a monotone reduction in level.
+  legitimately end up **hotter** than before, still under the non-positive clamps
+  and still level-correct. The property being restored is equality between the two
+  branches at the handoff, not a monotone reduction in level.
+
+  Reproducible: **+8.13 dB** hotter on a correction confined to the graded span
+  (level-band give-back 9.000 dB against the core band's 0.870 dB), pinned by
+  `test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct`, which also
+  asserts that the *quieter* old pair is the one that mis-levels there. A larger
+  **+9.21 dB** worst case was reported by the hearing-safety review's adversarial
+  corpus; that corpus is not banked in this repo, so it is cited as their
+  measurement rather than reproduced. The direction claim rests on the algebra,
+  not on either figure.
 
   **What this replaced (2026-08-19).** The anchor used to take
   `LinearizationFit.correction_giveback_db`, the same measured delta over each
