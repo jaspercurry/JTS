@@ -1179,8 +1179,8 @@ def check_grouping_aloop_remnant() -> CheckResult:
     # There is deliberately NO "content pair missing from the registry"
     # branch: the pair is derived from _OUTPUTD_CONTENT_ALOOP_PCM and inserted
     # by the same function, so it is in the set by construction. The earlier
-    # hand-maintained table could drift from that constant; a derived set
-    # cannot, so the branch that caught that drift is now unreachable code.
+    # hand-maintained table could drift from its source constant; a derived
+    # set cannot, so the branch that caught that drift is now unreachable code.
     # `test_grouping_pair_is_always_registered` pins the invariant instead.
 
     offenders: list[str] = []
