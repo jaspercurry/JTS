@@ -1620,3 +1620,112 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     )
 
     assert "commission_mute" not in result.yaml
+
+
+def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path):
+    """An /eq/ save on a speaker already running a below-floor crossover.
+
+    The gate that refuses that graph
+    (``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``) is on
+    the EMIT path, so a box commissioned before it existed keeps playing its
+    graph and meets the refusal the next time a household saves preference EQ.
+    That is not a hypothetical population: it is the exact fleet risk the gate's
+    own PR flagged, and the moment it happens the household needs the sentence
+    naming the crossover — not a 502 carrying a raw exception string.
+
+    ``ActiveSpeakerConfigError`` is a ``ValueError``, and nothing in
+    ``jasper/sound/`` or ``sound_setup.py`` knew that name, so before the
+    re-raise it escaped :class:`CarrierCannotHostEq` entirely and fell to the
+    handler's generic ``except Exception`` branch. This is end-to-end on
+    purpose — a REAL applied record through the REAL recomposer into the REAL
+    emit gate — because mocking the recomposer would pin the re-raise while
+    proving nothing about whether the gate actually reaches it.
+
+    The synthetic in-service box is built the only honest way: commission a
+    legal speaker with the real builder, then push the RECORDED crossover below
+    the RECORDED floor, which is what a box commissioned before the gate looks
+    like on disk today.
+    """
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+    from jasper.sound.graph_carrier import _recompose_active_baseline_with_eq
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    snapshot = applied["recomposition_snapshot"]
+    preset = snapshot["preset"]
+    floor_hz = preset["drivers"]["tweeter"]["protection_highpass_floor_hz"]
+    assert floor_hz == 2000.0, "fixture's declared tweeter floor moved"
+    # Commissioned below its own declared floor -- what the pre-gate fleet can
+    # be carrying right now.
+    preset["crossover_regions"][0]["fc_hz"] = 1500.0
+
+    with mock.patch(
+        "jasper.output_topology.load_output_topology", return_value=topology,
+    ), mock.patch(
+        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
+        return_value=applied,
+    ), mock.patch(
+        "jasper.sound.profile.build_sound_filters", return_value=(),
+    ):
+        with pytest.raises(CarrierCannotHostEq) as err:
+            _recompose_active_baseline_with_eq(
+                SoundProfile(enabled=False), out_path=None,
+            )
+
+    # Typed, with the stable reason_code the /eq/ and /sound/ handlers branch
+    # on -- NOT a bare ValueError falling through to a 502.
+    assert err.value.reason_code == "active_baseline_recompose_unavailable"
+    assert not isinstance(err.value, ActiveSpeakerConfigError)
+    # The gate's honest sentence survives the conversion: both numbers and the
+    # remedy reach the household rather than being replaced by a generic one.
+    message = str(err.value)
+    assert "1500 Hz" in message and "2000 Hz" in message
+    assert "required_protection_filters" in message
+    assert "crossover and driver protection are unchanged" in message
+
+
+def test_bass_extension_recompose_also_refuses_below_floor_by_type(tmp_path):
+    """The sibling seam's conversion, pinned while it is still latent.
+
+    ``recompose_active_baseline_for_bass_extension`` has no production caller
+    yet, so this refusal cannot reach a household today. It is pinned anyway
+    because the seam converts EVERY other failure to :class:`CarrierCannotHostEq`
+    and an unconverted ``ActiveSpeakerConfigError`` here would be the /eq/ defect
+    above repeated verbatim on the day bass extension is wired — and a
+    half-guarded pair reads as a guarded one to the next reader.
+
+    The reason code is this seam's own (``bass_extension_recompose_unavailable``,
+    what its siblings raise), not the preference-EQ seam's, so a caller
+    branching on reason_code still learns which seam refused.
+    """
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology, applied = _real_active_applied_baseline(tmp_path)
+    preset = applied["recomposition_snapshot"]["preset"]
+    assert preset["drivers"]["tweeter"]["protection_highpass_floor_hz"] == 2000.0
+    preset["crossover_regions"][0]["fc_hz"] = 1500.0
+
+    selected = tmp_path / "selected.yml"
+    selected.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(SoundProfile(enabled=False).to_dict()), encoding="utf-8",
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(CarrierCannotHostEq) as err:
+        recompose_active_baseline_for_bass_extension(
+            topology,
+            applied_profile=applied,
+            desired_profile=None,
+            current_config_path=selected,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
+        )
+
+    assert err.value.reason_code == "bass_extension_recompose_unavailable"
+    message = str(err.value)
+    assert "1500 Hz" in message and "2000 Hz" in message
+    assert "current DSP state is unchanged" in message

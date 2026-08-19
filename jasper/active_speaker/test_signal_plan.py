@@ -118,8 +118,10 @@ def strictest_crossover_highpass_hz(
 
     One derivation of "the crossover corner this driver is protected at", so
     the protective-high-pass clamp below, the staged metadata that publishes
-    it, and the path-safety gate that refuses a below-floor candidate all
-    compare the same number.
+    it, the L0 emit gate that refuses a below-floor graph
+    (``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), and
+    the path-safety gate that refuses a below-floor candidate all compare the
+    same number.
     """
 
     role_id = str(role or "").strip().lower()

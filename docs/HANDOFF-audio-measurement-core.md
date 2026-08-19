@@ -1490,6 +1490,7 @@ which is stricter than "a File sink", so an ALSA-sink program graph stays
 blocked under a roleful topology. Scope:
 L0 proves HP-presence + a safe corner FLOOR only — validating that a preset's
 *designed* Fc suits its specific driver is preset-validation's job (follow-up).
+
 **New failure mode callers handle:** an emit now raises
 `ActiveSpeakerConfigError` (a `ValueError`) with `event=active_speaker.emit_gate`
 logged first (never silent) if a graph would ship an unprotected tweeter — the
@@ -1501,6 +1502,42 @@ so the grouping reconciler's `except RuntimeError` still fail-safes to solo
 instead of crashing the oneshot. Hardware-free (code + tests); on-device H2
 acoustic sanity on jts5 still owed (confirm a real DE250 2-way commissions
 through the gate and is audibly band-limited).
+
+> **Annotation (2026-08-19), appended AFTER the 2026-07-03 entry above rather
+> than spliced into it — everything above this line describes the STRUCTURAL
+> gate only.** That entry's closing scope note ("validating that a preset's
+> *designed* Fc suits its specific driver is preset-validation's job
+> (follow-up)") has been overtaken: the follow-up landed, and not in preset
+> validation. A second, sibling gate —
+> `camilla_yaml._assert_tweeter_crossover_honours_declared_floor` — now refuses
+> a designed Fc below the tweeter's own declared protection floor at the emit
+> boundary, reading that floor from its owner
+> (`test_signal_plan.declared_protection_floor_hz` → the preset-carried
+> `DriverSpec.protection_highpass_floor_hz`) and comparing with the shared
+> `driver_protection.protection_highpass_floor_satisfied`.
+>
+> **It differs from the structural gate above on all three axes, so read none of
+> that paragraph as describing it:**
+> - **Emitter set is two, not five** — only the graphs carrying household
+>   program (`emit_active_speaker_{baseline,driver_domain}_config`). The
+>   commissioning-flow emitters stay ungated on purpose: staging a below-floor
+>   graph is how `path_safety._tweeter_protection_floor_verdict` produces the
+>   actionable startup-load refusal, the older and still-current layer.
+> - **It does NOT "only fire on a regression."** The structural gate is
+>   satisfied by construction, so it fires only if a refactor breaks something.
+>   This one compares against a per-driver *declaration*, and a speaker
+>   commissioned before it existed can be running a below-floor crossover right
+>   now — legitimately, by the rules of its day. It is on the emit path, so such
+>   a box keeps playing that graph and meets the refusal the next time anything
+>   re-emits (an `/eq/` or `/sound/` save, a correction apply).
+> - **A third caller therefore converts it:** `sound.graph_carrier.
+>   _recompose_active_baseline_with_eq` re-raises as `CarrierCannotHostEq`
+>   (`active_baseline_recompose_unavailable`), the same move the bond prechecks
+>   make above, so an `/eq/` save on such a box gets the typed refusal the UI
+>   branches on instead of a 502.
+>
+> The "absolute 400 Hz corner floor" above still describes what the structural
+> gate proves; the driver's own declared floor is a second, stricter bound.
 
 **Next slice (Phase 2 — kernel extraction):** move pure `sweep`/`deconv`/
 `analysis`/`quality` into `jasper/audio_measurement/` behind characterization
