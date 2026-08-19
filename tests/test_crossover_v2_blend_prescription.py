@@ -1217,6 +1217,33 @@ def test_the_b1_documents_exit_two_rather_than_crashing_the_cli(
     assert json.loads(out)["reason"] == reason
 
 
+def test_a_refusal_from_the_candidate_seam_still_exits_two(tmp_path):
+    """The seam's guard must be reportable, not fatal.
+
+    ``blend_prescription_to_candidate_fields`` re-asks the route (S3a), so it
+    can refuse. Computed outside the CLI's handler it would crash the process
+    instead of exiting 2 — making the seam's own guard the one refusal the
+    contract could not carry. Forced here by making the seam refuse whatever
+    the gate returned.
+    """
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(session)
+    path = _write_document(tmp_path, _document([_cut(-1.5)], packet))
+    with mock.patch.object(
+        cli,
+        "blend_prescription_to_candidate_fields",
+        side_effect=BlendPrescriptionRefused(
+            "boost_route_unavailable", "no seam carries this"
+        ),
+    ):
+        code, out, err = _run_cli(
+            ["propose", str(session), "--prescription", str(path), "--json"]
+        )
+    assert code == cli.EXIT_REFUSED
+    assert json.loads(out)["reason"] == "boost_route_unavailable"
+    assert "refused (boost_route_unavailable)" in err
+
+
 def test_the_bignum_document_exits_two_through_the_cli(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)

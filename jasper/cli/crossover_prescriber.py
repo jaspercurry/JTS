@@ -129,6 +129,16 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             band_hz=packet_region_band_hz(packet),
             positional_evidence=packet_positional_evidence(packet),
         )
+        # Inside the same handler as the gate, because the seam re-asks the
+        # route and can therefore refuse too. Computed outside, a prescription
+        # that reached the seam by some other path would crash this process
+        # instead of exiting with the contract's refusal code — which would
+        # make the seam's own guard the one thing the CLI could not report.
+        candidate_fields = (
+            {}
+            if prescription is None
+            else blend_prescription_to_candidate_fields(prescription)
+        )
     except BlendPrescriptionRefused as exc:
         if args.json:
             print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
@@ -144,7 +154,6 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         # exit. Same reason `linearization_fit`'s cut-only invariant raises.
         print("refused: the prescription document was empty", file=sys.stderr)
         return EXIT_REFUSED
-    candidate_fields = blend_prescription_to_candidate_fields(prescription)
     result: dict[str, Any] = {
         "accepted": True,
         "prescription": prescription.to_dict(),
