@@ -435,21 +435,17 @@ def build_v2_run_and_consume(
             ``CaptureBeginRefused``) propagates to the runner, which publishes
             it to the phone and ends the session exactly as an admission
             refusal does.
+
+            The sequence itself — persist FIRST (the combine plus the fit are
+            the slowest thing in the session, the wizard renders from durable
+            state, and until that write landed the speaker page kept telling
+            the household to confirm on their phone for the several seconds
+            after they already had), confirm, persist the fitted result — is
+            host policy every provider must drive identically, so its single
+            owner is ``_host.drive_group_close`` (#2662 W2b); this closure is
+            the relay's WHEN, not a second WHAT.
             """
-            # Persist FIRST, before the close runs. The combine plus the fit
-            # are the slowest thing in the session, the wizard renders from
-            # durable state, and until this write landed the speaker page kept
-            # telling the household to confirm on their phone for the several
-            # seconds after they already had.
-            conductor.note_group_close_started()
-            _host.persist_conductor_state(
-                conductor, failure_code=None, evidence=evidence_refs,
-            )
-            confirmed = conductor.confirm_cloud_measure_group()
-            if confirmed is not None:
-                _host.persist_conductor_state(
-                    conductor, failure_code=None, evidence=evidence_refs,
-                )
+            _host.drive_group_close(conductor, evidence=evidence_refs)
 
         def authorize(index: int, attempt: int, entry: Any = None) -> None:
             # Admission, and ONLY admission. The group close used to run here

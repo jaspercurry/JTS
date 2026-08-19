@@ -73,9 +73,16 @@ from jasper.audio_measurement.frame_ledger import (
 
 #: The shipped provider: the phone-relay capture flow. A session's source is a
 #: session-level fact — one provider hosts the whole walk — so the identity
-#: lives here as a provider constant, not as a per-answer field. The wired
-#: (Pi-mic) provider adds its own constant when it lands.
+#: lives here as a provider constant, not as a per-answer field.
 SOURCE_RELAY = "relay"
+
+#: The Pi-attached measurement-mic provider (#2662 W2b,
+#: :mod:`jasper.web.correction_crossover_v2_wired`): the Pi plays AND records
+#: on one host, so the relay's cross-device choreography (sessions, encrypted
+#: upload, deferred begins) does not exist for it at all. Selected per session
+#: by ``resolve_v2_capture_source`` in that module — presence of a
+#: measurement-class capture card, with a ``JASPER_CAPTURE_SOURCE`` override.
+SOURCE_WIRED = "wired"
 
 #: The per-take integrity counters a provider's answer carries, in the exact
 #: wire spelling ``reconcile_capture_frames`` reads. DERIVED from the owner

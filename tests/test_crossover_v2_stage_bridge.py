@@ -233,6 +233,12 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
+    # The preparers' source gate (#2662 W2b, gate fix round S3) asks the
+    # relay-configured question BEFORE any evidence bundle opens. These
+    # suites model the fleet default — a relay-configured Pi (installs seed
+    # the public relay) — so the gate must see one; the relay-LESS refusal
+    # has its own pins in tests/test_correction_crossover_v2_wired.py.
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import model_error_store
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan

@@ -2147,6 +2147,11 @@ POST /crossover/v2/position-ready
                              checked against what is actually pending, so a
                              retry that crossed a capture starting is refused
                              (409) rather than releasing the NEXT position
+POST /crossover/v2/complete  v2 conductor, WIRED source only (#2662 W2b): the
+                             all-spots-measured confirmation that closes the
+                             held pre-apply group — the local stand-in for the
+                             phone's authenticated completion event. Empty
+                             body; 409 when no wired session is waiting
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

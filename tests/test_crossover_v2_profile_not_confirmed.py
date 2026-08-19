@@ -423,6 +423,9 @@ def session_open(monkeypatch):
     reached, so "no link minted" is pinned by construction, not by absence of
     an assertion.
     """
+    # The preparers' source gate (#2662 W2b S3) asks the relay-configured
+    # question before any bundle opens; this suite models the fleet default.
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
     from jasper.active_speaker.tone_plan import load_active_speaker_preset

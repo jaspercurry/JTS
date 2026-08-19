@@ -1026,15 +1026,34 @@ def test_a_hand_walked_stage_keeps_the_default_link():
 
 def test_both_preparers_mint_their_link_from_the_ceiling_they_arm():
     """The two are one decision: a stage that armed a 2520 s ceiling and minted
-    a 900 s link is exactly the failure. Read out of each preparer's source,
-    the same way the ceiling re-arm itself is pinned."""
+    a 900 s link is exactly the failure. Read out of the source, the same way
+    the ceiling re-arm itself is pinned.
+
+    Since #2662 W2b the mint lives behind ``_mint_source_session`` (the
+    per-source fork), so the invariant is pinned at all three sites: the
+    helper's relay branch is where the TTL literal must live, and each
+    preparer must hand THAT helper its own ``ceiling_s`` — the number it
+    arms the volume plan with a few lines later.
+    """
     import inspect
 
     from jasper.web import correction_crossover_v2 as v2host
 
+    # The one mint owner derives the link TTL from the ceiling it is handed.
+    helper_source = inspect.getsource(v2host._mint_source_session)
+    assert "ttl_s=relay_link_ttl_s(plan_shape, ceiling_s)" in helper_source, (
+        "_mint_source_session's relay branch must mint from the ceiling it "
+        "is handed"
+    )
+    # ...and each preparer hands it the ceiling that preparer arms.
     for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
         source = inspect.getsource(fn)
-        assert "ttl_s=relay_link_ttl_s(plan_shape, ceiling_s)" in source, (
+        assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
+            f"{fn.__name__} must derive its ceiling from the plan it emitted"
+        )
+        assert re.search(
+            r"_mint_source_session\([^)]*ceiling_s=ceiling_s", source, re.S
+        ), (
             f"{fn.__name__} must mint its relay link from the ceiling it arms"
         )
 

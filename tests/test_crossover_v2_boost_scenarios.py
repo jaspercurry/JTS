@@ -535,3 +535,48 @@ def test_the_replay_gate_checks_the_field_count_its_doc_advertises():
     # really does omit the flag, which is WHY it left — is pinned beside that
     # fixture, in tests/test_crossover_v2_program_pilots.py's
     # `test_measure_summary_omits_the_channel_map_flag_it_cannot_judge`.
+
+
+def _write_wav(path, values, *, width, channels=1, rate=48_000):
+    """A mono/stereo WAV of ``values`` at the given sample width (stdlib)."""
+    import struct
+    import wave
+
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(width)
+        writer.setframerate(rate)
+        fmt = {2: f"<{len(values)}h", 4: f"<{len(values)}i"}[width]
+        writer.writeframes(struct.pack(fmt, *values))
+
+
+def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
+    """S2 (#2720 gate): the dump ring holds 16-bit phone captures AND 32-bit
+    wired captures (#2662 W2b). A width-blind int16 decode re-strides a
+    32-bit take into garbage the twin verdict then misreports as drift, so
+    the loader reads the width from the container's own fmt chunk — and
+    refuses widths it does not support rather than mis-analyzing them."""
+    import wave
+
+    replay = _load_replay_module()
+
+    sixteen = tmp_path / "phone.wav"
+    _write_wav(sixteen, [0, 16384, -16384, 32767], width=2)
+    assert np.allclose(
+        replay._load_mono(sixteen), [0.0, 0.5, -0.5, 32767 / 2**15]
+    )
+
+    thirty_two = tmp_path / "wired.wav"
+    _write_wav(thirty_two, [0, 2**30, -(2**30), 2**31 - 1], width=4)
+    assert np.allclose(
+        replay._load_mono(thirty_two), [0.0, 0.5, -0.5, (2**31 - 1) / 2**31]
+    )
+
+    eight = tmp_path / "unsupported.wav"
+    with wave.open(str(eight), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(1)
+        writer.setframerate(48_000)
+        writer.writeframes(bytes([128, 129, 127]))
+    with pytest.raises(ValueError, match="unsupported 8-bit WAV"):
+        replay._load_mono(eight)
