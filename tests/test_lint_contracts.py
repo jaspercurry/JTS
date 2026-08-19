@@ -683,7 +683,19 @@ MAX_LINES_BY_PATH = {
     # where a ratchet-respecting change puts them. What lands here is only what
     # the SESSION must know, and this file learned no new fact about
     # prescriptions beyond "one may arrive".
-    "jasper/active_speaker/crossover_v2_flow.py": 13_041,
+    #
+    # ...and 13,041 -> 13,055 (A9 gate round 1, SF-2), +14 net. The provenance
+    # record was ONE dict and is now a record plus a digest, because the gate
+    # found stage 2 rehydrating `None`: the durable record has to round-trip
+    # through `blend_prescription_from_mapping` for the grading stage to read
+    # it, and that reader refuses an unknown field rather than ignoring it — so
+    # the digest folded in beside the prescription made the whole record
+    # unreadable. Splitting it costs a 13-line `blend_prescription_sha256`
+    # property (5 execute) and 1 net on the record's own body; the remaining
+    # lines are the paragraph recording that the strictness is CORRECT — it is
+    # why a receipt cannot bank half a prescription — so the next author moves
+    # the field rather than loosening the reader.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_055,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -840,7 +852,30 @@ MAX_LINES_BY_PATH = {
     # policy questions above are exactly the ones a capture provider may not
     # own — the same line slice 1 drew when the relay's choreography left and
     # the source CHOICE stayed. 8,609 + 97 = 8,706.
-    "jasper/web/correction_crossover_v2.py": 8_706,
+    #
+    # ...and 8,706 -> 8,774 (A9 gate round 1, SF-2), +68, counted hunk by hunk.
+    # The gate found that the feature's whole point — banking WHO prescribed a
+    # round — was erased by stage 2 of that same round: `verify_priors` is
+    # rebuilt from the conductor on every persist, `alignment_prescription` has
+    # a stage-2 rehydration arm, and `blend_prescription` had none, so stage 2
+    # wrote `None` over the stage-1 record BEFORE the receipt. The #2698 shape
+    # exactly, one module over. What it cost:
+    #   47  the two readers, `blend_prescription_prior_from_state` and
+    #       `blend_prescription_sha256_from_state`, ~12 executing. They sit
+    #       beside `alignment_prescription_prior_from_state` and mirror it
+    #       exactly. The prose is the finding: that this arm is not merely how
+    #       stage 2 LEARNS the prescription but the only thing stopping stage 2
+    #       ERASING it, which is the sentence that stops it being deleted as a
+    #       redundant read of a value stage 2 does not use.
+    #   12  the `blend_prescription_sha256` persist key, 3 executing, with the
+    #       reason it cannot live inside the record it describes.
+    #    7  the two rehydration reads in `prepare_v2_verify`, 2 executing.
+    #    2  the two ctor arguments on the stage-2 session.
+    # No seam to cut: this file owns the state's read and write sides, and a
+    # reader for one of its own keys placed anywhere else would be a second
+    # owner of that key's shape — the exact drift the neighbouring reader/writer
+    # pairs exist in this file to prevent. 8,706 + 68 = 8,774.
+    "jasper/web/correction_crossover_v2.py": 8_774,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
