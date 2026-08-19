@@ -575,6 +575,10 @@ def test_snapclient_creates_the_ring_group_writable():
     ``jasper-camilla.service`` writes Ring B and carries no ``UMask`` anywhere
     in its own file. That is a real gap in an AXIS-1 unit, recorded rather than
     fixed here, and this test deliberately does not assert the fleet-wide claim.
+    The same unit is also THIS ring's READER end, and neither camilla unit
+    carries ``UMask`` either — latent only, because every participant on this
+    ring runs as root today, so no open takes EACCES on a 0640 file. Recorded
+    with the gap above; it moves with whoever fixes that one.
     """
     assert re.search(r"^UMask=0007$", _read(_SNAPCLIENT_UNIT), re.M), (
         "jasper-snapclient.service writes a ring and must set UMask=0007"

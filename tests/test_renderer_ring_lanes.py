@@ -1844,6 +1844,18 @@ def _enumerated_writer_cadences() -> dict[str, str]:
     return entries
 
 
+#: Enumerated ring writers that do NOT clear the platform's `StartLimitBurst
+#: > 5` bar, mapped to the value each declares today. One entry:
+#: `jasper-camilla` at 5 — systemd's own default, on the same AXIS-1 unit the
+#: header already records as sitting ON the liveness window and EG-7 records as
+#: the one ring writer carrying no `UMask`. Phase 1 fixes the unit it touches
+#: (jasper-snapclient) and does not claim the invariant holds fleet-wide.
+#: Written down rather than folded into a weaker bar, so the next writer added
+#: below the bar cannot land silently; pinned to the exact value, so the
+#: exemption fails the moment the gap is closed and can be deleted.
+_BURST_BAR_EXEMPTIONS = {"jasper-camilla": 5}
+
+
 def _unit_text_by_name(name: str) -> str:
     """The shipped unit (or drop-in) text for an ENUMERATED writer's name.
 
@@ -1889,6 +1901,15 @@ def test_every_enumerated_ring_writer_declares_the_cadence_the_header_claims():
     heartbeat into -EBUSY. A writer that must strictly CLEAR the window says so
     where it is decided: the renderer lanes in the parametrized pin above, and
     jasper-snapclient in its own unit contract test.
+
+    StartLimitBurst keeps its numeric bar, `> 5`, with ONE named exemption:
+    `jasper-camilla` at exactly 5 (`_BURST_BAR_EXEMPTIONS`). Same shape as the
+    `>=` relaxation above and as EG-7's `UMask` record — the gap is real, it is
+    an AXIS-1 unit this phase does not touch, and it is written down rather
+    than absorbed into a weaker bar that would let the NEXT writer land under
+    it silently. The exemption is pinned to the exact value, so a regression
+    below it fails here and closing the gap makes the exemption itself fail
+    until it is deleted.
     """
     window = _ring_liveness_window_sec()
     for unit, enumerated in sorted(_enumerated_writer_cadences().items()):
@@ -1913,6 +1934,23 @@ def test_every_enumerated_ring_writer_declares_the_cadence_the_header_claims():
         assert burst and interval, (
             f"{unit} writes a ring and must declare its own start limit; "
             "systemd's default 5-in-10s parks the unit on an EBUSY burst"
+        )
+        declared_burst = int(burst.group(1))
+        exempt = _BURST_BAR_EXEMPTIONS.get(unit)
+        if exempt is not None:
+            assert declared_burst == exempt, (
+                f"{unit} is this file's ONE recorded exception to the ring "
+                f"writers' StartLimitBurst > 5 bar, at {exempt}. It now "
+                f"declares {declared_burst}: if the gap was closed, DELETE the "
+                "_BURST_BAR_EXEMPTIONS entry so the bar applies to it like "
+                "every other writer; if this is a regression, restore the value"
+            )
+            continue
+        assert declared_burst > 5, (
+            f"{unit} writes a ring and declares StartLimitBurst="
+            f"{declared_burst}, no better than systemd's default 5-in-10s. A "
+            "run of legitimate EBUSY refusals then PARKS the unit — the one "
+            "non-self-healing shape in this design"
         )
 
 

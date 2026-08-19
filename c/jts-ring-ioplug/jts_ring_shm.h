@@ -112,11 +112,14 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // though the lock is already free. The window did not vanish when the lock
 // landed — it MOVED from the primary guard to the secondary one.
 //
-// So a ring-writing renderer's RestartSec must still exceed this window, or a
-// fast respawn races its own predecessor's frozen heartbeat into an avoidable
+// So a ring writer's RestartSec must not fall BELOW this window, or a fast
+// respawn races its own predecessor's frozen heartbeat into an avoidable
 // -EBUSY — and if its start limit is tight, that loop PARKS the unit, which is
-// the one non-self-healing shape here. Every ring writer's cadence, so the set
-// is checkable rather than assumed:
+// the one non-self-healing shape here. (Strictly CLEARING the window is the
+// stronger bar, and it is pinned per-unit where each cadence is decided rather
+// than claimed for the whole set here — one writer below sits exactly ON the
+// boundary and says so.) Every ring writer's cadence, so the set is checkable
+// rather than assumed:
 //   - librespot.service            RestartSec=5  — clears it comfortably
 //   - bluealsa-aplay.service       RestartSec=5  — in the JTS drop-in
 //     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf, which has
