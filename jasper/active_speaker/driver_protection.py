@@ -272,6 +272,41 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     return max(floors) if floors else None
 
 
+def declared_protection_lowpass_ceiling_hz(driver: Any) -> float | None:
+    """The declared protective low-pass ceiling carried by one driver payload.
+
+    The exact mirror of :func:`declared_protection_highpass_floor_hz`, and it
+    exists for the same reason that one does: ``required_protection_filters``
+    has admitted ``kind="lowpass"`` since the schema shipped (a mid declares
+    one, and ``driver_safety._target_issues`` refuses a mid that does not), but
+    nothing read it back as a per-driver upper edge. A caller that needed one
+    would have written a second parse of the same field, which is how the two
+    edges of one declaration end up disagreeing about what counts as declared.
+
+    Strictest wins, so ``min`` here where the floor takes ``max`` — both
+    directions tighten, neither can loosen.
+
+    ``None`` means *no ceiling is declared*, never a guessed default and never
+    the class-default policy corner, on that function's own never-nanny rule.
+    """
+
+    if not isinstance(driver, Mapping):
+        return None
+    filters = driver.get("required_protection_filters")
+    if not isinstance(filters, list):
+        return None
+    ceilings: list[float] = []
+    for item in filters:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("kind") or "").strip().lower() != "lowpass":
+            continue
+        cutoff = _finite_float(item.get("cutoff_hz"))
+        if cutoff is not None and cutoff > 0:
+            ceilings.append(cutoff)
+    return min(ceilings) if ceilings else None
+
+
 def protection_highpass_floor_satisfied(
     *,
     highpass_hz: float | None,

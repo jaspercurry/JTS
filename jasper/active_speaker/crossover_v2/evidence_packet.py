@@ -70,12 +70,20 @@ from jasper.audio_measurement.evidence_identity import (
 )
 
 from .blend_prescription import prescription_response_format
+from .driver_prescription import (
+    driver_passbands_from_safety_profile,
+    driver_prescription_response_format,
+)
+from .feature_classification import FeatureVerdict, read_feature_verdicts
 
 __all__ = [
+    "CLASSIFICATION_ARTIFACT",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
     "CrossoverEvidencePacketError",
     "build_crossover_evidence_packet",
+    "packet_driver_passbands_hz",
+    "packet_feature_classifications",
     "packet_positional_evidence",
     "packet_region_band_hz",
 ]
@@ -131,6 +139,17 @@ _IDENTITY_FIELDS = (
     "mic",
     "build_sha",
 )
+
+#: Where a round's banked feature classification lives, if one was banked.
+#:
+#: No stage of a round writes this today — stage P3's classification instrument
+#: is not in the product, and :mod:`.feature_classification` is the verdict
+#: REGISTER rather than the pipeline. So this is the name an operator's banked
+#: lab result must carry to be read into a packet, named here rather than left
+#: implicit so the packet, the gate and whatever eventually produces one cannot
+#: each invent their own spelling. Its absence is an ordinary ``source_absent``
+#: and is reported, never papered over.
+CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
 #: NOT among them and never will be: it is household-authored prose, so it is
@@ -347,11 +366,89 @@ def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
+def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
+    """Each role's own declared band — the bound a per-driver cut sits inside.
+
+    Read from the design draft's confirmed ``driver_safety_profile``, which is
+    where a speaker's per-driver declarations already live and are already
+    gated. Composed by :func:`~.driver_prescription.driver_passbands_from_safety_profile`
+    rather than here, so the packet reports a band it does not also define — the
+    same split every other block in this module keeps.
+
+    Deliberately NOT derived from the crossover: ``branch_chain.
+    radiating_band_hz`` would give the band this driver is within 3 dB of full
+    output over, which is the bound on a LIFT and is narrower than the driver.
+    The owner's directive is that the whole driver be correctable, and a cut
+    past the handoff is ordinary useful work.
+    """
+    profile = _mapping(draft.get("driver_safety_profile"))
+    passbands = driver_passbands_from_safety_profile(profile)
+    absent = _absence(reason, bool(passbands), "driver_safety_profile.targets")
+    if absent:
+        return {"available": False, **absent}
+    return {
+        "available": True,
+        "passbands_hz": {
+            role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
+        },
+        "source": (
+            "design_draft.driver_safety_profile.targets[].measurement_band_hz, "
+            "floored/capped by that target's own required_protection_filters"
+        ),
+        "confirmation": _mapping(profile.get("confirmation")),
+        "note": (
+            "the driver's published response range narrowed by whatever "
+            "protective corners it declares. A per-driver prescription's "
+            "filters must sit inside the band of the role they name"
+        ),
+    }
+
+
+def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
+    """The banked feature verdicts, typed but not re-derived.
+
+    Copied through :func:`~.feature_classification.read_feature_verdicts`, which
+    drops a row it cannot type rather than admitting it as ``ambiguous`` — so
+    the count this block reports is the count a gate can actually use, and a
+    half-readable artifact cannot look fuller than it is. ``n_rows_banked``
+    beside it is the raw count, because a denominator that moved silently is a
+    different measurement wearing the same number.
+    """
+    absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
+    if absent:
+        return {
+            "available": False,
+            **absent,
+            "note": (
+                "no feature classification was banked for this round, so no "
+                "per-driver cut can be shown to be aimed at a minimum-phase "
+                "driver defect rather than at an interference null or a room "
+                "arrival"
+            ),
+        }
+    verdicts = read_feature_verdicts(raw)
+    banked = raw.get("rows") if isinstance(raw, dict) else raw
+    return {
+        "available": bool(verdicts),
+        "n_rows_banked": len(banked) if isinstance(banked, list) else 0,
+        "n_rows_readable": len(verdicts),
+        "verdicts": [verdict.to_dict() for verdict in verdicts],
+        "source": CLASSIFICATION_ARTIFACT,
+        "note": (
+            "a 'defect-*' verdict says EQ is not structurally BARRED at that "
+            "feature. It does not say EQ will help — the round that follows is "
+            "what answers that, by measuring"
+        ),
+    }
+
+
 def _not_evaluated(
     *,
     receipt_reason: str,
     cloud_reason: str,
     state_reason: str,
+    classification_available: bool,
+    drivers_available: bool,
     findings: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
@@ -384,16 +481,34 @@ def _not_evaluated(
                 "them; there is no distortion record to carry"
             ),
         },
-        {
+    ]
+    if not classification_available:
+        # Was unconditional until a round could carry banked verdicts. Kept
+        # verbatim for the case it still describes — nothing in the product
+        # PRODUCES a classification, so this is the shipped answer for every
+        # round nobody banked one for. Stating it while the packet carries
+        # verdicts would be the opposite of the honesty this block exists for:
+        # "we did not look" printed beside the thing we looked at.
+        entries.append({
             "field": "per_bin_minimum_phase_class",
             "reason": (
-                "the excess-phase instrument that would separate a "
-                "minimum-phase dip from an interference null per bin is not "
-                "built. The positional bar in the response format is the "
-                "deterministic stand-in"
+                "no feature classification is banked for this round, and the "
+                "excess-phase instrument that would produce one per bin is "
+                "not built in the product. The positional bar in the response "
+                "format is the deterministic stand-in for the boost class; "
+                "the cut class refuses rather than standing in"
             ),
-        },
-    ]
+        })
+    if not drivers_available:
+        entries.append({
+            "field": "drivers.passbands_hz",
+            "reason": (
+                "no confirmed driver-safety profile was supplied, so this "
+                "packet cannot say where each driver's own band starts and "
+                "ends; a per-driver prescription has no bound to be checked "
+                "against and is refused"
+            ),
+        })
     if receipt_reason:
         entries.append({"field": "round_receipt", "reason": receipt_reason})
     if cloud_reason:
@@ -421,6 +536,7 @@ def build_crossover_evidence_packet(
     session_dir: Path,
     *,
     state_path: Path | None = None,
+    driver_draft_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -435,6 +551,13 @@ def build_crossover_evidence_packet(
     packet without it cannot carry the per-claim verify verdicts, the Fc
     selection, or the applied profile's own incumbent, and says so in the
     packet's ``not_evaluated`` block.
+
+    ``driver_draft_path`` is the active-speaker design draft
+    (``active_speaker_design_draft.json``), which carries the confirmed
+    driver-safety profile and is likewise banked outside the bundle. Same
+    posture and same reason: OPTIONAL, absence reported. A packet without it
+    cannot say where each driver's own band starts and ends, so the per-driver
+    prescription class has no bound to be checked against and refuses by name.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
@@ -455,6 +578,9 @@ def build_crossover_evidence_packet(
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
+    classification_raw, classification_reason = _read_json(
+        round_dir / CLASSIFICATION_ARTIFACT
+    )
     receipt = _mapping(receipt_raw)
     cloud = _mapping(cloud_raw)
     findings = _mapping(findings_raw)
@@ -466,6 +592,14 @@ def build_crossover_evidence_packet(
         state_reason = read_reason
     state = _mapping(state_raw)
     state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
+
+    draft_raw: Any = None
+    draft_reason = "no driver design draft was supplied"
+    if driver_draft_path is not None:
+        draft_raw, read_reason = _read_json(driver_draft_path)
+        draft_reason = read_reason
+    drivers = _drivers_block(_mapping(draft_raw), draft_reason)
+    classification = _classification_block(classification_raw, classification_reason)
 
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
@@ -557,13 +691,26 @@ def build_crossover_evidence_packet(
             if isinstance(state.get("fc_selection"), dict)
             else _absence(state_reason, False, "fc_selection")
         ),
+        # The two per-DRIVER evidence blocks. They travel together because a
+        # per-driver prescription needs both to be checked at all: the band
+        # says where a filter may sit, the verdicts say what it may be aimed
+        # at, and either alone answers half the question.
+        "drivers": drivers,
+        "feature_classification": classification,
         "not_evaluated": _not_evaluated(
             receipt_reason=receipt_reason,
             cloud_reason=cloud_reason,
             state_reason=state_reason,
+            classification_available=bool(classification.get("available")),
+            drivers_available=bool(drivers.get("available")),
             findings=findings,
         ),
+        # TWO contracts, one per prescription class, each written by the gate
+        # that enforces it. Beside each other rather than merged: they describe
+        # different shapes with different bounds, and a merged block would need
+        # an owner that is neither gate.
         "response_format": prescription_response_format(),
+        "driver_response_format": driver_prescription_response_format(),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
@@ -613,6 +760,57 @@ def packet_region_band_hz(packet: Any) -> tuple[float, float] | None:
     if not (lo > 0.0 and hi > lo):
         return None
     return (lo, hi)
+
+
+def packet_driver_passbands_hz(packet: Any) -> dict[str, tuple[float, float]]:
+    """Each role's own declared band, or ``{}`` when the packet carries none.
+
+    A reader rather than an attribute access, on
+    :func:`packet_region_band_hz`'s rule: the packet owns its own layout and
+    :mod:`.driver_prescription` asks it questions.
+
+    ``{}`` rather than ``None`` because the gate's answer is the same either
+    way — :data:`~.driver_prescription.PASSBAND_UNAVAILABLE` — and a second
+    empty value would be a second thing every caller has to test for.
+    """
+    if not isinstance(packet, dict):
+        return {}
+    drivers = packet.get("drivers")
+    if not isinstance(drivers, dict) or not drivers.get("available"):
+        return {}
+    bands = drivers.get("passbands_hz")
+    if not isinstance(bands, dict):
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for role, band in bands.items():
+        if not isinstance(role, str) or not role.strip():
+            continue
+        if not isinstance(band, (list, tuple)) or len(band) != 2:
+            continue
+        try:
+            lo, hi = float(band[0]), float(band[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if lo > 0.0 and hi > lo:
+            out[role.strip()] = (lo, hi)
+    return out
+
+
+def packet_feature_classifications(packet: Any) -> tuple[FeatureVerdict, ...] | None:
+    """The banked verdicts, or ``None`` when this round has none.
+
+    ``None`` and ``()`` are DIFFERENT here and the gate treats them the same
+    way on purpose: both refuse. They are kept apart anyway because the packet
+    distinguishes "no artifact was banked" from "one was and no row in it could
+    be typed", and collapsing them at the reader would throw away a fact the
+    block above it went to the trouble of reporting.
+    """
+    if not isinstance(packet, dict):
+        return None
+    block = packet.get("feature_classification")
+    if not isinstance(block, dict) or not block.get("available"):
+        return None
+    return read_feature_verdicts(block.get("verdicts"))
 
 
 def packet_positional_evidence(

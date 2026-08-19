@@ -1729,6 +1729,46 @@ jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
 and the only difference is that `stage` banks the result. Run the first to see
 the answer, the second to commit to it.
 
+**Two prescription classes, one door.** A document names its own `kind` and
+that is what picks its gate — there is no `--class` flag and no inference from
+shape:
+
+| `kind` | what it corrects | bounded by | lands in |
+|---|---|---|---|
+| `jts_crossover_blend_prescription` | the SUMMED blend region | the round's crossover region | the candidate's `blend_correction` |
+| `jts_crossover_driver_prescription` | ONE driver's own full band | that driver's own declared band | the candidate's `linearization` |
+
+The per-driver class is **cuts only** (a cut removes level and cannot clip; a
+per-driver boost spends the graph's headroom budget, which is a gain-structure
+decision nobody has made) and every cut must be aimed at a feature a banked
+classification typed as a minimum-phase driver **peak**. It needs two pieces of
+evidence, and they arrive by **different routes** — one flag, one file:
+
+```sh
+# --drivers is the ONLY extra flag; the classification is found in the bundle
+jasper-crossover-prescriber propose <bundle-dir> \
+    --drivers /var/lib/jasper/active_speaker_design_draft.json \
+    --prescription answer.json --json
+```
+
+- **The bands** come from `--drivers`, the design draft, whose confirmed
+  driver-safety profile carries each role's published response range and its
+  declared protective corners. The draft is banked outside the bundle, so it is
+  passed in. Absent → `driver_passband_unavailable`.
+- **The verdicts** are auto-discovered: the packet builder reads
+  `feature_classification.json` from the round's own artifact directory,
+  alongside `round_receipt.json` and `cloud_verify.json`. There is no flag for
+  it and no way to point it elsewhere. Absent → `driver_feature_not_classified`.
+
+Nothing in the product **produces** a classification today — stage P3's
+instrument is not built — so that file is an operator's banked lab result
+dropped into the round directory. A `defect-*` verdict says EQ is not
+structurally barred at that feature, never that EQ will help; and
+`defect-boostable` is a minimum-phase **dip**, which is still refused, because
+cutting a dip deepens it. The **nearest** banked verdict to a filter's centre is
+the one that decides — features can sit closer together than the match
+tolerance, so a cuttable peak nearby cannot vouch for a filter sitting on a dip.
+
 `stage` writes one document to
 `/var/lib/jasper/active_speaker_crossover_v2_prescription.json` and stamps it
 with the round the flow state says is next. The next crossover round takes it
@@ -1770,11 +1810,18 @@ Owners:
 [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)
 builds the document;
 [`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)
-owns the response format *and* the gate that enforces it, so the instructions a
-prescriber is given and the bar it is judged by cannot describe different
-shapes. Hardware-free coverage, including a hostile-input battery and a golden
-against a real banked round when `captures/` is present, lives in
-[`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py).
+and
+[`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)
+each own their class's response format *and* the gate that enforces it, so the
+instructions a prescriber is given and the bar it is judged by cannot describe
+different shapes;
+[`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
+is the verdict register the second of those reads (the vocabulary, deliberately
+not the pipeline). Hardware-free coverage, including a hostile-input battery and
+a golden against a real banked round when `captures/` is present, lives in
+[`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py)
+and
+[`tests/test_crossover_v2_driver_prescription.py`](../tests/test_crossover_v2_driver_prescription.py).
 
 ---
 

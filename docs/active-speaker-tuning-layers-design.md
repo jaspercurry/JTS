@@ -1314,10 +1314,11 @@ decisions — the fitting engine, the safety clamps and their bounds, the pooled
 grading views, the predict-apply-remeasure-rollback protocol, and both
 prescribers, all of which have run on hardware. What does not ship is the part
 that decides: taking **"is there code in the tree that makes this rule's
-decision?"** as the test, **five of the six rules below fail it** (rule 6 is a
-review discipline rather than code at all), and the stage's *scope* is narrower
-than this ruling requires. The per-rule table at the end of this stage makes
-that count reconstructable. Read "partially" strictly.
+decision?"** as the test, **three of the six rules below fail it outright and
+two more pass only on the prescribed path** (rule 6 is a review discipline
+rather than code at all), and the stage's *scope* is narrower than this ruling
+requires. The per-rule table at the end of this stage makes that count
+reconstructable. Read "partially" strictly.
 
 **When it runs.** Only after P2 freezes the crossover — not before, not
 alongside.
@@ -1438,18 +1439,54 @@ this stage reads as more finished than it is.
 
 | rule | the decision it has to make | ships? | what ships beside it |
 |---|---|---|---|
-| 1 classify first | per-bin minimum-phase classification | **no** | `positional_support` — the cross-position half only |
-| 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by open [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) |
-| 3 correct in the owning branch | routing a defect to per-driver vs shared | **no** | *both* stages — Layer 1a's per-role stage and the blend stage |
-| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no** | Layer 1a's boost bounds do ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`; the blend stage's own five-condition bar has never been exercised |
+| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver cut class — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** that would produce a verdict still does not ship, so the evidence is a banked lab result rather than something a round derives. `positional_support` remains the cross-position half for the blend boost class |
+| 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
+| 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
+| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no** | Layer 1a's boost bounds do ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`; the blend stage's own five-condition bar has never been exercised. The per-driver *prescribed* boost is refused outright rather than barred (`driver_boost_route_unavailable`), which is a parked decision, not a bar |
 | 5 frozen reference | a frozen-reference comparator | **no** | `flat_spec` / `flat_spec_views`, which self-reference |
 | 6 audibility floors | — | n/a | a review discipline, not code either way |
 
-So **five of six fail the test**. Exactly one has a change open against it —
-[PR #2730](https://github.com/jaspercurry/JTS/pull/2730), rule 2's cut-Q
-ceiling. For the other four, the campaign produced its verdicts with
-laptop-side analysis and none of that analysis has been promoted into the
-product.
+So **three of six still fail the test outright** (2, 4, 5), and **two more ship
+only on the prescribed path** (1, 3) — a gate that refuses a bad proposal,
+never a stage that derives the right one. For rules 2, 4 and 5 the campaign
+produced its verdicts with laptop-side analysis and none of that analysis has
+been promoted into the product.
+
+**What "partial" is buying, said plainly**, because the distinction is the
+whole of what rules 1 and 3 are worth: a bar that refuses cannot make a round
+better, it can only stop one specific way of making it worse. Rule 1's bar
+turns "a reader believes this is a driver defect" into "a classifier said so
+and the verdict is on the receipt"; it does not classify anything, and a
+`defect-*` verdict says only that EQ is not structurally barred there — run-log
+§9.2, and every EQ arm played that night still measured worse.
+
+**Two rulings the prescribed path forced, recorded here because they are stage
+decisions rather than module details.**
+
+*The nearest verdict decides (2026-08-19).* Rule 1's bar needs a rule for
+matching a filter's centre to a classified feature, and "any eligible verdict
+inside the match radius vouches" is the wrong one. Four of the record's nine
+features are minimum-phase **dips**, and two of its eight gaps — 0.143 and 0.157
+octaves, both peak/dip pairs — are narrower than the radius, so under that rule
+a cut aimed squarely at a dip borrowed the neighbouring peak's verdict and was
+accepted. Cutting a minimum-phase dip deepens it. The rule is therefore the
+ordinary one for a claim about a frequency: **the closest claim owns it**, and
+the tolerance's only job is to absorb the evidence's own locating error.
+
+*Merge by role (2026-08-19).* Rule 3 routes a per-driver defect into the
+role-keyed Layer-1a field, which then has two producers: the fit writes every
+eligible role, a prescription names a subset. Three options, and the ruling is
+the third:
+
+| option | what it does | verdict |
+|---|---|---|
+| replace wholesale | a document's roles become the whole field | **rejected** — a one-role document silently discards the other driver's *fitted* filters |
+| compose (append) | prescribed filters added to fitted ones | **rejected** — doubles corrections at a shared target and can breach the eight-filter branch ceiling from two authors, neither of whom sees the total |
+| **merge by role** | named roles replace **their own** filters; unnamed roles keep the fit's | **adopted** — the only option under which "a role you do not name is not changed" is true, and it keeps one author per branch so the ceiling has one owner |
+
+The seam implements the merge rather than documenting a protocol for its
+caller, and its fit argument is required-and-undefaulted precisely because
+forgetting it is the failure that looks like success until somebody measures.
 
 ### Provenance, and what this section supersedes
 
@@ -1723,8 +1760,13 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**: this pass
-added a section and trued up two entries it contradicted, it did not re-read
-the whole document against the code, and the footer is a whole-document claim.
+**The `Last verified:` footer below was deliberately NOT bumped**, twice now
+and for one reason: the footer is a whole-document claim, and neither pass
+re-read the whole document against the code. The 2026-08-18 pass added a
+section and trued up two entries it contradicted. The pass that shipped the
+per-driver prescription class trued up the P3 table's rules 1, 2 and 3, the
+stage's own STATUS count, and recorded the two rulings that change forced —
+because that change is what made them stale or newly needed. It did not verify
+anything else here.
 
 Last verified: 2026-08-18

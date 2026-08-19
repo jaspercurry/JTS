@@ -814,7 +814,8 @@ def test_the_envelope_fuzz_covers_every_field_and_the_known_escapes():
 
     assert fields == (
         "artifact_schema_version", "band_hz", "document", "for_round_ordinal",
-        "kind", "packet_fingerprint", "prescription_sha256", "staged_at",
+        "kind", "packet_fingerprint", "prescription_kind", "prescription_sha256",
+        "staged_at",
     )
     assert "\ud800" in _HOSTILE_VALUES
     assert float("inf") in _HOSTILE_VALUES
