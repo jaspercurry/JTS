@@ -2077,7 +2077,8 @@ def test_a_failed_absolute_claim_warns_and_names_the_clean_capture(monkeypatch):
     capture and tracking health only, so the claims record is what sees it —
     and BOTH facts print, because a line that says "came back failed" beside a
     `/state` reading ``verify_outcome=pass`` is the adjacent contradiction this
-    module keeps removing."""
+    module keeps removing. The ``capture`` qualifier is what stops the pair
+    reading as self-contradictory: it names which instrument answered."""
     _r19_doctor_state(
         monkeypatch,
         tier="full",
@@ -2095,7 +2096,7 @@ def test_a_failed_absolute_claim_warns_and_names_the_clean_capture(monkeypatch):
 
     assert r.status == "warn"
     assert "came back failed" in r.detail
-    assert "verify=pass" in r.detail
+    assert "capture verify=pass" in r.detail
 
 
 def test_an_inconclusive_verify_is_not_masked_by_a_closed_group(monkeypatch):
@@ -2112,7 +2113,7 @@ def test_an_inconclusive_verify_is_not_masked_by_a_closed_group(monkeypatch):
 
     assert r.status == "warn"
     assert "came back inconclusive" in r.detail
-    assert "verify=inconclusive" in r.detail
+    assert "capture verify=inconclusive" in r.detail
 
 
 def test_an_unknown_spatial_word_from_a_later_build_warns_and_names_it(

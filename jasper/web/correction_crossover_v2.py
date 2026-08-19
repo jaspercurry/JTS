@@ -2338,9 +2338,12 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # independent"), so a crossover-region claim that missed its tolerance
     # rides a clean ``pass`` — and the other way, an absent or non-numeric
     # tracking max is an ``outcome`` fail whose integration claim reads
-    # ``not_evaluated``. A state file with no claims block is a pre-R18 build
-    # and leaves ``outcome`` standing alone: absence is never a fail, and
-    # never a pass-of-claims either.
+    # ``not_evaluated``. It reads ``integration`` and ``absolute`` because a
+    # VERIFY grades no others: its one summed sweep leaves both per-branch
+    # claims structurally ``not_evaluated`` (``CLAIM_NO_PER_BRANCH_CAPTURE``).
+    # A state file with no claims block is a pre-R18 build and leaves
+    # ``outcome`` standing alone: absence is never a fail, and never a
+    # pass-of-claims either.
     #
     # #2160's rider (ratified 2026-08-17): geometry and k-of-N facts stay
     # un-co-located — each instrument's facts render on its own surface, and

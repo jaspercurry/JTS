@@ -2218,11 +2218,12 @@ says** (#2464, ruled 2026-08-19). A closed group used to be tested first, so it
 masked the `failed` and `inconclusive` answers entirely and a re-verify that
 failed against a carried-forward passing group read as `graded`. The failure
 fact is the union of two instruments that cannot see each other:
-`verify.outcome` (capture and tracking health) and the
-`verify.claims.<name>.status` record — so a crossover-region claim that missed
-its tolerance caps the badge on a capture whose own outcome is `pass`, and
-`verify_outcome` keeps reporting that `pass`. A state file with no claims block
-is graded on its outcome alone.
+`verify.outcome` (capture and tracking health) and the `verify.claims` record's
+`integration` and `absolute` verdicts (a VERIFY grades no others — its one
+summed sweep leaves both per-branch claims structurally `not_evaluated`). So a
+crossover-region claim that missed its tolerance caps the badge on a capture
+whose own outcome is `pass`, and `verify_outcome` keeps reporting that `pass`.
+A state file with no claims block is graded on its outcome alone.
 Per #2160's rider (ratified 2026-08-17) the cap co-locates nothing: `spatial`,
 `post_apply_spec_passed` and `verify_outcome` each still carry their own
 instrument's answer.

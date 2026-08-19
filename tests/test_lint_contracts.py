@@ -876,13 +876,13 @@ MAX_LINES_BY_PATH = {
     # owner of that key's shape — the exact drift the neighbouring reader/writer
     # pairs exist in this file to prevent. 8,706 + 68 = 8,774.
     #
-    # ...and 8,774 -> 8,801 (#2464, ruled 2026-08-19), +27 net (34 added, 7
+    # ...and 8,774 -> 8,804 (#2464, ruled 2026-08-19), +30 net (37 added, 7
     # removed), counted hunk by hunk, of which 3 execute:
     #    3  the `verify_failed` predicate, plus +1 net on the `state` chain it
     #       reorders — the whole behavioural change is which arm runs first
     #    2  the docstring sentence saying a failed mark-VERIFY caps `state`,
     #       pointing AT the derivation rather than restating its argument
-    #   21  that derivation's argument, in three paragraphs that each stop a
+    #   24  that derivation's argument, in three paragraphs that each stop a
     #       different revert. The defect (a closed post-apply group made the
     #       fail and inconclusive arms unreachable, so a re-verify that failed
     #       reported `graded=True` and the doctor ticked green); why the two
@@ -893,10 +893,14 @@ MAX_LINES_BY_PATH = {
     #       one instrument reopens exactly one of those two cells); and #2160's
     #       ratified rider that geometry and k-of-N facts stay un-co-located,
     #       naming the three neighbouring fields this cap does not touch.
+    #       3 of those 24 are the gate round's: WHY the predicate names two
+    #       claims and not the record — a VERIFY's one summed sweep leaves both
+    #       per-branch claims structurally `not_evaluated`, so the enumeration
+    #       IS the graded claim set, not a subset of it (gate nit 1).
     # No seam to cut: this is one predicate and one ordering inside the single
     # function that owns the grade, and both #2098 and #2160 already ruled that
     # the producer — not its consumers — answers this question once.
-    "jasper/web/correction_crossover_v2.py": 8_801,
+    "jasper/web/correction_crossover_v2.py": 8_804,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

@@ -840,7 +840,14 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     # a failed crossover-region CLAIM caps the state on a capture whose own
     # outcome is ``pass``. The never-graded fallback below still prints no
     # outcome word: it is reached only when there is no grade to attribute.
-    verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
+    #
+    # **``capture``** qualifies it at every site, not just that arm: without it
+    # ``came back failed (verify=pass)`` reads as self-contradictory to an
+    # operator who does not know the two name different instruments — the state
+    # is the union, ``verify_outcome`` is capture and tracking health alone.
+    # One local, so the word cannot be attached at one site and missed at
+    # another (#2464 gate, nit 3).
+    verify_text = f"capture verify={grade.get('verify_outcome') or 'n/a'}"
     if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
