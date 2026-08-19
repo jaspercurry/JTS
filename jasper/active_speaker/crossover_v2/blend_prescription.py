@@ -674,6 +674,27 @@ def prescription_response_format() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+def _finite_or_none(value: Any) -> float | None:
+    """One real number, or ``None`` — never a raise, never a coercion.
+
+    The reading counterpart of :func:`_finite_number`, which refuses; this one
+    reports. Same three rejections for the same reasons — ``bool`` because it
+    is an ``int`` subclass, non-numerics because ``float()`` would coerce a
+    string the contract never promised, and non-finite values — plus the
+    ``OverflowError`` an arbitrary-precision ``int`` raises after passing the
+    isinstance check. Used everywhere :func:`positional_support` reads a number
+    out of banked evidence, so there is one answer to "what is a usable number
+    here" rather than one per call site.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def positional_support(
     freq_hz: float,
     *,
@@ -693,14 +714,38 @@ def positional_support(
     on the shared ``freqs_hz`` grid, plus ``validity_floor_hz`` where the
     capture's own gate established one.
     """
-    grid = np.asarray(freqs_hz, dtype=np.float64)
-    if grid.ndim != 1 or grid.size == 0 or not np.all(np.isfinite(grid)):
+    # Every numeric input is coerced ONCE, here, through the same guard. This
+    # function is public and reachable with values that never passed
+    # `_finite_number`: on the shipped path `_check_boost_evidence` hands it a
+    # validated frequency and a packet-derived grid, but a caller reading a
+    # hand-edited banked artifact can hand it anything JSON admits. An
+    # arbitrary-precision int passes an isinstance check and then raises from
+    # `float()` / `np.asarray`, which is a crash where the contract promises a
+    # finding — so an unusable input is reported as "nothing could testify"
+    # rather than propagated.
+    target_hz = _finite_or_none(freq_hz)
+    reference = _finite_or_none(reference_db)
+    try:
+        grid = np.asarray(freqs_hz, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError):
+        grid = np.asarray([], dtype=np.float64)
+    if (
+        target_hz is None
+        or reference is None
+        or grid.ndim != 1
+        or grid.size == 0
+        or not np.all(np.isfinite(grid))
+    ):
         return PositionalSupport(
-            freq_hz=float(freq_hz), evaluated_at_hz=float("nan"),
+            freq_hz=target_hz if target_hz is not None else float("nan"),
+            evaluated_at_hz=float("nan"),
             n_positions=len(positions), n_testifying=0, n_with_dip=0,
-            excluded_reason="the packet carries no usable frequency grid",
+            excluded_reason=(
+                "the packet carries no usable frequency grid, centre "
+                "frequency, or flat reference"
+            ),
         )
-    index = int(np.argmin(np.abs(grid - float(freq_hz))))
+    index = int(np.argmin(np.abs(grid - target_hz)))
     evaluated_at = float(grid[index])
 
     testifying = 0
@@ -721,32 +766,34 @@ def positional_support(
         # A position's own gate may have established a floor below which its
         # curve is not evidence. Asking it about a frequency under that floor
         # is asking for an answer it already declined to give.
-        floor = entry.get("validity_floor_hz")
-        if (
-            isinstance(floor, (int, float))
-            and not isinstance(floor, bool)
-            and math.isfinite(float(floor))
-            and evaluated_at < float(floor)
-        ):
-            below_floor += 1
-            continue
-        raw_value = magnitude[index]
-        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-            unreadable += 1
-            continue
-        try:
-            value = float(raw_value)
-        except OverflowError:
-            # Same class as `_finite_number`'s: a bignum in a hand-edited
-            # banked curve passes the isinstance check and raises here. An
-            # unreadable bin, not a crash.
-            unreadable += 1
-            continue
-        if not math.isfinite(value):
+        # A position row reaches here verbatim — the packet's allowlist copies
+        # the field without coercing it — so a bignum floor is an ordinary
+        # hostile input on this path rather than a hypothetical. It crashed the
+        # CLI end to end before this guard.
+        #
+        # ABSENT and UNREADABLE are kept apart, and they resolve opposite ways.
+        # Absent means the capture's gate established no floor, so the position
+        # may testify about any frequency. Unreadable means a floor WAS
+        # recorded and cannot be read — and treating that as "no floor" would
+        # be fail-open in the one direction that matters here, letting a
+        # position vouch for a frequency its own gate may have excluded. That
+        # is a bin this function cannot read, which is what `unreadable`
+        # already means.
+        raw_floor = entry.get("validity_floor_hz")
+        if raw_floor is not None:
+            floor = _finite_or_none(raw_floor)
+            if floor is None:
+                unreadable += 1
+                continue
+            if evaluated_at < floor:
+                below_floor += 1
+                continue
+        value = _finite_or_none(magnitude[index])
+        if value is None:
             unreadable += 1
             continue
         testifying += 1
-        if value - reference_db <= -BOOST_MIN_DIP_DB:
+        if value - reference <= -BOOST_MIN_DIP_DB:
             with_dip += 1
 
     reasons = []
@@ -758,7 +805,7 @@ def positional_support(
     if unreadable:
         reasons.append(f"{unreadable} position curve(s) were unreadable")
     return PositionalSupport(
-        freq_hz=float(freq_hz),
+        freq_hz=target_hz,
         evaluated_at_hz=evaluated_at,
         n_positions=len(positions),
         n_testifying=testifying,

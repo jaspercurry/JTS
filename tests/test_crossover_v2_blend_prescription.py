@@ -42,6 +42,7 @@ from jasper.active_speaker.crossover_v2.blend_correction import (
     BLEND_MAX_TOTAL_CUT_DB,
     blend_filters_from_mapping,
 )
+from jasper.active_speaker.crossover_v2 import blend_prescription as bp
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
     BOOST_MIN_TESTIFYING_POSITIONS,
@@ -649,20 +650,205 @@ def test_the_composed_cap_is_read_on_the_denser_axis_not_the_supplied_one(tmp_pa
     assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(4.66, abs=0.05)
 
 
-def test_a_dense_packet_axis_is_still_the_one_that_is_read(tmp_path):
-    """The other direction: a well-populated round keeps its own axis.
+def _evaluated_grid(packet: dict[str, Any], filters: list[dict[str, Any]]):
+    """The axis ``_check_composed`` actually evaluated the cascade on.
 
-    Denser-of-the-two must not become always-the-synthetic-sweep, or the
-    system stops being judged on the axis it actually measured.
+    Read by spying on ``chain_response`` — the ONE biquad evaluator — rather
+    than by re-deriving the selection rule here, which would make the test a
+    copy of the branch it is checking.
+    """
+    with mock.patch.object(
+        bp, "chain_response", wraps=bp.chain_response
+    ) as evaluator:
+        _gate(packet, _document(filters, packet))
+    assert evaluator.call_args is not None, "the composed cap never ran"
+    return evaluator.call_args[0][1]
+
+
+def test_a_dense_packet_axis_is_the_one_the_composed_cap_is_evaluated_on(tmp_path):
+    """The other direction of N1, pinned on the SELECTION not the outcome.
+
+    Two dense axes agree on the composed extreme to about a thousandth of a
+    dB, so no assertion about the *verdict* can tell which one was used — an
+    earlier version of this test claimed to pin this and did not. What is
+    observable is which grid reached the evaluator, so that is what is
+    asserted: a well-populated round must be judged on the axis it actually
+    measured, or "denser of the two" quietly becomes "always the synthetic
+    sweep".
     """
     dense = [800.0 + 3.0 * i for i in range(900)]
     session, _ = _bundle(tmp_path, grid=dense)
     packet = build_crossover_evidence_packet(session)
-    evidence = packet_positional_evidence(packet)
-    assert evidence is not None
-    inside = [f for f in evidence[1] if BAND[0] <= f <= BAND[1]]
-    assert len(inside) > 512, "fixture must be denser than the fallback to prove it"
+    in_region = [f for f in dense if BAND[0] <= f <= BAND[1]]
+    assert len(in_region) > 512, "fixture must out-densify the fallback to prove it"
+
+    grid = _evaluated_grid(packet, [_cut(-1.5)])
+    assert len(grid) == len(in_region)
+    assert list(grid) == pytest.approx(in_region)
+
+
+def test_a_sparse_packet_axis_is_replaced_by_the_denser_fallback(tmp_path):
+    """The selection's other branch, asserted the same way."""
+    session, _ = _bundle(tmp_path, grid=_SPARSE_GRID)
+    packet = build_crossover_evidence_packet(session)
+    grid = _evaluated_grid(packet, [_cut(-1.5)])
+    assert len(grid) == 512
+    assert list(grid) != pytest.approx(
+        [f for f in _SPARSE_GRID if BAND[0] <= f <= BAND[1]]
+    )
+
+
+# --------------------------------------------------------------------------- #
+# hostile numbers in the BANKED artifacts, not just in the prescription
+# --------------------------------------------------------------------------- #
+
+#: A JSON integer too large to become a float. It survives a JSON round trip as
+#: a Python ``int`` (``json.dumps`` writes arbitrary-precision ints out in
+#: full), passes every ``isinstance(x, (int, float))`` check, and then raises
+#: ``OverflowError`` from ``float()``.
+_BIGNUM = 10 ** 400
+
+_ROUND_REL = "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
+
+
+def _edit_artifact(session: Path, name: str, mutate) -> None:
+    """Rewrite one banked artifact through a structural edit.
+
+    Structural rather than textual: the first textual occurrence of a field
+    name is rarely the one that matters (``validity_floor_hz`` exists both at
+    the cloud's top level and on every position row, and only the second
+    reaches ``positional_support``). A hand-edited banked artifact is a real
+    input — the packet builder reads whatever is on disk and its allowlist
+    copies position rows verbatim.
+    """
+    path = session / _ROUND_REL / name
+    document = json.loads(path.read_text())
+    mutate(document)
+    path.write_text(json.dumps(document))
+
+
+def test_a_bignum_position_floor_refuses_rather_than_crashing(tmp_path):
+    """R1: the site that crashed the CLI end to end.
+
+    ``validity_floor_hz`` reaches ``positional_support`` verbatim, so a bignum
+    there raised ``OverflowError`` out of the gate — a traceback and the
+    evidence-unreadable exit code, for a fault in a banked number.
+    """
+    session, _ = _bundle(tmp_path)
+    _edit_artifact(
+        session,
+        "cloud_verify.json",
+        lambda d: d["positions"]["positions"][0].update(validity_floor_hz=_BIGNUM),
+    )
+    packet = build_crossover_evidence_packet(session)
+    positions, freqs_hz, reference_db = packet_positional_evidence(packet)
+    support = positional_support(
+        1000.0, positions=positions, freqs_hz=freqs_hz, reference_db=reference_db
+    )
+    # A floor that WAS recorded and cannot be read leaves the denominator: it
+    # is a bin this function cannot read, not a position with no floor. The
+    # three intact positions still testify, and the denominator discloses it.
+    assert support.n_positions == 4
+    assert support.n_testifying == 3
+    assert "unreadable" in support.excluded_reason
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
+    # Three testifying positions still clear the floor and the all-but-one
+    # rule, so it reaches the route — the point being that it got there at all
+    # instead of raising OverflowError out of the gate.
+    assert excinfo.value.reason == "boost_route_unavailable"
+
+
+def test_an_unreadable_floor_leaves_the_denominator_rather_than_voting(tmp_path):
+    """Fail-closed, and visible: two bad floors drop it under the bar.
+
+    The direction that matters — an unreadable floor must not silently become
+    "no floor", which would let a position vouch for a frequency its own gate
+    may have excluded.
+    """
+    session, _ = _bundle(tmp_path)
+    _edit_artifact(
+        session,
+        "cloud_verify.json",
+        lambda d: [
+            row.update(validity_floor_hz=_BIGNUM)
+            for row in d["positions"]["positions"][:2]
+        ],
+    )
+    packet = build_crossover_evidence_packet(session)
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
+    assert excinfo.value.reason == "insufficient_positional_evidence"
+    assert excinfo.value.evidence["n_testifying"] == 2
+
+
+def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_path):
+    """R2: pins ``packet_positional_evidence``'s own OverflowError guard.
+
+    Reverting that guard's ``OverflowError`` — or moving ``float(reference)``
+    back outside it — turns this into a traceback.
+    """
+    session, _ = _bundle(tmp_path)
+    _edit_artifact(
+        session, "cloud_verify.json",
+        lambda d: d["spec"].update(reference_db=_BIGNUM),
+    )
+    packet = build_crossover_evidence_packet(session)
+    assert packet_positional_evidence(packet) is None
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
+    assert excinfo.value.reason == "insufficient_positional_evidence"
+    # A cut still works: it needs no positional evidence.
     assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
+
+
+def test_a_bignum_grid_bin_makes_the_positional_evidence_unavailable(tmp_path):
+    """R2: the grid half of the same guard."""
+    session, _ = _bundle(tmp_path)
+    _edit_artifact(
+        session, "cloud_verify.json",
+        lambda d: d["positions"]["curve_grid"]["freqs_hz"].__setitem__(0, _BIGNUM),
+    )
+    packet = build_crossover_evidence_packet(session)
+    assert packet_positional_evidence(packet) is None
+
+
+def test_a_bignum_region_band_makes_the_region_unavailable(tmp_path):
+    """R2: pins ``packet_region_band_hz``'s OverflowError guard."""
+    session, _ = _bundle(tmp_path)
+    _edit_artifact(
+        session, "round_receipt.json",
+        lambda d: d["round_measurements"]["blend"].update(band_hz=[_BIGNUM, 3297.4]),
+    )
+    packet = build_crossover_evidence_packet(session)
+    assert packet_region_band_hz(packet) is None
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut(-1.5)], packet))
+    assert excinfo.value.reason == "region_unavailable"
+
+
+def test_the_public_positional_support_api_survives_hostile_numbers():
+    """R1: the three public-API sites, guarded as defence in depth.
+
+    ``_check_boost_evidence`` only ever hands this validated numbers, so these
+    are unreachable on the shipped path — but the function is public, and a
+    caller reading a hand-edited artifact can hand it anything JSON admits.
+    """
+    bignum = 10 ** 400
+    grid = [1000.0, 1100.0, 1200.0]
+    row = {"magnitude_db": [0.0, -6.0, 0.0], "validity_floor_hz": 10.0}
+    for kwargs in (
+        {"freqs_hz": grid, "reference_db": 0.0},
+        {"freqs_hz": [bignum, 1100.0, 1200.0], "reference_db": 0.0},
+        {"freqs_hz": grid, "reference_db": bignum},
+    ):
+        support = positional_support(1100.0, positions=[row] * 4, **kwargs)
+        assert isinstance(support.to_dict(), dict)
+    # A bignum centre frequency is reported, not raised.
+    support = positional_support(bignum, positions=[row] * 4, freqs_hz=grid,
+                                 reference_db=0.0)
+    assert support.n_testifying == 0
+    assert support.supported is False
 
 
 def test_a_packet_with_no_region_refuses_rather_than_inventing_a_band(tmp_path):
