@@ -1021,7 +1021,27 @@ MAX_LINES_BY_PATH = {
     # the comment says exactly which producer would make them disagree, and
     # that a third reading here is the wrong repair. A latent second source of
     # truth on a household-facing control is worth ten lines to keep visible.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_127,
+    #
+    # ...and 4,127 -> 4,158 (#2738), +31 net, counted rather than estimated —
+    #    2  the cap itself, and the ONLY executable line change. The badge
+    #       composition it feeds is net ZERO: 14 lines replaced by 14, an
+    #       early return becoming one badge slot plus its caveats.
+    #    8  `_done_nudges`' docstring — the result code takes the SLOT and
+    #       does not take the caveats with it, and arrives already capped.
+    #   21  the comment beside the cap: WHY only the one `ok` code is capped.
+    # So +2 executable and +29 the two arguments a household-copy file cannot
+    # lose. The twin of the #2464 cap one surface over, and the same shape of
+    # payment: "a result code overrides this copy outright" — the sentence
+    # directly above, written by that very entry — turned out to BE the
+    # defect. `_verify_claims` always writes an `integration` entry, so the
+    # override reached every post-R18 session whose VERIFY produced a tracking
+    # analysis, and a group that closed FAILED at -4.63 dB renders "Target
+    # verified." The 21 buy the part a reader cannot re-derive: the three
+    # `warn` codes already refuse the claim, and swapping `keep_previous`'s
+    # copy for "Your speaker is tuned, but…" would endorse a result its own
+    # grade declined — so capping all four would be the defect pointed the
+    # other way.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_158,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

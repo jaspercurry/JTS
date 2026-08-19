@@ -2198,7 +2198,10 @@ gate `_verify_verdict`'s accepted/code logic — that stays a tracking judgement
   PRIMARY copy and swaps the "Verified." badge for one that names which
   instrument passed — previously the verdict reached only a line inside the
   collapsed disclosure. Since R19 it reads that verdict off `post_apply_grade`
-  rather than off the cloud entry's own `overall_passed` (see below);
+  rather than off the cloud entry's own `overall_passed` (see below), and since
+  #2738 a failing grade CAPS the terminal result code too: the one `ok` code,
+  `verified_target`, yields its badge and its copy to the failing grade, while
+  the three `warn` codes keep both because none of them claims verified;
 * `crossover_v2_status_block` folds it into the new `post_apply_grade` key
   (see below).
 
@@ -5853,7 +5856,12 @@ owner the code does not have, through two symbols
 do not exist repo-wide. Carried forward: #2698 — the blend-region section's
 restored-graph bullet re-read against `_blend_prescription`,
 `coordinator._write_round_receipt`, and `observe_restore`, and extended to name
-the household-Undo door the same rule now closes. **Scope: only the paragraphs
+the household-Undo door the same rule now closes. Carried forward: #2738 — the
+spec-verdict consumer bullet and the cloud-`flatness` "gates?" cell were both
+re-read against `_done_nudges` and the done-screen assembly, which had
+falsified them (the terminal result code overrode badge and copy on every
+post-R18 session); the bullet now names the cap and its one capped code, and
+the table cell was found true again as written. **Scope: only the paragraphs
 named above were re-verified this pass**; the rest of the live spine carries
 its 2026-08-16 reading, and the appendix's dated narrative was NOT re-verified
 and still shows the pre-#2602 five-row table, as its own status callout says
