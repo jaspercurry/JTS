@@ -241,3 +241,52 @@ success criterion in our units (dB RMS deviation on the pooled views).
   (views); prescription intake: `jasper/active_speaker/crossover_v2/`
   (`blend_prescription.py`, `prescription_spool.py`,
   `evidence_packet.py`); CLI: `jasper/cli/crossover_prescriber.py`.
+
+---
+
+## 9. Errata + post-brief evidence (appended 2026-08-19, run-log §9)
+
+Corrections to this brief's own claims, found by a verification pass over
+the banked record, plus one decisive new result. Researchers working from
+this brief should prefer the statements below where they conflict with
+the text above.
+
+1. **All nine named features measured MINIMUM-PHASE** (excess-group-delay
+   test with positive and negative synthetic controls; largest excursion
+   ≤8% of what a genuine same-frequency cancellation produces through the
+   identical pipeline; verdicts angle-invariant; all gate-stable). The
+   hypothesis that the in-window features live in a non-minimum-phase
+   summation zone is **not supported**. The EQ failures in §5 re-attribute
+   to *selectivity*: features have natural Q 3.6–6.6 (some reading Q≈12
+   at the smoothing floor), while the correction stage clamps filters to
+   Q ≤ 2.0 — every filter was ~3× wider than its target, and measured
+   filter efficiency at Q 2.0 was 28–43%, so skirt damage exceeded center
+   repair. This makes the Q clamp a *parameter under suspicion*, not
+   physics; the declared EQ floor stands until a narrow-Q round is
+   actually measured. The out-of-window dips at 4582/6245/8530 Hz
+   classified as boostable minimum-phase defects (high confidence);
+   the peaks at 4149/5396/9509 as cuttable (4149 medium — possible
+   3–7 ms-path contamination unresolved).
+2. **Per-seat spreads (§5.1):** correct values are 1037 → 0.46 dB,
+   1406 → 0.20 dB; **2057 Hz has no per-seat breakout banked** (its five
+   seat values were reproduced later by re-running the night's own tool,
+   not read from the log). The "spread 0.11" figure belongs to that
+   reconstruction, not the banked record.
+3. **The "up to 89×" magnitude split (§5.5)** belongs to a *separately
+   barred* beaming set (3608–15113 Hz, e.g. 11373 Hz = 88.9). The six
+   out-of-window features named in §5.5 split only **1.2–2.5×** across
+   angles.
+4. **Driver delay (§2):** the −350 µs woofer delay was the 2026-08-18
+   config. The baseline config this brief's numbers grade (the current
+   best-measuring one) commits **+24.06 µs on the tweeter** instead.
+5. **"Trusted band 357 Hz–16 kHz" (§3)** is an analysis convention (a
+   shipped floor constant plus an analysis edge), not a derived quantity
+   with a banked derivation.
+6. **Measured cross-capture timing stability of this rig:** after
+   alignment on a common event, sd 7.33 µs / worst 14.51 µs over 24
+   same-angle cross-session pairs (an upper bound — it sits at the
+   integer-sample quantization floor). The ±100 µs-class USB-mic jitter
+   assumed for rigs like ours is refuted here by an order of magnitude;
+   raw capture-start offsets (±54 ms) still make a common timing
+   reference mandatory for per-driver phase. See the companion brief
+   `RESEARCH-BRIEF-self-referencing-timing-2026-08-19.md`.

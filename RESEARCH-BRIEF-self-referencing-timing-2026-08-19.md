@@ -182,6 +182,18 @@ Playback clock: the Pi's DAC chain, independent of the mic clock. Room:
 ~10 ft cube, first reflection ≈7 ms, measurements gated at 7 ms, trusted
 band 357 Hz–16 kHz. Angles: turntable, 0°/±7°/±22° horizontal today
 (vertical planned). Sweep: exponential sine sweep, a few seconds.
-Measured cross-sweep timing jitter of this exact rig: **[measurement in
-flight — to be appended; treat as TBD, not assumed]**. Acoustic crossover
-region: ~0.8–3.3 kHz; the phase-accuracy bar in §3 derives from it.
+Acoustic crossover region: ~0.8–3.3 kHz; the phase-accuracy bar in §3
+derives from it.
+
+**Measured timing behavior of this exact rig (landed 2026-08-19, run-log
+§9):** raw capture-start offset scatters by ±~54 ms between captures — a
+common reference is mandatory, as assumed. But after alignment on a shared
+event, residual chain stability is **sd 7.33 µs, worst 14.51 µs across 24
+same-angle cross-session pairs** (5.3°/10.5° at 2 kHz) — and that number
+sits at the integer-sample alignment quantization floor (±0.5 sample =
+±10.4 µs at 48 kHz), so it is an **upper bound**. Two consequences for the
+research: (a) the ±100 µs-class jitter assumed in prior art for this rig
+class is refuted here by an order of magnitude; (b) the pilot method's
+error budget (§3: ≤20 µs 3σ) has real margin — the chain contributes ~7 µs
+class variance, so the open question is only the pilot *estimator's* added
+variance, not the chain's.
