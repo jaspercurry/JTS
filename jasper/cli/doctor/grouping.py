@@ -247,11 +247,17 @@ def check_grouping_snapcast_version() -> CheckResult:
     ``_resolved_jasper_voice_env`` idiom), never pins anything, and is
     warn-only — there is nothing here to enforce.
 
-    Skips (``ok``) when grouping is off (mirrors
+    Skips (``ok``) when: grouping is off (mirrors
     ``check_grouping_snapcast_installed`` — a warn about a disabled
-    subsystem's version is not actionable), when snapclient is not
-    installed, or when the probe's output cannot be parsed into a version —
-    never manufacture a warning from a fact the probe could not determine."""
+    subsystem's version is not actionable); snapclient is not installed; the
+    probe cannot even run (a timeout, a vanished binary); the probe exits
+    non-zero (e.g. a partial-upgrade linker error — the exit detail itself is
+    surfaced, since that IS the useful fact here); or its output has no
+    version-shaped token. The exit code is checked BEFORE the regex ever
+    runs — a non-zero exit's own error text can coincidentally contain a
+    version-shaped substring (a linked library's version, not snapclient's
+    own), and parsing it anyway would fabricate a comparison from a process
+    that determined nothing."""
     from ...multiroom.config import load_config as _load_grouping_config
     from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION
 
@@ -268,6 +274,14 @@ def check_grouping_snapcast_version() -> CheckResult:
         return CheckResult(
             label, "ok",
             f"could not determine the installed snapclient version: {e}",
+        )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return CheckResult(
+            label, "ok",
+            "could not determine the installed snapclient version: "
+            f"snapclient exited {proc.returncode}"
+            + (f": {detail}" if detail else ""),
         )
     match = re.search(r"\d+\.\d+\.\d+", (proc.stdout or "") + (proc.stderr or ""))
     if match is None:
