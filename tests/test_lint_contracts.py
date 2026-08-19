@@ -901,9 +901,10 @@ MAX_LINES_BY_PATH = {
     # function that owns the grade, and both #2098 and #2160 already ruled that
     # the producer — not its consumers — answers this question once.
     #
-    # 2026-08-19 (Fc/slope apply path): 8,804 -> 8,875. +71 net (148 added, 77
+    # 2026-08-19 (Fc/slope apply path): 8,804 -> 8,889. +85 net (162 added, 77
     # removed), counted rather than estimated, and ~27 of the added lines
-    # execute. What earned them, in the order the function reads:
+    # execute — the gate fix round that took it from 8,875 added prose only.
+    # What earned them, in the order the function reads:
     #    22  the derivation that REPLACED the `fc_selection` read (which took 10
     #        of the 77 removed). The apply now asks the candidate what crossover
     #        it carries instead of asking a persisted record what it claims —
@@ -926,6 +927,14 @@ MAX_LINES_BY_PATH = {
     #        argument — why it takes `accepted_sound_revision`'s session-gated
     #        shape rather than `sound_declaration_undo`'s unconditional one, and
     #        why it is cleared with the token it belongs to.
+    #    14  (gate fix round) the disclosure that the boundary is scoped to the
+    #        declaration-writing arm, and why the as-declared below-floor case
+    #        is left to re-raise raw. The gate's nit was that this PR puts two
+    #        below-floor refusals side by side and names only one; the argument
+    #        for not closing it — that converting the re-raise would make this
+    #        function the owner of how every L0 gate reads here, which is
+    #        #2736's residual to widen with tests per gate — is the kind a later
+    #        reader would otherwise "simplify" by making them symmetric.
     #    15  `_crossover_label` and its four call sites, which name a slope ONLY
     #        when the slope is what moved. The declaration write carries two
     #        parameters now, and every refusal on this path tells the household
@@ -944,7 +953,7 @@ MAX_LINES_BY_PATH = {
     # keep a capped file from growing is the next place growth goes. This file
     # learned no new fact about crossovers beyond "this apply may owe the
     # declaration a write".
-    "jasper/web/correction_crossover_v2.py": 8_875,
+    "jasper/web/correction_crossover_v2.py": 8_889,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

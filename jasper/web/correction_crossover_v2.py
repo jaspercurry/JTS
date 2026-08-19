@@ -7950,6 +7950,20 @@ def handle_v2_apply(
         # speaker is not playing and cannot be made to play. Refusing here means
         # a refused apply displaces nothing at all. See
         # ``crossover_declaration.assert_crossover_honours_declared_floor``.
+        #
+        # Scoped to THIS arm on purpose, and the resulting asymmetry is
+        # disclosed rather than closed. An as-declared apply (``change is
+        # None``) on a speaker whose declaration is ALREADY below the floor has
+        # no write to run ahead of; it falls through to the L0 emit gate, whose
+        # ``ActiveSpeakerConfigError`` the compose below re-raises RAW. Both
+        # refuse — but only one names itself. Converting that re-raise would
+        # make this function the owner of how EVERY L0 gate reads here (the
+        # unprotected-tweeter gate included), which is #2736's residual to
+        # widen with tests per gate, not this path's to take in passing. The
+        # two are also different situations: this arm refuses a change the
+        # household can still decline, that one describes a graph the speaker
+        # is already playing, whose remedy is the fleet check rather than
+        # "do not do this apply".
         try:
             assert_crossover_honours_declared_floor(candidate.source_preset)
         except CrossoverBelowDeclaredFloor as exc:
