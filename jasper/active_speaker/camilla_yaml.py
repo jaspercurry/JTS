@@ -159,8 +159,19 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 #   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
 #   latency with no benefit; and
 #   enable_rate_adjust false — a blocking slot handshake gives the rate
-#   controller nothing to adjust TO, and rate_adjust over an snd-aloop-class
-#   transport is a documented oscillation shape in this repo.
+#   controller nothing to adjust TO, and on a ring capture the request cannot be
+#   actuated in any case: a ring PCM is an ioplug, alsa-lib reports card -1 for
+#   every ioplug, so CamillaDSP builds no HCtl, finds neither the Loopback nor
+#   the UAC2-gadget mixer element, and takes the arm that does nothing. `false`
+#   is therefore what IS, stated rather than requested-and-ignored — and
+#   `capture_status.rate_adjust` echoes the REQUEST, so `true` would read
+#   plausible on the websocket while nothing moved.
+#     (The repo's snd-aloop rate-adjust OSCILLATION record is NOT the reason,
+#     though this comment used to cite it: that predicate fires only on an
+#     aloop capture carrying an ASYNC RESAMPLER — `snd_aloop_rate_adjust_
+#     oscillation_reason` returns None without one — and JTS emits no resampler
+#     on this path at all. The record neither argues for this setting nor
+#     against it.)
 #
 # The DEFAULTS are exactly the literals they replaced, so every non-ring emit is
 # byte-identical. The SIXTH emitter — the PARKED one — is excluded deliberately
