@@ -157,9 +157,13 @@ def driver_plants(
         freqs_hz = np.asarray(measurement.freqs_hz, dtype=np.float64)
         measured = np.asarray(measurement.complex_tf, dtype=np.complex128)
         if measured.shape != freqs_hz.shape:
-            raise ConfiguredPathConditioningError(
-                f"{role} response and grid disagree in shape"
-            )
+            # A plain ValueError, deliberately: ``ConfiguredPathConditioningError``
+            # carries a slug that names an ill-conditioned de-embedding and a
+            # flag that routes household-facing copy. A response and its own
+            # grid disagreeing in shape is neither — it is a caller handing in
+            # mismatched arrays, and dressing it as a conditioning refusal
+            # would put a measurement verdict on a programming error.
+            raise ValueError(f"{role} response and grid disagree in shape")
         lo_hz, hi_hz = (float(edge) for edge in measurement.band_hz)
 
         transfer = protection_by_role.get(role)

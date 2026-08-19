@@ -530,6 +530,34 @@ def test_a_pose_missing_one_commanded_role_is_dropped_rather_than_summed():
     assert sorted(predicted) == [0.0]
 
 
+def test_a_caller_bug_raises_plainly_rather_than_as_a_measurement_verdict():
+    """Mismatched arrays are a programming error, not an ill-conditioned path.
+
+    ``ConfiguredPathConditioningError`` carries a slug naming an ill-conditioned
+    de-embedding and a flag that routes household-facing copy. Reusing it for a
+    caller handing in a response and a grid of different lengths would put a
+    measurement verdict on a bug, so it stays a plain ``ValueError`` — and the
+    genuine conditioning refusals keep the shared type, asserted beside it so
+    the distinction is pinned rather than described.
+    """
+    freqs_hz = _grid()
+    with pytest.raises(ValueError, match="disagree in shape") as excinfo:
+        driver_plants(
+            [_Measurement(WOOFER, freqs_hz, np.ones(7, dtype=np.complex128))],
+            protection_by_role={},
+        )
+    assert not isinstance(excinfo.value, ConfiguredPathConditioningError)
+
+    with pytest.raises(ConfiguredPathConditioningError):
+        driver_plants(
+            [_Measurement(
+                WOOFER, freqs_hz, np.ones(freqs_hz.shape, dtype=np.complex128),
+                band_hz=(90_000.0, 95_000.0),
+            )],
+            protection_by_role={},
+        )
+
+
 def test_plants_from_one_pose_on_two_grids_raise_rather_than_vanish():
     """A caller defect must not disguise itself as an unanswerable pose.
 
