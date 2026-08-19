@@ -98,8 +98,18 @@ class DriverPlant:
     including outside the driven band. :func:`driver_plants` refuses outright
     when a bin inside the driven band is untrusted, so a plant that exists has
     a trusted driven band by construction; the mask carries the answer for
-    everywhere else, where a consumer may legitimately want to know rather than
-    be refused.
+    everywhere else.
+
+    **Nothing in this module reads ``trusted``, and that is deliberate rather
+    than an oversight** — said plainly so a reader does not have to work out
+    whether it is dead. Inside the driven band it is ``True`` by construction
+    (the refusal above guarantees it) and outside it :func:`predict_sum`
+    contributes zero, so this module cannot need it. Its consumer is the
+    objective: a grade computed over the predicted sum has to know which bins
+    the de-embedding could stand behind, and that answer is a property of the
+    CAPTURE rather than of any candidate — so it is derived once, here, where
+    the division that produced it happens, instead of being re-derived per
+    candidate by whoever grades one.
     """
 
     role: str
