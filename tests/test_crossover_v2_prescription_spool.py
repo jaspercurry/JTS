@@ -518,6 +518,33 @@ def test_an_oversized_spool_file_is_refused_on_its_size_not_its_content():
     assert caught.value.evidence["got_bytes"] > spool.SPOOL_MAX_BYTES
 
 
+def test_an_oversized_file_is_refused_without_ever_being_loaded(monkeypatch):
+    """What the STAT check uniquely does, and nothing else can.
+
+    The post-read check below also refuses an oversized document, so a test
+    that only asserted the refusal would pass with the stat check deleted — and
+    the whole point of a cap applied before parsing is that the pathological
+    file is never loaded. Pinned by making the read itself an error: reaching it
+    at all is the failure.
+    """
+    _stage(for_round_ordinal=9)
+    path = spool.prescription_spool_path()
+    path.write_text("x" * (spool.SPOOL_MAX_BYTES + 1))
+    real_read = Path.read_bytes
+
+    def _must_not_load(self, *args, **kwargs):
+        if self == path:
+            raise AssertionError("the oversized file was loaded")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", _must_not_load)
+
+    with pytest.raises(BlendPrescriptionRefused) as caught:
+        spool.take_staged_prescription(round_ordinal=9)
+
+    assert caught.value.reason == spool.SPOOL_TOO_LARGE
+
+
 def test_the_cap_is_a_property_of_the_bytes_not_of_the_stat(monkeypatch):
     """A stat that under-reports must not let an oversized file through.
 
