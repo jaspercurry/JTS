@@ -2152,6 +2152,128 @@ def test_an_unknown_spatial_word_from_a_later_build_warns_and_names_it(
     assert "applied and graded," in r.detail  # still says WHAT it checked
 
 
+# --- the result code is DISCLOSED beside the grade, and never gates it --------
+
+
+def test_a_kept_previous_result_is_disclosed_on_the_green_line(monkeypatch):
+    """The doctor and the household badge may honestly disagree about the same
+    durable state, and this pins BOTH halves of that ruling at once.
+
+    The cell: a clean, complete grade — capture ``pass``, both claims ``pass``,
+    a closed and passing spatial group — whose accountability comparison says
+    the correction was not an improvement, so the producer's ``outcome`` is
+    ``keep_previous``. The household badge reads "Keep the previous sound."
+    while this line read ``applied and graded (…capture verify=pass)`` with no
+    hint that a result code existed at all, which is what sent a support read
+    hunting for a second speaker's state.
+
+    **``ok`` is the ruling, not an oversight — argue with this test before
+    keying a warn on the result code.** Three reasons, and the disclosure below
+    is what discharges the legibility half without touching the severity half:
+
+    * This check's question is the one in its own title: was the applied
+      correction CHECKED. It was, completely, and every instrument that graded
+      the checking passed. ``outcome`` answers a different question — was the
+      result any GOOD — which has its own owner (``_post_apply_grade``) and its
+      own surface (the done screen's badge and ``/state``).
+    * A warn keyed on the code would fire on HEALTHY speakers: a session that
+      published no authorized winner, or whose VERIFY recorded no pass/fail
+      ``absolute`` claim, reaches ``inconclusive`` with every instrument that
+      graded the checking passing — see the express sibling below, which is
+      that cell. Warning there is the nanny failure, and the mirror of the
+      #2098 defect this family exists to fix.
+    * It is the house style for a fact this check observes but does not own:
+      ``check_crossover_v2_cloud_pipeline`` one screen up reports MEASURE's
+      verdict in detail while deliberately not gating on it, and
+      ``check_dac_usb_sync_mode`` says at length that it is an observation and
+      never a switch.
+    """
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={
+            "outcome": "pass",
+            "claims": {
+                "integration": {"status": "pass", "max_db": 0.7},
+                "absolute": {"status": "pass", "max_db": 0.8},
+            },
+        },
+        verify_priors={
+            "predicted_spec": {
+                "comparison": {
+                    "reason": "correction_not_an_improvement",
+                    "improvement_db": 0.1,
+                    "required_db": 0.5,
+                },
+            },
+        },
+        cloud=_r19_cloud_verify(passed=True, flatness=_R19_PASSING_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "result=keep_previous" in r.detail
+    # The grade's own facts still read exactly as before — the result code is
+    # an addition beside them, never a replacement for any of them.
+    assert "state=graded" in r.detail
+    assert "scope=spatial" in r.detail
+    assert "capture verify=pass" in r.detail
+
+
+def test_an_express_mark_verified_line_discloses_an_inconclusive_result(
+    monkeypatch,
+):
+    """The express shape, and the reason the disclosure above is not a gate:
+    mark-verified, no cloud group by design (express never walks one), capture
+    and tracking both clean — and ``inconclusive`` anyway, because no candidate
+    fingerprint was published and the crossover region carried no spec
+    tolerance for an ``absolute`` verdict. Every instrument that grades the
+    CHECKING passed, so this stays ``ok`` and simply says which result code the
+    badge is reading; a warn here would fire on a healthy commission."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="express",
+        verify={
+            "outcome": "pass",
+            "claims": {
+                "integration": {"status": "pass", "max_db": 0.7},
+                # The producer's own reason word for this shape
+                # (``crossover_v2_flow.ABSOLUTE_NO_SPEC_TOLERANCE``); only
+                # ``status`` is read here, but an invented reason string in a
+                # fixture teaches the next reader a word that does not exist.
+                "absolute": {
+                    "status": "not_evaluated",
+                    "reason": "no_spec_tolerance_for_region",
+                },
+            },
+        },
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "result=inconclusive" in r.detail
+    assert "state=mark_verified" in r.detail
+
+
+def test_a_legacy_state_with_no_result_evidence_discloses_no_result_code(
+    monkeypatch,
+):
+    """A pre-R18 durable state carries a VERIFY outcome and nothing the result
+    code is derived from, so the producer omits ``outcome`` entirely. The line
+    then says nothing about a result rather than printing a code no instrument
+    produced — the same never-fabricate-a-reading rule the spatial number
+    beside it already follows."""
+    _r19_doctor_state(monkeypatch, verify={"outcome": "pass"})
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "ok"
+    assert "result=" not in r.detail
+    assert "capture verify=pass" in r.detail
+
+
 def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     """Walking-class guard (S1, #2242 gate). ``GRADE_SPATIAL_*`` and
     ``GRADE_SCOPE_*`` are each consumed by literal membership/equality tests

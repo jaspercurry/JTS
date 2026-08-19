@@ -807,6 +807,12 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     ``complete``, plus the failing gauge's own number); this reads them and
     still re-derives nothing.
 
+    **The producer's result code rides every line that names an instrument,
+    as a disclosure and never as a gate**: this check grades the CHECKING, so
+    a ``keep_previous`` behind a clean complete grade stays ``ok`` and simply
+    says which code the household's badge is reading — see ``verify_text``
+    below for why keying severity on it would be the nanny failure.
+
     Still WARN, never FAIL, and never a revert: a failed spatial grade is a
     COMPLETED grade the household acts on at ``/correction/`` (#2160's ruling
     — grade and disclose, do not gate). An unknown ``spatial`` word from a
@@ -847,7 +853,28 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     # is the union, ``verify_outcome`` is capture and tracking health alone.
     # One local, so the word cannot be attached at one site and missed at
     # another (#2464 gate, nit 3).
-    verify_text = f"capture verify={grade.get('verify_outcome') or 'n/a'}"
+    #
+    # **``result`` is DISCLOSED here and never gates.** The producer's result
+    # code is the household's quality verdict — is the correction any GOOD —
+    # and it has its own owner (``_post_apply_grade``) and its own surface (the
+    # done screen's badge, ``/state``). This check's question is the one in its
+    # title: was the applied correction CHECKED. Those two honestly disagree —
+    # a ``keep_previous`` sitting behind a clean, complete grade printed a green
+    # line here beside a badge reading "Keep the previous sound.", with nothing
+    # saying a result code existed at all — so the fix is legibility, not
+    # severity. Keying a warn on the code would also fire on healthy speakers:
+    # a session that publishes no authorized winner, or whose VERIFY records no
+    # pass/fail ``absolute`` claim, reaches ``inconclusive`` with every
+    # instrument that graded the CHECKING passing (a worked cell of both sits
+    # in ``tests/test_doctor_correction.py``). Same posture as
+    # ``check_crossover_v2_cloud_pipeline`` above, which reports MEASURE's
+    # verdict without gating on it. Absent whenever the producer recorded no
+    # result evidence (a pre-R18 durable state): nothing is printed, never a
+    # fabricated code, matching the spatial number's own rule below.
+    verify_text = (
+        f"capture verify={grade.get('verify_outcome') or 'n/a'}"
+        + (f", result={grade.get('outcome')}" if grade.get("outcome") else "")
+    )
     if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
