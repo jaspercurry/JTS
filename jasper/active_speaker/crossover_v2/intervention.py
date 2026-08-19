@@ -114,6 +114,7 @@ from jasper.audio_measurement.program_analysis import (
     predicted_branch_sum,
     realized_branch_level_match,
     ripple_at_trim,
+    solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
@@ -210,9 +211,9 @@ _PORT_ERRORS = (
 LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 
 # How far the ripple-optimal tweeter trim may move from its ANCHORED trim
-# (raw trim + that branch's measured `correction_giveback_db`, normalized)
-# before the scan's result is treated as implausible. ANCHOR-anchored since
-# the 2026-07-24 JTS3 runs (#1668): the anchor is measured give-back, not a
+# (raw trim + that branch's measured level-band give-back, normalized) before
+# the scan's result is treated as implausible. ANCHOR-anchored since the
+# 2026-07-24 JTS3 runs (#1668): the anchor is measured give-back, not a
 # solver prediction, so it is trusted by construction and only the SCAN can
 # drift. What the guard catches is the scan wandering into the "attenuate the
 # tweeter toward silence is always flatter against a flat woofer" degenerate
@@ -1621,24 +1622,86 @@ def plan_linearization(
     woofer_span = _span(woofer_role)
     tweeter_span = _span(tweeter_role)
 
-    # ANCHORED give-back (#1668, replaces the overlap-band solve seed after the
-    # 2026-07-24 JTS3 runs). Each branch's linearized trim is its own COMMITTED
-    # raw trim plus ``LinearizationFit.correction_giveback_db`` — the fit
-    # engine's SSOT, the MEASURED before-vs-after level delta of that branch's
-    # own reference (core) band. Because the quantity added back IS the measured
-    # level change of the band being restored, this restores each branch's
-    # audible band to the pre-correction system level the raw candidate already
-    # accepted — with no flat-core assumption, no solver prediction, and no
-    # cross-branch coupling.
+    # ANCHORED give-back — measured in the SAME FRAME IT IS SPENT IN.
     #
-    # Why not the old ``solve_branch_trims(W_lin, T_lin)`` band-average seed: it
-    # averaged over the CROSSOVER OVERLAP band, which is the wrong reference for
-    # a top-octave correction on two counts — the tweeter's LR4 high-pass skirt
-    # lives there, and a power-domain mean weights the loudest (least-cut) bins
-    # hardest. Measured live 2026-07-24: it returned only 5.81 dB of a 9.27 dB
-    # spend, leaving the whole tweeter band ~3 dB low. PR-L3 later fixed the
-    # overlap-band frame itself, but the anchor stays: measured give-back beats
-    # any solver prediction for restoring a corrected branch's own level.
+    # **THE INVARIANT, and it is one sentence.** A give-back that adjusts a trim
+    # must be measured with the same estimator, in the same averaging domain,
+    # and over the SAME BANDS as the trim it adjusts and the verdict that grades
+    # that trim. Here that estimator is :func:`solve_branch_trims` over
+    # ``branch_level_bands_hz``, because that is what solved ``raw_trim_db`` and
+    # what :func:`realized_level_match` re-reads to grade the committed pair. Any
+    # other band answers a different question, and the difference lands as
+    # inter-driver level error.
+    #
+    # Two of the invariant's three legs were already enforced and the third was
+    # not. ``linearization_fit``'s give-back carries a LOCKSTEP REQUIREMENT that
+    # its average stay the trim solver's power-domain mean, whose stated reason
+    # is that otherwise "the anchored trim would systematically mis-level the
+    # branch" — and it guards ~0.3 dB of averaging-domain error. The BAND was
+    # left unmatched, and on JTS3 that cost **3.67 dB**, an order of magnitude
+    # more than the leg that was guarded. This block closes the third leg with
+    # the same argument the first two were closed with.
+    #
+    # **What went wrong when the bands did not match** (jts3, 2026-08-19,
+    # captures/wired-night-2026-08-19 §10.9). ``correction_giveback_db`` is a
+    # power mean over each driver's own CORE band; the verdict reads the
+    # crossover halves. For a compression-horn tweeter those barely overlap —
+    # core 2077-7949 Hz against a graded 1649-3297 Hz, about a third of the core
+    # band's log width — so a horn's 3-8 kHz correction bought back level where
+    # the verdict is not taken. Committed trims then carried
+    # ``giveback_t - giveback_w`` of pure inter-driver error: the tweeter shipped
+    # +3.67 dB hotter than its own raw measurement asked, the realized level
+    # landed 3.01 dB apart against a 3.0 dB tolerance, and the round was refused
+    # by 0.01 dB. Across three banked runs the raw measurement held to 0.093 dB
+    # while the anchor wandered 0.354 dB, because the wander was entirely this
+    # differential. The owner's ear reached the same verdict independently on the
+    # shipped config: "a little bright."
+    #
+    # **Why the 2026-07-24 objection does not apply to this band.** The old
+    # ``solve_branch_trims(W_lin, T_lin)`` seed was rejected because it averaged
+    # over the CROSSOVER OVERLAP band — the tweeter's LR4 high-pass skirt lives
+    # there and a power mean weights the least-cut bins hardest; measured live it
+    # returned only 5.81 dB of a 9.27 dB spend. That objection was against a
+    # frame **PR-L3 has since deleted**: the estimator no longer reads a shared
+    # overlap band at all, it reads each branch only on its own side of Fc
+    # (mirrored halves), which is the fix for exactly the skirt-weighting the
+    # objection named. The surviving rationale for the core band was "measured
+    # give-back beats any solver prediction" — and this is still a MEASURED
+    # before-vs-after delta, not a prediction. It changes the band, not the
+    # method, so that rationale is preserved rather than overturned.
+    #
+    # The 5.81-of-9.27 shortfall was also the wrong ledger to judge it by. A
+    # correction's SPEND is a headroom quantity and has its own owner
+    # (``linearization_headroom_db``, the #1808 charge). What a trim needs is the
+    # level change in the band the trim is read in. Reading one number for both
+    # is what merged the two ledgers; ``correction_giveback_db`` keeps the
+    # audible-band question and is still disclosed below, and the anchor now
+    # takes the leveling one.
+    #
+    # Both measurements go through the identical call, so the estimator's known
+    # +0.54 dB linear-grid systematic appears in each and CANCELS in the
+    # difference — a property the cross-band route could not have.
+    #
+    _pre_res_w, _pre_res_t, level_w_pre_db, level_t_pre_db = solve_branch_trims(
+        freqs,
+        responses[woofer_role].complex_tf,
+        responses[tweeter_role].complex_tf,
+        fc_hz,
+        woofer_span_hz=woofer_span,
+        tweeter_span_hz=tweeter_span,
+    )
+    _post_res_w, _post_res_t, level_w_post_db, level_t_post_db = solve_branch_trims(
+        freqs,
+        w_lin,
+        t_lin,
+        fc_hz,
+        woofer_span_hz=woofer_span,
+        tweeter_span_hz=tweeter_span,
+    )
+    level_band_giveback_db = {
+        woofer_role: float(level_w_pre_db - level_w_post_db),
+        tweeter_role: float(level_t_pre_db - level_t_post_db),
+    }
     #
     # The anchor's base is the RAW MEASURED TRIM, unconditionally. There is no
     # third term and no branch: the pair is placed where the branch solve
@@ -1680,10 +1743,10 @@ def plan_linearization(
     # NaN trim reaching the emitter.
     giveback_db = {}
     for role in (woofer_role, tweeter_role):
-        value = float(fits[role].correction_giveback_db)
+        value = float(level_band_giveback_db[role])
         if not math.isfinite(value):
             raise PlannerInputError(
-                f"correction_giveback_db[{role!r}] is not finite; the anchor's "
+                f"level-band give-back[{role!r}] is not finite; the anchor's "
                 "non-positive normalize cannot clamp a non-finite term"
             )
         giveback_db[role] = value
@@ -1765,7 +1828,22 @@ def plan_linearization(
     emit(
         "correction.crossover_v2_linearization_giveback",
         {
+            # THE ANCHOR'S TERM: the level-band give-back, measured by the same
+            # estimator over the same bands that solved the raw trim and that
+            # grade the committed pair.
             "giveback_db": {
+                role: round(float(giveback_db[role]), 3)
+                for role in (woofer_role, tweeter_role)
+            },
+            # The core-band give-back, kept BESIDE it rather than replaced by
+            # it. It answers the audible-band question (what the correction
+            # removed across the driver's own passband) and no longer places the
+            # trim. Publishing both is what makes a band-mismatch visible in one
+            # line instead of needing a fit dump: when a driver's correction is
+            # concentrated outside the graded band these two diverge, and their
+            # per-role DIFFERENCE is the inter-driver error the old anchor
+            # shipped (jts3 2026-08-19: 3.671 dB).
+            "core_band_giveback_db": {
                 role: round(float(fits[role].correction_giveback_db), 3)
                 for role in (woofer_role, tweeter_role)
             },

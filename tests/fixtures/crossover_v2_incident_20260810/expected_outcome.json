@@ -1,12 +1,11 @@
 {
   "_provenance": {
-    "anchor_replay_note": "anchor_replay re-derived 2026-08-17 for #2609: the anchor is raw trim + correction_giveback_db, shared-shift normalized non-positive (docs/active-speaker-tuning-layers-design.md, 'Anchored give-back (the trim)'). The prior values carried PR-L5's level_frame_offset_db term (woofer +1.5644, tweeter 0.0), which was the two-voter arbitration's limb and is deleted; the tweeter therefore moves -6.713 -> -5.149.",
     "bundle_dir_name": "jts3-incident-20260810-issue2291",
     "candidate_fingerprint": "3df7a4da7f33f5dfaa55866334cfaf7ebdb32bfa76dd0405f41fcc8a79d0941d",
     "derived_by": "scripts/derive-crossover-incident-fixture.py",
     "derived_on": "2026-08-10",
     "incident": "2026-08-10 jts3 crossover prescription incident (issue #2291)",
-    "note": "What the incident actually emitted, and what the speaker then measured. anchor_replay is DERIVED from the banked scalars; every other number here is banked verbatim.",
+    "note": "What the incident actually emitted, and what the speaker then measured. Every number here is banked verbatim. anchor_replay is NOT derived by this script — see the comment above it — and is carried through from the committed fixture unchanged.",
     "source_sha256": {
       "baseline_profile.json": "a5880af45bbcb91a7be51be7df5171736037336ff1b6972ecbb4d5ae83f611fb",
       "build.txt": "86124335f1e61a99b28aab3311817f12b5ebc17422a237017d2ced68b1530190",
@@ -21,16 +20,17 @@
     "stage2_relay_session_id": "cap_VlE2sNj8v5ego--UqbNDUQ"
   },
   "anchor_replay": {
-    "anchor_drift_db": 7.86435074107762,
+    "anchor_drift_db": 6.612404343367252,
     "anchored_trim_db": {
-      "tweeter": -5.148628622709409,
+      "tweeter": -6.400575020419777,
       "woofer": 0.0
     },
-    "derived": true,
-    "normalize_shift_db": 1.3353587252830579,
+    "derived": false,
+    "normalize_shift_db": 3.915754254149385,
+    "note": "anchor_replay re-derived 2026-08-19 for the give-back band fix: the anchor is raw trim + that branch's LEVEL-BAND give-back (measured by solve_branch_trims over branch_level_bands_hz, the bands that solve raw_trim_db and that realized_level_match grades), shared-shift normalized non-positive (docs/active-speaker-tuning-layers-design.md, 'Anchored give-back (the trim)'). PRIOR VALUES used LinearizationFit.correction_giveback_db, the same measured delta over each driver's own CORE band; spending a core-band number against a crossover-band verdict is the defect, and on this incident it moves the tweeter -5.149 -> -6.401, i.e. 1.252 dB CLOSER to the raw measured -10.885 the incident's own solve asked for. The 2026-08-17 re-derivation for #2609 (which moved -6.713 -> -5.149 by deleting PR-L5's level_frame_offset_db) is unchanged and still upstream of this one.",
     "unnormalized_anchor_db": {
-      "tweeter": -3.813269897426351,
-      "woofer": 1.3353587252830579
+      "tweeter": -2.484820766270392,
+      "woofer": 3.915754254149385
     }
   },
   "applied": {

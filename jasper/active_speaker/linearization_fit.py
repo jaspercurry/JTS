@@ -785,14 +785,29 @@ class LinearizationFit:
     # power-domain-approximate — exact only for a flat core, up to ~1.1 dB
     # under-return on a 12 dB-tilted woofer-shaped core.)
     #
-    # This is the SSOT for the trim give-back: ``crossover_v2.intervention.
-    # plan_linearization`` anchors each branch's linearized trim at
-    # ``raw_trim + correction_giveback_db``, returning the branch's audible band
-    # to its pre-correction system level — no solver prediction, no overlap-band
-    # averaging (measured live on JTS3 2026-07-24: the overlap-band route
-    # returned only 5.81 dB of a 9.27 dB spend, because the tweeter's LR4 skirt
-    # power-weights that average toward the least-cut region and the shelf's
-    # wide RBJ transition is not at full depth there).
+    # This is the SSOT for the AUDIBLE-BAND give-back: what this branch's own
+    # correction removed across the driver's own core band, returning that band
+    # to its pre-correction system level.
+    #
+    # **It does NOT place the trim, and has not since the band-mismatch fix.**
+    # ``crossover_v2.intervention.plan_linearization`` anchors the trim on a
+    # give-back measured over ``branch_level_bands_hz`` — the bands that solved
+    # the raw trim and that grade the committed pair — because a give-back spent
+    # against a trim must be measured in that trim's frame. This number is
+    # published beside it as ``core_band_giveback_db`` and answers the
+    # audible-band question instead. On a driver whose correction sits mostly
+    # outside the graded band the two legitimately diverge (jts3 horn tweeter,
+    # 2026-08-19: 6.656 dB here against 2.99 dB in the graded band), and using
+    # this one to place the trim shipped the tweeter 3.67 dB hot. Full account:
+    # that module's anchor block.
+    #
+    # (Historical note, because it is the reason this band was chosen: the
+    # pre-PR-L3 alternative averaged over the shared CROSSOVER OVERLAP band and
+    # returned only 5.81 dB of a 9.27 dB spend on JTS3 2026-07-24, because the
+    # tweeter's LR4 skirt power-weights that average toward the least-cut region
+    # and the shelf's wide RBJ transition is not at full depth there. PR-L3
+    # deleted that frame — the estimator now reads each branch on its own side
+    # of Fc — so the objection does not carry to the level-band route above.)
     #
     # Note the realization fit-quality gate bounds the correction's SHAPE only
     # over [onset, ceiling]; below the onset the realized cascade may diverge
@@ -1080,12 +1095,22 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     module's top docstring for the no-cross-module-private-imports convention),
     evaluated against a boolean mask on this module's own fit grid rather than
     a (lo, hi) frequency pair. LOCKSTEP REQUIREMENT: this MUST stay the same
-    power-domain mean the trim solver uses, because
-    :attr:`LinearizationFit.correction_giveback_db` is consumed by
-    ``crossover_v2.intervention.plan_linearization`` as the level a branch's own
-    correction removed — if the two averaging domains disagreed, the anchored
-    trim would systematically mis-level the branch (a linear-dB mean here
-    would read ~0.3 dB different on a non-flat correction).
+    power-domain mean the trim solver uses, so that
+    :attr:`LinearizationFit.correction_giveback_db` and the trim frame remain
+    directly comparable quantities (a linear-dB mean here would read ~0.3 dB
+    different on a non-flat correction).
+
+    **The reason this requirement exists is now enforced one layer up, and
+    completely.** Its original wording said the domains must match or "the
+    anchored trim would systematically mis-level the branch" — correct, and it
+    guarded ~0.3 dB of averaging-domain error while leaving the BAND unmatched,
+    which cost 3.67 dB on a horn tweeter (jts3, 2026-08-19). The anchor no
+    longer consumes this number: it measures its own give-back over
+    ``branch_level_bands_hz`` with the trim solver's own estimator, so the
+    domain, the band, and the estimator all match by construction rather than
+    by a comment asking them to. This requirement is kept anyway — the two
+    give-backs are published side by side and a reader compares them, which is
+    only meaningful while they share an averaging domain.
 
     Returns 0.0 for an empty mask (no band to average — an honest no-op).
     """

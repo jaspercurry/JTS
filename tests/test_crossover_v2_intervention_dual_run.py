@@ -78,7 +78,14 @@ from tests.test_crossover_v2_incident_replay import (
 )
 
 #: The incident's own scan drift: the ripple optimum sat this far below the
-#: level-preserving anchor, 0.300 dB past the 6.0 dB sanity margin.
+#: level-preserving anchor, 0.612 dB past the 6.0 dB sanity margin.
+#:
+#: DERIVED from the anchor rather than written down, and that is load-bearing.
+#: The scan's ABSOLUTE result is the banked −13.013 dB; the stub reproduces it
+#: as ``seed + delta``, so the delta has to move whenever the anchor does. It
+#: has moved twice — 6.300 dB when the anchor carried PR-L5's offset, 7.864 dB
+#: after #2609 deleted it, 6.612 dB now that the give-back is measured in the
+#: trim's own band — and the banked −13.013 dB never moved at all.
 INCIDENT_SCAN_DELTA_DB = float(COMMITTED_DB["tweeter"]) - float(
     ANCHORED_DB["tweeter"]
 )
@@ -176,8 +183,14 @@ def test_the_replay_cannot_emit_the_incident_trim_through_a_rejected_path(monkey
     """#2291's literal acceptance criterion, as one assertion.
 
     "The exact jts3 replay cannot emit the −13.013 dB tweeter trim through a
-    'trim_rejected' path." It emits −6.713 dB with a strategy that says the
+    'trim_rejected' path." It emits −6.401 dB with a strategy that says the
     scan was rejected and the anchor committed.
+
+    That anchored number has moved as the anchor's own definition did, most
+    recently −5.149 → −6.401 when the give-back moved into the band the trim is
+    read in — 1.252 dB CLOSER to the −10.885 this session's own raw solve asked
+    for. The criterion it serves has not moved: whatever the anchor is, it is
+    not the rejected scan's pair.
     """
     _install_stubs(monkeypatch, scan_delta_db=INCIDENT_SCAN_DELTA_DB)
     plan = _pure(_sections_at(SELECTED_FC_HZ))
@@ -937,16 +950,26 @@ def test_a_non_finite_giveback_is_refused_before_the_anchor_uses_it(
 ):
     """The anchor's OTHER term, guarded at its own call site.
 
-    ``correction_giveback_db`` is produced by the fit rather than handed in, so
-    it cannot be guarded in ``__post_init__`` with the trims — the check lives
-    where the value enters the anchor. Driven here by making the fit return the
-    bad value, which is the only way to reach that door.
+    The give-back is measured rather than handed in, so it cannot be guarded in
+    ``__post_init__`` with the trims — the check lives where the value enters
+    the anchor. Driven here by making the measurement return the bad value,
+    which is the only way to reach that door.
+
+    **The term this guards moved bands, and the guard moved with it.** It used
+    to read ``LinearizationFit.correction_giveback_db`` (the fit's core-band
+    number) and is now the level-band give-back measured through
+    ``solve_branch_trims`` over the bands the verdict grades — so the injection
+    site is the estimator, not the fit. The property under test is unchanged:
+    a non-finite give-back must be refused BEFORE ``anchor_trims``, because the
+    non-positive normalize is a ``max`` and a ``max`` against NaN is inert
+    (demonstrated in the sibling test above).
     """
-    real_fit = iv.fit_driver_linearization
+    real_solve = iv.solve_branch_trims
 
-    def _bad_giveback(*args, **kwargs):
-        return replace(real_fit(*args, **kwargs), correction_giveback_db=bad)
+    def _bad_level(*args, **kwargs):
+        trim_w, trim_t, _level_w, _level_t = real_solve(*args, **kwargs)
+        return trim_w, trim_t, 0.0, bad
 
-    monkeypatch.setattr(iv, "fit_driver_linearization", _bad_giveback)
+    monkeypatch.setattr(iv, "solve_branch_trims", _bad_level)
     with pytest.raises(iv.PlannerInputError, match="finite"):
         _pure(_sections_at(SELECTED_FC_HZ))
