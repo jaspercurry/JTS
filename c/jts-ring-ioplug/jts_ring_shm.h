@@ -132,6 +132,13 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     `systemctl restart` — which skips RestartSec entirely — cannot race
 //     this window: it is gated on no-active-session (ring closed) and the
 //     new process's first ring open waits for the next session, human-paced
+//   - jasper-snapclient.service    RestartSec=3  — the grouping ingress ring
+//     on a BONDED endpoint (snapclient writes it, that box's CamillaDSP
+//     captures the same PCM). The only writer here whose ring is neither a
+//     renderer lane nor the coupling's, and the one that had to move: it
+//     shipped at 2 s, ON the boundary, with StartLimitBurst=4 — below even
+//     systemd's default. A follower whose leader is powered off retries into
+//     this window, so the burst is what decides whether it re-joins or parks
 //   - correction lane: EPHEMERAL aplay writers (wizards / correction web /
 //     operator CLIs via jasper.audio_measurement.correction_lane) — no unit,
 //     no auto-respawn, so no RestartSec to clear. The only programmatic
@@ -150,8 +157,11 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 //     instruction), and the correction pipeline's capture-quality checks
 //     reject the truncated/absent capture the spanned iteration produces.
 // Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
-// and by tests/test_renderer_ring_lanes.py (each renderer's RestartSec against
-// this constant).
+// and by tests/test_renderer_ring_lanes.py, which walks THIS ENUMERATION —
+// every entry names a real unit, its RestartSec matches what that unit
+// declares, and the renderer lanes are all present — so a writer added here
+// with a cadence nobody checked, or removed from here while it still writes,
+// fails there.
 //
 // One consequence worth naming: the two can legitimately disagree. A paused
 // renderer reports `writer_alive:false` while still holding the ring, and that

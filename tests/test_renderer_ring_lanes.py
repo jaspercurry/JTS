@@ -1830,18 +1830,101 @@ def test_every_ring_writing_renderer_tolerates_a_burst_of_refusals(label):
     )
 
 
-def test_the_ring_liveness_window_is_enumerated_for_every_writer():
-    """The C header enumerates each ring writer's cadence. A writer missing from
-    that list is one nobody checked — which is how bluealsa-aplay reached P6b
-    as the third writer with its cadence unknown to the repo."""
-    header = (REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
-    # Match the ENUMERATION ENTRY's shape — `//   - <unit>  RestartSec=<n>` —
-    # not a bare substring. A substring test passes on any incidental mention
-    # (the drop-in's own PATH contains the unit name), which made the first
-    # version of this test survive deleting the entry it exists to require.
-    entries = dict(
-        re.findall(r"^//\s+-\s+(\S+)\s+RestartSec=(\d+)", header, re.M)
+def _enumerated_writer_cadences() -> dict[str, str]:
+    """``{unit: RestartSec}`` as the C header's writer enumeration declares it.
+
+    Matches the ENUMERATION ENTRY's shape — `//   - <unit>  RestartSec=<n>` —
+    not a bare substring. A substring test passes on any incidental mention
+    (the drop-in's own PATH contains the unit name), which made the first
+    version of this guard survive deleting the entry it exists to require.
+    """
+    header = RING_SHM_HEADER.read_text()
+    entries = dict(re.findall(r"^//\s+-\s+(\S+)\s+RestartSec=(\d+)", header, re.M))
+    assert entries, "the header's writer-cadence enumeration parsed empty"
+    return entries
+
+
+def _unit_text_by_name(name: str) -> str:
+    """The shipped unit (or drop-in) text for an ENUMERATED writer's name.
+
+    The lane-keyed `_unit_text` cannot serve here: this guard walks the header,
+    which enumerates writers that are not renderer lanes at all. Accepts the
+    header's own spelling, with or without the `.service` suffix.
+    """
+    candidates = [name] if name.endswith(".service") else [name, f"{name}.service"]
+    for candidate in candidates:
+        direct = REPO / "deploy" / "systemd" / candidate
+        if direct.exists():
+            return direct.read_text()
+        dropin_dir = REPO / "deploy" / "systemd" / f"{candidate}.d"
+        if dropin_dir.is_dir():
+            texts = [p.read_text() for p in sorted(dropin_dir.glob("*.conf"))]
+            if texts:
+                return "\n".join(texts)
+    raise AssertionError(
+        f"the header enumerates {name!r} as a ring writer, but no unit or "
+        "drop-in of that name ships in deploy/systemd/ — the enumeration names "
+        "something this repo does not install"
     )
+
+
+def test_every_enumerated_ring_writer_declares_the_cadence_the_header_claims():
+    """THE ENUMERATION IS EXECUTABLE, and the header is its single owner.
+
+    "Every ring writer's cadence, so the set is checkable rather than assumed"
+    is a claim the header makes about itself; this walks it. For each entry:
+    the unit ships, its RestartSec is the enumerated value, that value is not
+    BELOW the liveness window, and it declares its own start limit instead of
+    inheriting systemd's default 5-in-10s.
+
+    Why the header and not `RENDERER_LANES`: this guard used to iterate the
+    lanes, so it structurally could not see a writer that is not a renderer —
+    and jasper-snapclient became exactly that. The companion below keeps every
+    lane present in the enumeration, so neither direction can rot.
+
+    RestartSec is compared with `>=`, not `>`, because one enumerated writer
+    genuinely sits ON the window: `jasper-camilla` restarts in 2 s, which the
+    header records in so many words. Below the window is the shape this pin
+    exists to refuse — a respawn that races its own predecessor's frozen
+    heartbeat into -EBUSY. A writer that must strictly CLEAR the window says so
+    where it is decided: the renderer lanes in the parametrized pin above, and
+    jasper-snapclient in its own unit contract test.
+    """
+    window = _ring_liveness_window_sec()
+    for unit, enumerated in sorted(_enumerated_writer_cadences().items()):
+        text = _unit_text_by_name(unit)
+        declared = re.search(r"^RestartSec=(\d+(?:\.\d+)?)", text, re.M)
+        assert declared, (
+            f"the header enumerates {unit} at RestartSec={enumerated} but the "
+            "unit declares none — the PACKAGED cadence is not visible to this "
+            "repo, so it must be overridden here rather than assumed"
+        )
+        assert declared.group(1) == enumerated, (
+            f"the header says {unit} restarts in {enumerated}s but the unit "
+            f"declares {declared.group(1)}s"
+        )
+        assert float(declared.group(1)) >= window, (
+            f"{unit} restarts in {declared.group(1)}s but a killed ring writer "
+            f"stays refused for up to {window}s — a faster respawn races its "
+            "own predecessor into EBUSY and can trip the start limit"
+        )
+        burst = re.search(r"^StartLimitBurst=(\d+)", text, re.M)
+        interval = re.search(r"^StartLimitIntervalSec=(\d+)", text, re.M)
+        assert burst and interval, (
+            f"{unit} writes a ring and must declare its own start limit; "
+            "systemd's default 5-in-10s parks the unit on an EBUSY burst"
+        )
+
+
+def test_the_ring_liveness_window_is_enumerated_for_every_writer():
+    """Every renderer lane appears in the header's enumeration. A writer missing
+    from that list is one nobody checked — which is how bluealsa-aplay reached
+    P6b as the third writer with its cadence unknown to the repo.
+
+    The ADD direction (an entry whose unit or cadence is wrong) is the
+    companion above; this is the DROP direction, keyed on the lane registry.
+    """
+    entries = _enumerated_writer_cadences()
     for lane in rl.RENDERER_LANES:
         if lane.unit is None:
             # Ephemeral writers have no unit cadence to enumerate; the
@@ -1854,17 +1937,9 @@ def test_the_ring_liveness_window_is_enumerated_for_every_writer():
             "entry beside the liveness constant it must clear"
         )
     assert "jasper-camilla" in entries, "the Ring B writer dropped out"
-    # And each enumerated value must match what the unit really declares, or
-    # the enumeration is decoration.
-    for lane in rl.RENDERER_LANES:
-        if lane.unit is None:
-            continue  # enumerated by cadence class above, not by RestartSec
-        declared = re.search(r"^RestartSec=(\d+)", _unit_text(lane), re.M)
-        assert declared, lane.unit
-        assert entries[lane.unit] == declared.group(1), (
-            f"the header says {lane.unit} restarts in {entries[lane.unit]}s but "
-            f"the unit declares {declared.group(1)}s"
-        )
+    assert "jasper-snapclient.service" in entries, (
+        "the grouping-ingress writer dropped out"
+    )
 
 
 def test_the_arm_asks_the_group_predicate_even_for_a_root_renderer(

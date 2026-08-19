@@ -30,6 +30,11 @@ because the shipped ring PCMs are raw ``type jts_ring`` rather than
 **T-3 — the installer places it, and the deploy does not unlink its ring
 file.** The second half is the asymmetry with the coupling's three ring files
 and is deliberate; the reason is in that test's docstring.
+
+**T-6 — the writer's unit adopts the ring-writer contract.** Once snapclient
+writes this ring it inherits the platform's cadence rules: a restart slower
+than the writer-liveness window, a start limit a burst of refusals cannot
+reach, and the umask that leaves the ring file group-writable for its reader.
 """
 
 from __future__ import annotations
@@ -56,6 +61,7 @@ _GROUPING_CONF = _REPO / "deploy" / "alsa" / "conf.d" / "62-jts-ring-grouping.co
 _IOPLUG_C = _REPO / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 _IOPLUG_H = _REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
 _RING_PLATFORM_SH = _REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
+_SNAPCLIENT_UNIT = _REPO / "deploy" / "systemd" / "jasper-snapclient.service"
 
 
 def _read(path: Path) -> str:
@@ -456,10 +462,10 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
       ``write_build_manifest``. That is the trap
       ``tests/test_install_ring_platform_sequencing.py`` documents, and it makes
       unlinking those three MANDATORY.
-    * ``jasper-snapclient.service`` carries ``StartLimitBurst=4`` and NO
+    * ``jasper-snapclient.service`` carries ``StartLimitBurst=6`` and NO
       ``StartLimitAction``, by explicit design — its own unit comment reads
       *"follower degrades, visible; never reboots the household."* A stale
-      ``grouping.ring`` costs four retries and one ``failed`` unit, surfaced on
+      ``grouping.ring`` costs six retries and one ``failed`` unit, surfaced on
       ``/state`` and by ``jasper-doctor``. Unlinking buys nothing against an
       outcome that is already bounded and already visible.
 
@@ -496,4 +502,80 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     assert "grouping.ring" in platform, (
         "the rm -f block must name grouping.ring's deliberate absence, or the "
         "next reader adds it as an oversight"
+    )
+
+
+# --- T-6: the writer's unit adopts the ring-writer contract -----------------
+
+
+def test_snapclient_restarts_slower_than_the_ring_liveness_window():
+    """The grouping ring's WRITER must clear the ring's own liveness window.
+
+    A SIGKILLed writer's flock drops with its fd, but it leaves ``writer_pid``
+    stamped and its heartbeat frozen-fresh, so the secondary guard refuses a new
+    writer for up to that window. snapclient shipped at ``RestartSec=2s`` — ON
+    the boundary — which is a respawn racing its own predecessor into an
+    avoidable ``-EBUSY``.
+
+    The bound is READ FROM THE C CONSTANT that owns it, through the same parse
+    the renderer-lane pin uses. A bespoke "2 s" here would be a second owner of
+    a number the header decides, and the two would drift the first time it
+    moved.
+    """
+    from tests.test_renderer_ring_lanes import _ring_liveness_window_sec
+
+    text = _read(_SNAPCLIENT_UNIT)
+    m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)s?$", text, re.M)
+    assert m, "jasper-snapclient.service declares no RestartSec"
+    window = _ring_liveness_window_sec()
+    assert float(m.group(1)) > window, (
+        f"jasper-snapclient.service restarts in {m.group(1)}s but a killed ring "
+        f"writer stays refused for up to {window}s"
+    )
+
+
+def test_snapclient_tolerates_a_burst_of_ring_refusals():
+    """RestartSec alone does not save the unit: systemd's default limit (5 starts
+    in 10 s) is what turns a transient refusal loop into a PARKED unit, and a
+    parked snapclient is a bonded endpoint that stays silent until an operator
+    intervenes.
+
+    The same ``> 5`` bar every ring-writing renderer satisfies
+    (``test_every_ring_writing_renderer_tolerates_a_burst_of_refusals``). This
+    unit sat at 4 — below even systemd's own default — because it was written
+    before it wrote a ring. Raising it PRESERVES the unit's stated anti-storm
+    intent: still bounded, still ``StartLimitAction`` unset, so a follower whose
+    leader is powered off still degrades visibly instead of rebooting.
+    """
+    text = _read(_SNAPCLIENT_UNIT)
+    burst = re.search(r"^StartLimitBurst=(\d+)$", text, re.M)
+    interval = re.search(r"^StartLimitIntervalSec=(\d+)$", text, re.M)
+    assert burst and interval, "jasper-snapclient.service declares no start limit"
+    assert int(burst.group(1)) > 5, (
+        f"StartLimitBurst={burst.group(1)} is no better than systemd's default"
+    )
+    # A DIRECTIVE line, not a substring: the unit's own comment explains the
+    # default in prose, and a substring test would read that as a declaration.
+    assert re.search(r"^StartLimitAction=", text, re.M) is None, (
+        "a follower degrades, visible; it never reboots the household"
+    )
+
+
+def test_snapclient_creates_the_ring_group_writable():
+    """``UMask=0007``, because whichever end opens first CREATES the ring file.
+
+    ``ring_mapping_open`` creates at 0660, and the process umask masks it:
+    systemd's default 0022 lands 0640 — group-READABLE but not group-WRITABLE —
+    while BOTH ends of a ring write its header (the reader stamps ``read_seq``
+    and its heartbeat). The setgid directory fixes the file's GROUP; only the
+    umask fixes its MODE.
+
+    Scoped to the unit this transport adds. ``deploy/tmpfiles/jts-ring.conf``
+    states the rule for every ring writer and the rule is not currently exact —
+    ``jasper-camilla.service`` writes Ring B and carries no ``UMask`` anywhere
+    in its own file. That is a real gap in an AXIS-1 unit, recorded rather than
+    fixed here, and this test deliberately does not assert the fleet-wide claim.
+    """
+    assert re.search(r"^UMask=0007$", _read(_SNAPCLIENT_UNIT), re.M), (
+        "jasper-snapclient.service writes a ring and must set UMask=0007"
     )

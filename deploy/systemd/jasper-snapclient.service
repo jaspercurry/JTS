@@ -23,8 +23,18 @@ Wants=jasper-camilla.service
 # and self-rejoins when the leader returns. After the burst systemd
 # stops retrying (default StartLimitAction=none). Design doc §7:
 # "follower degrades, visible; never reboots the household."
+#
+# The burst is SIX because this unit writes a ring: a SIGKILLed ring
+# writer leaves its heartbeat frozen, so a successor is refused with
+# -EBUSY for up to JTS_RING_WRITER_LIVENESS_TIMEOUT_NS
+# (c/jts-ring-ioplug/jts_ring_shm.h), and a start limit that a burst of
+# those refusals can reach PARKS the unit — the one non-self-healing
+# shape. `RestartSec` below clears the window; the burst is what keeps a
+# run of them from parking an endpoint. Raising 4 -> 6 PRESERVES the
+# anti-storm intent above (still bounded, still no reboot) and gives a
+# follower whose leader is powered off six tries in 300 s instead of four.
 StartLimitIntervalSec=300
-StartLimitBurst=4
+StartLimitBurst=6
 
 [Service]
 # Output-side audio: never swap to zram. Slice enforces
@@ -43,6 +53,15 @@ EnvironmentFile=-/etc/jasper/jasper.env
 # targets 127.0.0.1, a follower's targets cfg.leader_addr.
 EnvironmentFile=-/run/jasper-grouping/snapcast-args.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
+# On the ACTIVE-endpoint path below this unit WRITES a ring, and whichever end
+# opens `/dev/shm/jts-ring/grouping.ring` first creates it, 0660 & ~umask.
+# systemd's default 0022 lands 0640 — group-READABLE, not group-WRITABLE — and
+# BOTH ends of a ring write its header (the reader stamps read_seq and its
+# heartbeat). The setgid directory (mode 3775, group jts-ring) fixes the file's
+# GROUP; only the umask fixes its MODE. `deploy/tmpfiles/jts-ring.conf` states
+# the rule for every ring writer. No `SupplementaryGroups=jts-ring` beside it:
+# this unit declares no `User=` and runs as root, like bluealsa-aplay.
+UMask=0007
 # TWO player shapes. Which one this box gets is decided by
 # jasper-grouping-reconcile and baked into $JASPER_SNAPCLIENT_ARGS
 # above (`jasper.multiroom.reconcile._assemble_args`, branching on
@@ -58,15 +77,22 @@ UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 #
 #   ACTIVE-speaker endpoint (active_endpoint true — an active follower
 #   or an active-speaker leader, distributed-active Slice 3) — `--player
-#   alsa --soundcard <GROUPING_LOOPBACK_PLAYBACK>`, default
-#   `hw:Loopback,0,6`. That IS an ALSA sink, and it does not contend for
-#   the DAC: it writes the grouping round-trip snd-aloop pair, this
-#   box's CamillaDSP captures the paired `hw:Loopback,1,6` and runs the
-#   crossover inside the bonded path, and outputd still owns the DAC.
-#   The dac_content FIFO lane is unused on this path.
+#   alsa --soundcard jts_ring_grouping`
+#   (`jasper.multiroom.grouping_ring.GROUPING_RING_PCM`). That IS an ALSA
+#   sink, and it does not contend for the DAC: it writes the grouping
+#   ring, this box's CamillaDSP captures THE SAME PCM (one ring device,
+#   opened in both directions) and runs the crossover inside the bonded
+#   path, and outputd still owns the DAC. The dac_content FIFO lane is
+#   unused on this path.
 ExecStart=/usr/bin/snapclient $JASPER_SNAPCLIENT_ARGS
 Restart=on-failure
-RestartSec=2s
+# Longer than the ring's writer-liveness window
+# (JTS_RING_WRITER_LIVENESS_TIMEOUT_NS = 2 s, c/jts-ring-ioplug/jts_ring_shm.h):
+# a killed ring writer's frozen heartbeat refuses a successor for up to that
+# window, so a 2 s respawn would race its own predecessor into an avoidable
+# -EBUSY. Enumerated beside that constant with every other ring writer's
+# cadence; tests/test_renderer_ring_lanes.py holds the two together.
+RestartSec=3s
 # Snapclient logs connection-refused loops once per second while a bonded
 # follower waits for its leader to return. Preserve the first burst and
 # journald's suppression summary, but don't let optional grouping consume the
