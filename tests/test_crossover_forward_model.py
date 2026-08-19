@@ -593,6 +593,42 @@ def test_every_angle_is_predicted_and_keyed_by_its_own_degrees():
     assert all(value.shape == freqs_hz.shape for value in predicted.values())
 
 
+def test_a_branch_operator_is_evaluated_once_per_grid_not_once_per_angle(
+    monkeypatch,
+):
+    """The reuse that makes an offline search affordable, counted.
+
+    ``branch_operator`` takes no angle precisely so a pose sweep does not pay
+    for it repeatedly. Six poses on one grid must cost TWO evaluations, not
+    twelve — and a claim about cost is worth a count rather than a comment.
+
+    Also the correctness half: caching keyed on the grid must not change any
+    answer, so the cached run is asserted equal to an uncached one.
+    """
+    import jasper.active_speaker.crossover_v2.forward_model as fm
+
+    freqs_hz = _grid()
+    angles = (-22.0, -7.0, 0.0, 7.0, 22.0, 45.0)
+    plants = _ideal_plants(freqs_hz, angles_deg=angles)
+    uncached = predict_sum(_two_way(), plants)
+
+    calls: list[str] = []
+    real = fm.branch_operator
+
+    def counted(candidate, role, grid, **kwargs):
+        calls.append(role)
+        return real(candidate, role, grid, **kwargs)
+
+    monkeypatch.setattr(fm, "branch_operator", counted)
+    cached = fm.predict_sum(_two_way(), plants)
+
+    assert len(calls) == 2, f"expected one per role, saw {calls}"
+    assert sorted(calls) == [TWEETER, WOOFER]
+    assert sorted(cached) == sorted(uncached) == sorted(angles)
+    for angle_deg in angles:
+        assert np.array_equal(cached[angle_deg], uncached[angle_deg])
+
+
 # --- candidate legality: the walls, by name ---------------------------------
 
 

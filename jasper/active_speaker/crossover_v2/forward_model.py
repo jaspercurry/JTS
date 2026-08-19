@@ -291,12 +291,21 @@ def predict_sum(
     which is ordinary; plants from one pose on two different grids means they
     came from different captures, which is a caller defect, and silently
     folding it into the same absence would hide it.
+
+    **Each branch operator is evaluated once per grid, not once per angle**,
+    which is the point of :func:`branch_operator` taking no angle. Six poses on
+    one grid cost two operator evaluations rather than twelve, and a search
+    running thousands of candidates over those poses pays the difference every
+    time. Keyed on the grid's own bytes rather than on object identity, so two
+    equal-but-distinct arrays share correctly and two different grids never
+    collide.
     """
     by_angle: dict[float, list[DriverPlant]] = {}
     for plant in plants:
         by_angle.setdefault(float(plant.angle_deg), []).append(plant)
 
     named = set(candidate.roles)
+    operators: dict[tuple[str, bytes], np.ndarray] = {}
     predicted: dict[float, np.ndarray] = {}
     for angle_deg, angle_plants in sorted(by_angle.items()):
         present = {plant.role: plant for plant in angle_plants}
@@ -310,10 +319,14 @@ def predict_sum(
         total = np.zeros(grid.shape, dtype=np.complex128)
         for role in sorted(named):
             plant = present[role]
-            operator = branch_operator(
-                candidate, role, plant.freqs_hz,
-                linearization_by_role=linearization_by_role,
-            )
+            key = (role, plant.freqs_hz.tobytes())
+            operator = operators.get(key)
+            if operator is None:
+                operator = branch_operator(
+                    candidate, role, plant.freqs_hz,
+                    linearization_by_role=linearization_by_role,
+                )
+                operators[key] = operator
             total = total + np.where(plant.driven, plant.plant * operator, 0.0)
         predicted[angle_deg] = total
     return predicted
