@@ -900,7 +900,61 @@ MAX_LINES_BY_PATH = {
     # No seam to cut: this is one predicate and one ordering inside the single
     # function that owns the grade, and both #2098 and #2160 already ruled that
     # the producer — not its consumers — answers this question once.
-    "jasper/web/correction_crossover_v2.py": 8_804,
+    #
+    # 2026-08-19 (Fc/slope apply path): 8,804 -> 8,875. +71 net (148 added, 77
+    # removed), counted rather than estimated, and ~27 of the added lines
+    # execute. What earned them, in the order the function reads:
+    #    22  the derivation that REPLACED the `fc_selection` read (which took 10
+    #        of the 77 removed). The apply now asks the candidate what crossover
+    #        it carries instead of asking a persisted record what it claims —
+    #        one artifact answers, so the declaration and the emitted graph
+    #        agree by construction rather than by cross-check. The extra lines
+    #        over the read they replace are the retry resume (once the
+    #        declaration carries the candidate's crossover, NOTHING live can
+    #        still say what it displaced, so the inverse has to be persisted at
+    #        the moment of the save) and the guard that refuses a review holding
+    #        a revision without one.
+    #    15  the hearing-safety BOUNDARY, 8 of them executing. This is the one
+    #        deliberate duplication in the whole path: the L0 emit gate refuses
+    #        the same condition, but it can only refuse AFTER the declaration
+    #        write (`baseline_profile`'s staleness guard requires that
+    #        ordering), so on its own it would leave `/sound` declaring a corner
+    #        the speaker is not playing and cannot be made to play. The seven
+    #        prose lines are that ordering argument, which is exactly the thing
+    #        a later reader would delete as redundant.
+    #    16  the two lines of the new review-scoped state key plus their
+    #        argument — why it takes `accepted_sound_revision`'s session-gated
+    #        shape rather than `sound_declaration_undo`'s unconditional one, and
+    #        why it is cleared with the token it belongs to.
+    #    15  `_crossover_label` and its four call sites, which name a slope ONLY
+    #        when the slope is what moved. The declaration write carries two
+    #        parameters now, and every refusal on this path tells the household
+    #        what is currently sitting in Sound — so on a slope-only accept the
+    #        old copy would have named the one number that did not change. Used
+    #        by the Undo sentences and the four apply refusals alike, because
+    #        they are the same sentence about the same declaration.
+    #     3  the remaining net across `_parse_sound_declaration_undo` (which
+    #        SHRANK — it delegates the crossover half to the same reader the
+    #        apply path resumes from) and `_restore_sound_declaration`'s swap.
+    # A seam WAS cut, and it is where the growth would otherwise have been: the
+    # geometry vocabulary, the difference between a declaration and a preset,
+    # the record Undo reads back, and the floor predicate all went to the new
+    # `jasper/active_speaker/crossover_declaration.py`, capped at birth just
+    # below for the reason the relay and wired providers are: a module born to
+    # keep a capped file from growing is the next place growth goes. This file
+    # learned no new fact about crossovers beyond "this apply may owe the
+    # declaration a write".
+    "jasper/web/correction_crossover_v2.py": 8_875,
+    # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
+    # DECLARES a crossover to be, what a measured candidate's preset says the
+    # same crossover is, and the difference between them — plus the declared-
+    # floor boundary the apply path checks before it writes either. It exists so
+    # `correction_crossover_v2` above could gain a two-parameter declaration
+    # write without gaining the vocabulary behind it, and it should grow only
+    # when that vocabulary does: a THIRD spelling of a crossover, or a second
+    # protected role. Deriving-and-refusing only — the single durable writer
+    # stays in `sound_setup`, in both directions.
+    "jasper/active_speaker/crossover_declaration.py": 407,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
@@ -949,7 +1003,16 @@ MAX_LINES_BY_PATH = {
     # made it reachable behind a closed post-apply group. The remaining lines
     # say which state file reaches it — one carrying no terminal result code,
     # since a result code overrides this copy outright.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_117,
+    #
+    # ...and 4,117 -> 4,127 (Fc/slope apply path, 2026-08-19), +10 and ZERO
+    # executable. The stage-1 Apply button's `uses_alternative` is now a SECOND
+    # reading of a question the apply path answers from the candidate itself.
+    # The two agree on every shape reachable today, so the honest response is
+    # neither to change the label logic nor to leave the coupling unwritten:
+    # the comment says exactly which producer would make them disagree, and
+    # that a third reading here is the wrong repair. A latent second source of
+    # truth on a household-facing control is worth ten lines to keep visible.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_127,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

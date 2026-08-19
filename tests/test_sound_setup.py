@@ -3367,6 +3367,7 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
 def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
     monkeypatch, tmp_path: Path,
 ) -> None:
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from jasper.active_speaker.design_draft import load_design_draft
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _manual_settings
@@ -3393,11 +3394,15 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
     })
     original_confirmation = original["driver_safety_profile"]["confirmation"]
 
-    saved = sound_setup.apply_measured_crossover_frequency(
+    saved = sound_setup.apply_measured_crossover_geometry(
         expected_revision=1,
         between_roles=("woofer", "tweeter"),
-        configured_hz=5500,
-        selected_hz=5750,
+        configured=CrossoverGeometry(
+            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
+        selected=CrossoverGeometry(
+            fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
     )
 
     assert saved["revision"] == 2
@@ -3408,21 +3413,26 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
     assert saved["driver_safety_profile"]["confirmation"] == original_confirmation
     assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
     with pytest.raises(ValueError, match="another session"):
-        sound_setup.apply_measured_crossover_frequency(
+        sound_setup.apply_measured_crossover_geometry(
             expected_revision=1,
             between_roles=("woofer", "tweeter"),
-            configured_hz=5750,
-            selected_hz=6000,
+            configured=CrossoverGeometry(
+                fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+            ),
+            selected=CrossoverGeometry(
+                fc_hz=6000, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+            ),
         )
     assert load_design_draft()["revision"] == 2
 
 
-def test_apply_measured_crossover_frequency_saves_durably(
+def test_apply_measured_crossover_geometry_saves_durably(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """#2292 scope 2: apply_measured_crossover_frequency (the crossover-accept
+    """#2292 scope 2: apply_measured_crossover_geometry (the crossover-accept
     seam) fsyncs its design-draft write; an ordinary wizard design-draft save
     does not."""
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _manual_settings
 
@@ -3451,13 +3461,210 @@ def test_apply_measured_crossover_frequency_saves_durably(
     })
     assert fsync_calls == []  # ordinary wizard save: no fsync
 
-    sound_setup.apply_measured_crossover_frequency(
+    sound_setup.apply_measured_crossover_geometry(
         expected_revision=1,
         between_roles=("woofer", "tweeter"),
-        configured_hz=5500,
-        selected_hz=5750,
+        configured=CrossoverGeometry(
+            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
+        selected=CrossoverGeometry(
+            fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
     )
     assert len(fsync_calls) == 2  # crossover-accept seam: file fsync + dir fsync
+
+
+def test_apply_measured_crossover_geometry_writes_slope_only_change(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The declaration is three fields, not one: a candidate re-measured at the
+    SAME corner but a different slope must still write (and still fsync) --
+    "frequency didn't move" is not license to treat the accept as a no-op."""
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24,
+        "confidence": "medium",
+    }]
+    sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {},
+        "confirm_safety_profile": True,
+    })
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    saved = sound_setup.apply_measured_crossover_geometry(
+        expected_revision=1,
+        between_roles=("woofer", "tweeter"),
+        configured=CrossoverGeometry(
+            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
+        selected=CrossoverGeometry(
+            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
+        ),
+    )
+
+    candidate = saved["manual_settings"]["crossover_candidates"][0]
+    assert candidate["frequency_hz"] == 5500
+    assert candidate["slope_db_per_octave"] == 48
+    assert len(fsync_calls) == 2  # crossover-accept seam: file fsync + dir fsync
+
+
+def test_apply_measured_crossover_geometry_writes_frequency_and_slope_together(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A candidate can be re-measured at a new corner AND a new slope in the
+    same accept; the writer must land both fields rather than the first one
+    that happens to differ."""
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24,
+        "confidence": "medium",
+    }]
+    sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {},
+        "confirm_safety_profile": True,
+    })
+
+    saved = sound_setup.apply_measured_crossover_geometry(
+        expected_revision=1,
+        between_roles=("woofer", "tweeter"),
+        configured=CrossoverGeometry(
+            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+        ),
+        selected=CrossoverGeometry(
+            fc_hz=6000, filter_type="Linkwitz-Riley", slope_db_per_octave=48
+        ),
+    )
+
+    candidate = saved["manual_settings"]["crossover_candidates"][0]
+    assert candidate["frequency_hz"] == 6000
+    assert candidate["slope_db_per_octave"] == 48
+
+
+def test_apply_measured_crossover_geometry_refuses_when_declared_slope_moved(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The compare-and-swap binds on all three declared fields, not just
+    ``frequency_hz``: a live slope that no longer matches what ``configured``
+    claims must refuse even though the corner itself still lines up. Proves
+    the widened CAS actually reads slope rather than only frequency."""
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "slope_db_per_octave": 24,
+        "confidence": "medium",
+    }]
+    sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {},
+        "confirm_safety_profile": True,
+    })
+
+    with pytest.raises(
+        ValueError, match="Sound changed since this measurement; review afresh"
+    ):
+        sound_setup.apply_measured_crossover_geometry(
+            expected_revision=1,
+            between_roles=("woofer", "tweeter"),
+            # fc_hz matches the live declaration (5500); slope does not (the
+            # live entry still says 24, this claims it was measured at 48).
+            configured=CrossoverGeometry(
+                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
+            ),
+            selected=CrossoverGeometry(
+                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+            ),
+        )
+
+
+def test_apply_measured_crossover_geometry_refuses_when_declared_slope_absent(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A declared candidate that carries no ``slope_db_per_octave`` at all
+    cannot be reconciled into a :class:`CrossoverGeometry`, so the writer must
+    refuse rather than complete the missing field with the caller's own
+    guess -- the same refusal as a genuine mismatch, not a silent fill-in."""
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        # slope_db_per_octave deliberately absent.
+        "confidence": "medium",
+    }]
+    sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": {},
+        "confirm_safety_profile": True,
+    })
+
+    with pytest.raises(
+        ValueError, match="Sound changed since this measurement; review afresh"
+    ):
+        sound_setup.apply_measured_crossover_geometry(
+            expected_revision=1,
+            between_roles=("woofer", "tweeter"),
+            configured=CrossoverGeometry(
+                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
+            ),
+            selected=CrossoverGeometry(
+                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
+            ),
+        )
 
 
 def _dual_apple_hardware() -> dict:

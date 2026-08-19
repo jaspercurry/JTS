@@ -396,6 +396,57 @@ def _normalise_filter_type(raw: Any) -> str | None:
     return None
 
 
+#: The declaration spelling this module compiles from, one per preset
+#: ``target_type``. The INVERSE of :func:`_normalise_filter_type`, kept beside it
+#: so one module owns the mapping in both directions -- a second table anywhere
+#: else is a second answer to "what does Sound call this filter".
+_DECLARATION_FILTER_TYPES = ("Linkwitz-Riley",)
+
+
+def declaration_filter_type(target_type: Any) -> str | None:
+    """What Sound must declare for this module to compile ``target_type``.
+
+    ``None`` when no declared spelling compiles to it -- never a guess. The
+    answer is *verified* through :func:`_normalise_filter_type` rather than
+    asserted, so the pair cannot drift: a spelling that stops compiling stops
+    being returned.
+    """
+
+    for spelling in _DECLARATION_FILTER_TYPES:
+        if _normalise_filter_type(spelling) == target_type:
+            return spelling
+    return None
+
+
+def same_declared_filter_type(left: Any, right: Any) -> bool:
+    """Whether two declared filter-type spellings mean the same filter here.
+
+    Compiled, not compared as text: ``"LR"``, ``"linkwitz riley"`` and
+    ``"Linkwitz-Riley"`` are one filter to this module, and a consumer that
+    compared the raw strings would read a household's own spelling as a
+    crossover change. A spelling this module cannot compile is not the same as
+    anything, itself included — it is not a filter yet.
+    """
+
+    compiled = _normalise_filter_type(left)
+    return compiled is not None and compiled == _normalise_filter_type(right)
+
+
+def declaration_slope_db_per_octave(order: Any) -> float | None:
+    """What Sound must declare for this module to compile ``order``.
+
+    The INVERSE of :func:`_slope_to_lr_order`, verified through it for the same
+    reason :func:`declaration_filter_type` is: ``order * 6`` is only the right
+    answer while that function still reads it back as ``order``. ``None`` for an
+    order this module refuses to compile (anything outside 2 / 4 / 8).
+    """
+
+    if isinstance(order, bool) or not isinstance(order, int):
+        return None
+    slope = float(order) * 6.0
+    return slope if _slope_to_lr_order(slope) == order else None
+
+
 def _driver_spec_from_preview(role: str, raw: Any) -> DriverSpec:
     driver = raw if isinstance(raw, dict) else {}
     model = str(driver.get("model") or role).strip() or role

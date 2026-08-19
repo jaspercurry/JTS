@@ -3209,30 +3209,62 @@ final `capture_result` before the page's ~250 ms poll reads it.
 
 ### Recommending an Fc
 
-> **Dormant since 2026-08-18.** The sweep that gathers this evidence fires only
-> in a session that walks the lateral poses, and that walk is paused (see
-> "Stage 1" above and the `STAGE1_INCLUDES_LATERAL` flag comment). A shipped
-> round therefore produces no `fc_selection`, always takes the configured-Fc
-> path below, and never renders **Use N Hz and apply**. Nothing here was
-> removed or changed: re-arming the walk re-arms all of it. The section
-> describes what runs when it is armed.
+> **The sweep that RECOMMENDS an Fc is dormant since 2026-08-18.** It fires
+> only in a session that walks the lateral poses, and that walk is paused (see
+> "Stage 1" above and the `STAGE1_INCLUDES_LATERAL` flag comment), so a shipped
+> round produces no `fc_selection` and never renders **Use N Hz and apply**.
+> Nothing here was removed: re-arming the walk re-arms all of it.
+>
+> **The apply path below is NOT gated on that record** (2026-08-19). It asks
+> the candidate being applied what crossover it carries and compares that with
+> what `/sound` declares, so any producer of a candidate measured somewhere
+> other than the declaration reaches it — the dormant sweep today, whatever
+> supersedes it next — with no further wiring. A shipped round still writes
+> nothing to Sound, because its candidate is measured at exactly the declared
+> crossover, which is the same outcome by a different route.
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
 tells the household which one measured best. A configured-Fc winner keeps the
 existing **Apply and verify** path unchanged. An alternative winner offers one
 exact action — **Use N Hz and apply** — with no copy/paste step.
 
-The declared crossover in `/sound` remains Fc's only writer. The action first
-asks Sound to save that exact measured Fc against the draft revision captured
-when the measurement opened, then reopens Sound's current draft/preview and
-passes the same candidate-specific preset through `baseline_profile`'s existing
-apply transaction. A stale Sound revision refuses before DSP. If Sound saves
-but DSP fails before load or proves rollback, the screen says saved/not applied
-and a retry skips the already-completed Sound save. An unconfirmed transaction
-instead says its current DSP result is unknown and asks the household to review
-the speaker state before retrying. There is no automatic next-Fc loop and no
-cross-service rollback of Sound on an apply failure; **Keep current sound**
-remains a non-mutating exit.
+The declared crossover in `/sound` remains the crossover's only writer, and
+`jasper.active_speaker.crossover_declaration` is where the two spellings of one
+crossover — the declaration's `frequency_hz`/`filter_type`/`slope_db_per_octave`
+and a preset's `fc_hz`/`target_type`/`order` — are compared. When they differ,
+the apply first asks Sound to save the candidate's crossover against the draft
+revision captured when the measurement opened, then reopens Sound's current
+draft/preview and passes the same candidate-specific preset through
+`baseline_profile`'s existing apply transaction. That ordering is required, not
+incidental: `baseline_profile`'s `measured_candidate_preset_mismatch` guard is a
+whole-preset equality, so the declaration must already carry the candidate's
+crossover before the recompose. A stale Sound revision refuses before DSP. If
+Sound saves but DSP fails before load or proves rollback, the screen says
+saved/not applied and a retry skips the already-completed Sound save (the
+inverse it would otherwise lose is persisted in the same state write as the
+revision that save produced). An unconfirmed transaction instead says its
+current DSP result is unknown and asks the household to review the speaker
+state before retrying. There is no automatic next-Fc loop and no cross-service
+rollback of Sound on an apply failure; **Keep current sound** remains a
+non-mutating exit.
+
+**Frequency AND slope, through one writer.** `sound_setup.
+apply_measured_crossover_geometry` carries both, because slope compiles into
+`CrossoverRegion.order` and therefore fails the same equality guard a moved
+corner does. Its compare-and-swap checks all three declared fields; a
+declaration that omits any of them is left alone rather than completed with a
+number nobody declared.
+
+**A crossover below the tweeter's declared protection floor is refused BEFORE
+the declaration is written.** The L0 emit gate refuses the same condition, but
+it can only do so after that write (see the ordering above), which would leave
+`/sound` declaring a corner the speaker is not playing and cannot be made to
+play. So the apply path re-checks the shared predicate
+(`driver_protection.protection_highpass_floor_satisfied`, against
+`test_signal_plan`'s two owner-supplied numbers) at the boundary and refuses
+with `reason=crossover_below_declared_protection_floor`, displacing nothing.
+This is the one deliberate duplication on the path: the proposer, the boundary
+and the emitter check one rule against three different failures.
 
 **Undo reverses the declaration too, or says why it did not** (#2292). Because
 that accept WRITES Sound, an Undo that reloaded only the DSP graph left the
@@ -3240,10 +3272,12 @@ speaker playing one crossover while `/sound` declared another — and the next
 session reads that declaration as its configured Fc. So a successful apply
 records the inverse of its own Sound write in the durable v2 state
 (`sound_declaration_undo`: the revision the accept produced, the driver pair,
-the value it wrote, the value Sound declared before it), and
-`handle_v2_restore` replays it backwards through the SAME in-process
-`apply_measured_crossover_frequency` writer — Sound stays Fc's only writer, and
-no cross-service hop is involved.
+and both the geometry it wrote and the geometry Sound declared before it —
+frequency, filter type and slope on each side), and `handle_v2_restore` replays
+it backwards through the SAME in-process `apply_measured_crossover_geometry`
+writer — Sound stays the crossover's only writer, no cross-service hop is
+involved, and the slope comes back with the frequency because one writer wrote
+both. The household sentence names the slope only when the slope is what moved.
 
 **One state write owns both halves of an Undo.** `observe_apply_success` writes
 `sound_declaration_undo` on the same line-pair as `pre_apply_profile`, and
@@ -5761,6 +5795,17 @@ against the code in the same diff — the prelude now announces a SESSION
 (`courtesy_prelude_for_phase`) and `DEFAULT_CLOUD_VERIFY_POSITIONS` sits at its
 floor of 5. **The date below is deliberately NOT bumped**: nothing outside
 those sections was re-verified.
+
+Addendum 2026-08-19 (Fc/slope apply path): "Recommending an Fc" was rewritten
+against the code in the same diff. Three claims in it had become false: the
+apply is no longer gated on `fc_selection` (it derives the change from the
+candidate's own preset, so the dormancy of the sweep no longer implies the
+dormancy of the route); the declaration writer carries slope as well as
+frequency and is now `apply_measured_crossover_geometry`; and a crossover below
+the tweeter's declared protection floor is refused at the apply boundary,
+before anything is written. The Undo paragraph gained the geometry the record
+now carries. **The date below is deliberately NOT bumped**: nothing outside
+that section was re-verified.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock

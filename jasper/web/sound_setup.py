@@ -83,7 +83,10 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+
+if TYPE_CHECKING:  # import-time cost paid by nobody; the value crosses at runtime
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
 # correction_play_device: the lane's one transport reader (P6c-ii) — the
 # static COMMISSION_TONE_ALSA_DEVICE alias dissolved with the ring-lane flip;
@@ -2339,7 +2342,7 @@ def _active_speaker_design_draft_save_payload(
 
     ``durable`` is a caller-only knob (never read from ``raw``, so an HTTP
     body can't set it): the crossover-accept seam
-    (:func:`apply_measured_crossover_frequency`) opts in, ordinary wizard
+    (:func:`apply_measured_crossover_geometry`) opts in, ordinary wizard
     edits keep the cheaper default.
     """
 
@@ -2422,20 +2425,38 @@ def _active_speaker_design_draft_save_payload(
     return payload
 
 
-def apply_measured_crossover_frequency(
+def apply_measured_crossover_geometry(
     *, expected_revision: int, between_roles: tuple[str, str],
-    configured_hz: float, selected_hz: float,
+    configured: "CrossoverGeometry", selected: "CrossoverGeometry",
 ) -> dict[str, Any]:
-    """Write a measured Fc onto the Sound declaration. Durable: every write
-    through this function is fsynced before it is visible.
+    """Write a measured crossover onto the Sound declaration. Durable: every
+    write through this function is fsynced before it is visible.
 
     Two production callers, both accept/apply-seam actions on the Sound
-    declaration: ``handle_v2_apply``'s alternative-Fc accept (the forward
+    declaration: ``handle_v2_apply``'s measured-crossover accept (the forward
     write), and ``_restore_sound_declaration``'s Undo leg (the SAME write run
-    backwards, with ``configured_hz``/``selected_hz`` swapped, to put the
+    backwards, with ``configured``/``selected`` swapped, to put the
     declaration back to what it said before the accept). Both correctly get
     the durable write -- there is no separate, cheaper path into this
-    function."""
+    function.
+
+    **Frequency AND slope, through one writer.** The declaration states a
+    crossover as three fields, and a candidate measured at a different slope is
+    as unreconcilable with the saved declaration as one measured at a different
+    corner (``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard
+    is a whole-preset equality, and slope compiles into ``CrossoverRegion.
+    order``). Widening this writer keeps that one write, one fsync and one Undo
+    leg; a second writer for slope would be a second way to change the
+    crossover, which is exactly what the declaration route exists to avoid.
+
+    The compare-and-swap covers all three fields for the same reason: what it
+    defends is "Sound still says what this review measured", and a slope edited
+    between review and apply falsifies that as completely as a retuned corner.
+    """
+    from jasper.active_speaker.crossover_declaration import (
+        declared_crossover_geometry,
+        matching_declared_candidate_index,
+    )
     from jasper.active_speaker.design_draft import load_design_draft
 
     draft = load_design_draft(topology=load_output_topology())
@@ -2444,18 +2465,18 @@ def apply_measured_crossover_frequency(
         raise ValueError("Sound has no manual crossover setting to update")
     raw = manual.get("crossover_candidates")
     candidates = list(raw) if isinstance(raw, list) else []
-    matches = [
-        i for i, item in enumerate(candidates) if isinstance(item, Mapping)
-        and tuple(item.get("between_roles") or ()) == between_roles]
-    if len(matches) != 1:
+    index = matching_declared_candidate_index(candidates, between_roles)
+    if index is None:
         raise ValueError("Sound's matching crossover setting is missing or ambiguous")
-    index, current_hz = matches[0], candidates[matches[0]].get("frequency_hz")
-    if (isinstance(current_hz, bool)
-            or not isinstance(current_hz, (int, float))
-            or not math.isclose(float(current_hz), configured_hz, abs_tol=0.05)):
+    current = declared_crossover_geometry(draft, between_roles)
+    if current is None or not current.matches(configured):
         raise ValueError("Sound changed since this measurement; review afresh")
     updated_candidates = [dict(item) for item in candidates]
-    updated_candidates[index]["frequency_hz"] = float(selected_hz)
+    updated_candidates[index]["frequency_hz"] = float(selected.fc_hz)
+    updated_candidates[index]["filter_type"] = selected.filter_type
+    updated_candidates[index]["slope_db_per_octave"] = float(
+        selected.slope_db_per_octave
+    )
     return _active_speaker_design_draft_save_payload({
         "expected_revision": expected_revision,
         "driver_research_request": draft.get("driver_research_request"),

@@ -1415,6 +1415,15 @@ def test_stage_1_plans_no_pre_apply_cloud_and_one_entry_baseline(monkeypatch):
 _PERSISTED_TOP_LEVEL_KEYS = {
     "accepted_phases",
     "accepted_sound_revision",
+    # Deliberate widening (Fc/slope apply path, 2026-08-19). What the accept
+    # DISPLACED in the ``/sound`` declaration, written in the same state write
+    # as the revision above and scoped to exactly that token — so it crosses
+    # with `accepted_sound_revision`'s session gate, not `pre_apply_profile`'s
+    # unconditional one. It has to cross at all because once the declaration
+    # carries the candidate's crossover, nothing live can still say what it
+    # replaced, and a retry (which skips the completed Sound save) still owes
+    # Undo that inverse.
+    "accepted_sound_declaration_change",
     "applied",
     "apply_blocked",
     "attempts_loop",

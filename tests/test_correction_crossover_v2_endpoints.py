@@ -4848,9 +4848,17 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
         },
         "sound_design_revision": 3,
         "accepted_sound_revision": 4,
+        "accepted_sound_declaration_change": {
+            "between_roles": ["woofer", "tweeter"],
+            "applied_hz": 2750.0, "previous_hz": 2500.0,
+            "applied_filter_type": "Linkwitz-Riley",
+            "previous_filter_type": "Linkwitz-Riley",
+            "applied_slope_db_per_octave": 24.0,
+            "previous_slope_db_per_octave": 24.0,
+        },
         "sound_declaration_undo": {
             "sound_revision": 4, "between_roles": ["woofer", "tweeter"],
-            "applied_hz": 2250.0, "previous_hz": 2500.0,
+            "applied_hz": 2750.0, "previous_hz": 2500.0,
         },
     })
     v2host.observe_restore()
@@ -4882,6 +4890,10 @@ def test_observe_restore_clears_applied_candidate_and_pre_apply_profile():
     assert state["measure"] is None
     assert state["sound_design_revision"] is None
     assert state["accepted_sound_revision"] is None
+    # The retry-resume inverse, scoped to the token above and cleared with it.
+    # It describes what an accept displaced in ``/sound``; an Undo has just put
+    # that back, so a survivor is an instruction to re-displace it.
+    assert state["accepted_sound_declaration_change"] is None
     # #2292's field is the fifth. It is carried forward UNCONDITIONALLY by
     # persist_conductor_state (it has ``pre_apply_profile``'s lifetime), so a
     # record that survived an Undo would be resurrected on the next re-arm and
@@ -8611,8 +8623,67 @@ def _run6_measured_candidate(preset):
     )
 
 
-def _seed_alternative_apply(monkeypatch, tmp_path, *, selected_hz=2250.0):
-    """A configured draft plus the exact alternative candidate under review."""
+def _emitted_crossover_filters(cam) -> dict[str, tuple[float, int]]:
+    """``{Linkwitz-Riley filter type: (freq, order)}`` from the graph that LOADED.
+
+    Read out of the CamillaDSP config the fake controller was actually handed
+    — the far end of the chain this seam keeps honest: declaration written,
+    preset recomposed from it, YAML emitted, config loaded. Asserting only
+    what ``/sound`` declares proves the first link and takes the other three
+    on trust, and "the two agree by construction" is a claim about all four.
+    """
+    import yaml
+
+    config = yaml.safe_load(Path(cam.path).read_text())
+    return {
+        str(spec["parameters"]["type"]): (
+            float(spec["parameters"]["freq"]), int(spec["parameters"]["order"]),
+        )
+        for spec in (config.get("filters") or {}).values()
+        if str((spec.get("parameters") or {}).get("type", "")).startswith(
+            "LinkwitzRiley"
+        )
+    }
+
+
+def _apply_issue_ids(payload) -> set[str]:
+    """Every issue id an apply payload names, in either shape it names them.
+
+    ``handle_v2_apply`` hands a blocker back as the singular ``issue`` and the
+    seam's own list as ``issues``. An assertion that reads only one of the two
+    can pass because it looked in the wrong place, which is exactly the
+    reassurance a "this guard did NOT fire" test must not give.
+    """
+    named = [payload.get("issue")] + list(payload.get("issues") or [])
+    return {
+        str(item.get("id") or item.get("code") or "")
+        for item in named
+        if isinstance(item, dict)
+    }
+
+
+def _seed_alternative_apply(
+    monkeypatch, tmp_path, *, selected_hz=2750.0, selected_order=None,
+):
+    """A configured draft plus the exact alternative candidate under review.
+
+    **The alternative moves UP, and it has to.** This fixture's tweeter
+    declares a protective high-pass floor, and ``handle_v2_apply`` re-checks
+    that floor against the candidate BEFORE it writes the declaration. Raising
+    a corner can never cross a floor, so 2750 Hz is legal wherever the fixture
+    happens to put that floor and stays well under the woofer's 5000 Hz usable
+    ceiling. Lowering one walks straight at it: a downward seed would be a
+    fixture whose legality is an accident of a number declared in another
+    file, and where it is illegal, every test built on it proves nothing
+    except that the refusal fires. The downward case gets its own test
+    (:func:`test_a_below_floor_apply_is_refused_before_sound_is_written`).
+
+    ``selected_order`` moves the declared SLOPE instead of, or as well as, the
+    corner. Sound declares a crossover as three fields and one writer owns all
+    three, so a candidate measured at a different order asks the declaration
+    to change exactly as a retuned corner does. ``None`` keeps the configured
+    order (4, i.e. 24 dB/octave).
+    """
     from jasper.active_speaker.design_draft import build_design_draft
     from tests.test_active_speaker_baseline_profile import _draft
 
@@ -8640,9 +8711,12 @@ def _seed_alternative_apply(monkeypatch, tmp_path, *, selected_hz=2250.0):
         crossover_regions=tuple(
             replace(
                 region,
+                # The id embeds the ROUNDED corner, so a slope-only change
+                # deliberately keeps the id it already had.
                 id=(f"{region.lower_driver}_{region.upper_driver}_"
                     f"{int(round(selected_hz))}hz"),
                 fc_hz=selected_hz,
+                order=region.order if selected_order is None else selected_order,
             )
             for region in configured_preset.crossover_regions
         ),
@@ -8686,9 +8760,20 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
 
     assert payload["status"] == "applied", payload
     assert cam.loads == 1
+    # The declaration is written BEFORE the recompose, which is the whole
+    # reason the seam's whole-preset equality guard passes here: a candidate
+    # measured at 2750 Hz against a draft still declaring 2500 Hz would be
+    # refused ``measured_candidate_preset_mismatch``.
+    assert "measured_candidate_preset_mismatch" not in _apply_issue_ids(payload)
     assert load_design_draft()["manual_settings"]["crossover_candidates"][0][
         "frequency_hz"
-    ] == 2250.0
+    ] == 2750.0
+    # …and the speaker is PLAYING it. The declaration and the emitted graph
+    # agreeing is the whole promise of deriving the write from the candidate.
+    assert _emitted_crossover_filters(cam) == {
+        "LinkwitzRileyLowpass": (2750.0, 4),
+        "LinkwitzRileyHighpass": (2750.0, 4),
+    }
     state = v2host.load_v2_state()
     assert state["accepted_sound_revision"] == 2
     assert state["applied"] is True
@@ -8696,7 +8781,7 @@ def test_alternative_apply_saves_sound_then_loads_exact_candidate_once(
 
 def test_alternative_apply_saves_sound_and_preview_durably(monkeypatch, tmp_path):
     """#2292 scope 2: accepting an alternative Fc fsyncs FOUR writes at the
-    accept/apply seam -- the Sound declaration (apply_measured_crossover_frequency),
+    accept/apply seam -- the Sound declaration (apply_measured_crossover_geometry),
     the crossover preview regenerated from it (ensure_crossover_preview_ready),
     the applied baseline profile (persist_applied_baseline_profile), and
     observe_apply_success's own v2-state write -- one file fsync + one
@@ -8731,7 +8816,7 @@ def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
     saves = 0
-    original_save = sound.apply_measured_crossover_frequency
+    original_save = sound.apply_measured_crossover_geometry
 
     def counted_save(**kwargs):
         nonlocal saves
@@ -8743,7 +8828,7 @@ def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
             "severity": "blocker", "code": "forced", "message": "forced",
         }]}
 
-    monkeypatch.setattr(sound, "apply_measured_crossover_frequency", counted_save)
+    monkeypatch.setattr(sound, "apply_measured_crossover_geometry", counted_save)
     monkeypatch.setattr(baseline, "apply_baseline_profile", blocked)
     request = {"expected_candidate_fingerprint": candidate.fingerprint,
                "candidate": candidate.to_dict()}
@@ -8752,7 +8837,7 @@ def test_alternative_blocked_apply_is_honest_and_retry_does_not_resave_sound(
     second = _apply(request, _bg_run_async, _FakeApplyCam)
 
     assert first["status"] == second["status"] == "blocked"
-    assert "2250 Hz is saved in Sound" in first["error"]
+    assert "2750 Hz is saved in Sound" in first["error"]
     assert "retry" in second["error"]
     assert saves == 1
 
@@ -8792,7 +8877,7 @@ def test_alternative_safety_refusal_after_sound_save_never_touches_camilla(
 
     monkeypatch.setattr(v2host, "_assert_stage_2_can_open", refuse_stage_2)
     with pytest.raises(
-        v2host.CrossoverV2Refused, match="2250 Hz is saved in Sound but was not applied",
+        v2host.CrossoverV2Refused, match="2750 Hz is saved in Sound but was not applied",
     ):
         _apply(
             {"expected_candidate_fingerprint": candidate.fingerprint,
@@ -8814,7 +8899,7 @@ def test_alternative_camilla_failure_reports_sound_saved_and_allows_retry(
         raise RuntimeError("Camilla unavailable")
 
     with pytest.raises(
-        v2host.CrossoverV2Refused, match="2250 Hz is saved in Sound but was not applied",
+        v2host.CrossoverV2Refused, match="2750 Hz is saved in Sound but was not applied",
     ):
         _apply(
             {"expected_candidate_fingerprint": candidate.fingerprint,
@@ -8831,9 +8916,12 @@ def test_alternative_apply_failed_is_non_success_and_retry_does_not_resave(
     import jasper.active_speaker.baseline_profile as baseline
     import jasper.web.sound_setup as sound
 
-    candidate = _seed_alternative_apply(monkeypatch, tmp_path, selected_hz=1750.6)
+    # A fractional corner on purpose: the refusal copy runs every frequency
+    # through one formatter, and a value that rounds to a different integer is
+    # the only thing that catches a caller reaching past it.
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path, selected_hz=2750.6)
     saves = 0
-    original_save = sound.apply_measured_crossover_frequency
+    original_save = sound.apply_measured_crossover_geometry
 
     def counted_save(**kwargs):
         nonlocal saves
@@ -8848,7 +8936,7 @@ def test_alternative_apply_failed_is_non_success_and_retry_does_not_resave(
             "severity": "blocker", "code": "load_failed", "message": "no load",
         }]}
 
-    monkeypatch.setattr(sound, "apply_measured_crossover_frequency", counted_save)
+    monkeypatch.setattr(sound, "apply_measured_crossover_geometry", counted_save)
     monkeypatch.setattr(baseline, "apply_baseline_profile", apply_failed)
     request = {"expected_candidate_fingerprint": candidate.fingerprint,
                "candidate": candidate.to_dict()}
@@ -8856,7 +8944,7 @@ def test_alternative_apply_failed_is_non_success_and_retry_does_not_resave(
     for _attempt in range(2):
         with pytest.raises(
             v2host.CrossoverV2Refused,
-            match="1750.6 Hz is saved in Sound but was not applied",
+            match="2750.6 Hz is saved in Sound but was not applied",
         ):
             _apply(request, _bg_run_async, _FakeApplyCam)
 
@@ -9005,7 +9093,7 @@ def test_alternative_sound_save_cannot_mark_a_replacement_review(
     import jasper.web.sound_setup as sound
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
-    original_save = sound.apply_measured_crossover_frequency
+    original_save = sound.apply_measured_crossover_geometry
 
     def save_then_replace_review(**kwargs):
         saved = original_save(**kwargs)
@@ -9017,7 +9105,7 @@ def test_alternative_sound_save_cannot_mark_a_replacement_review(
         return saved
 
     monkeypatch.setattr(
-        sound, "apply_measured_crossover_frequency", save_then_replace_review,
+        sound, "apply_measured_crossover_geometry", save_then_replace_review,
     )
     with pytest.raises(v2host.CrossoverV2Refused, match="review was replaced"):
         _apply(
@@ -9031,6 +9119,194 @@ def test_alternative_sound_save_cannot_mark_a_replacement_review(
     assert state["session_id"] == "fresh-review"
     assert state["candidate"]["fingerprint"] == "fresh-fingerprint"
     assert "accepted_sound_revision" not in state
+
+
+def test_a_below_floor_apply_is_refused_before_sound_is_written(
+    monkeypatch, tmp_path, caplog,
+):
+    """A refused apply must displace NOTHING — and the only way to promise
+    that is to refuse before the durable write, not after it.
+
+    The apply saves the Sound declaration first because the seam's whole-preset
+    equality guard demands the declaration already carry the candidate's
+    crossover. So the L0 emit gate, which refuses this same below-floor
+    condition, can only refuse once ``/sound`` has already been moved: the
+    graph is correctly rejected and the household is left with a declaration
+    naming a crossover the speaker is not playing and cannot be made to play.
+    The failure this pins is that ordering, not the refusal — a boundary check
+    that ran one line later would still raise, and would still be broken.
+
+    **1500 Hz is chosen, not tidied.** It sits below any declared floor this
+    fixture's tweeter has carried, so the pin survives the floor moving in the
+    file that owns it; a value nearer the configured 2500 Hz corner would stop
+    being below the floor the next time that number is retuned, and this test
+    would then pass by measuring nothing. Nothing here asserts what the floor
+    IS — only that a refusal names one and says how to clear it.
+    """
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    candidate = _seed_alternative_apply(monkeypatch, tmp_path, selected_hz=1500.0)
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(
+            v2host.CrossoverV2Refused,
+            match=(
+                "it crosses at 1500 Hz, below the tweeter's own declared "
+                "protective high-pass floor of"
+            ),
+        ) as excinfo:
+            _apply(
+                {"expected_candidate_fingerprint": candidate.fingerprint,
+                 "candidate": candidate.to_dict()},
+                _bg_run_async,
+                lambda: (_ for _ in ()).throw(AssertionError("Camilla touched")),
+            )
+
+    # The household is told what to do about it, not merely that it failed.
+    assert "raise the crossover to at least" in str(excinfo.value)
+    # The machine-readable half. The sentence above may be reworded; this slug
+    # is what an operator greps a hearing-safety refusal out of the journal by.
+    assert "event=correction.crossover_v2_apply_refused" in caplog.text
+    assert "reason=crossover_below_declared_protection_floor" in caplog.text
+
+    draft = load_design_draft()
+    assert draft["manual_settings"]["crossover_candidates"][0][
+        "frequency_hz"
+    ] == 2500
+    # Not one write happened: the revision the seed left is still the live one,
+    # so there is nothing for a household to undo and nothing for the next
+    # measurement session to read as its configured crossover.
+    assert draft["revision"] == 1
+    state = v2host.load_v2_state() or {}
+    assert state.get("accepted_sound_revision") is None
+    assert state.get("sound_declaration_undo") is None
+    assert state["applied"] is False
+
+
+def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
+    monkeypatch, tmp_path,
+):
+    """The apply is fed by the CANDIDATE, never by a record that claims
+    something about it.
+
+    A persisted ``fc_selection`` is advisory evidence the review screen renders
+    — and while it was the gate, the two could disagree: a stale
+    ``recommend_alternative`` from an earlier sweep made an apply write a
+    crossover into ``/sound`` that the candidate about to be emitted was never
+    measured at. Here the candidate crosses exactly where Sound already
+    declares, so the honest answer is "write nothing", and a fully-formed
+    contrary record must not change it.
+    """
+    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.output_topology import load_output_topology
+
+    _seed_alternative_apply(monkeypatch, tmp_path)
+    # Recompile the candidate from what /sound DECLARES, so this apply asks for
+    # no declaration change at all.
+    preview = v2host.ensure_crossover_preview_ready()
+    configured_preset, issues, _gates = compile_preset_from_crossover_preview(
+        load_output_topology(), preview,
+    )
+    assert configured_preset is not None, issues
+    as_declared = _run6_measured_candidate(configured_preset)
+    v2host.save_v2_state({
+        "session_id": "cap_stale_selection",
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
+        "candidate": {"fingerprint": as_declared.fingerprint},
+        # Everything the old gate needed to fire, all of it true of some other
+        # review: a complete comparison recommending a different crossover.
+        "fc_selection": {
+            "verdict": "recommend_alternative", "configured_hz": 2500.0,
+            "recommended_hz": 2750.0, "comparison_complete": True,
+        },
+        "sound_design_revision": 1,
+        "applied": False,
+    })
+
+    payload = _apply(
+        {"expected_candidate_fingerprint": as_declared.fingerprint,
+         "candidate": as_declared.to_dict()},
+        _bg_run_async, _FakeApplyCam,
+    )
+
+    assert payload["status"] == "applied", payload.get("issues")
+    draft = load_design_draft()
+    assert draft["manual_settings"]["crossover_candidates"][0][
+        "frequency_hz"
+    ] == 2500
+    # Byte-for-byte the pre-seam behaviour: an as-declared apply writes Sound
+    # nothing, so the revision never moves and there is no inverse to record.
+    assert draft["revision"] == 1
+    state = v2host.load_v2_state() or {}
+    assert state["sound_declaration_undo"] is None
+    assert state.get("accepted_sound_revision") is None
+    # The control that keeps this test honest: the contrary record was STILL
+    # there while the apply ran. A refactor that cleared it earlier would make
+    # every assertion above pass for a reason this test is not about.
+    assert state["fc_selection"]["verdict"] == "recommend_alternative"
+
+
+def test_a_slope_only_change_reaches_the_declaration_and_leaves_fc_alone(
+    monkeypatch, tmp_path,
+):
+    """A candidate measured at a different SLOPE moves ``/sound`` too.
+
+    The declaration states three fields and the seam's staleness guard is a
+    whole-preset equality, so a candidate measured at 12 dB/octave against a
+    draft declaring 24 is exactly as unapplyable as one measured at a different
+    corner. While the writer carried only the frequency, this apply could ONLY
+    be refused ``measured_candidate_preset_mismatch``: nothing could make the
+    declaration come to agree with it.
+
+    The corner is asserted UNCHANGED beside the slope, for the opposite
+    hazard — a writer that moves a field the change never named leaves the
+    same disagreement, pointing the other way.
+    """
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    # Same corner, half the slope: order 2 is 12 dB/octave, against the 24
+    # dB/octave (order 4) the draft declares.
+    candidate = _seed_alternative_apply(
+        monkeypatch, tmp_path, selected_hz=2500.0, selected_order=2,
+    )
+    regions = candidate.source_preset.crossover_regions
+    # The region id embeds the rounded corner, so a slope-only change keeps the
+    # id it had — asserted here because a changed id would make this test pass
+    # for the wrong reason (a whole different region, not a resloped one).
+    assert [region.id for region in regions] == ["woofer_tweeter_2500hz"]
+
+    cam = _FakeApplyCam()
+    payload = _apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint,
+         "candidate": candidate.to_dict()},
+        _bg_run_async, lambda: cam,
+    )
+
+    assert payload["status"] == "applied", payload.get("issues")
+    # The declaration is written BEFORE the recompose precisely so this guard
+    # passes; a slope left out of that write would trip it.
+    assert "measured_candidate_preset_mismatch" not in _apply_issue_ids(payload)
+    declared = load_design_draft()["manual_settings"]["crossover_candidates"][0]
+    assert declared["slope_db_per_octave"] == 12.0
+    assert declared["frequency_hz"] == 2500.0
+    assert declared["filter_type"] == "Linkwitz-Riley"
+    # The emitted graph carries the measured slope and the corner nobody moved.
+    assert _emitted_crossover_filters(cam) == {
+        "LinkwitzRileyLowpass": (2500.0, 2),
+        "LinkwitzRileyHighpass": (2500.0, 2),
+    }
+    # The inverse is recorded on both halves, so Undo has a slope to put back.
+    assert v2host.load_v2_state()["sound_declaration_undo"] == {
+        "sound_revision": 2,
+        "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
+        "applied_hz": 2500.0,
+        "previous_hz": 2500.0,
+        "applied_filter_type": "Linkwitz-Riley",
+        "previous_filter_type": "Linkwitz-Riley",
+        "applied_slope_db_per_octave": 12.0,
+        "previous_slope_db_per_octave": 24.0,
+    }
 
 
 def test_apply_translates_measured_fingerprint_to_baseline_fingerprint(
@@ -9819,6 +10095,10 @@ def test_apply_blocks_and_persists_a_nudge_when_the_reviewed_preset_goes_stale(
 
     assert payload["status"] == "blocked"
     assert payload["issue"]["id"] == "measured_candidate_preset_mismatch"
+    # The positive control for the reader the two "this guard did NOT fire"
+    # assertions use: a reader that could never see this id would let those
+    # tests pass on a payload that names it.
+    assert "measured_candidate_preset_mismatch" in _apply_issue_ids(payload)
     assert v2host._applied_gate() is False
 
     saved_state = v2host.load_v2_state()
@@ -10008,16 +10288,24 @@ def test_apply_stashes_pre_apply_profile_and_restore_reverts_through_real_seams(
 # (real design draft, real save_design_draft CAS, real restore transaction).
 
 
-def _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path, *, selected_hz=2250.0):
+def _seed_alternative_apply_over_a_prior(
+    monkeypatch, tmp_path, *, selected_hz=2750.0, selected_order=None,
+):
     """``_seed_alternative_apply`` plus a pre-existing applied profile.
 
     The alternative seed alone puts the speaker one apply away from its
     FIRST-ever applied crossover, and ``handle_v2_restore`` refuses that case
     outright ("no earlier one to restore"). An Undo that reaches the
     declaration leg needs a graph to go back to as well, so this applies the
-    household's CONFIGURED (2500 Hz) crossover first — which is also what
-    makes a passing declaration restore proof of reversion rather than a
-    coincidence: the graph and the declaration go back to the same crossover.
+    household's CONFIGURED (2500 Hz, 24 dB/octave) crossover first — which is
+    also what makes a passing declaration restore proof of reversion rather
+    than a coincidence: the graph and the declaration go back to the same
+    crossover.
+
+    ``selected_hz`` / ``selected_order`` pass straight through, so the Undo
+    tests can drive BOTH halves of the geometry the writer now owns; see
+    :func:`_seed_alternative_apply` for why the corner moves up rather than
+    down.
     """
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.active_speaker.baseline_profile import apply_baseline_profile
@@ -10025,7 +10313,10 @@ def _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path, *, selected_hz=2
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology
 
-    candidate = _seed_alternative_apply(monkeypatch, tmp_path, selected_hz=selected_hz)
+    candidate = _seed_alternative_apply(
+        monkeypatch, tmp_path,
+        selected_hz=selected_hz, selected_order=selected_order,
+    )
     topology = load_output_topology()
     draft = load_design_draft(topology=topology)
     preview = load_crossover_preview(current_design_draft=draft)
@@ -10061,14 +10352,43 @@ def _declared_fc_hz():
     ]
 
 
+def _declared_slope_db_per_octave():
+    from jasper.active_speaker.design_draft import load_design_draft
+
+    return load_design_draft()["manual_settings"]["crossover_candidates"][0][
+        "slope_db_per_octave"
+    ]
+
+
+#: The two shapes of declaration change one apply can ask for. Sound declares a
+#: crossover as three fields and ONE writer owns all three, so every "Undo puts
+#: the declaration back" pin has to say it for both halves — a slope-only
+#: reversal that silently no-ops leaves ``/sound`` declaring a slope the speaker
+#: is not playing, which is the #2292 defect wearing a different field.
+#: ``(seed kwargs, applied_hz, applied_slope_db_per_octave)``.
+_DECLARATION_CHANGES = [
+    pytest.param({"selected_hz": 2750.0}, 2750.0, 24.0, id="frequency"),
+    pytest.param(
+        {"selected_hz": 2500.0, "selected_order": 2}, 2500.0, 12.0, id="slope",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "seed_kwargs,applied_hz,applied_slope", _DECLARATION_CHANGES,
+)
 def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
-    monkeypatch, tmp_path, caplog,
+    monkeypatch, tmp_path, caplog, seed_kwargs, applied_hz, applied_slope,
 ):
-    """The #2292 defect, end to end: apply an alternative Fc (Sound 2500 →
-    2250), then Undo. Both halves must come back — the DSP graph AND the
-    number ``/sound`` declares — through Sound's own revision-checked writer.
+    """The #2292 defect, end to end: apply a measured crossover that moves what
+    ``/sound`` declares (2500 → 2750 Hz, or 24 → 12 dB/octave at the same
+    corner), then Undo. Both halves must come back — the DSP graph AND the
+    crossover ``/sound`` declares — through Sound's own revision-checked
+    writer.
     """
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
+    candidate = _seed_alternative_apply_over_a_prior(
+        monkeypatch, tmp_path, **seed_kwargs,
+    )
     regions = candidate.source_preset.crossover_regions
 
     apply_payload = _apply(
@@ -10077,15 +10397,20 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
         _bg_run_async, _FakeApplyCam,
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
-    assert _declared_fc_hz() == 2250.0
+    assert _declared_fc_hz() == applied_hz
+    assert _declared_slope_db_per_octave() == applied_slope
     # The accept recorded the inverse of the write it just made — the revision
-    # it produced plus the value Sound declared a moment earlier. Nothing else
-    # on the speaker remembers the latter.
+    # it produced plus the geometry Sound declared a moment earlier. Nothing
+    # else on the speaker remembers the latter.
     assert v2host.load_v2_state()["sound_declaration_undo"] == {
         "sound_revision": 2,
         "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
-        "applied_hz": 2250.0,
+        "applied_hz": applied_hz,
         "previous_hz": 2500.0,
+        "applied_filter_type": "Linkwitz-Riley",
+        "previous_filter_type": "Linkwitz-Riley",
+        "applied_slope_db_per_octave": applied_slope,
+        "previous_slope_db_per_octave": 24.0,
     }
 
     with caplog.at_level(logging.INFO):
@@ -10096,6 +10421,7 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     # Nothing for the household to act on, so nothing is said to them.
     assert "sound_declaration_message" not in restore_payload
     assert _declared_fc_hz() == 2500.0
+    assert _declared_slope_db_per_octave() == 24.0
     from jasper.active_speaker.design_draft import load_design_draft
 
     # Written THROUGH save_design_draft's CAS, not patched into the file: the
@@ -10201,21 +10527,36 @@ def test_the_commanded_axis_seam_refuses_a_displaced_applied_record(
     assert "surface=commanded_axis" in caplog.text
 
 
-def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
-    """#2292 scope 2 SF2: apply_measured_crossover_frequency has TWO
+@pytest.mark.parametrize(
+    "seed_kwargs,applied_hz,applied_slope", _DECLARATION_CHANGES,
+)
+def test_undo_declaration_restore_writes_durably(
+    monkeypatch, tmp_path, seed_kwargs, applied_hz, applied_slope,
+):
+    """#2292 scope 2 SF2: apply_measured_crossover_geometry has TWO
     production callers -- handle_v2_apply's accept (pinned by
     test_alternative_apply_saves_sound_and_preview_durably) and
     _restore_sound_declaration, the Undo leg exercised here. Both get the
     same durable write; there is no separate, cheaper path into the writer.
     fsync counting starts AFTER the apply so this isolates the Undo leg's
-    own write from the accept's."""
-    candidate = _seed_alternative_apply_over_a_prior(monkeypatch, tmp_path)
+    own write from the accept's.
+
+    Counted for a moved corner AND a moved slope because the durability of a
+    write is a property of the writer, not of which field changed -- a
+    slope-only reversal that reached a cheaper path would lose exactly the
+    same power-cut guarantee, silently."""
+    candidate = _seed_alternative_apply_over_a_prior(
+        monkeypatch, tmp_path, **seed_kwargs,
+    )
     apply_payload = _apply(
         {"expected_candidate_fingerprint": candidate.fingerprint,
          "candidate": candidate.to_dict()},
         _bg_run_async, _FakeApplyCam,
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
+    assert (_declared_fc_hz(), _declared_slope_db_per_octave()) == (
+        applied_hz, applied_slope,
+    )
 
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
@@ -10225,7 +10566,7 @@ def test_undo_declaration_restore_writes_durably(monkeypatch, tmp_path):
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert restore_payload["sound_declaration"] == "declaration_restored"
     # 6 = persist_applied_baseline_profile's graph-restore write (always
-    # durable, file + dir fsync) + apply_measured_crossover_frequency's
+    # durable, file + dir fsync) + apply_measured_crossover_geometry's
     # declaration-restore write (file + dir fsync) -- both halves of Undo --
     # + observe_restore's own v2-state write, durable since #2291 (file + dir).
     # That third pair is the anchor bookkeeping: the write CLEARS
@@ -10239,13 +10580,13 @@ def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
     monkeypatch, tmp_path,
 ):
     """The gate's blocker repro, as a regression: alternative apply (2500 →
-    2250) → Start over → ORDINARY configured-Fc apply → Undo.
+    2750) → Start over → ORDINARY as-declared apply → Undo.
 
     ``pre_apply_profile`` is re-stamped by every successful apply, so after the
-    second one the graph's Undo target is the 2250 graph. While the declaration
+    second one the graph's Undo target is the 2750 graph. While the declaration
     record was written on the alternative ACCEPT instead of beside
     ``pre_apply_profile``, it survived that second apply untouched — and the
-    Undo restored the 2250 graph while writing 2500 back into ``/sound`` and
+    Undo restored the 2750 graph while writing 2500 back into ``/sound`` and
     calling it ``declaration_restored``. Worse than doing nothing: the next
     session reads ``/sound`` as its configured Fc.
 
@@ -10261,15 +10602,16 @@ def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
          "candidate": candidate.to_dict()},
         _bg_run_async, _FakeApplyCam,
     )
-    assert _declared_fc_hz() == 2250.0
+    assert _declared_fc_hz() == 2750.0
     assert v2host.load_v2_state()["sound_declaration_undo"] is not None
 
     # Start over keeps the applied graph and both Undo halves alive.
     v2host.reset_v2_journey_state()
     assert v2host.load_v2_state()["sound_declaration_undo"] is not None
 
-    # A second, ORDINARY apply: the configured Fc is now 2250, so this review
-    # has no fc_selection and never touches Sound.
+    # A second, ORDINARY apply: the declaration now carries 2750 Hz, so this
+    # review's candidate crosses exactly where Sound declares and the apply
+    # never touches Sound.
     preview = v2host.ensure_crossover_preview_ready()
     configured_preset, issues, _gates = compile_preset_from_crossover_preview(
         load_output_topology(), preview,
@@ -10302,7 +10644,7 @@ def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
     assert restore_payload["sound_declaration"] == "declaration_not_applicable"
     # Sound still declares what the alternative apply left it declaring — the
     # Undo reversed the SECOND apply, which never wrote Sound.
-    assert _declared_fc_hz() == 2250.0
+    assert _declared_fc_hz() == 2750.0
 
 
 @pytest.mark.parametrize("edit,expected_fc_hz", [
@@ -10312,10 +10654,10 @@ def test_an_ordinary_apply_after_an_alternative_one_clears_the_record(
     #     ``save_design_draft``'s CAS (the pre-read sees the bumped revision
     #     first, and the writer's own conflict is the backstop for the race);
     #   * an edit that CHANGES the declared crossover is caught by the
-    #     pre-read. Without it, ``apply_measured_crossover_frequency``'s value
+    #     pre-read. Without it, ``apply_measured_crossover_geometry``'s value
     #     guard raises a plain ValueError first and the outcome would be
     #     mis-reported as a failed write rather than a household edit.
-    ("notes", 2250.0),
+    ("notes", 2750.0),
     ("crossover", 1900.0),
 ])
 def test_undo_refuses_the_declaration_when_sound_moved_and_leaves_it_untouched(
@@ -10358,7 +10700,7 @@ def test_undo_refuses_the_declaration_when_sound_moved_and_leaves_it_untouched(
     assert restore_payload["status"] == "restored", restore_payload.get("issues")
     assert restore_payload["sound_declaration"] == "declaration_refused_sound_moved"
     message = restore_payload["sound_declaration_message"]
-    assert "2250 Hz" in message and "2500 Hz" in message
+    assert "2750 Hz" in message and "2500 Hz" in message
     # Byte-identical: the refusal costs no write at all, not even a no-op
     # re-serialization that would bump the revision under the other editor.
     assert draft_path.read_bytes() == before
@@ -10395,7 +10737,7 @@ def test_a_failed_graph_restore_never_touches_the_declaration(
 
     assert restore_payload["status"] == "restore_failed"
     assert "sound_declaration" not in restore_payload
-    assert _declared_fc_hz() == 2250.0
+    assert _declared_fc_hz() == 2750.0
     # The record survives an Undo that did not happen, so a later retry can
     # still put the declaration back.
     assert v2host.load_v2_state()["sound_declaration_undo"] is not None
@@ -10419,7 +10761,7 @@ def test_undo_reports_a_failed_declaration_restore_beside_a_restored_graph(
     def _explode(**_kwargs):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(sound, "apply_measured_crossover_frequency", _explode)
+    monkeypatch.setattr(sound, "apply_measured_crossover_geometry", _explode)
     with caplog.at_level(logging.INFO):
         restore_payload = v2host.handle_v2_restore(_bg_run_async, _FakeApplyCam)
 
@@ -10489,25 +10831,49 @@ def test_start_over_keeps_the_declaration_undo_record_with_the_applied_graph():
     assert state["sound_declaration_undo"] == record
 
 
+#: Everything a readable record carries, so each case below can break exactly
+#: ONE field. Spelled out rather than derived: a case that is unreadable for two
+#: reasons at once proves neither of them, and every field the writer gained is
+#: a new way for these cases to go quietly redundant.
+_READABLE_DECLARATION_UNDO = {
+    "sound_revision": 2,
+    "between_roles": ["woofer", "tweeter"],
+    "applied_hz": 2750.0,
+    "previous_hz": 2500.0,
+    "applied_filter_type": "Linkwitz-Riley",
+    "previous_filter_type": "Linkwitz-Riley",
+    "applied_slope_db_per_octave": 24.0,
+    "previous_slope_db_per_octave": 24.0,
+}
+
+
 @pytest.mark.parametrize("record", [
     None,
     {},
-    {"sound_revision": 2, "between_roles": ["woofer"], "applied_hz": 2250.0,
-     "previous_hz": 2500.0},
-    {"sound_revision": True, "between_roles": ["woofer", "tweeter"],
-     "applied_hz": 2250.0, "previous_hz": 2500.0},
-    {"sound_revision": 2, "between_roles": "woofer,tweeter",
-     "applied_hz": 2250.0, "previous_hz": 2500.0},
-    {"sound_revision": 2, "between_roles": ["woofer", "tweeter"],
-     "applied_hz": float("nan"), "previous_hz": 2500.0},
-    {"sound_revision": 2, "between_roles": ["woofer", "tweeter"],
-     "applied_hz": 2250.0},
+    {**_READABLE_DECLARATION_UNDO, "between_roles": ["woofer"]},
+    {**_READABLE_DECLARATION_UNDO, "sound_revision": True},
+    {**_READABLE_DECLARATION_UNDO, "between_roles": "woofer,tweeter"},
+    {**_READABLE_DECLARATION_UNDO, "applied_hz": float("nan")},
+    {k: v for k, v in _READABLE_DECLARATION_UNDO.items() if k != "previous_hz"},
+    # The slope half is required on exactly the same terms as the frequency
+    # half, and for a sharper reason: a record with no declared slope would
+    # have to invent one to write back into ``/sound``, and no accept ever
+    # chose it.
+    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
+     if k != "previous_slope_db_per_octave"},
+    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
+     if k != "applied_filter_type"},
 ])
 def test_an_unusable_declaration_undo_record_is_not_applicable_not_a_guess(record):
     """A record this build cannot read is ``not_applicable``, never a
     best-effort write against a half-understood shape: the values name a
-    crossover frequency, and guessing one is the failure mode this whole
-    record exists to prevent."""
+    crossover, and guessing one is the failure mode this whole record exists
+    to prevent.
+
+    Every case starts from a record that IS readable and breaks one field, so
+    each one proves the defect it names rather than tripping over a field the
+    case never meant to be about.
+    """
     assert v2host._restore_sound_declaration(record) == (
         "declaration_not_applicable", "",
     )

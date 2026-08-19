@@ -1550,6 +1550,16 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     prediction = v2.get("prediction")
     prediction = prediction if isinstance(prediction, Mapping) else None
     fingerprint = str(candidate.get("fingerprint") or "")
+    # This predicate answers "will Apply move the declared crossover?", and
+    # since the 2026-08-19 apply-path change it is a SECOND reading of that
+    # question: `handle_v2_apply` derives the answer from the candidate's own
+    # preset (`crossover_declaration.declaration_change_for_candidate`), not
+    # from this record. The two agree on every shape reachable today — the only
+    # producer of a candidate that crosses somewhere other than the declaration
+    # is the Fc sweep, which writes `fc_selection` in the same breath — but a
+    # producer that does NOT write one would leave this button under-claiming a
+    # declaration write it is about to make. Closing that needs the review-time
+    # producer PR-4 owns; do not close it here with a third reading.
     fc_selection = _mapping(v2.get("fc_selection"))
     recommended_hz = _finite(fc_selection.get("recommended_hz"))
     uses_alternative = (
