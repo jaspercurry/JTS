@@ -41,6 +41,16 @@
 > where that section states shipped behavior it says so and cites the symbol.
 > Operational truth for the shipped flow stays
 > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> **The linearization pipeline (ratified 2026-08-19; no crossover parameter is
+> chosen by measurement today):** an eighth ruling adds decision 15 and one new
+> section,
+> ["The linearization pipeline — seed → crossover science → EQ"](#the-linearization-pipeline--seed--crossover-science--eq-ratified-2026-08-19).
+> The five-layer ownership is unchanged once more. What it rules on is the
+> **order in which the layers get tuned** — seed the crossover from declared
+> driver data, exhaust the crossover's own parameters against measurement, and
+> only then EQ what is left — not who owns which correction. Every stage there
+> carries an explicit EXISTS / IN FLIGHT / MISSING status, because most of the
+> middle stage does not exist yet.
 
 ## Why this exists (one paragraph of history)
 
@@ -229,7 +239,9 @@ morning after the series-1 convergence run on jts3.
     band and the protection posture derive from one honest number; **(ii)**
     the blend-region contract — decision 10; **(iii)** a hardware series that
     proves the dip moves. Only after (iii) is prescriber policy worth
-    deciding.
+    deciding. (Step (iii) has since run and both candidate prescribers were
+    built and exercised on jts3 — what that series settled, and what it did
+    not, is decision 15's, 2026-08-19.)
 
 **The ruling below was ratified later the same day.**
 
@@ -270,6 +282,23 @@ morning after the series-1 convergence run on jts3.
     rather than a convenience one. Full contract, its evidence, and its
     sequencing:
     ["Measurement Program v2 — the capture schedule"](#measurement-program-v2--the-capture-schedule-ratified-2026-08-18).
+
+**The ruling below was ratified on 2026-08-19; its middle stage chooses no
+crossover parameter by measurement today.**
+
+15. **Linearization is a strictly ordered pipeline — seed, then crossover
+    science, then EQ (2026-08-19).** It is BOTH-AND, never either-or, and the
+    order is the ruling. **(P1)** The operator enters driver information, and
+    the flow derives basic trims and a basic crossover placement from it.
+    **(P2)** The crossover is then tuned with maths, science, and experiment
+    until there is high confidence it is as good as it is going to get.
+    **(P3)** ONLY THEN does EQ iron out the rest, across the entire trusted
+    measurable region, to super flat. What the order buys: a filter spent
+    flattening a summation error that a still-free crossover parameter could
+    have removed is a filter aimed at the wrong cause, and it hides that cause
+    from every later measurement rather than fixing it. The stages, their
+    per-stage build status, and an honest inventory of what does not exist:
+    ["The linearization pipeline"](#the-linearization-pipeline--seed--crossover-science--eq-ratified-2026-08-19).
 
 ## Layer 1a concretely — UX and data flow
 
@@ -633,6 +662,21 @@ deferring cheap: everything except the trend engine itself — the contract,
 the vocabulary, the bounds, the harness, the receipts — is **common to both
 paths**, so nothing built now is wasted by either choice.
 
+**Update (2026-08-19): the deferral condition above has been exercised, and it
+did not resolve the way it was written to.** Both candidates now exist — the
+deterministic solver and an LLM prescriber behind the same deterministic
+validators (`jasper/cli/crossover_prescriber.py`,
+[`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py),
+[`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py))
+— and both were run against the blend region on jts3. What the series did *not*
+produce is the condition this deferral names: the blend region did not measure
+correctable through that stage as it stands. The open question consequently
+moved off *who prescribes* and onto *what the prescriber is allowed to shape*
+and *when it may act at all* — which is stage **P3** of
+[the linearization pipeline](#the-linearization-pipeline--seed--crossover-science--eq-ratified-2026-08-19).
+The seam itself is unchanged and still open; point there, do not restate it
+here.
+
 ## Measurement Program v2 — the capture schedule (ratified 2026-08-18)
 
 > **Status: ratified design, NOT built.** Owner-ratified 2026-08-18. **The
@@ -882,6 +926,482 @@ difference is the point:
   [PR #2717](https://github.com/jaspercurry/JTS/pull/2717). Stops 3–6 plus the
   stop-7 return are that reporter, inside a schedule.
 
+## The linearization pipeline — seed → crossover science → EQ (ratified 2026-08-19)
+
+> **Status: ratified design; one stage exists, two are partly built.**
+> Owner-ratified 2026-08-19 at the close of the wired
+> overnight campaign on jts3. **Every stage below carries an explicit STATUS
+> label — EXISTS / IN FLIGHT / MISSING — and nothing outside an EXISTS label
+> describes what the speaker does today.** Where a stage states shipped
+> behaviour it names the symbol it was read from; where it states a measured
+> result it names the dated evidence. Read everything else as ratified plan,
+> exactly as in Measurement Program v2 above. Operational truth for the shipped
+> flow stays
+> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+
+### The ruling
+
+Three stages, run in order. In the owner's framing it is **BOTH-AND, strictly
+ordered** — not a choice between tuning the crossover and applying EQ:
+
+1. **P1 — seed.** The operator enters driver information; the flow derives
+   basic trims and a basic crossover placement from it.
+2. **P2 — crossover science.** The crossover is tuned with maths, science, and
+   experiment until there is high confidence it is as good as it is going to
+   get.
+3. **P3 — EQ.** *Only then* does EQ iron out the rest, across the entire
+   trusted measurable region, to super flat.
+
+**Why the order is the ruling and not a preference.** EQ can flatten a
+magnitude error whatever caused it, which is precisely the hazard: a filter
+spent hiding a summation error that a still-free crossover parameter could have
+removed is aimed at the wrong cause, costs headroom permanently, and — because
+the correction is now baked into every subsequent measurement — removes the
+evidence that the parameter was ever wrong. Ordering the stages keeps each
+lever answerable for its own class of defect. It is the same separation the
+five-layer model already enforces between shape and level; P1–P3 apply it along
+the *time* axis of a commissioning session.
+
+### How the stages map onto the five layers
+
+This is not a second taxonomy. The pipeline is the **tuning order of the layers
+already named above**, and each stage's contract is owned where it always was:
+
+| stage | decides | owning layer / contract | status |
+|---|---|---|---|
+| **P1** seed | initial Fc, protection posture, polarity, geometry-bounded delay, first trims — all from declarations, no audio | Layer **1b**, from the component-entry declarations (#1665) and decisions 8–9 | **EXISTS** |
+| **P2** crossover science | the final non-EQ parameters: polarity, per-branch delay, Fc, slopes/order, branch gains | Layer **1b** again — contract **(c)** reserves all but slopes/order, which is 1b's own | at-mark substrate **EXISTS**; per-angle replay **PAUSED**; search + guards **MISSING** (4 named gaps) |
+| **P3** EQ | the minimum-phase residue across the whole trusted band | Layer **1a** per-driver, plus the blend region's summed owner under contract **(b)** | **partially EXISTS** |
+
+Layers 2–4 (bass, room, preference) are untouched by this ruling: the pipeline
+runs entirely inside the speaker layer, and its output is the flat device the
+room layer then corrects for a position.
+
+### Stage P1 — seed from driver knowledge
+
+**STATUS: EXISTS.** This is the one stage that runs today, end to end, with no
+measurement involved.
+
+The operator enters driver information — the component-entry surface of #1665,
+persisted by
+[`design_draft.py`](../jasper/active_speaker/design_draft.py), which by its own
+contract "records what the operator is trying to build and any externally
+researched driver facts" and deliberately does not compile filters or authorize
+playback. The externally-researched half arrives through the driver-research
+prompt owned by
+[`driver_safety.py`](../jasper/active_speaker/driver_safety.py)
+(`driver_research_targets`, `validate_driver_research_result_shape`,
+`finalise_research_result`), which is decision 9's rule in code: it asks for the
+manufacturer's **published** facts and nothing else, and a derived margin is
+never smuggled into a datasheet field.
+
+From those declarations the seed is computed deterministically by
+[`crossover_preview.py`](../jasper/active_speaker/crossover_preview.py)
+(`build_crossover_preview`) — "the deterministic bridge from a saved design
+draft to a future protected startup config… bounded filter intent only: no
+CamillaDSP YAML, no config load, no playback authority, and no sound." What it
+seeds, and from what:
+
+- **Fc, out of the driver's safety envelope.** The tweeter's minimum
+  recommended crossover frequency *with its slope condition* is decision 8's
+  single declared owner, resolved by
+  [`driver_protection.py`](../jasper/active_speaker/driver_protection.py)'s
+  `resolve_driver_low_limit` / `declared_protection_highpass_floor_hz` off the
+  `recommended_highpass_hz` field the operator's research response fills in.
+  The collapse to one owner has landed: `crossover_preview.SCHEMA_VERSION` was
+  bumped to 2 precisely so a preview saved before it — carrying un-derived
+  driver payloads — cannot be reused (#2603). The woofer's breakup ceiling and
+  the horn's coverage bound the choice from above; `radiating_diameter_mm`
+  feeds #1675's ka-beaming hint (`branch_chain.beaming_onset_hz`).
+- **A protection slope, not a crossover order.** Worth separating, because the
+  two are easy to conflate: the *crossover* filter's type and order are
+  declared, not derived. What the low limit's slope condition derives is the
+  **protective** high-pass floor, `PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE` in the
+  same module. P1 seeds a protection posture; choosing the crossover's order
+  against measurement is P2's.
+- **Polarity, and a geometry-bounded delay.** Declared geometry does not
+  produce a free delay guess; it produces a **bound around a seed** —
+  `null_walk.geometry_seed_us` converts the signed path difference into
+  microseconds, `alignment_walk.driver_delay_walk_spec` bounds "one
+  driver-to-driver walk from an a-priori geometry estimate", and
+  `measured_candidate.py`'s input contract fixes `delay_bound` at
+  `declared_geometry_plus_minus_half_period`. The acoustic-centre provenance is
+  explicitly operator-attested
+  (`commissioning_evidence.RegionGeometryAttestation`). So the physical offset
+  sets the window; the value inside it is P2's, from measurement.
+- **First trims,** from declared sensitivities and the declared in-line pad
+  ([`driver_pad.py`](../jasper/active_speaker/driver_pad.py),
+  `effective_sensitivity_db`).
+
+**What P1 is not.** It is a *starting point*, not an answer, and this stage's
+one honesty rule is that nothing it produces is ever reported as measured. The
+seed is an intent artifact with no acoustic evidence behind it, which is exactly
+why P2 exists.
+
+### Stage P2 — crossover tuning by measurement
+
+**STATUS: method ratified; the at-mark measurement substrate EXISTS, the
+per-angle replay is PAUSED, the search and its guards are MISSING.** No
+crossover parameter is chosen by measurement today. But the per-driver complex
+capture this stage consumes is already shipped **at the mark** — see "how much
+of it already exists" below — so the gap is narrower and differently shaped than
+a reading of "P2 is unbuilt" suggests. Off the mark it is a flag flip plus a
+cleared re-introduction bar, which is a different kind of work from the search
+and guards, and is neither free nor already done.
+
+**The goal, stated as a stopping condition.** Drive the non-EQ parameters —
+polarity, per-branch delay, Fc, slopes/order, and branch gains — to the point
+where there is high confidence they are as good as *these drivers in this
+cabinet* permit, and only then unfreeze EQ. Four of those five are the tools
+region contract **(c)** above reserves to themselves — it enumerates level,
+alignment (delay and polarity), and Fc. **Slopes/order is not in (c)'s
+enumeration**; its owner is Layer 1b's own job description at the top of this
+doc ("drivers sum correctly: crossover filters, **scalar** trim per driver,
+relative delay, polarity"). So P2 is what (c)'s "their own evidence" turns out
+to require, plus the one lever (c) never names.
+
+**The measurement it needs, and how much of it already exists.** Per-driver
+**complex** responses — magnitude *and* phase — at every angle. **At the mark
+this ships**, and the shape it ships in removes a problem P2 was originally
+scoped to solve. **At every other angle it does not run today** — the fourth
+bullet below is a paused capability, not a working one, and closing that is part
+of P2's work rather than a given.
+`build_measure_program`
+([`program.py`](../jasper/audio_measurement/program.py)) schedules the woofer
+and tweeter sweeps **non-overlapping inside ONE capture**, routed by channel —
+that module's own docstring states the design intent: CHECK/MEASURE programs
+are 2-channel WAVs, "ch0 → woofer output path, ch1 → tweeter output path", and
+"per-driver sequencing lives in the WAV channels so the CamillaDSP
+commissioning graph stays static and provable." Four consequences worth stating
+because they are easy to re-derive wrongly:
+
+- Per-driver **complex** transfer functions are produced and direct-arrival
+  gated — `DriverResponse.complex_tf` in
+  [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py).
+- The two drivers therefore share an **exact** common time origin: they are in
+  the same capture, so **there is no cross-capture alignment problem for the
+  A/B pair at all**. The USB start-offset scatter that motivates a shared
+  reference never enters between woofer and tweeter. Exact as an *origin* is a
+  separate question from intra-capture desync, and this is not a claim that A/B
+  timing is solved — gap 1 below records a real +1.986-sample slip *inside* a
+  capture that today's guard passes.
+- In-capture drift is estimated (`DriftEstimate`) and the drift-corrected
+  woofer-versus-tweeter anchor already ships as `anchor_delay_us`.
+- **Per-angle per-driver capture is BUILT BUT PAUSED — no per-driver data is
+  captured off the mark today.** The machinery is real: a pose "replays
+  MEASURE's program"
+  ([`spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py)). But
+  `STAGE1_INCLUDES_LATERAL` is `False`
+  ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)), and
+  [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) opens by saying so
+  in its own words — "**No stage-1 session feeds this today.** The lateral walk
+  that produces `poses` was paused on 2026-08-18." The one multi-position walk
+  that *does* run yields nothing per-driver, because every cloud phase sits in
+  `SUMMED_SWEEP_PHASES`
+  ([`programs.py`](../jasper/active_speaker/crossover_v2/programs.py)) — and
+  `STAGE1_INCLUDES_CLOUD_MEASURE` is `False` besides. Measurement Program v2's
+  own "The machinery this reuses is built, and currently paused" paragraph above
+  owns that story, and un-pausing is gated on its constraint 1 re-introduction
+  bar ([#2711](https://github.com/jaspercurry/JTS/issues/2711)) — which the same
+  section says nothing banked today clears. **An implementer scoping P2 should
+  read the angle schedule as work, not as a given.**
+
+**Branch muting is not the route, and must not be proposed as one.** A
+commission-mute overlay would break the graph classifier:
+`protected_neutral_program_origin`
+([`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py)) accepts the
+program origin only when every commission-mute filter is exactly pass-through
+(`{"gain": 0.0, "inverted": False, "mute": False}`) and returns `False`
+otherwise. The interleaved-channel design exists precisely so the commissioning
+graph can stay static and provable; muting a branch trades that away for
+something the one-capture schedule already provides.
+
+**So what does the timing pilot actually buy?** Its validated role narrows to
+two things, neither of which is the A/B common origin:
+
+1. **A sharper slip estimator** on the existing capture path — the gap named
+   below.
+2. Any future genuinely **cross-capture** comparison, such as session-to-session
+   absolute phase, where two captures really must be tied to a shared event.
+
+The method itself is unchanged: a **self-referencing acoustic timing pilot** —
+the DUT's own tweeter playing a short chirp whose arrival is the reference.
+
+> **Name collision, worth fixing before it costs someone a session.** This doc
+> already uses "pilot" for a different signal: the **behavioural-linearity
+> pilot** pair (`DEFAULT_PILOT_DURATION_S`) that Measurement Program v2's
+> constraint 4 *removes* from the wired path, whose job is to prove the chain
+> responded linearly and that the phone heard the speaker at all. P2's is a
+> **timing pilot**, and its job is an arrival reference. They point in opposite
+> directions — one is being deleted from the wired path, the other added to it
+> — so this section says **timing pilot** every time, and the linearity pilot
+> must never be reused as an arrival reference: it is not designed, placed, or
+> gated for that.
+
+The estimator's accuracy bar is loose in a useful way: what a slip measurement
+needs is **repeatability, not correctness**. The pilot path is the same physical
+path on both sides of any comparison, so multipath bias cancels in the
+difference and only its **variance** enters the error budget. A **second timing
+pilot after** the sweep yields that capture's playback-versus-capture clock
+ratio, so in-capture drift is measured rather than assumed — which composes with
+the shipped `DriftEstimate` rather than replacing it. The **summed-capture
+self-consistency solve** — recovering the offset that makes the separately
+measured branch responses sum to the measured summed response — is retained as
+an independent cross-check, not as a replacement.
+
+**The search.** An offline **complex-summation forward model** predicts the
+summed response from the per-driver complex responses and a candidate parameter
+set, computed with **the same biquad math CamillaDSP runs** — a model that
+disagrees with the shipped filter realization is measuring its own arithmetic.
+Its objective must be **commensurate with the on-device grade**: same smoothing,
+same pooling, same frozen baseline reference (rule 5 of P3 below), so that a
+predicted win and a measured win are the same quantity. The search is an
+**outer discrete enumeration** (filter type, order, polarity) wrapped around an
+**inner continuous optimization** (Fc, Q, per-branch delay and gain), bounded
+throughout by the declared driver-safety envelope — P1's declared low limit with
+its slope condition is a hard wall, not a starting guess.
+
+**The on-device confirmation schedule**, coarsest lever first: **polarity →
+delay → Fc → slopes → Bayesian refinement**. Each step carries a
+**pre-registered acceptance** in the same shape P3 uses — a prediction banked in
+the grading view's own units *before* the change is played, **2–3σ** on
+frozen-reference pooled views, **≥3 pooled repeats**, and **rollback on loss**.
+A **sim-to-real discrepancy term** is calibrated on **≥3–5 real trials before
+the model's predicted signs are trusted at all**: this program's model
+predictions have been anti-correlated with measurement more than once, so the
+forward model earns its sign empirically or it does not get a vote.
+
+**The exit criterion.** **K ≈ 3–5 consecutive rounds with no statistically real
+improvement** freezes the crossover. Freezing is the event that hands control to
+P3. An unfrozen crossover is a reason for P3 *not to run*, never a thing for P3
+to compensate.
+
+**What does not exist — the honest inventory.** Four gaps, naming what is
+missing rather than planning how to close it. Read gap 1 against its own
+heading: what is absent there is a *guard*, not the capture it guards.
+
+1. **A sharper capture-integrity slip estimator — MISSING. The per-driver
+   timed capture it would guard already EXISTS** (the interleaved program
+   above). The residual gap is not a capture *mode*; it is the **sensitivity
+   floor of the guard on the capture path that already runs**. Today's desync
+   guard rejects a **+4-sample** silent slip and **passes a +2-sample** one —
+   pinned as a parametrized boundary in
+   [`tests/test_audio_measurement_program_analysis.py`](../tests/test_audio_measurement_program_analysis.py)
+   (`test_desync_guard_keeps_its_teeth_after_d7`: `("sweep_w", 4, True)`,
+   `("sweep_w", 2, False)`). At 48 kHz **2 samples is 41.7 µs**, which is
+   **2.1× the 20 µs relative-phase budget** in gap 4 — so a capture carrying a
+   phase error twice the whole budget passes the gate clean. This is not
+   hypothetical: Stage-0's bank contains a real **+1.986-sample** silent USB
+   slip that today's guard would pass. The fix-shape is therefore a sharper
+   slip estimator **on the existing capture path** — the Stage-0 dual-pilot /
+   cross-correlation algorithm is the candidate instrument — and explicitly
+   **not** a new capture mode, and **not** branch muting.
+2. **Vertical polar capability — MISSING.** The crossover's primary artifact is
+   **vertical** lobing, and this rig measures horizontal angles only.
+   ["Deferred axis — elevation (v2+)"](#deferred-axis--elevation-v2) above
+   already records the gap from the instrument's side — the program samples zero
+   vertical offsets, the household string-and-protractor method does not
+   generalize as stated, and the lab arm's elevation capability is undetermined.
+   P2 is the consumer that turns that deferral from tidy-later into blocking.
+3. **The forward model and the optimizer — MISSING.** Neither the
+   complex-summation predictor nor the enumeration/optimization search exists in
+   the tree.
+4. **A Stage-0 timing acceptance test — MISSING; its bar is declared and its
+   precondition is measured.** Pass bar: **relative-phase alignment residual
+   ≤ 20 µs (3σ)** — the ~15° at 2 kHz that a ±0.5 dB summation prediction near
+   Fc can absorb. No implementation of that test exists in the tree. **What
+   the Stage-0 work unblocks has narrowed**, since the one-capture program
+   supplies the A/B origin exactly: the bar now governs the **slip estimator**
+   of gap 1 (and any future cross-session absolute-phase comparison), not an
+   A/B alignment problem that does not exist. The numbers it produced stand,
+   and they earned their keep by discovering the slip class rather than by
+   validating an alignment: measured on jts3 on 2026-08-19, the chain's own
+   cross-capture stability came in at **sd 7.33 µs, worst 14.51 µs** across 24
+   same-angle pairs. **Do the arithmetic at the bar, because it does not obviously
+   clear it:** 3 × 7.33 = **22.0 µs**, which is *above* the 20 µs bar before
+   the timing pilot's own estimator has contributed anything at all. What keeps
+   that from being a verdict is that the 7.33 sd is an **upper bound** —
+   it sits at the integer-sample quantization floor (±0.5 sample = ±10.4 µs at
+   48 kHz), so it measures the quantization as much as the chain, and the
+   chain's true variance is unresolved until the quantization is removed. That
+   is precisely #2710 below, which is why the next bullet escalates it from
+   caveat to blocker rather than noting it. What the figure *does* settle is
+   that the ±100 µs-class USB-mic jitter this rig class is usually assumed to
+   have is refuted by an order of magnitude. Nothing downstream should be built
+   until the test passes on a de-quantized measurement.
+
+**One constraint this stage inherits rather than discovers.** Measurement
+Program v2's constraint 2 —
+[#2710](https://github.com/jaspercurry/JTS/issues/2710), per-role integer-sample
+alignment quantization at ±20.833 µs on a 48 kHz chain — sits at **the same
+order as P2's entire timing budget**. It is already flagged there as needing to
+be located before the D14 aligner root fix leans on measured inter-driver
+timing; P2 raises it from caveat to blocker, because — as the arithmetic in
+gap 4 shows — a quantization floor this close to the acceptance bar consumes
+the entire budget before the timing pilot's estimator is even measured.
+
+### Stage P3 — EQ the minimum-phase residue
+
+**STATUS: partially EXISTS.** What ships is the machinery *around* the
+decisions — the fitting engine, the safety clamps and their bounds, the pooled
+grading views, the predict-apply-remeasure-rollback protocol, and both
+prescribers, all of which have run on hardware. What does not ship is the part
+that decides: taking **"is there code in the tree that makes this rule's
+decision?"** as the test, **five of the six rules below fail it** (rule 6 is a
+review discipline rather than code at all), and the stage's *scope* is narrower
+than this ruling requires. The per-rule table at the end of this stage makes
+that count reconstructable. Read "partially" strictly.
+
+**When it runs.** Only after P2 freezes the crossover — not before, not
+alongside.
+
+**What it covers.** The **entire trusted band**, today an analysis convention of
+roughly **357 Hz to 16 kHz** — a shipped gate-derived floor
+(`gating.f_trusted_floor_hz`, `2.5 / window_s`, so 357.14 Hz at this rig's 7 ms
+gate) plus a hand-set analysis edge (`flat_spec.BEST_EFFORT_ABOVE_HZ`), which
+makes it a convention rather than one derived quantity with a banked
+derivation — and not merely the crossover window. The only **shared** EQ stage
+that exists today is the blend stage, safety-reviewed for the crossover
+neighbourhood alone, while the overnight campaign's remaining common-mode
+targets sat **outside** it. Layer 1a's *per-driver* linearization EQ is a
+separate shipped stage that does reach the emitted graph
+([`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py),
+`fit_driver_linearization`; the series-1 woofer Peaking filter recorded above
+is one of its outputs) — which is why rule 3 below is about *which* of the two
+owns a given defect, not about acquiring the first one. Extending correction
+across the full trusted band is the scope this stage ratifies, and it is
+unbuilt.
+
+**The rules.** Each was measured on hardware on 2026-08-19 and is recorded in
+`captures/wired-night-2026-08-19/run-log.md` §§8–9 (session-artifact,
+laptop-side). The figures are that night's evidence, not standing constants.
+
+1. **Classify before correcting; EQ only defects.** Every feature is typed
+   first — a controls-verified **excess-group-delay minimum-phase test** (with
+   positive *and* negative synthetic controls pushed through the identical
+   pipeline), a **gate-invariance** check, and **cross-angle behaviour** — and
+   only minimum-phase, speaker-own defects are eligible. Interference, beaming,
+   and room features are **barred**, the same refusal the correction envelope's
+   `spatial_exclusion_limit` term already encodes for the per-driver fit. The
+   test earns its keep in both directions: that night it found all nine named
+   features **minimum-phase**, which killed the comfortable hypothesis that the
+   in-window failures lived in a non-minimum-phase summation zone and
+   re-attributed them to rule 2. **Status: the instrument is MISSING from the
+   product.** Those verdicts came from campaign-side analysis, not from shipped
+   code, and the tree already says so in its own words —
+   [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)
+   discloses `per_bin_minimum_phase_class` as a gap because "the excess-phase
+   instrument that would separate a minimum-phase dip from an interference null
+   per bin is not built", and `PositionalSupport` in
+   [`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)
+   describes itself as "the deterministic stand-in for the per-bin
+   minimum-phase classifier that does not exist yet". Only the cross-position
+   half of this rule has a shipped instrument (`positional_support`); no
+   excess-group-delay or gate-invariance symbol exists anywhere in `jasper/`.
+2. **Match filter width to feature width.** The three in-window features
+   measured natural Q **3.9 / 5.1 / 6.6** (2057 / 1406 / 1037 Hz), each read off
+   the pooled 7 ms detrended curve with a ×1.5-narrower companion bracketing it
+   — a measured width, not an assumed one. Against those, filters clamped to
+   Q 2.0 delivered **28–43% on-target efficiency** (round 17: −1.2 dB nominal
+   delivered −0.33 to −0.51 locally), about **3× too wide at the 1037 dip**, and
+   the skirt damage to already-below-reference neighbours **exceeded the repair
+   at the centre**. That makes the Q clamp **a parameter under suspicion, not
+   physics**. Note for whoever sizes the narrow-Q round: **the in-window span is
+   the narrow end of the problem, not its extent.** Across all nine named
+   features the measured span is **Q 3.9–18.4**, and the six out-of-window ones
+   (10.4–18.4) include three reading an identical Q 12.1 and two an identical
+   18.4 — repeated values are the signature of the 1/12-octave smoothing floor
+   rather than of distinct resonances, so those are lower bounds on how narrow
+   the features really are. A ceiling chosen against 6.6 would be too wide for
+   most of the band this stage is meant to cover.
+   **Status: raising it for cuts is IN FLIGHT.** On `main` the prescriber's
+   width bound is `BLEND_FILTER_Q = 2.0` in
+   [`blend_correction.py`](../jasper/active_speaker/crossover_v2/blend_correction.py),
+   re-exported unchanged into the prescription bounds;
+   [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (open) replaces that
+   single re-export with a **sign-split pair** — a wider ceiling for cuts, the
+   old value kept for boosts — so read the bound through whichever of the two
+   shapes is on `main` when you get here rather than through a symbol name. The
+   declared EQ floor stands until a narrow-Q round has actually been measured.
+3. **Correct in the branch that owns the defect.** A per-driver defect gets a
+   per-driver filter in that branch — Layer 1a's existing per-role stage — and
+   the shared stage is reserved for genuinely system-level shaping. A shared
+   filter is the wrong instrument for a one-driver problem, and it charges both
+   branches for it.
+4. **Cuts are bounded and free; boosts pay an evidence bar.** Cuts ride the
+   existing caps and the cut-preferred posture unchanged. A boost requires a
+   **minimum-phase dip**, **multi-angle testimony**, and an **excursion /
+   thermal / harmonic-distortion budget** showing the driver can spend it.
+   **The route's design remains an owner decision** — this stage states the bar,
+   not the mechanism.
+5. **Grade against a FROZEN baseline reference.** Referencing each configuration
+   to its own average is exactly invariant to level and therefore **flatters
+   broadband cuts**: the cut lowers its own reference too (measured at
+   0.4–0.75 dB), so it partially forgives itself, and per-configuration
+   target-relative tables inherit the same flattery. Freezing the reference to
+   the *baseline* configuration is the honest comparator — under it, apparent
+   off-axis improvements reversed into losses. Predictions are **pre-banked in
+   the grading view's own units**, and anything that measures worse is **rolled
+   back**. Under that comparator every EQ attempt that night lost — a
+   deterministic candidate by **+3.3σ**, a one-cut prescription by **+8.2σ**, a
+   two-cut by **+15.2σ** — and each was rolled back by the harness rather than
+   argued with. **Status: the comparator itself is MISSING.** The grading
+   implementation is [`flat_spec.py`](../jasper/active_speaker/flat_spec.py)
+   and [`flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py),
+   but `evaluate_flat_spec` computes `reference_db` from whichever curve it is
+   handed and takes no frozen-reference argument — so the honest comparator is
+   a rule this stage ratifies, not behaviour the shipped views have. The frozen
+   *entry-baseline curve* that `round_evidence.EntryBaseline` banks is a
+   different mechanism and does not supply it: each side of that comparison
+   still self-references its own level.
+6. **Respect the audibility floors.** Broad, low-Q deviations are worth
+   correcting down to roughly **0.5–1 dB**; a **narrow** feature must be several
+   dB before it earns a filter at all; and nothing below the **session noise
+   floor** is a target. The floor is measured per session, not assumed — that
+   night the only in-window dip was small enough that a *perfect* boost
+   predicted **−0.033 to −0.046 dB** on the primary score against a **0.057 dB**
+   detection threshold. Correcting it would have been arithmetic, not audio.
+
+**Where the shipped stage and the ratified stage differ.** Materially less is
+built than the campaign's fluency suggests, so the count is worth making
+reconstructable rather than asserting. The test is **"is there code in the tree
+that makes this rule's decision?"** — deliberately not "is there anything
+nearby", because something ships beside every one of them, which is exactly how
+this stage reads as more finished than it is.
+
+| rule | the decision it has to make | ships? | what ships beside it |
+|---|---|---|---|
+| 1 classify first | per-bin minimum-phase classification | **no** | `positional_support` — the cross-position half only |
+| 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by open [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) |
+| 3 correct in the owning branch | routing a defect to per-driver vs shared | **no** | *both* stages — Layer 1a's per-role stage and the blend stage |
+| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no** | Layer 1a's boost bounds do ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`; the blend stage's own five-condition bar has never been exercised |
+| 5 frozen reference | a frozen-reference comparator | **no** | `flat_spec` / `flat_spec_views`, which self-reference |
+| 6 audibility floors | — | n/a | a review discipline, not code either way |
+
+So **five of six fail the test**. Exactly one has a change open against it —
+[PR #2730](https://github.com/jaspercurry/JTS/pull/2730), rule 2's cut-Q
+ceiling. For the other four, the campaign produced its verdicts with
+laptop-side analysis and none of that analysis has been promoted into the
+product.
+
+### Provenance, and what this section supersedes
+
+The method in P2 and the rules in P3 were assembled from two dated research
+briefs written at the close of the 2026-08-19 campaign —
+`RESEARCH-BRIEF-speaker-linearization-2026-08-19.md` and its companion
+`RESEARCH-BRIEF-self-referencing-timing-2026-08-19.md`, both session artifacts
+living at the repo root of branch `claude/night-driver`, not on `main`. They are
+named here for archaeology only and are deliberately **not** linked: they are
+branch-scoped, they will age, and **this section is the single source of truth
+for the pipeline**. Do not copy their content back in.
+
+This section **supersedes nothing** in the five-layer model, the correction
+envelope, the region-based adjustment contract, or Measurement Program v2 — it
+orders them. Two entries it does update, both trued up in place above:
+decision 12's sequencing (its step (iii) has since run) and
+["The prescriber seam"](#the-prescriber-seam-open-decision) (its deferral
+condition was exercised and did not resolve as written).
+
 ## Session operating model (how the implementing session runs)
 
 Fable is the brains, not the hands: architect, coordinator, debugger, and
@@ -1054,5 +1574,90 @@ the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
 the display constants, not a fixed one — it moves with topology — so it is
 cited as representative rather than verified. Nothing else in this doc was
 re-verified in that pass.
+
+Decision 15 (2026-08-19) opens no new issues. Its two named blockers are
+already in the lists above and are reused rather than restated: #2662's
+capture-source seam is where the per-driver timed capture mode belongs, and
+#2710's per-role alignment quantization sits at the same order as stage P2's
+whole timing budget.
+
+The 2026-08-19 pass added decision 15 and the linearization-pipeline section
+only, and verified that section's own code claims at HEAD: `design_draft.py`'s
+"researched driver facts, no filter compilation" contract,
+`driver_safety.py`'s driver-research prompt entry points,
+`driver_protection.resolve_driver_low_limit`'s `recommended_highpass_hz` owner
+ordering, `crossover_preview.build_crossover_preview`'s bounded-intent
+docstring and its `SCHEMA_VERSION = 2` bump for the #2603 collapse,
+`measured_candidate.py`'s `declared_geometry_plus_minus_half_period` delay
+bound plus `null_walk.geometry_seed_us` / `alignment_walk.driver_delay_walk_spec`,
+`driver_pad.effective_sensitivity_db`, `branch_chain.beaming_onset_hz`,
+`gating.f_trusted_floor_hz` (2.5 / 7 ms = 357.14 Hz) with
+`flat_spec.BEST_EFFORT_ABOVE_HZ = 16000.0`, and the existence of
+`flat_spec.py` / `flat_spec_views.py` and the prescriber intake modules cited
+under the prescriber-seam update. The stage P3 measurements and the stage P2
+method are cited to dated session artifacts, not re-derived here.
+
+That pass also checked the section's **negative** claims, which is where its
+first draft was wrong and had to be corrected before merge: `evaluate_flat_spec`
+takes no frozen-reference argument (it derives `reference_db` from whichever
+curve it is handed); `evidence_packet.py` and `blend_prescription.py` both
+disclose the per-bin minimum-phase instrument as not built; no
+excess-group-delay or gate-invariance symbol exists anywhere in `jasper/`;
+`BLEND_FILTER_Q` is `2.0`; and at that moment neither the cut-Q raise nor a
+Stage-0 timing acceptance test had an open change against it, so **every "IN
+FLIGHT" in that first draft was demoted to MISSING**. The campaign's analysis
+was laptop-side and had not been promoted into the product, which remains the
+single most load-bearing fact about this section's status labels.
+
+**A second pass corrected stage P2's own framing**, and it moved a claim from
+MISSING to EXISTS rather than the other way round. An earlier draft described
+gap 1 as a missing "per-driver timed capture mode (branch mute plus pilot
+injection)". That was wrong on both halves, verified at HEAD: `program.py`'s
+`build_measure_program` already interleaves the two drivers non-overlapping in
+ONE capture routed by channel (its module docstring is quoted in the stage), so
+`DriverResponse.complex_tf`, an exact A/B common time origin, `DriftEstimate`
+and `anchor_delay_us` all ship — **at the mark**, since `spatial.py`'s per-pose
+replay of that program is real but flagged off (`STAGE1_INCLUDES_LATERAL` is
+`False`, `fc_selector.py` says "No stage-1 session feeds this today", and the
+cloud walk that does run is summed-only), a distinction a later pass had to add
+after this paragraph first over-claimed it;
+and branch muting is not merely unnecessary but *contraindicated*, because
+`camilla_yaml.protected_neutral_program_origin` classifies the program origin
+only while every commission-mute filter is exactly pass-through
+(`{"gain": 0.0, "inverted": False, "mute": False}`). The real residual is the
+desync guard's sensitivity floor, pinned as a parametrized boundary in
+`tests/test_audio_measurement_program_analysis.py`
+(`test_desync_guard_keeps_its_teeth_after_d7`: 4 samples rejected, 2 samples
+passed) — 41.7 µs at 48 kHz, 2.1× the relative-phase budget. The timing pilot's
+role narrowed accordingly, to that estimator plus any future cross-session
+comparison.
+
+**Those labels are time-sensitive, and one turned over inside the hour.**
+Rule 2's cut-Q raise went from MISSING back to IN FLIGHT when
+[PR #2730](https://github.com/jaspercurry/JTS/pull/2730) opened. That is the
+expected behaviour of a status label rather than a defect in one: re-derive any
+label here against `main` and the open-PR list before relying on it, which is
+all this pass did. The four still marked MISSING were re-checked when #2730 was
+found; P2's four gaps had no branch then and have none now.
+
+**One figure was corrected against the primary record.** Stage P3 rule 2's
+feature widths are read from the campaign's own null-model block
+(`analysis/classify-features.json` → `test2_null_model`, whose spec states the
+Q is "MEASURED off the pooled 7 ms detrended curve for each feature, with a
+×1.5-narrower companion to bracket it"): **3.9 / 5.1 / 6.6** in-window and
+**3.9–18.4** across all nine. An earlier revision of the research brief's
+erratum read "natural Q 3.6–6.6", which was wrong at both ends — **3.6 was never
+a feature property**, it is the authored Q of a *refused* filter
+(`filter_q_out_of_range: filter 0 Q 3.6 is outside 0.5-2`), and the top of that
+range ignored the six out-of-window features. The brief was corrected the same
+day (`bbd1b7638` on `claude/night-driver`) and now carries its own dated
+correction note, so the values there and here agree. The repeated identical
+readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
+floor rather than distinct resonances, so those are lower bounds on narrowness —
+which is why rule 2 warns against sizing a Q ceiling against 6.6.
+
+**The `Last verified:` footer below was deliberately NOT bumped**: this pass
+added a section and trued up two entries it contradicted, it did not re-read
+the whole document against the code, and the footer is a whole-document claim.
 
 Last verified: 2026-08-18
