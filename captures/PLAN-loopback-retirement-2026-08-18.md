@@ -1023,3 +1023,76 @@ wave-boundary currency, the campaign-branch adaptation of the design's
 per-push rebase rule. Post-rebase object map (the reviewed pre-rebase SHAs
 above are historical): transport=77fe01f, pickup=b208184, baseline=ef2f657,
 PR-2=be738fd, errata=23e35c0, fix=8fbe723; base=412fdc6.
+
+### 2026-08-19 — **PR-3 SEALED 0/0/0 BY ALL THREE LENSES** (safety-class
+panel: correctness / hearing-safety / resilience, all independent; builder
+Opus). Reviewed range 256fd79..f782d3e0, seven commits: the flip, the
+ring-writer unit contract + executable T-7 enumeration, EG-4, an installer
+citation true-up the subject sweep caught, a 10-item consolidated fix round,
+and a 4-item micro-round. Round-1 verdicts: C 0B/3SF/4N · HS 0B/3SF/1N ·
+RES 0B/1SF/2N — ZERO BLOCKERS at every round. Fix rounds were prose-truth +
+one restored test bar; the only runtime-string change in the whole review
+tail is "grouping remnant"→"aloop remnant" in one doctor detail.
+
+Key adjudications on the record: (1) deviation-1 (T-7 semantics) — RestartSec
+`>=`-over-the-enumeration UPHELD by all three lenses; the burst bar RESTORED
+as `> 5` with an exact-value exemption _BURST_BAR_EXEMPTIONS={"jasper-camilla": 5}
+that is SELF-DELETING (reds on gap-closed AND on regression; C's own P4
+probe proved a hypothetical 7th writer at burst=4 now reds). (2) C's SF-4
+(the fix round trued the FAIL string and left its OK twin) resolved via
+option (a) — option (b) would have re-falsified what HS sealed against; the
+phrase class is now FULLY retired (zero "grouping remnant" tree-wide outside
+captures/). (3) HS WITHDREW its own round-1 hardware item 3 after verifying
+resolve_output_layout returns the active ring unconditionally — the
+inert-rate_adjust bonded shape never ships. (4) One doc site moved up from
+PR-6 by conductor ruling (HANDOFF-distributed-active:356-362 — cited by name
+from both corrected code comments; PR-5's builder reads that doc); the
+builder also dropped the "already-validated" adjective — the ring seam
+awaits its own hardware pass. (5) RES's seal covers ..9091cdcc; the
+micro-round extension is prose-only outside its charter, verified
+nothing-behavioral by C's mechanical filter — recorded as the scoping.
+
+Ledger updates: §6.2's docstring-truing is CONSUMED by PR-3 (PR-5 owes only
+the is_active_member widening + the fail-soft asymmetry); PR-2's FAIL/OK
+carry-forward is consumed except the non_grouping vocabulary + rename
+(PR-5); HANDOFF-distributed-active has 18 sites + footer left (PR-6);
+grouping_supervisor.py:313 explicitly assigned to PR-6 (was row-less in
+§10.1); the modprobe pair-6 row is sharpened by PR-3's own
+test_pair_five_is_not_registered naming that file THE ALLOCATION OWNER.
+
+CAMPAIGN FOLLOW-UP, one unit: jasper-camilla.service carries all three
+recorded latent gaps — StartLimitBurst=5 (the exemption), RestartSec=2 == the
+liveness window (one EBUSY max per writer death; StartLimitAction=none), no
+UMask (EG-7; it is also the grouping ring's reader end). AXIS-1, outside
+Phase 1; candidate issue at campaign close.
+
+NEW TRAPS MINTED this wave: (1) ONE lane runner at a time in the shared
+checkout — pgrep 'test-(fast|merge)' before any full lane; (2) in-place
+mutation probes BANNED — isolated `git archive` exports only (RES caught C's
+live S32_LE probe on the shared tree mid-panel; the transient also tripped
+the stop hook twice — inspect, never blind-commit); (3) namespace scratchpad
+files per agent (a sibling's pr3.diff/merge.log were clobbered).
+
+ENV BASELINE ADDENDUM: any session that ran `git fetch` sees FIVE baseline
+failures, not three — test_laptop_onboarding_scripts ×2 red on git
+short-SHA abbrev divergence (ROOT 8 chars vs --shared clone 7 after the
+fetch's second pack; mechanism reproduced independently by builder and C
+lens; same divergence holds for the baseline commit's own SHA). Fix shape,
+standalone and outside this campaign: compute the expected short SHA in the
+isolated checkout, not ROOT.
+
+Hardware-brief inputs banked from the panel: S2 captures the .delay series
+across BOND-START (ramp to ~42.7 ms, saturate, ONE step down at reader
+attach; >45.3 ms or non-saturating = stop-and-escalate); SIGKILL-snapclient
+drill (paced silence from camilla, first-try ring reopen at 3 s, no -EBUSY);
+stale-geometry grouping.ring needs a reboot after any geometry change (the
+one bounded-but-not-self-recovering shape); confirm emitted follower YAML
+chunksize:128 / enable_rate_adjust:false (cheap glance — now
+code-established); camilla's burst=5 exemption is where to look on any EBUSY
+run; no runtime escape hatch exists post-flip (env overrides deleted) — a
+misbehaving ring path on metal means redeploy/revert.
+
+Branch rebased onto current origin/main at this seal. Post-rebase object
+map: PR-2=a0cc0e70 (+fix 5aa081c7), PR-3 flip=6bf8e03d, unit+T7=5337f1b2,
+EG-4=e3c57a29, installer=56b063ce, fix=face7e5d+9091cdcc, micro=dff65539;
+the reviewed pre-rebase range 256fd79..f782d3e0 is historical.
