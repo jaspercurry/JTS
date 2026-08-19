@@ -92,7 +92,7 @@ def test_all_closed_is_ok(proc_root, tmp_path):
     assert "no non-grouping pair currently open" in result.detail
     # The remnant's size is REPORTED, not merely asserted — risk 5.1 in the
     # design is "the remnant becomes permanent by silence".
-    assert "grouping remnant on pair 6" in result.detail
+    assert "aloop remnant on pair 6" in result.detail
     assert "#2508" in result.detail
 
 

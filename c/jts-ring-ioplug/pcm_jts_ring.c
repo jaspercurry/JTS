@@ -442,15 +442,16 @@ static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     // In-flight = published-but-unread slots * period_frames + staged frames.
     // This is intentionally the HONEST occupancy-derived delay, NOT the
     // dual-mode value the `pointer`/avail path uses while the reader is dead.
-    // Rationale (round-3 review nit #3): `.delay` is only consulted by a LIVE
-    // pacer's rate controller (CamillaDSP), and a live reader IS the honest
-    // case — so the two agree exactly when `.delay` is actually read. On a
-    // readerless ring there is no rate controller polling delay; what governs
-    // writer progress there is the `avail` GATE (which jts_ring_pointer_report's
-    // dual-mode + clamp keep open), not this delay value. Reporting honest
-    // occupancy here therefore never gates a readerless writer, and mirroring
-    // the pointer's dead-mode discount would only add a code path with no
-    // consumer.
+    // Original rationale (round-3 review nit #3), recorded as the PRE-SNAPCLIENT
+    // case — the paragraph below is the current one: `.delay` was consulted only
+    // by a LIVE pacer's rate controller (CamillaDSP), and a live reader IS the
+    // honest case, so the two agree exactly when `.delay` is read that way. On a
+    // readerless ring no rate controller WAS polling delay; what governs writer
+    // progress there is the `avail` GATE (which jts_ring_pointer_report's
+    // dual-mode + clamp keep open), not this delay value — that half still
+    // holds. Reporting honest occupancy therefore never gates a readerless
+    // writer, and mirroring the pointer's dead-mode discount would at the time
+    // have added a code path with no consumer.
     //
     // THAT CONDITION HAS SINCE FIRED, and the answer is "accepted, unchanged".
     // snapclient writes the grouping-ingress ring and reads its own

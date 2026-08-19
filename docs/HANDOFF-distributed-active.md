@@ -353,10 +353,14 @@ crystal producing it at a fixed wrong rate, just buffered and consumed at the
 DAC's pace — so it is *not* a crossing and needs *no* loop. The combined stream
 therefore has **exactly one** rate loop. Two configurations follow from this:
 
-- **Music-only (no leader TTS):** camilla#2 *is* the loop — it reads the
-  snapclient round-trip loopback with `enable_rate_adjust` ON, exactly the
-  **already-validated active-follower seam** (`snapclient → loopback → camilla
-  [rate_adjust] → DAC`). No mixer, no new clock topology — the leader's own
+- **Music-only (no leader TTS):** snapclient *is* the loop — it tracks the
+  server clock and writes the grouping ring, which camilla#2 captures
+  (`snapclient → jts_ring_grouping → camilla#2 → DAC`), exactly the
+  **active-follower seam**. camilla#2 adds no second loop: its
+  `enable_rate_adjust` follows the SINK it plays into (false on the active
+  ring), and on a ring capture the request cannot be actuated at all — a ring
+  PCM is an ioplug, so CamillaDSP finds no mixer element to steer. No mixer, no
+  new clock topology — the leader's own
   drivers are driven by the follower endpoint config verbatim, while camilla#1
   bakes the wire.
 - **With leader TTS:** TTS must be summed **pre-crossover** (camilla#2 has a

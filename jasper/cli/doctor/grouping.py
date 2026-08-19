@@ -247,9 +247,10 @@ def check_grouping_rate_adjust() -> CheckResult:
     check's scope: a passive follower's CamillaDSP sits outside the bonded path
     entirely, and an ACTIVE follower's CamillaDSP IS in the bonded path
     (distributed-active Slice 3 — it captures the grouping ring and runs
-    Layer A) but is not a tracker there either. snapclient is, on both ends of
-    that ring: its ``enable_rate_adjust`` follows the SINK it plays into, and on
-    a ring CAPTURE the request cannot be actuated at all — a ring PCM is an
+    Layer A) but is not a tracker there either. snapclient is — in BOTH endpoint
+    roles, follower and active leader, each writing its own box's grouping ring.
+    CamillaDSP's ``enable_rate_adjust`` follows the SINK it plays into, and on a
+    ring CAPTURE the request cannot be actuated at all — a ring PCM is an
     ioplug, so CamillaDSP builds no HCtl and finds no mixer element to steer.
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
@@ -1137,7 +1138,8 @@ def _aloop_substream_owner(status_text: str) -> str:
     exclusive_group="audio-probe",
 )
 def check_grouping_aloop_remnant() -> CheckResult:
-    """snd-aloop is loaded only for the grouping remnant — nothing else holds it.
+    """snd-aloop is loaded only for the bounded aloop remnant this check
+    measures — nothing else holds it.
 
     Audio-graph consolidation #2285, P9-C. See the header comment above for
     the full rationale; the operator-facing summary:
@@ -1248,7 +1250,7 @@ def check_grouping_aloop_remnant() -> CheckResult:
     non_grouping = sorted(registered_open - {content_pair})
     detail = (
         f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
-        f"still registered, grouping remnant on pair {content_pair} (#2508)"
+        f"still registered, aloop remnant on pair {content_pair} (#2508)"
     )
     if non_grouping:
         detail += (
