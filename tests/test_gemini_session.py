@@ -298,6 +298,9 @@ async def test_release_rejected_turn_does_not_commit():
     # The turn must still detach cleanly so the next acquire_turn() can
     # proceed — rejecting a commit must not wedge the connection.
     assert conn._active_turn is None
+    # Armed so the NEXT _send_activity_start() logs the correlator line
+    # (see test_send_activity_start_logs_correlator_after_uncommitted_release).
+    assert conn._last_release_uncommitted is True
 
 
 @pytest.mark.asyncio
@@ -343,3 +346,53 @@ async def test_release_rejected_turn_after_end_input_still_commits():
     assert len(conn._session.calls) == 1
     assert turn._activity_end_sent is True
     assert len(conn._unack_activity_end_times) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_activity_start_logs_correlator_after_uncommitted_release(
+    caplog,
+):
+    """After a rejected turn is released uncommitted (see
+    test_release_rejected_turn_does_not_commit), the NEXT
+    _send_activity_start() must log a correlator line — the deliberate
+    observability aid mark_uncommitted()'s docstring describes: if the
+    unmatched activity_start ever does break the following turn (an
+    open, unverified risk — see that docstring), this line puts cause
+    and effect one grep apart instead of a timestamp reconstruction. The
+    flag must also be a one-shot: a THIRD turn opening normally must not
+    repeat the line."""
+    import logging
+
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._session = _FakeSendSession()
+    rejected = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = rejected
+    rejected.mark_uncommitted()
+    await rejected.release()
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice.gemini_session"):
+        await conn._send_activity_start()
+    assert "released WITHOUT committing" in caplog.text
+    assert conn._last_release_uncommitted is False
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="jasper.voice.gemini_session"):
+        await conn._send_activity_start()
+    assert "released WITHOUT committing" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_activity_start_no_correlator_after_normal_release():
+    """Control case: a turn that legitimately committed must NOT arm the
+    correlator — only an uncommitted release should."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._session = _FakeSendSession()
+    turn = GeminiLiveTurn(
+        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
+    )
+    conn._active_turn = turn
+    await turn.release()
+
+    assert conn._last_release_uncommitted is False
