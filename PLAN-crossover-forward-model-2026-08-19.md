@@ -180,6 +180,37 @@ reference level, and this plan builds the latter.)*
 
 ### H5 — The "model is anti-correlated with measurement" evidence indicts the wrong instrument
 
+> **CORRECTED 2026-08-19, same day, by running the test this section proposed.**
+> The instrument critique below is right. **The conclusion I drew from it was
+> wrong**, and the correction is the more important half.
+>
+> I graded the banked arms with the delay-SENSITIVE output
+> (`verify_priors.verify_measured`, both sides through one identical
+> reduction; local grader validated against `evaluate_flat_spec` to 1.1e-16 dB).
+> Result: against the campaign's pooled measured referee the model is
+> **perfectly anti-correlated — Spearman ρ = −1.000 across 6 arms / 5 distinct
+> delays** (and ρ = −0.986 on the product's own two numbers). Against the mark
+> it is unstable (+0.66 to −1.00 depending on reference policy and subset), i.e.
+> says nothing at this n.
+>
+> **So "the model has been anti-correlated with measurement" SURVIVES**, on
+> better evidence than it originally had. What survives of this section is only
+> the narrow claim that the run-log's *stated* evidence was invalid — see the
+> polarity confound below, now measured: `predicted_ripple_db` is bimodal by
+> polarity (invert 13.34–13.99, keep 4.24–4.63; between-group ≈ 9.1 dB,
+> within-group ≤ 0.65 dB across a 200 µs delay range) and correlates with
+> nothing measured (ρ = −0.43 / +0.09).
+>
+> Three consequences, all live: **rung 4's ρ ≥ +0.6 bar would fail today**, so
+> the model gets no ranking vote for the delay lever; **the objective's currency
+> is an open design question**, because the broadband residual is uncorrelated
+> (ρ = +0.03) with the crossover-region feature the delay lever actually moves;
+> and **R1 is confirmed in data** — the mark and the pool anti-correlate with
+> each other (ρ = −0.66), which is a lobe being re-aimed.
+>
+> Full analysis, tool and data:
+> `captures/xover-armrun-2026-08-18/analysis/README-delay-arm-regrade.md`.
+
 This matters because it is the stated reason the model *"earns its sign
 empirically or it does not get a vote."*
 
@@ -1100,7 +1131,24 @@ The top three, ordered by how likely they are to make the predictions wrong,
 each with the rung that catches it. (The safety gap of H1 is not listed here —
 it is not a prediction risk, it is a blocking prerequisite, and §8.4 owns it.)
 
-### R1 — The referee is blind to the axis the crossover most affects
+### R1 — The referee is blind to the axis the crossover most affects — **CONFIRMED IN DATA, no longer a risk**
+
+> **Promoted from risk to finding, 2026-08-19.** The banked armrun shows the two
+> measured axes anti-correlating with each other: mark RMS vs pooled RMS
+> ρ = **−0.66**, and the crossover-region worst-deviation vs the broadband
+> residual ρ = **+0.03** (uncorrelated). Three referees pick three different
+> winning arms (pooled → `control`, mark → `a550`, the run-log's dip → `a350`),
+> and measurement repeatability is 7–10× smaller than the arm-to-arm spread, so
+> the disagreement is real rather than noise.
+>
+> Two things follow. **The vertical-polar dependency is blocking, not deferred**
+> — a horizontal-only referee cannot adjudicate a lever that re-aims a lobe. And
+> **the objective's currency must be settled before the objective is written**:
+> `spec_convergence_residual` cannot see the feature the delay lever moves, so
+> PR-3 must either add a region-scoped term or state plainly which defects it is
+> not able to rank. Evidence:
+> `captures/xover-armrun-2026-08-18/analysis/README-delay-arm-regrade.md`.
+
 
 **The crossover's primary artifact is vertical lobing, and this rig measures
 horizontal angles only.** Design doc gap 2: *"Vertical polar capability —
