@@ -235,51 +235,59 @@ def check_grouping_snapcast_installed() -> CheckResult:
 
 @doctor_check(order=71.6, group="grouping")
 def check_grouping_snapcast_version() -> CheckResult:
-    """Warn when the snapclient actually provisioned differs from the version
-    this design validated against (the loopback-retirement grouping-ring
-    campaign's snapclient-hardening decision). The apt package is
-    deliberately UNPINNED (a pin would turn a routine Trixie point release
-    into a failed install — the household loses grouping, and it blocks
-    security updates for something that is not a safety hazard), so the
-    mitigation is visibility, not a gate:
-    ``jasper.multiroom.provision.ensure_snapcast_installed`` probes
-    ``snapclient --version`` once, at the moment it actually installs the
-    package, and records it.
+    """Warn when the installed snapclient differs from the version this
+    design validated against
+    (:data:`jasper.multiroom.provision.VALIDATED_SNAPCAST_VERSION` — Trixie's
+    apt repo at authoring time). The apt package is deliberately UNPINNED in
+    ``jasper.multiroom.provision.ensure_snapcast_installed`` (a pin would turn
+    a routine Trixie point release into a failed install — the household
+    loses grouping, and it blocks security updates — for a mismatch that is
+    not a safety hazard). This check is the resulting visibility: it probes
+    the binary directly (bounded, mirroring this file's
+    ``_resolved_jasper_voice_env`` idiom), never pins anything, and is
+    warn-only — there is nothing here to enforce.
 
-    This check is a RECORD COMPARE against that recording — it never
-    re-probes live, the same reason ``ring_wire_caps_ready`` (fanin's shm_ring
-    preflight) compares a recorded install-time fact rather than re-opening a
-    device: the repo prefers a record already on file to a fresh runtime
-    probe wherever one exists.
-
-    Skips (``ok``) when snapclient is not installed, or when nothing has
-    been recorded yet (a pre-existing install from before this check
-    shipped, or a provision whose probe itself failed) — a fact we do not
-    have is not evidence of a problem."""
-    from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION, read_provision_status
+    Skips (``ok``) when grouping is off (mirrors
+    ``check_grouping_snapcast_installed`` — a warn about a disabled
+    subsystem's version is not actionable), when snapclient is not
+    installed, or when the probe's output cannot be parsed into a version —
+    never manufacture a warning from a fact the probe could not determine."""
+    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION
 
     label = "grouping: snapcast version"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "grouping off (snapcast not required)")
     if shutil.which("snapclient") is None:
         return CheckResult(label, "ok", "snapclient not installed (n/a)")
 
-    recorded = read_provision_status().get("version", "")
-    if not recorded:
+    try:
+        proc = _run(["snapclient", "--version"])
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
         return CheckResult(
             label, "ok",
-            "no recorded snapclient version yet (opt in via /rooms to "
-            "provision and record one)",
+            f"could not determine the installed snapclient version: {e}",
         )
-    if recorded != VALIDATED_SNAPCAST_VERSION:
+    match = re.search(r"\d+\.\d+\.\d+", (proc.stdout or "") + (proc.stderr or ""))
+    if match is None:
+        return CheckResult(
+            label, "ok",
+            "could not determine the installed snapclient version from "
+            "`snapclient --version` output",
+        )
+    installed = match.group(0)
+    if installed != VALIDATED_SNAPCAST_VERSION:
         return CheckResult(
             label, "warn",
-            f"provisioned snapclient {recorded} differs from the "
+            f"installed snapclient {installed} differs from the "
             f"{VALIDATED_SNAPCAST_VERSION} this design validated against — "
             "not pinned by design (a pin would block security updates and "
             "fail installs on routine Trixie point releases); this is "
             "visibility only, not a fault",
         )
     return CheckResult(
-        label, "ok", f"provisioned snapclient matches validated {recorded}",
+        label, "ok", f"installed snapclient matches validated {installed}",
     )
 
 

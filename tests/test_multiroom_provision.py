@@ -27,13 +27,11 @@ class _Runner:
     """A subprocess.run stub recording argv. ``apt-get install`` returns
     ``apt_rc`` (or raises ``apt_raise``); when it succeeds it flips ``installed``
     so a post-install which() sees the binaries. ``apt-get update`` returns 0 (or
-    raises ``update_raise``). ``snapclient --version`` returns
-    ``snapclient_version_stdout`` (default a real-shaped version line).
-    systemctl calls return ``systemctl_rc``."""
+    raises ``update_raise``). systemctl calls return ``systemctl_rc``."""
 
     def __init__(
         self, *, installed, apt_rc=0, apt_raise=None, update_raise=None,
-        systemctl_rc=0, snapclient_version_stdout="snapclient v0.31.0\n",
+        systemctl_rc=0,
     ):
         self.calls: list[list[str]] = []
         self._installed = installed
@@ -41,7 +39,6 @@ class _Runner:
         self._apt_raise = apt_raise
         self._update_raise = update_raise
         self._systemctl_rc = systemctl_rc
-        self._snapclient_version_stdout = snapclient_version_stdout
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -59,10 +56,6 @@ class _Runner:
                 returncode=self._apt_rc,
                 stdout="",
                 stderr="E: boom" if self._apt_rc else "",
-            )
-        if list(argv[:2]) == ["snapclient", "--version"]:
-            return SimpleNamespace(
-                returncode=0, stdout=self._snapclient_version_stdout, stderr="",
             )
         return SimpleNamespace(
             returncode=self._systemctl_rc,
@@ -224,80 +217,3 @@ def test_read_provision_status_round_trips(tmp_path) -> None:
     got = provision.read_provision_status(status)
     assert got["state"] == "present"
     assert "detail" in got
-
-
-# --- §8.1: version probe + record (T-9) ------------------------------------
-
-
-def test_install_probes_and_records_snapclient_version(tmp_path) -> None:
-    """After a successful install, `ensure_snapcast_installed` probes
-    `snapclient --version`, parses it, and records it — surfaced both in the
-    return value and in the status file `read_provision_status` re-reads."""
-    present: set[str] = set()
-    runner = _Runner(installed=present, snapclient_version_stdout="snapclient v0.31.0\n")
-    status = str(tmp_path / "s.json")
-    r = provision.ensure_snapcast_installed(
-        runner=runner, which=_which(present), status_path=status,
-    )
-    assert r["state"] == "installed"
-    assert r["version"] == "0.31.0"
-    assert any(c == ["snapclient", "--version"] for c in runner.calls)
-    assert provision.read_provision_status(status)["version"] == "0.31.0"
-
-
-def test_version_probe_failure_is_fail_soft(tmp_path, caplog) -> None:
-    """A probe that cannot run (timeout / missing binary) must never fail the
-    install it only observes — the install still reports `installed`, just
-    with an empty (unrecorded) version, and the miss is logged rather than
-    silent."""
-    present: set[str] = set()
-    base_runner = _Runner(installed=present)
-
-    def _raising_call(argv, **kw):
-        if list(argv[:2]) == ["snapclient", "--version"]:
-            raise subprocess.TimeoutExpired(cmd="snapclient", timeout=5)
-        return base_runner(argv, **kw)
-
-    status = str(tmp_path / "s.json")
-    with caplog.at_level(logging.WARNING):
-        r = provision.ensure_snapcast_installed(
-            runner=_raising_call, which=_which(present), status_path=status,
-        )
-    assert r["state"] == "installed"
-    assert r["version"] == ""
-    assert "multiroom.provision.snapclient_version_probe_failed" in caplog.text
-
-
-def test_version_probe_unparseable_output_is_empty(tmp_path) -> None:
-    """Output with no version-shaped token degrades to an empty version
-    rather than raising or recording garbage."""
-    present: set[str] = set()
-    runner = _Runner(installed=present, snapclient_version_stdout="not a version\n")
-    status = str(tmp_path / "s.json")
-    r = provision.ensure_snapcast_installed(
-        runner=runner, which=_which(present), status_path=status,
-    )
-    assert r["state"] == "installed"
-    assert r["version"] == ""
-
-
-def test_present_path_carries_the_version_forward_without_reprobing(
-    tmp_path,
-) -> None:
-    """The `present` fast path stays a true no-op subprocess-wise (it is
-    called on every reconcile pass while grouping is active): it must NOT
-    re-invoke `snapclient --version`, and must instead carry forward whatever
-    a prior install already recorded."""
-    present: set[str] = {"snapserver", "snapclient"}
-    status = str(tmp_path / "s.json")
-    # Seed a prior recorded version, as a real install would have left it.
-    Path(status).write_text(
-        json.dumps({"state": "installed", "detail": "", "version": "0.31.0"}),
-    )
-    runner = _Runner(installed=present)
-    r = provision.ensure_snapcast_installed(
-        runner=runner, which=_which(present), status_path=status,
-    )
-    assert r["state"] == "present"
-    assert r["version"] == "0.31.0"
-    assert runner.calls == []  # still a true no-op — no probe, no apt

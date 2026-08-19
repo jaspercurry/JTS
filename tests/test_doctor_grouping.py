@@ -4,6 +4,8 @@
 
 """Unit tests for the jasper-doctor grouping domain."""
 
+from types import SimpleNamespace
+
 from jasper.cli import doctor
 
 
@@ -78,40 +80,53 @@ def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
     assert "apt install" in r.detail
 
 
-# --- §8.1: snapclient version drift (T-9) — a RECORD compare, never a
-# live re-probe; independent of grouping.enabled (see the check's docstring).
+# --- snapclient version drift — a live probe (bounded), never a record;
+# mirrors check_grouping_snapcast_installed's grouping-off skip.
 
 
 def test_check_snapcast_version_registered():
     assert "check_grouping_snapcast_version" in _registered_check_names()
 
 
+def test_check_snapcast_version_off_skips(monkeypatch):
+    """Mirrors check_grouping_snapcast_installed's grouping-off skip — a
+    warn about a disabled subsystem's version is not actionable."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "grouping off" in r.detail
+
+
 def test_check_snapcast_version_not_installed_skips(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
     monkeypatch.setattr("shutil.which", lambda name: None)
     r = doctor.check_grouping_snapcast_version()
     assert r.status == "ok"
     assert "not installed" in r.detail
 
 
-def test_check_snapcast_version_not_recorded_skips(monkeypatch):
-    """A pre-existing install from before this probe shipped (or a provision
-    whose probe itself failed) has no recorded version — skip, never warn on
-    a fact we do not have."""
-    import jasper.multiroom.provision as provision
-
+def test_check_snapcast_version_unparseable_skips(monkeypatch):
+    """Output with no version-shaped token skips (ok) — never manufacture a
+    warning from a fact the probe could not determine."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(provision, "read_provision_status", lambda *a, **k: {})
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(returncode=0, stdout="not a version\n", stderr=""),
+    )
     r = doctor.check_grouping_snapcast_version()
     assert r.status == "ok"
-    assert "no recorded" in r.detail
+    assert "could not determine" in r.detail
 
 
 def test_check_snapcast_version_match_is_ok(monkeypatch):
-    import jasper.multiroom.provision as provision
-
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        provision, "read_provision_status", lambda *a, **k: {"version": "0.31.0"},
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=0, stdout="snapclient v0.31.0\n", stderr="",
+        ),
     )
     r = doctor.check_grouping_snapcast_version()
     assert r.status == "ok"
@@ -119,14 +134,16 @@ def test_check_snapcast_version_match_is_ok(monkeypatch):
 
 
 def test_check_snapcast_version_mismatch_warns(monkeypatch):
-    """The T-9 drift case: a recorded version that differs from
+    """The drift case: an installed version that differs from
     VALIDATED_SNAPCAST_VERSION warns (visibility), it does not fail — no
     apt pin exists to enforce it."""
-    import jasper.multiroom.provision as provision
-
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        provision, "read_provision_status", lambda *a, **k: {"version": "0.32.1"},
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=0, stdout="snapclient v0.32.1\n", stderr="",
+        ),
     )
     r = doctor.check_grouping_snapcast_version()
     assert r.status == "warn"
