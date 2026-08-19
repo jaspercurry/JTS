@@ -3879,11 +3879,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         # the post-apply group by design). A failing grade already has its own
         # screen; this is the case where no check finished at all.
         elif not grade.get("graded", True):
-            # Two different silences, two different sentences. "Never finished"
-            # is false for an INCONCLUSIVE check — that one ran to completion
-            # and could not decide, which is a different thing to tell someone
-            # and points at a different fix (a quieter room, not a retry of a
-            # step that died).
+            # Three answers, three sentences. "Never finished" is false for an
+            # INCONCLUSIVE check — that one ran to completion and could not
+            # decide, which is a different thing to tell someone and points at
+            # a different fix (a quieter room, not a retry of a step that died)
+            # — and it is false for a FAILED one in the other direction.
             grade_state = str(grade.get("state") or "")
             if grade_state == "inconclusive":
                 # WHY it could not tell, from the verdict that produced the
@@ -3907,6 +3907,16 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 done_verdict = (
                     "Your speaker is tuned, but the check that confirms it "
                     f"could not tell either way{because}. Re-verify to try "
+                    "again, or undo to restore the previous sound."
+                )
+            elif grade_state == "failed":
+                # The check ran, completed, and did not pass — reachable here
+                # only for a state file carrying no terminal result code to
+                # override this copy, and reachable BEHIND a closed post-apply
+                # group since #2464 capped the grade.
+                done_verdict = (
+                    "Your speaker is tuned, but the check that confirms it did "
+                    "not pass, so this result is unconfirmed. Re-verify to try "
                     "again, or undo to restore the previous sound."
                 )
             else:

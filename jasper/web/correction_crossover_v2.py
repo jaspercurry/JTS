@@ -2130,7 +2130,9 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     boolean a caller may key "all clear" on by itself; ``scope``/``spatial``/
     ``complete`` below carry the verdict it cannot. Both a passing VERIFY
     outcome and a graded post-apply cloud count — either instrument is a real
-    check, and the tiers differ in which one they run.
+    check, and the tiers differ in which one they run. A mark-VERIFY that
+    FAILED caps ``state`` whatever the cloud group says (#2464); the
+    derivation below owns that rule and states why.
 
     **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
     answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
@@ -2323,18 +2325,43 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     cloud_verdict = (
         post_apply.get("overall_passed") if isinstance(post_apply, Mapping) else None
     )
-    if isinstance(cloud_verdict, bool):
-        # A walked post-apply position group — the widest claim available.
+    # **A failed mark-VERIFY caps this badge whatever the group says** (#2464,
+    # ruled 2026-08-19). ``cloud_verdict`` was tested FIRST, so a closed group
+    # made the fail and inconclusive arms unreachable: a re-verify that failed
+    # against a carried-forward passing group reached ``GRADE_GRADED`` with
+    # ``graded=True``, and every surface keying on those read it as all clear.
+    #
+    # ``verify_failed`` is a UNION of the two instruments, not a fallback
+    # between them, because neither can see the other's failure. ``outcome``
+    # grades CAPTURE and tracking health only (``crossover_v2_flow.
+    # _set_verify_outcome``; its pass call site says "Absolute remains
+    # independent"), so a crossover-region claim that missed its tolerance
+    # rides a clean ``pass`` — and the other way, an absent or non-numeric
+    # tracking max is an ``outcome`` fail whose integration claim reads
+    # ``not_evaluated``. A state file with no claims block is a pre-R18 build
+    # and leaves ``outcome`` standing alone: absence is never a fail, and
+    # never a pass-of-claims either.
+    #
+    # #2160's rider (ratified 2026-08-17): geometry and k-of-N facts stay
+    # un-co-located — each instrument's facts render on its own surface, and
+    # capping this badge gathers none of them. ``spatial``,
+    # ``post_apply_spec_passed`` and ``verify_outcome`` below are untouched.
+    verify_failed = outcome == "fail" or CLAIM_FAIL in {
+        tracking_status, absolute_status,
+    }
+    if verify_failed:
+        state = GRADE_FAILED
+    elif outcome == "inconclusive":
+        state = GRADE_INCONCLUSIVE
+    elif isinstance(cloud_verdict, bool):
+        # A walked post-apply position group — the widest claim available, and
+        # on a clean pass it is the wider claim, so it still wins the word.
         state = GRADE_GRADED
     elif outcome == "pass":
         # Verified at the mark only. On express that is the whole grade by
         # design; on full it means VERIFY passed but the post-apply group has
         # not closed yet.
         state = GRADE_MARK_VERIFIED
-    elif outcome == "inconclusive":
-        state = GRADE_INCONCLUSIVE
-    elif outcome == "fail":
-        state = GRADE_FAILED
     else:
         state = GRADE_UNVERIFIED
     spatial = _spatial_grade(post_apply)

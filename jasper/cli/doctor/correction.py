@@ -775,6 +775,17 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     omit the post-apply position group, so the VERIFY outcome is what carries
     them — which is why both are consulted and either one satisfies this check.
 
+    **A failed mark-VERIFY reaches this line as ``GRADE_FAILED`` however the
+    spatial group graded** (#2464, ruled 2026-08-19). No branch here changed
+    for it: the producer's own precedence was masking the state, and an honest
+    ``state`` routes the cell into the warn arm that already carried the right
+    remediation. What DID change is that that arm now prints the outcome word
+    too, because the producer reads the claims record as well as ``outcome``
+    and the two may honestly disagree — a crossover-region claim that missed
+    its tolerance caps a capture whose own outcome is ``pass``, and a line
+    saying "came back failed" beside a `/state` reading ``verify_outcome=pass``
+    would leave a support read resolving that gap by guessing.
+
     **Reads ``post_apply_grade``; does not re-derive it** (PR-L4 review S2).
     An earlier revision recomputed the verdict here from ``verify`` and the
     cloud block with a predicate that had already drifted from the producer's
@@ -824,11 +835,16 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     # future build could carry a state name this one has never heard of, and
     # inventing a warning about it would be worse than saying what it said.
     state = str(grade.get("state") or "")
+    # Hoisted (#2464) so the fail/inconclusive arm below can print it too:
+    # ``state`` and ``verify_outcome`` may legitimately disagree there, because
+    # a failed crossover-region CLAIM caps the state on a capture whose own
+    # outcome is ``pass``. The never-graded fallback below still prints no
+    # outcome word: it is reached only when there is no grade to attribute.
+    verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
     if state == GRADE_NOT_APPLIED:
         return CheckResult(label, "ok", "no applied measured crossover")
     if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
         spatial = str(grade.get("spatial") or "")
-        verify_text = f"verify={grade.get('verify_outcome') or 'n/a'}"
         # A non-empty word this build does not recognize — a later build's
         # vocabulary. Never the empty string, which means a durable state
         # written before ``spatial`` existed at all and keeps its pre-R19
@@ -889,8 +905,9 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
     if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
         return CheckResult(
             label, "warn",
-            f"applied but the post-apply check came back {state} — re-verify "
-            "at /correction/ or undo to restore the previous sound",
+            f"applied but the post-apply check came back {state} "
+            f"({verify_text}) — re-verify at /correction/ or undo to restore "
+            "the previous sound",
         )
     return CheckResult(
         label, "warn",

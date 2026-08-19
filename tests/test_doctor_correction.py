@@ -2038,6 +2038,83 @@ def test_a_closed_and_passing_spatial_grade_is_ok(monkeypatch):
     assert "scope=spatial" in r.detail
 
 
+# --- #2464: a failed mark-VERIFY caps this line at warn -----------------------
+
+
+_R19_PASSING_GAUGE = {**_R19_FAILED_GAUGE, "max_db": 0.9, "passed": True}
+
+
+def test_a_failed_verify_is_not_masked_by_a_passing_spatial_grade(monkeypatch):
+    """#2464, ruled 2026-08-19 (option (a)): a failed mark-VERIFY caps this
+    line at warn whatever the spatial group says.
+
+    The producer tested the closed post-apply group BEFORE its own fail arm,
+    so a re-verify that failed against a carried-forward passing group reached
+    ``GRADE_GRADED`` — and this check, which reads that state, printed
+    ``applied and graded`` over it. The remediation copy the household needs
+    was unreachable, not absent."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={
+            "outcome": "fail",
+            "claims": {"integration": {"status": "fail", "max_db": 4.2}},
+        },
+        cloud=_r19_cloud_verify(passed=True, flatness=_R19_PASSING_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "came back failed" in r.detail
+    assert "re-verify at /correction/ or undo" in r.detail
+    assert "applied and graded" not in r.detail
+
+
+def test_a_failed_absolute_claim_warns_and_names_the_clean_capture(monkeypatch):
+    """The retro-audit shape: the capture was clean (``outcome=pass``) and the
+    crossover-region claim missed its tolerance. ``verify.outcome`` grades
+    capture and tracking health only, so the claims record is what sees it —
+    and BOTH facts print, because a line that says "came back failed" beside a
+    `/state` reading ``verify_outcome=pass`` is the adjacent contradiction this
+    module keeps removing."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={
+            "outcome": "pass",
+            "claims": {
+                "integration": {"status": "pass", "max_db": 0.7},
+                "absolute": {"status": "fail", "max_db": 4.31},
+            },
+        },
+        cloud=_r19_cloud_verify(passed=True, flatness=_R19_PASSING_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "came back failed" in r.detail
+    assert "verify=pass" in r.detail
+
+
+def test_an_inconclusive_verify_is_not_masked_by_a_closed_group(monkeypatch):
+    """The same mask one arm over — and this arm now names the outcome word
+    too, for the same reason the graded branches beside it always have."""
+    _r19_doctor_state(
+        monkeypatch,
+        tier="full",
+        verify={"outcome": "inconclusive"},
+        cloud=_r19_cloud_verify(passed=False, flatness=_R19_FAILED_GAUGE),
+    )
+
+    r = doctor.check_crossover_v2_applied_is_graded()
+
+    assert r.status == "warn"
+    assert "came back inconclusive" in r.detail
+    assert "verify=inconclusive" in r.detail
+
+
 def test_an_unknown_spatial_word_from_a_later_build_warns_and_names_it(
     monkeypatch,
 ):
