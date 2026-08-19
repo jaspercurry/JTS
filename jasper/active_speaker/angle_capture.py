@@ -76,6 +76,7 @@ forbid importing the flow.
 from __future__ import annotations
 
 import math
+import numbers
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Sequence
@@ -182,22 +183,48 @@ _REGIME_PROGRAM_PHASE = {
 
 
 def _validated_angle(angle_deg: object) -> int:
-    """One bearing, checked -- the single validator both entry points share.
+    """One bearing, checked and normalized -- the validator EVERY door shares.
 
-    :class:`AngleStop` and :func:`pose_at_angle` are both reachable directly, so
-    the two bounds live here rather than on whichever one a caller happened to
-    use first.
+    :class:`AngleStop`, :func:`pose_at_angle` and the three request
+    constructors are all reachable directly, so the bounds live here rather
+    than on whichever one a caller happened to use first.
+
+    **Silent truncation never returns from this function, and that is the point
+    rather than a style preference.** The constructors used to coerce with
+    ``int(a)`` before this ran, which made the whole-degree contract bind two of
+    the three doors. The sharp row is ``0.4``: it truncates to ``0``, and a
+    request for a pose just off the axis becomes an ON-AXIS capture with
+    ``offset_cm=0.0`` -- routing straight around :func:`position_angle_deg`'s
+    zero-sign guard, whose whole job is to refuse a pose that "would record an
+    offset the microphone never had". ``7.9 -> 7`` and ``'45' -> 45`` are the
+    same defect wearing quieter clothes. A caller who means 7 degrees can say
+    ``7``; nothing here guesses.
+
+    **Accepts any integer type except ``bool``.** Arm tooling and
+    numpy-derived schedules naturally hand over ``np.int64``, and refusing that
+    would push every such caller into exactly the ``int()`` coercion this
+    function exists to remove. So the test is :class:`numbers.Integral`, which
+    ``np.int64`` satisfies and ``np.float64`` does not. ``bool`` is excluded
+    explicitly because it *is* an ``Integral`` subclass in Python: ``True``
+    would otherwise sail through as ``+1 deg``, which is a real bearing and a
+    obvious caller error at the same time.
+
+    Returns a plain :class:`int` so nothing downstream carries a numpy scalar
+    into a record, a journal line or an equality check. The conversion happens
+    AFTER the type check, so it can never truncate.
     """
-    if type(angle_deg) is not int:
+    if isinstance(angle_deg, bool) or not isinstance(angle_deg, numbers.Integral):
         raise CrossoverV2FlowError(
-            f"an angle is stated in WHOLE degrees, got {angle_deg!r}"
+            "an angle is stated in WHOLE degrees -- no rounding, no coercion "
+            f"-- got {angle_deg!r}"
         )
-    if abs(angle_deg) > MAX_ANGLE_DEG:
+    degrees = int(angle_deg)
+    if abs(degrees) > MAX_ANGLE_DEG:
         raise CrossoverV2FlowError(
             f"an angle must be within +/-{MAX_ANGLE_DEG} deg of the design "
-            f"axis, got {angle_deg:+d} deg"
+            f"axis, got {degrees:+d} deg"
         )
-    return angle_deg
+    return degrees
 
 
 @dataclass(frozen=True)
@@ -216,7 +243,9 @@ class AngleStop:
     regime: str
 
     def __post_init__(self) -> None:
-        _validated_angle(self.angle_deg)
+        # Normalized back onto the field, so an ``np.int64`` a caller passed
+        # never reaches a record or an equality check as a numpy scalar.
+        object.__setattr__(self, "angle_deg", _validated_angle(self.angle_deg))
         if self.regime not in REGIMES:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
@@ -344,9 +373,15 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
 def per_driver_at(
     angles_deg: Sequence[int], *, mover: str = MOVER_HUMAN,
 ) -> AngleCaptureRequest:
-    """Per-driver captures at each angle -- the P2 forward model's input."""
+    """Per-driver captures at each angle -- the P2 forward model's input.
+
+    Angles are passed through to :class:`AngleStop` UNCOERCED, so this door
+    enforces the same whole-degree contract as the other two -- see
+    :func:`_validated_angle` for why an ``int()`` here was a hole rather than a
+    convenience.
+    """
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(int(a), REGIME_PER_DRIVER) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_PER_DRIVER) for a in angles_deg),
         mover=mover,
     )
 
@@ -356,7 +391,7 @@ def summed_at(
 ) -> AngleCaptureRequest:
     """Summed captures at each angle -- the system response off the axis."""
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(int(a), REGIME_SUMMED) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_SUMMED) for a in angles_deg),
         mover=mover,
     )
 
@@ -373,8 +408,8 @@ def both_at(
     """
     stops: list[AngleStop] = []
     for angle in angles_deg:
-        stops.append(AngleStop(int(angle), REGIME_PER_DRIVER))
-        stops.append(AngleStop(int(angle), REGIME_SUMMED))
+        stops.append(AngleStop(angle, REGIME_PER_DRIVER))
+        stops.append(AngleStop(angle, REGIME_SUMMED))
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 

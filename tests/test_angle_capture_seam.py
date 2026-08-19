@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import math
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
@@ -96,6 +97,80 @@ def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
     """Whole degrees is the resolution the placement is honest at."""
     with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
         ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER)  # type: ignore[arg-type]
+
+
+# --- the whole-degree contract binds EVERY door, not just two --------------- #
+#
+# The three request constructors used to coerce with ``int(a)`` BEFORE the
+# validator ran, so `per_driver_at([0.4])` silently produced an on-axis capture.
+# These pin all three doors against the truncation cases.
+
+_DOORS = (
+    pytest.param(lambda a: ac.per_driver_at([a]), id="per_driver_at"),
+    pytest.param(lambda a: ac.summed_at([a]), id="summed_at"),
+    pytest.param(lambda a: ac.both_at([a]), id="both_at"),
+)
+_TRUNCATING = [7.9, -7.9, 0.4, "45", None]
+
+
+@pytest.mark.parametrize("door", _DOORS)
+@pytest.mark.parametrize("bad", _TRUNCATING)
+def test_every_door_refuses_a_non_whole_degree(door: object, bad: object) -> None:
+    """No constructor rounds, truncates, or parses its way to an angle."""
+    with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+        door(bad)  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("door", _DOORS)
+def test_a_fractional_angle_never_becomes_an_on_axis_capture(door: object) -> None:
+    """The sharp row: 0.4 must REFUSE, never truncate to 0.
+
+    Truncating 0.4 to 0 turns a request for a pose just off the design axis
+    into an on-axis capture at ``offset_cm=0.0`` -- which also routes around
+    `position_angle_deg`'s zero-sign guard, the one that exists to stop a pose
+    recording "an offset the microphone never had". A silent 0 is therefore
+    worse than a loud refusal, not a lenient version of it.
+    """
+    with pytest.raises(flow.CrossoverV2FlowError):
+        door(0.4)  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("door", _DOORS)
+def test_every_door_accepts_a_numpy_integer(door: object) -> None:
+    """np.int64 is an integer, and arm/numpy-derived schedules produce them.
+
+    Refusing it would push exactly those callers back into the `int()` coercion
+    this contract removes. It normalizes to a plain `int` so no numpy scalar
+    reaches a record or an equality check.
+    """
+    request = door(np.int64(45))  # type: ignore[operator]
+    stop = ac.resolve_request(request)[0]
+    assert stop.angle_deg == 45
+    assert type(stop.angle_deg) is int
+    assert flow.position_angle_deg(stop.prompt) == 45
+
+
+@pytest.mark.parametrize("door", _DOORS)
+@pytest.mark.parametrize("bad", [np.float64(45.0), True, False])
+def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
+    """np.float64 is not an integer; bool is one in Python and must still refuse.
+
+    `True` would otherwise sail through as a perfectly valid +1 deg bearing --
+    a real angle and an obvious caller error at the same time.
+    """
+    with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+        door(bad)  # type: ignore[operator]
+
+
+def test_angle_stop_and_pose_share_the_numpy_and_bool_rules() -> None:
+    """The other two doors agree with the constructors -- one validator, not three."""
+    assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED).angle_deg == 22
+    assert flow.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
+    for bad in (np.float64(22.0), True, 22.5, "22"):
+        with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+            ac.AngleStop(bad, ac.REGIME_SUMMED)  # type: ignore[arg-type]
+        with pytest.raises(flow.CrossoverV2FlowError, match="WHOLE degrees"):
+            ac.pose_at_angle(bad)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- #
