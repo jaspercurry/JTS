@@ -42,17 +42,23 @@ unresolvable combination shipped. These three guards close that gap:
    runtime reqs>`` with pip's real resolver in ``--dry-run`` mode, so it
    catches ANY conflict, including future classes the hard-pin list in
    guard 1 does not enumerate. Skips cleanly when PyPI is unreachable
-   (offline dev) or when no pip/uv resolver is available (a bare uv
-   venv), so it never spuriously fails; it runs in CI, which already has
-   network and ``uv`` on PATH for ``uv sync``.
+   (offline dev), when neither pip nor uv is available, or when uv is
+   the only option but has no environment to resolve into (no
+   ``$VIRTUAL_ENV`` and no ``.venv/`` at the repo root — the case for a
+   plain ``git worktree add`` checkout), so it never spuriously fails;
+   it runs for real in CI, which has network and, after ``uv sync``, a
+   ``.venv/`` at the repo root.
 
 3. ``test_uv_dry_run_resolves_pi_platform`` — PI-TARGETED + NETWORK.
    Resolves the same versioned requirements for Linux aarch64 / Python
    3.13, including Linux-only markers, so an x86-only wheel cannot make
    the faithful current-runner probe green while the Pi remains broken.
+   Shares guard 2's environment-precondition skips (PyPI reachability,
+   uv on PATH, uv having a venv to resolve into).
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -165,10 +171,28 @@ def _pypi_reachable() -> bool:
         return False
 
 
+def _uv_venv_available() -> bool:
+    """Whether a bare ``uv pip install`` (no ``--system``/``--python``)
+    has a target environment to resolve into, mirroring uv's own
+    discovery order: an activated venv (``$VIRTUAL_ENV``) or a
+    ``.venv/`` at the repo root. Without either, uv exits before
+    resolving anything ("No virtual environment found; run `uv venv`
+    ... or pass `--system`") — an environment precondition, not a
+    resolution failure, so it belongs in the skip list next to
+    ``_pypi_reachable``. A ``git worktree add`` checkout has neither by
+    default; the main checkout and CI (post ``uv sync``) have the
+    ``.venv/``.
+    """
+    if os.environ.get("VIRTUAL_ENV"):
+        return True
+    return (_ROOT / ".venv").is_dir()
+
+
 def _resolver_cmd() -> list[str] | None:
     """A pip-compatible resolver invocation, or None if none is
     available. Prefer the current interpreter's pip; fall back to ``uv
-    pip`` (CI's uv venvs omit pip but ship uv on PATH)."""
+    pip`` (CI's uv venvs omit pip but ship uv on PATH) when uv has a
+    venv to resolve into — see ``_uv_venv_available``."""
     if (
         subprocess.run(
             [sys.executable, "-m", "pip", "--version"],
@@ -179,7 +203,7 @@ def _resolver_cmd() -> list[str] | None:
         return [sys.executable, "-m", "pip", "install", "--dry-run", "--ignore-installed"]
     from shutil import which
 
-    if which("uv"):
+    if which("uv") and _uv_venv_available():
         return ["uv", "pip", "install", "--dry-run"]
     return None
 
@@ -244,7 +268,11 @@ def test_pip_dry_run_resolves_constraints() -> None:
         pytest.skip("PyPI unreachable — offline; the offline guard still runs")
     cmd = _resolver_cmd()
     if cmd is None:
-        pytest.skip("no pip/uv resolver available in this environment")
+        pytest.skip(
+            "no usable pip/uv resolver in this environment (no pip module, or "
+            "uv has no venv to resolve into — e.g. a git worktree with no "
+            ".venv of its own)"
+        )
 
     reqs = _constrained_runtime_requirements()
     proc = subprocess.run(
@@ -275,6 +303,11 @@ def test_uv_dry_run_resolves_pi_platform() -> None:
 
     if which("uv") is None:
         pytest.skip("uv is required for cross-platform Pi resolution")
+    if not _uv_venv_available():
+        pytest.skip(
+            "uv has no venv to resolve into (no $VIRTUAL_ENV and no .venv/ at "
+            "the repo root) — e.g. a git worktree with no .venv of its own"
+        )
 
     proc = subprocess.run(
         [
