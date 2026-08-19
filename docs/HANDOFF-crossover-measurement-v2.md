@@ -357,12 +357,31 @@ re-derivation is worth recording because the two look interchangeable:
 
 * A glitched capture's reason code IS in `auto_retry`. `program_analysis`'s
   glitch inputs (`epsilon_out_of_bound` / `residual_desync` /
-  `repeat_level_disagree`) are telemetry disambiguators, not codes; the verdict
-  is one code, and `spatial`'s `SCREEN_CAPTURE_GLITCH` maps to
-  `drift_baselines_disagree`, whose template is `silent_auto_retry`. So a
+  `repeat_level_disagree` / `timeline_slip`) are telemetry disambiguators, not
+  codes; the verdict is one code, and `spatial`'s `SCREEN_CAPTURE_GLITCH` maps
+  to `drift_baselines_disagree`, whose template is `silent_auto_retry`. So a
   Pi-side `auto_retry` filter would have fired on every one of the 13 events of
   the 2026-08-15 campaign — **and equally on every other glitch-class
   rejection, whatever caused it**.
+
+  > **`timeline_slip`, and the exposure it does NOT close — read this before
+  > trusting per-driver phase.** The fourth input gates a discrete
+  > sub-sample timeline step, the silent-USB-slip class: the Stage-0 bank
+  > measured these at ~0.5 % of captures with **no ALSA error at all**, and a
+  > slip landing between the interleaved per-driver segments biases exactly
+  > the woofer-vs-tweeter timing that per-driver phase and the `M*C/P`
+  > composition depend on. It moved the rejected step from about 4 samples to
+  > 2 (83 µs → 41 µs). **A ~1-sample slip (20.8 µs) still passes**, which is
+  > at the 20 µs relative-phase bar — 15° at 2 kHz, which is the entire
+  > 10–15° summation budget. That floor is a
+  > structural property of the analysis, not a tuning choice, and it is pinned
+  > by test: six locate positions and a best-of-five cut search cannot resolve
+  > below it, and tightening the gate to try costs 15 % false rejection one
+  > stress row below worst case. Closing the last 2× requires adding signal to
+  > the capture — a program-level timing pilot — which is a future program
+  > change, not an analysis one. Owner of the measured numbers and the limit:
+  > `SLIP_GATE_SAMPLES` in
+  > [`jasper/audio_measurement/timeline_slip.py`](../jasper/audio_measurement/timeline_slip.py).
 * That is the wrong side of the line this section already draws two paragraphs
   up. The 2026-08-15 remote deaths were rejected as glitches by a
   *deterministic* Pi-side playback insertion (#2533), against which an

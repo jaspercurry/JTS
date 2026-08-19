@@ -88,6 +88,12 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.timeline_slip import (
+    GLITCH_INPUT_TIMELINE_SLIP,
+    TimelineStepFit,
+    fit_timeline_step,
+    slip_rejects_capture,
+)
 from jasper.capture_relay.alignment import cross_correlation_alignment
 from jasper.log_event import log_event
 
@@ -196,54 +202,22 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 # Timeline-discontinuity change-point (2026-07-27 forensics, issue #1765).
 #
-# Every glitch this system has produced by a real TIMELINE fault was a DISCRETE
-# step, never clock drift: across the 2026-07-22..27 JTS3 journal (57 MEASURE
-# captures) both `program_analysis.glitch` events fired on the residual guard
-# with epsilon comfortably INSIDE MAX_DRIFT_PPM — 2026-07-23 at 30.53 ppm /
-# 798.46 samples, 2026-07-27 at 94.12 ppm / 32.36 samples. The 500 ppm bound
-# has never fired. The 2026-07-27 capture was recovered from JTS3's retained
-# dump and cross-correlated (ncc 0.92-0.99) against the two captures that
-# PASSED minutes later on the same program/rig: five of its six located sweeps
-# agreed within 0.8 samples while the first woofer sweep sat 64.3 samples
-# apart — a single +64-sample (1.333 ms) insertion between `sweep_w` and
-# `sweep_t`. That one step predicts every reported number (woofer pair
-# straddles it: 32.1 + 64/1_036_800 = 93.8 ppm vs 94.118 observed; tweeter
-# pair sits entirely after it, so 32.097 ppm = the TRUE drift; demeaned
-# residual 32.2 predicted vs 32.357 observed).
+# The reported `epsilon_ppm` on a capture carrying a real step is an ARTEFACT
+# of that step, not a drift measurement, and "the baselines disagree" says
+# nothing about what actually broke. A single-step timeline model names it
+# instead. That model — with the 2026-07-27 +64-sample forensic that motivated
+# it, its one admission rule, and the measured limits of what it can and
+# cannot resolve — now lives in `jasper.audio_measurement.timeline_slip`;
+# `_locate_discontinuity` below is the adapter that measures this capture's
+# positions and feeds it.
 #
-# That "real timeline fault" qualifier is load-bearing, and series 2 is why
-# (D7). The unqualified version of the sentence above — every glitch is a step —
-# was inherited as settled and is false: a THIRD class exists in which nothing
-# happened to the capture at all and the residual guard fired on its own
-# estimator's noise, with epsilon in the normal branch and no step resolvable.
-# Eight of those in one series. See `GLITCH_RESIDUAL_SAMPLES` for the finding
-# and the fix; the 2026-07 forensic above stands unchanged as a description of
-# the step class it actually studied.
-#
-# So the reported `epsilon_ppm` on a glitched capture is an ARTEFACT of the
-# step, not a drift measurement, and "the baselines disagree" says nothing
-# about what actually broke. This estimator names it: fit a single-step
-# timeline model across the located sweeps and report the step's size and
-# where it landed. Diagnostic ONLY — like `per_role_epsilon_ppm` it never
-# gates `glitch_detected`, so no capture's accept/reject changes.
-#
-# Thresholds: a fitted step this large should not come from locate noise, and
-# the RSS ratio additionally requires the step model to EXPLAIN the capture
-# rather than merely soak up one extra degree of freedom. NOTE (D7): this fit
-# still reads the INTEGER `located_start` — unlike the residual guard, which
-# no longer does — and the margin here is thinner than it looks. The premise
-# was "a clean capture's integer-located residuals sit well under a sample";
-# series 2 measured 2.00-3.13 on eight clean captures, so 4.0 is nearer 1.5x
-# that noise than the comfortable multiple it was chosen as. This estimator
-# gates nothing (diagnostic only), so it is recorded rather than retuned here.
-# What a journal reader will now see, because D7 changed the verdict beside it
-# and not this fit: replaying the ten r1b laterals, two resolve a spurious
-# -4.2 / -4.0 step after `sweep_w_rep2` next to an ACCEPTED capture. Pre-D7
-# both were rejected, so the same spurious step rode along with a rejection
-# and read as corroboration. It never was; treat a step this close to 4.0 as
-# locate noise until this threshold is re-derived from a real distribution.
-DISCONTINUITY_MIN_SAMPLES = 4.0
-DISCONTINUITY_RSS_RATIO = 0.25
+# The move is a VERDICT change, not a refactor. Fed sub-sample positions
+# instead of integer `located_start`, the fit is sharp enough to gate on, so a
+# timeline slip now REJECTS a capture rather than only annotating one — which
+# is what D7's warning about the integer-fed version sitting "nearer 1.5x its
+# own noise" than a comfortable multiple was asking for. See
+# `GLITCH_RESIDUAL_SAMPLES` above for the separate, deliberately UNCHANGED
+# spread guard and the eight-false-rejection incident that calibrated it.
 
 # #1839 addendum: the step-fit above trusts its OWN INPUT — every located
 # sweep's `located_start` — implicitly. That trust is unearned once the
@@ -394,8 +368,8 @@ INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
 # buffer here?" gets the answer, and a future VERIFY program that grows a
 # repeat pair has the exact list of what would become evaluable. Their MEASURE
 # counterparts are ``DriftEstimate.glitch_inputs``'s ``epsilon_out_of_bound``
-# / ``repeat_level_disagree`` / ``residual_desync`` and the diagnostic
-# ``_locate_discontinuity`` step fit.
+# / ``repeat_level_disagree`` / ``residual_desync`` / ``timeline_slip``, the
+# last of which is ``_locate_discontinuity``'s step fit.
 INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
 INTEGRITY_CHECK_REPEAT_LEVEL = "repeat_level_agreement"
 INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
@@ -1293,13 +1267,13 @@ class DriftEstimate:
     old-shaped program's un-repeated tweeter, or any degenerate single-sweep
     role) and for legacy construction sites that predate this field.
 
-    ``glitch_inputs`` (issue #1765) names WHICH of the three bounds tripped —
+    ``glitch_inputs`` (issue #1765) names WHICH of the four bounds tripped —
     ``epsilon_out_of_bound`` / ``residual_desync`` / ``repeat_level_disagree``
-    — in that fixed order, empty on a clean capture. The verdict is one
-    user-facing reason by design (§5.2's "never a new user-facing code for a
-    capture-glitch class"), but telemetry had no way to tell the three apart,
-    and the drift-flavoured name misled readers into assuming the ppm bound
-    fired when it never has (see DISCONTINUITY_MIN_SAMPLES).
+    / ``timeline_slip`` — in that fixed order, empty on a clean capture. The
+    verdict is one user-facing reason by design (§5.2's "never a new
+    user-facing code for a capture-glitch class"), but telemetry had no way to
+    tell them apart, and the drift-flavoured name misled readers into assuming
+    the ppm bound fired when it never has.
 
     ``discontinuity_samples`` / ``discontinuity_after_segment`` describe a
     single discrete timeline step when one explains the located sweeps: its
@@ -1311,7 +1285,13 @@ class DriftEstimate:
     or more located sweeps fell below ``SWEEP_LOCATE_CONFIDENCE_FLOOR``
     instead: a step fitted from an unlocated sweep is not a clean reading, it
     is a fabrication, so it is a distinct sentinel rather than silently
-    ``0.0``. Diagnostic only; never gates ``glitch_detected``.
+    ``0.0``.
+
+    These two now populate exactly when ``timeline_slip`` fires, so they are
+    the slip's own record rather than a free-running diagnostic. Read the
+    MAGNITUDE: the sign and the segment id are ambiguous when the step lands
+    at an even schedule index, which the fit's own docstring measures and
+    which is why the gate reads ``abs()`` alone.
     """
 
     epsilon_ppm: float
@@ -2689,93 +2669,85 @@ def _repeat_epsilon(
 
 def _locate_discontinuity(
     program: ExcitationProgram,
+    capture: np.ndarray,
     stimulus_locs: Sequence[SegmentLocation],
-) -> tuple[float | str, str]:
+) -> tuple[float | str, str, TimelineStepFit]:
     """Fit a single discrete timeline STEP across the located sweeps (#1765).
 
-    Returns ``(step_samples, after_segment_id)`` when a step is resolved;
-    ``(0.0, "")`` when no step is resolved on a capture whose sweeps were
-    confidently located — including a clean capture, where this is the
-    expected value; or ``(DISCONTINUITY_UNRESOLVED, "")`` (#1839) when one or
-    more of ``stimulus_locs`` falls below
-    ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — a step fitted from a sweep the
-    locator could barely find is not a "clean capture" reading, it is a
-    number invented from noise (real incident: session
+    Returns ``(step_samples, after_segment_id, fit)``. The first two keep
+    their long-standing diagnostic meaning — ``(0.0, "")`` when no step is
+    resolved, including on a clean capture where that is the expected value,
+    or ``(DISCONTINUITY_UNRESOLVED, "")`` (#1839) when any of
+    ``stimulus_locs`` falls below ``SWEEP_LOCATE_CONFIDENCE_FLOOR``, because a
+    step fitted from a sweep the locator could barely find is not a "clean
+    capture" reading but a number invented from noise (real incident: session
     cap_-Us10xORVNlFa_dgi-sP7g's sweeps located at confidence 0.0298, and this
     function reported a confident-looking -2090.5-sample step before this
-    precondition existed). Diagnostic only — see ``DISCONTINUITY_MIN_SAMPLES``
-    for the hardware forensics this exists to name, and ``DriftEstimate`` for
-    the fields it feeds.
+    precondition existed). The third is the fit itself, which
+    ``_estimate_drift`` puts through
+    :func:`~jasper.audio_measurement.timeline_slip.slip_rejects_capture`.
 
-    Model: a sweep scheduled at ``start`` and located at ``located`` satisfies
-    ``located = acoustic_delay[role] + start·(1+ε) + step·[start > cut]``. One
-    constant per ROLE absorbs that role's own acoustic delay (the same reason
-    ``_estimate_drift``'s residual guard demeans per role — a real
-    tweeter-vs-woofer delay must not read as a glitch); ``ε`` is shared, and
-    is fitted here independently of the woofer-pair baseline precisely
-    BECAUSE a step corrupts that baseline. Every interior cut is tried and the
-    best-fitting one wins; a step must clear both a physical-size floor and an
-    explanatory-power ratio to be reported at all.
+    **This is no longer diagnostic-only, and the reason is the input.** The
+    model lives in :mod:`jasper.audio_measurement.timeline_slip` and is
+    unchanged; what changed is that it is now fed SUB-SAMPLE positions
+    instead of the integer ``located_start`` whose own noise on clean
+    hardware was 2.00-3.13 samples. Each occurrence is placed against its
+    role's first by :func:`_subsample_separation` — the same estimator, and
+    the same "never read off ``located_start``" rule, that D7 gave the
+    residual guard, and whose measured scatter is 0.038-0.299 samples. That
+    single substitution is what makes the fit sharp enough to gate on; the
+    module constant ``SLIP_GATE_SAMPLES`` owns the measured operating point
+    and states plainly which slips remain out of reach.
 
-    Needs enough located sweeps to leave the step model ≥2 degrees of freedom,
-    so an old-shaped 3-sweep program (2 roles ⇒ 4 parameters) resolves nothing
-    and returns ``(0.0, "")`` rather than fitting noise.
-
-    Limitation worth knowing before trusting a reported step: with only 6
-    points and one extra parameter chosen as the best of 5 candidate cuts,
-    a capture whose per-segment LOCATE noise is itself several samples can
-    fit a spurious step. That is bounded — this value is diagnostic and gates
-    nothing — and the same diag record carries
-    ``sweep_locate_confidence_min`` / ``sweep_residual_ms_worst``, which is
-    where a reader checks whether the locations were trustworthy in the first
-    place. Read a step alongside those, not on its own.
+    Placing each occurrence relatively also cancels the global offset and the
+    driver's constant acoustic delay structurally, exactly as it does for the
+    residual guard; the per-role constants in the model then absorb whatever
+    is left.
     """
     ordered = sorted(
         stimulus_locs, key=lambda loc: program.segment(loc.segment_id).start_sample
     )
-    roles = sorted({loc.role for loc in ordered}, key=str)
-    # parameters = one per role + shared drift slope + the step itself
-    if len(ordered) < len(roles) + 4:
-        return 0.0, ""
-
-    # #1839: a step fitted from a sweep the locator could barely find is not
-    # a "clean, no step" reading (0.0) — it is a confident-looking
-    # fabrication from noise. Gate BEFORE the least-squares fit, on the exact
-    # per-location confidence the fit is about to trust implicitly.
+    # #1839: gate BEFORE the fit, on the exact per-location confidence the fit
+    # is about to trust implicitly.
     if any(loc.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR for loc in ordered):
-        return DISCONTINUITY_UNRESOLVED, ""
+        return DISCONTINUITY_UNRESOLVED, "", TimelineStepFit()
 
-    starts = np.array(
-        [float(program.segment(loc.segment_id).start_sample) for loc in ordered]
+    # Sub-sample positions, per role, referenced to that role's first
+    # occurrence. The reference's own integer start stays in the value; the
+    # model's per-role constant absorbs it, so only WITHIN-role placement has
+    # to be sharp — which is precisely what `_subsample_separation` delivers.
+    # `role` is `str | None` on the type, and a role-less sweep groups with
+    # the other role-less ones under "" — the tolerance the pre-move fit had
+    # via its `key=str` sort, kept rather than tightened. No composable
+    # MEASURE program can produce one (``RoleBand.__post_init__`` refuses a
+    # role that is not a non-empty string), so this is scope discipline, not
+    # a live case.
+    # Keyed by POSITION in `ordered`, not by object identity: two locations can
+    # legitimately compare equal, and an index needs no aliasing argument.
+    by_role: dict[str, list[int]] = {}
+    for index, loc in enumerate(ordered):
+        by_role.setdefault(loc.role or "", []).append(index)
+    placed: list[float] = [0.0] * len(ordered)
+    for members in by_role.values():
+        reference = ordered[members[0]]
+        ref_n = program.segment(reference.segment_id).n_samples
+        placed[members[0]] = float(reference.located_start)
+        for index in members[1:]:
+            placed[index] = float(reference.located_start) + _subsample_separation(
+                capture,
+                reference.located_start,
+                ordered[index].located_start,
+                ref_n,
+            )
+
+    fit = fit_timeline_step(
+        [float(program.segment(loc.segment_id).start_sample) for loc in ordered],
+        placed,
+        [loc.role or "" for loc in ordered],
     )
-    located = np.array([float(loc.located_start) for loc in ordered])
-    role_column = {role: idx for idx, role in enumerate(roles)}
-    base = np.zeros((len(ordered), len(roles) + 1))
-    for row, loc in enumerate(ordered):
-        base[row, role_column[loc.role]] = 1.0
-    base[:, -1] = starts
-
-    def fit(design: np.ndarray) -> tuple[np.ndarray, float]:
-        coef, *_ = np.linalg.lstsq(design, located, rcond=None)
-        resid = located - design @ coef
-        return coef, float(resid @ resid)
-
-    _, no_step_rss = fit(base)
-    best_rss = math.inf
-    best_step = 0.0
-    best_after = ""
-    for cut in range(1, len(ordered)):
-        step_column = np.zeros((len(ordered), 1))
-        step_column[cut:, 0] = 1.0
-        coef, rss = fit(np.hstack([base, step_column]))
-        if rss < best_rss:
-            best_rss, best_step, best_after = rss, float(coef[-1]), ordered[cut - 1].segment_id
-
-    if abs(best_step) < DISCONTINUITY_MIN_SAMPLES:
-        return 0.0, ""
-    if best_rss > DISCONTINUITY_RSS_RATIO * no_step_rss:
-        return 0.0, ""
-    return best_step, best_after
+    if not slip_rejects_capture(fit):
+        return 0.0, "", fit
+    return fit.step_samples, ordered[fit.cut_index - 1].segment_id, fit
 
 
 def _estimate_drift(
@@ -2913,26 +2885,31 @@ def _estimate_drift(
         if result is not None:
             per_role_epsilon_ppm[role] = result[0] * 1e6
 
+    # Computed on EVERY capture, not just a failing one, so the clean corpus
+    # carries the same field and a future bench pass can read its distribution
+    # (the `repeat_level_delta_db` precedent). A clean capture resolves no step
+    # and reports 0.0 / "".
+    discontinuity_samples, discontinuity_after, slip_fit = _locate_discontinuity(
+        program, capture, stimulus_locs
+    )
+
     # WHICH bound tripped, in a fixed order — the verdict stays one reason
-    # code (§5.2), this is telemetry's disambiguator (#1765).
+    # code (§5.2), this is telemetry's disambiguator (#1765). The slip gate is
+    # APPENDED rather than folded into `residual_desync`: that name belongs to
+    # the spread guard, whose calibration and whose +4-rejects / +2-passes pins
+    # are deliberately untouched here, and one name covering two instruments
+    # would leave a journal reader unable to tell which of them fired.
     glitch_inputs = tuple(
         name
         for name, tripped in (
             ("epsilon_out_of_bound", abs(epsilon) * 1e6 > MAX_DRIFT_PPM),
             ("residual_desync", max_residual > GLITCH_RESIDUAL_SAMPLES),
             ("repeat_level_disagree", repeat_level_disagrees),
+            (GLITCH_INPUT_TIMELINE_SLIP, slip_rejects_capture(slip_fit)),
         )
         if tripped
     )
     glitch = bool(glitch_inputs)
-
-    # Diagnostic only, never gated — and computed on EVERY capture, not just a
-    # failing one, so the clean corpus carries the same field and a future
-    # bench pass can read its distribution (the `repeat_level_delta_db`
-    # precedent). A clean capture resolves no step and reports 0.0 / "".
-    discontinuity_samples, discontinuity_after = _locate_discontinuity(
-        program, stimulus_locs
-    )
 
     if glitch:
         log_event(

@@ -1698,6 +1698,74 @@ def test_desync_guard_keeps_its_teeth_after_d7(
     ) == pytest.approx(res.drift.max_residual_samples, abs=0.01)
 
 
+@pytest.mark.parametrize(
+    "insert_samples, expect_slip, expect_residual_desync",
+    [
+        # The BOUNDARY this guard moved, pinned end to end on the real
+        # analysis path. Before the sub-sample slip gate, only the spread
+        # guard rejected, so +2 and +3 sailed through: at 48 kHz that is 41
+        # and 62 us of woofer-vs-tweeter error, against a 20 us relative-phase
+        # budget. The Stage-0 bank recorded a real silent USB slip of +1.986
+        # samples, so this was not a theoretical hole.
+        (0, False, False),
+        # Honest limit, pinned in the same table as the wins: one sample is
+        # NOT caught, and SLIP_GATE_SAMPLES says why reaching it would cost
+        # more than it buys.
+        (1, False, False),
+        (2, True, False),   # newly caught — was silently accepted
+        (3, True, False),   # newly caught — was silently accepted
+        # The spread guard's own pins, unchanged: it still fires at +4 and +7,
+        # and this PR retuned nothing about it.
+        (4, True, True),
+        (7, True, True),
+    ],
+)
+def test_timeline_slip_gate_moves_the_floor_from_four_samples_to_two(
+    insert_samples, expect_slip, expect_residual_desync
+):
+    """The whole point of the sub-sample slip gate, as a before/after table.
+
+    Read the two columns together: ``timeline_slip`` is the new instrument and
+    ``residual_desync`` is the shipped one. The shipped one's behaviour is
+    IDENTICAL to what it was — that is the claim "nothing about the spread
+    guard was retuned", asserted rather than promised.
+    """
+    prog = build_measure_program(
+        {"woofer": -11.0, "tweeter": -13.0}, _roles(),
+        sweep_durations={"woofer": 0.8, "tweeter": 0.6},
+    )
+    cap = _synthesize(
+        prog,
+        woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
+        tweeter_ir=_band_impulse(225, 300.0, 20000.0, 0.7),
+        epsilon=0.0,
+    )
+    seg = prog.segment("sweep_w")
+    cut = GLOBAL_OFFSET + seg.start_sample + seg.n_samples + 4_000
+    spliced = (
+        np.concatenate([cap[:cut], np.zeros(insert_samples), cap[cut:]])
+        if insert_samples
+        else cap
+    )
+
+    res = analyze_program_capture(
+        prog, spliced, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+    )
+    inputs = res.drift.glitch_inputs
+    assert ("timeline_slip" in inputs) is expect_slip, (
+        f"+{insert_samples} samples: glitch_inputs={inputs}, "
+        f"step={res.drift.discontinuity_samples}"
+    )
+    assert ("residual_desync" in inputs) is expect_residual_desync
+    if expect_slip:
+        # The slip's own record, so a forensic reader sees the size that was
+        # rejected rather than only that something was.
+        assert res.drift.discontinuity_samples == pytest.approx(
+            insert_samples, abs=0.5
+        )
+        assert res.drift.discontinuity_after_segment == "sweep_w"
+
+
 def test_diagnostic_summary_says_WHY_the_gate_window_is_what_it_is():
     """#1966 — the sidecar must distinguish "reflection found" from "capped".
 
@@ -1914,7 +1982,12 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
         for loc in res.locations
         if loc.kind == KIND_SWEEP
     ]
-    step, after = program_analysis._locate_discontinuity(prog, sweep_locs)
+    # The fit now measures positions out of the capture itself (sub-sample,
+    # so it can gate), which is why the capture is an argument and the fit
+    # rides back as a third return value.
+    step, after, _fit = program_analysis._locate_discontinuity(
+        prog, spliced, sweep_locs
+    )
     if expect_unresolved:
         assert step == program_analysis.DISCONTINUITY_UNRESOLVED
         assert after == ""

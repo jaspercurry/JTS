@@ -950,7 +950,21 @@ MAX_LINES_BY_PATH = {
     # measured after the rebase rather than added on paper) = 7,275. The seam
     # both notes name is now named twice by two independent sessions in one
     # night, which is the strongest argument either could make for cutting it.
-    "jasper/audio_measurement/program_analysis.py": 7_275,
+    # 2026-08-19 (capture slip guard): 7,275 -> 7,252, a CUT rather than a
+    # bump, and the ceiling follows the file down so the room is not silently
+    # available to the next diff. The single-step timeline model, its
+    # admission rule and the 2026-07-27 forensics that motivated it moved out
+    # to `jasper.audio_measurement.timeline_slip`, which also owns the
+    # measured operating point of the new sub-sample slip gate; what stayed
+    # here is the adapter that measures a capture's positions and feeds the
+    # model. Net -23: about -50 moved out, +27 back for the adapter's
+    # sub-sample placement (index-keyed, so no aliasing argument is owed),
+    # the fourth `glitch_inputs` entry, the role-less grouping note the type
+    # checker asked for, and the DriftEstimate docstring gaining the one thing
+    # a reader of those two fields now has to know -- they populate exactly
+    # when the gate fires, and their sign and segment id are ambiguous at an
+    # even cut, so the magnitude is the part to read.
+    "jasper/audio_measurement/program_analysis.py": 7_252,
 }
 
 
