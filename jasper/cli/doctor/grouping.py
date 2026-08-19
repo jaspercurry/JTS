@@ -244,11 +244,13 @@ def check_grouping_rate_adjust() -> CheckResult:
     documented ``rate_adjust`` + ``AsyncSinc`` trap). The no-rate-adjust rule is
     SPECIFIC to the leader's pipe-writing CamillaDSP (a File/pipe sink has no
     output clock, so snapclient is the sole tracker). A FOLLOWER is out of this
-    check's scope because it correctly runs ``rate_adjust: true``: a passive
-    follower's CamillaDSP sits outside the bonded path, and an ACTIVE follower's
-    CamillaDSP IS in the bonded path (distributed-active Slice 3 — it captures
-    the round-trip loopback and runs Layer A) but is itself the sole rate-tracker
-    of that loopback, so ``rate_adjust: true`` is REQUIRED there, not forbidden.
+    check's scope: a passive follower's CamillaDSP sits outside the bonded path
+    entirely, and an ACTIVE follower's CamillaDSP IS in the bonded path
+    (distributed-active Slice 3 — it captures the grouping ring and runs
+    Layer A) but is not a tracker there either. snapclient is, on both ends of
+    that ring: its ``enable_rate_adjust`` follows the SINK it plays into, and on
+    a ring CAPTURE the request cannot be actuated at all — a ring PCM is an
+    ioplug, so CamillaDSP builds no HCtl and finds no mixer element to steer.
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
@@ -1234,8 +1236,8 @@ def check_grouping_aloop_remnant() -> CheckResult:
             label,
             "fail",
             "snd-aloop substream(s) open with no registered purpose in this "
-            f"phase: {'; '.join(shown)}{suffix}. snd-aloop is retained only "
-            f"for the grouping round-trip on pair {content_pair} (#2508); "
+            f"phase: {'; '.join(shown)}{suffix}. Pair {content_pair} is "
+            "outputd's passive content lane (#2508); "
             "pair 5's PCM definitions were DELETED by #2285 P9-C, so a holder "
             "there means a rolled-back binary or a stale /etc/asound.conf "
             "resurrected a deleted lane. Identify the process above, stop it, "

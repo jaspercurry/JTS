@@ -228,9 +228,9 @@ def test_emits_the_ring_chunk_it_is_given() -> None:
     behaviour, and it silently raised anything below 1024. The bonded endpoint
     captures the grouping ring now, and the ring path's chunk is
     ``RING_CAMILLA_CHUNKSIZE`` — one slot, 128 frames — so a surviving floor
-    would not "protect" the graph, it would emit a chunk eight times its
-    playback ring's whole buffer. The floor is gone; a resurrected one fails
-    here.
+    would not "protect" the graph, it would emit a chunk FOUR TIMES its
+    playback ring's whole 2-slot buffer (128 x 2 = 256 frames; eight times one
+    slot). The floor is gone; a resurrected one fails here.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,

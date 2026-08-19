@@ -2345,8 +2345,10 @@ def main(argv: list[str] | None = None) -> int:
             # flat statefile. camilla#2 is disabled before the bake and later
             # started from that statefile, so trim-only rewrites are picked up by
             # process start rather than relying on an idempotent systemd no-op.
-            # camilla#2 keeps enable_rate_adjust ON — the validated
-            # active-follower seam, no outputd-summer yet
+            # camilla#2 runs the active follower's clock seam unchanged — same
+            # capture (the grouping ring), same per-sink rate-adjust
+            # resolution — so the leader adds no clock topology the follower
+            # does not already have. No outputd-summer yet
             # (HANDOFF-distributed-active.md "Sequencing" 1).
             bake_ok = False
             if not _disable_crossover_unit():

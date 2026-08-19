@@ -316,11 +316,12 @@ install_jts_ring_conf_assets() {
 
     # 1c. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
     #     two blocks above: system-wide 0644 so any user can resolve the name.
-    #     The device ships ahead of its consumers — no `--soundcard` and no
-    #     CamillaDSP capture device names pcm.jts_ring_grouping, and a PCM
-    #     definition is not an open. What it costs to place it is one file
-    #     alsa-lib parses; what it buys is that the geometry can be proven on
-    #     metal before any transport moves onto it.
+    #     It has three consumers now — snapclient's `--soundcard` and both
+    #     active-endpoint prechecks' CamillaDSP capture device, all naming
+    #     pcm.jts_ring_grouping (jasper/multiroom/grouping_ring.py) — but a PCM
+    #     definition is still not an open, and only a BONDED active endpoint
+    #     opens it. On every solo box in the fleet this file costs one block
+    #     alsa-lib parses and nothing else.
     local grouping_src="${REPO_DIR}/deploy/alsa/conf.d/62-jts-ring-grouping.conf"
     if [[ -f "${grouping_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d

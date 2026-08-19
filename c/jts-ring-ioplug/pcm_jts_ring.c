@@ -450,8 +450,24 @@ static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     // dual-mode + clamp keep open), not this delay value. Reporting honest
     // occupancy here therefore never gates a readerless writer, and mirroring
     // the pointer's dead-mode discount would only add a code path with no
-    // consumer. If a future consumer reads `.delay` on a readerless ring, revisit
-    // (discount it the same way jts_ring_pointer_report does).
+    // consumer.
+    //
+    // THAT CONDITION HAS SINCE FIRED, and the answer is "accepted, unchanged".
+    // snapclient writes the grouping-ingress ring and reads its own
+    // `snd_pcm_delay` as time-to-DAC, and the grouping reconciler starts
+    // snapclient BEFORE it swaps CamillaDSP onto the capture side — so there is
+    // a bond-start window where this callback answers a live WRITER on a ring
+    // with no reader. What it answers there is a bounded constant, not a
+    // runaway: free-run drops the oldest slot on the absent reader's behalf, so
+    // occupancy pins at n_slots and the value saturates at
+    // n_slots*period_frames + (period_frames-1) — 2175 frames at the grouping
+    // ring's 16x128, i.e. 42.7 ms of occupancy and 45.3 ms worst case at 48 kHz.
+    // snapclient's own gate is bufferMs 400 (jasper/multiroom/config.py), an
+    // order of magnitude away, so it keeps emitting chunks throughout; the
+    // expected effect is ONE hard sync when the reader attaches and the delay
+    // drops to steady state. Discounting it here would report a delay the
+    // writer's audio is not actually behind, which is worse for a consumer that
+    // steers on it. Hardware S2/S3 measure the delay series across that window.
     uint64_t slots = p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);

@@ -953,11 +953,18 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 # GROUPING_RING_PERIOD_FRAMES; one chunk is one slot, the relationship every
 # other ring in the tree ships. The 1024 floor that used to sit on this path
 # was an snd-aloop EPIPE artifact and is deleted — it would now put a chunk
-# eight times the playback ring's whole buffer into the graph.
+# FOUR TIMES the playback ring's whole 2-slot buffer (128 x 2 = 256 frames;
+# eight times one slot) into the graph.
 #
-# Both branches are exercised: a bonded box whose coupling is armed plays into
-# the ACTIVE RING, one whose coupling is not plays into its DAC, and the seam
-# has to hold on both.
+# THE RING BRANCH IS THE ONLY PRODUCTION ONE. `resolve_output_layout` returns
+# RING_ACTIVE_PLAYBACK_DEVICE unconditionally for any profile with an active
+# outputd lane (jasper/output_topology.py — "the ACTIVE ring, unconditionally
+# … OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member"), so a bonded active endpoint
+# plays into the active ring whatever its coupling says. The DAC branch is
+# reached only by the explicit lab/CI override (the `playback_device` argument
+# or JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE); its pins below are LAB GUARDS —
+# they hold the pre-ring emit byte-identical on a bench box — not a second
+# shipped shape.
 
 _PLAYBACK_BRANCHES = ("hw:CARD=DAC8x,DEV=0", RING_ACTIVE_PLAYBACK_DEVICE)
 
