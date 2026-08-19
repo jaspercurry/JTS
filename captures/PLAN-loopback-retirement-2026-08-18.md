@@ -962,3 +962,29 @@ topology ruling pending — commits stay sliceable into per-wave branches);
 NOTHING merges until the owner's Pi agent validates the deployed stack (owner
 re-sequencing of §10.1's merge-then-deploy order). Dispositions recorded here
 when each review returns; posted to PRs when PRs exist.
+
+### 2026-08-19 — **ENV BASELINE (cloud container), waves diff against exactly
+this.** Full venv stood up around the proxy's tarball block: pycamilladsp
+git-cloned + pinned to the locked SHA fdc0d163e (git-protocol reads of public
+repos are served; only archive/*.tar.gz is 403), `uv sync --frozen
+--no-install-package camilladsp` then `uv pip install --no-deps` of the
+verified checkout; uv.lock/pyproject byte-untouched; apt added libasound2-dev
+(pyalsaaudio build headers) + libportaudio2 (sounddevice runtime) — both
+absent from the base image, invisible until the ModuleNotFoundError storm
+cleared. Lanes at 733bc08, tool origins "(repo .venv)" verified:
+`==> test-fast: 96 passed` (25s); test-merge mypy clean (629 files), pytest
+`3 failed, 22037 passed, 71 skipped` (9m48s). All 3 are ROOT-EXECUTION
+ARTIFACTS (suite runs as uid 0; CAP_DAC_OVERRIDE defeats permission fixtures —
+source-confirmed per test):
+test_active_speaker_bundles::test_open_bundle_returns_none_and_warns_on_write_failure,
+test_tool_catalog::test_write_catalog_fail_soft_on_unwritable_path,
+test_audio_hardware_reconcile::test_dac_change_brain_restart_gate_follows_profile_marker.
+TRUE code-level baseline = 0 real failures, 0 collection errors. RETRACTION:
+the interim "genuine standalone failure" call on
+test_bass_management::test_fourth_quadrant_active_main_with_wireless_only_sub_is_honest
+was an incomplete-venv artifact (resolve_bass_management's lazy imports at
+bass_management.py:120-186 behave differently with deps absent); it PASSES
+under the full venv and in the 22037-test run. Quirks for wave runs: rm -rf
+.pytest_cache after any env repair (stale lastfailed makes test-fast crawl);
+always verify the lanes' tool-origin lines before trusting a verdict (stray
+/root/.local/bin mypy 1.19.1 shadows when .venv lacks tools).
