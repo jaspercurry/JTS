@@ -875,7 +875,32 @@ MAX_LINES_BY_PATH = {
     # reader for one of its own keys placed anywhere else would be a second
     # owner of that key's shape — the exact drift the neighbouring reader/writer
     # pairs exist in this file to prevent. 8,706 + 68 = 8,774.
-    "jasper/web/correction_crossover_v2.py": 8_774,
+    #
+    # ...and 8,774 -> 8,804 (#2464, ruled 2026-08-19), +30 net (37 added, 7
+    # removed), counted hunk by hunk, of which 3 execute:
+    #    3  the `verify_failed` predicate, plus +1 net on the `state` chain it
+    #       reorders — the whole behavioural change is which arm runs first
+    #    2  the docstring sentence saying a failed mark-VERIFY caps `state`,
+    #       pointing AT the derivation rather than restating its argument
+    #   24  that derivation's argument, in three paragraphs that each stop a
+    #       different revert. The defect (a closed post-apply group made the
+    #       fail and inconclusive arms unreachable, so a re-verify that failed
+    #       reported `graded=True` and the doctor ticked green); why the two
+    #       instruments are a UNION and not a fallback (`outcome` grades
+    #       capture/tracking health only, so an absolute-claim miss rides a
+    #       clean `pass`, and an absent or non-numeric tracking max is an
+    #       `outcome` fail whose claim is `not_evaluated` — a reader who keeps
+    #       one instrument reopens exactly one of those two cells); and #2160's
+    #       ratified rider that geometry and k-of-N facts stay un-co-located,
+    #       naming the three neighbouring fields this cap does not touch.
+    #       3 of those 24 are the gate round's: WHY the predicate names two
+    #       claims and not the record — a VERIFY's one summed sweep leaves both
+    #       per-branch claims structurally `not_evaluated`, so the enumeration
+    #       IS the graded claim set, not a subset of it (gate nit 1).
+    # No seam to cut: this is one predicate and one ordering inside the single
+    # function that owns the grade, and both #2098 and #2160 already ruled that
+    # the producer — not its consumers — answers this question once.
+    "jasper/web/correction_crossover_v2.py": 8_804,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.
@@ -915,7 +940,16 @@ MAX_LINES_BY_PATH = {
     # the walk paused this capture follows MEASURE, where the microphone never
     # left, so the copy drops one word and the comment says why it has to read
     # correctly from either predecessor.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_107,
+    #
+    # ...and 4,107 -> 4,117 (#2464), +10: a third arm on the done screen's
+    # ungraded copy, 5 of them the sentence itself. The two sentences there
+    # already split "never finished" from "could not tell either way" on the
+    # argument that the first is FALSE of a check that ran; a check that ran
+    # and did not PASS is the third answer that argument covers, and #2464
+    # made it reachable behind a closed post-apply group. The remaining lines
+    # say which state file reaches it — one carrying no terminal result code,
+    # since a result code overrides this copy outright.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_117,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

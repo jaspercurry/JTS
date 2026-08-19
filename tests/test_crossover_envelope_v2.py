@@ -2614,6 +2614,62 @@ def test_terminal_outcome_household_copy(outcome, copy, badge):
     assert env["nudges"][0]["text"] == badge
 
 
+# --- #2464: a failed mark-VERIFY is not masked by a passing group ------------
+
+
+def _passing_post_apply_group():
+    """A closed post-apply group whose spatial verdict PASSED, in the compact
+    shape ``crossover_v2_status_block`` publishes."""
+    return {
+        PHASE_CLOUD_VERIFY: {
+            "geometry_locked": False, "thin_evidence": False,
+            "geometry_guidance": "", "spec_bands": [], "overall_passed": True,
+            "excluded_interval_count": 0,
+            "flatness": {
+                "max_db": 0.9, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
+                "reference_band_hz": [250.0, 8000.0], "tolerance_db": 2.5,
+                "rms_db": 0.4, "n_bins": 900, "n_excluded": 12,
+                "evaluable": True, "passed": True,
+            },
+        },
+    }
+
+
+def test_a_failed_verify_keeps_the_household_on_the_previous_sound():
+    """#2464, ruled 2026-08-19: the copy and badge a re-verify that FAILED
+    against a carried-forward passing spatial group must produce. The terminal
+    result code already routed this cell honestly; what the ruling caps is the
+    grade state underneath it, so this pins the household's own two sentences
+    against a regression in either producer."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", applied=True, tier="full",
+        verify={
+            "outcome": "fail",
+            "claims": {"integration": {"status": "fail", "max_db": 4.2}},
+        },
+        cloud=_passing_post_apply_group(),
+    ))
+    assert "should not replace" in env["verdict_text"]
+    assert env["nudges"][0]["text"] == "Keep the previous sound."
+
+
+def test_a_failed_check_is_never_described_as_one_that_never_finished():
+    """A pre-claims state file has no claim record and no comparison, so no
+    terminal result code overrides this screen's copy — and "never finished"
+    is false of a check that ran and did not pass, exactly the argument the
+    inconclusive arm beside it was written for. Before #2464 the closed group
+    masked the state entirely and the household read "Your speaker is
+    tuned." over a failed check."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", applied=True, tier="full",
+        verify={"outcome": "fail"},
+        cloud=_passing_post_apply_group(),
+    ))
+    assert "did not pass" in env["verdict_text"]
+    assert "never finished" not in env["verdict_text"]
+    assert "could not tell either way" not in env["verdict_text"]
+
+
 def test_a_not_evaluated_crossover_region_renders_no_number():
     """Absence stays absence — an ungraded claim produces no sentence."""
     claims = {

@@ -5184,10 +5184,14 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
     assert by_verify["state"] == v2host.GRADE_MARK_VERIFIED
     assert by_verify["graded"] is True
 
+    # The cloud instrument grading ALONE. #2464 moved this fixture off
+    # ``outcome="inconclusive"`` — that pairing now grades ``inconclusive``,
+    # and pinning it here pinned the mask instead of the claim this test
+    # makes. A session whose VERIFY produced no outcome at all is the honest
+    # way to ask "does a closed group grade on its own".
     v2host.save_v2_state({
         "session_id": "cap_graded_cloud",
         "applied": True,
-        "verify": {"outcome": "inconclusive"},
         "cloud": {
             PHASE_CLOUD_VERIFY: {
                 "geometry": {"locked": False},
@@ -5211,13 +5215,17 @@ def test_status_block_reports_a_graded_result_from_either_instrument():
 # --- R19 honest grading: scope, the spatial gauge's own state (#2098/#2160) --
 
 
-def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None):
+def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
+                   claims=None):
     """An applied session, optionally with a post-apply cloud group."""
     state = {
         "session_id": "cap_r19",
         "session_phases": [PHASE_VERIFY, PHASE_CLOUD_VERIFY],
         "applied": True,
-        "verify": {"outcome": verify_outcome},
+        "verify": {
+            "outcome": verify_outcome,
+            **({"claims": claims} if claims is not None else {}),
+        },
     }
     if tier is not None:
         state["tier"] = tier
@@ -5673,6 +5681,122 @@ def test_a_verify_that_did_not_pass_delivers_no_scope_at_all():
     assert grade["state"] == v2host.GRADE_INCONCLUSIVE
     assert grade["scope"] == v2host.GRADE_SCOPE_NONE
     assert grade["complete"] is False
+
+
+# --- #2464: a failed mark-VERIFY caps the badge, whatever the group says -----
+
+
+_PASSING_GROUP = {"passed": True, "flatness": {
+    **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
+}}
+
+
+def test_a_failed_verify_is_not_masked_by_a_passing_spatial_grade():
+    """#2464, ruled 2026-08-19 (option (a)). ``cloud_verdict`` was tested
+    BEFORE the fail arm, so any closed group masked it: a re-verify that
+    failed against a carried-forward passing group reached ``GRADE_GRADED``
+    with ``graded=True``, and every surface that keys on those two — `/state`,
+    the doctor's green tick — reported the failure as a clean result."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="fail",
+        claims={"integration": {"status": "fail", "max_db": 4.2}},
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_FAILED
+    assert grade["graded"] is False
+    # The rider (#2160, ratified 2026-08-17): the spatial instrument's own
+    # verdict is untouched and still rides its own field. Capping the badge
+    # is not co-locating the two facts.
+    assert grade["spatial"] == v2host.GRADE_SPATIAL_PASSED
+    assert grade["post_apply_spec_passed"] is True
+
+
+def test_a_failed_absolute_claim_caps_the_badge_on_a_clean_capture():
+    """The retro-audit shape, and the reason the CLAIMS record is the source.
+
+    ``verify.outcome`` grades capture and tracking health only — its ``pass``
+    call site says so ("Absolute remains independent; the terminal owner
+    classifies its miss") — so a crossover-region claim that missed its
+    tolerance rides a clean ``pass`` and no ``outcome`` reader can see it."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="pass",
+        claims={
+            "integration": {"status": "pass", "max_db": 0.7},
+            "absolute": {"status": "fail", "max_db": 4.31, "worst_hz": 1590.4},
+        },
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_FAILED
+    assert grade["graded"] is False
+    assert grade["verify_outcome"] == "pass"  # both facts, neither overwritten
+
+
+def test_an_outcome_fail_whose_claims_could_not_grade_still_caps_the_badge():
+    """An absent or non-numeric tracking max is an ``outcome`` fail whose
+    integration claim is ``not_evaluated`` (``_verify_claims``), so the two
+    instruments are a UNION and not a fallback: neither can see the other's
+    failure."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="fail",
+        claims={
+            "integration": {"status": "not_evaluated"},
+            "absolute": {"status": "not_evaluated", "reason": "no_trusted_region"},
+        },
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_FAILED
+
+
+def test_an_inconclusive_verify_is_not_masked_by_a_closed_group():
+    """The same masking defect one arm over: the ``inconclusive`` arm was
+    unreachable behind the closed-group test, so the household lost the
+    "could not tell either way" copy and the doctor lost its warn."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="inconclusive",
+        cloud_verify=_closed_cloud_group(passed=False),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_INCONCLUSIVE
+    assert grade["graded"] is False
+
+
+def test_a_clean_pass_still_grades_on_the_wider_spatial_claim():
+    """The cap is scoped to a FAILED or undecided VERIFY. On a clean pass the
+    walked group is the wider claim and still wins the state word — otherwise
+    this would demote every correctly graded Full session."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="pass",
+        claims={
+            "integration": {"status": "pass", "max_db": 0.7},
+            "absolute": {"status": "pass", "max_db": 0.8},
+        },
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == v2host.GRADE_GRADED
+    assert grade["graded"] is True
+    assert grade["complete"] is True
+
+
+def test_a_state_file_with_no_claims_block_is_graded_on_its_outcome_alone():
+    """Absence of claims is a pre-R18 state file, never a fail and never a
+    pass-of-claims: the outcome is left standing as the only record there is."""
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="pass",
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    legacy = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert legacy["state"] == v2host.GRADE_GRADED
+
+    v2host.save_v2_state(_applied_state(
+        tier=TIER_FULL, verify_outcome="fail",
+        cloud_verify=_closed_cloud_group(**_PASSING_GROUP),
+    ))
+    legacy_fail = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert legacy_fail["state"] == v2host.GRADE_FAILED
 
 
 def test_status_block_never_asks_an_unapplied_session_for_a_grade():

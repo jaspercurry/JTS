@@ -889,15 +889,24 @@ def _crossover_region_band_hz(
 def _post_residual(
     post: MeasurementComparand, *, benefit_reason: str
 ) -> tuple[float, int] | None:
-    """The post side's own pooled residual, for the attempts ledger.
+    """The post side's own pooled residual, for the round's journal line.
 
-    Deliberately independent of whether a *comparison* was possible: the
-    attempts loop differences consecutive ATTEMPTS, not this round's before
-    and after (its kernel reads only the last two entries, because a fixed
-    early baseline accumulates drift comparable to the measurement floor
-    within ~15 attempts). So a round with no comparable entry baseline still
-    has an honest acoustic grade to bank — the benefit verdict is
-    indeterminate, and the ledger is not.
+    **Not the attempts ledger's grade, and never was.** Earlier text here said
+    it was, which is false and was checked: the ledger's ``grade_db`` is read
+    from ``analysis.verify_tracking``'s ``max_db_notch_excluded`` by
+    ``crossover_v2_flow.attempt_record_from_verify``, and
+    :func:`~jasper.active_speaker.attempts_loop.decide_next` takes no residual
+    argument at all. Corrected rather than deleted for the reason the same
+    correction on :attr:`RoundEvaluation.post_residual_db` gives — it is the
+    kind of claim a reader would otherwise re-invent. That FIELD is this
+    value's one destination, and its readership is the journal line; the
+    region-masked ``post_residual_db`` KEY on ``region_benefit``'s evidence is
+    a different instrument's number over a different band, and this is not it.
+
+    What that paragraph got right, and this function's reason to exist: it is
+    computed whether or not a *comparison* was possible, so a round with no
+    comparable entry baseline still records a pooled number of its own while
+    its benefit verdict is indeterminate.
 
     Computed through the same shipped evaluator the benefit verdict uses, so
     the two numbers cannot disagree about what "the post-apply residual" is.

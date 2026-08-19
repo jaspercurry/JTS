@@ -2213,6 +2213,21 @@ and warns on an applied profile that was never graded — the silence
 gates on a FAILING `PHASE_CLOUD_VERIFY` verdict and a missing one renders as no
 phase at all.
 
+**A failed mark-VERIFY caps `state` at `failed` whatever the spatial group
+says** (#2464, ruled 2026-08-19). A closed group used to be tested first, so it
+masked the `failed` and `inconclusive` answers entirely and a re-verify that
+failed against a carried-forward passing group read as `graded`. The failure
+fact is the union of two instruments that cannot see each other:
+`verify.outcome` (capture and tracking health) and the `verify.claims` record's
+`integration` and `absolute` verdicts (a VERIFY grades no others — its one
+summed sweep leaves both per-branch claims structurally `not_evaluated`). So a
+crossover-region claim that missed its tolerance caps the badge on a capture
+whose own outcome is `pass`, and `verify_outcome` keeps reporting that `pass`.
+A state file with no claims block is graded on its outcome alone.
+Per #2160's rider (ratified 2026-08-17) the cap co-locates nothing: `spatial`,
+`post_apply_spec_passed` and `verify_outcome` each still carry their own
+instrument's answer.
+
 **Three more keys carry what `state` structurally cannot** (R19; #2098, #2160
 — plan §7's scope/completeness fact). `state` answers *was it checked*, and
 both `graded` and `mark_verified` are honest answers to that in cases that are
