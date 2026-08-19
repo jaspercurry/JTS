@@ -202,7 +202,6 @@ __all__ = [
     "SAFETY_CLIPPED_CAPTURE",
     "SAFETY_NO_FINDING",
     "SAFETY_NO_FINDING_UNMEASURED",
-    "identity_mismatch",
     "SAFETY_UNCOMMANDED_LEVEL_LOUDER",
     "SPEC_BAND_OUT_OF_TOLERANCE",
     "SPEC_IN_TOLERANCE",
@@ -222,6 +221,8 @@ __all__ = [
     "evaluate_round_quality",
     "evaluate_spec",
     "flatness_objectives",
+    "identity_mismatch",
+    "pooled_residual",
     "verification_result",
 ]
 
@@ -554,8 +555,8 @@ def evaluate_benefit(
             },
         )
 
-    before = _pooled_residual(entry_baseline)
-    after = _pooled_residual(post)
+    before = pooled_residual(entry_baseline)
+    after = pooled_residual(post)
     if before is None or after is None:
         return Verdict(
             BenefitStatus.INDETERMINATE,
@@ -640,7 +641,7 @@ def _comparability_mismatch(
     return None
 
 
-def _pooled_residual(
+def pooled_residual(
     comparand: MeasurementComparand,
 ) -> tuple[float, int] | None:
     """``(rms_db, n_bins)`` from the shipped evaluator, or ``None``.
@@ -650,6 +651,17 @@ def _pooled_residual(
     "cannot grade this" answers to a verdict function, not crashes to
     propagate into a household decision, so they become ``None`` here and
     :data:`BENEFIT_RESIDUAL_UNEVALUABLE` above.
+
+    Public because its second caller is in another module, on the rule
+    :func:`identity_mismatch` states. ``round_evidence.evaluate_round`` grades
+    the post side alone for the round's journal line, and had been doing it
+    through a private copy of this function that was identical statement for
+    statement. One reduction with one owner is now why that number and this
+    axis's ``post_residual_db`` cannot disagree about what "the post-apply
+    residual" is. Being public also puts it one namespace from
+    :func:`~jasper.active_speaker.flat_spec_views.log_pooled_residual`, which is
+    not this: that one re-pools a FINISHED report by octave, this one grades a
+    curve.
     """
 
     try:
