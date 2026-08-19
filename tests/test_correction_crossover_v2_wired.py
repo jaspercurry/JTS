@@ -317,6 +317,11 @@ class FakeConductor:
         self.events.append(("consume", index, attempt, dict(verdict)))
         if verdict.get("accepted"):
             self._accepted += 1
+        elif verdict.get("code"):
+            # The REAL conductor stamps every rejection's code (S1's probe
+            # surfaced that the shipped fake hard-coded None here, hiding the
+            # precedence hazard the stamp creates).
+            self.last_failure_code = verdict["code"]
         return verdict
 
     def cloud_measure_group_awaiting_confirm(self):
@@ -736,6 +741,50 @@ def test_held_set_waits_for_the_completion_signal_then_closes(monkeypatch):
     close_events = [e for e in conductor.events if e[0] in ("close_started", "confirm")]
     assert close_events == [("close_started",), ("confirm",)]
     assert volume.events == ["open", "close"]
+
+
+def test_a_ceiling_expiry_after_a_rejection_keeps_its_own_code(monkeypatch):
+    """S1's probe scenario: a prior rejection stamps ``last_failure_code``,
+    and the ceiling then expires. The persisted code must be the refusal's
+    own — the clock that actually ended the session — never the stale
+    capture-quality claim (the shadowing the relay-style precedence
+    allowed)."""
+    terminal = []
+    conductor = FakeConductor(
+        verdicts=[{"accepted": False, "code": REASON_VERIFY_INCONCLUSIVE}],
+        awaiting_confirm=True,
+    )
+    volume = VolumeRecorder()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        terminal=terminal, ceiling_s=0.2,
+        plan=None,
+    )
+    with pytest.raises(CaptureBeginRefused) as caught:
+        _run(runner, plan=_plan(target=1, max_attempts=3))
+    # The rejection really did stamp the conductor first...
+    assert conductor.last_failure_code == REASON_VERIFY_INCONCLUSIVE
+    # ...and the ceiling's own registered code still won the persist.
+    assert caught.value.code == REASON_SESSION_CEILING_EXPIRED
+    assert terminal == [REASON_SESSION_CEILING_EXPIRED]
+    assert volume.events == ["open", "abandon"]
+
+
+def test_an_unregistered_refusal_falls_back_to_the_conductors_stamp(monkeypatch):
+    """The fallback direction of the S1 precedence: a refusal carrying no
+    registered code defers to whatever the conductor stamped."""
+    terminal = []
+
+    def _refuse(index, attempt, entry):
+        raise CaptureBeginRefused("some_future_code", "no")
+
+    conductor = FakeConductor(authorize=_refuse)
+    conductor.last_failure_code = "cloud_geometry_locked"
+    runner = _build(conductor, VolumeRecorder(), monkeypatch=monkeypatch,
+                    persists=[], terminal=terminal)
+    with pytest.raises(CaptureBeginRefused):
+        _run(runner)
+    assert terminal == ["cloud_geometry_locked"]
 
 
 def test_confirm_wait_expiry_persists_the_session_ceiling_code(monkeypatch):

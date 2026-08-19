@@ -659,15 +659,23 @@ def build_v2_wired_run_and_consume(
             await _abandon_best_effort(session_id, volume)
             raise
         except CaptureBeginRefused as refusal:
-            # The conductor's own refusal carries its code in
-            # last_failure_code; a gate (or ceiling) refusal carries its own
-            # registered code on the exception. The relay's REASON_RELAY_TIMEOUT
-            # fallback is deliberately NOT mirrored — there is no link here to
-            # blame, so an unregistered code degrades to internal_error.
-            gate_code = str(getattr(refusal, "code", "") or "")
-            if gate_code not in REASON_REGISTRY:
-                gate_code = ""
-            code = conductor.last_failure_code or gate_code or REASON_INTERNAL_ERROR
+            # THE REFUSAL'S OWN registered code wins (gate fix round S1): the
+            # exception that ended the session is the freshest fact, while
+            # ``last_failure_code`` is whatever the LAST REJECTED CAPTURE
+            # stamped — so the relay's precedence would let a prior
+            # rejection's code shadow a later ceiling expiry (a
+            # capture-quality claim persisted over a clock that ran out).
+            # The conductor's stamp is the fallback for refusals that carry
+            # no registered code of their own (the admission arms raise with
+            # a rendered MESSAGE and stamp the code separately). The relay's
+            # REASON_RELAY_TIMEOUT fallback is deliberately NOT mirrored —
+            # there is no link here to blame — and the relay runner's own
+            # inverted precedence is flagged (PR body) but out of scope: its
+            # gate refusals reach a different arm shape via the phone.
+            refusal_code = str(getattr(refusal, "code", "") or "")
+            if refusal_code not in REASON_REGISTRY:
+                refusal_code = ""
+            code = refusal_code or conductor.last_failure_code or REASON_INTERNAL_ERROR
             _host._persist_terminal_failure(conductor, code)
             await _abandon_best_effort(session_id, volume)
             raise
