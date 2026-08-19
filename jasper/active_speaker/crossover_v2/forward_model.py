@@ -130,6 +130,7 @@ def driver_plants(
     measurements: Iterable[Any],
     *,
     protection_by_role: Mapping[str, Callable[[np.ndarray], Any]],
+    required_band_hz_by_role: Mapping[str, tuple[float, float]] | None = None,
     protection_floor_db: float = CONFIGURED_PATH_PROTECTION_FLOOR_DB,
 ) -> tuple[DriverPlant, ...]:
     """Divide the emitted protection out of every measured response, once.
@@ -146,7 +147,7 @@ def driver_plants(
     may not import this package and the same shape crosses that boundary in
     both directions.
 
-    **Refuses, never saturates, on the driven band.** A protection response
+    **Refuses, never saturates — on the REQUIRED band.** A protection response
     below ``protection_floor_db`` is one the division cannot invert honestly:
     dividing it out amplifies whatever noise the capture has there faster than
     it recovers signal. Raising is the same answer
@@ -154,6 +155,26 @@ def driver_plants(
     :class:`ConfiguredPathConditioningError` and the same ``protection_floor``
     flag — which tells a household WHICH lever it has, since ``|P| <
     floor`` does not involve the crossover and no Fc can clear it.
+
+    ``required_band_hz_by_role`` is where the de-embedding must be honest, and
+    it is intersected with the driven band exactly as the kernel intersects
+    ``candidate_required_band_hz_by_role`` with ``radiated_band_hz``. **Passing
+    nothing means the mask carries the answer and nothing refuses**, which is
+    deliberate rather than lax: the band a search depends on is a property of
+    the CANDIDATE, and this function runs before any candidate exists.
+
+    Why the parameter exists at all — a measured lesson, not a hypothetical.
+    Checking the floor over the whole DRIVEN band refuses every real two-way
+    capture whenever ``P`` contains a crossover: a sweep necessarily runs past
+    the corner, and an LR4 low-pass at 1648.7 Hz is about -30 dB at 4 kHz,
+    inside a woofer's 150-4000 Hz sweep. Graded against the banked armrun that
+    refused **6 of 6 arms** for a de-embedding that provably cancels. A gate
+    that refuses every honest input is not a strict gate, it is a broken one.
+
+    ``P`` is the EMITTED protection — what the graph actually ran during this
+    capture. On a MEASURE capture that is the per-driver protective high-pass,
+    not the full crossover; handing this function a crossover it did not run is
+    the misuse the paragraph above was found by.
 
     A role with no protection entry is a role running full range in the emitted
     graph, and full range means ``P = 1``: nothing to divide out. That is the
@@ -188,11 +209,21 @@ def driver_plants(
             raise ConfiguredPathConditioningError(f"no driven bins for {role}")
         if not np.all(np.isfinite(protection[driven])):
             raise ConfiguredPathConditioningError(f"non-finite P for {role}")
-        if not np.all(trusted[driven]):
-            raise ConfiguredPathConditioningError(
-                f"P below {protection_floor_db:g} dB for {role}",
-                protection_floor=True,
+
+        band = (required_band_hz_by_role or {}).get(role)
+        if band is not None:
+            required = driven & (
+                (freqs_hz >= float(band[0])) & (freqs_hz <= float(band[1]))
             )
+            if not np.any(required):
+                raise ConfiguredPathConditioningError(
+                    f"no required bins for {role}"
+                )
+            if not np.all(trusted[required]):
+                raise ConfiguredPathConditioningError(
+                    f"P below {protection_floor_db:g} dB for {role}",
+                    protection_floor=True,
+                )
         plants.append(DriverPlant(
             role=role,
             angle_deg=float(measurement.angle_deg),

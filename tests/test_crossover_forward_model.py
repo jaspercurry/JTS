@@ -450,7 +450,7 @@ def test_a_role_with_no_emitted_protection_runs_full_range_so_p_is_unity():
     assert bool(np.all(plant.trusted))
 
 
-def test_protection_below_the_shared_floor_refuses_on_the_driven_band():
+def test_protection_below_the_shared_floor_refuses_on_the_required_band():
     """Refuse, never saturate — and with the flag that names the lever.
 
     ``|P| < floor`` does not involve the crossover, so no Fc can clear it; the
@@ -466,9 +466,62 @@ def test_protection_below_the_shared_floor_refuses_on_the_driven_band():
         driver_plants(
             [_Measurement(TWEETER, freqs_hz, ones)],
             protection_by_role={TWEETER: lambda f: np.full(f.shape, deep, complex)},
+            required_band_hz_by_role={TWEETER: (1000.0, 8000.0)},
         )
     assert excinfo.value.protection_floor is True
     assert "-12" in str(excinfo.value)
+
+
+def test_a_crossover_shaped_protection_does_not_refuse_the_whole_sweep():
+    """The gap the banked armrun found: 6 of 6 arms refused, wrongly.
+
+    A sweep necessarily runs past the corner, so when ``P`` contains a
+    crossover it is far below the floor inside the DRIVEN band by construction
+    — an LR4 low-pass at 1648.7 Hz is about -30 dB at 4 kHz, inside a woofer's
+    150-4000 Hz sweep. Checking the floor over the driven band therefore
+    refused every real two-way capture, including the incumbent round trip
+    where the de-embedding provably cancels.
+
+    The required band is what the kernel intersects for exactly this reason,
+    and it is the caller's to declare because it is a property of the
+    candidate. Undeclared refuses nothing and the mask carries the answer.
+    """
+    freqs_hz = _grid()
+    ones = np.ones(freqs_hz.shape, dtype=np.complex128)
+
+    def woofer_lowpass(f: np.ndarray) -> np.ndarray:
+        return crossover_response_complex(f, (CrossoverSection(1648.7, 4, False),))
+
+    measurement = _Measurement(
+        WOOFER, freqs_hz, ones, band_hz=(150.0, 4000.0),
+    )
+    # The floor is genuinely violated deep in the sweep — this is not a fixture
+    # that dodges the question.
+    assert np.min(np.abs(woofer_lowpass(np.array([4000.0])))) < 10.0 ** (
+        CONFIGURED_PATH_PROTECTION_FLOOR_DB / 20.0
+    )
+
+    (plant,) = driver_plants(
+        [measurement], protection_by_role={WOOFER: woofer_lowpass},
+    )
+    assert not bool(np.all(plant.trusted)), "the mask must still record it"
+
+    # Declaring a band the branch actually owns is honest and passes...
+    (narrow,) = driver_plants(
+        [measurement],
+        protection_by_role={WOOFER: woofer_lowpass},
+        required_band_hz_by_role={WOOFER: (150.0, 1200.0)},
+    )
+    assert bool(np.all(narrow.trusted[narrow.driven & (freqs_hz <= 1200.0)]))
+
+    # ...and declaring one that reaches into the stopband still refuses.
+    with pytest.raises(ConfiguredPathConditioningError) as excinfo:
+        driver_plants(
+            [measurement],
+            protection_by_role={WOOFER: woofer_lowpass},
+            required_band_hz_by_role={WOOFER: (150.0, 4000.0)},
+        )
+    assert excinfo.value.protection_floor is True
 
 
 def test_an_untrusted_bin_outside_the_driven_band_is_marked_not_refused():
