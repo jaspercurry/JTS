@@ -1099,14 +1099,17 @@ def test_the_bounds_are_the_numbers_the_ruling_and_the_evidence_earned():
     assert BLEND_MAX_FILTERS == 2
     assert BLEND_MAX_FILTER_CUT_DB == 3.0
     assert BLEND_MAX_TOTAL_CUT_DB == 4.0
-    # Q is split by sign since 2026-08-19. The cut ceiling is the fit engine's
-    # own (8.0), NOT the solver's fixed emitted Q — hardware showed the
-    # features in this region have natural Q 3.6-6.6, so a Q-2.0 cut aimed at
-    # one is about three times too wide and spends its action on the skirts.
+    # Q is split by sign by owner ruling of 2026-08-19 (the two-arm
+    # experiment). The cut ceiling is the fit engine's own peaking ceiling
+    # (8.0), NOT the solver's fixed emitted Q: the three IN-WINDOW features
+    # measured that night had natural Q 3.9-6.6, so a Q-2.0 cut aimed at one
+    # is two to three times too wide and spends its action on the skirts. The
+    # campaign supplied that evidence and declined to lift the clamp itself;
+    # the ruling is what authorizes this number.
     assert PRESCRIPTION_MAX_CUT_Q == 8.0
     assert PRESCRIPTION_MAX_CUT_Q is not BLEND_FILTER_Q
-    # The boost ceiling did stay the solver's — that evidence was measured on
-    # cuts and says nothing about a class whose risk is headroom.
+    # The boost ceiling did stay the solver's — the ruling did not reach it and
+    # that evidence was measured on cuts, a class whose risk is not headroom.
     assert PRESCRIPTION_MAX_BOOST_Q == 2.0
     assert PRESCRIPTION_MAX_BOOST_Q is BLEND_FILTER_Q, (
         "the BOOST Q ceiling must stay the solver's"
@@ -1143,18 +1146,32 @@ def test_a_cut_narrower_than_the_fit_engines_ceiling_is_refused(packet, q):
     assert excinfo.value.reason == "filter_q_out_of_range"
 
 
-@pytest.mark.parametrize("q", [2.1, 3.6, 6.6, 7.9, 8.0])
+@pytest.mark.parametrize("q", [2.1, 3.9, 5.1, 6.6, 7.9, 8.0])
 def test_a_cut_as_narrow_as_the_feature_it_targets_is_accepted(packet, q):
     """The whole point of the change, at literal Q values.
 
-    3.6 and 6.6 are the ends of the natural-Q range the nine minimum-phase
-    features measured on jts3 on 2026-08-19 actually had; every one of them
-    was refused before this ceiling moved. 8.0 is the boundary itself, which
-    is inclusive.
+    3.9, 5.1 and 6.6 are the MEASURED natural Q of the three in-window
+    features on jts3, 2026-08-19 (2057, 1406 and 1037 Hz respectively), read
+    off the pooled 7 ms detrended curve — the classification record's
+    ``test2_null_model``, not a filter Q and not a smoothing-floored reading.
+    Every one of them was refused before this ceiling moved. 8.0 is the
+    boundary itself, which is inclusive.
     """
     accepted = _gate(packet, _document([_cut(q=q)], packet))
     assert accepted.filters[0]["q"] == q
     assert accepted.prescription_class == "cut"
+
+
+def test_the_filter_q_the_round_18_gate_actually_refused_is_now_accepted(packet):
+    """3.6 is a FILTER Q, not a measurement — kept apart on purpose.
+
+    It is the value in the refusal string observed live on 2026-08-19
+    (``filter 0 Q 3.6 is outside 0.5-2``): what a prescriber asked for, not
+    the width of anything. The measured widths are the parametrization above.
+    Confusing the two is how a refusal string gets cited as evidence.
+    """
+    accepted = _gate(packet, _document([_cut(q=3.6)], packet))
+    assert accepted.filters[0]["q"] == 3.6
 
 
 @pytest.mark.parametrize("q", [2.1, 3.6, 8.0, 12.0])
@@ -1231,34 +1248,75 @@ def test_a_document_past_a_literal_byte_ceiling_is_refused(size):
     assert excinfo.value.reason == "prescription_too_large"
 
 
-@pytest.mark.parametrize("freq", [BAND[0], 1000.0, 1400.0, 2500.0, BAND[1]])
-def test_a_cut_at_the_new_ceiling_emits_a_stable_biquad_at_48_kHz(freq):
-    """The widened ceiling asks the emitter for nothing it cannot realize.
+def _max_pole_radius(freq: float, q: float, gain_db: float, fs: float = 48_000.0) -> float:
+    """The RBJ Peaking denominator's larger pole radius, from the cookbook.
 
-    Computed here from the RBJ cookbook directly rather than through this
-    codebase's evaluator, so it is an independent check of the same claim: at
-    ``PRESCRIPTION_MAX_CUT_Q`` and 48 kHz, across the whole blend region, the
-    denominator's poles sit strictly inside the unit circle with room to
-    spare. Q enters the RBJ coefficients only through
-    ``alpha = sin(w0) / (2Q)``, so nothing about a narrow PEAKING section is
-    conditionally unstable — but "there is no hazard" is a claim, and this is
-    the arithmetic behind it.
+    Written out here rather than taken from this codebase's evaluator, so the
+    stability check is independent of the thing it is vouching for.
     """
-    fs, q, gain_db = 48_000.0, PRESCRIPTION_MAX_CUT_Q, -3.0
     amp = 10.0 ** (gain_db / 40.0)
     w0 = 2.0 * math.pi * freq / fs
     alpha = math.sin(w0) / (2.0 * q)
     a0, a1, a2 = 1.0 + alpha / amp, -2.0 * math.cos(w0), 1.0 - alpha / amp
     # Poles of 1 / (a0 + a1 z^-1 + a2 z^-2), i.e. roots of a0 z^2 + a1 z + a2.
     disc = complex(a1 * a1 - 4.0 * a0 * a2, 0.0) ** 0.5
-    poles = [(-a1 + disc) / (2.0 * a0), (-a1 - disc) / (2.0 * a0)]
-    assert max(abs(pole) for pole in poles) < 0.999, "pole outside the unit circle"
+    return max(abs((-a1 + disc) / (2.0 * a0)), abs((-a1 - disc) / (2.0 * a0)))
+
+
+#: The lowest frequency a prescribed filter can reach. `PRESCRIPTION_MAX_CUT_Q`
+#: is global while a filter's frequency is bounded per-packet by the region, so
+#: the pin below sweeps the whole band the campaign trusted (357 Hz up) rather
+#: than only the fixture's own region — otherwise it would pin the fixture and
+#: call it the constant.
+_TRUSTED_BAND_LO_HZ = 357.0
+
+
+@pytest.mark.parametrize("freq", [
+    _TRUSTED_BAND_LO_HZ, BAND[0], 1037.0, 1406.0, 2057.0, BAND[1], 8000.0, 16000.0,
+])
+@pytest.mark.parametrize("gain_db", [0.0, -0.5, -3.0])
+def test_a_cut_at_the_new_ceiling_emits_a_stable_biquad_at_48_kHz(freq, gain_db):
+    """The widened ceiling asks the emitter for nothing it cannot realize.
+
+    At ``PRESCRIPTION_MAX_CUT_Q`` and 48 kHz the denominator's poles sit
+    strictly inside the unit circle with room to spare, everywhere a prescribed
+    filter can legally sit and at every legal cut depth. Q enters the RBJ
+    coefficients only through ``alpha = sin(w0) / (2Q)``, so nothing about a
+    narrow PEAKING section is conditionally unstable — but "there is no hazard"
+    is a claim, and this is the arithmetic behind it.
+    """
+    assert _max_pole_radius(freq, PRESCRIPTION_MAX_CUT_Q, gain_db) < 0.999
     # And the ONE evaluator the emitter, gate and headroom charge share agrees
     # the section realizes the depth that was asked for, at its own centre.
     realized = 20.0 * math.log10(
-        abs(chain_response([_cut(gain=gain_db, freq=freq, q=q)], np.array([freq]))[0])
+        abs(chain_response(
+            [_cut(gain=gain_db, freq=freq, q=PRESCRIPTION_MAX_CUT_Q)], np.array([freq]),
+        )[0])
     )
     assert realized == pytest.approx(gain_db, abs=1e-9)
+
+
+def test_the_pole_radius_margin_is_a_low_frequency_story_and_the_region_clears_it():
+    """WHY the sweep above starts at 357 Hz rather than at 1 Hz.
+
+    Pole radius rises as centre frequency falls, so the 0.999 line is crossed
+    somewhere — near 122 Hz at Q 8 and the WORST legal cut depth, which is the
+    shallowest one (a deeper cut pushes the poles further in, so bounding the
+    inert 0 dB case bounds every legal cut). A blend region is a crossover
+    region: its lower edge is a crossover frequency, an order above that. The
+    numbers are pinned rather than asserted in prose so a future reader can see
+    the margin instead of trusting this paragraph.
+    """
+    q = PRESCRIPTION_MAX_CUT_Q
+    assert _max_pole_radius(120.0, q, 0.0) > 0.999 > _max_pole_radius(125.0, q, 0.0)
+    # The shallowest cut is the worst case, monotonically.
+    radii = [_max_pole_radius(1000.0, q, g) for g in (0.0, -0.5, -1.0, -2.0, -3.0)]
+    assert radii == sorted(radii, reverse=True)
+    # And the trusted band's own floor clears the line with margin to spare.
+    assert _max_pole_radius(_TRUSTED_BAND_LO_HZ, q, 0.0) < 0.998
+    # A cut sits FURTHER from the circle than a boost of the same size and Q,
+    # so the sign this change widened is the one with more margin, not less.
+    assert _max_pole_radius(1000.0, q, -3.0) < _max_pole_radius(1000.0, q, 3.0)
 
 
 def test_a_cut_at_the_new_ceiling_survives_the_emitters_own_re_validation(packet):

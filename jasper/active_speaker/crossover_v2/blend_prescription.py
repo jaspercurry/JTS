@@ -220,28 +220,43 @@ RATIONALE_MAX_CHARS = 1_200
 # Re-exported under their own names would be a second vocabulary for one fact;
 # the module refers to `BLEND_*` throughout instead.
 #
-# Its WIDTH is not, since 2026-08-19: `BLEND_FILTER_Q` is the single Q the
-# solver's fixed-Q fit emits, not a claim about the narrowest shape this region
-# may carry, and hardware showed the two are different facts. See
-# `PRESCRIPTION_MAX_CUT_Q`.
+# Its WIDTH is not, by owner ruling of 2026-08-19: `BLEND_FILTER_Q` is the
+# single Q the solver's fixed-Q fit emits, not a claim about the narrowest
+# shape this region may carry, and hardware sized the cost of treating the two
+# as one fact. See `PRESCRIPTION_MAX_CUT_Q`.
 
-#: Widest Q one prescribed CUT may use. The fit engine's own ceiling for cuts
-#: (``linearization_fit._PEAKING_Q_MAX``), which this seam now matches rather
-#: than under-cutting.
+#: Widest Q one prescribed CUT may use — ``linearization_fit._PEAKING_Q_MAX``,
+#: the fit engine's PEAKING ceiling. That constant bounds the fit engine's
+#: boosts as well as its cuts; what this seam adopts from it is cut parity, so
+#: the prescription intake stops being stricter about cut width than the engine
+#: that has been emitting up to it for the in-band linearization all along.
+#:
+#: **Owner ruling, 2026-08-19.** The ratified two-arm experiment — narrow-Q EQ
+#: against crossover tuning, both graded on the same frozen-reference bar with
+#: rollback — authorizes this restoration as Arm B. The campaign evidence below
+#: is the BASIS; the ruling is the AUTHORIZATION, and conflating them would
+#: misreport the record: the campaign explicitly declined to lift the clamp
+#: itself ("This section does not recommend lifting it — that needs its own
+#: evidence", run-log §9.5, which left §8.4's EQ floor operative). What the
+#: hardware retired was one REASON to leave it alone, not the decision.
 #:
 #: **It used to be** :data:`~.blend_correction.BLEND_FILTER_Q` — 2.0, the Q the
 #: deterministic solver emits — on the argument that a prescriber allowed past
 #: the solver's own shape would weaken the region contract by the back door.
-#: Hardware on 2026-08-19 (jts3, wired night) retired that argument for the cut
-#: class specifically:
+#: The 2026-08-19 hardware (jts3, wired night) sized the cost of that coupling:
 #:
-#: * All nine measured response features classified as MINIMUM-PHASE under the
-#:   controls-verified excess-group-delay test, so they are the kind of feature
-#:   a point EQ can actually cancel rather than a spatial null it would only
-#:   feed.
-#: * Their natural Q was **3.6–6.6**, several at the smoothing floor (≥12) —
-#:   every one of them narrower than 2.0, so a Q-2.0 filter aimed at any of
-#:   them is roughly three times too wide.
+#: * The blend region's own features — the **three** classified ``in-window``;
+#:   the other six sit outside ``band_hz`` and are refused
+#:   :data:`FILTER_OUTSIDE_REGION` at any Q, so they bear on nothing here — all
+#:   classified MINIMUM-PHASE under the controls-verified excess-group-delay
+#:   test. They are the kind of feature a point EQ can cancel rather than a
+#:   spatial null it would only feed.
+#: * Their measured natural Q was **6.6 / 5.1 / 3.9** (1037 / 1406 / 2057 Hz),
+#:   read off the pooled 7 ms detrended curve per the classification record
+#:   (``analysis/classify-features.json`` → ``test2_null_model``), the 1037
+#:   value corroborated independently by the run log's own direct width
+#:   derivation. Every one of them is narrower than 2.0, so a Q-2.0 filter
+#:   aimed at any of them is roughly two to three times too wide.
 #: * Measured on-target efficiency of the Q-2.0 filters that were actually
 #:   played was **28–43 %**: most of what the filter did, it did somewhere the
 #:   measurement did not ask for. Both prescribed rounds were rolled back on
@@ -249,12 +264,17 @@ RATIONALE_MAX_CHARS = 1_200
 #:   depth at the target.
 #:
 #: So the clamp was a parameter and not physics, and it was the binding one: a
-#: cut could not be as narrow as the feature it was aimed at. 8.0 rather than a
-#: fresh number because it is already this codebase's cut ceiling — the fit
-#: engine has emitted up to it for the in-band linearization all along, and
-#: :func:`~jasper.active_speaker.branch_chain._evaluation_grid` states the
-#: evaluator's own between-bin error there (at most 0.21 dB, inside the
-#: headroom margin), so nothing downstream is being asked to do something new.
+#: cut could not be as narrow as the feature it was aimed at.
+#:
+#: **The region-contract limb, answered directly.** The coupling's own worry
+#: was that a shape the solver forbids itself weakens the region contract. It
+#: does the opposite: a Peaking filter's action radius is a function of Q
+#: alone, so a NARROWER cut leaks LESS energy outside ``band_hz`` than the
+#: Q-2.0 one the gate already accepts. Containment improves with this change.
+#: :func:`~jasper.active_speaker.branch_chain._evaluation_grid` covers the
+#: other half — it states the evaluator's own between-bin error at Q 8 (at most
+#: 0.21 dB, inside the headroom margin) — so nothing downstream is being asked
+#: to do something new.
 #:
 #: **Why the cut class alone.** A cut cannot clip: it only ever removes level,
 #: so a narrow one carries no headroom hazard however sharp it is, and the
@@ -271,12 +291,13 @@ PRESCRIPTION_MAX_CUT_Q = 8.0
 #: instrument cannot resolve and the room will not reproduce off-axis", and
 #: 2.0 is the Q every series-1 fit actually realized on hardware.
 #:
-#: The 2026-08-19 evidence that widened the CUT ceiling says nothing about this
-#: one. It was measured on features being cut, and the risk it retires — a
-#: filter wider than its target wasting most of its action on the skirts — is
-#: a quality risk, whereas a narrow boost is a headroom one: every dB of boost
-#: is charged against the graph's finite budget, and a sharp boost aimed at an
-#: interference null feeds the null instead of filling it. The boost class is
+#: The 2026-08-19 ruling that widened the CUT ceiling did not reach this one,
+#: and its evidence does not either: that was measured on features being cut,
+#: and the risk it sizes — a filter wider than its target wasting most of its
+#: action on the skirts — is a quality risk, whereas a narrow boost is a
+#: headroom one: every dB of boost is charged against the graph's finite
+#: budget, and a sharp boost aimed at an interference null feeds the null
+#: instead of filling it. The boost class is
 #: additionally refused outright by :func:`prescription_route` today, so this
 #: ceiling binds nothing that ships; it is here so the bound is stated rather
 #: than inherited when that route opens.
