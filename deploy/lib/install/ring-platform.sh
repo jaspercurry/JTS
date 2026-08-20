@@ -218,6 +218,9 @@ _jts_ring_ioplug_caps() {
     if LC_ALL=C grep -aqF 'channels out of range 2..=8' "${so}"; then
         caps+=("wire_channels")
     fi
+    if LC_ALL=C grep -aqF 'pace_nominal must be 0 or 1' "${so}"; then
+        caps+=("pace_nominal")
+    fi
     local IFS=,
     # `${caps[*]-}`, not `${caps[*]}`: under `set -u` bash 3.2 (the macOS system
     # bash the test lane runs on) treats an EMPTY array expansion as an unbound

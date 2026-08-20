@@ -73,12 +73,10 @@
 //    the `aplay -D jts_ring_playback ... /dev/zero` resolvability probe
 //    terminate. The reported-position clamp (b) also keeps hw_ptr non-decreasing,
 //    so reader reattach never steps it backward.
-//    ONE PCM-SCOPED EXCEPTION: a conf.d block that declares `pace_nominal 1` also
-//    caps the reported position at a nominal software clock (jts_ring_pace_apply,
-//    jts_ring_shm.h), so its `avail` DOES close when the app runs ahead of real
-//    time. That is a rate bound, not the B1 wedge: the clock advances with no
-//    reader, so the gate always reopens within a period and (c) still bounds the
-//    ring. Every PCM without the field keeps (a)+(b) exactly as described above.
+//    ONE EXCEPTION, PLAYBACK ONLY: a block declaring `pace_nominal 1` rate-limits
+//    the reported position (jts_ring_pace_apply), so its `avail` DOES close when
+//    the app outruns real time. Not the B1 wedge: the bucket refills with no
+//    reader, so the gate reopens within a period and (c) still bounds the ring.
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
@@ -186,13 +184,13 @@ typedef struct {
     // advertised HW format/channel constraints, and every staging stride below.
     uint32_t channels;
     uint32_t sample_format; // JTS_RING_SAMPLE_FORMAT_*
-    // Governor opt-in from the conf.d (`pace_nominal`, default 0); set once at open
-    // like the wire above. jts_ring_pace_apply in the header owns what it means.
+    // Governor opt-in from the conf.d (`pace_nominal`, default 0), set once at open
+    // like the wire above; jts_ring_pace_apply owns what it means and ptr_state
+    // holds the bucket.
     int pace_nominal;
-    // The governor's t0: a CLOCK_MONOTONIC_RAW stamp taken at stream START, forced
-    // nonzero so 0 is an unambiguous "not started" sentinel. `prepare` clears it
-    // alongside appl_frames / last_reported; `start` stamps it.
-    uint64_t clock_t0_ns;
+    uint64_t pace_prev_throttled; // edge-logging state; see pace_log_edges
+    uint64_t pace_log_ns;
+    int pace_bound;
     int opened; // writer/reader attached
     // --- PLAYBACK staging (writer) ---
     // Camilla may writei() fewer than a whole slot at a time; we accumulate into
@@ -274,32 +272,20 @@ static jts_ring_geometry_t pcm_geometry(const jts_ring_pcm_t *p) {
     return g;
 }
 
-// One period of wall-clock time at the pinned wire rate. The ONE place that
-// conversion lives, shared by the poll cadence below and the capture silence
-// pacing (which computed it inline before this was extracted).
-static uint64_t period_ns_for(uint32_t period_frames) {
-    return (uint64_t)period_frames * 1000000000ull / JTS_RING_RATE;
-}
-
-// One poll/pacing tick: period/4, clamped to [0.25 ms, 2 ms]. Shared by the
-// timerfd cadence, the playback drain wait, and the capture starvation nap.
+// The bounded nap both directions use (the playback drain wait, the capture
+// starvation backstop). The timerfd interval is NOT this — see arm_timer.
 static uint64_t tick_ns_for(uint32_t period_frames) {
-    uint64_t tick_ns = period_ns_for(period_frames) / 4;
-    if (tick_ns < 250000ull) tick_ns = 250000ull;
-    if (tick_ns > 2000000ull) tick_ns = 2000000ull;
-    return tick_ns;
+    return jts_ring_tick_ns(period_frames, JTS_RING_RATE);
 }
 
 static void arm_timer(jts_ring_pcm_t *p) {
     if (p->timer_fd < 0) return;
-    // A governed PCM polls at the PERIOD: the ceiling it is waiting on releases in
-    // period grains, so three of every four period/4 wakes would find the same
-    // avail and sleep again. Ungoverned PCMs keep period/4 unchanged.
-    uint64_t tick_ns = p->pace_nominal ? period_ns_for(p->period_frames)
-                                       : tick_ns_for(p->period_frames);
-    // tv_nsec must be < 1e9 and a whole period passes that above 48000 frames (the
-    // conf.d accepts up to 65536); the ungoverned tick is <= 2 ms, so this is a
-    // no-op there.
+    uint64_t tick_ns = jts_ring_timer_cadence_ns(
+        p->pace_nominal, p->io.stream == SND_PCM_STREAM_PLAYBACK, p->period_frames,
+        JTS_RING_RATE);
+    // tv_nsec must be < 1e9, and a whole period reaches that at or above 48000
+    // frames (the conf.d accepts up to 65536); the ungoverned tick is <= 2 ms, so
+    // the split is a no-op there.
     struct itimerspec its;
     its.it_interval.tv_sec = (time_t)(tick_ns / 1000000000ull);
     its.it_interval.tv_nsec = (long)(tick_ns % 1000000000ull);
@@ -314,17 +300,22 @@ static void disarm_timer(jts_ring_pcm_t *p) {
     timerfd_settime(p->timer_fd, 0, &its, NULL);
 }
 
-// The governor's impure prologue: read the clock, hand frames to the core. Both
-// pointer callbacks call this pair; neither does anything else about pacing.
-static int pace_active(const jts_ring_pcm_t *p) {
-    return p->pace_nominal && p->clock_t0_ns != 0;
-}
-
-static uint64_t pace_clock_frames(const jts_ring_pcm_t *p) {
-    if (!pace_active(p)) return 0;
-    uint64_t now = jts_ring_monotonic_raw_ns();
-    uint64_t elapsed = (now > p->clock_t0_ns) ? (now - p->clock_t0_ns) : 0;
-    return jts_ring_nominal_clock_frames(elapsed, JTS_RING_RATE);
+// Announce the governor's bind/release EDGES, one pair per window. The storm used
+// to announce a stalled reader by itself; the governor silences that signature, so
+// without this a wedged reader looks like healthy playback. Edges only — a bound
+// governor is the steady state under a dead reader. A suppressed bind leaves
+// `pace_bound` clear so its release is suppressed too and the pairs stay balanced.
+#define JTS_RING_PACE_LOG_INTERVAL_NS 60000000000ull
+static void pace_log_edges(jts_ring_pcm_t *p, uint64_t now_ns) {
+    uint64_t throttled = p->ptr_state.pace_throttled_frames;
+    int bound_now = throttled > p->pace_prev_throttled;
+    p->pace_prev_throttled = throttled;
+    if (bound_now == p->pace_bound) return;
+    if (bound_now && now_ns - p->pace_log_ns < JTS_RING_PACE_LOG_INTERVAL_NS) return;
+    p->pace_bound = bound_now;
+    if (bound_now) p->pace_log_ns = now_ns;
+    SNDERR("jts_ring: pace %s path=%s throttled_frames=%llu",
+           bound_now ? "bind" : "release", p->path, (unsigned long long)throttled);
 }
 
 // ---- ioplug callbacks ----
@@ -354,22 +345,18 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
         }
         p->opened = 1;
     }
-    // Reset the staging + pointer on (re)prepare. clock_t0_ns clears with them so
-    // the governor re-stamps at the next start rather than measuring from the old.
+    // Reset the staging + pointer (bucket included) on (re)prepare.
     p->stage_frames = 0;
     p->appl_frames = 0;
-    p->ptr_state.last_reported = 0;
-    p->clock_t0_ns = 0;
+    jts_ring_pointer_state_reset(&p->ptr_state);
     return 0;
 }
 
 static int jts_ring_start(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
-    // Stamp the governor's t0 here, not at prepare: frames only move once the
-    // stream runs, and a prepare-to-start gap would otherwise be handed to the
-    // writer as slack. Forced nonzero — 0 is the "not started" sentinel.
-    p->clock_t0_ns = jts_ring_monotonic_raw_ns();
-    if (p->clock_t0_ns == 0) p->clock_t0_ns = 1;
+    // Anchor at start, not prepare: a prepare-to-start gap would otherwise refill
+    // the bucket for time the app could not have used.
+    jts_ring_pace_start(&p->ptr_state, jts_ring_monotonic_raw_ns());
     arm_timer(p);
     return 0;
 }
@@ -431,6 +418,8 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
     int reader_live = p->opened ? jts_ring_writer_reader_is_live(&p->writer) : 0;
     uint64_t occupancy =
         p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
+    // The governor's impure half: one clock sample per call for the pure bucket.
+    uint64_t now_ns = jts_ring_monotonic_raw_ns();
     jts_ring_pointer_inputs_t in = {
         .appl_frames = (uint64_t)p->appl_frames,
         .occupancy_slots = occupancy,
@@ -438,10 +427,12 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
         .period_frames = p->period_frames,
         .buffer_size = (uint64_t)io->buffer_size,
         .reader_live = reader_live,
-        .pace_nominal = pace_active(p),
-        .clock_frames = pace_clock_frames(p),
+        .pace_nominal = p->pace_nominal,
+        .now_ns = now_ns,
+        .rate = JTS_RING_RATE,
     };
     uint64_t reported = jts_ring_pointer_report(&p->ptr_state, &in);
+    pace_log_edges(p, now_ns);
     // ALSA wants the position modulo the buffer. The clamp above guarantees the
     // reported value never advanced >= buffer_size since the last call, so the
     // mod projection here can never alias a full lap to a zero/backward delta.
@@ -502,20 +493,16 @@ static int jts_ring_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp) {
     //
     // THAT CONDITION HAS SINCE FIRED, and the answer is "accepted, unchanged".
     // snapclient writes the grouping-ingress ring and reads its own
-    // `snd_pcm_delay` as time-to-DAC, and the grouping reconciler starts
-    // snapclient BEFORE it swaps CamillaDSP onto the capture side — so there is
-    // a bond-start window where this callback answers a live WRITER on a ring
-    // with no reader. What it answers there is a bounded constant, not a
-    // runaway: free-run drops the oldest slot on the absent reader's behalf, so
-    // occupancy pins at n_slots and the value saturates at
-    // n_slots*period_frames + (period_frames-1) — 2175 frames at the grouping
-    // ring's 16x128, i.e. 42.7 ms of occupancy and 45.3 ms worst case at 48 kHz.
-    // snapclient's own gate is bufferMs 400 (jasper/multiroom/config.py), an
-    // order of magnitude away, so it keeps emitting chunks throughout; the
-    // expected effect is ONE hard sync when the reader attaches and the delay
-    // drops to steady state. Discounting it here would report a delay the
-    // writer's audio is not actually behind, which is worse for a consumer that
-    // steers on it. Hardware S2/S3 measure the delay series across that window.
+    // `snd_pcm_delay` as time-to-DAC, so a bond-start window answers a live WRITER
+    // on a readerless ring. What it answers there is a bounded constant, not a
+    // runaway: free-run drops the oldest slot, so occupancy pins at n_slots and the
+    // value saturates at n_slots*period_frames + (period_frames-1) — 45.3 ms worst
+    // case at the grouping ring's 16x128. That saturation was CONFIRMED on
+    // 2026-08-20; the prediction that followed it here — snapclient keeping up and
+    // taking one hard sync — was falsified in the same pass, which is what the
+    // pacing governor now addresses (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md).
+    // Discounting the delay here would still report one the writer's audio is not
+    // behind, which is worse for a consumer that steers on it.
     uint64_t slots = p->opened ? jts_ring_writer_occupancy_slots(&p->writer) : 0;
     snd_pcm_sframes_t delay =
         (snd_pcm_sframes_t)(slots * p->period_frames + p->stage_frames);
@@ -655,7 +642,9 @@ static int jts_ring_close(snd_pcm_ioplug_t *io) {
 //     `last_silence_ns = now` re-anchors to that wake rather than to the ideal
 //     period boundary, so the observed silence rate runs slightly SLOW of
 //     realtime (measured ~14% on the tick-only path: 4 s of silence ~= 4.66 s
-//     wall). That is the SAFE direction: slightly-slow silence makes the
+//     wall — a figure that belongs to the period/4 cadence this gate is sampled
+//     at, which is why jts_ring_timer_cadence_ns keeps CAPTURE at period/4).
+//     That is the SAFE direction: slightly-slow silence makes the
 //     consumer block marginally longer and NEVER over-drains, so a returning
 //     writer's real audio is never pre-consumed as silence (the fast direction
 //     would). It is warn-only (`stop_on_rate_change` is unset). Do NOT "fix"
@@ -689,7 +678,7 @@ static void capture_service_tick(jts_ring_pcm_t *p) {
     if (!writer_live && real_empty &&
         p->pending_silence_frames < (uint64_t)p->period_frames) {
         uint64_t now = jts_ring_monotonic_ns();
-        uint64_t period_ns = period_ns_for(p->period_frames);
+        uint64_t period_ns = jts_ring_period_ns(p->period_frames, JTS_RING_RATE);
         // First silence period after real data (last_silence_ns == 0) arms
         // immediately so the gate opens without a period of dead air; each
         // subsequent one waits a full period of realtime.
@@ -730,8 +719,7 @@ static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
     p->silence_periods = 0;
     p->transfer_starved_naps = 0;
     p->last_silence_ns = 0;
-    p->ptr_state.last_reported = 0;
-    p->clock_t0_ns = 0; // re-stamped at the next start (see jts_ring_start)
+    jts_ring_pointer_state_reset(&p->ptr_state);
     return 0;
 }
 
@@ -768,8 +756,6 @@ static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
         .pending_silence_frames = p->pending_silence_frames,
         .period_frames = p->period_frames,
         .buffer_size = (uint64_t)io->buffer_size,
-        .pace_nominal = pace_active(p),
-        .clock_frames = pace_clock_frames(p),
     };
     uint64_t reported = jts_ring_capture_pointer_report(&p->ptr_state, &in);
     return (snd_pcm_sframes_t)(reported % io->buffer_size);
@@ -1186,9 +1172,19 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     jts_ring_pcm_t *p = calloc(1, sizeof(*p));
     if (!p) return -ENOMEM;
     p->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    // A missing timerfd is not fatal — poll degrades to ALSA's own timeout — but
-    // log it.
     if (p->timer_fd < 0) {
+        // Ungoverned: not fatal, alsa-lib falls back to its own timeout. Governed
+        // playback: fatal. The bucket closes `avail` on purpose so the app must
+        // WAIT, and with no fd to wait on (count still claims 1, descriptors supply
+        // none) that is a spin. Fail the open — a source that will not start is
+        // loud; one that pins a core is not.
+        if (pace_nominal && stream == SND_PCM_STREAM_PLAYBACK) {
+            int timer_errno = errno; // free() may clobber errno
+            SNDERR("jts_ring: timerfd_create failed and pace_nominal needs it: %s",
+                   strerror(timer_errno));
+            free(p);
+            return timer_errno > 0 ? -timer_errno : -EIO;
+        }
         SNDERR("jts_ring: timerfd_create failed (poll will fall back): %s",
                strerror(errno));
     }

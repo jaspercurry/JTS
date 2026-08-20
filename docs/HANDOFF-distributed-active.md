@@ -362,7 +362,13 @@ therefore has **exactly one** rate loop. Two configurations follow from this:
   PCM is an ioplug, so CamillaDSP finds no mixer element to steer. No mixer, no
   new clock topology — the leader's own
   drivers are driven by the follower endpoint config verbatim, while camilla#1
-  bakes the wire.
+  bakes the wire. The grouping ring's **playback** side carries a token-bucket
+  rate floor (`pace_nominal` in
+  [`62-jts-ring-grouping.conf`](../deploy/alsa/conf.d/62-jts-ring-grouping.conf)) —
+  a storm guard for a stalled or dead reader, inert against any live DAC-paced
+  reader, and **not** a second loop; the capture side camilla#2 reads is
+  ungoverned. Contract and constants: `jts_ring_pace_apply` in
+  [`jts_ring_shm.h`](../c/jts-ring-ioplug/jts_ring_shm.h).
 - **With leader TTS:** TTS must be summed **pre-crossover** (camilla#2 has a
   single capture and cannot mix a second source), so a summing stage moves in
   front of camilla#2 and **becomes the sole loop**; camilla#2 then runs

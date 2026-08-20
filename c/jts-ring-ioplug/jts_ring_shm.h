@@ -506,72 +506,65 @@ void jts_ring_reader_close(jts_ring_reader_t *r);
 // helper). Exposed for the bench + host test.
 uint64_t jts_ring_monotonic_ns(void);
 
-// CLOCK_MONOTONIC_RAW nanoseconds — the pacing governor's base, and deliberately
-// not the clock above. CLOCK_MONOTONIC is NTP-disciplined, and adjtime slew that
-// ran it slow against the crystal would drag the governor's ceiling BELOW a
-// correct DAC's real rate and bind against hardware doing nothing wrong. Exposed
-// for the bench + host test.
+// CLOCK_MONOTONIC_RAW ns — the governor's base. NOT the clock above: that one is
+// NTP-disciplined, and slew would bind the governor against healthy hardware.
 uint64_t jts_ring_monotonic_raw_ns(void);
 
-// Rate headroom above nominal, parts per million: the ceiling must clear a real
-// crystal's error (commodity spec is +-100 ppm) so it never binds on hardware that
-// is merely fast. An exact reciprocal of 1e6, so the ppm math below is integer.
-#define JTS_RING_PACE_HEADROOM_PPM 200ull
+// Rate headroom, ppm. The governed quantity is a DIFFERENCE of independent clocks
+// (the wire's crystal vs this Pi's), so a crystal's own +-100 ppm spec is the wrong
+// size: this fleet's dongle measures ~667 ppm and the repo's precedent for the same
+// two-crystal problem took ~4x that — both in docs/HANDOFF-airplay.md. An exact
+// reciprocal of 1e6, so the refill below is integer.
+#define JTS_RING_PACE_HEADROOM_PPM 2500ull
 #define JTS_RING_PACE_HEADROOM_DIVISOR (1000000ull / JTS_RING_PACE_HEADROOM_PPM)
 _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 1000000ull,
-               "pace headroom must divide 1e6 exactly (the ppm math is integer)");
+               "pace headroom must divide 1e6 exactly (the refill math is integer)");
 
-// Frames a device at `rate` clocks in `elapsed_ns`, plus the headroom above. Pure;
-// the caller samples the clock (jts_ring_monotonic_raw_ns) and passes elapsed ns.
+// Sub-frame tokens, because the refill is per CALL: at frame resolution every
+// call's remainder is discarded — ~0.78% loss against 0.25% headroom, which
+// throttles a healthy stream. 1/1024 frame makes it ~8 ppm.
+#define JTS_RING_PACE_TOKENS_PER_FRAME 1024ull
+
+// Tokens a device at `rate` clocks in `elapsed_ns`, plus the headroom.
 //
-// OVERFLOW BOUND — why the division splits on the second. `elapsed_ns * rate / 1e9`
-// overflows u64 past elapsed_ns = 2^64/48000 = 3.8e14 ns, i.e. 4.4 DAYS of uptime,
-// wrapping the ceiling to ~0 and freezing the report. Split, no product can wrap
-// anywhere a u64 ns count reaches:
-//   secs        <= (2^64-1)/1e9      = 1.845e10  (584.9 years, the u64 ns ceiling)
-//   secs*rate   <= 1.845e10 * 48000  = 8.855e14
-//   rem_ns*rate <  1e9 * 48000       = 4.800e13  (the only other product formed,
-//                                                 and exact for any rate < 1.8e10)
-//   base + base/5000                 <= 8.857e14 = 2.1e4x below UINT64_MAX
-static inline uint64_t jts_ring_nominal_clock_frames(uint64_t elapsed_ns, uint32_t rate) {
+// OVERFLOW BOUND at the shipped rate 48000, over the whole u64 input range (a
+// paused stream can go arbitrarily long between calls). `elapsed_ns * rate/1e9`
+// wraps past 4.4 days, silently zeroing a refill; splitting on the second does not:
+//   secs             <= (2^64-1)/1e9            = 1.845e10  (584.9 yr)
+//   secs*rate*1024   <= 1.845e10 * 48000 * 1024 = 9.07e17
+//   rem_ns*rate*1024 <  1e9 * 48000 * 1024      = 4.92e16
+//   base + base/400                             <= 9.09e17  = 20x below UINT64_MAX
+static inline uint64_t jts_ring_pace_refill_tokens(uint64_t elapsed_ns, uint32_t rate) {
     if (rate == 0) return 0;
     uint64_t secs = elapsed_ns / 1000000000ull;
     uint64_t rem_ns = elapsed_ns % 1000000000ull;
-    uint64_t base = secs * (uint64_t)rate + (rem_ns * (uint64_t)rate) / 1000000000ull;
+    uint64_t scaled = (uint64_t)rate * JTS_RING_PACE_TOKENS_PER_FRAME;
+    uint64_t base = secs * scaled + (rem_ns * scaled) / 1000000000ull;
     return base + base / JTS_RING_PACE_HEADROOM_DIVISOR;
 }
 
-// THE NOMINAL-CLOCK PACING GOVERNOR — the one owner of the ceiling. Both pointer
-// cores below apply it through this function and neither restates it.
-//
-// CONTRACT. Returns `honest` capped at what a nominal-rate device would have
-// clocked since stream start (`clock_frames`) plus one buffer of burst credit,
-// quantized down to a period multiple. `pace_nominal == 0` returns `honest`
-// unchanged, bit for bit — that is the ungoverned default for every PCM whose
-// conf.d omits the field. Monotonicity is NOT this function's to guarantee: it
-// only ever lowers a value, and the callers' forward-only clamp owns the
-// non-decreasing report (which is why the ceiling is applied BEFORE that clamp).
-//
-// WHY A CEILING AND NOT A GATE. `honest` wins whenever it is lower, so a real
-// clock in the loop paces the ring underneath the ceiling and this is inert
-// (measured: a DAC-clocked reader holds a ring writer to exactly 1.00x nominal,
-// where an unclocked one ran 763x). It cannot speed a slow reader up or invent
-// progress. And because the clock advances whether or not anything reads the ring,
-// a dead reader never freezes the ceiling — pacing survives without a liveness
-// branch, and the free-run drop path underneath is untouched.
-//
-// BURST CREDIT == ONE BUFFER. Models a device's prefill, so a scheduling gap
-// shorter than the buffer catches up in one call rather than a period per wake. It
-// is also the largest credit that cannot outrun the ring, which is exactly one
-// buffer deep. QUANTIZED, because an unquantized ceiling releases a few frames per
-// wake and limit-cycles at the cap in sub-period steps no caller here transfers in.
-static inline uint64_t jts_ring_pace_apply(uint64_t honest, int pace_nominal,
-                                           uint64_t clock_frames, uint64_t buffer_size,
-                                           uint32_t period_frames) {
-    if (!pace_nominal) return honest;
-    uint64_t ceiling = clock_frames + buffer_size; // burst credit == one buffer
-    if (period_frames > 0) ceiling -= ceiling % (uint64_t)period_frames;
-    return (honest > ceiling) ? ceiling : honest;
+// Poll/pacing cadence — pure, so the host test drives the plugin's own choice.
+static inline uint64_t jts_ring_period_ns(uint32_t period_frames, uint32_t rate) {
+    if (rate == 0) return 0;
+    return (uint64_t)period_frames * 1000000000ull / (uint64_t)rate;
+}
+
+// period/4, clamped to [0.25 ms, 2 ms]: every ungoverned poll and both naps.
+static inline uint64_t jts_ring_tick_ns(uint32_t period_frames, uint32_t rate) {
+    uint64_t tick_ns = jts_ring_period_ns(period_frames, rate) / 4;
+    if (tick_ns < 250000ull) tick_ns = 250000ull;
+    if (tick_ns > 2000000ull) tick_ns = 2000000ull;
+    return tick_ns;
+}
+
+// The timerfd interval. A governed PLAYBACK PCM polls at the period: it waits on
+// the bucket, which releases in period grains. CAPTURE is excluded even when the
+// field is set — its wake also drives capture_service_tick's wall-clock silence
+// gate, and one period critically-samples that gate.
+static inline uint64_t jts_ring_timer_cadence_ns(int pace_nominal, int stream_is_playback,
+                                                 uint32_t period_frames, uint32_t rate) {
+    if (pace_nominal && stream_is_playback) return jts_ring_period_ns(period_frames, rate);
+    return jts_ring_tick_ns(period_frames, rate);
 }
 
 // --- ioplug pointer core (shared by pcm_jts_ring.c AND test_ring_core.c) ---
@@ -621,13 +614,79 @@ static inline uint64_t jts_ring_pace_apply(uint64_t honest, int pace_nominal,
 // (exactly where ALSA wants a mod-buffer value, and where the raw value is
 // available for the delta math above to reason about).
 
-// The reported-position state the pointer core carries across calls. One field:
-// the last RAW (pre-modulo) position reported to ALSA. Reset to 0 (with
-// appl_frames) on (re)prepare. The plugin embeds this inside jts_ring_pcm_t;
-// the host test embeds it inside its ioplug model. Same type, same reset rule.
+// The state the pointer core carries across calls, cleared on (re)prepare. The
+// plugin embeds it in jts_ring_pcm_t; the host test embeds it in its ioplug model.
 typedef struct {
     uint64_t last_reported; // last raw hw_ptr handed to ALSA (pre-modulo)
+    // Governor bucket; all three stay zero on an ungoverned PCM. pace_last_ns is
+    // also the started flag — 0 means `start` has not run and the governor is inert.
+    uint64_t pace_last_ns;          // clock sample at the previous governed call
+    uint64_t pace_tokens;           // credit, in 1/1024-frame tokens
+    uint64_t pace_throttled_frames; // cumulative frames withheld (observability)
 } jts_ring_pointer_state_t;
+
+static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
+    st->last_reported = 0;
+    st->pace_last_ns = 0;
+    st->pace_tokens = 0;
+    st->pace_throttled_frames = 0;
+}
+
+// Stream start: anchor the bucket, EMPTY — ALSA's buffer already lets the app
+// prefill, so credit here would stack a second buffer onto the first wake. Forced
+// nonzero: 0 is the not-started sentinel.
+static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, uint64_t now_ns) {
+    st->pace_last_ns = (now_ns == 0) ? 1 : now_ns;
+    st->pace_tokens = 0;
+}
+
+// THE PACING GOVERNOR — one owner, PLAYBACK only. Measured 2026-08-20: a
+// DAC-clocked reader holds this ring's writer at 1.00x nominal, a stalled one let
+// it storm at 763x (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md). A floor
+// under that failure, not a substitute for a clock. CAPTURE never calls it — a
+// bind there starves camilla on a DAC-vs-Pi clock difference.
+//
+// CONTRACT. A token bucket anchored to the PREVIOUS call. Each call refills by
+// what a nominal device would have clocked in `now_ns - pace_last_ns` plus the
+// headroom, caps at `buffer_size`, and grants at most what it holds. Returns
+// `honest` unchanged when the bucket covers the whole advance (a device-paced app
+// reads bit-for-bit as it would with no governor), else `last_reported + granted`.
+// `pace_nominal == 0`, or an unanchored bucket, returns `honest` untouched. It only
+// ever lowers a value; the caller's forward-only clamp owns monotonicity, which is
+// why this runs BEFORE it.
+//
+// Per-call anchoring is what keeps it from being an INTEGRATOR: an absolute anchor
+// accumulates a persistent clock difference without bound — a deficit that binds a
+// healthy stream, or a surplus released in one burst when the reader dies. Here the
+// cap bounds burst outright: one wake advances the report by at most one buffer,
+// however long the stream idled. A PARTIAL grant is floored to a period multiple so
+// a capped bucket releases whole periods; a covering grant is exact. Tokens are
+// spent on the GRANT; the caller's clamp may report up to a period less.
+static inline uint64_t jts_ring_pace_apply(jts_ring_pointer_state_t *st, uint64_t honest,
+                                           int pace_nominal, uint64_t now_ns, uint32_t rate,
+                                           uint64_t buffer_size, uint32_t period_frames) {
+    if (!pace_nominal || st->pace_last_ns == 0) return honest;
+    // Refill by real elapsed time, then cap. A backward clock sample refills
+    // nothing rather than underflowing.
+    uint64_t dt = (now_ns > st->pace_last_ns) ? (now_ns - st->pace_last_ns) : 0;
+    st->pace_last_ns = now_ns;
+    uint64_t cap = buffer_size * JTS_RING_PACE_TOKENS_PER_FRAME;
+    st->pace_tokens += jts_ring_pace_refill_tokens(dt, rate);
+    if (st->pace_tokens > cap) st->pace_tokens = cap;
+
+    uint64_t want = (honest > st->last_reported) ? (honest - st->last_reported) : 0;
+    if (want == 0) return honest; // nothing to grant; the clamp holds the floor
+    uint64_t affordable = st->pace_tokens / JTS_RING_PACE_TOKENS_PER_FRAME;
+    if (want <= affordable) {
+        st->pace_tokens -= want * JTS_RING_PACE_TOKENS_PER_FRAME; // spend what we grant
+        return honest;                                            // governor inert
+    }
+    uint64_t grant = affordable;
+    if (period_frames > 0) grant -= grant % (uint64_t)period_frames;
+    st->pace_tokens -= grant * JTS_RING_PACE_TOKENS_PER_FRAME;
+    st->pace_throttled_frames += want - grant;
+    return st->last_reported + grant;
+}
 
 // Inputs the pointer core needs, gathered by the caller (which owns the ALSA
 // io object / the writer handle). Keeping them in a struct lets the host test
@@ -640,7 +699,8 @@ typedef struct {
     uint64_t buffer_size;    // n_slots * period_frames (== ALSA buffer)
     int reader_live;         // 1 iff a reader heartbeat is fresh
     int pace_nominal;        // governor opt-in (jts_ring_pace_apply); 0 = ungoverned
-    uint64_t clock_frames;   // jts_ring_nominal_clock_frames() since stream start
+    uint64_t now_ns;         // jts_ring_monotonic_raw_ns() sample for this call
+    uint32_t rate;           // wire rate, for the bucket refill
 } jts_ring_pointer_inputs_t;
 
 // Compute the RAW (pre-modulo) hw_ptr to report to ALSA, advancing/clamping
@@ -661,7 +721,7 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
     uint64_t honest = (in->appl_frames >= in_flight) ? (in->appl_frames - in_flight) : 0;
 
     // 1b. Pacing governor (jts_ring_pace_apply owns it). Before step 2, never after.
-    honest = jts_ring_pace_apply(honest, in->pace_nominal, in->clock_frames,
+    honest = jts_ring_pace_apply(st, honest, in->pace_nominal, in->now_ns, in->rate,
                                  in->buffer_size, in->period_frames);
 
     // 2. Reported-position clamp. The reported value only ever moves FORWARD,
@@ -670,8 +730,9 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
     uint64_t last = st->last_reported;
     uint64_t reported;
     if (honest <= last) {
-        // Honest position went backward (dead->live regrow, or a live reader
-        // lagging) or stayed put: hold at last_reported. Non-decreasing floor.
+        // Honest position went backward (dead->live regrow, a live reader lagging,
+        // or a governed bucket holding less than one period) or stayed put: hold at
+        // last_reported. Non-decreasing floor.
         reported = last;
     } else {
         uint64_t advance = honest - last;
@@ -736,10 +797,7 @@ typedef struct {
     uint64_t pending_silence_frames; // fabricated writer-dead silence armed but not yet consumed
     uint32_t period_frames;  // frames per slot
     uint64_t buffer_size;    // n_slots * period_frames (== ALSA buffer)
-    // One conf.d field governs both directions of a PCM: on playback the ceiling
-    // bounds how fast the app may WRITE, here how fast it may READ.
-    int pace_nominal;        // governor opt-in (jts_ring_pace_apply); 0 = ungoverned
-    uint64_t clock_frames;   // jts_ring_nominal_clock_frames() since stream start
+    // No governor fields — PLAYBACK-only, see jts_ring_pace_apply.
 } jts_ring_capture_pointer_inputs_t;
 
 // Bound a raw capture occupancy (write_seq - local read_seq) to what the reader
@@ -795,13 +853,6 @@ jts_ring_capture_pointer_report(jts_ring_pointer_state_t *st,
                         in->destage_frames + in->pending_silence_frames;
     // Honest capture hw_ptr = appl + readable (frames available to be captured).
     uint64_t honest = in->appl_frames + readable;
-
-    // 1b. Pacing governor (jts_ring_pace_apply owns it). Before step 2, never after.
-    // Composes with the writer-dead silence above rather than duplicating it: that
-    // path paces its own fabrication, this bounds the total, and min() of two
-    // ceilings is a ceiling.
-    honest = jts_ring_pace_apply(honest, in->pace_nominal, in->clock_frames,
-                                 in->buffer_size, in->period_frames);
 
     // 2. Reported-position clamp (identical shape to the playback core): forward-
     // only, and never by >= buffer_size in one call so ALSA's mod-buffer delta

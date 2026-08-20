@@ -297,6 +297,38 @@ def test_the_confd_block_and_the_python_constants_agree(key, constant):
     )
 
 
+def test_the_grouping_ring_is_the_only_pcm_that_asks_to_be_paced():
+    """``pace_nominal 1`` is here, and nowhere else in the conf.d tree.
+
+    The field opts this PCM's PLAYBACK direction into the ioplug's rate limiter
+    (``jts_ring_pace_apply``). It is scoped to this one block on purpose: every
+    other ring's writer already carries a clock, and the limiter's whole reason
+    to exist is the one writer that does not. Two ways that scoping breaks
+    silently — the field being dropped from this file (the storm comes back with
+    nothing to say so), and the field spreading to a ring that never needed it
+    (a rate bound on a path nobody measured) — so both directions are pinned.
+    """
+    conf = _read(_GROUPING_CONF)
+    body = conf[conf.index("{") + 1 : conf.rindex("}")]
+    assert re.search(r"^\s*pace_nominal\s+1\s*$", body, re.MULTILINE), (
+        f"{_GROUPING_CONF.name} must declare `pace_nominal 1` — without it the "
+        "grouping ring's writer is unpaced against a stalled or dead reader"
+    )
+
+    conf_dir = _GROUPING_CONF.parent
+    declaring = sorted(
+        path.name
+        for path in conf_dir.glob("*.conf")
+        if re.search(
+            r"^\s*pace_nominal\s+\S", _strip_conf_comments(_read(path)), re.MULTILINE
+        )
+    )
+    assert declaring == [_GROUPING_CONF.name], (
+        "pace_nominal is scoped to the grouping ring; these conf.d files also "
+        f"declare it: {declaring}"
+    )
+
+
 def test_the_grouping_ring_slot_is_one_camilladsp_chunk():
     """One slot per chunk — the relationship every other ring in the tree ships.
 
