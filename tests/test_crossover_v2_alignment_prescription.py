@@ -1079,6 +1079,43 @@ def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
     assert polarity == word
 
 
+@pytest.mark.parametrize("pinned_sign", (1, -1))
+def test_a_pinned_basin_reaches_the_household_row_as_an_instruction(pinned_sign):
+    """The pin survives into the frozen evidence the review screen is built from.
+
+    #2607 S3 reopened by a new route: the household row words a polarity as
+    "Inverted (measured)" unless something tells it otherwise, and a pinned
+    round commits the same ``explicit_prescription_committed`` an unpinned
+    prescription does — so the objective cannot be that something. The bit is,
+    and it has two hops to survive before any screen sees it: the carry onto the
+    candidate, and the freeze into ``analysis_json``. Either one silently
+    dropped puts "measured" over an operator's instruction.
+
+    Asserted on the REAL analysis, so both hops are exercised; the projection
+    from here to the payload is pinned in ``tests/test_crossover_envelope_v2.py``
+    and the copy itself in ``tests/js/crossover_polarity_provenance_test.mjs``.
+    """
+    from jasper.active_speaker.crossover_v2.planning import analysis_json
+
+    analysis = _analyzed(-450.0, polarity_sign=pinned_sign)
+    assert analysis.candidate.polarity_pinned is True
+    assert analysis_json(analysis)["polarity_pinned"] is True
+
+
+def test_an_unpinned_round_is_not_labelled_an_instruction():
+    """The control, and the half that keeps the fix scoped.
+
+    An unpinned prescription commits the SAME objective, so a fix keyed off the
+    objective would have reworded every prescribed round. This is what fails if
+    the bit ever starts being inferred rather than carried.
+    """
+    from jasper.active_speaker.crossover_v2.planning import analysis_json
+
+    analysis = _analyzed(-450.0)
+    assert analysis.candidate.polarity_pinned is False
+    assert analysis_json(analysis)["polarity_pinned"] is False
+
+
 def test_an_unpinned_analysis_still_solves_its_own_basin():
     """The control for the pair above, and the regression pin for today.
 

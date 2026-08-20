@@ -1553,6 +1553,17 @@ class CrossoverCandidate:
     #: where a prescription had actually overridden correlation and flipped the
     #: polarity. ``None`` means no flat sum ever answered it.
     polarity_agrees_with_sum: bool | None = None
+    #: Did the REQUEST hold the polarity axis, rather than anything measuring it?
+    #: Carried from :attr:`AlignmentPairSelection.polarity_pinned` for the reason
+    #: the field above is carried and not re-derived, and it exists because the
+    #: household row has to word an operator's instruction differently from a
+    #: measurement. It is NOT derivable from the two facts already here:
+    #: ``alignment_objective`` is the same ``explicit_prescription_committed``
+    #: pinned or not, and ``polarity_agrees_with_sum is None`` is also what a
+    #: seed-committed arm reports — whose polarity IS a measurement (the
+    #: correlation's). ``False`` on a selection-less arm is therefore correct
+    #: rather than a fallback: the seed shipped, so nothing was pinned.
+    polarity_pinned: bool = False
 
 
 @dataclass(frozen=True)
@@ -4370,8 +4381,9 @@ def _select_alignment_pair(
     # walking a grid of identical scores and calling the winner a selection.
     grid_step_us = 0.0
     delays = [seed_delay_us]
-    # A prescription fixes the delay axis to exactly one point and leaves the
-    # polarity axis to the objective. The seed is NOT appended here (it is
+    # A prescription fixes the delay axis to exactly one point, and leaves the
+    # polarity axis to the objective unless `explicit_polarity_sign` pins that
+    # too (the `signs` line below). The seed is NOT appended here (it is
     # everywhere else): appending it would let the search return the seed's
     # delay whenever the seed happened to score within the flat-minimum
     # epsilon, and an arm that silently measures the estimator's answer instead
@@ -6695,6 +6707,12 @@ def _build_candidate(
         polarity_agrees_with_sum=(
             None if selection is None else selection.polarity_agrees_with_sum
         ),
+        # Same rule, same reason: from the selection that applied the pin. No
+        # selection means the seed shipped, and correlation's answer is a
+        # measurement — so this is honestly ``False`` even on a round that ASKED
+        # for a basin (the `alignment_prescription_not_committed` warning is
+        # where that round learns its arm did not run).
+        polarity_pinned=bool(selection is not None and selection.polarity_pinned),
     )
     return candidate, (freqs, predicted_db)
 

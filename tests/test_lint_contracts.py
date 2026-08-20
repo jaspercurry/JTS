@@ -1117,7 +1117,9 @@ MAX_LINES_BY_PATH = {
     # No seam to cut: the take, the refusal-that-leaves-a-round-running, and the
     # split are one act, and it is exactly the act an untrusted-input boundary
     # owns. What did NOT land here is the merge — see the flow's entry above.
-    "jasper/web/correction_crossover_v2.py": 9_079,
+    # 2026-08-20 basin pin (gate fix round SF1): 9,079 -> 9,083. Argued in the
+    # dated block at the end of this dict, with the two files it moves with.
+    "jasper/web/correction_crossover_v2.py": 9_083,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1205,7 +1207,9 @@ MAX_LINES_BY_PATH = {
     # copy for "Your speaker is tuned, but…" would endorse a result its own
     # grade declined — so capping all four would be the defect pointed the
     # other way.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_158,
+    # 2026-08-20 basin pin (gate fix round SF1): 4,158 -> 4,165. Argued in the
+    # dated block at the end of this dict, with the two files it moves with.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_165,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`
@@ -1299,7 +1303,39 @@ MAX_LINES_BY_PATH = {
     #    property, and at the selector, is what stops the next reader restoring
     #    a `True` that no search produced. Compressing it would keep the number
     #    flat and leave the trap.
-    "jasper/audio_measurement/program_analysis.py": 7_356,
+    #
+    # 2026-08-20 (basin pin, gate fix round SF1): the pin reopened #2607 S3 by a
+    # NEW route — the household review row worded an operator-pinned polarity as
+    # "Inverted (measured)". Both existing guards were structurally blind: a
+    # pinned round commits the same `explicit_prescription_committed` an
+    # unpinned prescription does, so it is in neither the declared-design list
+    # the mirror guard compares nor the "no objective" case. The conductor ruled
+    # the predicate moves to a payload BIT with one owner rather than a fifth
+    # literal in the renderer's list. That bit is one line per hop, and the
+    # comment at each hop says why it cannot be inferred from the two facts
+    # already there — which is the whole finding, and the thing a later reader
+    # will otherwise try to "simplify" back into an objective test.
+    #
+    #  * `program_analysis` 7,356 -> 7,374. +18 net, of which 2 execute: the
+    #    `CrossoverCandidate.polarity_pinned` field and its carry in
+    #    `_build_candidate`. It is carried, never re-derived, for the reason the
+    #    `polarity_agrees_with_sum` field beside it records in its own comment —
+    #    that one WAS re-derived once, and drifted the moment #2662 widened its
+    #    rule. One line of the 18 is the SF2 fix: a comment inside
+    #    `_select_alignment_pair` still said a prescription "leaves the polarity
+    #    axis to the objective", 26 lines above the `signs` line that had
+    #    stopped being true.
+    #  * `correction_crossover_v2` 9,079 -> 9,083. +4, of which 1 executes:
+    #    `_candidate_summary` reads the bit off the frozen analysis JSON. This
+    #    at-cap file needed no room in the parent PR and needs 4 lines here for
+    #    the reason the projection exists at all — the renderer sees only what
+    #    this summary persists.
+    #  * `crossover_envelope_v2` 4,158 -> 4,165. +7, of which 1 executes: the
+    #    payload key the browser reads by name. The 6 comment lines are the
+    #    ruling itself — why a separate bit and not a fifth member of the
+    #    declared-design list, whose membership ALSO governs the anchor
+    #    withdrawal a pinned round does not get.
+    "jasper/audio_measurement/program_analysis.py": 7_374,
 }
 
 
