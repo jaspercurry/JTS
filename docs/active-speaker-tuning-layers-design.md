@@ -1300,14 +1300,17 @@ heading: what is absent there is a *guard*, not the capture it guards.
    vertical offsets, the household string-and-protractor method does not
    generalize as stated, and the lab arm's elevation capability is undetermined.
    P2 is the consumer that turns that deferral from tidy-later into blocking.
-3. **The forward model — PRESENT since 2026-08-19; the optimizer — MISSING.**
+3. **The forward model and the optimizer — PRESENT since 2026-08-19; a product
+   consumer — MISSING.**
    The complex-summation predictor is
    [`crossover_v2/forward_model.py`](../jasper/active_speaker/crossover_v2/forward_model.py)
    (`driver_plants` / `branch_operator` / `predict_sum`), with the candidate it
    predicts for, and that candidate's legality, in
    [`crossover_v2/candidate_space.py`](../jasper/active_speaker/crossover_v2/candidate_space.py).
-   Both are pure and fixture-tested; **nothing consumes them yet**, and the
-   enumeration/optimization search still does not exist. Two things the
+   Both are pure and fixture-tested, and the enumeration/optimization search
+   over them landed with #2739 as
+   [`crossover_v2/search.py`](../jasper/active_speaker/crossover_v2/search.py);
+   **nothing in the product consumes that search yet**. Two things the
    predictor's presence does NOT buy, stated here because presence reads as
    readiness: it has no objective in the grade's own currency, and its delay
    axis has never been graded against measurement — so it may not yet rank

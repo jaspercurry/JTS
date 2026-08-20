@@ -1406,7 +1406,7 @@ def test_a_caller_that_declares_no_standing_highpass_gets_the_unchanged_wall():
         excitation_ceiling_hz_by_role={},
         incumbent_fc_hz=2000.0,
         geometry_seed_us=0.0,
-        delay_step_us=0.0,
+        delay_step_us=20.833,
     )
     assert dict(bounds.standing_highpass_hz_by_role) == {}
     assert bounds.declared_floor_hz_by_role[WOOFER] == 40.0
@@ -1419,3 +1419,30 @@ def test_a_caller_that_declares_no_standing_highpass_gets_the_unchanged_wall():
     assert refusal_for(_two_way(fc_hz=2000.0), replace(
         bounds, standing_highpass_hz_by_role={WOOFER: 80.0},
     )) is None
+    # ...and the same is true through the real constructor, not only through
+    # ``replace``. Dropping the pass-through would leave every assertion above
+    # green while silently restoring the refusal this whole module fixed, so
+    # the declared value is asserted to ARRIVE — coerced to ``float`` from the
+    # ``int`` a caller reading a corner off a preset naturally holds. The
+    # neighbouring ``delay_step_us`` is the identical shape and is pinned in
+    # the same breath, for the same reason.
+    declared = replace(bounds, standing_highpass_hz_by_role={})
+    landed = bounds_from_declarations(
+        drivers_by_role={
+            WOOFER: {"required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 40.0},
+            ]},
+        },
+        search_band_hz_by_role={TWEETER: (200.0, 9000.0), WOOFER: (200.0, 9000.0)},
+        excitation_ceiling_hz_by_role={},
+        incumbent_fc_hz=2000.0,
+        geometry_seed_us=0.0,
+        delay_step_us=20.833,
+        standing_highpass_hz_by_role={WOOFER: 80},
+    )
+    assert dict(landed.standing_highpass_hz_by_role) == {WOOFER: 80.0}
+    assert landed.delay_step_us == 20.833
+    assert refusal_for(_two_way(fc_hz=2000.0), landed) is None
+    assert refusal_for(_two_way(fc_hz=2000.0), declared) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )

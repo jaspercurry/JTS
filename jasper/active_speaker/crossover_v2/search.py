@@ -1040,6 +1040,18 @@ def prediction_document(shortlist: Shortlist) -> dict[str, Any]:
             ),
             "fc_lo_role": shortlist.bounds.fc_lo_role,
             "fc_hi_role": shortlist.bounds.fc_hi_role,
+            # Both halves of the floor wall. ``below_declared_floor`` has two
+            # causes — a corner under a declared floor, or a floor nothing
+            # high-passes at all — and the block published neither number, so
+            # the artifact could not tell a reader which one a walk met. #2760
+            # is what that cost: the refusal read as a bad corner for as long
+            # as it took to find the missing filter.
+            "declared_floor_hz_by_role": dict(
+                shortlist.bounds.declared_floor_hz_by_role
+            ),
+            "standing_highpass_hz_by_role": dict(
+                shortlist.bounds.standing_highpass_hz_by_role
+            ),
             "legal_orders": sorted(shortlist.bounds.legal_orders),
             "delay_window_us": list(shortlist.bounds.delay_window_us),
             "delay_step_us": shortlist.bounds.delay_step_us,

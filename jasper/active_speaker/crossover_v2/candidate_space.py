@@ -82,6 +82,15 @@ is saved and surfaces to a household as an ambiguous "could not confirm whether
 the DSP apply finished". A below-floor Fc must therefore never become a
 proposable candidate at all.
 
+Since #2760 the two doors read the same rule against a DIFFERENT number in one
+case, and it is bounded by a caller contract rather than by code. The backstop
+reads the crossover corner alone; this door reads the whole branch, so a
+:attr:`CandidateBounds.standing_highpass_hz_by_role` entry on the role the
+crossover itself protects would admit exactly the candidate the backstop then
+refuses. Nothing structural stops a caller writing one — the field's contract
+below forbids it instead, and the reason that is the right trade is recorded
+there.
+
 Two consequences for how the floor is read here, both non-obvious:
 
 * **The value comes from the same parse, not from a second resolver.** An
@@ -104,6 +113,16 @@ backstop still catches everything this door lets through. That asymmetry is
 what makes the slope question below a legitimate future refinement rather than
 a contradiction.
 
+"Looser never" is a rule this file obeys and no longer *proves*, and the
+distinction matters to whoever edits next. Within a candidate it still holds
+absolutely: :func:`_protecting_highpass_hz` compares the candidate's own
+crossover corner whenever it proposes one, so no standing value can rescue a
+corner a candidate actually asks for. What it cannot bound is a caller that
+declares a standing high-pass for the crossover-protected role — see
+:attr:`CandidateBounds.standing_highpass_hz_by_role`, which forbids it in
+prose because the guard that would enforce it needs a protected-role name this
+package publishes no owner for.
+
 **A high-pass the candidate does not propose is still protection (#2760).** A
 two-way crossover gives the LOWER driver a low-pass and never a high-pass, so a
 woofer declaring a 40 Hz protective floor has no crossover corner to compare it
@@ -121,10 +140,14 @@ each role's own confirmed ``required_protection_filters`` (through
 None of those is a crossover section: no candidate proposes them and no
 candidate can remove them.
 
-Not one of them is unconditional either — ``camilla_yaml._bass_management_active``
-emits the bass-management high-pass only when the preset carries a local
-subwoofer — so this module may not assume one exists any more than it may
-assume one does not. The caller declares what its chain actually carries on
+Not one of them is unconditional, and they do not stack: the confirmed
+protection sections belong to the measurement graph while bass management
+belongs to the applied baseline, and ``camilla_yaml._bass_management_active``
+emits even that one only when the preset carries a local subwoofer. So this
+module may not assume a standing high-pass exists any more than it may assume
+one does not, and it is the APPLIED graph's corner that a caller owes —
+:attr:`CandidateBounds.standing_highpass_hz_by_role` says which of the three
+that is in practice. The caller declares what its chain actually carries on
 :attr:`CandidateBounds.standing_highpass_hz_by_role`; absent means absent, and
 a driver left genuinely open below its declared floor is refused by the same
 slug as before.
@@ -383,17 +406,31 @@ class CandidateBounds:
     outside the crossover, on the chain being proposed into — declared by the
     caller for the same reason ``delay_step_us`` is, and read only for a role
     the candidate does not high-pass itself. A role with no entry has no
-    standing high-pass, which is the honest reading: the graph's own sources for
-    one (bass management, a sealed bass-extension subsonic filter, confirmed
-    per-role protection sections) are each conditional, so an absent entry must
-    mean absent rather than "probably fine".
+    standing high-pass; the module docstring enumerates the graph's possible
+    sources for one and why each is conditional, which is why an absent entry
+    must mean absent rather than "probably fine".
+
+    **The graph that counts is the one the candidate will be APPLIED to**, not
+    whichever graph is playing while the search runs. A shortlist measured on
+    the crossover-v2 program graph is applied as a baseline, so the standing
+    corner to declare is the baseline's — in practice the bass-management
+    high-pass, which is the only one of the sources that is both routinely
+    present and high enough to satisfy a real floor. The confirmed per-role
+    protection sections belong to the measurement graph rather than the applied
+    one, and a sealed bass-extension subsonic filter sits far below any floor it
+    would be asked to satisfy; neither is a corner to declare here.
 
     Declare it for the role the chain high-passes OUTSIDE the split — in a
     two-way that is the woofer, whose branch the emitter high-passes ahead of
     the crossover and whose floor no candidate can honour. Do NOT declare one
     for the role the crossover itself protects: the apply gate compares that
     role's CROSSOVER corner and nothing else, so a standing entry there could
-    only ever admit a candidate the apply door then refuses.
+    only ever admit a candidate the apply door then refuses. That contract is
+    the whole guard, deliberately: enforcing it in code means naming the
+    protected role, which every sibling gate spells as a bare literal because
+    the package publishes no owner for it (``crossover_declaration``'s
+    ``_PROTECTED_ROLE`` comment says exactly that), and adding one more
+    unowned spelling here would cost more than the contract does.
 
     ``beaming_ceiling_hz`` is GUIDANCE and never refuses. #1675 defines the ka
     prior as something to warn on rather than a fence, and on jts3 the ceiling
@@ -610,18 +647,20 @@ def strictest_highpass_hz(candidate: XoverCandidate, role: str) -> float | None:
     :func:`~jasper.active_speaker.test_signal_plan.strictest_crossover_highpass_hz`,
     which reads the same quantity off a compiled preset (``max`` of the
     regions whose ``upper_driver`` is this role). Same rule, same ``max``, same
-    ``None`` — because the front door and the emit gate have to be answering
-    one question about one number.
+    ``None`` — the two have to answer one question about one number, and the
+    question is *the crossover's* corner rather than the branch's protection.
 
     ``max`` and not ``min``: cascading high-passes compound, so a role
     high-passed at both 500 Hz and 2000 Hz is protected to 2000. Taking the
     lowest corner would refuse a fully-protected branch for a section that is
     not the one doing the protecting.
 
-    ``None`` means this candidate gives the role NO high-pass at all — the
-    driver would run open in the emitted graph. Against a declared floor the
-    shared predicate reads that as unsatisfied, which is the whole point: a
-    missing corner is the hazard, not the absence of one.
+    ``None`` means this CANDIDATE gives the role no high-pass — not that the
+    role has none, which is a question about the whole branch and is
+    :func:`_protecting_highpass_hz`'s to answer (#2760: a two-way's woofer is
+    never high-passed by the split, yet the chain may high-pass it ahead of
+    one). Do not compare this value to a declared floor directly; reading its
+    ``None`` as "the driver runs open" is the refusal that zeroed a search.
     """
     corners = [
         float(section.fc_hz)

@@ -342,11 +342,18 @@ def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -
 
     assert admitted.ranked
     assert ("incumbent", "below_declared_floor") not in admitted.refusals
-    # Byte-for-byte the shortlist the same walk produces with no LF floor
-    # declared at all: crediting the standing filter changed which candidates
-    # are legal and nothing else about the search.
-    assert json.dumps(prediction_document(admitted), sort_keys=True) == (
-        json.dumps(prediction_document(_search()), sort_keys=True)
+
+    # The same walk the fixture produces with no LF floor declared at all,
+    # byte-for-byte everywhere EXCEPT the bounds echo: crediting the standing
+    # filter changed which candidates are legal and nothing else about the
+    # search. The one permitted difference is the declaration itself, and the
+    # artifact publishes both maps precisely so a reader can see which of
+    # ``below_declared_floor``'s two causes a walk met.
+    admitted_doc = prediction_document(admitted)
+    control_doc = prediction_document(_search())
+    assert admitted_doc.pop("bounds") != control_doc.pop("bounds")
+    assert json.dumps(admitted_doc, sort_keys=True) == (
+        json.dumps(control_doc, sort_keys=True)
     )
 
     # And the wall is still a wall: raise the woofer's floor above what the
