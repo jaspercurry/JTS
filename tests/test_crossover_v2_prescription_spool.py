@@ -30,20 +30,71 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
+    PRESCRIPTION_KIND,
     PRESCRIPTION_REFUSAL_REASONS,
     BlendPrescriptionRefused,
     prescription_sha256,
     read_blend_prescription,
     read_prescription_bytes,
 )
+from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DRIVER_PRESCRIPTION_KIND,
+    FEATURE_NOT_CLASSIFIED as DRIVER_FEATURE_NOT_CLASSIFIED,
+    FEATURE_NOT_CUTTABLE as DRIVER_FEATURE_NOT_CUTTABLE,
+)
+from jasper.active_speaker.crossover_v2.feature_classification import (
+    DEFECT_BOOSTABLE,
+)
+from jasper.active_speaker.crossover_v2.evidence_packet import (
+    packet_feature_classifications,
+)
+from jasper.active_speaker.crossover_v2.intervention import (
+    compose_linearized_prediction,
+)
+from jasper.active_speaker.linearization_fit import (
+    LinearizationFilter,
+    LinearizationFit,
+    linearization_filters_by_role,
+)
+from jasper.capture_relay.session import CaptureBeginRefused
 from jasper.cli import crossover_prescriber as cli
 from jasper.web import correction_crossover_v2 as v2host
+
+from tests.crossover_v2_fixtures import (
+    FakeSeams,
+    _conductor,
+    _eligible_measure_analysis,
+    _run_phase,
+)
+
+# The per-driver class's own document builders, borrowed from the module that
+# owns them (section 7) rather than re-derived: a second hand-built fixture for
+# the same artifact is the second source of truth this repo trims. Aliased
+# because this module already has a ``_document`` of its own, for the other
+# class.
+from tests.test_crossover_v2_driver_prescription import (
+    TWEETER_FEATURE_HZ,
+    WOOFER_FEATURE_HZ,
+    _classification as _driver_classification,
+    _cut as _driver_cut,
+    _document as _driver_document,
+    _gate as _driver_gate,
+    _speaker as _driver_packet,
+    _verdict as _driver_verdict,
+)
+# …and the Fc sweep's own harness, for the one pin that has to walk it.
+from tests.test_crossover_v2_fc_selector_wiring import (
+    _eligible_seams,
+    _selector_conductor,
+)
 
 # The stage-bridge harness — one definition of "what a real preparer needs
 # stubbed". The autouse fixtures are re-exported under the redundant-alias form
@@ -1383,3 +1434,874 @@ def test_configuring_logging_does_not_silence_the_human_summary(tmp_path):
 
     assert "staged cut prescription for round 9" in result.stderr
     assert "the next round takes it once and consumes it" in result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# 7. the OTHER class — the per-driver document's own route into a round (PR-B)
+#
+# The blend half above pins a door that already opened. This section pins the
+# second one: until PR-B the preparer took with ``accepts=BLEND_ONLY``, so a
+# per-driver document was refused by name before its ordinal, its digest and
+# its gate were ever looked at, and ``driver_prescription_to_candidate_fields``
+# had no production caller at all. What is asserted here is the WIRING — that a
+# real document, staged through the real gate, reaches a real session and lands
+# on the candidate merged BY ROLE. The merge RULE is
+# ``tests/test_crossover_v2_driver_prescription.py``'s; this is its consumption.
+# --------------------------------------------------------------------------- #
+
+
+def _stage_driver(
+    tmp_path: Path, *, ordinal: int = 9, filters: Any = None,
+    classification: dict[str, Any] | None = None,
+) -> tuple[Any, bytes]:
+    """One accepted per-driver document, banked in THIS module's spool.
+
+    The real gate against the real-artifact fixture, then the real
+    ``stage_prescription`` — #2752's shape — so the round below takes a document
+    production would have accepted rather than a hand-built stand-in.
+    """
+    packet = _driver_packet(tmp_path / "driver-bundle", classification=classification)
+    document = _driver_document(filters or [_driver_cut()], packet)
+    payload = json.dumps(document).encode()
+    prescription = _driver_gate(packet, document)
+    spool.stage_prescription(
+        payload,
+        prescription,
+        for_round_ordinal=ordinal,
+        classifications=packet_feature_classifications(packet),
+    )
+    return prescription, payload
+
+
+def test_a_staged_per_driver_prescription_reaches_the_next_rounds_session(
+    tmp_path, monkeypatch,
+):
+    """PR-B's headline: the class the round could not take, taken.
+
+    Driven through the REAL stage-1 preparer against a document the REAL gate
+    accepted. Before this the same file produced
+    ``prescription_class_not_accepted`` and a round that ran the automatic fit,
+    with nothing on any surface saying an instruction had been dropped.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+
+    conductor = _prepare(monkeypatch)
+
+    assert conductor._prescribed_driver == prescription
+    assert conductor._prescribed_driver.roles == ("tweeter",)
+
+
+def test_the_two_classes_are_separate_arms_and_a_session_holds_one(
+    tmp_path, monkeypatch,
+):
+    """One slot, one take, two ctor arguments — and never both at once.
+
+    The split is made at the take, on the envelope's class field. A split that
+    leaked would hand a ``DriverPrescription`` to ``_blend_prescription``, whose
+    next line reads ``filters`` as a flat region list — the exact shape
+    confusion the fail-closed default existed to prevent.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage_driver(tmp_path, ordinal=9)
+
+    conductor = _prepare(monkeypatch)
+
+    assert conductor._prescribed_driver is not None
+    assert conductor._prescribed_blend is None
+    # …and the round's blend correction is untouched: the banked instruction,
+    # not the per-driver document, and not the applied incumbent.
+    assert conductor._blend_prescription() == (
+        {"biquad_type": "Peaking", "freq": 2120.34, "q": 2.0, "gain": -0.72},
+    )
+
+
+def test_a_blend_document_still_lands_on_the_blend_arm_alone(monkeypatch):
+    """The regression control for the split, from the other side.
+
+    Widening ``accepts`` must not change one byte of what a blend round does.
+    Both arms are asserted, because a split that put every document on the
+    driver arm would leave the take itself looking healthy and fail only later,
+    at a candidate nothing here builds.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage(for_round_ordinal=9)
+
+    conductor = _prepare(monkeypatch)
+
+    assert conductor._prescribed_driver is None
+    assert conductor._blend_prescription() == _ACCEPTED_FILTERS
+
+
+def test_the_hop_fails_when_the_preparer_stops_handing_the_driver_class_over(
+    tmp_path, monkeypatch,
+):
+    """The mutation that proves the hop above is load-bearing.
+
+    #2698's shape in this door: the preparer resolves a prescription, the
+    session never receives it, and the round silently falls back. Mutated by
+    taking the ctor argument away — exactly what deleting the
+    ``driver_prescription=`` line would do.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage_driver(tmp_path, ordinal=9)
+
+    real_hydrate = flow.CrossoverV2Session.hydrate
+
+    def _hydrate_without_the_prescription(*args, **kwargs):
+        kwargs.pop("driver_prescription", None)
+        return real_hydrate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        flow.CrossoverV2Session, "hydrate",
+        staticmethod(_hydrate_without_the_prescription),
+    )
+    conductor = _prepare(monkeypatch)
+
+    assert conductor._prescribed_driver is None
+
+
+def test_the_preparer_accepts_every_class_the_slot_can_carry(
+    tmp_path, monkeypatch, caplog,
+):
+    """The arming itself, pinned as a property rather than as an absence.
+
+    ``PRESCRIPTION_CLASS_NOT_ACCEPTED`` is unreachable from this caller now, and
+    that is the whole edit: the envelope's class is checked against
+    ``STAGEABLE_KINDS`` first, and this taker accepts exactly that set. Asserted
+    on the journal too, because a take that quietly reverted to the fail-closed
+    default would leave the conductor's field ``None`` for two different reasons
+    and only the slug tells them apart.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage_driver(tmp_path, ordinal=9)
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        conductor = _prepare(monkeypatch)
+
+    assert spool.PRESCRIPTION_CLASS_NOT_ACCEPTED not in caplog.text
+    assert conductor._prescribed_driver is not None
+
+
+def test_the_take_event_names_the_class_and_the_branches_it_replaces(
+    tmp_path, monkeypatch, caplog,
+):
+    """One event, extended — never twinned — and it carries the deciding numbers.
+
+    A reader of the journal alone has to be able to answer "which class was
+    taken, and which driver branches stopped being fitted this round". Both
+    facts are on the line: ``prescription_kind`` is the DOCUMENT's class and
+    ``prescription_class`` beside it stays cut-versus-boost, because one key may
+    carry one fact.
+    """
+    _prescription, payload = _stage_driver(tmp_path, ordinal=9)
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        _prepare(monkeypatch)
+
+    assert "event=correction.crossover_v2_prescription_taken" in caplog.text
+    assert f"prescription_kind={DRIVER_PRESCRIPTION_KIND}" in caplog.text
+    assert "prescription_class=cut" in caplog.text
+    assert "roles=tweeter" in caplog.text
+    assert "filters=1" in caplog.text
+    assert f"prescription_sha256={prescription_sha256(payload)}" in caplog.text
+
+
+def test_the_blend_classs_take_event_carries_the_class_and_no_roles(
+    monkeypatch, caplog,
+):
+    """The same line for the other class, so one grep answers both.
+
+    ``roles`` is empty rather than absent: a blend correction is one region, not
+    a set of branches, and a field that disappeared on one arm would make the
+    line's shape depend on its content.
+    """
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    _stage(for_round_ordinal=9)
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        _prepare(monkeypatch)
+
+    assert "event=correction.crossover_v2_prescription_taken" in caplog.text
+    assert f"prescription_kind={PRESCRIPTION_KIND}" in caplog.text
+    assert 'roles=""' in caplog.text
+
+
+# --- the refusals, inherited whole ------------------------------------------ #
+
+
+def _refusal_slug(caplog) -> str:
+    """The slug on this round's refusal line, or ``""`` if it never said one."""
+    for record in caplog.records:
+        message = record.getMessage()
+        if "event=correction.crossover_v2_prescription_refused" in message:
+            return message.split("reason=")[1].split(" ")[0]
+    return ""
+
+
+def test_a_per_driver_document_staged_for_another_round_is_refused_and_consumed(
+    tmp_path, monkeypatch, caplog,
+):
+    """Fail-open on the transport, fail-closed on the content — for this class too.
+
+    The three properties the blend class already had, inherited rather than
+    re-argued: the document is consumed before it is judged, the refusal is
+    journalled by name, and the session carries on with the automatic answer.
+    """
+    _stage_driver(tmp_path, ordinal=4)  # …and this is round 9
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        conductor = _prepare(monkeypatch)
+
+    assert _refusal_slug(caplog) == spool.PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND
+    assert spool.staged_prescription_pending() is False
+    assert conductor._prescribed_driver is None
+    assert conductor._blend_prescription() == (
+        {"biquad_type": "Peaking", "freq": 2120.34, "q": 2.0, "gain": -0.72},
+    )
+
+
+def test_a_tampered_per_driver_document_is_refused_on_the_digest(
+    tmp_path, monkeypatch, caplog,
+):
+    """The document that ran must be the document that was accepted.
+
+    Deepening the cut by hand after staging leaves the banked digest naming
+    bytes that no longer exist, and the take refuses before the gate — so a
+    filter nobody vouched for cannot reach a driver branch.
+    """
+    _stage_driver(tmp_path, ordinal=9)
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    envelope = json.loads(spool.prescription_spool_path().read_text())
+    document = json.loads(envelope["document"])
+    document["filters"][0]["gain"] = -11.0
+    _rewrite_envelope(document=json.dumps(document))
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        conductor = _prepare(monkeypatch)
+
+    assert _refusal_slug(caplog) == spool.SPOOL_MALFORMED
+    assert conductor._prescribed_driver is None
+
+
+def test_a_per_driver_filter_moved_off_its_verdict_is_refused_at_the_take(
+    tmp_path, monkeypatch, caplog,
+):
+    """The CONTENT gate, re-run at the take and reaching the round's preparer.
+
+    #2752 made the take's classification bar EQUAL to the staging gate's by
+    banking the whole row set. What this pins is that the equal bar is the one
+    the ROUND now meets: a filter re-aimed at an unclassified frequency, with
+    its digest recomputed so nothing cheaper can refuse it first, is refused by
+    the gate's own slug and the session still opens.
+    """
+    _stage_driver(tmp_path, ordinal=9)
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+    envelope = json.loads(spool.prescription_spool_path().read_text())
+    document = json.loads(envelope["document"])
+    document["filters"][0]["freq"] = 12000.0
+    payload = json.dumps(document).encode()
+    _rewrite_envelope(
+        document=payload.decode(),
+        prescription_sha256=prescription_sha256(payload),
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        conductor = _prepare(monkeypatch)
+
+    assert _refusal_slug(caplog) == DRIVER_FEATURE_NOT_CLASSIFIED
+    assert conductor._prescribed_driver is None
+    assert conductor._blend_prescription() == (
+        {"biquad_type": "Peaking", "freq": 2120.34, "q": 2.0, "gain": -0.72},
+    )
+
+
+#: The 2026-08-19 record's own peak/dip pair, 0.143 octaves apart — closer than
+#: the match tolerance, which is what makes NEAREST-decides load-bearing.
+_RECORD_PEAK_HZ = 4149.0
+_RECORD_DIP_HZ = 4582.0
+
+
+def test_a_per_driver_filter_nudged_onto_a_nearby_dip_is_refused_at_the_take(
+    tmp_path, monkeypatch, caplog,
+):
+    """#2752's hole, closed, and now proven from the ROUND rather than the gate.
+
+    The staging step accepted a cut aimed at the 4149 Hz peak. Moved 0.143
+    octaves onto the 4582 Hz dip — inside the match tolerance, so the peak is
+    still "a match" — the pre-#2752 take found the peak in its vouching-subset
+    anchor, found no dip to outrank it, and ACCEPTED. Banking the WHOLE row set
+    means the take now asks the same question the staging gate asked and gets
+    the same no.
+
+    The strong input, deliberately: a filter moved somewhere unclassified is
+    refused by a much cheaper rule, so it would pass even against the old
+    subset. This one only refuses because the dip is there.
+    """
+    _stage_driver(
+        tmp_path, ordinal=9,
+        filters=[_driver_cut(freq=_RECORD_PEAK_HZ, gain=-1.0)],
+        classification=_driver_classification([
+            _driver_verdict(_RECORD_PEAK_HZ),
+            _driver_verdict(_RECORD_DIP_HZ, DEFECT_BOOSTABLE),
+        ]),
+    )
+    envelope = json.loads(spool.prescription_spool_path().read_text())
+    document = json.loads(envelope["document"])
+    document["filters"][0]["freq"] = _RECORD_DIP_HZ
+    payload = json.dumps(document).encode()
+    _rewrite_envelope(
+        document=payload.decode(),
+        prescription_sha256=prescription_sha256(payload),
+    )
+    v2host.save_v2_state(_state_carrying_a_kept_round())
+
+    with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
+        conductor = _prepare(monkeypatch)
+
+    assert _refusal_slug(caplog) == DRIVER_FEATURE_NOT_CUTTABLE
+    assert conductor._prescribed_driver is None
+
+
+def test_every_swept_fc_corner_carries_the_prescription(tmp_path, monkeypatch):
+    """The Fc sweep builds candidates through the SAME door, so all of them merge.
+
+    ``MeasuredCrossoverCandidate`` is constructed in one place, reached only
+    through ``_build_measure_candidate`` — and one of that method's callers is
+    the sweep's ``build=`` port. Merging into every corner is the right answer
+    rather than an accident: the sweep CHOOSES between corners, and prescribing
+    only the committed one would have it comparing a prescribed candidate
+    against unprescribed rivals.
+    """
+    _stage_driver(
+        tmp_path, ordinal=9,
+        filters=[_driver_cut(role="woofer", freq=WOOFER_FEATURE_HZ)],
+    )
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    conductor = _selector_conductor(_eligible_seams(), driver_prescription=taken)
+    _run_phase(conductor, 1, 1)
+    conductor._sweep_fc_candidates(
+        conductor.program_for_phase(flow.PHASE_MEASURE),
+        object(),
+        conductor._measure_analysis,
+    )
+
+    assert conductor._fc_evaluations, "the sweep must have produced evidence"
+    # The retained record is the SERIALIZED candidate (the sweep's memory
+    # contract keeps no object), so the merge is read off the persisted map —
+    # which is the same shape the emitter and the ceiling read.
+    carried = [
+        "prescribed_by" in (
+            (evaluation.candidate.get("linearization") or {}).get("woofer") or {}
+        )
+        for evaluation in conductor._fc_evaluations
+        if evaluation.candidate is not None
+    ]
+    assert carried, "no swept corner produced a candidate to inspect"
+    assert all(carried)
+
+
+# --- the merge, at the site that consumes it -------------------------------- #
+
+
+def _fitted(role: str, *, gain: float) -> dict[str, Any]:
+    """One role's Layer-1a fit, in the shape the candidate carries it."""
+    return LinearizationFit(
+        role=role,
+        filters=(LinearizationFilter("Peaking", 1400.0, 2.0, gain),),
+        fit_band_hz=(200.0, 8000.0),
+        target_level_db=0.0,
+        residual_rms_db=0.5,
+        residual_max_db=1.0,
+        reason_summary={},
+        mic_tier="reference",
+        driver_class="cone",
+        n_repeats=3,
+    ).to_dict()
+
+
+def _prescribed_round(monkeypatch, prescription: Any) -> SimpleNamespace:
+    """Build ONE candidate on a session holding ``prescription``.
+
+    The fit is substituted so both roles are fitted with KNOWN filters — the
+    merge is only observable against a fit that had something to lose. What is
+    NOT substituted is the merge or the recomposition: both run in
+    ``crossover_v2.planning.build_candidate`` exactly as production reaches
+    them.
+
+    The substituted plan's own prediction is recomposed to match its
+    substituted filters, so the fixture is self-consistent: ``planned`` is what
+    an automatic round would have banked for THESE filters, and the candidate's
+    state is what the prescribed round banks instead. Comparing the two is then
+    a statement about the prescription rather than about the fixture.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    conductor = _conductor(fakes, driver_prescription=prescription)
+    _run_phase(conductor, 1, 1)
+    analysis = _eligible_measure_analysis(
+        conductor.program_for_phase(flow.PHASE_MEASURE)
+    )
+    fit = {"woofer": _fitted("woofer", gain=-1.5),
+           "tweeter": _fitted("tweeter", gain=-2.0)}
+    real = conductor._plan_linearization(analysis, analysis.candidate, None)
+    planned = dataclasses.replace(
+        real,
+        linearization=fit,
+        linearized_predicted_sum=compose_linearized_prediction(
+            real.summation_frame,
+            filters_by_role=linearization_filters_by_role(fit),
+            role_attenuations_db=real.role_attenuations_db,
+        ),
+    )
+    monkeypatch.setattr(
+        conductor, "_plan_linearization",
+        lambda analysis, cand, cloud=None, *, candidate_sections=None: planned,
+    )
+    candidate, state = conductor._build_candidate(analysis, None)
+    return SimpleNamespace(
+        conductor=conductor, candidate=candidate, state=state,
+        planned=planned, fit=fit,
+    )
+
+
+def _candidate_from_a_prescribed_round(
+    monkeypatch, prescription: Any
+) -> tuple[Any, dict[str, Any]]:
+    """:func:`_prescribed_round`'s two most-asked fields, for the merge pins."""
+    built = _prescribed_round(monkeypatch, prescription)
+    return built.candidate, built.fit
+
+
+def _candidate_from_a_failed_fit(
+    monkeypatch, prescription: Any, *, cloud: Any = None,
+) -> tuple[Any, Any]:
+    """The SF2 degrade, carrying ``prescription``: the fit raised, the graph did not.
+
+    The one arm where the fitted map and the merged one differ in KIND rather
+    than in content — the fit linearized nothing, so every entry the candidate
+    carries is prescribed and none of them knows which microphone measured.
+    """
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    conductor = _conductor(fakes, driver_prescription=prescription)
+    _run_phase(conductor, 1, 1)
+    analysis = _eligible_measure_analysis(
+        conductor.program_for_phase(flow.PHASE_MEASURE)
+    )
+
+    def _the_fit_engine_raises(analysis, cand, cloud=None, *, candidate_sections=None):
+        raise ValueError("simulated fit engine bug")
+
+    monkeypatch.setattr(conductor, "_plan_linearization", _the_fit_engine_raises)
+    monkeypatch.setattr(
+        conductor, "_exclusion_evidence_json", lambda cloud: {"filed": True}
+    )
+    return conductor._build_candidate(analysis, cloud)
+
+
+def test_a_prescribed_role_replaces_its_own_fitted_filters(tmp_path, monkeypatch):
+    """Merge-by-role, half one: the NAMED role is the document's, not the fit's.
+
+    And it carries ``prescribed_by`` and no fit-quality field — a prescription
+    has no ``fit_band_hz``, no residual and no ``reason_summary``, and emitting
+    those zeroed would bank a claim nothing measured.
+    """
+    prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    assert taken == prescription  # the document a round would actually hold
+
+    candidate, _fit = _candidate_from_a_prescribed_round(monkeypatch, taken)
+
+    assert candidate.linearization["tweeter"]["filters"] == [
+        {"biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ, "q": 5.0,
+         "gain": -3.0},
+    ]
+    assert candidate.linearization["tweeter"]["prescribed_by"]["operator"] == "jasper"
+    assert "fit_band_hz" not in candidate.linearization["tweeter"]
+
+
+def test_an_unnamed_role_keeps_the_filters_the_fit_gave_it(tmp_path, monkeypatch):
+    """Merge-by-role, half two: the role nobody prescribed is UNCHANGED.
+
+    This is the half a wholesale replace would break silently — a prescriber
+    correcting the tweeter would un-linearize the woofer without saying so —
+    and it is asserted byte-for-byte against the fit's own dict rather than for
+    mere presence, because a merge that dropped one key would still leave a
+    woofer branch here.
+    """
+    prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    candidate, fit = _candidate_from_a_prescribed_round(monkeypatch, taken)
+
+    assert candidate.linearization["woofer"] == fit["woofer"]
+    assert set(candidate.linearization) == {"woofer", "tweeter"}
+
+
+def test_a_round_with_no_per_driver_document_carries_the_fit_untouched(monkeypatch):
+    """The control: no document, and the candidate is the fit's own map.
+
+    Every ordinary round takes this path, so it is the one that must be
+    byte-identical to the pre-PR-B shape.
+    """
+    candidate, fit = _candidate_from_a_prescribed_round(monkeypatch, None)
+
+    assert candidate.linearization == fit
+
+
+# --- the prediction, which must model the graph that ships ------------------ #
+
+
+def _max_divergence_db(left: Any, right: Any) -> float:
+    """The worst dB gap between two ``(freqs, magnitude_db)`` predictions."""
+    return float(np.max(np.abs(np.asarray(left[1]) - np.asarray(right[1]))))
+
+
+def test_the_prediction_models_the_filters_that_will_actually_ship(
+    tmp_path, monkeypatch,
+):
+    """SF1: a prescribed round's prediction is recomposed, not the fit's.
+
+    ``plan_linearization``'s own invariant is that the persisted prediction is
+    "a model of exactly what the emitted graph will do" — the #1668 PR-D fix,
+    bought after a deterministic 1.688-1.699 dB VERIFY mismatch against a 1.5 dB
+    tolerance. A prescription replaces the filters the graph carries AFTER that
+    number is composed, so without recomposition the round would ship a model of
+    a graph nobody emits.
+
+    Two assertions, and they are the two halves of the claim:
+
+    * against the fit's own prediction the recomposed one MOVES — by the
+      prescribed-versus-fitted filter response, which for this fixture
+      (prescribed 5000 Hz Q5 -3 dB against fitted 1400 Hz Q2 -2 dB) is a
+      multi-dB gap, far past the 1.5 dB tolerance the precedent was about;
+    * against a composition from the CANDIDATE'S OWN persisted map it does not
+      move at all. That is the invariant stated as an equality: whatever the
+      candidate carries is what the prediction models.
+    """
+    _prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    built = _prescribed_round(monkeypatch, taken)
+
+    shipped = compose_linearized_prediction(
+        built.planned.summation_frame,
+        filters_by_role=linearization_filters_by_role(built.candidate.linearization),
+        role_attenuations_db=built.planned.role_attenuations_db,
+    )
+    assert _max_divergence_db(built.state.linearized_predicted_sum, shipped) == 0.0
+    assert _max_divergence_db(
+        built.state.linearized_predicted_sum, built.planned.linearized_predicted_sum
+    ) > 1.5
+
+
+def test_a_round_with_no_document_banks_the_fits_prediction_unchanged(monkeypatch):
+    """The control: no prescription, and the recomposition never runs.
+
+    Byte-identical to the pre-SF1 path, which is what makes the movement above
+    a statement about the document rather than about the recomposition existing.
+    """
+    built = _prescribed_round(monkeypatch, None)
+
+    assert _max_divergence_db(
+        built.state.linearized_predicted_sum, built.planned.linearized_predicted_sum
+    ) == 0.0
+
+
+def _walked_round(monkeypatch, prescription: Any) -> SimpleNamespace:
+    """A conductor walked CHECK → MEASURE through the REAL fit and the REAL gate.
+
+    No substitution at all — the fit engine runs, the merge runs, the
+    recomposition runs, the accountability gate runs, and the proposal commits.
+    ``graded`` is what the gate was handed, wrapped rather than replaced so the
+    walk still behaves exactly as production's.
+    """
+    graded: list[Any] = []
+    fakes = FakeSeams()
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
+    conductor = _conductor(fakes, driver_prescription=prescription)
+    real_gate = conductor._assert_accountable
+
+    def _spy(predicted, raw, **kwargs):
+        graded.append(predicted)
+        return real_gate(predicted, raw, **kwargs)
+
+    monkeypatch.setattr(conductor, "_assert_accountable", _spy)
+    _run_phase(conductor, 1, 1)
+    verdict = _run_phase(conductor, 2, 2)
+    assert verdict["accepted"] is True
+    return SimpleNamespace(conductor=conductor, graded=graded)
+
+
+def test_the_three_consumers_of_the_prediction_see_the_prescribed_filters(
+    tmp_path, monkeypatch,
+):
+    """…and the recomposed number reaches every surface that grades on it.
+
+    Driven end-to-end twice over one fixture — once with the document, once
+    without — because "the prescription reached this consumer" is exactly the
+    difference between those two runs, and a recomposition that stopped at the
+    state would leave the two identical.
+
+    The three, by the three different names they read it under: the
+    accountability pre-Apply grade takes it as an ARGUMENT, VERIFY tracking
+    takes it through ``measure_predicted_sum``, and the delta probe's two axes
+    carry it as the APPLIED side of ``commanded_delta`` / ``declared_transfer``.
+    """
+    _stage_driver(
+        tmp_path, ordinal=9,
+        # A cut the recomposed prediction still calls an improvement — see the
+        # refusal test below for what happens when it is not, which is the point
+        # of grading the shipping graph in the first place.
+        filters=[_driver_cut(role="woofer", freq=WOOFER_FEATURE_HZ)],
+    )
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    prescribed = _walked_round(monkeypatch, taken)
+    automatic = _walked_round(monkeypatch, None)
+    lhs, rhs = prescribed.conductor, automatic.conductor
+
+    # The fixture really is a merge over a fit that had something to lose.
+    assert "prescribed_by" in lhs.candidate.linearization["woofer"]
+    assert "prescribed_by" not in rhs.candidate.linearization["woofer"]
+
+    # (a) the accountability gate, on the value it was handed.
+    assert _max_divergence_db(prescribed.graded[-1], lhs.measure_predicted_sum) == 0.0
+    assert _max_divergence_db(prescribed.graded[-1], automatic.graded[-1]) > 0.0
+    # (b) VERIFY tracking.
+    assert _max_divergence_db(
+        lhs.measure_predicted_sum, rhs.measure_predicted_sum
+    ) > 0.0
+    # (c) both delta-probe axes, each on its applied side.
+    assert _max_divergence_db(
+        lhs.measure_commanded_delta, rhs.measure_commanded_delta
+    ) > 0.0
+    assert _max_divergence_db(
+        lhs._measure_declared_transfer, rhs._measure_declared_transfer
+    ) > 0.0
+
+
+def _gate_lines(caplog) -> list[str]:
+    """Every pre-Apply prediction-gate line captured so far."""
+    return [
+        record.getMessage() for record in caplog.records
+        if "event=correction.crossover_v2_prediction_gate" in record.getMessage()
+    ]
+
+
+def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
+    tmp_path, monkeypatch, caplog,
+):
+    """THE BAR RULING: the prescribed class is gated on NON-WORSENING, not 0.5 dB.
+
+    This fixture is the one the gate measured: the document replaces a working
+    tweeter fit with a single narrow high-Q cut, and the predicted pooled
+    improvement is 0.152 dB. Against the FITTED bar
+    (``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`` = 0.5) that refuses — and would
+    refuse essentially every per-driver prescription, because a pooled-RMS
+    figure is the wrong instrument for a narrow cut: the class would be blocked
+    before its first hardware exercise rather than judged.
+
+    So a candidate carrying prescribed branches is asked only not to make the
+    speaker WORSE. It arrives already carrying its own admission evidence — the
+    classification verdict bar, the per-filter depth cap, the composed cap, and
+    a digest proving the accepted bytes ran — and what adjudicates it is the
+    measured round with its pre-registered keep/rollback.
+    """
+    _stage_driver(tmp_path, ordinal=9)  # the default: tweeter, 5 kHz, Q5, -3 dB
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    gate_logger = "jasper.active_speaker.crossover_v2_flow"
+    with caplog.at_level(logging.INFO, logger=gate_logger):
+        built = _walked_round(monkeypatch, taken)
+        prescribed_lines = _gate_lines(caplog)
+        caplog.clear()
+        _walked_round(monkeypatch, None)
+        automatic_lines = _gate_lines(caplog)
+
+    assert built.conductor.candidate is not None
+    assert "prescribed_by" in built.conductor.candidate.linearization["tweeter"]
+    # BOTH bars asserted from ONE run pair, because the ruling is a difference:
+    # a branch that collapsed either way would leave one of these two wrong, and
+    # asserting only the prescribed side would not notice the fitted class
+    # quietly losing its own 0.5 dB.
+    assert any("required_db=0.0" in line for line in prescribed_lines)
+    assert not any("required_db=0.5" in line for line in prescribed_lines)
+    assert any("required_db=0.5" in line for line in automatic_lines)
+    assert not any("required_db=0.0" in line for line in automatic_lines)
+    assert flow.PRESCRIBED_NON_WORSENING_DB == 0.0
+    assert flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
+
+
+def test_a_prescription_predicted_to_worsen_still_refuses_and_says_whose_it_was(
+    tmp_path, monkeypatch, caplog,
+):
+    """The floor under the ruling, and the copy that goes with it.
+
+    Non-worsening is a real gate, not a waiver: a model cannot settle whether a
+    narrow cut helps, but it CAN settle that a proposal makes the prediction
+    worse, and spending the household's speaker on that is worth refusing before
+    measuring. Reached here with a deep cut on a role the fit was correcting.
+
+    The sentence is the other half. The refused tuning is a document an operator
+    wrote, so the household must not be told "the tuning JTS worked out" and
+    must not be sent to re-check driver details that are not what is wrong — the
+    one action that changes the outcome is naming the prescription.
+    """
+    _stage_driver(
+        tmp_path, ordinal=9,
+        filters=[_driver_cut(role="woofer", freq=WOOFER_FEATURE_HZ, gain=-12.0, q=1.0)],
+    )
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    with caplog.at_level(
+        logging.ERROR, logger="jasper.active_speaker.crossover_v2_flow"
+    ):
+        with pytest.raises(CaptureBeginRefused) as excinfo:
+            _walked_round(monkeypatch, taken)
+
+    said = str(excinfo.value)
+    assert "prescribed tuning that was staged for this round" in said
+    assert "Revise or withdraw the prescription" in said
+    # The misattribution this replaced, absent in both of its halves.
+    assert "tuning JTS worked out" not in said
+    assert "driver details" not in said
+    # …and the deciding number on the wire says WHICH bar refused it.
+    assert "required_db=0.0" in caplog.text
+    # The control: the same session with no document is accepted, so this is the
+    # DOCUMENT being refused rather than the fixture failing its own gate.
+    assert _walked_round(monkeypatch, None).conductor.candidate is not None
+
+
+# --- #2649's ceiling, which the merge must not take away ------------------- #
+
+#: A grid that reaches past the reference tier's ~16.4 kHz taper zero, so a
+#: ceiling exists to be found at all.
+_TRUST_GRID_HZ = np.geomspace(20.0, 20000.0, 400)
+
+
+def test_a_document_naming_every_role_keeps_the_mic_trust_ceiling(
+    tmp_path, monkeypatch,
+):
+    """#2649's ceiling survives a fully-prescribed candidate. THE BLOCKER.
+
+    ``_mic_trust_ceiling_hz`` scavenges the linearization map for a ``mic_tier``
+    and stops the delta probe grading above it. A merge that carried only
+    ``filters`` + ``prescribed_by`` left a document naming EVERY role with no
+    tier anywhere, so the ceiling silently became ``None`` and the probe graded
+    a microphone nobody trusts — the exact defect #2649 closed (~90% of the
+    squared error on the 2026-08-16 round).
+
+    Asserted as EQUALITY against the same candidate built with no document, not
+    merely as "not None": the tier is a fact about the microphone that measured
+    the round, so replacing every filter must not move the ceiling one bin.
+    """
+    prescription, _payload = _stage_driver(
+        tmp_path, ordinal=9,
+        filters=[_driver_cut(), _driver_cut(role="woofer", freq=WOOFER_FEATURE_HZ)],
+    )
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    assert set(taken.roles) == {"woofer", "tweeter"}  # every role this box has
+
+    prescribed, _fit = _candidate_from_a_prescribed_round(monkeypatch, taken)
+    automatic, _fit = _candidate_from_a_prescribed_round(monkeypatch, None)
+
+    assert set(prescribed.linearization) == {"woofer", "tweeter"}
+    assert all(
+        "prescribed_by" in entry for entry in prescribed.linearization.values()
+    )
+    session = SimpleNamespace(_candidate=prescribed, session_id="s")
+    ceiling = flow.CrossoverV2Session._mic_trust_ceiling_hz(session, _TRUST_GRID_HZ)
+    baseline = flow.CrossoverV2Session._mic_trust_ceiling_hz(
+        SimpleNamespace(_candidate=automatic, session_id="s"), _TRUST_GRID_HZ
+    )
+
+    assert baseline is not None
+    assert ceiling == baseline
+
+
+def test_a_prescribed_round_with_no_fit_says_the_ceiling_is_unavailable(
+    tmp_path, monkeypatch, caplog,
+):
+    """…and when there genuinely is no tier, it is LOUD rather than silent.
+
+    A prescription can land on a round whose fit was ineligible or failed, and
+    then nothing in the candidate knows which microphone measured. ``None`` is
+    still the answer — inventing a ceiling would be worse — but silence is not:
+    it is indistinguishable from "the mic is trusted everywhere", which is what
+    let the untrusted-HF grade happen unnoticed in the first place. That arm was
+    silent before PR-B too, on every ineligible/failed round; extending the
+    existing slug covers both.
+    """
+    _prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    candidate, _state = _candidate_from_a_failed_fit(monkeypatch, taken)
+    session = SimpleNamespace(_candidate=candidate, session_id="s")
+
+    with caplog.at_level(
+        logging.WARNING, logger="jasper.active_speaker.crossover_v2_flow"
+    ):
+        ceiling = flow.CrossoverV2Session._mic_trust_ceiling_hz(
+            session, _TRUST_GRID_HZ
+        )
+
+    assert ceiling is None
+    assert "event=correction.crossover_v2_mic_trust_ceiling_unavailable" in caplog.text
+    assert "reason=no_entry_recorded_a_mic_tier" in caplog.text
+    # …and the instruction still landed, so this is a statement about the TIER
+    # rather than about an empty candidate.
+    assert set(candidate.linearization) == {"tweeter"}
+
+
+def test_a_prescribed_branch_does_not_earn_the_fits_exclusion_evidence(
+    tmp_path, monkeypatch,
+):
+    """A record of what the fit CONSUMED may not ride a correction it did not fit.
+
+    ``exclusion_evidence`` is filed when the cloud envelope fed a fit, and the
+    build's own rule is that it must not ride a candidate whose corrections came
+    from the trims-only fallback instead. A prescribed branch is exactly such an
+    elsewhere — so the test that decides it reads the FIT's map, never the merged
+    one. Driven on the SF2 degrade, the one arm where the two maps differ:
+    the fit raised, so it linearized nothing, and the candidate is non-empty only
+    because a document was staged.
+    """
+    prescription, _payload = _stage_driver(tmp_path, ordinal=9)
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+
+    candidate, state = _candidate_from_a_failed_fit(
+        monkeypatch, taken,
+        cloud=CloudFitEvidence(excluded_bands_hz=(), band_spread=(), n_positions=3),
+    )
+
+    assert state.outcome == "fit_failed"
+    assert candidate.exclusion_evidence == {}
+    # …and the instruction still landed, which is what makes the assertion above
+    # a statement about the two maps rather than about an empty candidate.
+    assert set(candidate.linearization) == {"tweeter"}
+    assert prescription.roles == ("tweeter",)

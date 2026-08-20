@@ -685,6 +685,20 @@ class LinearizationFilter:
         }
 
 
+#: The persisted key naming WHICH MICROPHONE measured the round this entry
+#: came from.
+#:
+#: A named constant rather than a literal because it is the one key on a
+#: persisted linearization entry that a SECOND writer legitimately emits:
+#: :func:`~jasper.active_speaker.crossover_v2.driver_prescription.driver_prescription_to_candidate_fields`
+#: carries it forward onto a prescribed branch, because replacing a role's
+#: filters does not change which microphone measured. Its reader is
+#: ``CrossoverV2Session._mic_trust_ceiling_hz`` (#2649), which decides where the
+#: delta probe may grade; a spelling drift between the three would silently
+#: remove that ceiling rather than fail.
+MIC_TIER_FIELD = "mic_tier"
+
+
 @dataclass(frozen=True)
 class LinearizationFit:
     """One driver's fitted linearization — the Layer-1a artifact.
@@ -912,7 +926,7 @@ class LinearizationFit:
             "residual_rms_db": self.residual_rms_db,
             "residual_max_db": self.residual_max_db,
             "reason_summary": dict(self.reason_summary),
-            "mic_tier": self.mic_tier,
+            MIC_TIER_FIELD: self.mic_tier,
             "driver_class": self.driver_class,
             "n_repeats": self.n_repeats,
             "verify_band_hz": list(self.verify_band_hz),

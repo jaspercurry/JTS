@@ -88,10 +88,11 @@ and every taker says which classes it can actually run.
 **The take is fail-closed about the class, and that is deliberate.**
 :func:`take_staged_prescription`'s ``accepts`` defaults to the blend class
 alone.  A caller that has not been taught to route a per-driver prescription
-therefore cannot be handed one by accident — it refuses by name instead, which
-is the honest answer while the round's own consumption of that class is still
-being built.  The direction matters: a permissive default here would hand an
-unrecognised class to a caller whose next line assumes the other one.
+therefore cannot be handed one by accident — it refuses by name instead.  The
+direction matters: a permissive default here would hand an unrecognised class
+to a caller whose next line assumes the other one.  The round's own preparer
+HAS been taught both since PR-B and passes :data:`STAGEABLE_KINDS`; the default
+still protects every caller that has not.
 """
 
 from __future__ import annotations
@@ -206,10 +207,10 @@ STAGEABLE_KINDS = frozenset({PRESCRIPTION_KIND, DRIVER_PRESCRIPTION_KIND})
 #: The default ``accepts`` set: the blend class alone.
 #:
 #: Named rather than spelled inline at the default, because it is a statement
-#: about which class has a live consumer in the round today, and that fact will
-#: change. A caller that has learned to route the per-driver class passes
-#: :data:`STAGEABLE_KINDS`; every other caller keeps the fail-closed answer
-#: without being edited.
+#: about which classes a caller can route rather than about which classes
+#: exist. The round's preparer passes :data:`STAGEABLE_KINDS` (PR-B); every
+#: other caller keeps the fail-closed answer without being edited, which is
+#: what the name buys.
 BLEND_ONLY = frozenset({PRESCRIPTION_KIND})
 
 #: Byte ceiling on the envelope FILE, read before it is parsed.
@@ -289,8 +290,10 @@ PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND = "prescription_not_staged_for_this_round
 #:
 #: A LIFECYCLE refusal and not a content one, which is why it lives in this
 #: vocabulary: the prescription may be perfectly valid, and would be accepted by
-#: a caller that had a route for it. What it says is "not here, not yet" — the
-#: same shape as the ordinal refusal beside it, about a different axis.
+#: a caller that had a route for it. What it says is "not this taker" — the same
+#: shape as the ordinal refusal beside it, about a different axis. Since PR-B
+#: the round's preparer accepts every stageable class, so this answers a
+#: caller's narrower ``accepts``, not an unbuilt route.
 PRESCRIPTION_CLASS_NOT_ACCEPTED = "prescription_class_not_accepted"
 
 #: The lifecycle vocabulary, beside rather than inside

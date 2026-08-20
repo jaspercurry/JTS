@@ -142,6 +142,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         RoundPorts,
         SeriesPosition,
     )
+    from jasper.active_speaker.crossover_v2.driver_prescription import (
+        DriverPrescription,
+    )
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
         MeasuredResponse,
@@ -1996,6 +1999,8 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_LOW_ALIGNMENT_CONFIDENCE as REASON_LOW_ALIGNMENT_CONFIDENCE,
     REASON_NOISY_ROOM_LINEARITY as REASON_NOISY_ROOM_LINEARITY,
     REASON_PILOT_LEVEL_COLLAPSE as REASON_PILOT_LEVEL_COLLAPSE,
+    REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT
+    as REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_PROGRAM_PROFILE_INCOMPLETE as REASON_PROGRAM_PROFILE_INCOMPLETE,
     REASON_PROGRAM_PROFILE_MISSING as REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED as REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -2052,6 +2057,46 @@ from jasper.active_speaker.crossover_v2.attempt_grading import (
     ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
 )
+
+#: The pre-Apply improvement bar for a candidate carrying PRESCRIBED branches:
+#: non-worsening (PR-B, conductor ruling 2026-08-20).
+#:
+#: Its sibling — :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`, 0.5 dB — is
+#: field evidence about the FIT and keeps its original subject untouched. This
+#: one exists because that figure is a POOLED-RMS improvement and a per-driver
+#: prescription is by construction a narrow high-Q filter aimed at ONE banked
+#: feature: 0.077-0.152 dB pooled on realistic fixtures even when it is exactly
+#: right, so the fitted bar would refuse the class before its first hardware
+#: exercise rather than judge it. Named and defined HERE, beside the reader that
+#: chooses between the two,
+#: because the choice is this module's (see ``_assert_accountable``) and the
+#: gate it is handed to never branches on either.
+#:
+#: 0.0 rather than "no gate at all": a model cannot settle whether a narrow cut
+#: helps, but it CAN settle that a proposal is predicted to make the speaker
+#: worse, and spending the household's speaker on that is the one thing worth
+#: refusing before measuring.
+PRESCRIBED_NON_WORSENING_DB: float = 0.0
+
+
+def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
+    """Which of a candidate's driver branches are PRESCRIBED rather than fitted.
+
+    Read off the persisted entry's own ``prescribed_by`` — the marker
+    :func:`~.crossover_v2.driver_prescription.driver_prescription_to_candidate_fields`
+    stamps and the same one a reader six weeks later uses — so "this graph
+    carries a document" is answered by the graph rather than by session state.
+    Empty for every automatic round, and defensive in the shape its neighbours
+    are: a malformed or era-older entry is skipped rather than raising.
+    """
+    linearization = getattr(candidate, "linearization", None)
+    if not isinstance(linearization, Mapping):
+        return ()
+    return tuple(
+        str(role)
+        for role, entry in linearization.items()
+        if isinstance(entry, Mapping) and entry.get("prescribed_by")
+    )
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR as SWEEP_LOCATE_CONFIDENCE_FLOOR,
@@ -5013,6 +5058,7 @@ class CrossoverV2Session:
         alignment_prescription: "AlignmentPrescription | None" = None,
         blend_prescription: "BlendPrescription | None" = None,
         blend_prescription_sha256: str = "",
+        driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
@@ -5049,6 +5095,19 @@ class CrossoverV2Session:
         # name would shadow it.
         self._prescribed_blend = blend_prescription
         self._prescribed_blend_sha256 = str(blend_prescription_sha256 or "")
+        # A9/PR-B. The THIRD prescription this session may hold, on the two
+        # above's terms — validated by the boundary that took it out of the
+        # spool, not re-judged here — and it differs from them in exactly two
+        # ways worth stating. It is per-ROLE rather than per-region, so its door
+        # is the candidate's ``linearization`` map and the merge that folds it
+        # onto the fit lives where the fit is final
+        # (``crossover_v2.planning.build_candidate``), not in a reader here.
+        # And it carries no digest field: the blend one exists only because the
+        # round receipt banks it, this class has no receipt lane yet, and a
+        # field nothing reads is the permissive-default trap this file's
+        # neighbours name. The document's digest is journal-visible at the take
+        # instead.
+        self._prescribed_driver = driver_prescription
         # PR-4: the contract-derived analysis bands for the cloud-group
         # honesty pipeline (combine's echo/signal bands, the null gate's
         # search band) -- computed once here so every group-close event uses
@@ -5864,8 +5923,11 @@ class CrossoverV2Session:
         Three sources, in this order, and the order below the first is the
         panel's second ruling:
 
-        0. **An accepted prescription staged for THIS round** (A9), if the
-           preparer took one out of the spool. It supersedes the series'
+        0. **An accepted BLEND prescription staged for THIS round** (A9), if the
+           preparer took one out of the spool. The class is named because the
+           spool carries two: a per-driver document staged for this round is
+           taken by the same door and reaches the candidate's ``linearization``
+           map instead, and never this list. It supersedes the series'
            instruction for exactly one round, and that precedence is the whole
            point of staging one: an operator who read the round's evidence and
            wrote a correction is answering the same question decision 10's
@@ -8772,8 +8834,12 @@ class CrossoverV2Session:
         # trim_rejected — both emit the correction filters, see
         # ``plan_linearization``'s tail), the persisted prediction VERIFY
         # compares against must be the LINEARIZED model, the exact thing the
-        # emitted graph now carries — never the raw-branch one. The
-        # ineligible/fit_failed path is untouched: the state's
+        # emitted graph now carries — never the raw-branch one. Since PR-B
+        # "the exact thing" survives a per-driver PRESCRIPTION too: the merge
+        # recomposes this number through the fit module's own single
+        # composition, so a prescribed role's filters are modelled here rather
+        # than the fitted ones the graph no longer carries.
+        # The ineligible/fit_failed path is untouched: the state's
         # ``linearized_predicted_sum`` is ``None`` there, so this stays
         # byte-identical to ``analysis.predicted_sum``, as before. It is
         # computed here rather than at MEASURE because the fit is here; nothing
@@ -8790,6 +8856,12 @@ class CrossoverV2Session:
         # offer rather than an unaccountable proposal.
         level_frame_finding = self._assert_accountable(
             predicted_sum, analysis.predicted_sum, linearization=linearization,
+            # Read off the CANDIDATE rather than off ``self._prescribed_driver``:
+            # the bar below is a statement about the graph this apply would
+            # emit, and the candidate is what says which branches it carries.
+            # The two agree on every path today; the candidate is the one that
+            # stays true if a document is ever held without being merged.
+            prescribed=_prescribed_roles(candidate),
         )
         return _SpeculativeClose(
             candidate=candidate,
@@ -9307,25 +9379,57 @@ class CrossoverV2Session:
         ~90% of the squared error behind a 0.664 pooled realization, while the
         trusted HF had realized 96-101% of commanded.
 
-        The tier reaches VERIFY through the published candidate's own fits —
+        The tier reaches VERIFY through the published candidate's own entries —
         ``_analyze_verify`` does not stamp ``mic_tier`` on its analysis, and the
         MEASURE analysis that carries one is released after the fit. Same route
-        and same guard shape as :meth:`_candidate_headroom_cost_db`.
+        and same guard shape as :meth:`_candidate_headroom_cost_db`. The
+        candidate is also the ONLY carrier that crosses into the grading stage,
+        which is why the tier is read here rather than off a session field: a
+        stage-2 session has no MEASURE analysis to ask. The scan takes the first
+        entry that has one because one round is measured by one microphone, so
+        every entry that carries a tier carries the same one. Since PR-B a
+        PRESCRIBED entry carries it too — replacing a role's filters does not
+        change which microphone measured, and a document naming every role would
+        otherwise take the ceiling away silently
+        (:func:`~.crossover_v2.driver_prescription.driver_prescription_to_candidate_fields`
+        is the second writer of that key).
 
         ``None`` — no ceiling, so the graded band is the caller's requested one,
-        byte-identically to before this existed — when no candidate is bound, no
-        fit recorded a tier, the tier is not one this build knows, or the curve
-        never reaches zero on this grid.
+        byte-identically to before this existed — in four cases, and each one
+        now SAYS so on the journal rather than only the third:
+
+        1. no candidate is bound;
+        2. no entry recorded a tier, which is every round whose fit was
+           ineligible or failed (``linearization`` is then ``{}``) and any
+           prescribed round on top of such a fit;
+        3. the tier is not one this build knows;
+        4. the curve never reaches zero on this grid.
+
+        Cases 1 and 2 were silent before PR-B, and case 2 is the arm a
+        fully-prescribed candidate reaches. Silence there is the worst available
+        answer: the probe grades untrusted HF and nothing distinguishes "the mic
+        is trusted everywhere" from "nobody told us which mic it was".
         """
+        from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
+
+        def unavailable(reason: str, tier: str = "") -> None:
+            log_event(
+                logger, "correction.crossover_v2_mic_trust_ceiling_unavailable",
+                level=logging.WARNING, session_id=self.session_id,
+                reason=reason, mic_tier=tier,
+            )
+
         linearization = getattr(self._candidate, "linearization", None)
         if not isinstance(linearization, Mapping):
+            unavailable("no_candidate_linearization")
             return None
         tier = ""
         for entry in linearization.values():
-            if isinstance(entry, Mapping) and entry.get("mic_tier"):
-                tier = str(entry["mic_tier"])
+            if isinstance(entry, Mapping) and entry.get(MIC_TIER_FIELD):
+                tier = str(entry[MIC_TIER_FIELD])
                 break
         if not tier:
+            unavailable("no_entry_recorded_a_mic_tier")
             return None
         from jasper.active_speaker.linearization_envelope import mic_trust_limit
 
@@ -9336,13 +9440,11 @@ class CrossoverV2Session:
             # An unknown tier raises by design in the envelope module. Here that
             # is missing evidence, not a broken session: fall back to no ceiling
             # and keep grading what the gate trusted.
-            log_event(
-                logger, "correction.crossover_v2_mic_trust_ceiling_unavailable",
-                level=logging.WARNING, session_id=self.session_id, mic_tier=tier,
-            )
+            unavailable("mic_tier_not_recognised", tier)
             return None
         zeros = np.flatnonzero(allowed <= 0.0)
         if zeros.size == 0:
+            unavailable("trust_curve_never_reaches_zero", tier)
             return None
         return float(grid[zeros[0]])
 
@@ -9387,6 +9489,7 @@ class CrossoverV2Session:
     def _assert_accountable(
         self, predicted_sum: Any, raw_predicted_sum: Any = None,
         *, linearization: _LinearizationState | None = None,
+        prescribed: tuple[str, ...] = (),
     ) -> Mapping[str, Any] | None:
         """The three accountability assertions — see
         :func:`~jasper.active_speaker.crossover_v2.accountability.assess_accountability`,
@@ -9412,15 +9515,56 @@ class CrossoverV2Session:
         ``test_crossover_v2_accountability``. It used to say "both arms": the
         estimator-consistency gate had a refusal arm of its own until #2609,
         and now banks and proceeds without one.
+
+        **The bar has two values, and choosing between them is THIS method's
+        job** (PR-B, conductor ruling 2026-08-20). ``prescribed`` names the
+        roles whose branches this candidate carries by prescription rather than
+        by fit; it is empty on every automatic round, which keeps that path
+        byte-identical.
+
+        * **Empty — the fitted class — keeps
+          :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` (0.5 dB) exactly as it
+          is.** That number is field evidence about the FIT, which is what it
+          was measured on, and nothing here touches its original subject.
+        * **Non-empty — the prescribed class — requires NON-WORSENING (0.0).**
+          The 0.5 dB bar is a pooled-RMS figure, and a per-driver prescription
+          is by construction a narrow high-Q filter aimed at ONE banked feature:
+          on realistic fixtures such a filter predicts 0.077-0.152 dB of pooled
+          improvement even when it is exactly the right correction, so the
+          fitted bar would refuse the whole class before its first hardware
+          exercise. It is not the same question
+          being asked more leniently — it is the same question asked of a
+          proposal that already carries its OWN admission evidence (the
+          classification verdict bar, the per-filter depth cap, the composed
+          cap, and a digest proving the accepted bytes ran). What adjudicates a
+          prescription is the measured round with its pre-registered
+          keep/rollback, not a model-vs-model screen sized for another class.
+          Non-worsening is the floor that still refuses the one thing a model
+          CAN settle before spending the speaker: a correction predicted to make
+          it worse.
+
+        The gate itself never learns any of this — it is handed a number and a
+        code, per its own docstring — so the journal line carries ``required_db``
+        and the two are told apart on the wire by the value that decided.
         """
+        # One branch, one owner. The pair moves together: a household reading
+        # "the tuning JTS worked out" about a document an operator wrote would
+        # be sent to re-check driver details that are not what is wrong.
+        prescribed_graph = bool(prescribed)
         decision = _accountability.assess_accountability(
             predicted_sum=predicted_sum,
             raw_predicted_sum=raw_predicted_sum,
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
-            material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+            material_improvement_db=(
+                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
+                else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+            ),
             reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
-            reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+            reason_not_an_improvement=(
+                REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT if prescribed_graph
+                else REASON_CORRECTION_NOT_AN_IMPROVEMENT
+            ),
         )
         if decision.spec_report_written:
             self._measure_predicted_spec_report = decision.spec_report
@@ -11575,6 +11719,13 @@ class CrossoverV2Session:
             # prescribed, or — when there is no instruction — what the speaker
             # is already playing. See ``_blend_prescription``.
             blend_correction=self._blend_prescription(),
+            # A9/PR-B: the staged per-driver instruction, handed over RAW rather
+            # than through a reader like its neighbour's. The blend field has
+            # three sources to rank; this one has none — the fit is the only
+            # other producer of the map it lands in, and merge-by-role IS that
+            # precedence, decided where the fit is final. A method here would
+            # be a pass-through with nothing to decide.
+            driver_prescription=self._prescribed_driver,
         )
 
     def _exclusion_evidence_json(self, cloud: _CloudFitEvidence) -> dict[str, Any]:
@@ -13027,6 +13178,8 @@ __all__ = [
     "REASON_AGC_BEHAVIORAL_FAIL",
     "REASON_NOISY_ROOM_LINEARITY",
     "REASON_PILOT_LEVEL_COLLAPSE",
+    "REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT",
+    "PRESCRIBED_NON_WORSENING_DB",
     "REASON_SNR_FLOOR",
     "REASON_CHANNEL_MAP_MISMATCH",
     "REASON_CLIPPED",

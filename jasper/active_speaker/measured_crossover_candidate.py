@@ -225,12 +225,30 @@ class MeasuredCrossoverCandidate:
     ``expected_candidate_fingerprint`` staleness gate via
     ``build_baseline_profile_candidate``'s ``measured_candidate`` seam).
 
-    ``linearization`` (#1668 PR-C) is the Layer-1a driver-linearization
-    artifact — a per-role compact dict (see
-    ``jasper.active_speaker.linearization_fit.LinearizationFit.to_dict``:
-    filters, fit_band_hz, target_level_db, residuals, an octave-band reason
-    summary, mic_tier, driver_class, n_repeats), keyed by driver role. Like
-    ``analysis``, it is frozen through the SAME exact-JSON-data walk. A
+    ``linearization`` (#1668 PR-C) is the per-role driver-linearization the
+    emitted graph carries, keyed by driver role, and its entries come in TWO
+    shapes since a per-driver prescription can reach a round (PR-B):
+
+    * a FITTED role — the Layer-1a artifact, a compact dict (see
+      ``jasper.active_speaker.linearization_fit.LinearizationFit.to_dict``:
+      filters, fit_band_hz, target_level_db, residuals, an octave-band reason
+      summary, mic_tier, driver_class, n_repeats);
+    * a PRESCRIBED role — ``filters`` plus ``prescribed_by`` (model, operator,
+      packet fingerprint) plus ``mic_tier``, and deliberately none of the
+      fit-quality fields, because a prescription measured nothing and emitting
+      those zeroed would bank a claim nothing made. ``mic_tier`` is the one
+      exception and is carried forward from the entry it replaces: it names the
+      MICROPHONE, not the correction, and ``_mic_trust_ceiling_hz`` reads it to
+      decide where the delta probe may grade at all. The owner of that split is
+      ``crossover_v2.driver_prescription.driver_prescription_to_candidate_fields``.
+
+    Every reader here must therefore treat a fit-quality key as OPTIONAL rather
+    than as a shape guarantee — which is what
+    ``linearization_filters_by_role`` (reads only ``filters``),
+    ``worst_headroom_cost_db`` (absent key is an honest 0.0 for a cuts-only
+    prescription) and the emitter's own ``_validated_linearization`` already
+    do. Like ``analysis``, the map is frozen through the SAME exact-JSON-data
+    walk. A
     NON-empty value participates in the fingerprint — tampering with a
     persisted linearization result trips the same ``candidate_tampered``
     refusal as tampering with anything else in this candidate. The empty
@@ -244,13 +262,17 @@ class MeasuredCrossoverCandidate:
     absence the same way (see its own docstring). This module does NOT
     persist the underlying ``EnvelopeCurve`` — only the compact fit result.
 
-    ``linearization_outcome`` (gauge fix, 2026-07-24) is the WHY behind
-    ``linearization`` above: one of "fitted" / "trim_rejected" /
+    ``linearization_outcome`` (gauge fix, 2026-07-24) is the WHY behind the
+    FITTED half of ``linearization`` above: one of "fitted" / "trim_rejected" /
     "ineligible_mic_tier" / "ineligible_repeats" / "fit_failed", or "" when
     linearization was never evaluated this attempt. This is the single
     writer's own verdict (``crossover_v2.candidates.LinearizationState.outcome``,
     stamped verbatim at candidate-build time) — this module never re-derives
-    it. Era-tolerant exactly like ``linearization``: omitted from the
+    it. **It says nothing about a prescribed role, and cannot**: the fit engine
+    is its one writer and never saw the document. So a candidate may
+    legitimately read ``fit_failed`` while carrying prescribed filters, and the
+    thing that tells a reader which is which is the ENTRY's own
+    ``prescribed_by`` rather than this field. Era-tolerant exactly like ``linearization``: omitted from the
     fingerprint when empty, and accepted absent on ``from_mapping`` (every
     candidate persisted before this field existed implicitly claimed "").
 
