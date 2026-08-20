@@ -271,6 +271,17 @@ device for the first ~30 seconds of every remote session.
    position. The held begin is then admitted.
 5. Repeat. Analysis, apply, verify and restore are unchanged.
 
+**Steps 3–5 have a shipped implementation for the lab turntable arm:**
+`jasper-arm-walk` ([`jasper/active_speaker/arm_walk.py`](../jasper/active_speaker/arm_walk.py),
+CLI in [`jasper/cli/arm_walk.py`](../jasper/cli/arm_walk.py)). It runs on the
+speaker, polls this envelope over loopback, drives the turntable adapter as a
+subprocess, and posts `/position-ready` — with the power preflight, the ±45°
+envelope clamp, the measured settle, and the park-and-verify held in code rather
+than in an operator's attention. Every campaign before it wrote the loop again
+from scratch. It is opt-in and foreground: nothing starts it. Steps 1–2 are
+still the operator's (or the wired source's, below); see
+[`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness).
+
 **The WIRED capture source changes steps 1–2 of this contract** (#2662 W2b,
 `jasper/web/correction_crossover_v2_wired.py`). When a measurement-class USB
 mic is plugged into the Pi (usbid matched against the calibration registry —

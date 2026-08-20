@@ -43,6 +43,7 @@
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
+| Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -2012,7 +2013,11 @@ of itself. The `consumed=` field says which happened; do not assume it.
 
 The spool's own slugs (`angle_request_spool_*`, `measurement_session_already_live`)
 reach the same journal line, so this table is the take's half, not the whole
-vocabulary.
+vocabulary. One walk slug deliberately never reaches it:
+`walk_over_mover_envelope` is decided by the REQUEST alone (its mover plus its
+angles — an arm reaches ±45°, a person ±80°), so `plan` and `stage` refuse it
+and no session is ever offered a walk its positioner cannot serve. Refusing it
+later would cost the session `600 s` of held budget per unreachable stop.
 
 Hardware-free coverage: the mailbox and the CLI in
 [`tests/test_angle_capture_trigger.py`](../tests/test_angle_capture_trigger.py),
@@ -2021,6 +2026,77 @@ the composition and its refusals in
 take in [`tests/test_angle_capture_take.py`](../tests/test_angle_capture_take.py),
 and the suppression pins in
 [`tests/test_crossover_v2_lateral_evidence.py`](../tests/test_crossover_v2_lateral_evidence.py).
+
+---
+
+## Lab-arm walk harness
+
+`jasper-arm-walk` ([`jasper/cli/arm_walk.py`](../jasper/cli/arm_walk.py), loop in
+[`jasper/active_speaker/arm_walk.py`](../jasper/active_speaker/arm_walk.py)) is
+what actually WALKS a live measurement session with the lab turntable arm. Both
+ends already shipped and nothing joined them: the session publishes
+`relay.position_pending` and holds every begin until something POSTs
+`/correction/crossover/v2/position-ready`, and the turntable adapter moves the
+microphone. Between them sat a script rewritten per campaign — this is that
+script's contract, kept.
+
+Runs **on the speaker**, in the foreground, one run per walk:
+
+```sh
+# stage the walk first (angle-walk door, above), then start this, THEN open
+# the session — the first poll is what checks a walk is still waiting.
+sudo -u jasper /opt/jasper/.venv/bin/jasper-arm-walk \
+    --attest-rig-clear --hostname jts3.local \
+    --expect-angles 7,-7,22,-22 --complete-after 5 \
+    --trail /tmp/arm-walk.jsonl
+```
+
+One turn of the loop: poll → power preflight → move → measured settle (30 s by
+default) → `position-ready`. It reads the envelope over loopback with the
+speaker's own `Host:` header (the shape the deploy's management-surface probe
+and the doctor's `check_management_surface` use — the wizard's host guard
+rejects a bare `127.0.0.1`), and drives the adapter as a **subprocess** at
+`/opt/jasper/experiments/usb-turntable/jts_turntable.py` (`--tool` points it at
+a checkout), never as an import.
+
+**The safety invariants are in the code, each pinned by a test in
+[`tests/test_arm_walk.py`](../tests/test_arm_walk.py):**
+
+| invariant | what it does |
+|---|---|
+| power before EVERY motion | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `rc 3`. Stricter than the adapter's own gate, which is right for a human at the rig and not for an unattended walk |
+| ±45° clamp | belt-and-braces over the adapter's own refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
+| park and verify on every exit | clean finish, exception, or SIGTERM. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
+| `set-zero` is unreachable | `power`, `position` and `offset` are the complete set of verbs this tool can emit |
+| the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED, so the trail states what was taken, not what was intended |
+
+**Attestation, not a nanny.** The adapter wants two `--confirm-*` flags per
+move, which no unattended caller can honestly answer per move. So the operator
+answers once for the run with `--attest-rig-clear`, and a power sign is the one
+thing that voids it — because a power event is exactly when the saved zero may
+have stopped being the acoustic axis. One flag, one honest void condition, no
+zero-validity state machine.
+
+**Exit codes are the contract** — `0` walk complete, and a distinct code per
+failure class: `3` power void, `4` move refused/failed, `5` the wired
+completion signal was not accepted, `6` stuck (a rejected capture is awaiting a
+human — [#2506](https://github.com/jaspercurry/JTS/issues/2506)), `7` the
+session itself failed (its own error is on the line), `8` nothing ever asked
+the arm to move, `9` `--expect-angles` given with no walk staged and no session
+open, `10` a stated angle never arrived, `11` the measured settle broke the
+floor, `12` refused before anything moved. `EXIT_NAMES` maps them.
+
+**`--expect-angles` is how a silently degraded walk is caught.** A session that
+refuses a staged walk runs its ordinary shape instead, whose captures are ALL
+design-axis — so an unattended driver serves them happily and the run looks
+fine. Stating the walk's non-zero angles turns that into `rc 10`. The envelope
+cannot be asked "did you take a walk", so the pre-motion half of the check is
+narrower: with no session yet in flight, a walk must still be staged (`rc 9`).
+
+**Observability**: `event=arm_walk.*` in the journal (`pending`, `moved`,
+`released`, `power_void`, `stuck`, `parked`, `walk_not_taken`, …), each line
+carrying the deciding numbers, and the same fields as JSONL rows under `--trail`
+— one call site, so the two can never disagree.
 
 ---
 
