@@ -37,6 +37,7 @@
 | Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
+| Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
@@ -1723,6 +1724,46 @@ and the only signal is `correction.crossover_v2_uncalibrated_capture` in the
 `jasper-correction-web` journal. Hardware-free coverage lives in
 [`tests/test_e0_capture_experiment.py`](../tests/test_e0_capture_experiment.py),
 which runs the same offline checks `--selftest` does.
+
+---
+
+## Crossover-v2 round banking
+
+`scripts/bank-crossover-round.sh <dest-dir>` pulls one crossover-v2 round's
+evidence off the Pi into a directory you name — never a hardcoded campaign
+path, unlike the throwaway `night_bank.sh` / `pull_dumps.sh` /
+`integrity_summary.py` scripts this productizes (most recently
+`captures/linearization-night-2026-08-19/tools/`). It pulls the newest
+session bundle, the crossover-v2 flow state, the design draft, a bounded
+journal window (the four units a round speaks through:
+`jasper-correction-web`, `jasper-control`, `jasper-camilla`,
+`jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
+under-voltage grep counts), the round's own prediction fields lifted out of
+the flow state before the next round overwrites them (`priors.predicted_sum`
+/ `predicted_spec` / `fc_selection` / etc.), and the dump-ring captures
+(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
+and `dumps/sidecar/`).
+
+Every pull above is best-effort and independently reported to stderr; the
+only gate is the last step. `jasper.audio_measurement.capture_integrity`
+checks every sidecar under `dumps/sidecar/` against the wired capture
+chain's own definition of clean (the two independent frame counts agree,
+zero ALSA gaps, zero capture-FIFO dropouts, not truncated, the wired
+`capture_chain` tag, and a reconciled frame ledger), and the bank script's
+own exit code **is** that check's:
+
+| Exit | Meaning |
+|---|---|
+| `0` | at least one sidecar was found and every one is clean |
+| `1` | nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) |
+| `2` | at least one sidecar is dirty, including one whose JSON could not be parsed — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
+
+A dirty or unreadable run never deletes anything already pulled — the
+refusal is the exit code plus the printed findings, never a missing file.
+Standalone: `python -m jasper.audio_measurement.capture_integrity
+<sidecar-dir> [<dir> ...]`. Hardware-free coverage — clean / dirty /
+unreadable fixture trees, plus one test per named finding class — lives in
+[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py).
 
 ---
 
