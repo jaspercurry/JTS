@@ -531,8 +531,7 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 // containing either carries one more term, one-time rather than rate:
 //     + 1e6*(2*buffer_size)/(rate*T)
 // the seed plus the app's standing one-buffer lead — 1422 ppm over 60 s here, so a
-// from-start window is bounded by 2589 + 1422 = 4011 ppm. Measured from-start
-// windows ran +3511..+3822 ppm, inside it.
+// from-start window is bounded by 2589 + 1422 = 4011 ppm.
 #define JTS_RING_PACE_HEADROOM_PPM 2500ull
 #define JTS_RING_PACE_HEADROOM_DIVISOR (1000000ull / JTS_RING_PACE_HEADROOM_PPM)
 _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 1000000ull,
