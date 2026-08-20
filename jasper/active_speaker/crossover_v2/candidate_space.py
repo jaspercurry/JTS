@@ -209,7 +209,7 @@ record: ``_hz`` frequencies, ``_us`` microseconds, ``_db`` decibels,
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -295,6 +295,12 @@ CANDIDATE_REFUSAL_REASONS = frozenset({
 # That declared step is #2710's +/-20.833 us integer-sample alignment on a
 # 48 kHz chain, which is four hundred times coarser and is a real bound.
 _DELAY_STEP_TOLERANCE_US = 0.05
+
+# "This chain high-passes nothing outside its crossover." Shared and immutable
+# so every bounds object that declares no standing protection points at one
+# object nobody can write into — see the field on :class:`CandidateBounds` for
+# why it reaches the dataclass through a factory.
+_NO_STANDING_HIGHPASS: Mapping[str, float] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -456,7 +462,20 @@ class CandidateBounds:
     undeclared_roles: tuple[str, ...]
     # The CHAIN's standing protection, defaulted empty so a caller that declares
     # nothing gets exactly the pre-#2760 wall rather than a silent credit.
-    standing_highpass_hz_by_role: Mapping[str, float] = MappingProxyType({})
+    #
+    # ``default_factory`` returning the ONE shared proxy rather than the proxy
+    # itself as a plain default, and the reason is a portability break rather
+    # than style. ``dataclasses`` rejects a default whose
+    # ``__class__.__hash__`` is ``None``, and ``mappingproxy`` only gained a
+    # ``__hash__`` in 3.12 — so this field's plain default raises
+    # ``ValueError: mutable default <class 'mappingproxy'>`` on 3.11 at IMPORT
+    # time (taking every test in the package with it) while passing silently on
+    # 3.12, which is exactly the shape a local run cannot see. Measured on both
+    # interpreters. The factory hands back ``_NO_STANDING_HIGHPASS`` itself, so
+    # identity and immutability are unchanged.
+    standing_highpass_hz_by_role: Mapping[str, float] = field(
+        default_factory=lambda: _NO_STANDING_HIGHPASS,
+    )
     # The MEASURED layer, defaulted absent because it does not exist until a
     # per-driver per-angle capture does. Supplied through
     # ``with_measured_directivity`` rather than by ``bounds_from_declarations``,
