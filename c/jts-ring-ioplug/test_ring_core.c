@@ -3315,7 +3315,7 @@ static uint64_t pace_report(jts_ring_pointer_state_t *st, uint64_t honest,
 static jts_ring_pointer_state_t pace_state_started(void) {
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1, 1, 1);
+    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
     return st;
 }
 
@@ -3340,6 +3340,25 @@ static uint64_t legacy_clamp(jts_ring_pointer_state_t *st, uint64_t honest,
     }
     st->last_reported = reported;
     return reported;
+}
+
+// pace_report with the reader's liveness under the test's control — the dead->live
+// edge is what re-seeds the bucket, so it has to be drivable.
+static uint64_t pace_report_rl(jts_ring_pointer_state_t *st, uint64_t honest,
+                               uint64_t buffer, uint32_t period, int pace_nominal,
+                               uint64_t now_ns, int reader_live) {
+    jts_ring_pointer_inputs_t in = {
+        .appl_frames = honest,
+        .occupancy_slots = 0,
+        .stage_frames = 0,
+        .period_frames = period,
+        .buffer_size = buffer,
+        .reader_live = reader_live,
+        .pace_nominal = pace_nominal,
+        .now_ns = now_ns,
+        .rate = PACE_RATE,
+    };
+    return jts_ring_pointer_report(st, &in);
 }
 
 static uint64_t pace_lcg(uint64_t *s) {
@@ -3483,6 +3502,89 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
     CHECK(fast.last_reported == fast_honest, "and is reported honestly throughout");
 }
 
+static void test_pace_start_grants_the_prefill_without_binding(void) {
+    // A clean start must absorb its prefill the way a real device does — instantly,
+    // with no bind edge. Starting empty paced legitimate prefill at the ceiling: on
+    // 2026-08-20 that read as a 57 s startup bind where the ungoverned build had
+    // back-pressure in ~5 s.
+    jts_ring_pointer_state_t st;
+    memset(&st, 0, sizeof(st));
+    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    jts_ring_pace_log_state_t ls;
+    memset(&ls, 0, sizeof(ls));
+
+    // One buffer LESS ONE PERIOD of demand, a microsecond after start — the most a
+    // single call can report anyway (the alias clamp caps an advance at
+    // buffer - period), so what is measured here is the governor and not that clamp.
+    const uint64_t prefill = PACE_BUFFER - PACE_PERIOD;
+    uint64_t got = pace_report_rl(&st, prefill, PACE_BUFFER, PACE_PERIOD, 1, 1 + 1000, 1);
+    CHECK(got == prefill, "the prefill lands in ONE call, ungated");
+    CHECK(st.pace_bound_ns == 0, "and the governor never bound doing it");
+    CHECK(jts_ring_pace_log_step(&ls, st.pace_bound_ns, 1 + 1000, 60 * PACE_NS_PER_S) ==
+              JTS_RING_PACE_LOG_NONE,
+          "a clean start with a live reader produces NO edge at all");
+}
+
+static void test_pace_reader_reattach_reseeds_the_prefill(void) {
+    // The reader coming back is the same event that resyncs read_seq: the device was
+    // re-prepared, so it gets its prefill again. Without this the recovery after a
+    // stall is rationed at the ceiling — the hardware pass saw no sub-second re-lock
+    // after SIGCONT.
+    jts_ring_pointer_state_t st;
+    memset(&st, 0, sizeof(st));
+    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    uint64_t now = 1;
+    // Reader stalls; a greedy app drains the seeded bucket over 200 ms.
+    for (uint64_t ms = 1; ms <= 200; ms++) {
+        now = 1 + ms * 1000000ull;
+        pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now, 0);
+    }
+    CHECK(st.pace_tokens < PACE_BUFFER * 1024ull, "the stall left the bucket drained");
+    uint64_t before = st.last_reported;
+
+    // Reattach, with essentially no time passing: only a re-seed can pay for this.
+    now += 1000;
+    pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now, 1);
+    CHECK(st.last_reported - before == PACE_BUFFER - PACE_PERIOD,
+          "reattach catch-up lands in one call, not rationed at the ceiling");
+}
+
+static void test_pace_reattach_flapping_stays_bounded(void) {
+    // The re-seed is EDGE-only, and the edge rate is capped by the liveness window
+    // (a reader must be heartbeat-dead 2 s before it can come live again). So the
+    // worst an adversarial flap can add is one buffer per transition — asserted here
+    // against N buffers plus the honest refill, not against a rate.
+    jts_ring_pointer_state_t st;
+    memset(&st, 0, sizeof(st));
+    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    const uint64_t transitions = 30;
+    const uint64_t dead_calls = 100, live_calls = 50;
+    const uint64_t cycle_ns = 2 * PACE_NS_PER_S; // the liveness floor
+    uint64_t now = 1;
+    for (uint64_t i = 0; i < transitions; i++) {
+        for (uint64_t k = 0; k < dead_calls; k++) {
+            now += cycle_ns / (dead_calls + live_calls);
+            pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now, 0);
+        }
+        // ...then a run of LIVE calls. Only the FIRST is an edge; a re-seed that
+        // fired on every live call instead would grant a buffer `live_calls` times.
+        for (uint64_t k = 0; k < live_calls; k++) {
+            now += cycle_ns / (dead_calls + live_calls);
+            pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now, 1);
+        }
+    }
+    uint64_t elapsed_s = transitions * 2;
+    uint64_t bound = pace_expected_frames(elapsed_s) + transitions * PACE_BUFFER +
+                     transitions * PACE_PERIOD;
+    CHECK(st.last_reported <= bound,
+          "flapping adds at most one buffer per transition, never per call");
+    // And the standing overhead is the 2.1% the contract derives: N buffers over
+    // N*2 s is 1024 f/s against 48000.
+    uint64_t excess = st.last_reported - pace_expected_frames(elapsed_s);
+    CHECK(excess <= transitions * (PACE_BUFFER + PACE_PERIOD),
+          "the flap overhead matches the derived per-transition bound");
+}
+
 static void test_pace_bound_ns_measures_time_not_call_rate(void) {
     // The operator-facing number. It must be O(truth), not O(how often ALSA asked:
     // `want` is a STANDING backlog re-presented on every call, so a frames-withheld
@@ -3526,7 +3628,7 @@ static void test_pace_start_only_anchors_a_governed_playback_pcm(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         jts_ring_pointer_state_t st;
         memset(&st, 0, sizeof(st));
-        jts_ring_pace_start(&st, cases[i].governed, cases[i].playback, 7 * PACE_NS_PER_S);
+        jts_ring_pace_start(&st, cases[i].governed, cases[i].playback, 7 * PACE_NS_PER_S, PACE_BUFFER);
         if (cases[i].anchors) {
             CHECK(st.pace_last_ns == 7 * PACE_NS_PER_S, "governed playback anchors");
         } else {
@@ -3646,13 +3748,24 @@ static void test_pace_sustained_rate_stays_within_nominal_plus_headroom(void) {
         }
         if (ms == 1000) at_1s = reported;
     }
-    const uint64_t nominal_9s = 9ull * PACE_RATE;
-    const uint64_t slack = 2ull * PACE_PERIOD; // one period of quantization per mark
-    const uint64_t bound = nominal_9s + (nominal_9s * 2500ull) / 1000000ull + slack;
-    CHECK(reported - at_1s <= bound,
-          "sustained rate stays within nominal + 2500 ppm over 10 s");
-    CHECK(reported - at_1s + slack >= nominal_9s,
-          "sustained rate is not held below nominal");
+    // THE DERIVED BOUND, not a flat 2500 ppm. The asymptotic rate IS the headroom —
+    // every truncation in the path rounds down and carries — so what a finite
+    // window adds is granularity: one period of grant quantization at each mark.
+    //   observed <= nominal*T*(1 + headroom) + 2*period_frames
+    // Over this 9 s window that is 2500 + 1e6*256/(48000*9) = 2500 + 592 = 3092 ppm.
+    // Written longhand so widening the headroom constant fails here, and stated as
+    // the number a hardware bar should be set against.
+    const uint64_t window_s = 9;
+    const uint64_t nominal_9s = window_s * PACE_RATE;
+    const uint64_t quantization = 2ull * PACE_PERIOD;
+    const uint64_t bound = nominal_9s + (nominal_9s * 2500ull) / 1000000ull + quantization;
+    const uint64_t measured = reported - at_1s;
+    CHECK(measured <= bound, "sustained rate stays within the derived ceiling");
+    // Pin the derivation itself: the excess over nominal must be inside headroom +
+    // quantization, and quantization alone must be the smaller term at this window.
+    CHECK(measured >= nominal_9s - quantization, "sustained rate is not held below nominal");
+    CHECK(quantization * 1000000ull / nominal_9s < 2500ull,
+          "at this window quantization is the smaller term — the headroom dominates");
 }
 
 static void test_pace_quantizes_only_when_it_binds(void) {
@@ -3724,9 +3837,10 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
 
     // START anchors it; the governor now binds a greedy app.
     jts_ring_pointer_state_reset(&st);
-    jts_ring_pace_start(&st, 1, 1, 5 * PACE_NS_PER_S);
+    jts_ring_pace_start(&st, 1, 1, 5 * PACE_NS_PER_S, PACE_BUFFER);
     CHECK(st.pace_last_ns == 5 * PACE_NS_PER_S, "start anchors the bucket at now");
-    CHECK(st.pace_tokens == 0, "start leaves the bucket EMPTY (ALSA owns the prefill)");
+    CHECK(st.pace_tokens == PACE_BUFFER * 1024ull,
+          "start seeds the bucket FULL — one buffer of device prefill");
     // 100 ms of refill: enough to grant several whole periods, so the report moves
     // and the state below is genuinely dirty. (One millisecond buys 48 frames —
     // under a period — and would grant nothing at all.)
@@ -3753,7 +3867,7 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
     // A zero clock sample at start still anchors (0 is the not-started sentinel).
     jts_ring_pointer_state_t zero_st;
     memset(&zero_st, 0, sizeof(zero_st));
-    jts_ring_pace_start(&zero_st, 1, 1, 0);
+    jts_ring_pace_start(&zero_st, 1, 1, 0, PACE_BUFFER);
     CHECK(zero_st.pace_last_ns != 0, "start forces a nonzero anchor");
 }
 
@@ -3812,7 +3926,10 @@ static void test_pace_off_is_byte_identical_to_the_pre_governor_core(void) {
                 CHECK(got_st.last_reported == want_st.last_reported,
                       "pace_nominal 0 leaves the carried state identical too");
             }
-            CHECK(got_st.pace_tokens == 0 && got_st.pace_bound_ns == 0,
+            // The state was anchored AND seeded by pace_state_started, so "untouched"
+            // means still holding its seed — not zero. A leaked governor would have
+            // spent from it.
+            CHECK(got_st.pace_tokens == PACE_BUFFER * 1024ull && got_st.pace_bound_ns == 0,
                   "an ungoverned call never touches the bucket");
         }
     }
@@ -3878,7 +3995,7 @@ static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
     ioplug_model_t m = ioplug_model_new(&g);
     m.pace_nominal = 1;
     m.now_ns = 1;
-    jts_ring_pace_start(&m.ptr, 1, 1, m.now_ns);
+    jts_ring_pace_start(&m.ptr, 1, 1, m.now_ns, m.buffer_size);
     const uint64_t buffer = m.buffer_size;
     uint64_t accepted = 0, accepted_at_half = 0;
     const uint64_t window_ms = 200;
@@ -4003,6 +4120,9 @@ int main(void) {
     test_pace_refill_overflow_bound();
     test_pace_bucket_binds_when_the_app_outruns_the_clock();
     test_pace_is_inert_when_the_device_binds_first();
+    test_pace_start_grants_the_prefill_without_binding();
+    test_pace_reader_reattach_reseeds_the_prefill();
+    test_pace_reattach_flapping_stays_bounded();
     test_pace_bound_ns_measures_time_not_call_rate();
     test_pace_start_only_anchors_a_governed_playback_pcm();
     test_pace_log_step_edges_and_rate_limit();

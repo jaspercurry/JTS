@@ -354,7 +354,7 @@ static int jts_ring_start(snd_pcm_ioplug_t *io) {
     // the governed-playback gate is inside jts_ring_pace_start.
     jts_ring_pace_start(&p->ptr_state, p->pace_nominal,
                         io->stream == SND_PCM_STREAM_PLAYBACK,
-                        jts_ring_monotonic_raw_ns());
+                        jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
     arm_timer(p);
     return 0;
 }

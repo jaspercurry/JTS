@@ -515,6 +515,15 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 // size: this fleet's dongle measures ~667 ppm and the repo's precedent for the same
 // two-crystal problem took ~4x that — both in docs/HANDOFF-airplay.md. An exact
 // reciprocal of 1e6, so the refill below is integer.
+//
+// BARS BELONG AGAINST THE DERIVED BOUND, not against this number flat.
+// Asymptotically the rate IS the headroom — the refill's /400, the token division
+// and the period floor all truncate DOWN and carry — so what a finite measurement
+// adds is granularity, one period of grant quantization at each end of a window:
+//     observed_ppm <= HEADROOM_PPM + 1e6*(2*period_frames)/(rate*T) + instrument
+// At the grouping ring's 128-frame period that is 2589 ppm over 60 s. The
+// 2026-08-20 hardware's 2667 ppm sits inside it, and inside that instrument's own
+// 533 ppm resolution.
 #define JTS_RING_PACE_HEADROOM_PPM 2500ull
 #define JTS_RING_PACE_HEADROOM_DIVISOR (1000000ull / JTS_RING_PACE_HEADROOM_PPM)
 _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 1000000ull,
@@ -627,6 +636,7 @@ typedef struct {
     // Cumulative wall time spent binding. NOT frames: `want` is a standing backlog
     // re-presented every call, so summing `want - grant` reads O(call rate).
     uint64_t pace_bound_ns;
+    int pace_prev_reader_live; // for the dead->live re-seed edge; 1 after start
 } jts_ring_pointer_state_t;
 
 static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
@@ -634,25 +644,32 @@ static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
     st->pace_last_ns = 0;
     st->pace_tokens = 0;
     st->pace_bound_ns = 0;
+    st->pace_prev_reader_live = 0;
 }
 
-// Stream start: anchor the bucket, EMPTY — ALSA's buffer already lets the app
-// prefill, so credit here would stack a second buffer onto the first wake. Forced
-// nonzero: 0 is the not-started sentinel. The gate lives HERE because `start` is
-// shared by both directions and every ungoverned PCM — which is what keeps the
-// "all three stay zero on an ungoverned PCM" claim above true of the plugin.
+// Stream start: anchor the bucket and seed it FULL — a real device absorbs its
+// prefill at once, and an empty bucket paces that prefill at the ceiling instead
+// (the 57 s startup bind in the measurements jts_ring_pace_apply cites). One
+// buffer, once, so it costs no rate. `prev_reader_live` starts at 1 so an
+// already-live reader is not read as a dead->live edge and re-seeded on top.
+// Forced-nonzero clock: 0 is the not-started sentinel. The gate lives HERE because
+// `start` is shared by both directions and every ungoverned PCM — which is what
+// keeps the "all stay zero on an ungoverned PCM" claim above true of the plugin.
 static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, int pace_nominal,
-                                       int stream_is_playback, uint64_t now_ns) {
+                                       int stream_is_playback, uint64_t now_ns,
+                                       uint64_t buffer_size) {
     if (!pace_nominal || !stream_is_playback) return;
     st->pace_last_ns = (now_ns == 0) ? 1 : now_ns;
-    st->pace_tokens = 0;
+    st->pace_tokens = buffer_size * JTS_RING_PACE_TOKENS_PER_FRAME;
+    st->pace_prev_reader_live = 1;
 }
 
-// THE PACING GOVERNOR — one owner, PLAYBACK only. Measured 2026-08-20: a
-// DAC-clocked reader holds this ring's writer at 1.00x nominal, a stalled one let
-// it storm at 763x (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md). A floor
-// under that failure, not a substitute for a clock. CAPTURE never calls it — a
-// bind there starves camilla on a DAC-vs-Pi clock difference.
+// THE PACING GOVERNOR — one owner, PLAYBACK only. A floor under the failure a
+// DAC-clocked reader does not have: measured 2026-08-20, a stalled reader let this
+// ring's writer storm at 763x where a live one held it to 1.00x
+// (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md — the file every hardware
+// number in this header points at). CAPTURE never calls it: a bind there starves
+// camilla on a DAC-vs-Pi clock difference.
 //
 // CONTRACT. A token bucket anchored to the PREVIOUS call. Each call refills by
 // what a nominal device would have clocked in `now_ns - pace_last_ns` plus the
@@ -668,20 +685,30 @@ static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, int pace_no
 //
 // Per-call anchoring is what keeps it from being an INTEGRATOR: an absolute anchor
 // accumulates a persistent clock difference without bound — a deficit that binds a
-// healthy stream, or a surplus released in one burst when the reader dies. Here the
-// cap bounds burst outright: one wake advances the report by at most one buffer,
-// however long the stream idled. A PARTIAL grant is floored to a period multiple so
-// a capped bucket releases whole periods; a covering grant is exact. Tokens are
-// spent on the GRANT; the caller's clamp may report up to a period less.
+// healthy stream, or a surplus released in one burst when the reader dies. The cap
+// bounds burst outright instead: one wake advances at most one buffer, however long
+// the stream idled. A PARTIAL grant is floored to a period multiple; a covering
+// grant is exact. Tokens are spent on the GRANT, and the caller's clamp may report
+// up to a period less.
+//
+// RE-SEEDS ON READER dead->live — the same event that resyncs read_seq, i.e. the
+// device was re-prepared, so it gets its prefill again exactly as `start` does.
+// EDGE ONLY, and bounded by the liveness window: a reader must go heartbeat-dead
+// (JTS_RING_WRITER_LIVENESS_TIMEOUT_NS, 2 s) before it can come live, so flapping
+// caps at one buffer per 2 s = 1024 f/s against 48000, ~2.1% — and only for a
+// reader dying and returning twice a second forever, its own loud failure.
 static inline uint64_t jts_ring_pace_apply(jts_ring_pointer_state_t *st, uint64_t honest,
                                            int pace_nominal, uint64_t now_ns, uint32_t rate,
-                                           uint64_t buffer_size, uint32_t period_frames) {
+                                           uint64_t buffer_size, uint32_t period_frames,
+                                           int reader_live) {
     if (!pace_nominal || st->pace_last_ns == 0) return honest;
     // Refill by real elapsed time, then cap. A backward clock sample refills
     // nothing rather than underflowing.
     uint64_t dt = (now_ns > st->pace_last_ns) ? (now_ns - st->pace_last_ns) : 0;
     st->pace_last_ns = now_ns;
     uint64_t cap = buffer_size * JTS_RING_PACE_TOKENS_PER_FRAME;
+    if (reader_live && !st->pace_prev_reader_live) st->pace_tokens = cap; // reattach
+    st->pace_prev_reader_live = reader_live;
     st->pace_tokens += jts_ring_pace_refill_tokens(dt, rate);
     if (st->pace_tokens > cap) st->pace_tokens = cap;
 
@@ -718,6 +745,12 @@ typedef struct {
 // suppressed with it. `last_log_ns == 0` is a SENTINEL, never a timestamp to
 // subtract from: `now_ns` is CLOCK_MONOTONIC_RAW, so a PCM opened inside the first
 // interval after boot would otherwise lose its very first bind.
+//
+// SO AN EDGE INSIDE A PRIOR EDGE'S WINDOW IS DELIBERATELY SILENT, re-announcing on
+// the next window: a real bind can go unlogged while the governor is visibly
+// working, and that is the rate limit, not a fault. Seeding at start removes the
+// case that made it bite — a clean start now produces no edge, so a later stall's
+// bind is reliably the first.
 static inline jts_ring_pace_log_event_t
 jts_ring_pace_log_step(jts_ring_pace_log_state_t *ls, uint64_t bound_ns, uint64_t now_ns,
                        uint64_t interval_ns) {
@@ -769,7 +802,7 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
 
     // 1b. Pacing governor (jts_ring_pace_apply owns it). Before step 2, never after.
     honest = jts_ring_pace_apply(st, honest, in->pace_nominal, in->now_ns, in->rate,
-                                 in->buffer_size, in->period_frames);
+                                 in->buffer_size, in->period_frames, in->reader_live);
 
     // 2. Reported-position clamp. The reported value only ever moves FORWARD,
     // and never by >= buffer_size in one call (which would alias to a zero — or
