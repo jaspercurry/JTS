@@ -1339,8 +1339,12 @@ rejected — see the "Stage 2a landed" callout above.)
   *disappears* is caught on the write path, but **not** by the next bullet's
   recovery ladder: that ladder is the xrun path and `write_dac_fail_closed`
   enters it only on `EPIPE`/`ESTRPIPE`, so a vanished device's
-  `ENODEV`/`ENXIO` takes the bare propagate beneath it and never emits an
-  `event=outputd.xrun` line — do not go looking for one after a removal.
+  `ENODEV`/`ENXIO` takes the bare propagate beneath it and emits no
+  `event=outputd.xrun` line of its own. Don't read an *absent* xrun line as
+  "no removal" — nor a present one as "just an xrun": a removal can surface
+  first as an `EPIPE` underrun, which logs the xrun before `try_recover` fails
+  on the now-absent device, since that `eprintln!` precedes the recovery
+  attempt.
   Recovery is out-of-band: udev → `jasper-audio-hardware-reconcile` rewrites
   `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC, clearing
   `JASPER_OUTPUTD_DUAL_DAC_A_PCM`/`_B_PCM`, and restarts outputd. The
@@ -2227,8 +2231,15 @@ re-touched since carries forward from its most recent entry below.
   corrected in place. Third, this pass's own first draft routed a *departed*
   child through that recovery ladder; `write_dac_fail_closed` enters the ladder
   only on `EPIPE`/`ESTRPIPE`, so an `ENODEV`/`ENXIO` removal takes the bare
-  propagate and emits no `event=outputd.xrun` — the bullet now says so, since
-  the wrong journal signature is what a debugger would have grepped for. **Nothing else in this pass:** the remaining Resilience
+  propagate and emits no `event=outputd.xrun` of its own — the bullet now says
+  so in **both** directions, because the first draft of that very correction
+  then overclaimed the other way ("do not go looking for one after a
+  removal"): the xrun `eprintln!` is unconditional and precedes `try_recover`,
+  so a removal that surfaces first as an underrun DOES log one before recovery
+  fails on the vanished device. Which errno a real removal raises first is a
+  kernel behaviour no static read settles, which is why the doc now scopes the
+  negative to the errno rather than to the scenario.
+  **Nothing else in this pass:** the remaining Resilience
   bullets, the change set, and Observability stand as last verified, which is
   why the footer below still reads 2026-08-15.
 
