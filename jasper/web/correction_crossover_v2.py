@@ -3293,6 +3293,10 @@ def _candidate_summary(candidate: Any) -> dict[str, Any] | None:
         # measured one; the lobe flag is a receipt line, because that mode is
         # magnitude-flat and an on-axis VERIFY cannot contradict it.
         "alignment_objective": analysis.get("alignment_objective"),
+        # …and whether the polarity above was MEASURED or held by the request.
+        # Its own key because the objective cannot say: a pinned round commits
+        # the same `explicit_prescription_committed` an unpinned one does.
+        "polarity_pinned": bool(analysis.get("polarity_pinned")),
         "left_anchor_lobe": analysis.get("left_anchor_lobe"),
         # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did or
         # didn't run this attempt — "" / "fitted" / "trim_rejected" /

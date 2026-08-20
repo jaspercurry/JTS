@@ -422,6 +422,13 @@ def _candidate_review_payload(
         # result. Carried as the enum rather than pre-rendered prose, matching
         # how ``linearization_outcome`` reaches the same renderer.
         "alignment_objective": str(candidate.get("alignment_objective") or ""),
+        # The SECOND way a polarity can fail to be a measured result: the round
+        # pinned it. Its own bit rather than a fifth member of the renderer's
+        # declared-design list, because it is a different claim — "as designed,
+        # this measurement could not check it" versus "the operator held it
+        # here" — and because that list is also read for the objectives whose
+        # ANCHOR is withdrawn, which a pinned round's is not.
+        "polarity_pinned": bool(candidate.get("polarity_pinned")),
         "confidence": _finite(candidate.get("alignment_confidence")),
         "ripple_db": _finite(candidate.get("predicted_ripple_db")),
         "fingerprint": str(candidate.get("fingerprint") or ""),

@@ -4852,9 +4852,13 @@ cross-check that had no production reader before #2598 and now travels in
 `correction.crossover_v2_measure_diag`. A disagreement between correlation and
 the objective is ordinary operation, not a fault. `polarity_agrees_with_sum` is
 `None` — not `False` — on any commitment the flat-sum objective did not make on
-the polarity axis (the low-SNR path and both seed fallbacks): reporting
-disagreement for a comparison that never ran is the same dishonesty this issue
-is about.
+the polarity axis (the low-SNR path, both seed fallbacks, and — since the
+`alignment_prescription` basin pin — any round whose polarity axis the request
+held to one sign): reporting disagreement for a comparison that never ran is
+the same dishonesty this issue is about. That last one is why the selection
+carries `polarity_pinned` at all: a pinned round still commits
+`explicit_prescription_committed`, so the objective alone cannot say whether
+the question was put.
 
 **The household surface.** The objective reaches the review screen through
 `_candidate_summary` → `_candidate_review_payload` → the wizard's
@@ -4862,6 +4866,17 @@ is about.
 designed — this measurement could not check it"* rather than *"Inverted
 (measured)"*. "Measured" is the one word a household reads as "we checked", and
 on that path nothing checked (#2607 S3).
+
+`polarity_pinned` rides that same path and is checked **first**, wording a
+pinned round as *"Inverted (pinned for this round)"*. It is a second fact
+rather than a fifth objective because the objective genuinely cannot carry it —
+a pinned round commits the same `explicit_prescription_committed` an unpinned
+prescription does — and because membership in the declared-design set also
+governs the anchor withdrawal, which a pinned round does not get. The two
+overlap on one arm (a pinned prescription on a refused capture), and the pin
+wins there because the pin is what shipped. The list-comparison guard cannot
+see a payload key, so
+`test_the_browser_and_python_agree_on_the_pinned_polarity_key` guards this one.
 
 `_estimate_alignment` remains the coarse, drift-corrected GCC-PHAT source for
 the seed polarity and capture-quality confidence, and computes the fine stage.

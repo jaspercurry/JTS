@@ -225,8 +225,9 @@ function renderCandidateReview(review) {
   // A SET, not one string: that refusal has four commitments, differing in the
   // DELAY they commit and agreeing exactly here. The fourth (#2662) commits an
   // explicit bench PRESCRIPTION, which the refusal does not touch because it
-  // never came from this capture — but its polarity is still the declaration,
-  // so it words the same way. Mirrors
+  // never came from this capture — and its polarity is the declaration too,
+  // so it words the same way UNLESS that round also pinned the polarity, which
+  // the `polarityPinned` bit below takes ahead of this list. Mirrors
   // `program_analysis.ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`; a browser module
   // cannot import a Python constant, so `tests/test_crossover_envelope_v2.py`
   // fails when the two lists disagree and
@@ -237,6 +238,25 @@ function renderCandidateReview(review) {
     'no_delay_committed_after_unreadable_apply',
     'explicit_prescription_held_after_low_snr',
   ].includes(review.alignment_objective);
+
+  // The OTHER way a polarity is not a measured result: the round PINNED it.
+  // A separate bit and not a fifth member of the list above, because the
+  // objective cannot carry this — a pinned round commits the very same
+  // `explicit_prescription_committed` an unpinned prescription does — and
+  // because that list is also read for commitments whose ANCHOR is withdrawn,
+  // which a pinned round's is not. Nor can it be inferred from
+  // `polarity_agrees_with_sum === null`: a seed-committed arm reports null too,
+  // and ITS polarity is a measurement (the correlation's).
+  //
+  // Checked BEFORE `declaredByDesign` because the two overlap on exactly one
+  // arm — a pinned prescription on a capture the SNR verdict refused — and
+  // there the pin is what actually shipped, so "as designed" would name the
+  // wrong author. Python owns the bit (`CrossoverCandidate.polarity_pinned` →
+  // `analysis_json` → `_candidate_summary` → `_candidate_review_payload`);
+  // `tests/js/crossover_polarity_provenance_test.mjs` drives this renderer with
+  // a pinned payload, and `tests/test_crossover_envelope_v2.py` pins the
+  // round-trip that carries it here.
+  const polarityPinned = review.polarity_pinned === true;
 
   const rows = [];
   trims.forEach((trim) => {
@@ -264,11 +284,14 @@ function renderCandidateReview(review) {
     ]));
   }
   if (hasPolarity) {
-    const polarityText = declaredByDesign
-      ? 'As designed — this measurement could not check it'
-      : review.polarity === 'invert'
-        ? 'Inverted (measured)'
-        : 'Kept as set';
+    const polarityBase = review.polarity === 'invert' ? 'Inverted' : 'Kept as set';
+    const polarityText = polarityPinned
+      ? `${polarityBase} (pinned for this round)`
+      : declaredByDesign
+        ? 'As designed — this measurement could not check it'
+        : review.polarity === 'invert'
+          ? 'Inverted (measured)'
+          : 'Kept as set';
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [
         el('p', {class: 'measurement-row__title', text: 'Polarity'}),

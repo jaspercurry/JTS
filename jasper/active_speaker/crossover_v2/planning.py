@@ -340,6 +340,14 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
         "polarity_agrees_with_sum": (
             align.polarity_agrees_with_sum if align else None
         ),
+        # WHETHER ANYTHING MEASURED THE POLARITY AT ALL, which the two fields
+        # above cannot answer between them: a pinned round commits the same
+        # `alignment_objective` an unpinned prescription does, and a
+        # `polarity_agrees_with_sum` of None is also what a seed-committed arm
+        # reports — and THAT arm's polarity is a measurement (correlation's).
+        # The household row words an operator's instruction differently from a
+        # measured result, so it needs the discriminator, not an inference.
+        "polarity_pinned": bool(cand.polarity_pinned) if cand else False,
         # The wrong-lobe disclosure travels with the candidate that authorized
         # the apply, not just the journal: the mode it names is magnitude-flat
         # and time-wrong, so an on-axis VERIFY cannot contradict it and the

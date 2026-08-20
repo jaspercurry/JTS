@@ -587,12 +587,19 @@ ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
 #: The commitments where the flat-sum objective chose the POLARITY — the only
 #: ones that may answer ``polarity_agrees_with_sum``. A set rather than a bare
 #: ``== ALIGNMENT_COMMITTED_FLAT_SUM`` since #2662's explicit prescription: that
-#: path fixes the DELAY axis and still scores both polarities at it, so the
-#: correlation-vs-objective comparison genuinely happened and reporting ``None``
-#: would hide a real disagreement. The rule for membership is exactly that — the
-#: flat sum answered the polarity question — and it is a narrower claim than
-#: :data:`_SELECTOR_COMMITTED_OBJECTIVES`, which is about the selector having
-#: run at all.
+#: path fixes the DELAY axis and ordinarily still scores both polarities at it,
+#: so the correlation-vs-objective comparison genuinely happened and reporting
+#: ``None`` would hide a real disagreement. The rule for membership is exactly
+#: that — the flat sum answered the polarity question — and it is a narrower
+#: claim than :data:`_SELECTOR_COMMITTED_OBJECTIVES`, which is about the
+#: selector having run at all.
+#:
+#: **Membership is necessary and no longer sufficient.** A prescription may also
+#: PIN the polarity, and then the same objective commits without the axis ever
+#: being scored. That is why :attr:`AlignmentPairSelection.polarity_agrees_with_sum`
+#: asks :attr:`~AlignmentPairSelection.polarity_pinned` FIRST: the objective
+#: names which commitment was made, and only the selection knows whether the
+#: question this set is about was actually put.
 _FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
@@ -1106,14 +1113,28 @@ class MeasurementPriors:
     (:func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`).
     Like ``applied_alignment`` it is a fact the host holds and hands down rather
     than one this module could reach for, and it is read on exactly one path:
-    :func:`_select_alignment_pair`, which commits it as the delay and lets the
-    flat-sum objective keep the polarity. ``None`` — the default and every
+    :func:`_select_alignment_pair`, which commits it as the delay and — unless
+    ``explicit_alignment_polarity_sign`` says otherwise — lets the flat-sum
+    objective keep the polarity. ``None`` — the default and every
     ordinary session — leaves the automatic selection byte-identical. A bare
     ``float | None`` rather than ``AppliedAlignment``'s wrapper because this
     question has only TWO answers: a prescription was made, or none was. There
     is no third "one was made and cannot be read" state to distinguish — an
     unreadable one never becomes a prior at all, it is refused at the boundary
     with a named reason.
+
+    ``explicit_alignment_polarity_sign`` is the OPTIONAL other half of that same
+    prescription: ``+1``/``-1`` in this module's own polarity frame
+    (:func:`polarity_label`), translated from the request's word by the reader
+    that owns the word. It pins the BASIN a fit may solve in, because delay and
+    polarity are degenerate on axis — invert plus half a period at Fc sums
+    almost identically — so a re-fit at one physical configuration can hop
+    basins between rounds and turn a one-variable round into two. It constrains
+    the same selection at the same point, so the trims and the delay re-solve
+    UNDER the pin rather than being edited after it. ``None`` is every ordinary
+    session and the whole automatic path, byte for byte. Never set without
+    ``explicit_alignment_delay_us``: the request that carries a polarity must
+    state a delay, so the two always arrive together.
 
     ``mic_tier`` (#1668 PR-C) is the correction-envelope trust tier
     (``jasper.active_speaker.linearization_envelope.MIC_TIERS`` — "reference"
@@ -1135,6 +1156,7 @@ class MeasurementPriors:
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
     explicit_alignment_delay_us: float | None = None
+    explicit_alignment_polarity_sign: int | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers, NOT product objects: the kernel may not import
     # jasper.active_speaker, so it is handed `freqs -> complex response`.
@@ -1531,6 +1553,17 @@ class CrossoverCandidate:
     #: where a prescription had actually overridden correlation and flipped the
     #: polarity. ``None`` means no flat sum ever answered it.
     polarity_agrees_with_sum: bool | None = None
+    #: Did the REQUEST hold the polarity axis, rather than anything measuring it?
+    #: Carried from :attr:`AlignmentPairSelection.polarity_pinned` for the reason
+    #: the field above is carried and not re-derived, and it exists because the
+    #: household row has to word an operator's instruction differently from a
+    #: measurement. It is NOT derivable from the two facts already here:
+    #: ``alignment_objective`` is the same ``explicit_prescription_committed``
+    #: pinned or not, and ``polarity_agrees_with_sum is None`` is also what a
+    #: seed-committed arm reports — whose polarity IS a measurement (the
+    #: correlation's). ``False`` on a selection-less arm is therefore correct
+    #: rather than a fallback: the seed shipped, so nothing was pinned.
+    polarity_pinned: bool = False
 
 
 @dataclass(frozen=True)
@@ -4089,18 +4122,34 @@ class AlignmentPairSelection:
     grid_points: int
     grid_step_us: float
     left_anchor_lobe: bool = False
+    #: Was the POLARITY axis pinned by the request rather than searched? The
+    #: objective string cannot carry this: a pinned round still commits the
+    #: prescription, so it is still
+    #: :data:`ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION` and must stay in
+    #: :data:`ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES` for the receipt's
+    #: ``committed`` bit to keep meaning what it means. What changes is only
+    #: whether the flat sum answered the polarity question — which is exactly
+    #: what :attr:`polarity_agrees_with_sum` reports, so it is recorded as its
+    #: own bit and read there.
+    polarity_pinned: bool = False
 
     @property
     def polarity_agrees_with_sum(self) -> bool | None:
         """Did correlation's polarity answer survive the flat-sum objective?
 
         ``None`` on any commitment the flat-sum objective did not make on the
-        POLARITY axis — today the low-SNR path, where the declared design is
+        POLARITY axis — the low-SNR path, where the declared design is
         committed precisely because the evidence a flat sum would read is not
-        trustworthy. Recording ``False`` there would report a comparison that
-        never happened, which is the same dishonesty
-        :data:`_SELECTOR_COMMITTED_OBJECTIVES` refuses for the seed fallbacks.
+        trustworthy, and a PINNED round, where the axis held one value and
+        nothing was compared to anything. Recording ``False`` there would report
+        a comparison that never happened, which is the same dishonesty
+        :data:`_SELECTOR_COMMITTED_OBJECTIVES` refuses for the seed fallbacks —
+        and on the pinned path it would be actively misleading, since a pin that
+        happened to match the seed would read as correlation being confirmed by
+        a search that never ran.
         """
+        if self.polarity_pinned:
+            return None
         if self.objective not in _FLAT_SUM_POLARITY_OBJECTIVES:
             return None
         return self.polarity_sign == self.seed_polarity_sign
@@ -4128,6 +4177,7 @@ def _select_alignment_pair(
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
     explicit_delay_us: float | None = None,
+    explicit_polarity_sign: int | None = None,
 ) -> AlignmentPairSelection | None:
     """Commit the (polarity, delay) pair whose predicted blend sums flattest.
 
@@ -4213,17 +4263,31 @@ def _select_alignment_pair(
     at Fc from that basis, and refused at the request boundary if it is not.
     When present it FIXES the delay axis — the grid is that one point, so the
     committed delay is exactly the prescribed number and never a nearby grid
-    point that scored better — and the polarity axis is searched as usual, so
-    the objective still owns the question it owns. It outranks the low-SNR
+    point that scored better — and, unless ``explicit_polarity_sign`` pins it
+    too, the polarity axis is searched as usual, so the objective still owns the
+    question it owns. It outranks the low-SNR
     ladder, because that ladder answers "what do we commit when nothing better
     is known" and a bench-measured prescription IS something better; what the
-    refusal still costs is the POLARITY, which is this capture's question.
+    refusal still costs is an UNPINNED polarity, which is this capture's
+    question.
 
     Deliberately NOT an anchor substitute. Re-centring the search on the
     prescription would let the objective wander off the prescribed value, and
     the arm measured would then not be the arm asked for — the one property a
     delay-sweep harness cannot give up. The seed pair is still scored, so the
     record always shows what the prescription displaced.
+
+    ``explicit_polarity_sign`` pins the other axis of that same prescription,
+    and pins it the same way: the polarity grid becomes that one sign, so the
+    objective chooses the trims and the residual UNDER the pinned basin instead
+    of being handed a candidate someone flipped afterwards. It applies on BOTH
+    prescription arms — including the low-SNR one, where an unpinned round
+    commits declared ``+1`` because polarity is this capture's question: a pin
+    is not this capture's answer either, so the refusal has nothing to say about
+    it. ``None`` is every ordinary session and leaves both arms byte-identical.
+    The commitment records :attr:`~AlignmentPairSelection.polarity_pinned` so
+    ``polarity_agrees_with_sum`` reports ``None`` rather than an agreement no
+    search produced.
 
     Returns ``None`` when the objective cannot be evaluated at all — no
     frequency bin inside ``[lo_hz, hi_hz]``, or no candidate with a finite score
@@ -4262,14 +4326,19 @@ def _select_alignment_pair(
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
 
     if explicit_delay_us is not None and branch_snr_insufficient:
-        # The prescription stands (it did not come from this capture); the
-        # polarity does not (it did). Declared relative polarity ``+1``, for the
-        # reason the arm below states.
+        # The prescription stands (it did not come from this capture); an
+        # UNPINNED polarity does not (it did), so it commits declared relative
+        # polarity ``+1`` for the reason the arm below states. A PINNED polarity
+        # did not come from this capture either, so the refusal has no more to
+        # say about it than it does about the delay.
         prescribed_us = float(explicit_delay_us)
+        prescribed_sign = (
+            1 if explicit_polarity_sign is None else int(explicit_polarity_sign)
+        )
         return AlignmentPairSelection(
-            polarity_sign=1,
+            polarity_sign=prescribed_sign,
             delay_us=prescribed_us,
-            ripple_db=_ripple_at(1, prescribed_us),
+            ripple_db=_ripple_at(prescribed_sign, prescribed_us),
             seed_polarity_sign=seed_polarity_sign,
             seed_delay_us=seed_delay_us,
             seed_ripple_db=seed_ripple_db,
@@ -4277,6 +4346,7 @@ def _select_alignment_pair(
             grid_points=1,
             grid_step_us=0.0,
             left_anchor_lobe=_left_anchor_lobe(prescribed_us),
+            polarity_pinned=explicit_polarity_sign is not None,
         )
 
     if branch_snr_insufficient:
@@ -4311,8 +4381,9 @@ def _select_alignment_pair(
     # walking a grid of identical scores and calling the winner a selection.
     grid_step_us = 0.0
     delays = [seed_delay_us]
-    # A prescription fixes the delay axis to exactly one point and leaves the
-    # polarity axis to the objective. The seed is NOT appended here (it is
+    # A prescription fixes the delay axis to exactly one point, and leaves the
+    # polarity axis to the objective unless `explicit_polarity_sign` pins that
+    # too (the `signs` line below). The seed is NOT appended here (it is
     # everywhere else): appending it would let the search return the seed's
     # delay whenever the seed happened to score within the flat-minimum
     # epsilon, and an arm that silently measures the estimator's answer instead
@@ -4339,7 +4410,17 @@ def _select_alignment_pair(
             grid_step_us = step_us
         delays = [*grid, seed_delay_us]
 
-    pairs = [(sign, delay) for sign in (1, -1) for delay in delays]
+    # The polarity axis, pinned the same way the delay axis is: one value, and
+    # the objective solves everything else under it. The seed sign is NOT added
+    # back for the reason the seed delay is not — a pinned round that scored the
+    # seed's basin could commit it under the pin's name, which is the failure
+    # this whole path exists to remove. `seed_ripple_db` above already scored
+    # the seed pair, so the record still shows what the pin displaced.
+    signs = (
+        (1, -1) if explicit_polarity_sign is None
+        else (int(explicit_polarity_sign),)
+    )
+    pairs = [(sign, delay) for sign in signs for delay in delays]
     # Non-finite scores are not candidates. `_ripple_db` is finite for any
     # finite band (its 1e-12 magnitude clamp keeps the log bounded), so this
     # only fires on a branch TF that already carries NaN/inf — but then
@@ -4395,6 +4476,7 @@ def _select_alignment_pair(
         grid_points=len(delays),
         grid_step_us=grid_step_us,
         left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
+        polarity_pinned=explicit_polarity_sign is not None,
     )
 
 
@@ -6114,6 +6196,7 @@ def _analyze_measure(
         branch_snr_insufficient=branch_snr_insufficient,
         applied_alignment=priors.applied_alignment,
         explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
+        explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
     )
     # `_build_candidate` owns the selection; the estimate published here is the
     # one every downstream consumer reads (`alignment_to_candidate_fields`
@@ -6188,6 +6271,7 @@ def _build_candidate(
     branch_snr_insufficient: bool = False,
     applied_alignment: AppliedAlignment | None = None,
     explicit_alignment_delay_us: float | None = None,
+    explicit_alignment_polarity_sign: int | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
     _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -6310,6 +6394,7 @@ def _build_candidate(
             branch_snr_insufficient=branch_snr_insufficient,
             applied_alignment=applied_alignment,
             explicit_delay_us=explicit_alignment_delay_us,
+            explicit_polarity_sign=explicit_alignment_polarity_sign,
         )
         if alignment.status == ALIGNMENT_OK
         else None
@@ -6394,6 +6479,20 @@ def _build_candidate(
                 None if explicit_alignment_delay_us is None
                 else round(float(explicit_alignment_delay_us), 3)
             ),
+            # The basin half of the same disclosure, and the deciding value on
+            # this line: with it, `polarity` above is the round's INSTRUCTION
+            # rather than its finding, and `polarity_agrees_with_sum` is None
+            # because nothing was compared. Spelled in this module's own
+            # polarity frame so all three polarity fields on one line —
+            # `seed_polarity`, `prescribed_polarity`, `polarity` — read in one
+            # vocabulary; the request's own words live on the receipt. `None`
+            # when no prescription was made at all, matching its delay sibling;
+            # "unpinned" when one was made and left the basin to the objective.
+            prescribed_polarity=(
+                None if explicit_alignment_delay_us is None
+                else "unpinned" if explicit_alignment_polarity_sign is None
+                else polarity_label(int(explicit_alignment_polarity_sign))
+            ),
             anchor_delay_us=(
                 None if anchor_delay_us is None
                 else round(float(anchor_delay_us), 3)
@@ -6428,6 +6527,13 @@ def _build_candidate(
             fc_hz=round(float(fc_hz), 3),
             prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
             committed_delay_us=round(float(delay_us), 3),
+            # A pinned basin is lost on exactly the same rails the delay is, and
+            # by the same silence, so it is disclosed beside it.
+            prescribed_polarity=(
+                "unpinned" if explicit_alignment_polarity_sign is None
+                else polarity_label(int(explicit_alignment_polarity_sign))
+            ),
+            committed_polarity=polarity_label(polarity_sign),
             alignment_status=alignment.status,
             objective=alignment_objective,
         )
@@ -6601,6 +6707,12 @@ def _build_candidate(
         polarity_agrees_with_sum=(
             None if selection is None else selection.polarity_agrees_with_sum
         ),
+        # Same rule, same reason: from the selection that applied the pin. No
+        # selection means the seed shipped, and correlation's answer is a
+        # measurement — so this is honestly ``False`` even on a round that ASKED
+        # for a basin (the `alignment_prescription_not_committed` warning is
+        # where that round learns its arm did not run).
+        polarity_pinned=bool(selection is not None and selection.polarity_pinned),
     )
     return candidate, (freqs, predicted_db)
 

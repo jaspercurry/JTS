@@ -1989,6 +1989,74 @@ def test_the_browser_and_python_agree_on_which_objectives_are_unmeasured():
     assert in_browser == set(ALIGNMENT_DECLARED_POLARITY_OBJECTIVES)
 
 
+def test_done_candidate_review_carries_whether_the_polarity_was_pinned():
+    """The basin pin survives the projection into ``candidate_review``.
+
+    The sibling above carries WHICH objective committed the polarity. That is
+    not enough on its own: a round that PINNED the polarity commits the very
+    same ``explicit_prescription_committed`` an unpinned prescription does, so
+    the objective cannot tell the renderer that nothing measured this polarity.
+    The bit does, and it has to survive the same projection the objective does
+    or the row silently reverts to "Inverted (measured)".
+    """
+    pinned = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            alignment_objective="explicit_prescription_committed",
+            polarity_pinned=True,
+        ),
+    ))
+    assert pinned["candidate_review"]["polarity_pinned"] is True
+
+    # An UNPINNED prescription is the control, and it is the whole point: the
+    # same objective must NOT carry the bit, or the fix would reword every
+    # prescribed round rather than the pinned ones.
+    unpinned = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            alignment_objective="explicit_prescription_committed",
+        ),
+    ))
+    assert unpinned["candidate_review"]["polarity_pinned"] is False
+
+
+def test_the_browser_and_python_agree_on_the_pinned_polarity_key():
+    """The cross-language guard for a class the list comparison cannot see.
+
+    ``test_the_browser_and_python_agree_on_which_objectives_are_unmeasured``
+    compares one literal LIST against one frozenset. The basin pin is carried
+    by neither — it is a payload KEY the renderer reads by name — so that guard
+    was structurally blind to it, and #2607 S3 reopened through the gap: the
+    review row rendered "Inverted (measured)" for a polarity an operator had
+    pinned and nothing had measured.
+
+    A key name is a cross-language contract exactly as a literal list is. If
+    Python renames the field, or the renderer reads a different one, the bit
+    silently reads as absent and the copy silently reverts — no exception, no
+    failing assertion anywhere else.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const polarityPinned = review\.([a-z0-9_]+) === true;", source,
+    )
+    assert match, "the renderer no longer reads a named pinned-polarity bit"
+
+    payload = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            alignment_objective="explicit_prescription_committed",
+            polarity_pinned=True,
+        ),
+    ))["candidate_review"]
+    # The name the browser reads is a key Python actually sends, and it is True
+    # on a pinned round — the renderer's `=== true` accepts nothing weaker.
+    assert match.group(1) in payload
+    assert payload[match.group(1)] is True
+
+
 def test_done_candidate_review_omits_linearization_fields_when_absent():
     """A candidate with no linearization at all (ineligible / plain trims)
     renders an empty outcome string and no octave rows — never a phantom

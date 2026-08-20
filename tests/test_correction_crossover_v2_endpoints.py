@@ -7235,6 +7235,47 @@ def test_candidate_summary_linearization_fields_default_empty():
     assert summary["linearization_octave_reasons"] == {}
 
 
+def test_candidate_summary_carries_whether_the_polarity_was_pinned():
+    """The web hop of the basin pin, on the REAL projection (#2607 S3, redux).
+
+    ``_candidate_review_payload`` reads this summary, and the renderer reads
+    that payload — so if the bit stops being copied HERE the household row
+    silently reverts to "Inverted (measured)" over a polarity an operator
+    pinned. The envelope-side guards use their own candidate fixture and are
+    structurally blind to this hop: a mutation run that deleted this very line
+    left the whole envelope suite green.
+
+    Absent reads False rather than missing, so the renderer's ``=== true`` has
+    a value to test on every candidate, including ones frozen before the field.
+    """
+    from jasper.active_speaker.measured_crossover_candidate import (
+        MeasuredCrossoverCandidate,
+    )
+
+    def _summary_for(analysis):
+        return v2host._candidate_summary(MeasuredCrossoverCandidate(
+            program_id="prog-abc",
+            analysis=analysis,
+            source_preset=_preset(),
+            role_attenuations_db={"woofer": 0.0, "tweeter": -2.0},
+        ))
+
+    pinned = _summary_for({
+        "alignment_confidence": 0.9,
+        "alignment_objective": "explicit_prescription_committed",
+        "polarity_pinned": True,
+    })
+    assert pinned["polarity_pinned"] is True
+
+    # The same objective WITHOUT the bit — the discriminator the objective
+    # cannot supply, which is the whole reason this key exists.
+    unpinned = _summary_for({
+        "alignment_confidence": 0.9,
+        "alignment_objective": "explicit_prescription_committed",
+    })
+    assert unpinned["polarity_pinned"] is False
+
+
 def test_candidate_summary_none_candidate_returns_none():
     assert v2host._candidate_summary(None) is None
 

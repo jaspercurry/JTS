@@ -17,12 +17,15 @@
 // measured result. "Measured" is the one word a household reads as "we
 // checked", and on that path nothing checked.
 //
-// This harness pins the three cases renderCandidateReview()
+// This harness pins the cases renderCandidateReview()
 // (deploy/assets/correction/js/crossover/main.js) has to tell apart:
 //   - a measured inversion still says so;
 //   - a measured keep still says so;
 //   - a declared-design commitment says it was NOT checked, and never uses the
-//     word "measured", whatever polarity string rides with it.
+//     word "measured", whatever polarity string rides with it;
+//   - and (§5, the basin pin) a round whose polarity the REQUEST held says so
+//     in its own words — the same defect reopened by a new route, since a
+//     pinned round commits an objective that is in neither list above.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -241,5 +244,73 @@ render({
 });
 check(polarityRowText() === "Inverted (measured)",
   "a candidate with no objective renders unchanged", { got: polarityRowText() });
+
+// --- 5. A PINNED basin is worded as an instruction, not a measurement -----
+// The basin pin reopened #2607 S3 by a new route. A pinned round commits
+// `explicit_prescription_committed`, which is in NEITHER list above — not the
+// declared-design set, and not "no objective" — so both existing guards were
+// structurally blind to it and the row rendered "Inverted (measured)" for a
+// polarity nothing measured. The discriminator is the payload bit, so these
+// cases differ from §1 only by `polarity_pinned`.
+for (const [polarity, expected] of [
+  ["invert", "Inverted (pinned for this round)"],
+  ["keep", "Kept as set (pinned for this round)"],
+]) {
+  render({
+    ...baseEnvelope,
+    candidate_review: candidateReview({
+      polarity,
+      alignment_objective: "explicit_prescription_committed",
+      polarity_pinned: true,
+    }),
+  });
+  const text = polarityRowText();
+  check(text === expected,
+    `a pinned ${polarity} says it was pinned`, { got: text });
+  check(!/measured/i.test(text),
+    `a pinned ${polarity} never says "measured"`, { got: text });
+}
+
+// The overlap arm, and the reason the pin is tested BEFORE the design list:
+// a pinned prescription on a capture the SNR verdict refused is in the
+// declared-design set AND pinned. The pin is what actually shipped, so "as
+// designed" would name the wrong author.
+render({
+  ...baseEnvelope,
+  candidate_review: candidateReview({
+    polarity: "invert",
+    alignment_objective: "explicit_prescription_held_after_low_snr",
+    polarity_pinned: true,
+  }),
+});
+check(polarityRowText() === "Inverted (pinned for this round)",
+  "a pinned low-SNR arm credits the pin, not the design",
+  { got: polarityRowText() });
+
+// The CONTROL that makes the bit load-bearing: the identical payload without
+// it renders exactly as it did before this change. This is what fails if the
+// renderer ever starts inferring the pin from the objective instead.
+render({
+  ...baseEnvelope,
+  candidate_review: candidateReview({
+    polarity: "invert",
+    alignment_objective: "explicit_prescription_committed",
+  }),
+});
+check(polarityRowText() === "Inverted (measured)",
+  "an UNPINNED prescription is still worded as measured", { got: polarityRowText() });
+
+// …and an explicit `false` is the same as absent, so a payload that always
+// carries the key cannot change an unpinned round's copy.
+render({
+  ...baseEnvelope,
+  candidate_review: candidateReview({
+    polarity: "invert",
+    alignment_objective: "explicit_prescription_committed",
+    polarity_pinned: false,
+  }),
+});
+check(polarityRowText() === "Inverted (measured)",
+  "polarity_pinned:false reads exactly like absent", { got: polarityRowText() });
 
 console.log(JSON.stringify({ ok: true, passed }));
