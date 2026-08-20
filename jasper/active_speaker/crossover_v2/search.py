@@ -503,16 +503,21 @@ def _candidate_at(
     spend its budget on pairs that differ only by a constant.
 
     **This shape high-passes the HF role and nothing else, and that is a bound
-    rather than an oversight.** The front door refuses a candidate that says
-    nothing about a role a declaration protects — a missing corner IS the
-    hazard, and a candidate cannot opt out of a wall by staying silent
-    (:func:`~jasper.active_speaker.crossover_v2.candidate_space.strictest_highpass_hz`
-    returns ``None``, which the shared predicate reads as unsatisfied). So a
-    floor declared on the LF role, or on any role a two-way plan never names,
-    describes a protective filter this shape cannot emit, and every candidate is
-    refused by name. That is the correct outcome: the alternative is proposing
-    an unprotected branch to get around a driver's declaration. What the search
-    owes is legibility, not a workaround — the refusal is on every point and the
+    rather than an oversight.** A floor declared on the LF role, or on any role
+    a two-way plan never names, therefore has no corner in this shape to answer
+    it, and the search may not invent one: proposing an unprotected branch to
+    get around a driver's declaration is the failure the front door exists to
+    stop.
+
+    What answers such a floor is the chain, not the candidate. The caller
+    declares what each branch already high-passes at outside the crossover on
+    :attr:`~jasper.active_speaker.crossover_v2.candidate_space.CandidateBounds.standing_highpass_hz_by_role`
+    — a two-way woofer's bass-management high-pass sits ahead of the split — and
+    the front door credits it for exactly the roles this shape cannot cover
+    (#2760; reading the crossover corner alone refused 1681 of 1681 candidates
+    on a confirmed profile). When the chain carries nothing there, every
+    candidate is still refused by name, and what the search owes then is
+    legibility rather than a workaround: the refusal is on every point and the
     incumbent is still graded, so a household running that branch sees it.
     """
     return XoverCandidate(

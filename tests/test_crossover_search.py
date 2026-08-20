@@ -284,16 +284,18 @@ def test_every_emitted_candidate_high_passes_the_floor_declared_role(shortlist) 
     assert shortlist.ranked
 
 
-def test_a_floor_on_a_role_the_plan_never_high_passes_refuses_everything() -> None:
-    """Fail-closed and DISCLOSED, because the search cannot express that filter.
+def test_a_floor_nothing_in_the_chain_high_passes_refuses_everything() -> None:
+    """Fail-closed and DISCLOSED, when the branch really is open below its floor.
 
     A two-way plan puts a high-pass on the HF role and a low-pass on the LF one,
-    so a floor declared on the LF role — or on a role the plan never names —
-    describes a protective filter this shape has no way to emit. Every candidate
-    is then refused by name at the front door, and that is the honest outcome:
-    the search may not work around a wall by proposing an unprotected branch,
-    and an empty shortlist that says ``below_declared_floor`` on every point is
-    a legible answer where a silently-shortened one would not be.
+    so neither a floor on the LF role nor one on a role the plan never names has
+    a crossover corner to answer it. When the chain declares no standing
+    high-pass there either — ``camilla_yaml._bass_management_active`` emits the
+    lowest driver's only when the preset carries a local subwoofer — nothing
+    honours that floor and every candidate is refused by name. That is the
+    honest outcome: the search may not work around a wall by proposing an
+    unprotected branch, and an empty shortlist saying ``below_declared_floor``
+    on every point is legible where a silently-shortened one would not be.
     """
     lf_floor = _bounds(
         declared_floor_hz_by_role={"tweeter": 1500.0, "woofer": 60.0},
@@ -316,6 +318,45 @@ def test_a_floor_on_a_role_the_plan_never_high_passes_refuses_everything() -> No
     # produce a shortlist, so the two assertions above are about the LF floor
     # and not about the fixture refusing everything for some other reason.
     assert _search(bounds=_bounds()).ranked
+
+
+def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -> None:
+    """#2760: the crossover is not the only filter on the branch.
+
+    The same LF floor as above, on a bass-managed chain. The woofer's low end is
+    high-passed at the sub corner AHEAD of the split — a filter no candidate
+    proposes and none can remove — so the floor is honoured and the whole space
+    stays proposable. Read off the crossover corner alone it did not: the
+    offline search refused 1681 of 1681 candidates, the incumbent included, the
+    first time a confirmed driver-safety profile was supplied, and could only
+    run by withholding the woofer's declared floor entirely.
+
+    The HF floor is still compared against the crossover corner, so this is the
+    LF wall standing down and not the safety wall going away.
+    """
+    bass_managed = _bounds(
+        declared_floor_hz_by_role={"tweeter": 1500.0, "woofer": 60.0},
+        standing_highpass_hz_by_role={"woofer": 80.0},
+    )
+    admitted = _search(bounds=bass_managed)
+
+    assert admitted.ranked
+    assert ("incumbent", "below_declared_floor") not in admitted.refusals
+    # Byte-for-byte the shortlist the same walk produces with no LF floor
+    # declared at all: crediting the standing filter changed which candidates
+    # are legal and nothing else about the search.
+    assert json.dumps(prediction_document(admitted), sort_keys=True) == (
+        json.dumps(prediction_document(_search()), sort_keys=True)
+    )
+
+    # And the wall is still a wall: raise the woofer's floor above what the
+    # chain stands at and every candidate is refused again, by the same name.
+    exposed = _search(bounds=_bounds(
+        declared_floor_hz_by_role={"tweeter": 1500.0, "woofer": 100.0},
+        standing_highpass_hz_by_role={"woofer": 80.0},
+    ))
+    assert exposed.ranked == ()
+    assert {why for _what, why in exposed.refusals} == {"below_declared_floor"}
 
 
 def test_every_proposed_trim_is_inside_the_declared_range() -> None:
