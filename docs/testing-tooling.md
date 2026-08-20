@@ -37,6 +37,7 @@
 | Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
+| Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
@@ -1723,6 +1724,73 @@ and the only signal is `correction.crossover_v2_uncalibrated_capture` in the
 `jasper-correction-web` journal. Hardware-free coverage lives in
 [`tests/test_e0_capture_experiment.py`](../tests/test_e0_capture_experiment.py),
 which runs the same offline checks `--selftest` does.
+
+---
+
+## Crossover-v2 round banking
+
+`scripts/bank-crossover-round.sh <dest-dir>` pulls one crossover-v2 round's
+evidence off the Pi into a directory you name — never a hardcoded campaign
+path, unlike the throwaway `night_bank.sh` / `pull_dumps.sh` /
+`integrity_summary.py` scripts this productizes (most recently
+`captures/linearization-night-2026-08-19/tools/`). `<dest-dir>` must not
+already exist non-empty — re-running into a used directory is refused
+(exit `4`) rather than silently truncating the prior pull, since every
+artifact below is written with a plain `>` redirect.
+
+The first thing written, before any Pi round-trip, is `provenance.json`
+— the host and user actually banked, a UTC timestamp, and this script's
+own commit — so a banked tree always names its own source even if every
+pull below it fails. This is also where an explicit `PI_HOST=` /
+`PI_USER=` override is guaranteed to win: `_lib.sh` sources `.env.local`
+with `set -a`, which can otherwise silently overwrite an
+already-exported `PI_HOST` before the `${PI_HOST:-jts.local}` fallback
+ever runs (repo-wide, tracked as #2689) — this script captures the
+caller's export before sourcing `_lib.sh` and re-applies it after, so
+`PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>`
+reliably banks jts3 even when `.env.local` points somewhere else.
+
+It then pulls the newest session bundle, the crossover-v2 flow state, the
+design draft, a bounded journal window (the four units a round speaks
+through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
+`jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
+under-voltage grep counts), the round's own prediction fields lifted out
+of the flow state before the next round overwrites them
+(`verify_priors.predicted_sum` / `verify_priors.predicted_spec` /
+`fc_selection` / etc.), and the dump-ring captures
+(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
+and `dumps/sidecar/`). Every pull is best-effort and independently
+reported to stderr, and a per-artifact status summary prints at the end
+regardless of outcome.
+
+Three things can make the script refuse a run, and none of them ever
+deletes a file that was already pulled — the refusal is the exit code
+plus the printed findings, forensics stay on disk. Each has its own exit
+code, on purpose: a caller scripting a retry loop over this command needs
+to tell "this destination is unusable" apart from "nothing to check yet"
+without parsing stderr.
+
+| Exit | Meaning |
+|---|---|
+| `0` | the round bundle and flow state were both pulled, and `jasper.audio_measurement.capture_integrity` found every dump-ring sidecar clean |
+| `1` | the capture-integrity check found nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) — **or** `<dest-dir>` was omitted entirely (bash's own `${1:?…}` exit code; a one-time invocation mistake, not a state a retry loop cycles through, so it is not worth a distinct code) |
+| `2` | the round bundle and flow state were both pulled, but capture-integrity found at least one dump-ring sidecar dirty (including one whose JSON could not be parsed) — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
+| `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank; this overrides whatever capture-integrity found, even a clean dump-ring |
+| `4` | `<dest-dir>` already exists and is non-empty. Nothing was pulled — a caller retrying into the same destination after a failed bank needs this distinguishable from `1`'s "nothing to check" |
+
+Exit `0`/`1`/`2` are exactly `jasper.audio_measurement.capture_integrity`'s
+own contract, propagated unchanged; `3` and `4` are this script's own,
+layered on top of it (that command alone never returns either — the
+non-empty-`<dest-dir>` and incomplete-bank checks are the bank script's
+job, not the checker's). Standalone: `python -m
+jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`.
+Hardware-free coverage — clean / dirty / unreadable fixture trees, the
+exit-code values themselves (not just the names), and one test per named
+finding class — lives in
+[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py);
+the bank script's own non-empty-`<dest-dir>` refusal (exit `4`, no Pi
+needed — the check runs before any SSH call) is pinned in
+[`tests/test_bank_crossover_round_script.py`](../tests/test_bank_crossover_round_script.py).
 
 ---
 
