@@ -740,19 +740,13 @@ def cloud_position_record(
     }
 
 
-#: The stimulus regime EVERY lateral pose is measured in, stated on the record
-#: so a bundle's reader never has to infer it from the phase name.  It is a
-#: property of :data:`~.journey.PHASE_LATERAL` itself rather than of one walk:
-#: ``program_for_phase`` hands every pose the anchor's interleaved per-driver
-#: MEASURE object, which is what makes a pose's two curves comparable with the
-#: anchor's at all.
+#: What every :data:`~.journey.PHASE_LATERAL` pose plays -- ``program_for_phase``
+#: hands them all the anchor's interleaved per-driver MEASURE object.
 #:
-#: The vocabulary is
-#: :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER`'s, spelled here
-#: as a literal because that module imports the flow and the flow imports this
-#: one — an import would close a cycle.  The equality is pinned by
-#: ``test_the_pose_record_states_the_seams_own_regime_word`` rather than left to
-#: a reader to notice.
+#: A literal copy of :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER`
+#: because importing it would close a cycle (that module imports the flow, the
+#: flow imports this one).  Pinned equal by
+#: ``test_the_pose_record_states_the_seams_own_regime_word``.
 LATERAL_POSE_REGIME = "per_driver"
 
 
@@ -766,40 +760,20 @@ def lateral_pose_record(
 ) -> dict[str, Any]:
     """One retained lateral pose, as the evidence bundle's sidecar carries it.
 
-    :func:`cloud_position_record`'s sibling, and deliberately a separate builder
-    rather than a widened one: the two takes answer different questions, so they
-    record different facts.  A cloud position is a SUMMED sweep judged by gating
-    and ripple, and its record says so.  A pose is a per-driver replay of the
-    anchor's program at a stated bearing, and what an offline consumer needs
-    from it is WHERE the microphone was and WHAT was played — the gate/ripple
-    columns a cloud record carries are not the pose's question, and columns
-    present but never meaningful are worse than absent.
+    Takes: the accepted :class:`LateralPose`, plus the four facts it does not
+    carry.  ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT
+    of the design axis), derived by the flow's ``position_angle_deg`` and
+    stated here rather than re-derived.  ``lateral_consumer`` is one of
+    :data:`~.journey.LATERAL_CONSUMERS`.
 
-    It takes the :class:`LateralPose` whole rather than seven of its fields
-    restated at the call site, which is the difference between a record OF a
-    pose and a record that happens to agree with one.  Only what the pose does
-    not carry is a keyword.
+    Guarantees: WHERE the microphone was (``position_deg`` + ``offset_cm`` +
+    ``at_mark``), WHAT played (``regime``), WHO the walk was for
+    (``lateral_consumer``), and the identity/verifier pair
+    (``take_id``, ``wav_sha256``) a replay needs.  Refuses nothing.
 
-    **``position_deg`` is the load-bearing addition, and it is stated rather
-    than derived here** (:func:`~jasper.active_speaker.crossover_v2_flow.position_angle_deg`
-    is the one derivation, and it lives with the offsets it reads).  It is the
-    SIGNED whole-degree bearing — negative LEFT of the design axis — which is
-    the axis the P2 forward model indexes its per-driver plants by.
-    ``offset_cm`` rides beside it because the centimetre is the primary datum
-    every shipped consumer already reads, and the two are one geometry stated
-    twice on purpose: the round trip between them is the pin that either is
-    honest.
-
-    ``lateral_consumer`` records who the walk was FOR
-    (:data:`~.journey.LATERAL_CONSUMERS`).  A bundle read months later cannot
-    otherwise tell an evidence walk's poses from a selector walk's, and they are
-    not interchangeable — one of them fed a statistic and the other deliberately
-    did not.
-
-    ``take_id`` and ``wav_sha256`` mean exactly what they mean on a cloud
-    position: the id names the take (a retake reuses the pose id, so the id
-    alone does not identify one), and the digest is the replay VERIFIER, never
-    the index.
+    Separate from :func:`cloud_position_record` rather than a widened one: a
+    cloud position is a summed sweep judged by gating and ripple, and those
+    columns are never meaningful for a pose.
     """
     return {
         "pose_id": pose.pose_id,

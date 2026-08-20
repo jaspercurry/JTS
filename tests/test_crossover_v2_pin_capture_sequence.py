@@ -102,8 +102,12 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     # here too. Paused since 2026-08-18 — see the flag's own comment.
     assert "include_lateral = STAGE1_INCLUDES_LATERAL" in source
     assert STAGE1_INCLUDES_LATERAL is False
-    # …and threads that one read into both surfaces: the spec and the map.
-    assert source.count("include_lateral=include_lateral") == 2
+    # …and threads that one read into every surface: the map, the same map
+    # rebuilt when #2732's angle-walk take supplies one, and the spec. Three
+    # since that take, and the count is about the LOCAL being threaded rather
+    # than about how many builders read it — a literal at any of the three is
+    # the drift this catches.
+    assert source.count("include_lateral=include_lateral") == 3
 
     # Stated beside the sibling flag it was written next to, so a change that
     # turned the pre-apply cloud back on without revisiting the walk is
@@ -118,7 +122,7 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     # reading ``entry_baseline_unavailable`` a stage later.
     assert "include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE" in source
     assert STAGE1_INCLUDES_ENTRY_BASELINE is True
-    assert source.count("include_entry_baseline=include_entry_baseline") == 2
+    assert source.count("include_entry_baseline=include_entry_baseline") == 3
 
 
 def test_both_builders_default_the_walk_off_which_is_why_a_dropped_thread_is_silent():

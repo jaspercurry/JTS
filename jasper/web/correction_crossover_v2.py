@@ -2875,30 +2875,22 @@ def _take_staged_blend_prescription(round_ordinal: int) -> Any:
 def _take_staged_angle_walk(
     plan_shape: Any, *, base_entries: int, lateral_group_present: bool,
 ) -> tuple[tuple[Any, ...], str] | None:
-    """The staged angle walk this session should run, or ``None`` (#2732 P2).
+    """This session's staged angle walk as ``(poses, consumer)``, or ``None``.
 
-    :func:`_take_staged_blend_prescription`'s twin, and deliberately its shape:
-    ONE take, at ONE place, whose refusal becomes a session that opens without
-    the walk. ``None`` is every ordinary session.
+    :func:`_take_staged_blend_prescription`'s twin: ONE take, at ONE place.
+    ``None`` is every ordinary session, and every refused one.
 
-    **The consumer identity is assigned HERE and is not in the document.** Any
-    walk an operator stages is evidence for the offline P2 forward model; the
-    fixed stage-1 walk is the ratified Fc selector's. A document field would be
-    a second writer of a fact this take owns, and the one it could write wrong
-    is the one that decides whether #2711's paused statistic runs.
+    Guarantees: the document is CONSUMED whichever way it goes, so a refusal
+    happens once rather than every session; a refusal is journalled with the
+    producing module's own slug and never raises, so the session opens in its
+    ordinary shape; and the consumer is always
+    ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here rather than read from the
+    document, because it is the fact that decides whether #2711's paused
+    statistic runs and it may have exactly one writer.
 
-    **Fail-open on the session, fail-closed on the walk.** A refused document is
-    consumed (so it refuses once, not every session) and named in the journal,
-    and the session then opens in its ordinary shape. A household session is
-    never hostage to an operator's staged file — which is also why the refusals
-    are checked before any state is opened.
-
-    ``lateral_group_present`` refuses a staged walk while the session already
-    runs one: two lateral groups cannot share one index space, and the relay
-    arithmetic that keeps the paused walk's six poses affordable
-    (``MAX_CLOUD_MEASURE_POSITIONS``' own note) has no room for a second walk on
-    top. That check is the caller's fact to supply, not this module's to read:
-    the seam that composes the walk deliberately never reads the pause flag.
+    ``lateral_group_present`` refuses a staged walk while the session plans a
+    lateral group of its own. Passed in rather than read, because the composing
+    seam may not read session flags.
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
@@ -7196,13 +7188,11 @@ def prepare_v2_session(
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
     )
-    # P2's staged angle walk (#2732). ONE take, HERE, feeding all four surfaces
-    # that must agree about it: this map, the emitted spec, and the conductor's
-    # two lateral kwargs. Before any state is opened, so a refusal costs
-    # nothing. The map above is the walk's own ``base_entries`` — the captures
-    # this session takes that are NOT the walk — and is rebuilt below when a
-    # walk is taken. That rebuild is the one exception to "built ONCE" and it
-    # is still one DECISION: the take happens once and both builds read it.
+    # P2's staged angle walk (#2732). ONE take, feeding the map, the spec and
+    # the conductor's two lateral kwargs. Before any state is opened, so a
+    # refusal costs nothing. The map above is this walk's ``base_entries`` —
+    # the captures that are NOT the walk — and is rebuilt below when one is
+    # taken; that rebuild is still ONE decision, because the take is not redone.
     staged_walk = _take_staged_angle_walk(
         plan_shape,
         base_entries=len(stage1_index_phase),
@@ -7216,7 +7206,7 @@ def prepare_v2_session(
         stage1_index_phase = build_v2_cloud_index_phase_map(
             plan_shape=plan_shape,
             include_cloud_measure=include_cloud_measure,
-            include_lateral=True,
+            include_lateral=include_lateral,
             include_entry_baseline=include_entry_baseline,
             lateral_prompts=lateral_prompts,
         )
@@ -7395,9 +7385,7 @@ def prepare_v2_session(
             # selector cannot fire there and an argument passed to it would be
             # dead rather than symmetric.
             crossover_search_band_hz_by_role=context.crossover_search_band_hz_by_role,
-            # #2732 P2. From the SAME take the map and the spec above read, so
-            # the poses the phone is prompted through, the phase the conductor
-            # runs at each index, and who the walk is FOR are one decision.
+            # #2732 P2. From the SAME take the map and the spec above read.
             lateral_consumer=lateral_consumer,
             lateral_prompts=lateral_prompts,
             measurement_protection_sections_by_role=protection_sections,

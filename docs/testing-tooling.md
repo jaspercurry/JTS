@@ -1880,41 +1880,43 @@ single-use and last-wins, logged as `event=angle_capture.request_staged`. Owner:
 [`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py).
 
 **The next measurement session takes it, once.** Opening
-`/correction/crossover/v2/session` consumes the document, composes its stops
-into the session's capture plan as a lateral group, and walks them behind the
-shipped gate/advance machinery; each accepted pose lands in the evidence bundle
-as its raw WAV plus an angle-stamped sidecar (`position_deg`, `offset_cm`,
-`at_mark`, `regime`, `lateral_consumer`). Journal:
-`event=correction.crossover_v2_angle_walk_taken`, or
-`..._angle_walk_refused` with the reason.
+`/correction/crossover/v2/session` consumes the document and walks its stops as
+that session's lateral group. Every accepted pose banks its raw WAV plus a
+sidecar carrying `position_deg`, `offset_cm`, `at_mark`, `regime` and
+`lateral_consumer`.
 
-**A taken walk is EVIDENCE, and its last pose adjudicates nothing.** The
+**A taken walk is EVIDENCE: its last pose adjudicates nothing.** The
 lateral-walk statistic paused on 2026-08-18 runs only for the fixed stage-1
-selector walk; a staged walk declares the forward-model consumer, so the walk's
-close — and with it `_adjudicate_fc` — is suppressed and says so
-(`event=correction.crossover_v2_lateral_close_suppressed`,
-`fc_statistic_paused=true`). The
-[#2711](https://github.com/jaspercurry/JTS/issues/2711) re-introduction bar is
-untouched by this door; the ruling that put the take behind that split is
-recorded in
+selector walk. A staged walk declares the forward-model consumer, so the walk's
+close is suppressed — the [#2711](https://github.com/jaspercurry/JTS/issues/2711)
+bar is untouched, and the ruling behind that split is recorded in
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 under "Stage P2".
 
-**Per-driver stops only, for now**, and refused rather than narrowed: a session
-lateral group plays MEASURE's per-driver program at every pose, so a summed stop
-would be measured as something other than what was asked for. Two more refusals
-are properties of the pair (this walk, this session) rather than of the
-document — the walk's mover must match the session's tier, and the composed
-session must fit the relay's blob-index ceiling, which a walk at the spool's own
-`MAX_STOPS` does not. Every refusal consumes the document and leaves the session
-opening in its ordinary shape.
+Read the journal, not the code, to find out what happened:
+
+| `event=correction.…` | says |
+|---|---|
+| `crossover_v2_angle_walk_taken` | stops, angles, mover, regimes, consumer |
+| `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
+| `crossover_v2_lateral_close_suppressed` | `planned`/`captured`, and `fc_statistic_paused=true` |
+
+**Four refusals.** Every one consumes the document — so it refuses once, not
+every session — and leaves the session opening in its ordinary shape.
+
+| slug | why |
+|---|---|
+| `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
+| `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
+| `walk_over_relay_capacity` | entries + stops + retakes must fit the relay's blob-index ceiling, which a walk at the spool's own `MAX_STOPS` does not |
+| `walk_lateral_group_already_planned` | the session already walks a lateral group |
 
 Hardware-free coverage: the mailbox and the CLI in
 [`tests/test_angle_capture_trigger.py`](../tests/test_angle_capture_trigger.py),
 the composition and its refusals in
 [`tests/test_angle_capture_seam.py`](../tests/test_angle_capture_seam.py), the
 take in [`tests/test_angle_capture_take.py`](../tests/test_angle_capture_take.py),
-and the session's own suppression pins in
+and the suppression pins in
 [`tests/test_crossover_v2_lateral_evidence.py`](../tests/test_crossover_v2_lateral_evidence.py).
 
 ---

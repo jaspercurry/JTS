@@ -211,7 +211,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
-    LATERAL_CONSUMERS,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOSING,
@@ -1054,9 +1053,7 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
 
 
 def walk_shape_for(
-    *,
-    cloud_positions: int,
-    lateral: bool,
+    *, cloud_positions: int, lateral: bool,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> str:
     """The orientation sentence for a stage-1 session's ACTUAL groups (R16).
@@ -1065,17 +1062,13 @@ def walk_shape_for(
     them — a household needs to know how much room the whole session wants, and
     two sentences quoting two ceilings would just make them pick one.
 
-    ``lateral_prompts`` is the walk actually taken (default: the ratified
-    table). A taken angle walk can reach far past 40 cm — a ±45° stop is a metre
-    off a 1 m mark — and quoting 40 cm at a household about to be walked past it
-    is this sentence's own dishonesty.
+    ``lateral_prompts`` is the walk this session actually takes; ``None`` is the
+    ratified table. A taken angle walk can reach far past that table's 40 cm.
     """
+    table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
     reach = max(
         cloud_walk_reach_cm(cloud_positions) if cloud_positions else 0.0,
-        (
-            cloud_walk_reach_cm_of(lateral_prompts or LATERAL_POSE_PROMPTS)
-            if lateral else 0.0
-        ),
+        cloud_walk_reach_cm_of(table) if lateral else 0.0,
     )
     return _walk_shape(reach)
 
@@ -1844,9 +1837,8 @@ def build_v2_cloud_index_phase_map(
     this same function, so an entry's prompt can never address a different
     phase than the session believes it is running.
 
-    ``lateral_prompts`` is the walk's own table — L is its length — threaded
-    rather than read from the module so a taken angle walk and this map cannot
-    disagree about how many captures it is. ``None`` is the shipped table.
+    ``lateral_prompts`` is the walk's own table (L is its length); ``None`` is
+    the ratified one.
     """
     shape = _shape_from_kwargs(
         plan_shape,
@@ -1855,7 +1847,7 @@ def build_v2_cloud_index_phase_map(
         cloud_verify_positions=cloud_verify_positions,
     )
     n = shape.cloud_measure_positions
-    lateral_table = lateral_prompts or LATERAL_POSE_PROMPTS
+    lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
     nxt = 3
     if include_lateral:
@@ -5175,11 +5167,8 @@ class CrossoverV2Session:
         # ``self._lateral_prompts``; each pose holds two curves on the fixed
         # ~120-point basis, so the whole walk is a few thousand complex values.
         self._lateral_poses: list[LateralPose] = []
-        # WHO this session's lateral group is FOR, and the ONE table it walks.
-        # The defaults reproduce the shipped session exactly. The pair is judged
-        # by its vocabulary's own owner (fail-closed, and why, at
-        # ``validated_lateral_consumer``); restated here as the flow's error so
-        # constructing a session refuses in one vocabulary.
+        # Defaults reproduce the shipped session exactly. Judged by the
+        # vocabulary's owner; re-raised so construction refuses in one type.
         try:
             self._lateral_consumer = validated_lateral_consumer(
                 lateral_consumer, states_own_poses=lateral_prompts is not None,
@@ -6519,9 +6508,7 @@ class CrossoverV2Session:
         except ValueError:
             position = 0
         # R16: the lateral walk has its own table and its own length. Same
-        # front-loading rule, same builder enumeration order. The SESSION's
-        # table, never the module constant, so the prompt banked with a pose is
-        # the prompt that pose was captured at.
+        # front-loading rule, same builder enumeration order.
         table = (
             self._lateral_prompts if phase == PHASE_LATERAL
             else CLOUD_POSITION_PROMPTS
@@ -6925,11 +6912,8 @@ class CrossoverV2Session:
             # 8 banked rounds reached with the walk on. Re-arming the walk
             # (``STAGE1_INCLUDES_LATERAL``) re-arms the sweep with it; that
             # flag's comment carries why the pause sits on the walk.
-            #
-            # An EVIDENCE walk is a lateral group whose close never adjudicates,
-            # so ``_adjudicating_walk`` — not the phase alone — is the question:
-            # arming the sweep for one would build the barred statistic's inputs
-            # for a walk with nothing to spend them at.
+            # Not the phase alone: an evidence walk has no close to spend a
+            # candidate set at.
             if verdict.accepted and self._adjudicating_walk:
                 self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
@@ -7598,11 +7582,8 @@ class CrossoverV2Session:
         # produce — the exact defect the 2026-07-27 decision removed for the
         # cloud. The lateral group's last accepted pose closes it instead.
         #
-        # **That reason is false of an EVIDENCE walk.** "The walk is the fit's
-        # input" is not true of one feeding an offline model, and deferring for
-        # it would leave the household waiting on a candidate only
-        # ``_close_lateral_walk`` publishes — the method such a walk never
-        # reaches. It publishes on the no-walk branch below instead.
+        # The stated reason — the walk is the fit's INPUT — is false of an
+        # evidence walk, whose close never publishes anything to wait for.
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases or self._adjudicating_walk:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
@@ -7651,13 +7632,12 @@ class CrossoverV2Session:
 
     @property
     def _adjudicating_walk(self) -> bool:
-        """Does this session run a lateral group that READS ITSELF as a whole?
+        """This session runs a lateral group AND that group reads itself.
 
-        Both halves in one predicate, because every reader wants both and a
-        reader that checked only the phase is exactly the bug this guards:
+        Both halves, because a reader that checks only the phase is the bug this
+        guards. ``True`` turns on the three behaviours
         :func:`~jasper.active_speaker.crossover_v2.journey.lateral_adjudicates`
-        over the consumer this session was built with. ``False`` on an evidence
-        walk — same program, same poses, same retention, none of the reading.
+        names.
         """
         return (
             PHASE_LATERAL in self._journey.plan.phases
@@ -7743,18 +7723,10 @@ class CrossoverV2Session:
     def _retain_lateral_pose(
         self, pose: LateralPose, prompt: CloudPositionPrompt, result: Any,
     ) -> None:
-        """Bank one accepted pose's RAW capture, through :meth:`_hand_to_retention`.
+        """Bank one accepted pose's WAV + sidecar. Fail-soft; never a gate.
 
-        Until this existed a pose was retained in MEMORY only — two curves,
-        nothing on disk. Survivable while every consumer was in-session; not
-        survivable for an OFFLINE forward model, which needs the WAV and the
-        bearing it was taken at, months later. No branch on consumer, so an
-        un-paused selector walk's poses land in the same shape an evidence
-        walk's do. ``prompt`` is the one the operator was ACTUALLY shown,
-        threaded in for :meth:`_prompt_shown_for`'s reason: a sidecar naming a
-        spot they were told to abandon is worse than none. Called outside
-        ``_close_lock``, unlike the cloud's retention, because nothing written
-        here is read by a close.
+        ``prompt`` must be :meth:`_prompt_shown_for`'s result — the sidecar's
+        bearing names where the operator was sent, not where the table wanted.
         """
         self._hand_to_retention(
             pose.pose_id, PHASE_LATERAL, result,
@@ -7787,12 +7759,9 @@ class CrossoverV2Session:
         A walk where nothing was captured still closes: the anchor already owns
         the coefficients (see :meth:`_group_position_floor`).
 
-        **An EVIDENCE walk closes nothing, and this is the ONE place that is
-        decided** — not at each of the two routes in (an accepted last pose, a
-        settled one), which would be two branches to keep in step and a third
-        route away from a gap. Its candidate was published at MEASURE, and
-        everything below is the adjudication #2711 bars. Suppressed by name, not
-        by silence: "did not run" has to be a positive journal statement.
+        Returns ``{}`` for a walk that does not adjudicate, and journals why.
+        Decided HERE, not at either route in (an accepted last pose, a settled
+        one), so a third route cannot miss it.
         """
         if not self._adjudicating_walk:
             log_event(
@@ -8122,15 +8091,12 @@ class CrossoverV2Session:
     def _hand_to_retention(
         self, take_id: str, phase: str, result: Any, metadata: Mapping[str, Any],
     ) -> bool:
-        """Hand one accepted take's bytes to the evidence seam. ONE boundary.
+        """Hand one take's bytes to the evidence seam; return whether it stored.
 
-        Three kinds of take are retained — a cloud position, an R16 lateral
-        pose, and #2291's entry baseline — and the boundary is the same fact
-        about all three rather than three agreeing copies of it: no seam bound
-        is not an error, and a bound seam that fails is forensics lost, never a
-        gate. A full disk must not turn an acoustically-good capture into a
-        retake. Returns whether the bytes were stored, which is what lets the
-        entry baseline record an artifact reference only when there is one.
+        The ONE fail-soft boundary for all three retained kinds (cloud position,
+        lateral pose, entry baseline). No seam bound is not an error, and a
+        bound seam that raises costs a WARN: a full disk must not turn a good
+        capture into a retake.
         """
         if self._seams.retain_position is None:
             return False
@@ -12079,7 +12045,7 @@ def build_v2_capture_plan(
     lateral_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
     ]
-    lateral_table = lateral_prompts or LATERAL_POSE_PROMPTS
+    lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
     for offset, capture_index in enumerate(lateral_indexes):
         prompt = _positioned_prompt(lateral_table[offset], shape)
         entries.append(
@@ -13008,7 +12974,6 @@ __all__ = [
     "PHASE_LATERAL",
     "LATERAL_CONSUMER_FC_SELECTOR",
     "LATERAL_CONSUMER_FORWARD_MODEL",
-    "LATERAL_CONSUMERS",
     "LATERAL_POSE_PROMPTS",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
