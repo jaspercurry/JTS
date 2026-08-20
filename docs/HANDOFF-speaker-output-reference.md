@@ -1379,11 +1379,18 @@ rejected — see the "Stage 2a landed" callout above.)
   under a width-agnostic `composite` `/state` block. The Observability section
   below prescribes it and `SinkMode::as_str` defers it as "a separate change",
   so that container is live work — only the `.state` leaf this bullet used to
-  spell is unprescribed. **One real gap does remain:** unlike the divergence
-  branch beside it (`event=outputd.dual_apple.delay_diverged`), the
-  bad-PCM-state bail emits no `event=` line of its own, so the fault is visible
-  only as the bail message and the restart — the one place this section's
-  "observable" promise is unmet for a composite. Child-presence gating is the
+  spell is unprescribed. **Real gaps remain, and there are at least three:**
+  the divergence branch logs
+  `event=outputd.dual_apple.delay_diverged` before it bails, but the
+  bad-PCM-state bail beside it does not, and neither do the two child-write
+  bails — a repeated `Ok(0)` ("writei returned 0 frames repeatedly") and the
+  non-`EPIPE` `writei` propagate that a removal takes. `write_dac_fail_closed`
+  carries exactly one `eprintln!` in its whole body, the xrun line, so every
+  other exit from it is silent; `run_alsa` propagates with a bare `?` and
+  `main` logs only config-class errors, so nothing upstream rescues them. All
+  three faults are therefore visible only as the bail message and the restart
+  — this section's "observable" promise is the composite's weakest, not a
+  single missing line. Child-presence gating is the
   **reconciler's**, not the unit's: `dual_apple_runtime_mapping`
   (`jasper/output_hardware.py`) refuses unless exactly two child devices with
   PCMs resolve, while the single `ExecCondition` on `jasper-outputd.service`
@@ -2209,12 +2216,14 @@ re-touched since carries forward from its most recent entry below.
   `alsa_backend.rs`; serialized under `sink_mode == "dual_apple"` in
   `state.rs`). Rewrote it to the shipped bail → `Restart=on-failure` →
   `StartLimitAction=reboot` path, pointed at the reconcile-to-`single_alsa`
-  convergence that actually handles a departed child, and recorded the one
-  genuine gap: the bad-PCM-state bail emits no `event=` line, unlike
-  `event=outputd.dual_apple.delay_diverged` beside it. Split the trailing
+  convergence that actually handles a departed child, and recorded the genuine
+  observability gaps: `write_dac_fail_closed` holds exactly one `eprintln!`, so
+  the bad-PCM-state bail, a repeated `Ok(0)`, and the non-`EPIPE` propagate are
+  all silent, unlike `event=outputd.dual_apple.delay_diverged` beside them.
+  Split the trailing
   gating claim, which was half true — `dual_apple_runtime_mapping` does require
   two child PCMs, but the unit's single `ExecCondition` checks only the one
-  resolved `JASPER_AUDIO_DAC_CARD`. **Three corrections from this PR's
+  resolved `JASPER_AUDIO_DAC_CARD`. **Four corrections from this PR's
   adversarial review, recorded because each was the same defect class the pass
   set out to remove.** First, only `sink.health()` and `child_lost` are dead:
   a per-child array under a width-agnostic `composite` `/state` block is **live
@@ -2238,7 +2247,11 @@ re-touched since carries forward from its most recent entry below.
   so a removal that surfaces first as an underrun DOES log one before recovery
   fails on the vanished device. Which errno a real removal raises first is a
   kernel behaviour no static read settles, which is why the doc now scopes the
-  negative to the errno rather than to the scenario.
+  negative to the errno rather than to the scenario. Fourth, this pass's first
+  draft also called the bad-PCM-state bail "the one place" the section's
+  observable promise is unmet; it is one of at least three, per the
+  single-`eprintln!` count above — a universal asserted from a verified narrow
+  case, which is the same shape as the other three.
   **Nothing else in this pass:** the remaining Resilience
   bullets, the change set, and Observability stand as last verified, which is
   why the footer below still reads 2026-08-15.
