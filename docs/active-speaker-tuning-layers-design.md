@@ -1191,9 +1191,10 @@ because they are easy to re-derive wrongly:
   ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)), and
   [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) opens by saying so
   in its own words — "**No stage-1 session feeds this today.** The lateral walk
-  that produces `poses` was paused on 2026-08-18." The one multi-position walk
-  that *does* run yields nothing per-driver, because every cloud phase sits in
-  `SUMMED_SWEEP_PHASES`
+  that produces `poses` was paused on 2026-08-18." A staged angle walk is
+  per-driver but declares the forward-model consumer, so it feeds no selector;
+  and the multi-position walks that run *automatically* yield nothing
+  per-driver, because every cloud phase sits in `SUMMED_SWEEP_PHASES`
   ([`programs.py`](../jasper/active_speaker/crossover_v2/programs.py)) — and
   `STAGE1_INCLUDES_CLOUD_MEASURE` is `False` besides. Measurement Program v2's
   own "The machinery this reuses is built, and currently paused" paragraph above
@@ -1759,11 +1760,12 @@ injection)". That was wrong on both halves, verified at HEAD: `program.py`'s
 `build_measure_program` already interleaves the two drivers non-overlapping in
 ONE capture routed by channel (its module docstring is quoted in the stage), so
 `DriverResponse.complex_tf`, an exact A/B common time origin, `DriftEstimate`
-and `anchor_delay_us` all ship — **at the mark**, since `spatial.py`'s per-pose
-replay of that program is real but flagged off (`STAGE1_INCLUDES_LATERAL` is
-`False`, `fc_selector.py` says "No stage-1 session feeds this today", and the
-cloud walk that does run is summed-only), a distinction a later pass had to add
-after this paragraph first over-claimed it;
+and `anchor_delay_us` all ship — **at the mark automatically**, since
+`spatial.py`'s per-pose replay of that program runs only when an operator stages
+an angle walk (`STAGE1_INCLUDES_LATERAL` is `False`, `fc_selector.py` says "No
+stage-1 session feeds this today", and the cloud walk that runs on its own is
+summed-only), a distinction a later pass had to add after this paragraph first
+over-claimed it;
 and branch muting is not merely unnecessary but *contraindicated*, because
 `camilla_yaml.protected_neutral_program_origin` classifies the program origin
 only while every commission-mute filter is exactly pass-through

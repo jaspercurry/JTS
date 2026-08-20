@@ -2207,9 +2207,9 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # lateral pause). Two gates below — ``comparison_complete`` and
     # ``authorized_winner`` — encode "the Fc comparison finished, and the corner
     # on the speaker is the one it authorized". Neither question EXISTS when no
-    # candidate sweep ran: the sweep fires only in a session that walks the
-    # lateral poses, so since the pause ``fc_selection`` is absent on every
-    # shipped session. Reading that absence as an unfinished comparison made
+    # candidate sweep ran: the sweep fires only for a lateral walk whose
+    # consumer adjudicates, so ``fc_selection`` is absent on every shipped
+    # session — with the pause, and with an operator's staged walk too. Reading that absence as an unfinished comparison made
     # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
     # a successful commission told the household "not enough complete evidence
     # to grade… this report changed nothing automatically" over a tune that IS
@@ -2873,38 +2873,70 @@ def _take_staged_blend_prescription(round_ordinal: int) -> Any:
 
 
 def _take_staged_angle_walk(
-    plan_shape: Any, *, base_entries: int, lateral_group_present: bool,
+    plan_shape: Any,
+    *,
+    base_entries: int,
+    lateral_group_present: bool,
+    plans_cloud_group: bool,
 ) -> tuple[tuple[Any, ...], str] | None:
     """This session's staged angle walk as ``(poses, consumer)``, or ``None``.
 
     :func:`_take_staged_blend_prescription`'s twin: ONE take, at ONE place.
     ``None`` is every ordinary session, and every refused one.
 
-    Guarantees: the document is CONSUMED whichever way it goes, so a refusal
-    happens once rather than every session; a refusal is journalled with the
-    producing module's own slug and never raises, so the session opens in its
-    ordinary shape; and the consumer is always
+    Guarantees: it NEVER raises, so a staged document can never cost a
+    household its session — the three refusal classes are the spool's
+    ``AngleRequestRefused``, the seam's ``LateralWalkRefused``, and the bare
+    ``CrossoverV2FlowError`` the spool re-raises for a banked stop that no
+    longer satisfies the seam's contract (a hand-edited angle), which that
+    module deliberately does not re-wrap. Every one is journalled with its
+    producing module's own slug. The consumer is always
     ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here rather than read from the
-    document, because it is the fact that decides whether #2711's paused
-    statistic runs and it may have exactly one writer.
+    document, because it decides whether #2711's paused statistic runs and may
+    have exactly one writer.
 
-    ``lateral_group_present`` refuses a staged walk while the session plans a
-    lateral group of its own. Passed in rather than read, because the composing
-    seam may not read session flags.
+    ``consumed`` on the journal line is READ BACK from the spool, never
+    asserted: its two unreadable arms deliberately do not consume, so a
+    permissions mistake refuses every session until it is fixed rather than
+    silently destroying the evidence of itself.
+
+    ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
+    facts, passed in rather than read, because the composing seam may not read
+    session flags.
+
+    A walk does not survive its session. The consumer is not persisted and the
+    document is single-use, so a session that lapses mid-walk re-opens in its
+    ordinary shape and the operator stages again — which is the safe direction:
+    a resumed half-walk would bank poses under a consumer nothing re-declared.
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
         session_lateral_walk,
     )
     from jasper.active_speaker.angle_capture_spool import (
         AngleRequestRefused,
+        staged_angle_request_pending,
         take_staged_angle_request,
     )
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    from jasper.active_speaker.crossover_v2_flow import position_angle_deg
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2FlowError,
+        position_angle_deg,
+    )
+
+    def refused(reason: str, detail: str) -> None:
+        log_event(
+            logger, "correction.crossover_v2_angle_walk_refused",
+            level=logging.WARNING, reason=reason, detail=detail,
+            # READ BACK, never asserted: the spool's two unreadable arms
+            # deliberately do not consume.
+            consumed=not staged_angle_request_pending(),
+            session_continues=True,
+        )
 
     try:
         request = take_staged_angle_request()
@@ -2920,13 +2952,17 @@ def _take_staged_angle_walk(
             request,
             externally_positioned=plan_shape.externally_positioned,
             base_entries=base_entries,
+            plans_cloud_group=plans_cloud_group,
         )
     except (AngleRequestRefused, LateralWalkRefused) as exc:
-        log_event(
-            logger, "correction.crossover_v2_angle_walk_refused",
-            level=logging.WARNING, reason=exc.reason, detail=exc.detail,
-            consumed=True, session_continues=True,
-        )
+        refused(exc.reason, exc.detail)
+        return None
+    except CrossoverV2FlowError as exc:
+        # The third class: a banked stop the seam can no longer build. The spool
+        # re-raises it un-wrapped because ``_validated_angle``'s own sentence
+        # beats anything a second vocabulary could say, so it arrives with no
+        # slug — it gets one here and keeps that sentence as the detail.
+        refused(WALK_STOP_NO_LONGER_VALID, str(exc))
         return None
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
@@ -7197,6 +7233,7 @@ def prepare_v2_session(
         plan_shape,
         base_entries=len(stage1_index_phase),
         lateral_group_present=include_lateral,
+        plans_cloud_group=include_cloud_measure,
     )
     lateral_prompts: tuple[Any, ...] | None = None
     lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR

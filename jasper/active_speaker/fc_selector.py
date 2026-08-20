@@ -7,8 +7,9 @@ RECOMMENDATION. The host retains its winner for Sound-owned apply; see R17.
 **No stage-1 session feeds this today.** The lateral walk that produces
 ``poses`` was paused on 2026-08-18 (``crossover_v2_flow.
 STAGE1_INCLUDES_LATERAL``, whose comment carries the evidence), and the sweep
-that gathers the evidence fires only in a session that walks — so the shipped
-round commits its configured Fc without scoring candidates. Nothing here
+that gathers the evidence fires only in a session that walks an ADJUDICATING
+walk — so the shipped round commits its configured Fc without scoring
+candidates. Nothing here
 changed and nothing here is dead: forcing that flag back on restores this
 module's inputs unmodified. It is kept intact for the redesigned lateral
 statistic the pause is waiting on.

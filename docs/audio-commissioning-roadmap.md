@@ -235,7 +235,8 @@ carries only its position in the order: upstream truth (item 7) → the
 contract → a hardware series that proves the dip moves → then the
 capture-source seam (#2662), whose "pull forward if lateral aborts recur
 during the series" trigger can no longer fire: the lateral walk was paused on
-2026-08-18, so the series runs no lateral captures to abort. Series 1 is why: four rounds converged a trim prescription
+2026-08-18, so a series run takes no lateral captures to abort unless an
+operator stages an angle walk for one (#2732). Series 1 is why: four rounds converged a trim prescription
 against a crossover-region dip that a scalar trim cannot address.
 
 ---

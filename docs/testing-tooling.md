@@ -1901,15 +1901,22 @@ Read the journal, not the code, to find out what happened:
 | `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
 | `crossover_v2_lateral_close_suppressed` | `planned`/`captured`, and `fc_statistic_paused=true` |
 
-**Four refusals.** Every one consumes the document — so it refuses once, not
-every session — and leaves the session opening in its ordinary shape.
+**Five refusals.** The session opens in its ordinary shape after every one, and
+the document is consumed — except on the spool's two unreadable arms, which
+deliberately do not consume so a permissions mistake cannot destroy the evidence
+of itself. The `consumed=` field says which happened; do not assume it.
 
 | slug | why |
 |---|---|
 | `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
 | `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
-| `walk_over_relay_capacity` | entries + stops + retakes must fit the relay's blob-index ceiling, which a walk at the spool's own `MAX_STOPS` does not |
+| `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |
 | `walk_lateral_group_already_planned` | the session already walks a lateral group |
+| `walk_stop_no_longer_valid` | a banked stop no longer satisfies the seam (a hand-edited angle); the detail carries the seam's own sentence |
+
+The spool's own slugs (`angle_request_spool_*`, `measurement_session_already_live`)
+reach the same journal line, so this table is the take's half, not the whole
+vocabulary.
 
 Hardware-free coverage: the mailbox and the CLI in
 [`tests/test_angle_capture_trigger.py`](../tests/test_angle_capture_trigger.py),

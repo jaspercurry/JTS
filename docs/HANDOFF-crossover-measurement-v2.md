@@ -159,7 +159,9 @@ between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 Which phases stage 1 walks is three flags in the flow file, not a guess:
 `STAGE1_INCLUDES_ENTRY_BASELINE` is `True`, and `STAGE1_INCLUDES_CLOUD_MEASURE`
 and `STAGE1_INCLUDES_LATERAL` are `False`, so a shipped session emits no
-`cloud_measure` and no `lateral` phase or prompt. The entry baseline is
+`cloud_measure` phase and no `lateral` phase of its own — an operator's staged
+angle walk is the one way `lateral` indexes reach a plan (#2732, and they
+adjudicate nothing). The entry baseline is
 **last** on purpose: the less the room, the mic and the household have moved
 between it and the graph change, the more of the before→after difference is
 the graph.
@@ -174,8 +176,9 @@ stays in place — prompts, screens, ladder, curve builder, relay arithmetic —
 and forcing the flag back to `True` restores the 9-capture shape unchanged.
 It re-enables when a redesigned lateral statistic shows rank separation above
 its measured noise floor. **The R17 Fc candidate sweep pauses with it**: the
-sweep fires only in a session that walks, so a shipped round now commits its
-configured Fc without scoring alternatives — the verdict all 8 banked rounds
+sweep fires only for a walk whose consumer adjudicates, which the paused stage-1
+walk is and a staged angle walk is not — so a shipped round commits its
+configured Fc without scoring alternatives, the verdict all 8 banked rounds
 reached anyway.
 
 The set is held open past its capture target until the phone posts
@@ -1496,7 +1499,8 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 `True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) and
 `STAGE1_INCLUDES_LATERAL` are both `False`, so a shipped session runs the
 anchor pair, then one summed capture at the mark, and emits no `cloud_measure`
-and no `lateral` phase or prompt. Production passes
+phase and no `lateral` phase of its own (a staged angle walk adds one — see
+"Only a walk the FIT reads" below). Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
@@ -1524,7 +1528,8 @@ The pose measurements are sound (inter-driver drift 0.6–1.9 dB against a
 0.09–0.32 dB mark-return floor; ±40 cm ~2.2× the ±12 cm pair in 8 of 8), so
 the machinery below is intact and unmodified — this is a paused producer
 awaiting a redesigned statistic, not a retired one. **The Fc candidate sweep
-is dormant with it**, since it fires only in a session that walks.
+is dormant with it**, since it fires only for a walk whose consumer
+adjudicates.
 
 Everything from here to the end of this subsection describes the walk **as it
 runs when the flag is forced back to `True`** — indexes 3–8, stage 1 back to
@@ -1600,8 +1605,8 @@ consumer, and a walk an operator staged with `jasper-angle-capture` declares the
 offline forward model. Nothing in-session reads that one as a whole, so MEASURE
 publishes at its own accept, `_close_lateral_walk` suppresses itself by name
 (`event=correction.crossover_v2_lateral_close_suppressed`), and R17's candidate
-sweep never arms. Everything above this paragraph is the selector walk's, and
-unchanged.
+sweep never arms. Every OTHER statement about the walk in this subsection —
+above and below — is the selector walk's, and unchanged.
 
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
@@ -3230,9 +3235,12 @@ final `capture_result` before the page's ~250 ms poll reads it.
 ### Recommending an Fc
 
 > **The sweep that RECOMMENDS an Fc is dormant since 2026-08-18.** It fires
-> only in a session that walks the lateral poses, and that walk is paused (see
-> "Stage 1" above and the `STAGE1_INCLUDES_LATERAL` flag comment), so a shipped
-> round produces no `fc_selection` and never renders **Use N Hz and apply**.
+> only for a lateral walk whose consumer adjudicates, and the one walk that has
+> that consumer is paused (see "Stage 1" above and the
+> `STAGE1_INCLUDES_LATERAL` flag comment). An operator's staged angle walk
+> declares the forward-model consumer instead, so it does not re-arm this
+> either: a shipped round produces no `fc_selection` and never renders
+> **Use N Hz and apply**.
 > Nothing here was removed: re-arming the walk re-arms all of it.
 >
 > **The apply path below is NOT gated on that record** (2026-08-19). It asks
@@ -3371,8 +3379,9 @@ automatic rollback now genuinely runs. Which stage binds it is declared once, in
   terms are not — issue #2291 owns that gap, and
   [`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
   characterizes it.
-- `_adjudicate_fc` at the walk's close — §4.4's rule that anything reading the
-  whole walk waits for the whole walk.
+- `_adjudicate_fc` at the close of an ADJUDICATING walk — §4.4's rule that
+  anything reading the whole walk waits for the whole walk. A walk whose
+  consumer is not this selector never reaches it (#2732).
 
 **Two bounds worth knowing before you touch it.**
 

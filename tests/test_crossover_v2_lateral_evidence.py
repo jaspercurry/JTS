@@ -985,6 +985,7 @@ def _angle_prompts(angles=(0, 7, -7, 22, -22)):
         ac.per_driver_at(list(angles)),
         externally_positioned=False,
         base_entries=3,
+        plans_cloud_group=False,
     )
 
 

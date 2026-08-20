@@ -88,8 +88,6 @@ from jasper.audio_measurement.program import ExcitationProgram
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .crossover_v2_flow import (
-    CLOUD_RETAKE_ALLOWANCE,
-    GEOMETRY_RETRY_POSITIONS,
     MARK_DISTANCE_M,
     POSITION_DEG_KEY,
     POSITION_ROLE_KEY,
@@ -104,6 +102,7 @@ from .crossover_v2_flow import (
     announced_capture_indexes,
     position_angle_deg,
     remote_position_prompt,
+    stage1_plan_max_attempts,
 )
 
 __all__ = [
@@ -129,6 +128,7 @@ __all__ = [
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_RELAY_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
+    "WALK_STOP_NO_LONGER_VALID",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -568,11 +568,19 @@ WALK_OVER_RELAY_CAPACITY = "walk_over_relay_capacity"
 #: flags (see the module docstring).
 WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
 
+#: A banked stop no longer satisfies this module's own contract -- a hand-edited
+#: angle, an unknown regime or mover. The spool re-raises the bare
+#: :class:`CrossoverV2FlowError` for these rather than re-wrapping, because
+#: :func:`_validated_angle`'s sentence beats a second vocabulary; the take gives
+#: that exception this slug and keeps the sentence as the detail.
+WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_RELAY_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
+    WALK_STOP_NO_LONGER_VALID,
 })
 
 
@@ -596,12 +604,14 @@ def session_lateral_walk(
     *,
     externally_positioned: bool,
     base_entries: int,
+    plans_cloud_group: bool,
 ) -> tuple[CloudPositionPrompt, ...]:
     """The poses a measurement session should walk for this request.
 
     Takes: the staged ``request``; ``externally_positioned``, the session's own
     answer (``V2PlanShape.externally_positioned``); ``base_entries``, how many
-    captures that session takes that are NOT this walk.
+    captures that session takes that are NOT this walk; ``plans_cloud_group``,
+    whether it also walks a position cloud.
 
     Returns: one pose per stop, in stop order, in the ``CloudPositionPrompt``
     vocabulary every shipped prompted walk uses. Never a session phase -- the
@@ -612,10 +622,10 @@ def session_lateral_walk(
     are properties of the PAIR (this walk, this session), which is why the
     spool's own document validation cannot make them.
 
-    The capacity bound is the conservative one (geometry retries included),
-    matching ``assert_cloud_plan_fits_relay_capacity``: this seam cannot see
-    whether the session also walks a position cloud, and an under-count strands
-    an operator mid-walk at a blob index the relay Worker rejects.
+    The capacity bound asks :func:`stage1_plan_max_attempts`, the same producer
+    the emitted plan sets ``max_attempts`` from. A second copy of that
+    arithmetic is a gate that refuses walks the relay would have taken, which is
+    what the first one did.
     """
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
@@ -635,14 +645,16 @@ def session_lateral_walk(
             f"(externally_positioned={request.externally_positioned}) but this "
             f"session is externally_positioned={externally_positioned}",
         )
-    allowance = GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
-    attempts = base_entries + len(request.stops) + allowance
+    entries = base_entries + len(request.stops)
+    attempts = stage1_plan_max_attempts(
+        entries, include_cloud_measure=plans_cloud_group,
+    )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
             WALK_OVER_RELAY_CAPACITY,
-            f"{base_entries} session captures + {len(request.stops)} stops + "
-            f"{allowance} retake allowance = {attempts} relay blob indexes, "
-            f"over the ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
+            f"{base_entries} session captures + {len(request.stops)} stops = "
+            f"{entries} entries, needing {attempts} relay blob indexes over a "
+            f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
         )
     return tuple(stop.prompt for stop in resolve_request(request))
 

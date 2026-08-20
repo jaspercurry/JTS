@@ -18,7 +18,9 @@ second validator is the thing this design exists to avoid.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import os
 
 import pytest
 
@@ -71,11 +73,15 @@ def _arm_shape():
     return flow.resolve_plan_shape(flow.TIER_REMOTE)
 
 
-def _take(shape=None, *, base_entries=3, lateral_group_present=False):
+def _take(
+    shape=None, *, base_entries=3, lateral_group_present=False,
+    plans_cloud_group=False,
+):
     return v2host._take_staged_angle_walk(
         shape if shape is not None else _hand_shape(),
         base_entries=base_entries,
         lateral_group_present=lateral_group_present,
+        plans_cloud_group=plans_cloud_group,
     )
 
 
@@ -303,6 +309,10 @@ def test_the_preparer_feeds_map_spec_and_conductor_from_one_take():
     driving ``_open`` needs a live relay. What matters is the wiring -- a second
     take would hand the map and the spec different walks, and a surface left
     unthreaded would render one walk while the conductor ran another.
+
+    Dropping the CONSUMER thread also fails closed at RUNTIME, because
+    ``validated_lateral_consumer`` refuses a session handed a pose table with
+    the selector consumer. This pin catches that earlier and by name.
     """
     source = inspect.getsource(v2host.prepare_v2_session)
     assert source.count("_take_staged_angle_walk(") == 1
@@ -316,3 +326,86 @@ def test_the_preparer_feeds_map_spec_and_conductor_from_one_take():
     # The take is fed the session's own shape, never a default one.
     assert "base_entries=len(stage1_index_phase)" in source
     assert "lateral_group_present=include_lateral" in source
+
+# --- the take opens the session, whatever the document does -------------------
+
+
+def test_a_stop_the_seam_can_no_longer_build_refuses_instead_of_escaping(
+    slot, caplog,
+):
+    """A hand-edited angle must not cost a household its measurement.
+
+    ``take_staged_angle_request`` deliberately re-raises the seam's own
+    ``CrossoverV2FlowError`` un-wrapped for a banked stop that no longer
+    satisfies the contract, because ``_validated_angle``'s sentence beats a
+    second vocabulary. That is a third refusal class, and it reaches
+    ``prepare_v2_session`` — so it is handled here, journalled with a slug, and
+    the session opens in its ordinary shape.
+    """
+    spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["stops"][1]["angle_deg"] = 999
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        assert _take() is None  # never raises
+
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_STOP_NO_LONGER_VALID}" in line
+    # The producing module's own sentence survives as the detail rather than
+    # being re-worded by a second validator.
+    assert "+999 deg" in line
+    assert "consumed=true" in line
+    assert spool.staged_angle_request_pending() is False
+
+
+def test_consumed_is_read_back_from_the_spool_not_asserted(slot, caplog):
+    """The spool's two unreadable arms deliberately do NOT consume.
+
+    A permissions mistake must refuse every session until it is fixed rather
+    than destroying the only evidence of itself — so the journal has to say what
+    the spool actually did. Asserting ``consumed=true`` here would have told an
+    operator their document was spent while it sat on disk, refusing forever.
+    """
+    spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
+    path = spool.angle_request_spool_path()
+    os.chmod(path, 0o000)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert _take() is None
+            assert _take() is None
+        assert path.is_file(), "the unreadable arm must not consume"
+        assert [line for line in _events(caplog) if "consumed=false" in line]
+        assert not [line for line in _events(caplog) if "consumed=true" in line]
+    finally:
+        os.chmod(path, 0o600)
+
+
+def test_a_taken_walk_still_says_it_was_consumed(slot, caplog):
+    """The control for the pin above: an ordinary refusal DID consume, and says
+    so — so ``consumed`` is a read, not a constant in either direction."""
+    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    with caplog.at_level(logging.WARNING):
+        assert _take(_hand_shape()) is None
+    line, = _events(caplog)
+    assert "consumed=true" in line
+    assert spool.staged_angle_request_pending() is False
+
+
+def test_the_take_reads_the_sessions_own_cloud_shape(slot):
+    """The capacity gate needs this session's retake budget, not a guess.
+
+    A cloud group costs two more relay indexes than a cloud-less session of the
+    same length, because only a cloud budgets geometry retakes. The stop count
+    below is chosen so that fact is the ONLY thing separating the two calls:
+    same document length, same ``base_entries``, opposite verdicts. Anything
+    less discriminating passes with the flag ignored — the first version of this
+    test did.
+    """
+    stops = list(range(1, 16))  # 11 + 15 + 5 = 31 fits; + 7 = 33 does not
+    spool.stage_angle_request(ac.per_driver_at(stops))
+    assert _take(base_entries=11, plans_cloud_group=False) is not None
+
+    spool.stage_angle_request(ac.per_driver_at(stops))
+    assert _take(base_entries=11, plans_cloud_group=True) is None

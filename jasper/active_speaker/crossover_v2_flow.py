@@ -1628,6 +1628,27 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
         )
 
 
+def stage1_plan_max_attempts(
+    capture_target: int, *, include_cloud_measure: bool,
+) -> int:
+    """The admission budget a stage-1 plan of ``capture_target`` entries emits.
+
+    THE producer of that number, with two readers: ``build_v2_capture_plan``
+    sets ``CapturePlan.max_attempts`` from it, and ``session_lateral_walk`` asks
+    it whether a composed walk still fits ``MAX_CAPTURE_PLAN_ATTEMPTS``. A copy
+    of it is a gate that refuses plans the relay would have taken.
+
+    Geometry retakes are that cloud group's lever, so they are budgeted only
+    when one is planned. Derived from the entries a plan ACTUALLY emits, never
+    from the shape's cloud-only arithmetic.
+    """
+    return (
+        capture_target
+        + (GEOMETRY_RETRY_POSITIONS if include_cloud_measure else 0)
+        + CLOUD_RETAKE_ALLOWANCE
+    )
+
+
 def _validated_cloud_counts(
     *,
     cloud_measure_positions: int,
@@ -1748,11 +1769,12 @@ STAGE1_INCLUDES_CLOUD_MEASURE = False
 # Re-enable when a redesigned lateral statistic demonstrates rank separation
 # above its measured noise floor on the banked rounds.
 #
-# **The R17 candidate sweep pauses with it, by construction**: the sweep fires
-# only on an accepted MEASURE that a walk will follow, and adjudicates only at
-# the walk's close (``_consume_measure``'s guard, ``_close_lateral_walk``). With
-# no walk the session publishes the configured Fc at MEASURE — the same verdict
-# all 8 banked rounds reached with the walk on.
+# **The R17 candidate sweep pauses with it.** Since #2732 there are TWO
+# deciders, not one: a walk must be in the plan AND its consumer must adjudicate
+# (``_adjudicating_walk``, read by the sweep's arm and by ``_close_lateral_walk``
+# alike). This flag governs the first; an operator's staged walk declares the
+# second and never adjudicates. With neither, MEASURE publishes the configured
+# Fc — the same verdict all 8 banked rounds reached with the walk on.
 #
 # Everything else stays: the pose table, the prompts, the per-pose screens and
 # ladder, ``lateral_pose_curve``, ``lateral_mark_return_drift_db``, the relay
@@ -6902,9 +6924,9 @@ class CrossoverV2Session:
             # raw capture, and it is alive only inside this call. What the
             # session retains past it are derived ``DriverResponse``s, which
             # §4.2's conditioning policy refuses to un-compose. Only on an
-            # accepted MEASURE that a walk will follow — a rejected capture has
-            # no evidence to adjudicate from, and a session with no walk has no
-            # lateral robustness term and no close to adjudicate at.
+            # accepted MEASURE an ADJUDICATING walk will follow — a rejected
+            # capture has no evidence to adjudicate from, and a session without
+            # such a walk has no close to adjudicate at.
             #
             # Since the 2026-08-18 lateral pause, no walk is the SHIPPED stage-1
             # session: this sweep does not run and ``fc_selection`` stays
@@ -7705,6 +7727,9 @@ class CrossoverV2Session:
             attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
             at_mark=pose.at_mark, curves=len(pose.curves),
         )
+        # Outside the lock below, unlike the cloud's in-lock retention: that
+        # one writes ``_group_position_meta``, which the close reads; this
+        # writes nothing any close reads.
         self._retain_lateral_pose(pose, prompt, result)
         # ONE critical section for retain + close, exactly as the cloud's
         # position verdict takes: the candidate build reads the whole walk, and
@@ -7727,6 +7752,7 @@ class CrossoverV2Session:
 
         ``prompt`` must be :meth:`_prompt_shown_for`'s result — the sidecar's
         bearing names where the operator was sent, not where the table wanted.
+        Same shape for both consumers, so their poses stay comparable.
         """
         self._hand_to_retention(
             pose.pose_id, PHASE_LATERAL, result,
@@ -12123,16 +12149,8 @@ def build_v2_capture_plan(
         )
     return CapturePlan(
         capture_target=target,
-        # Derived from the entries this plan ACTUALLY emits rather than from the
-        # shape's cloud-only arithmetic, so a walk that grows (R16's poses) grows
-        # its retake budget with it. Byte-identical on both pre-R16 shapes:
-        # with the cloud on and no lateral, ``target == measure_capture_target``,
-        # so this reproduces ``shape.measure_max_attempts`` exactly; with the
-        # cloud off it reproduces the previous ``target + CLOUD_RETAKE_ALLOWANCE``.
-        max_attempts=(
-            target
-            + (GEOMETRY_RETRY_POSITIONS if include_cloud_measure else 0)
-            + CLOUD_RETAKE_ALLOWANCE
+        max_attempts=stage1_plan_max_attempts(
+            target, include_cloud_measure=include_cloud_measure,
         ),
         schema_version=2,
         entries=tuple(entries),
@@ -12972,6 +12990,7 @@ __all__ = [
     "PHASE_REVIEW",
     "PHASE_CLOSING",
     "PHASE_LATERAL",
+    "stage1_plan_max_attempts",
     "LATERAL_CONSUMER_FC_SELECTOR",
     "LATERAL_CONSUMER_FORWARD_MODEL",
     "LATERAL_POSE_PROMPTS",

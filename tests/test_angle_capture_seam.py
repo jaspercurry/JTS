@@ -31,9 +31,16 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
 )
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
+_FC_HZ = 2000.0
+_ROLES_BANDS = (
+    RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+    RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -262,10 +269,11 @@ def test_empty_and_unknown_requests_are_refused() -> None:
 def test_the_seam_never_mints_the_lateral_phase() -> None:
     """No stop is ever tagged PHASE_LATERAL, in any combination.
 
-    That tag is what routes a capture into the walk's close, where the barred
-    selector term is computed. This seam's captures cannot arrive there because
-    they never carry the tag -- which is why the capability can ship while the
-    statistic stays paused.
+    What this pins is a SEPARATION OF CONCERNS, not the bar. This module answers
+    "what does this stop play"; a session host answers "which phase runs at this
+    index", and since #2732's take it does tag a staged walk's indexes
+    PHASE_LATERAL. The bar is held one layer down, on that group's declared
+    consumer -- see ``tests/test_crossover_v2_lateral_evidence.py``.
     """
     for request in (
         ac.per_driver_at(_SHIPPED_ANGLES),
@@ -524,6 +532,7 @@ def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
         ac.per_driver_at(list(_SHIPPED_ANGLES)),
         externally_positioned=False,
         base_entries=3,
+        plans_cloud_group=False,
     )
     assert len(prompts) == len(_SHIPPED_ANGLES)
     assert [flow.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
@@ -545,6 +554,7 @@ def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
         with pytest.raises(ac.LateralWalkRefused) as excinfo:
             ac.session_lateral_walk(
                 request, externally_positioned=False, base_entries=3,
+                plans_cloud_group=False,
             )
         assert excinfo.value.reason == ac.WALK_REGIME_UNSUPPORTED
         assert ac.REGIME_SUMMED in excinfo.value.detail
@@ -566,6 +576,7 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
                 ac.per_driver_at([7], mover=mover),
                 externally_positioned=session_positioned,
                 base_entries=3,
+                plans_cloud_group=False,
             )
         assert excinfo.value.reason == ac.WALK_MOVER_MISMATCH
     # ...and both matched pairs compose.
@@ -577,50 +588,139 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
             ac.per_driver_at([7], mover=mover),
             externally_positioned=session_positioned,
             base_entries=3,
+            plans_cloud_group=False,
         )
 
 
-def test_the_relay_index_space_bounds_the_walk_and_max_stops_does_not() -> None:
-    """A walk at the spool's own ``MAX_STOPS`` composes PAST the relay ceiling.
+@pytest.mark.parametrize("plans_cloud_group", [False, True])
+def test_the_capacity_gate_admits_exactly_what_the_relay_accepts(
+    plans_cloud_group: bool,
+) -> None:
+    """The gate's verdict IS the relay's, at the boundary, both ways.
 
-    ``MAX_STOPS`` is a wall-clock bound on the walk; this is a bound on the
-    session the walk lands in, and the two are not the same number. Without
-    this refusal a legally-staged 24-stop walk would be admitted and then
-    refused mid-walk by the Worker at a blob index that does not exist — a
-    stall discovered by an operator standing in a room, not by a gate.
+    Stated as agreement with ``_validate_capture_plan`` rather than as its own
+    arithmetic, because the first version of this gate had its own and was
+    wrong in the direction that costs a capability: it added the geometry-retry
+    budget unconditionally, while a plan only budgets geometry retakes when a
+    cloud group is planned, so it refused the two largest LEGAL walks (23 and
+    24 stops on the shipped cloud-less shape — the relay accepts both).
 
-    The boundary is asserted on both sides, so a shifted-by-one bound fails
-    rather than silently widening.
+    Building the plan the session would emit and asking the relay is the whole
+    method here. A gate that agrees with the thing it is guarding cannot drift
+    from it, which is why ``stage1_plan_max_attempts`` is now one producer with
+    two readers.
+    """
+    from jasper.capture_relay.spec import CaptureSpecError, _validate_capture_plan
+
+    shape = flow.resolve_plan_shape(flow.TIER_FULL)
+    base_entries = len(flow.build_v2_cloud_index_phase_map(
+        plan_shape=shape,
+        include_cloud_measure=plans_cloud_group,
+        include_lateral=False,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    ))
+
+    def relay_takes(stops: int) -> bool:
+        plan = flow.build_v2_capture_plan(
+            _ROLES_BANDS, _FC_HZ, plan_shape=shape,
+            include_cloud_measure=plans_cloud_group,
+            include_lateral=True,
+            include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+            lateral_prompts=tuple(ac.pose_at_angle(d) for d in range(1, stops + 1)),
+        )
+        try:
+            _validate_capture_plan(plan)
+        except CaptureSpecError:
+            return False
+        return True
+
+    def gate_takes(stops: int) -> bool:
+        try:
+            ac.session_lateral_walk(
+                ac.per_driver_at(list(range(1, stops + 1))),
+                externally_positioned=False,
+                base_entries=base_entries,
+                plans_cloud_group=plans_cloud_group,
+            )
+        except ac.LateralWalkRefused:
+            return False
+        return True
+
+    # 1..30 covers both boundaries on both shapes.
+    for stops in range(1, 31):
+        assert gate_takes(stops) == relay_takes(stops), (
+            f"gate and relay disagree at {stops} stops "
+            f"(plans_cloud_group={plans_cloud_group})"
+        )
+    # ...and the boundary is really in range, so the loop is not vacuous.
+    assert relay_takes(1) and not relay_takes(30)
+
+
+def test_a_legal_staged_walk_is_never_refused_for_capacity() -> None:
+    """The spool's own ceiling fits the shipped session exactly — and only just.
+
+    ``MAX_STOPS`` is a wall-clock bound on the walk; the relay's blob-index
+    space is a bound on the session it lands in. On the shipped stage-1 shape
+    the two meet exactly at 24, so every walk an operator can legally stage is
+    admitted, with ZERO slack: one more base entry and ``MAX_STOPS`` becomes
+    unreachable. That is the number to re-derive if a fourth stage-1 capture is
+    ever added, and this test is where it fails.
     """
     from jasper.active_speaker.angle_capture_spool import MAX_STOPS
 
-    base_entries = 3
-    allowance = ac.GEOMETRY_RETRY_POSITIONS + ac.CLOUD_RETAKE_ALLOWANCE
-    largest = _relay_ceiling() - base_entries - allowance
+    shape = flow.resolve_plan_shape(flow.TIER_FULL)
+    base_entries = len(flow.build_v2_cloud_index_phase_map(
+        plan_shape=shape,
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=False,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    ))
+    assert base_entries == 3
 
     fits = ac.session_lateral_walk(
-        ac.per_driver_at(list(range(1, largest + 1))),
+        ac.per_driver_at(list(range(1, MAX_STOPS + 1))),
         externally_positioned=False,
         base_entries=base_entries,
+        plans_cloud_group=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
     )
-    assert len(fits) == largest
-
+    assert len(fits) == MAX_STOPS
+    # Zero slack: one more stop than the spool can bank would not fit.
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.session_lateral_walk(
-            ac.per_driver_at(list(range(1, largest + 2))),
+            ac.per_driver_at(list(range(1, MAX_STOPS + 2))),
             externally_positioned=False,
             base_entries=base_entries,
+            plans_cloud_group=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         )
     assert excinfo.value.reason == ac.WALK_OVER_RELAY_CAPACITY
-    # The arithmetic rides in the message, because the operator's only lever is
-    # to stage fewer stops and they need the numbers to pick a count.
+    # The arithmetic rides in the message: the operator's only lever is to stage
+    # fewer stops, and they need the numbers to pick a count.
     detail = excinfo.value.detail
-    for number in (base_entries, largest + 1, allowance, _relay_ceiling()):
+    for number in (base_entries, MAX_STOPS + 1, _relay_ceiling()):
         assert str(number) in detail
 
-    # ...and this is why the refusal is load-bearing rather than theoretical:
-    # the spool will happily bank a walk longer than the largest that fits.
-    assert MAX_STOPS > largest
+
+def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
+    """The refusal is reachable, not theoretical — just not on the shipped shape.
+
+    With the pre-apply cloud on, the base entries alone take 11 of the relay's
+    32 indexes and the plan budgets geometry retakes too, so the walk that fits
+    is far shorter than anything the spool would refuse to bank.
+    """
+    shape = flow.resolve_plan_shape(flow.TIER_FULL)
+    base_entries = len(flow.build_v2_cloud_index_phase_map(
+        plan_shape=shape, include_cloud_measure=True, include_lateral=False,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    ))
+    assert base_entries == 11
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.session_lateral_walk(
+            ac.per_driver_at(list(range(1, 20))),
+            externally_positioned=False,
+            base_entries=base_entries,
+            plans_cloud_group=True,
+        )
+    assert excinfo.value.reason == ac.WALK_OVER_RELAY_CAPACITY
 
 
 def test_the_pose_record_states_the_seams_own_regime_word() -> None:
@@ -636,19 +736,29 @@ def test_the_pose_record_states_the_seams_own_regime_word() -> None:
     assert LATERAL_POSE_REGIME == ac.REGIME_PER_DRIVER
 
 
-def test_composing_a_walk_still_mints_no_session_phase() -> None:
+def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
     """Section 3's ruling, re-asserted over the NEW entry point.
 
     ``session_lateral_walk`` is the first function here whose whole purpose is
     to feed a measurement session, which is exactly the shape that would invite
-    a phase constant. It returns poses; the caller tags the indexes.
+    it to return indexed, phase-tagged stops. It returns POSES, and the caller
+    tags indexes -- so the thing to assert is the RETURN TYPE, not the absence
+    of a string.
+
+    Asserting "no field contains 'lateral'" would be near-vacuous (a pose has
+    no phase field to contain it); asserting the exact shipped type is what
+    would fail if this ever grew a ``ResolvedStop`` or a ``(index, phase)``
+    pair.
     """
     prompts = ac.session_lateral_walk(
         ac.per_driver_at([0, 22]), externally_positioned=False, base_entries=3,
+        plans_cloud_group=False,
     )
-    assert not any(
-        PHASE_LATERAL in (getattr(p, field, "") or "")
-        for p in prompts
-        for field in ("headline", "detail")
+    assert isinstance(prompts, tuple)
+    assert [type(p) for p in prompts] == [flow.CloudPositionPrompt] * 2
+    # A pose carries geometry and copy, and nothing that names a journey.
+    assert not (
+        {f.name for f in dataclasses.fields(flow.CloudPositionPrompt)}
+        & {"phase", "index", "program_phase"}
     )
     assert flow.STAGE1_INCLUDES_LATERAL is False
