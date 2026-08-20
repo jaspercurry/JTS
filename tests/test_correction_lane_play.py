@@ -31,7 +31,7 @@ Four groups of checks:
   3. **The conventions guard.** No file under ``jasper/`` outside a small,
      count-pinned allowlist may contain an ``aplay``/``-D`` spawn shape —
      this is what fails when someone adds an eleventh inline site instead
-     of calling the helper. Scope is ``jasper/`` only: the five
+     of calling the helper. Scope is ``jasper/`` only: the four
      stdlib-only lab probe scripts under ``scripts/`` spell the command by
      design (see correction_lane.py's "Scope of the drift guard" docstring
      section — same exemption, same reason).
