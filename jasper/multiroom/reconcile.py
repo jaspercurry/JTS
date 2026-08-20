@@ -60,6 +60,7 @@ from .config import (
     GroupingConfig,
     bond_has_subwoofer,
     is_active_leader,
+    is_active_member,
     load_config,
     local_sources_parked,
 )
@@ -700,6 +701,44 @@ def outputd_grouping_env(
     }
 
 
+def dac_content_lane_armed(
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
+) -> bool:
+    """Would :func:`outputd_grouping_env` arm the dac_content lane here? PURE.
+
+    ONE derivation, and it is the WRITER'S OWN: this asks
+    :func:`outputd_grouping_env` for the env it would write and reads the
+    lane's FIFO key out of it, rather than restating the three-input rule.
+    A restatement would be a second source of truth that drifts the first
+    time the writer gains a fourth input — which has already happened once
+    (``flat_output_allowed`` arrived with the output runtime contract).
+
+    Its consumer is the coupling support matrix
+    (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
+    blocks ``shm_ring`` only where this lane is armed: a DUMB member reads
+    ``MEMBER_CONTENT_FIFO`` through outputd's own ChannelPick, so a box whose
+    fan-in has moved to the ring would leave that lane with no writer. Every
+    other bonded shape — an active endpoint, or a member whose saved topology
+    forbids a flat DAC graph — gets the cleared lane above and has nothing for
+    the ring to strand.
+
+    The value crosses module boundaries as a plain ``bool`` ON PURPOSE:
+    ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
+    imported at module level BY ``multiroom.active_leader_config``), so
+    importing this predicate there would invert that direction into a cycle.
+    """
+    return bool(
+        outputd_grouping_env(
+            cfg,
+            active_endpoint=active_endpoint,
+            flat_output_allowed=flat_output_allowed,
+        )[OUTPUTD_DAC_CONTENT_FIFO_ENV]
+    )
+
+
 def voice_grouping_env(
     cfg: GroupingConfig,
     *,
@@ -839,6 +878,36 @@ def is_active_speaker_box() -> bool:
     the grouping reconciler reads :func:`_output_topology_state` directly
     and blocks graph transitions on unknown."""
     return _output_topology_state()[0] is True
+
+
+def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
+    """This box's live :func:`dac_content_lane_armed` verdict for ``cfg``.
+
+    The coupling gates run in daemons that hold a route mode and nothing else
+    (``jasper-fanin-coupling-reconcile``, the audio runtime plan), and a route
+    mode genuinely cannot answer this: ``route_mode_from_grouping_config``
+    classifies on ``cfg.role`` alone, so a DUMB member and an ACTIVE follower
+    are both ``active_follower``. This reads the two topology-derived inputs
+    the writer's own caller reads — through the same
+    :func:`_output_topology_state` — and hands them to the writer's rule.
+
+    UNCERTAINTY FAILS CLOSED, and it does so as WORST-CASE INPUTS rather than
+    as a bypass: an unreadable topology cannot separate a dumb member (lane
+    armed) from an active endpoint (lane cleared), so the rule is asked with
+    the shape that arms the lane. A solo or invalid config still answers
+    ``False`` there, because that is what the writer's off-path returns — the
+    guess is confined to the axis that was actually unreadable.
+    """
+    active_box_state, flat_output_allowed = _output_topology_state()
+    if active_box_state is None:
+        return dac_content_lane_armed(
+            cfg, active_endpoint=False, flat_output_allowed=True
+        )
+    return dac_content_lane_armed(
+        cfg,
+        active_endpoint=is_active_member(cfg) and active_box_state,
+        flat_output_allowed=flat_output_allowed,
+    )
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
@@ -1871,30 +1940,54 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
-    # coupling is shm_ring (audio-graph consolidation P2, audit finding 3). Ring is
-    # solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip): a bond
-    # formed on a ring box would split camilla#1's graph across topologies (the
-    # bonded leader-pipe/round-trip lanes assume the loopback/aloop content path,
-    # not the SHM ring). Fail-SAFE to solo — the box keeps playing its own content
+    # Ring-armed box: REFUSE to form a bond whose local playback would read a lane
+    # the armed ring leaves with no writer (audio-graph consolidation P2, audit
+    # finding 3). This is the SYMMETRIC half of the coupling support matrix, and it
+    # now asks that matrix instead of hand-rolling its own rule: the two encoded
+    # DIFFERENT rules and coincided only because this one was stricter. The subject
+    # is outputd's dac_content lane — a DUMB member plays the round-tripped stream
+    # through it, and the armed ring moves fan-in off the snd-aloop content path it
+    # reads. An ACTIVE endpoint's lane is cleared by the same writer (its own
+    # CamillaDSP does the channel-pick and split), so a ring-armed active endpoint
+    # may bond. Fail-SAFE to solo — the box keeps playing its own content
     # (self-recovery, AGENTS.md resilience) rather than half-parking silent — and
-    # surface a clear operator reason (disarm the ring to bond). Placed BEFORE the
-    # snapcast provision / any bond wiring so nothing bond-forming runs. The bond
-    # request stays in the wizard config; the operator disarms the ring (or waits
-    # for P8) and the next reconcile forms the bond.
+    # surface the matrix's own operator reason. Placed BEFORE the snapcast
+    # provision / any bond wiring so nothing bond-forming runs. The bond request
+    # stays in the wizard config; the operator disarms the ring and the next
+    # reconcile forms the bond.
     if active:
+        from jasper.audio_runtime_plan import (
+            coupling_supported_for_route,
+            route_mode_from_grouping_config,
+        )
         from jasper.fanin.coupling_reconcile import read_persisted_coupling
-        from jasper.fanin_coupling import COUPLING_SHM_RING
 
-        if read_persisted_coupling() == COUPLING_SHM_RING:
-            endpoint_block_reason = "ring_armed_box_cannot_bond"
+        coupling_support = coupling_supported_for_route(
+            read_persisted_coupling(),
+            route_mode_from_grouping_config(cfg),
+            dac_content_lane_armed=dac_content_lane_armed(
+                cfg,
+                active_endpoint=active_endpoint,
+                flat_output_allowed=flat_output_allowed,
+            ),
+        )
+        if not coupling_support.supported:
+            endpoint_block_reason = (
+                coupling_support.reason or "ring_armed_box_cannot_bond"
+            )
             log_event(
                 logger,
                 "multiroom.reconcile.ring_armed_bond_blocked",
                 reason=args.reason,
+                # The REASON token is the matrix's (one vocabulary for one rule);
+                # the detail is this side's, because the matrix's own detail ends
+                # in "keeping the coupling on loopback" — that is the coupling
+                # reconciler's action, not this one's. Here the coupling is
+                # untouched and the BOND is what gets refused.
                 detail=(
-                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a ring-armed box "
-                    "cannot join a bond until ring v2 (P8); disarm the ring "
+                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — this bond would "
+                    "play through outputd's dac_content lane, which an armed "
+                    "ring leaves with no writer. Disarm the ring "
                     "(jasper-fanin-coupling-reconcile loopback) to group this "
                     "speaker. Staying solo."
                 ),

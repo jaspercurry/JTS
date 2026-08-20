@@ -908,8 +908,10 @@ def _reconcile_coupling_inner(
     outputd_snapshot = _read_snapshot(outputd_env_path)
     current = resolve_coupling(read_value(fanin_snapshot.text, COUPLING_ENV_VAR))
 
-    route_mode = _route_mode_for_reconcile(active_leader_check)
-    action, support = fanin_coupling_action(desired_raw, route_mode)
+    route_mode, dac_content_lane_armed = _route_mode_for_reconcile(active_leader_check)
+    action, support = fanin_coupling_action(
+        desired_raw, route_mode, dac_content_lane_armed=dac_content_lane_armed
+    )
     desired = support.coupling
     if not support.supported:
         return _block_unsupported_coupling(
@@ -1426,16 +1428,21 @@ def reconcile_auto(
         # migration when an operator choice is frozen.
         fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
 
-        # Route shape for the ring ROUTE-support gate (defect-F3). Computed once
-        # here and reused; reconcile_coupling recomputes its own from the same
-        # active_leader_check so both agree.
-        route_mode = _route_mode_for_reconcile(active_leader_check)
+        # Route shape + dac_content lane verdict for the ring ROUTE-support gate
+        # (defect-F3). Computed once here and reused; reconcile_coupling
+        # recomputes its own from the same active_leader_check so both agree.
+        route_mode, route_lane_armed = _route_mode_for_reconcile(active_leader_check)
 
         # The full ordered ring preflight set: assets + fail-closed topology
         # (from default_ring_gates), then route-support, then the two geometry
         # gates that need the outputd/fanin env text (bound here as closures).
         ring_gates = default_ring_gates() + (
-            ("ring_route", lambda: ring_route_ready(route_mode)),
+            (
+                "ring_route",
+                lambda: ring_route_ready(
+                    route_mode, dac_content_lane_armed=route_lane_armed
+                ),
+            ),
             ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
             (
                 "ring_slot_geometry",
@@ -1616,11 +1623,20 @@ def reconcile_auto(
     )
 
 
-def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
-    """Return the route shape for the coupling support matrix."""
+def _route_mode_for_reconcile(
+    check: "Callable[[], bool] | None",
+) -> tuple[RouteMode, bool]:
+    """Return the route shape AND the dac_content lane verdict for the support
+    matrix.
+
+    The two travel together because the matrix needs both and neither can be
+    derived from the other: ``route_mode`` classifies on ``cfg.role`` alone, so
+    a DUMB member and an ACTIVE follower are the same mode with opposite lane
+    states. Both come off ONE config read on the live path.
+    """
     if check is not None:
         try:
-            return "active_leader" if bool(check()) else "solo"
+            leader = bool(check())
         except (OSError, RuntimeError, TypeError, ValueError) as e:
             log_event(
                 logger,
@@ -1629,12 +1645,19 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
                 detail=e,
                 level=logging.WARNING,
             )
-            return "unknown"
+            return "unknown", True
+        # The injected seam reports leader-vs-solo only, which cannot separate
+        # an ACTIVE-speaker leader (whose dac_content lane the writer clears)
+        # from a PASSIVE one (whose lane it arms), so the lane verdict fails
+        # CLOSED here — the pre-narrowing answer. ``solo`` never consults it.
+        return ("active_leader", True) if leader else ("solo", False)
     try:
         from jasper.audio_runtime_plan import route_mode_from_grouping_config
         from jasper.multiroom.config import load_config
+        from jasper.multiroom.reconcile import box_dac_content_lane_armed
 
-        return route_mode_from_grouping_config(load_config())
+        cfg = load_config()
+        return route_mode_from_grouping_config(cfg), box_dac_content_lane_armed(cfg)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as e:
         log_event(
             logger,
@@ -1643,7 +1666,7 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
             detail=e,
             level=logging.DEBUG,
         )
-        return "unknown"
+        return "unknown", True
 
 
 def _block_unsupported_coupling(
@@ -1664,7 +1687,8 @@ def _block_unsupported_coupling(
     """Refuse an unsupported coupling for this route and fail-closed to loopback.
 
     Covers the blocked combination from ``coupling_supported_for_route``:
-    ``shm_ring`` on any grouping-enabled box. Forces fan-in loopback + clears every
+    ``shm_ring`` on a grouping-enabled box whose outputd dac_content lane is
+    armed. Forces fan-in loopback + clears every
     reconciler-owned outputd content-source key (Ring B, plus a sweep of the legacy
     transport_pipe key), so a previously-armed shm_ring box recovers rather than
     stranding one transport end. A force-disarm off a LIVE shm_ring bridge leaves
@@ -3393,31 +3417,39 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     ) + _SHARED_RING_PREFLIGHTS
 
 
-def ring_route_ready(route_mode: RouteMode) -> tuple[bool, str]:
+def ring_route_ready(
+    route_mode: RouteMode, *, dac_content_lane_armed: bool
+) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for ROUTE support (defect-F3).
 
-    ``shm_ring`` is a solo-stereo-only coupling until ring v2 (P8): a grouped box
-    (active leader/follower, or an invalid grouping config) has no solo content path
-    for the ring to drive, so ``coupling_supported_for_route`` blocks it. The auto
-    default MUST resolve loopback on such a box — otherwise ``resolve_auto_decision``
-    would resolve ``shm_ring`` (the topology/geometry gates pass on the box's stereo
-    output shape), the delegated ``reconcile_coupling`` would then route-block it
-    (``direction=blocked``, ``ok=False``), and the boot/deploy oneshot unit would
-    FAIL on every boot of a perfectly healthy grouped box. Gating on route support
-    UP FRONT resolves loopback (the correct default there) and the reconcile
-    succeeds. Solo / unknown never block (unknown = a transient indeterminate
-    grouping read that must not refuse a legitimate solo arm — same fail-open as the
-    support matrix itself).
+    A box playing a bond through outputd's dac_content lane has no writer for
+    that lane once the ring is armed, so ``coupling_supported_for_route`` blocks
+    it. The auto default MUST resolve loopback on such a box — otherwise
+    ``resolve_auto_decision`` would resolve ``shm_ring`` (the topology/geometry
+    gates pass on the box's stereo output shape), the delegated
+    ``reconcile_coupling`` would then route-block it (``direction=blocked``,
+    ``ok=False``), and the boot/deploy oneshot unit would FAIL on every boot of a
+    perfectly healthy grouped box. Gating on route support UP FRONT resolves
+    loopback (the correct default there) and the reconcile succeeds. Solo /
+    unknown never block (unknown = a transient indeterminate grouping read that
+    must not refuse a legitimate solo arm — same fail-open as the support matrix
+    itself), and neither does a bonded box whose lane is cleared: an ACTIVE
+    endpoint's CamillaDSP owns its own channel-pick and split, so the ring
+    strands nothing there.
     """
     from jasper.audio_runtime_plan import coupling_supported_for_route
 
-    support = coupling_supported_for_route(COUPLING_SHM_RING, route_mode)
+    support = coupling_supported_for_route(
+        COUPLING_SHM_RING,
+        route_mode,
+        dac_content_lane_armed=dac_content_lane_armed,
+    )
     if support.supported:
         return True, f"route supports shm_ring (route_mode={route_mode})"
     return False, (
-        f"shm_ring is not supported for this route ({support.reason}); a grouped "
-        "box has no solo content path for the ring until ring v2 (P8) — the default "
-        "resolves loopback"
+        f"shm_ring is not supported for this route ({support.reason}); this box "
+        "plays its bond through outputd's dac_content lane, which an armed ring "
+        "would leave with no writer — the default resolves loopback"
     )
 
 

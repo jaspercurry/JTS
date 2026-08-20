@@ -3518,6 +3518,13 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
 
 
 # --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
+#
+# NARROWED (T-5): the refusal's subject is outputd's dac_content lane, not
+# "grouping is on". `_patch_main_io` stubs `_output_topology_state` to
+# (False, True) — a PASSIVE box with a saved flat-capable layout, i.e. the DUMB
+# member that reads the lane — so the two refusal tests below keep their meaning
+# and only their reason token changes. The box that used to be refused for
+# nothing is covered by `test_ring_armed_active_endpoint_may_bond`.
 
 
 def _arm_ring_for_reconcile(monkeypatch):
@@ -3526,6 +3533,46 @@ def _arm_ring_for_reconcile(monkeypatch):
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
+
+
+def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
+    """B1's subject, from the other direction: an ACTIVE-speaker box whose
+    dac_content lane the writer clears is NOT refused by the ring gate.
+
+    This is the cell the whole hazard PR exists to admit — a bonded, ring-armed
+    active leader — and before the narrowing it was unreachable, which is why
+    the coupling-blind program bake it exposes had to land in the same PR.
+
+    Asserted as "the ring gate did not fire", not as "the bond succeeded": the
+    reconcile runs on past it into the active-leader precheck, whose own gates
+    (snapcast present, graphs re-proved) are a different subject and are not
+    hermetic here. Under the pre-narrowing rule the gate fired FIRST and
+    `fall_back_to_solo` skipped that precheck entirely, so a blocked_reason from
+    any later gate is itself proof the ring gate let the box through.
+    """
+    _patch_main_io(monkeypatch, tmp_path, _leader())
+    # ACTIVE box: roleful topology, so no flat DAC graph is permitted and the
+    # dac_content lane is cleared by outputd_grouping_env.
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
+    _arm_ring_for_reconcile(monkeypatch)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        main([])
+
+    assert not any(
+        "event=multiroom.reconcile.ring_armed_bond_blocked" in record.message
+        for record in caplog.records
+    ), "the ring gate fired on a box whose dac_content lane is cleared"
+
+    import json
+
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status.get("blocked_reason") not in (
+        "ring_armed_box_cannot_bond",  # the pre-narrowing token
+        "fanin_shm_ring_unsupported_with_dac_content_lane",
+    ), status
 
 
 def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch):
@@ -3543,7 +3590,10 @@ def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch
     import json
 
     status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
-    assert status.get("blocked_reason") == "ring_armed_box_cannot_bond"
+    assert (
+        status.get("blocked_reason")
+        == "fanin_shm_ring_unsupported_with_dac_content_lane"
+    )
     assert status.get("local_sources_allowed") is True
 
 
@@ -3563,7 +3613,9 @@ def test_ring_armed_follower_status_allows_sources_after_solo_fallback(
     assert main([]) == 1
     status_path = tmp_path / "grouping-follower-status.json"
     status = read_effective_role_status(str(status_path))
-    assert status["blocked_reason"] == "ring_armed_box_cannot_bond"
+    assert (
+        status["blocked_reason"] == "fanin_shm_ring_unsupported_with_dac_content_lane"
+    )
     assert status["local_sources_allowed"] is True
     assert (
         effective_local_sources_park_reason(

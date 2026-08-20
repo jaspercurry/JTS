@@ -166,10 +166,16 @@ async def precheck_active_leader(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
+    from jasper.active_speaker.playback_route import (
+        active_playback_route_capability,
+    )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,
+        classify_output_contract,
+        topology_allows_flat_dac_graph,
     )
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -178,6 +184,7 @@ async def precheck_active_leader(
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
     from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
+    from .reconcile import dac_content_lane_armed
 
     # program_channel_for is the SHARED single-box channel pick; re-raise its
     # follower-flavoured error as the leader error so this arm raises a single
@@ -205,22 +212,23 @@ async def precheck_active_leader(
                 "wireless pair; refusing to bond (no camilla#1/#2 DAC conflict)",
             )
 
-    coupling_support = coupling_supported_for_route(
-        read_persisted_coupling(), "active_leader"
-    )
-    if not coupling_support.supported:
-        raise ActiveLeaderError(
-            coupling_support.reason,
-            coupling_support.detail
-            + " Run `jasper-fanin-coupling-reconcile loopback` before bonding.",
-        )
-
     # STRICT topology load (fail-closed). Both re-proofs below pass this topology
     # explicitly to classify_camilla_graph, so a fail-SOFT loader would hand them
     # an empty draft (requires_roleful_graph=False) on a corrupt topology.json —
     # and a flat full-range graph would then RE-PROVE allowed (the tweeter guard
     # is keyed on a roleful topology). The 2026-05-23 filesystem-loss class
     # corrupts topology.json too, so refuse to bond on an unreadable topology.
+    #
+    # ORDERED BEFORE THE COUPLING CHECK, and that PRECEDENCE IS DELIBERATE. The
+    # coupling check now needs this topology (it derives whether this box is an
+    # active endpoint, which is what decides the dac_content lane), so checking
+    # coupling first would mean guessing. In the one cell where a box is both
+    # ring-armed and has an unreadable topology.json, the operator-visible reason
+    # therefore changes from the coupling support reason to `topology_unreadable`.
+    # Both outcomes are fail-closed, so there is no safety change, and
+    # `topology_unreadable` is the more specific and more actionable blocker —
+    # the operator fixes the real thing instead of chasing the coupling and then
+    # meeting the topology error on the retry.
     try:
         topology = load_output_topology_strict()
     except OutputTopologyError as exc:
@@ -229,6 +237,31 @@ async def precheck_active_leader(
             "active leader cannot re-prove its graphs — output topology is "
             f"missing/corrupt ({exc}); refusing to bond (no full-range emit)",
         ) from exc
+
+    # An ACTIVE-speaker leader is an active ENDPOINT: outputd_grouping_env clears
+    # its dac_content lane (this box's own CamillaDSP owns the channel-pick and
+    # the split), so an armed ring strands no lane here and the coupling matrix
+    # admits the bond. Derived from the topology just loaded rather than asserted
+    # from the caller's context, so the answer stays right if this precheck is
+    # ever reached on a box whose topology says otherwise.
+    box_is_active = active_playback_route_capability(topology).active_group_count > 0
+    coupling_support = coupling_supported_for_route(
+        read_persisted_coupling(),
+        "active_leader",
+        dac_content_lane_armed=dac_content_lane_armed(
+            cfg,
+            active_endpoint=box_is_active,
+            flat_output_allowed=topology_allows_flat_dac_graph(
+                classify_output_contract(topology)
+            ),
+        ),
+    )
+    if not coupling_support.supported:
+        raise ActiveLeaderError(
+            coupling_support.reason,
+            coupling_support.detail
+            + " Run `jasper-fanin-coupling-reconcile loopback` before bonding.",
+        )
 
     # 1. camilla#2 driver-domain (Layer A) — the leader's OWN drivers, captured
     #    from the grouping ring. Identical build to the active follower
@@ -319,12 +352,38 @@ async def precheck_active_leader(
     #    hear the same correction the leader does solo.)
     profile = load_profile()
     settings = load_sound_settings()
+    # THE BAKE'S CAPTURE FOLLOWS THE LIVE COUPLING. Without this the emitter's
+    # own default binds `capture_device=DEFAULT_CAPTURE_DEVICE`
+    # ("plug:jasper_capture", the snd-aloop fan-in tap) — and under `shm_ring`
+    # fan-in writes Ring A and stops feeding that tap, so camilla#1 would capture
+    # a device nobody writes. camilla#1 is the producer of the WHOLE BOND's audio,
+    # so that is a silent group on every member with every daemon healthy and no
+    # cue: the quiet trap `active_emit_devices` names for the solo graph, on the
+    # one instance where it is loudest. The resolver reads the coupling token
+    # file-fresh, and returns {} under `loopback` — byte-identical to today.
+    #
+    # CAPTURE HALF ONLY, and the filter lives here rather than in a second
+    # resolver: `coupling_capture_kwargs_from_env` returns the FULL end-to-end
+    # ring topology, whose `playback_device` is Ring B. This bake's sink is a
+    # `File` at SNAPFIFO — redirecting it to Ring B is exactly the
+    # strand-the-leader failure the coupling gate was written to prevent — and
+    # `emit_active_speaker_program_bake_config` accepts no playback parameter at
+    # all, so splatting the dict is a TypeError rather than a silent redirect.
+    # If a second File-sink emitter ever needs this, promote the filter into
+    # `fanin_coupling.py` beside its parent instead of copying it.
+    coupling_kwargs = coupling_capture_kwargs_from_env()
+    bake_capture_kwargs = {
+        key: value
+        for key, value in coupling_kwargs.items()
+        if key in ("capture_device", "capture_format")
+    }
     emit_active_speaker_program_bake_config(
         profile,
         room_peqs=[],
         output_trim_db=output_trim_db(profile, settings),
         out_path=LEADER_BAKE_CONFIG_PATH,
         profile_id=f"grouping-{cfg.bond_id or 'bond'}",
+        **bake_capture_kwargs,  # type: ignore[arg-type]
     )
     # Program-bake graphs cannot carry the optional baseline bass block, so
     # their pre-publication proof is a frozen in-memory composition check.  The

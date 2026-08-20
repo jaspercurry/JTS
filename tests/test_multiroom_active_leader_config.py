@@ -99,6 +99,19 @@ class _FakeCamilla:
         return True
 
 
+def _persist_coupling(monkeypatch, coupling: str) -> None:
+    """Both readers of the coupling token, because they are separate bindings.
+
+    D5's gate reads it through this module's own module-level import; the bake
+    reads it through `coupling_capture_kwargs_from_env`, whose lazy import
+    resolves the ORIGINAL function. In production both hit the same file.
+    """
+    import jasper.fanin.coupling_reconcile as crmod
+
+    monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: coupling)
+    monkeypatch.setattr(crmod, "read_persisted_coupling", lambda *a, **k: coupling)
+
+
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
     # The re-proof uses the STRICT loader (fail-closed); patch that.
     monkeypatch.setattr(
@@ -133,9 +146,11 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     # Snapcast precondition: pretend the binaries are installed (a dev machine has
     # no snapserver/snapclient, which would otherwise fail-close the precheck).
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # The active-leader program bake currently requires the legacy fan-in
-    # loopback capture; isolate tests from the host's persisted coupling file.
-    monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: "loopback")
+    # The bake's capture FOLLOWS the persisted coupling now (T-8), so pin the
+    # default here to `loopback` — today's bytes — and let the tests that care
+    # drive it explicitly through `_persist_coupling`. Without this the emitted
+    # capture would vary with whatever the host's fanin.env happens to say.
+    _persist_coupling(monkeypatch, "loopback")
 
 
 def _fake_apply_dsp_config():
@@ -215,23 +230,124 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_precheck_refuses_shm_ring_coupling_before_emit(monkeypatch, tmp_path) -> None:
-    """Local shm_ring coupling and the active-leader program bake are not yet a
-    supported pair (the ring is solo-stereo-only until ring v2). Refuse before
-    writing either generated config."""
+# --------------------------------------------------------------------------
+# T-8 — B1: the leader's camilla#1 program bake follows the live coupling.
+#
+# The narrowed route gate ADMITS a ring-armed active leader (its dac_content
+# lane is cleared, so the ring strands nothing there). That is what makes the
+# bake reachable, and the bake defaults its capture to the snd-aloop fan-in tap
+# — a device fan-in stops writing the moment the ring is armed. camilla#1 is the
+# producer of the whole bond's audio, so a coupling-blind bake is a SILENT GROUP
+# with every daemon healthy. Gate and bake are not separable; these pin the bake
+# half.
+# --------------------------------------------------------------------------
+
+
+def test_leader_bake_capture_follows_coupling(monkeypatch, tmp_path) -> None:
+    """Under `shm_ring` the bake captures Ring A at the resolved wire format —
+    and its sink is STILL the snapfifo `File`, never Ring B."""
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
+    from jasper.multiroom.reconcile import SNAPFIFO
+
     topology = _dual_apple_topology()
     draft = _draft(topology)
     preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    monkeypatch.setattr(
-        alc, "read_persisted_coupling", lambda *a, **k: "shm_ring",
+    _persist_coupling(monkeypatch, "shm_ring")
+
+    asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+
+    bake = yaml.safe_load(
+        Path(alc.LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8")
     )
+    assert bake["devices"]["capture"]["device"] == RING_CAPTURE_DEVICE
+    assert bake["devices"]["capture"]["format"] == resolve_ring_wire().sample_format
+    # The capture half ONLY: the sink stays the pipe snapserver reads. Taking the
+    # resolver's playback half would point camilla#1 at Ring B and strand the
+    # leader — the failure the coupling gate was written to prevent.
+    assert bake["devices"]["playback"]["type"] == "File"
+    assert bake["devices"]["playback"]["filename"] == SNAPFIFO
+    assert bake["devices"]["enable_rate_adjust"] is False
+
+
+def test_leader_bake_under_loopback_is_unchanged(monkeypatch, tmp_path) -> None:
+    """The other half of the resolver's contract: `{}` under `loopback`, so the
+    emitter's own defaults bind and the emitted YAML is today's bytes."""
+    from jasper.camilla_config_contract import (
+        DEFAULT_CAPTURE_DEVICE,
+        DEFAULT_CAPTURE_FORMAT,
+    )
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _persist_coupling(monkeypatch, "loopback")
+
+    asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+
+    bake = yaml.safe_load(
+        Path(alc.LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8")
+    )
+    assert bake["devices"]["capture"]["device"] == DEFAULT_CAPTURE_DEVICE
+    assert bake["devices"]["capture"]["format"] == DEFAULT_CAPTURE_FORMAT
+    assert bake["devices"]["playback"]["filename"] == SNAPFIFO
+
+
+def test_precheck_admits_shm_ring_for_an_active_leader(monkeypatch, tmp_path) -> None:
+    """The gate half of B1. An ACTIVE-speaker leader is an active ENDPOINT, so
+    `outputd_grouping_env` clears its dac_content lane and the narrowed support
+    matrix admits the bond. Before this the precheck refused here, which is why
+    the coupling-blind bake above was unreachable — and why both land together.
+    """
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _persist_coupling(monkeypatch, "shm_ring")
+
+    asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+
+    assert Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
+    assert Path(alc.CROSSOVER_CONFIG_PATH).exists()
+
+
+def test_precheck_reports_topology_before_coupling(monkeypatch, tmp_path) -> None:
+    """C-9: D5's coupling check moved BELOW the strict topology load, because the
+    narrowed predicate needs that topology to know whether this box is an active
+    endpoint. In the cell where a box is BOTH ring-armed AND has an unreadable
+    topology.json — reachable; the 2026-05-23 filesystem-loss class corrupts
+    topology.json too — the operator-visible reason is now `topology_unreadable`.
+
+    Both outcomes are fail-closed, so there is no safety change; the precedence
+    is pinned because `topology_unreadable` is the more specific and more
+    actionable blocker, and because a reordering back would silently restore a
+    reason that sends the operator to fix the wrong thing first.
+    """
+    from jasper.output_topology import OutputTopologyError
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    measurements = _measurements(topology, tmp_path)
+    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
+    _persist_coupling(monkeypatch, "shm_ring")
+
+    import jasper.output_topology as ot
+
+    def _boom(*a, **k):
+        raise OutputTopologyError("topology.json corrupt")
+
+    monkeypatch.setattr(ot, "load_output_topology_strict", _boom)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
 
-    assert exc.value.reason == "fanin_shm_ring_coupling_unsupported_while_grouped"
+    assert exc.value.reason == "topology_unreadable"
     assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
     assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
 

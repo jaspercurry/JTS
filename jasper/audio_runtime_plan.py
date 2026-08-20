@@ -266,27 +266,30 @@ _VALID_AUDIO_ROUTE_PROFILES = {
 }
 
 # The route modes that mean "grouping is enabled" (leader/follower = enabled +
-# valid + role; invalid_grouping = enabled + config error). ``shm_ring`` is
-# solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip), so arming
-# it on ANY of these would split camilla#1's graph across topologies (the bonded
-# leader-pipe / round-trip lanes assume the loopback/aloop content path, not the
-# SHM ring) and silence the leader's own local output. This is the SYMMETRIC half
-# of jasper.multiroom.reconcile's "ring-armed box cannot bond" gate (which blocks
-# the OTHER direction — forming a bond while already ring-armed); together they
-# make ring ⟂ grouping a fail-closed invariant from both entry points. ``solo`` /
-# ``unknown`` are NOT blocked: solo = grouping off, unknown = indeterminate (a
-# transient grouping-config read failure must not refuse a legitimate solo arm).
+# valid + role; invalid_grouping = enabled + config error). Being one of these is
+# NECESSARY but no longer SUFFICIENT to block ``shm_ring``: the block also needs
+# ``dac_content_lane_armed``, because outputd's dac_content lane is the one
+# bonded consumer that reads the snd-aloop content path fan-in stops feeding
+# once the ring is armed. A DUMB member plays through that lane, so arming the
+# ring there would leave it with no writer; an ACTIVE endpoint's lane is cleared
+# by the same writer (CamillaDSP owns its channel-pick and split), so the ring
+# strands nothing. This is the SYMMETRIC half of jasper.multiroom.reconcile's
+# "ring-armed box cannot bond" gate (which blocks the OTHER direction — forming a
+# bond while already ring-armed); both now ask the same predicate, so they cannot
+# encode different rules. ``solo`` / ``unknown`` are NOT blocked: solo = grouping
+# off, unknown = indeterminate (a transient grouping-config read failure must not
+# refuse a legitimate solo arm).
 _GROUPING_ENABLED_ROUTE_MODES = frozenset(
     {"active_leader", "active_follower", "invalid_grouping"}
 )
-_GROUPED_SHM_RING_REASON = "fanin_shm_ring_coupling_unsupported_while_grouped"
+_GROUPED_SHM_RING_REASON = "fanin_shm_ring_unsupported_with_dac_content_lane"
 _GROUPED_SHM_RING_DETAIL = (
-    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box has "
-    "multiroom grouping enabled; the SHM ring is solo-stereo-only until ring v2 "
-    "(P8), and arming it on a bonded box would strand the leader's local output "
-    "(outputd reads Ring B while camilla#1 still bakes the aloop/loopback grouped "
-    "program). Disarm the ring (jasper-fanin-coupling-reconcile loopback) or "
-    "ungroup this speaker; keeping the coupling on loopback."
+    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box "
+    "plays a bond through outputd's dac_content lane: that lane reads the "
+    "snd-aloop content path (JASPER_OUTPUTD_DAC_CONTENT_FIFO), and an armed "
+    "ring moves fan-in off it, so the lane would have no writer. Disarm the "
+    "ring (jasper-fanin-coupling-reconcile loopback) or ungroup this speaker; "
+    "keeping the coupling on loopback."
 )
 
 
@@ -814,16 +817,33 @@ def outputd_env_buffer_pair_error(
     )
 
 
-def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> CouplingSupport:
+def coupling_supported_for_route(
+    coupling: str,
+    route_mode: RouteMode,
+    *,
+    dac_content_lane_armed: bool,
+) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    One blocked combination, because a non-loopback coupling assumes a
-    solo-speaker content path that a grouped camilla#1 graph does not have:
+    One blocked combination, and it has TWO conditions because only one bonded
+    shape actually conflicts with the ring:
 
-    - ``shm_ring`` + any grouping-enabled mode (leader/follower/invalid) — the ring
-      is solo-stereo-only until ring v2 (P8); arming it on a bonded box would
-      strand the leader's local output. This is the symmetric half of the
-      multiroom reconciler's "ring-armed box cannot bond" gate.
+    - ``shm_ring`` + a grouping-enabled mode (leader/follower/invalid) **and**
+      ``dac_content_lane_armed`` — outputd's dac_content lane reads the
+      snd-aloop content path, and an armed ring moves fan-in off it, so the
+      lane would have no writer. This is the symmetric half of the multiroom
+      reconciler's "ring-armed box cannot bond" gate.
+
+    ``dac_content_lane_armed`` is
+    :func:`jasper.multiroom.reconcile.dac_content_lane_armed` — derived from the
+    function that WRITES the lane, so this gate and that writer cannot encode
+    different rules. It arrives as a plain ``bool`` because importing the
+    predicate here would invert this module's lazy-only dependency on
+    ``jasper.multiroom`` into a cycle; it and ``route_mode`` are two halves of
+    one fact and must be sourced together. It is keyword-ONLY and has NO
+    default: neither answer is safe to assume — ``True`` would silently keep
+    blocking a shape this narrowing exists to admit, ``False`` would silently
+    admit the one shape that breaks.
 
     Keeping this in a route-policy function makes grouped coupling support a
     deliberate support-matrix change instead of another scattered conditional.
@@ -833,7 +853,11 @@ def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> Coupli
 
     normalized = resolve_coupling(coupling)
     mode = route_mode if route_mode in _VALID_ROUTE_MODES else "unknown"
-    if normalized == COUPLING_SHM_RING and mode in _GROUPING_ENABLED_ROUTE_MODES:
+    if (
+        normalized == COUPLING_SHM_RING
+        and mode in _GROUPING_ENABLED_ROUTE_MODES
+        and dac_content_lane_armed
+    ):
         return CouplingSupport(
             coupling=normalized,
             route_mode=mode,  # type: ignore[arg-type]
@@ -851,11 +875,20 @@ def coupling_supported_for_route(coupling: str, route_mode: RouteMode) -> Coupli
 def fanin_coupling_action(
     desired_raw: str | None,
     route_mode: RouteMode,
+    *,
+    dac_content_lane_armed: bool,
 ) -> tuple[RuntimeEnvAction | None, CouplingSupport]:
-    """Return the ``fanin.env`` coupling action and route-policy verdict."""
+    """Return the ``fanin.env`` coupling action and route-policy verdict.
+
+    ``dac_content_lane_armed`` is passed straight through to
+    :func:`coupling_supported_for_route`; see it for what the flag means and
+    why it carries no default.
+    """
 
     desired = resolve_coupling(desired_raw)
-    support = coupling_supported_for_route(desired, route_mode)
+    support = coupling_supported_for_route(
+        desired, route_mode, dac_content_lane_armed=dac_content_lane_armed
+    )
     if not support.supported:
         return None, support
     return RuntimeEnvAction("set", COUPLING_ENV_VAR, desired), support
@@ -1353,12 +1386,21 @@ def build_audio_runtime_plan_from_system(
     except ImportError:
         profile_id = ""
     route_mode: RouteMode = "unknown"
+    # Both halves of the grouping fact come off ONE config read, and both stay
+    # behind a lazy import: this module is imported at module level by
+    # jasper.multiroom.active_leader_config, so a top-level multiroom import
+    # here would be a cycle. The bool crosses that boundary, never the predicate.
+    dac_content_lane_armed = False
     try:
         from jasper.multiroom.config import load_config
+        from jasper.multiroom.reconcile import box_dac_content_lane_armed
 
-        route_mode = route_mode_from_grouping_config(load_config(grouping_env_path))
+        grouping_cfg = load_config(grouping_env_path)
+        route_mode = route_mode_from_grouping_config(grouping_cfg)
+        dac_content_lane_armed = box_dac_content_lane_armed(grouping_cfg)
     except ImportError:
         route_mode = "unknown"
+        dac_content_lane_armed = False
     correction_config_path = _active_camilla_config_path_from_statefile()
     return build_audio_runtime_plan(
         base_env=base_values,
@@ -1367,6 +1409,7 @@ def build_audio_runtime_plan_from_system(
         overrides=overrides.values(),
         profile_id=profile_id,
         route_mode=route_mode,
+        dac_content_lane_armed=dac_content_lane_armed,
         correction_config_path=correction_config_path,
         base_env_label=base.path,
         outputd_env_label=outputd.path,
@@ -1384,6 +1427,11 @@ def build_audio_runtime_plan(
     overrides: Mapping[str, str] | None = None,
     profile_id: str | None = None,
     route_mode: RouteMode = "unknown",
+    # Two halves of one fact: see coupling_supported_for_route. The default
+    # pairs with ``route_mode="unknown"``, which never blocks, so the pair is
+    # coherent as "this caller has no grouping information"; a caller that
+    # supplies a grouping route_mode must supply this too.
+    dac_content_lane_armed: bool = False,
     base_env_label: str = DEFAULT_BASE_ENV_PATH,
     outputd_env_label: str = DEFAULT_OUTPUTD_ENV_PATH,
     fanin_env_label: str = DEFAULT_FANIN_ENV_PATH,
@@ -1524,7 +1572,11 @@ def build_audio_runtime_plan(
             )
         )
     settings.append(coupling_setting)
-    support = coupling_supported_for_route(str(coupling_setting.value), route_mode)
+    support = coupling_supported_for_route(
+        str(coupling_setting.value),
+        route_mode,
+        dac_content_lane_armed=dac_content_lane_armed,
+    )
     camilla_devices = read_camilla_devices_config(correction_config_path)
     topology = transport_topology_for_coupling(
         str(coupling_setting.value),
