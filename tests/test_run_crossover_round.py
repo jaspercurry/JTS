@@ -32,7 +32,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -55,18 +55,35 @@ CANDIDATE = {
 # --------------------------------------------------------------------------- #
 
 
+class _Seen(NamedTuple):
+    """What a server recorded, frozen at the moment of asking."""
+
+    requests: tuple[tuple[str, str], ...]   # (method, path)
+    posts: tuple[tuple[str, Any], ...]      # (path, body)
+    hosts: tuple[str, ...]                  # the Host header each request sent
+
+
 class _Wizard(ThreadingHTTPServer):
     """A correction wizard that records every request and scripts its phase.
 
-    ``daemon_threads`` means ``server_close()`` returns WITHOUT joining handler
-    threads, so a handler could still be appending to ``requests`` after a test
-    believed the server was shut. Handlers are tracked and joined explicitly at
-    teardown (:meth:`join_handlers`), and every assertion reads a SNAPSHOT
-    (:meth:`seen`), so neither a slow handler nor a late one can change a list
-    mid-assertion. Two full-file runs during this PR showed a server holding a
-    request its own subprocess could not have sent; port reuse was tested and
-    refuted, the mechanism is still unattributed, and these two are the
-    enablers that make such a thing observable rather than harmless.
+    ``daemon_threads = True`` means ``server_close()`` returns WITHOUT joining
+    handler threads, so a handler can still be appending to ``requests`` after
+    a test believes the server is shut. That is the hazard; the two remedies
+    are :meth:`join_handlers`, which waits for them, and :meth:`seen`, which
+    hands out a frozen copy so a late handler cannot change a list mid-
+    assertion.
+
+    **Both remedies are only in force through** :func:`_serving`, which is why
+    every server in this file is started that way and none hand-rolls
+    ``serve_forever``/``shutdown``. Seven of them did until the round-2 gate
+    found it: those paths skipped ``join_handlers`` entirely, so the docstring
+    that claimed the protection was describing four servers out of eleven.
+
+    Why it matters here rather than in general: two full-file runs during this
+    PR showed a server holding a request its own subprocess could not have
+    sent. Port reuse was tested and REFUTED, the mechanism is still
+    unattributed, and the point of these two is that such a thing shows up as
+    a failure instead of a silently wrong list.
     """
 
     daemon_threads = True
@@ -117,10 +134,15 @@ class _Wizard(ThreadingHTTPServer):
         with self._lock:
             self.posts.append((path, body))
 
-    def seen(self) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, Any], ...]]:
-        """A frozen (requests, posts) pair -- never the live lists."""
+    def seen(self) -> _Seen:
+        """A frozen snapshot of EVERY recorded list -- never the live ones.
+
+        Returns all three together rather than per-list accessors: a caller
+        that reached past this for one of them (``hosts`` was read live until
+        the round-2 gate found it) is the case this exists to prevent.
+        """
         with self._lock:
-            return tuple(self.requests), tuple(self.posts)
+            return _Seen(tuple(self.requests), tuple(self.posts), tuple(self.hosts))
 
     def join_handlers(self) -> None:
         with self._lock:
@@ -403,7 +425,7 @@ def test_staging_angles_without_the_attestation_is_refused_up_front(
 
     assert proc.returncode == 2
     assert "--attest-rig-clear" in proc.stderr
-    requests, _ = wizard.seen()
+    requests = wizard.seen().requests
     assert ssh_lines == [] and bank_lines == [] and requests == ()
 
 
@@ -414,7 +436,7 @@ def test_a_verify_stage_opens_the_post_apply_check(checkout, wizard, tmp_path):
     )
 
     assert proc.returncode == 0, proc.stderr
-    _, posts = wizard.seen()
+    posts = wizard.seen().posts
     assert posts == (("/correction/crossover/v2/verify", {"stage": "post_apply"}),)
 
 
@@ -432,7 +454,7 @@ def test_an_alignment_prescription_is_posted_verbatim(checkout, wizard, tmp_path
     )
 
     assert proc.returncode == 0, proc.stderr
-    _, posts = wizard.seen()
+    posts = wizard.seen().posts
     _, body = posts[0]
     assert body["alignment_prescription"] == document
     assert body["tier"] == "remote"  # always explicit; an absent tier inherits
@@ -450,7 +472,7 @@ def test_an_unreadable_prescription_is_refused_before_anything_is_staged(
 
     assert proc.returncode == 2  # argparse's own usage exit
     assert "Traceback" not in proc.stderr
-    requests, posts = wizard.seen()
+    posts = wizard.seen().posts
     assert ssh_lines == [] and bank_lines == [] and posts == ()
 
 
@@ -469,7 +491,7 @@ def test_a_measurement_round_never_posts_the_apply_endpoint(
     )
 
     assert proc.returncode == 0, proc.stderr
-    requests, _ = wizard.seen()
+    requests = wizard.seen().requests
     assert not any(path.endswith("/v2/apply") for _, path in requests)
     # …and the candidate it declined to apply is on stdout, by fingerprint.
     assert FINGERPRINT in proc.stdout
@@ -492,7 +514,7 @@ def test_apply_refuses_a_fingerprint_that_is_not_live_and_sends_nothing(
     )
 
     assert proc.returncode == 11  # EXIT_FINGERPRINT, literal on purpose
-    requests, _ = wizard.seen()
+    requests = wizard.seen().requests
     assert not any(method == "POST" for method, _ in requests)
     assert not any(path == "/sound/crossover/" for _, path in requests)
     row = _trail(trail)[-1]
@@ -513,7 +535,7 @@ def test_an_empty_apply_fingerprint_is_refused_before_it_is_compared(
     proc, ssh_lines, bank_lines = _run(checkout, wizard, ["--apply", ""])
 
     assert proc.returncode == 2  # argparse usage exit, not the gate's rc 11
-    requests, _ = wizard.seen()
+    requests = wizard.seen().requests
     assert requests == ()
     assert ssh_lines == [] and bank_lines == []
     assert "Traceback" not in proc.stderr
@@ -521,16 +543,11 @@ def test_an_empty_apply_fingerprint_is_refused_before_it_is_compared(
 
 def test_apply_refuses_when_no_candidate_is_published(checkout, tmp_path):
     server = _Wizard(v2={"phase": "measure", "session_id": "s0", "candidate": None})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 11
-    requests, _ = server.seen()
+    requests = server.seen().requests
     assert not any(method == "POST" for method, _ in requests)
 
 
@@ -540,7 +557,7 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     proc, ssh_lines, bank_lines = _run(checkout, wizard, ["--apply", FINGERPRINT])
 
     assert proc.returncode == 0, proc.stderr
-    _, posts = wizard.seen()
+    posts = wizard.seen().posts
     assert posts == (
         ("/correction/crossover/v2/apply",
          {"expected_candidate_fingerprint": FINGERPRINT}),
@@ -552,30 +569,25 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
 def test_a_blocked_apply_is_a_failure_even_though_it_answers_409(
     checkout, tmp_path
 ):
-    """``blocked`` is 409 and ``apply_failed`` is 200 — the BODY is the verdict."""
+    """``blocked`` is the ONE status that moves the code off 200.
+
+    Which is why the code alone cannot decide: ``apply_failed`` is always 200,
+    and a refusal is a 400 carrying no ``status`` at all. Only 200 AND
+    ``applied`` is right on every row.
+    """
     server = _Wizard(apply_status=409,
                      apply_body={"status": "blocked",
                                  "issue": {"id": "stage_2_cannot_open"}})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 10  # EXIT_APPLY
 
 
 def test_an_apply_that_answers_200_but_did_not_apply_is_a_failure(checkout):
     server = _Wizard(apply_status=200, apply_body={"status": "apply_failed"})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 10
 
@@ -614,19 +626,72 @@ def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
 ):
     """``jasper-arm-walk``'s rc rides through untranslated, and nothing banks."""
     trail = tmp_path / "trail.jsonl"
+    # Exports a speaker that is NOT the one .env.local names, so the printed
+    # bank command can only carry `caller.invalid` if the prefix is really
+    # there. Drop the prefix and the pasted line re-resolves to
+    # `checkout.invalid` — a different Pi — which is the whole hazard.
     proc, _, bank_lines = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--trail", str(trail),
          *MEASURE_ARGS],
-        FAKE_WALK_EXIT="6",
+        FAKE_WALK_EXIT="6", PI_HOST="caller.invalid", PI_USER="caller-user",
     )
 
     assert proc.returncode == 5  # EXIT_WALK — this runner's own phase code
     row = next(r for r in _trail(trail) if r["step"] == "walk")
     assert row["arm_walk_exit"] == 6 and row["arm_walk_exit_name"] == "stuck"
     assert bank_lines == []
-    # The evidence is still on the Pi, and the operator is told how to keep it.
+    # The evidence is still on the Pi, and the operator is told how to keep it
+    # — WITH this round's own speaker on the front. Without that prefix the
+    # pasted command re-resolves through .env.local and can bank a different
+    # Pi, on the one path where a human is asked to run it by hand.
     assert "bank-crossover-round.sh" in proc.stderr
+    assert "PI_HOST=caller.invalid PI_USER=caller-user SINCE=" in proc.stderr
+    # Absolute, and the checkout the runner actually resolved itself from --
+    # the line prints wherever the operator happened to be standing.
+    repo, _, _ = checkout
+    assert str(repo / "scripts" / "bank-crossover-round.sh") in proc.stderr
+
+
+def test_an_ssh_transport_failure_is_not_reported_as_the_arms_fault(
+    checkout, wizard, tmp_path
+):
+    """255 is ssh's code, and the harness cannot produce it.
+
+    Its exit codes are 0-14 plus 128+signum, so within this runner 255 is
+    unambiguously the link failing. Calling that ``walk_failed`` on the line an
+    operator reads would send them to the rig to look at an arm that never
+    misbehaved.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, _, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        FAKE_WALK_EXIT="255",
+    )
+
+    assert proc.returncode == 12  # EXIT_SSH_TRANSPORT, not EXIT_WALK's 5
+    # The stderr summary and the trail row agree, which is the whole point.
+    assert "ssh_transport_failed" in proc.stderr
+    row = next(r for r in _trail(trail) if r["step"] == "walk")
+    assert row["arm_walk_exit"] == 255
+    assert row["arm_walk_exit_name"] == "ssh_transport_failed"
+    assert bank_lines == []
+
+
+def test_the_walk_exit_names_come_from_the_harness_except_ssh_own():
+    """Every code the harness owns keeps ITS name; only 255 is relabelled."""
+    runner = _runner()
+
+    from jasper.active_speaker.arm_walk import EXIT_NAMES
+
+    assert runner._walk_exit_name(255) == "ssh_transport_failed"
+    assert 255 not in EXIT_NAMES  # ...so nothing was overridden to say it
+    for code, name in EXIT_NAMES.items():
+        assert runner._walk_exit_name(code) == name
+    # A code nobody claims is passed through as itself rather than guessed at.
+    assert runner._walk_exit_name(99) == "99"
 
 
 def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path):
@@ -638,22 +703,17 @@ def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path)
 
     assert proc.returncode == 3  # EXIT_STAGE
     assert not any("jasper-arm-walk" in line for line in ssh_lines)
-    _, posts = wizard.seen()
+    posts = wizard.seen().posts
     assert posts == () and bank_lines == []
 
 
 def test_a_session_that_will_not_open_stops_the_round(checkout, tmp_path):
     server = _Wizard(open_status=400)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, bank_lines = _run(
             checkout, server,
             ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
         )
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 4  # EXIT_OPEN
     assert bank_lines == []
@@ -745,16 +805,11 @@ def test_the_runner_never_claims_the_park_it_cannot_see(checkout, tmp_path):
 def test_a_session_failure_is_named_rather_than_waited_out(checkout, tmp_path):
     server = _Wizard(after_open={"phase": "measure", "session_id": "after",
                                  "failure": {"code": "capture_rejected"}})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, bank_lines = _run(
             checkout, server,
             ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
         )
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 8  # EXIT_SESSION_FAILED
     assert bank_lines == []
@@ -763,17 +818,12 @@ def test_a_session_failure_is_named_rather_than_waited_out(checkout, tmp_path):
 def test_a_stage_that_never_finishes_times_out_instead_of_banking(checkout, tmp_path):
     """A previous round's terminal phase must not read as this round's finish."""
     server = _Wizard(after_open={"phase": "cloud_measure", "session_id": "after"})
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, bank_lines = _run(
             checkout, server,
             ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
              "--stage-timeout-s", "0.4"],
         )
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 7  # EXIT_INCOMPLETE
     assert bank_lines == []
@@ -787,17 +837,12 @@ def test_a_terminal_phase_left_by_a_PRIOR_session_does_not_end_this_one(
         v2={"phase": "review", "session_id": "same", "candidate": CANDIDATE},
         after_open={"phase": "review", "session_id": "same", "candidate": CANDIDATE},
     )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _serving(server):
         proc, _, bank_lines = _run(
             checkout, server,
             ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
              "--stage-timeout-s", "0.4"],
         )
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert proc.returncode == 7  # EXIT_INCOMPLETE, not a banked non-round
     assert bank_lines == []
@@ -850,7 +895,8 @@ def test_the_speakers_own_name_is_the_host_header_and_the_walks_hostname(
     assert "--hostname jts9.local" in walk_cmd
     # ...and it is what actually went out on the wire. Asserting only the ssh
     # argument would have let a wrong Host header pass under this test's name.
-    assert wizard.hosts and set(wizard.hosts) == {"jts9.local"}
+    hosts = wizard.seen().hosts
+    assert hosts and set(hosts) == {"jts9.local"}
 
 
 def test_a_split_identity_is_disclosed_with_where_each_half_came_from(

@@ -2346,8 +2346,9 @@ round applied a candidate nobody had sanctioned — one measured round, lost. So
 a measurement run NEVER applies: it ends with the candidate's fingerprint and
 its numbers printed on stdout and banked as `<campaign>/<label>/candidate.json`,
 and stops. Applying is a second invocation that must NAME the fingerprint, and
-the runner re-reads the live candidate and refuses **before any request leaves
-the laptop** when the two differ (`rc 11`, and
+the runner re-reads the live candidate and refuses **before any POST leaves the
+laptop** when the two differ (the envelope GET that reads the live candidate is
+the one request it does make — the promise is about what it never SENDS) (`rc 11`, and
 [`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
 asserts nothing was sent, not merely that the exit code was non-zero). The
 endpoint runs that same comparison server-side and would refuse the same
@@ -2377,6 +2378,11 @@ as parked: the one thing it can see is its own client exiting.
 drives a real two-process double (a client, and a remote running the harness's
 own signal handlers) and asserts the PARK MARKER, so removing SIGHUP from
 `PARK_ON_SIGNALS` or dropping `-tt` each fail it.
+
+**`--tier` is ignored by `--stage verify`.** Stage 2 takes the instrument the
+MEASURING session recorded in durable state, so the household's one choice at
+the tier chooser governs both stages — passing a different tier to the verify
+invocation changes nothing, and is not a way to re-instrument a round.
 
 **Three configurations are refused before anything runs**: an `--apply` with an
 empty fingerprint (an absent live candidate also reads as empty, so comparing

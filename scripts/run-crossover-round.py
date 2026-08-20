@@ -42,8 +42,10 @@ One measurement stage, in order::
 The walk starts BEFORE the open because ``jasper-arm-walk``'s first poll is
 what checks a staged walk is still waiting — see its module docstring. It is
 launched only when ``--attest-rig-clear`` is given: the attestation is the
-operator's to make and this runner never invents one. Without it the round
-runs the same phases minus the walk, for a human-moved or ordinary session.
+operator's to make and this runner never invents one. Without it the round runs
+the same phases minus the walk, for a human-moved or ordinary session -- and
+``--angles`` is refused outright, because the walk it would stage is an ARM
+walk that nothing would serve.
 
 **Nothing here re-maps another tool's verdict.** ``jasper-arm-walk``'s exit
 codes and ``bank-crossover-round.sh``'s 0/1/2/3/4 are reported verbatim, by
@@ -94,6 +96,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from jasper.active_speaker.arm_walk import (
+    CSRF_PAGE_PATH,
     STATUS_PATH,
     WizardClient,
 )
@@ -181,6 +184,10 @@ EXIT_APPLY = 10
 #: The fingerprint named on the command line is not the live candidate's.
 #: NOTHING was POSTed. This is the gate.
 EXIT_FINGERPRINT = 11
+#: The ssh transport failed, so the walk never reported anything. Its own code
+#: rather than EXIT_WALK: "walk_failed" on the summary line reads as the arm
+#: misbehaving, and a dropped link is not the arm's doing.
+EXIT_SSH_TRANSPORT = 12
 
 EXIT_NAMES: Mapping[int, str] = {
     EXIT_OK: "ok",
@@ -193,6 +200,7 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_BANK: "bank_refused",
     EXIT_APPLY: "apply_failed",
     EXIT_FINGERPRINT: "fingerprint_mismatch",
+    EXIT_SSH_TRANSPORT: "ssh_transport_failed",
 }
 
 
@@ -320,9 +328,16 @@ def resolve_target(hostname_override: str | None = None,
                    else "the built-in jts.local default"),
         )
 
+    env_local = (REPO_ROOT / ".env.local").exists()
+    # Where a value came from when the library answered but the file does not
+    # exist: `_lib.sh` supplies `jts.local`/`pi` itself, so calling that
+    # ".env.local" would name a file the operator could go look for and not
+    # find.
+    lib_source = ".env.local" if env_local else "the built-in default"
+
     def _pick(override: str, caller: str, lib: str, default: str) -> tuple[str, str]:
         for value, source in ((override, "--hostname"), (caller, "your export"),
-                              (lib, ".env.local"), (default, "the default")):
+                              (lib, lib_source), (default, "the default")):
             if value:
                 return value, source
         return default, "the default"
@@ -338,6 +353,12 @@ def resolve_target(hostname_override: str | None = None,
         # can ssh to one speaker carrying another's Host header. Nothing here
         # guesses which of the two is the one you meant — that is the
         # operator's to know — but it must not be invisible.
+        #
+        # ``split`` compares SOURCES, not values, so it is true even when both
+        # sources happen to name the same speaker. That over-warns on purpose:
+        # two sources agreeing on a value is a property of one checkout, not a
+        # guarantee, and the cheap direction to be wrong in is the one that
+        # says "look at this".
         trail.emit(
             "identity", host=host, host_from=host_source,
             user=user, user_from=user_source,
@@ -660,6 +681,16 @@ def apply_candidate(wizard: Wizard, fingerprint: str, trail: Trail) -> int:
     is a separate invocation naming the fingerprint at all. The chain that
     applied a candidate nobody had sanctioned filled that field in for itself.
     """
+    if not fingerprint.strip():
+        # The CLI refuses this at parse time, and this is the same refusal at
+        # the function boundary -- because an ABSENT live candidate also reads
+        # as "", so an empty argument would compare EQUAL and POST. Stated here
+        # too so the docstring above is true of the FUNCTION rather than of its
+        # callers, which is where a guard belongs when its absence would send a
+        # request.
+        trail.emit("apply", ok=False, named="(empty)",
+                   detail="refused: no fingerprint was named")
+        return EXIT_FINGERPRINT
     live = ""
     block = wizard.v2_block()
     candidate = block.get("candidate")
@@ -678,13 +709,25 @@ def apply_candidate(wizard: Wizard, fingerprint: str, trail: Trail) -> int:
     status, payload = wizard.post_json(
         APPLY_PATH, {"expected_candidate_fingerprint": fingerprint}
     )
-    # The BODY is the verdict, because the HTTP code alone is not: the host
-    # treats ``blocked`` and ``apply_failed`` as one family and can answer
-    # either with 200 or 409 depending on how it got there, and an
-    # ``apply_failed`` that is merely "the DSP was already inactive" comes back
-    # 200 with the graph unchanged. Only ``applied`` means the candidate is on
-    # the speaker; anything else — including a status this runner has never
-    # seen — is a failure here rather than an assumption.
+    # WHAT THE ROUTE ACTUALLY ANSWERS (correction_setup's `/crossover/v2/apply`
+    # dispatch, which computes the code from the payload):
+    #
+    #   status="applied"      -> 200      the candidate is on the speaker
+    #   status="blocked"      -> 409      always; the ONE status that moves the
+    #                                     code off 200
+    #   status="apply_failed" -> 200      always; a 200 whose graph did not
+    #                                     change, which is exactly why a caller
+    #                                     reading only the code would call this
+    #                                     a success
+    #   a refusal             -> 400      CrossoverV2Refused is a ValueError and
+    #                                     the handler answers {"ok": false,
+    #                                     "error": ...} with NO status field
+    #   an internal error     -> 500      likewise no status field
+    #
+    # So neither half decides alone: the code alone passes `apply_failed`, and
+    # the body alone has nothing to read on the 400/500 arms. Requiring 200 AND
+    # "applied" is the one test that is correct on every row, including a
+    # status this runner has never seen.
     outcome = (
         str(payload.get("status") or "")
         if isinstance(payload, Mapping) else ""
@@ -740,10 +783,12 @@ def _open_failure_detail(status: int, payload: Any, target: Target) -> str:
     detail = _error_of(payload)
     if status == 403:
         detail += (
-            f" [403 is what the management-host guard returns for a Host it "
-            f"does not answer to: this round ssh'd to {target.host} and sent "
-            f"Host: {target.hostname} — if those are two different speakers, "
-            f"that is the cause; --hostname sets the second]"
+            f" [two things answer 403 here. The management-host guard, for a "
+            f"Host it does not answer to: this round ssh'd to {target.host} "
+            f"and sent Host: {target.hostname}, so if those are two different "
+            f"speakers that is the cause and --hostname sets the second. Or "
+            f"the CSRF pair, if the token could not be minted from "
+            f"{CSRF_PAGE_PATH} — the wizard still starting looks like this]"
         )
     return detail
 
@@ -797,7 +842,11 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             )
             if not walk_ok:
                 _say_bank_by_hand(dest, since, target)
-                return EXIT_WALK
+                # ssh's own failure is not the walk's verdict, and the exit
+                # name an operator reads has to agree with the trail line
+                # above it.
+                return (EXIT_SSH_TRANSPORT if walk_rc == SSH_TRANSPORT_EXIT
+                        else EXIT_WALK)
 
         rc = await_stage(
             wizard, prior_session_id=prior_session_id,
@@ -901,7 +950,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "the commission instrument this session measures with, sent "
             "explicitly on every open — an absent tier silently inherits the "
-            "last session's (default: %(default)s)"
+            "last session's (default: %(default)s). Ignored by --stage verify, "
+            "which takes the instrument the MEASURING session recorded"
         ),
     )
     parser.add_argument(
@@ -916,7 +966,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--angles", default="",
         help=(
             "stage an arm walk at these whole degrees before opening "
-            "(e.g. 0,7,-7,22,-22). Omitted, nothing is staged"
+            "(e.g. 0,7,-7,22,-22). Omitted, nothing is staged. Requires "
+            "--attest-rig-clear: a staged walk is an ARM walk, and one nobody "
+            "will serve is refused rather than run"
         ),
     )
     parser.add_argument(
@@ -928,7 +980,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "YOUR attestation, forwarded to jasper-arm-walk: the arm's travel "
             "is clear and the saved zero is the acoustic axis. Without it no "
-            "walk is launched — this runner never attests on your behalf"
+            "walk is launched — this runner never attests on your behalf — "
+            "and --angles is refused, since nothing would serve the walk it "
+            "stages"
         ),
     )
     parser.add_argument(
