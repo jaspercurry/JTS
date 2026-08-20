@@ -1394,18 +1394,19 @@ laptop-side). The figures are that night's evidence, not standing constants.
    test earns its keep in both directions: that night it found all nine named
    features **minimum-phase**, which killed the comfortable hypothesis that the
    in-window failures lived in a non-minimum-phase summation zone and
-   re-attributed them to rule 2. **Status: the instrument is MISSING from the
-   product.** Those verdicts came from campaign-side analysis, not from shipped
-   code, and the tree already says so in its own words —
-   [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)
-   discloses `per_bin_minimum_phase_class` as a gap because "the excess-phase
-   instrument that would separate a minimum-phase dip from an interference null
-   per bin is not built", and `PositionalSupport` in
+   re-attributed them to rule 2. **Status: the instrument ships** as
+   [`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+   (`jasper-classify-features`), which runs the excess-group-delay test, the
+   gate-invariance check against a matched-Q null model, and the timing-scatter
+   test over one round's banked captures, and refuses to emit a verdict at all
+   unless its known-answer controls pass. It is an OFFLINE run over a banked
+   round rather than a stage of one, so a round carries verdicts when somebody
+   classified it and `per_bin_minimum_phase_class` is still disclosed as a gap
+   when nobody did. What it cannot do is the vertical plane: every capture
+   shape it reads is horizontal, so every verdict it emits is `vertical_blind`
+   and the boost bar refuses on that alone. `PositionalSupport` in
    [`blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)
-   describes itself as "the deterministic stand-in for the per-bin
-   minimum-phase classifier that does not exist yet". Only the cross-position
-   half of this rule has a shipped instrument (`positional_support`); no
-   excess-group-delay or gate-invariance symbol exists anywhere in `jasper/`.
+   remains the cross-position half for the BLEND class.
 2. **Match filter width to feature width.** The three in-window features
    measured natural Q **3.9 / 5.1 / 6.6** (2057 / 1406 / 1037 Hz), each read off
    the pooled 7 ms detrended curve with a ×1.5-narrower companion bracketing it
@@ -1479,7 +1480,7 @@ this stage reads as more finished than it is.
 
 | rule | the decision it has to make | ships? | what ships beside it |
 |---|---|---|---|
-| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver class, both signs — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable`, a boost with no `defect-boostable` one `driver_feature_not_boostable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** that would produce a verdict still does not ship, so the evidence is a banked lab result rather than something a round derives. `positional_support` remains the cross-position half for the blend boost class |
+| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver class, both signs — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable`, a boost with no `defect-boostable` one `driver_feature_not_boostable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** ships too — [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py) / `jasper-classify-features`, controls-gated — but it types detected FEATURES rather than bins, runs OFFLINE over a banked round rather than inside one, and is horizontally blind, so its every verdict refuses a boost on `driver_boost_vertically_blind`. `positional_support` remains the cross-position half for the blend boost class |
 | 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
 | 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
 | 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **partial** | ships for the **per-driver prescribed** class since [PR #2754](https://github.com/jaspercurry/JTS/pull/2754): a boost is admitted only against a nearest banked `defect-boostable` verdict that is not `vertical_blind` and reports its own `depth_db`, no deeper than that depth, and inside a per-role composed budget that bounds the maximum-SPL spend at 5.0 dB ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)). Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised, and the per-driver bar is a gate on a proposal rather than a stage that derives one |
@@ -1748,8 +1749,11 @@ That pass also checked the section's **negative** claims, which is where its
 first draft was wrong and had to be corrected before merge: `evaluate_flat_spec`
 takes no frozen-reference argument (it derives `reference_db` from whichever
 curve it is handed); `evidence_packet.py` and `blend_prescription.py` both
-disclose the per-bin minimum-phase instrument as not built; no
-excess-group-delay or gate-invariance symbol exists anywhere in `jasper/`;
+disclosed the per-bin minimum-phase instrument as not built, and no
+excess-group-delay or gate-invariance symbol existed anywhere in `jasper/`
+**at that date** — both were true on 2026-08-19 and neither is now, since
+[`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+shipped the instrument (rule 1 above carries the current status);
 `BLEND_FILTER_Q` is `2.0`; and at that moment neither the cut-Q raise nor a
 Stage-0 timing acceptance test had an open change against it, so **every "IN
 FLIGHT" in that first draft was demoted to MISSING**. The campaign's analysis

@@ -86,6 +86,7 @@ __all__ = [
     "packet_feature_classifications",
     "packet_positional_evidence",
     "packet_region_band_hz",
+    "round_artifact_dir",
 ]
 
 #: Bumped when a reader that understood the previous version would misread this
@@ -142,13 +143,15 @@ _IDENTITY_FIELDS = (
 
 #: Where a round's banked feature classification lives, if one was banked.
 #:
-#: No stage of a round writes this today — stage P3's classification instrument
-#: is not in the product, and :mod:`.feature_classification` is the verdict
-#: REGISTER rather than the pipeline. So this is the name an operator's banked
-#: lab result must carry to be read into a packet, named here rather than left
-#: implicit so the packet, the gate and whatever eventually produces one cannot
-#: each invent their own spelling. Its absence is an ordinary ``source_absent``
-#: and is reported, never papered over.
+#: :mod:`.feature_classifier` writes it — one name shared by the instrument
+#: that produces a classification, the packet that reads it and the gate that
+#: acts on it, so none of the three can invent its own spelling. No stage of a
+#: round writes it AUTOMATICALLY: the instrument is an offline run over a
+#: round's banked captures (``jasper-classify-features``), so the file is
+#: present when somebody classified the round and absent otherwise. An
+#: operator's own banked lab result carrying this name is read identically.
+#: Its absence is an ordinary ``source_absent`` and is reported, never papered
+#: over.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
@@ -213,7 +216,14 @@ def _copy_allowed(
     return kept, withheld
 
 
-def _find_round_dir(session_dir: Path) -> tuple[Path | None, str]:
+def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
+    """The one round-artifact directory in a bundle, or ``(None, why)``.
+
+    Public because a bundle's round directory is now WRITTEN as well as read:
+    :mod:`.feature_classifier` files :data:`CLASSIFICATION_ARTIFACT` there, and
+    a producer that located that directory by its own glob could file an
+    artifact where this reader does not look. One rule, both directions.
+    """
     matches = sorted(
         path for path in session_dir.glob(_EVIDENCE_GLOB) if path.is_dir()
     )
@@ -483,21 +493,19 @@ def _not_evaluated(
         },
     ]
     if not classification_available:
-        # Was unconditional until a round could carry banked verdicts. Kept
-        # verbatim for the case it still describes — nothing in the product
-        # PRODUCES a classification, so this is the shipped answer for every
-        # round nobody banked one for. Stating it while the packet carries
-        # verdicts would be the opposite of the honesty this block exists for:
-        # "we did not look" printed beside the thing we looked at.
+        # Was unconditional until a round could carry banked verdicts. Stating
+        # it while the packet carries verdicts would be the opposite of the
+        # honesty this block exists for: "we did not look" printed beside the
+        # thing we looked at.
         entries.append({
             "field": "per_bin_minimum_phase_class",
             "reason": (
-                "no feature classification is banked for this round, and the "
-                "excess-phase instrument that would produce one per bin is "
-                "not built in the product. The positional bar in the response "
-                "format is the deterministic stand-in for the BLEND boost "
-                "class; the per-driver class refuses, either sign, rather "
-                "than standing in"
+                "no feature classification is banked for this round. The "
+                "instrument that produces one runs offline over a round's "
+                "banked captures (jasper-classify-features) and nobody ran it "
+                "here. The positional bar in the response format is the "
+                "deterministic stand-in for the BLEND boost class; the "
+                "per-driver class refuses, either sign, rather than standing in"
             ),
         })
     if not drivers_available:
@@ -572,7 +580,7 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(
             f"bundle missing a readable info.json ({info_reason}): {session_dir}"
         )
-    round_dir, round_reason = _find_round_dir(session_dir)
+    round_dir, round_reason = round_artifact_dir(session_dir)
     if round_dir is None:
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
