@@ -153,6 +153,14 @@ uint64_t jts_ring_monotonic_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+// The pacing governor's clock base. NOT CLOCK_MONOTONIC — see the declaration in
+// jts_ring_shm.h for why NTP slew must not reach this one.
+uint64_t jts_ring_monotonic_raw_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 size_t jts_ring_samples_per_slot(const jts_ring_geometry_t *g) {
     return (size_t)g->period_frames * (size_t)g->channels;
 }

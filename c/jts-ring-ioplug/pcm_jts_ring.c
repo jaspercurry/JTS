@@ -73,6 +73,12 @@
 //    the `aplay -D jts_ring_playback ... /dev/zero` resolvability probe
 //    terminate. The reported-position clamp (b) also keeps hw_ptr non-decreasing,
 //    so reader reattach never steps it backward.
+//    ONE PCM-SCOPED EXCEPTION: a conf.d block that declares `pace_nominal 1` also
+//    caps the reported position at a nominal software clock (jts_ring_pace_apply,
+//    jts_ring_shm.h), so its `avail` DOES close when the app runs ahead of real
+//    time. That is a rate bound, not the B1 wedge: the clock advances with no
+//    reader, so the gate always reopens within a period and (c) still bounds the
+//    ring. Every PCM without the field keeps (a)+(b) exactly as described above.
 // 2. What breaks if the writer (this plugin) dies? write_seq stops advancing;
 //    the reader sees the ring empty and emits silence. On close we clear
 //    writer_pid so the reader reports writer_alive:false.
@@ -180,6 +186,13 @@ typedef struct {
     // advertised HW format/channel constraints, and every staging stride below.
     uint32_t channels;
     uint32_t sample_format; // JTS_RING_SAMPLE_FORMAT_*
+    // Governor opt-in from the conf.d (`pace_nominal`, default 0); set once at open
+    // like the wire above. jts_ring_pace_apply in the header owns what it means.
+    int pace_nominal;
+    // The governor's t0: a CLOCK_MONOTONIC_RAW stamp taken at stream START, forced
+    // nonzero so 0 is an unambiguous "not started" sentinel. `prepare` clears it
+    // alongside appl_frames / last_reported; `start` stamps it.
+    uint64_t clock_t0_ns;
     int opened; // writer/reader attached
     // --- PLAYBACK staging (writer) ---
     // Camilla may writei() fewer than a whole slot at a time; we accumulate into
@@ -261,11 +274,17 @@ static jts_ring_geometry_t pcm_geometry(const jts_ring_pcm_t *p) {
     return g;
 }
 
+// One period of wall-clock time at the pinned wire rate. The ONE place that
+// conversion lives, shared by the poll cadence below and the capture silence
+// pacing (which computed it inline before this was extracted).
+static uint64_t period_ns_for(uint32_t period_frames) {
+    return (uint64_t)period_frames * 1000000000ull / JTS_RING_RATE;
+}
+
 // One poll/pacing tick: period/4, clamped to [0.25 ms, 2 ms]. Shared by the
 // timerfd cadence, the playback drain wait, and the capture starvation nap.
 static uint64_t tick_ns_for(uint32_t period_frames) {
-    uint64_t period_ns = (uint64_t)period_frames * 1000000000ull / JTS_RING_RATE;
-    uint64_t tick_ns = period_ns / 4;
+    uint64_t tick_ns = period_ns_for(period_frames) / 4;
     if (tick_ns < 250000ull) tick_ns = 250000ull;
     if (tick_ns > 2000000ull) tick_ns = 2000000ull;
     return tick_ns;
@@ -273,12 +292,18 @@ static uint64_t tick_ns_for(uint32_t period_frames) {
 
 static void arm_timer(jts_ring_pcm_t *p) {
     if (p->timer_fd < 0) return;
-    uint64_t tick_ns = tick_ns_for(p->period_frames); // repeating
+    // A governed PCM polls at the PERIOD: the ceiling it is waiting on releases in
+    // period grains, so three of every four period/4 wakes would find the same
+    // avail and sleep again. Ungoverned PCMs keep period/4 unchanged.
+    uint64_t tick_ns = p->pace_nominal ? period_ns_for(p->period_frames)
+                                       : tick_ns_for(p->period_frames);
+    // tv_nsec must be < 1e9 and a whole period passes that above 48000 frames (the
+    // conf.d accepts up to 65536); the ungoverned tick is <= 2 ms, so this is a
+    // no-op there.
     struct itimerspec its;
-    its.it_interval.tv_sec = 0;
-    its.it_interval.tv_nsec = (long)tick_ns;
-    its.it_value.tv_sec = 0;
-    its.it_value.tv_nsec = (long)tick_ns;
+    its.it_interval.tv_sec = (time_t)(tick_ns / 1000000000ull);
+    its.it_interval.tv_nsec = (long)(tick_ns % 1000000000ull);
+    its.it_value = its.it_interval;
     timerfd_settime(p->timer_fd, 0, &its, NULL);
 }
 
@@ -287,6 +312,19 @@ static void disarm_timer(jts_ring_pcm_t *p) {
     struct itimerspec its;
     memset(&its, 0, sizeof(its));
     timerfd_settime(p->timer_fd, 0, &its, NULL);
+}
+
+// The governor's impure prologue: read the clock, hand frames to the core. Both
+// pointer callbacks call this pair; neither does anything else about pacing.
+static int pace_active(const jts_ring_pcm_t *p) {
+    return p->pace_nominal && p->clock_t0_ns != 0;
+}
+
+static uint64_t pace_clock_frames(const jts_ring_pcm_t *p) {
+    if (!pace_active(p)) return 0;
+    uint64_t now = jts_ring_monotonic_raw_ns();
+    uint64_t elapsed = (now > p->clock_t0_ns) ? (now - p->clock_t0_ns) : 0;
+    return jts_ring_nominal_clock_frames(elapsed, JTS_RING_RATE);
 }
 
 // ---- ioplug callbacks ----
@@ -316,15 +354,22 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
         }
         p->opened = 1;
     }
-    // Reset the staging + pointer on (re)prepare.
+    // Reset the staging + pointer on (re)prepare. clock_t0_ns clears with them so
+    // the governor re-stamps at the next start rather than measuring from the old.
     p->stage_frames = 0;
     p->appl_frames = 0;
     p->ptr_state.last_reported = 0;
+    p->clock_t0_ns = 0;
     return 0;
 }
 
 static int jts_ring_start(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
+    // Stamp the governor's t0 here, not at prepare: frames only move once the
+    // stream runs, and a prepare-to-start gap would otherwise be handed to the
+    // writer as slack. Forced nonzero — 0 is the "not started" sentinel.
+    p->clock_t0_ns = jts_ring_monotonic_raw_ns();
+    if (p->clock_t0_ns == 0) p->clock_t0_ns = 1;
     arm_timer(p);
     return 0;
 }
@@ -393,6 +438,8 @@ static snd_pcm_sframes_t jts_ring_pointer(snd_pcm_ioplug_t *io) {
         .period_frames = p->period_frames,
         .buffer_size = (uint64_t)io->buffer_size,
         .reader_live = reader_live,
+        .pace_nominal = pace_active(p),
+        .clock_frames = pace_clock_frames(p),
     };
     uint64_t reported = jts_ring_pointer_report(&p->ptr_state, &in);
     // ALSA wants the position modulo the buffer. The clamp above guarantees the
@@ -642,7 +689,7 @@ static void capture_service_tick(jts_ring_pcm_t *p) {
     if (!writer_live && real_empty &&
         p->pending_silence_frames < (uint64_t)p->period_frames) {
         uint64_t now = jts_ring_monotonic_ns();
-        uint64_t period_ns = (uint64_t)p->period_frames * 1000000000ull / JTS_RING_RATE;
+        uint64_t period_ns = period_ns_for(p->period_frames);
         // First silence period after real data (last_silence_ns == 0) arms
         // immediately so the gate opens without a period of dead air; each
         // subsequent one waits a full period of realtime.
@@ -684,6 +731,7 @@ static int jts_ring_capture_prepare(snd_pcm_ioplug_t *io) {
     p->transfer_starved_naps = 0;
     p->last_silence_ns = 0;
     p->ptr_state.last_reported = 0;
+    p->clock_t0_ns = 0; // re-stamped at the next start (see jts_ring_start)
     return 0;
 }
 
@@ -720,6 +768,8 @@ static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
         .pending_silence_frames = p->pending_silence_frames,
         .period_frames = p->period_frames,
         .buffer_size = (uint64_t)io->buffer_size,
+        .pace_nominal = pace_active(p),
+        .clock_frames = pace_clock_frames(p),
     };
     uint64_t reported = jts_ring_capture_pointer_report(&p->ptr_state, &in);
     return (snd_pcm_sframes_t)(reported % io->buffer_size);
@@ -1029,6 +1079,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     long period_frames = JTS_RING_DEFAULT_PERIOD;
     long n_slots = JTS_RING_DEFAULT_SLOTS;
     long channels = JTS_RING_DEFAULT_CHANNELS;
+    long pace_nominal = 0; // ungoverned unless the block opts in
     uint32_t sample_format = JTS_RING_DEFAULT_FORMAT;
     int rc;
 
@@ -1095,6 +1146,13 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
             }
             continue;
         }
+        if (!strcmp(id, "pace_nominal")) {
+            if (snd_config_get_integer(n, &pace_nominal) < 0) {
+                SNDERR("jts_ring: pace_nominal must be an integer");
+                return -EINVAL;
+            }
+            continue;
+        }
         // An unknown field is REFUSED, and that refusal is load-bearing beyond
         // typo-catching: it is what makes a deploy-skew mismatch fail at open
         // instead of on the wire. The ioplug build degrades to a warning (the
@@ -1120,6 +1178,10 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
         SNDERR("jts_ring: channels out of range 2..=8");
         return -EINVAL;
     }
+    if (pace_nominal != 0 && pace_nominal != 1) {
+        SNDERR("jts_ring: pace_nominal must be 0 or 1");
+        return -EINVAL;
+    }
 
     jts_ring_pcm_t *p = calloc(1, sizeof(*p));
     if (!p) return -ENOMEM;
@@ -1135,6 +1197,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     p->n_slots = (uint32_t)n_slots;
     p->channels = (uint32_t)channels;
     p->sample_format = sample_format;
+    p->pace_nominal = (int)pace_nominal;
 
     p->io.version = SND_PCM_IOPLUG_VERSION;
     if (stream == SND_PCM_STREAM_CAPTURE) {
