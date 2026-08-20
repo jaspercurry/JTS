@@ -347,14 +347,20 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
 
 
 def staged_angle_request_pending() -> bool:
-    """Is a walk waiting? A TEST predicate, with no production caller.
+    """Is a walk waiting?
 
     Named rather than left as a bare ``.is_file()`` in a dozen assertions,
     because "is one pending" is the concept the lifecycle tests are actually
-    checking and a second spelling of it in each test is how the two drift. It
-    answers what a stat answers and no more: anything that wants the request
+    checking and a second spelling of it in each test is how the two drift.
+
+    Its one production caller reads it AFTER a refused
+    :func:`take_staged_angle_request` to find out whether that refusal consumed
+    the document — the two unreadable arms deliberately do not — so a journal
+    line can state what happened instead of asserting it.
+
+    It answers what a stat answers and no more: anything that wants the request
     itself goes through :func:`take_staged_angle_request`, which is the only
-    reader and always consumes.
+    reader and always consumes what it could read.
     """
     return angle_request_spool_path().is_file()
 

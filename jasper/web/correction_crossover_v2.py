@@ -2207,9 +2207,10 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # lateral pause). Two gates below — ``comparison_complete`` and
     # ``authorized_winner`` — encode "the Fc comparison finished, and the corner
     # on the speaker is the one it authorized". Neither question EXISTS when no
-    # candidate sweep ran: the sweep fires only in a session that walks the
-    # lateral poses, so since the pause ``fc_selection`` is absent on every
-    # shipped session. Reading that absence as an unfinished comparison made
+    # candidate sweep ran: the sweep fires only for a lateral walk whose
+    # consumer adjudicates, so ``fc_selection`` is absent on every shipped
+    # session — with the pause, and with an operator's staged walk too.
+    # Reading that absence as an unfinished comparison made
     # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
     # a successful commission told the household "not enough complete evidence
     # to grade… this report changed nothing automatically" over a tune that IS
@@ -2870,6 +2871,110 @@ def _take_staged_blend_prescription(round_ordinal: int) -> Any:
             prescription_sha256=staged.prescription_sha256,
         )
     return staged
+
+
+def _take_staged_angle_walk(
+    plan_shape: Any,
+    *,
+    base_entries: int,
+    lateral_group_present: bool,
+    plans_cloud_group: bool,
+) -> tuple[tuple[Any, ...], str] | None:
+    """This session's staged angle walk as ``(poses, consumer)``, or ``None``.
+
+    :func:`_take_staged_blend_prescription`'s twin: ONE take, at ONE place.
+    ``None`` is every ordinary session, and every refused one.
+
+    Guarantees: it NEVER raises, so a staged document can never cost a
+    household its session — the three refusal classes are the spool's
+    ``AngleRequestRefused``, the seam's ``LateralWalkRefused``, and the bare
+    ``CrossoverV2FlowError`` the spool re-raises for a banked stop that no
+    longer satisfies the seam's contract (a hand-edited angle), which that
+    module deliberately does not re-wrap. Every one is journalled with its
+    producing module's own slug. The consumer is always
+    ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here rather than read from the
+    document, because it decides whether #2711's paused statistic runs and may
+    have exactly one writer.
+
+    ``consumed`` on the journal line is READ BACK from the spool, never
+    asserted: its two unreadable arms deliberately do not consume, so a
+    permissions mistake refuses every session until it is fixed rather than
+    silently destroying the evidence of itself.
+
+    ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
+    facts, passed in rather than read, because the composing seam may not read
+    session flags.
+
+    A walk does not survive its session. The consumer is not persisted and the
+    document is single-use, so a session that lapses mid-walk re-opens in its
+    ordinary shape and the operator stages again — which is the safe direction:
+    a resumed half-walk would bank poses under a consumer nothing re-declared.
+    """
+    from jasper.active_speaker.angle_capture import (
+        WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_STOP_NO_LONGER_VALID,
+        LateralWalkRefused,
+        session_lateral_walk,
+    )
+    from jasper.active_speaker.angle_capture_spool import (
+        AngleRequestRefused,
+        staged_angle_request_pending,
+        take_staged_angle_request,
+    )
+    from jasper.active_speaker.crossover_v2.journey import (
+        LATERAL_CONSUMER_FORWARD_MODEL,
+    )
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2FlowError,
+        position_angle_deg,
+    )
+
+    def refused(reason: str, detail: str) -> None:
+        log_event(
+            logger, "correction.crossover_v2_angle_walk_refused",
+            level=logging.WARNING, reason=reason, detail=detail,
+            # READ BACK, never asserted: the spool's two unreadable arms
+            # deliberately do not consume.
+            consumed=not staged_angle_request_pending(),
+            session_continues=True,
+        )
+
+    try:
+        request = take_staged_angle_request()
+        if request is None:
+            return None
+        if lateral_group_present:
+            raise LateralWalkRefused(
+                WALK_LATERAL_GROUP_ALREADY_PLANNED,
+                "this session already walks a lateral group; a staged walk "
+                "cannot be a second one",
+            )
+        prompts = session_lateral_walk(
+            request,
+            externally_positioned=plan_shape.externally_positioned,
+            base_entries=base_entries,
+            plans_cloud_group=plans_cloud_group,
+        )
+    except (AngleRequestRefused, LateralWalkRefused) as exc:
+        refused(exc.reason, exc.detail)
+        return None
+    except CrossoverV2FlowError as exc:
+        # The third class: a banked stop the seam can no longer build. The spool
+        # re-raises it un-wrapped because ``_validated_angle``'s own sentence
+        # beats anything a second vocabulary could say, so it arrives with no
+        # slug — it gets one here and keeps that sentence as the detail.
+        refused(WALK_STOP_NO_LONGER_VALID, str(exc))
+        return None
+    log_event(
+        logger, "correction.crossover_v2_angle_walk_taken",
+        stops=len(prompts),
+        angles=",".join(f"{position_angle_deg(p):+d}" for p in prompts),
+        mover=request.mover,
+        regimes=",".join(sorted({stop.regime for stop in request.stops})),
+        consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+        fc_statistic_paused=True,
+    )
+    return prompts, LATERAL_CONSUMER_FORWARD_MODEL
 
 
 def pilot_transfer_prior_from_state(
@@ -7016,6 +7121,7 @@ def prepare_v2_session(
         read_alignment_prescription,
     )
     from jasper.active_speaker.crossover_v2_flow import (
+        LATERAL_CONSUMER_FC_SELECTOR,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
         STAGE1_INCLUDES_LATERAL,
@@ -7119,6 +7225,29 @@ def prepare_v2_session(
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
     )
+    # P2's staged angle walk (#2732). ONE take, feeding the map, the spec and
+    # the conductor's two lateral kwargs. Before any state is opened, so a
+    # refusal costs nothing. The map above is this walk's ``base_entries`` —
+    # the captures that are NOT the walk — and is rebuilt below when one is
+    # taken; that rebuild is still ONE decision, because the take is not redone.
+    staged_walk = _take_staged_angle_walk(
+        plan_shape,
+        base_entries=len(stage1_index_phase),
+        lateral_group_present=include_lateral,
+        plans_cloud_group=include_cloud_measure,
+    )
+    lateral_prompts: tuple[Any, ...] | None = None
+    lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
+    if staged_walk is not None:
+        lateral_prompts, lateral_consumer = staged_walk
+        include_lateral = True
+        stage1_index_phase = build_v2_cloud_index_phase_map(
+            plan_shape=plan_shape,
+            include_cloud_measure=include_cloud_measure,
+            include_lateral=include_lateral,
+            include_entry_baseline=include_entry_baseline,
+            lateral_prompts=lateral_prompts,
+        )
     # #2662 W2b: which capture source answers this session's asks. After the
     # speaker-level gates (they are prior questions), before any state is
     # opened (an explicit-override refusal must cost nothing).
@@ -7189,6 +7318,7 @@ def prepare_v2_session(
             include_cloud_measure=include_cloud_measure,
             include_lateral=include_lateral,
             include_entry_baseline=include_entry_baseline,
+            lateral_prompts=lateral_prompts,
             default_setup_calibration=default_setup_calibration_for_v2(),
         ).with_return_url(return_url)
         # This stage's own wall-clock budget, read ONCE off the plan it just
@@ -7293,6 +7423,9 @@ def prepare_v2_session(
             # selector cannot fire there and an argument passed to it would be
             # dead rather than symmetric.
             crossover_search_band_hz_by_role=context.crossover_search_band_hz_by_role,
+            # #2732 P2. From the SAME take the map and the spec above read.
+            lateral_consumer=lateral_consumer,
+            lateral_prompts=lateral_prompts,
             measurement_protection_sections_by_role=protection_sections,
             sound_design_revision=context.sound_design_revision,
             tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,

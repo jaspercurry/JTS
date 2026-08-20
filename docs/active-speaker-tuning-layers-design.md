@@ -1089,14 +1089,15 @@ why P2 exists.
 
 ### Stage P2 — crossover tuning by measurement
 
-**STATUS: method ratified; the at-mark measurement substrate EXISTS, the
-per-angle replay is PAUSED, the search and its guards are MISSING.** No
-crossover parameter is chosen by measurement today. But the per-driver complex
-capture this stage consumes is already shipped **at the mark** — see "how much
-of it already exists" below — so the gap is narrower and differently shaped than
-a reading of "P2 is unbuilt" suggests. Off the mark there are **two** routes and
-only one of them is gated: un-pausing the lateral WALK is a flag flip plus a
-cleared re-introduction bar, while capturing per-driver responses at angles as
+**STATUS: method ratified; the at-mark measurement substrate EXISTS, per-angle
+replay RUNS when an operator stages a walk, the automatic per-angle schedule is
+PAUSED, and the search and its guards are MISSING.** No crossover parameter is
+chosen by measurement today. But the per-driver complex capture this stage
+consumes is already shipped **at the mark** — see "how much of it already
+exists" below — so the gap is narrower and differently shaped than a reading of
+"P2 is unbuilt" suggests. Off the mark there are **two** routes and only one of
+them is gated: un-pausing the lateral WALK is a flag flip plus a cleared
+re-introduction bar, while capturing per-driver responses at angles as
 **forward-model input** needs neither, because it computes no pose-ratio
 statistic for the bar to govern. Since 2026-08-19 the second route has a seam —
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py) resolves
@@ -1106,25 +1107,40 @@ operator states a walk with `jasper-angle-capture`
 ([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py)), which resolves
 it through that seam and banks it in a single-use mailbox
 ([`angle_capture_spool.py`](../jasper/active_speaker/angle_capture_spool.py))
-for a session to take. **No session takes it yet**, so the bullet below stays
-literally true: no per-driver data is captured off the mark today.
+for a session to take — and, since 2026-08-19, the **take**: the next
+`/correction/crossover/v2/session` open consumes that document, walks its stops
+as the session's lateral group, and banks every accepted pose's raw WAV with an
+angle-stamped sidecar. So per-driver data off the mark is now capturable, and
+the fourth bullet below records what still is not: the fixed stage-1 walk stays
+paused, and nothing captures off-axis unless an operator stages a walk.
 
-**What remains is one ruling and its wiring, and the ruling is the load-bearing
-half.** A per-driver stop at a pose is a real, shipped capture path — the
-conductor's `_consume_lateral_pose` screens it, builds its per-driver curves and
-retains it — but that path is reached only through `PHASE_LATERAL`, and the
-walk's **last** index runs `_close_lateral_walk`, where R17's paused selector
-adjudicates. So a session wired naively onto the shipped per-driver-at-a-pose
-machinery would reach the statistic
+**The ruling that gated it, recorded.** A per-driver stop at a pose is a real,
+shipped capture path — the conductor's `_consume_lateral_pose` screens it,
+builds its per-driver curves and retains it — but that path is reached only
+through `PHASE_LATERAL`, and the walk's **last** index runs
+`_close_lateral_walk`, where R17's paused selector adjudicates. A session wired
+naively onto that machinery would reach the statistic
 [#2711](https://github.com/jaspercurry/JTS/issues/2711) bars, which is precisely
-the bar-dodge #2732 built the seam to avoid. The two ways out are (a) suppress
-the close for a walk that is not a stage-1 lateral walk, or (b) give the walk
-its own group phase; both edit `crossover_v2_flow.py` and
-`web/correction_crossover_v2.py`, which sit **exactly** at their
-`MAX_LINES_BY_PATH` caps. That is a decision about a bar-gated capability, not
-an implementation detail, and it is why the door landed without the take. The
-search and its guards are unaffected either way and are neither free nor already
-done.
+the bar-dodge #2732 built the seam to avoid. Two ways out were on the table:
+(a) suppress the close for a walk that is not a stage-1 lateral walk, or
+(b) give the walk its own group phase.
+
+**Option (a) was ratified and is what shipped.** A lateral group now declares
+its **consumer** — `LATERAL_CONSUMER_FC_SELECTOR` for the fixed stage-1 walk,
+`LATERAL_CONSUMER_FORWARD_MODEL` for a taken evidence walk
+([`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py))
+— and one derived predicate decides everything that reads the walk as a whole:
+MEASURE's candidate deferral, R17's candidate sweep, and both routes into
+`_close_lateral_walk`. An evidence walk takes none of them, and the suppression
+is a named journal line rather than a silence
+(`event=correction.crossover_v2_lateral_close_suppressed`,
+`fc_statistic_paused=true`). Why (a) over (b): a second group phase would have
+duplicated the whole per-driver-at-a-pose ladder — screens, curve build,
+retention, retry and settle bookkeeping — to change one thing about who reads
+the result, and the two walks measure the same thing at the same poses with the
+same program. #2711's bar is untouched: the statistic did not move, gain a
+caller, or become reachable by a new path; it lost one. The search and its
+guards are unaffected either way and are neither free nor already done.
 
 **The goal, stated as a stopping condition.** Drive the non-EQ parameters —
 polarity, per-branch delay, Fc, slopes/order, and branch gains — to the point
@@ -1140,9 +1156,10 @@ to require, plus the one lever (c) never names.
 **The measurement it needs, and how much of it already exists.** Per-driver
 **complex** responses — magnitude *and* phase — at every angle. **At the mark
 this ships**, and the shape it ships in removes a problem P2 was originally
-scoped to solve. **At every other angle it does not run today** — the fourth
-bullet below is a paused capability, not a working one, and closing that is part
-of P2's work rather than a given.
+scoped to solve. **Off the mark it now runs when an operator asks for it** —
+the fourth bullet below is an operator-driven capability, not an automatic one,
+so the angle SCHEDULE a search needs is still something a session has to be
+told, not something it produces.
 `build_measure_program`
 ([`program.py`](../jasper/audio_measurement/program.py)) schedules the woofer
 and tweeter sweeps **non-overlapping inside ONE capture**, routed by channel —
@@ -1164,17 +1181,20 @@ because they are easy to re-derive wrongly:
   capture that today's guard passes.
 - In-capture drift is estimated (`DriftEstimate`) and the drift-corrected
   woofer-versus-tweeter anchor already ships as `anchor_delay_us`.
-- **Per-angle per-driver capture is BUILT BUT PAUSED — no per-driver data is
-  captured off the mark today.** The machinery is real: a pose "replays
-  MEASURE's program"
-  ([`spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py)). But
-  `STAGE1_INCLUDES_LATERAL` is `False`
+- **Per-angle per-driver capture is BUILT, and OPERATOR-DRIVEN — no household
+  session captures off the mark on its own.** The machinery is real: a pose
+  "replays MEASURE's program"
+  ([`spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py)), and since
+  2026-08-19 an operator can point it at stated angles by staging a walk with
+  `jasper-angle-capture` (the take, above). What is still off is the AUTOMATIC
+  route: `STAGE1_INCLUDES_LATERAL` is `False`
   ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)), and
   [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) opens by saying so
   in its own words — "**No stage-1 session feeds this today.** The lateral walk
-  that produces `poses` was paused on 2026-08-18." The one multi-position walk
-  that *does* run yields nothing per-driver, because every cloud phase sits in
-  `SUMMED_SWEEP_PHASES`
+  that produces `poses` was paused on 2026-08-18." A staged angle walk is
+  per-driver but declares the forward-model consumer, so it feeds no selector;
+  and the multi-position walks that run *automatically* yield nothing
+  per-driver, because every cloud phase sits in `SUMMED_SWEEP_PHASES`
   ([`programs.py`](../jasper/active_speaker/crossover_v2/programs.py)) — and
   `STAGE1_INCLUDES_CLOUD_MEASURE` is `False` besides. Measurement Program v2's
   own "The machinery this reuses is built, and currently paused" paragraph above
@@ -1740,11 +1760,12 @@ injection)". That was wrong on both halves, verified at HEAD: `program.py`'s
 `build_measure_program` already interleaves the two drivers non-overlapping in
 ONE capture routed by channel (its module docstring is quoted in the stage), so
 `DriverResponse.complex_tf`, an exact A/B common time origin, `DriftEstimate`
-and `anchor_delay_us` all ship — **at the mark**, since `spatial.py`'s per-pose
-replay of that program is real but flagged off (`STAGE1_INCLUDES_LATERAL` is
-`False`, `fc_selector.py` says "No stage-1 session feeds this today", and the
-cloud walk that does run is summed-only), a distinction a later pass had to add
-after this paragraph first over-claimed it;
+and `anchor_delay_us` all ship — **at the mark automatically**, since
+`spatial.py`'s per-pose replay of that program runs only when an operator stages
+an angle walk (`STAGE1_INCLUDES_LATERAL` is `False`, `fc_selector.py` says "No
+stage-1 session feeds this today", and the cloud walk that runs on its own is
+summed-only), a distinction a later pass had to add after this paragraph first
+over-claimed it;
 and branch muting is not merely unnecessary but *contraindicated*, because
 `camilla_yaml.protected_neutral_program_origin` classifies the program origin
 only while every commission-mute filter is exactly pass-through
@@ -1780,13 +1801,16 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, twice now
-and for one reason: the footer is a whole-document claim, and neither pass
+**The `Last verified:` footer below was deliberately NOT bumped**, three times
+now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
 per-driver prescription class trued up the P3 table's rules 1, 2 and 3, the
 stage's own STATUS count, and recorded the two rulings that change forced —
-because that change is what made them stale or newly needed. It did not verify
-anything else here.
+because that change is what made them stale or newly needed. The pass that
+gave the angle walk a session to take (#2732) recorded the (a)-ruling in
+Stage P2 and trued up that stage's STATUS line, its lead-in, its fourth bullet
+and the per-pose-replay parenthesis below — every one of them a claim that
+change falsified. None verified anything else here.
 
 Last verified: 2026-08-18

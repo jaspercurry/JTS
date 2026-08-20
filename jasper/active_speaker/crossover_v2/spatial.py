@@ -58,11 +58,13 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.program import KIND_SWEEP
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
 from .contracts import CaptureValidity
@@ -78,6 +80,9 @@ __all__ = [
     "CLOUD_CLOSE_AWAITING_CONFIRM",
     "CLOUD_CLOSE_RUNNING",
     "GEOMETRY_RETRY_POSITIONS",
+    "LATERAL_EVIDENCE_BAND_HZ",
+    "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
+    "LATERAL_POSE_REGIME",
     "SCREEN_LOCATE_FAILED",
     "SCREEN_PILOT_LEVEL_COLLAPSE",
     "SCREEN_LINEARITY_FAILED",
@@ -88,13 +93,18 @@ __all__ = [
     "EntryBaselineScreen",
     "GeometryRetake",
     "BoostExclusion",
+    "LateralPose",
+    "LateralPoseCurve",
     "cloud_position_screens",
     "lateral_pose_screens",
     "lateral_curves_sufficient",
+    "lateral_evidence_grid_hz",
+    "lateral_pose_curve",
     "entry_baseline_screens",
     "group_position_floor",
     "geometry_retake",
     "cloud_position_record",
+    "lateral_pose_record",
     "entry_baseline_record",
     "boost_excluded_bands_hz",
 ]
@@ -536,6 +546,120 @@ def geometry_retake(
     return GeometryRetake(rung=retries_used, retries_after=retries_used + 1)
 
 
+# --- R16 lateral evidence (plan §4.4) --------------------------------------- #
+#
+# One fixed log-spaced basis for every retained pose curve. Fixed rather than
+# per-role so both branches land on the SAME frequencies and a consumer can sum
+# them without resampling either; log-spaced because a crossover argument is a
+# per-octave one. 1/12 octave is ~118 Hz at 2 kHz, which resolves a handoff
+# region the plan itself calls a COARSE gate ("lateral samples remain a coarse
+# gate", #1968) — this is not a polar measurement and must not be read as one.
+LATERAL_EVIDENCE_BAND_HZ = (20.0, 20_000.0)
+LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
+
+
+@dataclass(frozen=True)
+class LateralPoseCurve:
+    """One driver's NEUTRAL response at one pose, on the shared log basis.
+
+    ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
+    configured-crossover composition applied (see
+    ``CrossoverV2Session._lateral_priors``). §4.2's
+    ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
+
+    Values are SAMPLED at the nearest native bin, never interpolated or
+    averaged: an interpolated complex value is a number no microphone produced,
+    and a phase interpolated across a wrap is simply wrong. The frequencies
+    actually sampled ride along for the same reason. ``band_hz`` is the role's
+    driven sweep band — outside it there was no stimulus, so the samples are
+    noise and a consumer must bound itself with this.
+    """
+
+    role: str
+    freqs_hz: np.ndarray
+    complex_tf: np.ndarray
+    band_hz: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class LateralPose:
+    """One accepted pose in the lateral walk.
+
+    Carries NO trim, delay, polarity or fit. That absence is the §4.4 contract
+    ("re-solve trim or delay independently at every pose" is forbidden), and it
+    is structural rather than a convention: there is no field here for a second
+    solution to be written to.
+    """
+
+    pose_id: str
+    index: int
+    attempt: int
+    prompt: str
+    role: str
+    offset_cm: float
+    at_mark: bool
+    curves: tuple[LateralPoseCurve, ...]
+
+    def curve(self, role: str) -> LateralPoseCurve | None:
+        for curve in self.curves:
+            if curve.role == role:
+                return curve
+        return None
+
+
+def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
+    """Each role's PRIMARY sweep band, read off the program that played.
+
+    ``kind == KIND_SWEEP`` matters because a v2 MEASURE program OPENS with a
+    leading pilot pair, and a pilot carries a role and a band too — so a
+    role-only match would take the pilot's, not the sweep's. Today those two
+    bands are EQUAL (both derive from the same intersected ``RoleBand``), so
+    this is not a live bug; it names which segment the retained curve's band
+    describes, so the answer stays right if that coupling ever moves. Pinned by
+    ``test_the_retained_band_reads_the_sweep_segment_not_a_pilot``.
+    """
+    bands: dict[str, tuple[float, float]] = {}
+    for segment in program.segments:
+        if segment.kind != KIND_SWEEP or segment.role is None:
+            continue
+        if segment.f1_hz is None or segment.f2_hz is None:
+            continue
+        bands.setdefault(segment.role, (float(segment.f1_hz), float(segment.f2_hz)))
+    return bands
+
+
+def lateral_evidence_grid_hz() -> np.ndarray:
+    """The shared log basis every retained pose curve is sampled onto."""
+    lo, hi = LATERAL_EVIDENCE_BAND_HZ
+    octaves = math.log2(hi / lo)
+    return np.geomspace(
+        lo, hi, num=int(round(octaves * LATERAL_EVIDENCE_POINTS_PER_OCTAVE)) + 1,
+    )
+
+
+def lateral_pose_curve(
+    response: Any, band_hz: tuple[float, float],
+) -> LateralPoseCurve:
+    """Sample one analyzed driver response onto the shared basis."""
+    freqs = np.asarray(response.freqs_hz, dtype=np.float64)
+    tf = np.asarray(response.complex_tf, dtype=np.complex128)
+    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
+    # monotonically increasing rfft grid, without materialising an N x M
+    # distance matrix (the analysis grid is hundreds of thousands of bins).
+    grid = lateral_evidence_grid_hz()
+    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
+    left = right - 1
+    take = np.where(
+        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
+    )
+    return LateralPoseCurve(
+        role=str(response.role),
+        freqs_hz=freqs[take],
+        complex_tf=tf[take],
+        band_hz=(float(band_hz[0]), float(band_hz[1])),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # what a retained take records
 # --------------------------------------------------------------------------- #
@@ -612,6 +736,59 @@ def cloud_position_record(
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
+        "wav_sha256": wav_sha256,
+    }
+
+
+#: What every :data:`~.journey.PHASE_LATERAL` pose plays -- ``program_for_phase``
+#: hands them all the anchor's interleaved per-driver MEASURE object.
+#:
+#: A literal copy of :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER`
+#: because importing it would close a cycle (that module imports the flow, the
+#: flow imports this one).  Pinned equal by
+#: ``test_the_pose_record_states_the_seams_own_regime_word``.
+LATERAL_POSE_REGIME = "per_driver"
+
+
+def lateral_pose_record(
+    pose: LateralPose,
+    *,
+    position_deg: int,
+    lateral_consumer: str,
+    session_id: str,
+    wav_sha256: str | None,
+) -> dict[str, Any]:
+    """One retained lateral pose, as the evidence bundle's sidecar carries it.
+
+    Takes: the accepted :class:`LateralPose`, plus the four facts it does not
+    carry.  ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT
+    of the design axis), derived by the flow's ``position_angle_deg`` and
+    stated here rather than re-derived.  ``lateral_consumer`` is one of
+    :data:`~.journey.LATERAL_CONSUMERS`.
+
+    Guarantees: WHERE the microphone was (``position_deg`` + ``offset_cm`` +
+    ``at_mark``), WHAT played (``regime``), WHO the walk was for
+    (``lateral_consumer``), and the identity/verifier pair
+    (``take_id``, ``wav_sha256``) a replay needs.  Refuses nothing.
+
+    Separate from :func:`cloud_position_record` rather than a widened one: a
+    cloud position is a summed sweep judged by gating and ripple, and those
+    columns are never meaningful for a pose.
+    """
+    return {
+        "pose_id": pose.pose_id,
+        "phase": PHASE_LATERAL,
+        "index": pose.index,
+        "attempt": pose.attempt,
+        "take_id": f"{pose.pose_id}_a{int(pose.attempt):02d}",
+        "prompt": pose.prompt,
+        "role": pose.role,
+        "position_deg": int(position_deg),
+        "offset_cm": float(pose.offset_cm),
+        "at_mark": bool(pose.at_mark),
+        "regime": LATERAL_POSE_REGIME,
+        "lateral_consumer": lateral_consumer,
+        "session_id": session_id,
         "wav_sha256": wav_sha256,
     }
 

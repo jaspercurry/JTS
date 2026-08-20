@@ -47,11 +47,12 @@ places: ``2`` means fix the request, ``3`` means fix the speaker's filesystem.
 
 **What this tool does NOT do, stated plainly rather than implied.** It does not
 run a capture, open a session, play anything, or move a microphone. ``stage``
-places a request; a session takes it. Until the take is wired, ``plan`` is the
-verb that earns its keep on its own -- it is the only way to see what a stated
-walk resolves to, in the units the session will use -- and ``stage`` gives the
-request a durable, single-use home instead of a shell variable. See
-``docs/active-speaker-tuning-layers-design.md`` (stage P2) for what remains.
+places a request; the next measurement session takes it, once. ``plan`` is the
+dry run -- the only way to see what a stated walk resolves to, in the units the
+session will use -- and ``stage`` gives the request a durable, single-use home
+instead of a shell variable. What a taken walk then does, and what it
+deliberately does not adjudicate, is
+``docs/testing-tooling.md`` ("Angle-walk door").
 """
 
 from __future__ import annotations

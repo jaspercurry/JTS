@@ -695,7 +695,34 @@ MAX_LINES_BY_PATH = {
     # lines are the paragraph recording that the strictness is CORRECT — it is
     # why a receipt cannot bank half a prescription — so the next author moves
     # the field rather than loosening the reader.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_055,
+    #
+    # ...and 13,055 -> 13,053 (#2732 P2, the angle walk's take), a LOWERING
+    # across a change that added ~95 lines of behaviour. It is paid for by a
+    # cut taken first: the R16 lateral-evidence block — `LateralPose`,
+    # `LateralPoseCurve`, `_primary_sweep_bands`, the shared grid and its two
+    # constants — moved verbatim to `crossover_v2/spatial.py`, whose charter
+    # (what a take records) already covered it, leaving 17 re-export lines
+    # here. 13,055 -> 12,958 -> 13,053. What the +95 buys: the walk's own pose
+    # table and consumer threaded into the four builders and the session; the
+    # ONE predicate (`_adjudicating_walk`) and the suppression guard that keep
+    # #2711's paused statistic unreachable from an evidence walk; and per-pose
+    # evidence retention, which did not exist at all. Partly offset by one
+    # `_hand_to_retention` replacing what would have been a THIRD copy of the
+    # fail-soft retention boundary.
+    #
+    # ...and 13,053 -> 13,072 (#2753 gate round 1), +19. The gate found the
+    # angle walk's capacity gate carrying its OWN copy of the plan's retake
+    # arithmetic, and wrong: it added the geometry-retry budget
+    # unconditionally, while a plan budgets those only when a cloud group is
+    # planned, so it refused the two largest LEGAL walks (23 and 24 stops on the
+    # shipped shape — the relay accepts both). +21 is
+    # `stage1_plan_max_attempts`, the one producer both the plan builder and the
+    # seam now read, minus the 8-line inline expression it replaced; the rest
+    # is the pause comment's mechanism sentence, which named one decider where
+    # there are now two, and the comment saying why a pose's retention runs
+    # outside the close lock. A second copy of a gate's arithmetic is the
+    # defect; this is what removing it costs.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_072,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -953,7 +980,46 @@ MAX_LINES_BY_PATH = {
     # keep a capped file from growing is the next place growth goes. This file
     # learned no new fact about crossovers beyond "this apply may owe the
     # declaration a write".
-    "jasper/web/correction_crossover_v2.py": 8_889,
+    #
+    # 2026-08-19 (#2732 P2, the angle walk's take): 8,889 -> 8,984, +95, no
+    # deletions. Hunk by hunk:
+    #    68  `_take_staged_angle_walk`, the module-level twin of
+    #        `_take_staged_blend_prescription` beside it and named for that
+    #        function's reason (a take drivable in a test without a relay). 27
+    #        of the 68 execute; the rest is its contract and the two journal
+    #        lines, which carry the deciding numbers so the take is readable
+    #        from the journal alone.
+    #    22  the call site: one take, feeding the index map, the emitted spec
+    #        and the conductor's two kwargs, plus the map rebuild a taken walk
+    #        needs.
+    #     5  threading `lateral_prompts` / `lateral_consumer` into the spec
+    #        build and `hydrate`.
+    # No seam to cut here, and the composition is not this module's: resolving
+    # a request into poses and refusing an incompatible pair belongs to
+    # `active_speaker/angle_capture.py` (uncapped, and the module that already
+    # owns every other angle question), and the consumer vocabulary belongs to
+    # `crossover_v2/journey.py`. What lands here is the take itself — which is
+    # exactly the fact a session host owns — and this file learned no new fact
+    # about angles, poses or programs.
+    #
+    # ...and 8,984 -> 9,022 (#2753 gate rounds 1-2), +38, all of it inside
+    # `_take_staged_angle_walk` and its contract:
+    #    19  the take was not fail-closed. `take_staged_angle_request` re-raises
+    #        the seam's bare `CrossoverV2FlowError` for a banked stop it can no
+    #        longer build (a hand-edited angle) — deliberately un-wrapped, so it
+    #        carries no slug — and that class ESCAPED, killing the session open
+    #        with no journal line. It is a third refusal class; it is now caught
+    #        in its OWN except arm (mypy cannot narrow an isinstance flag),
+    #        slugged, and journalled with the producer's own sentence.
+    #    12  `consumed=true` was a literal the spool contradicts on its two
+    #        unreadable arms, which deliberately do not consume so a permissions
+    #        mistake cannot destroy the evidence of itself. It is read back now.
+    #     6  `plans_cloud_group` threaded through, so the capacity gate asks the
+    #        budget this session will actually emit.
+    #     1  gate round 2, nit A: one 125-char comment line wrapped to the
+    #        block's convention. No words changed, and E501 is not in the ruff
+    #        set, so the wrap is the whole of it.
+    "jasper/web/correction_crossover_v2.py": 9_022,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

@@ -9,22 +9,28 @@ A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial` and
 what a capture-consuming phase decides, and what one build produced.  This one
 answers R17's question: **given a capture that is alive exactly once, which
 crossover corners may this speaker be asked about, what does each one cost to
-score, and — in a session that walks — which one does the evidence recommend?**
+score, and — in a session whose walk adjudicates — which one does the evidence
+recommend?**
 
-**Whether anything runs this depends on one flag.**  The sweep fires at
-MEASURE-consume only when a lateral walk follows, and adjudicates only at that
-walk's close, so ``crossover_v2_flow.STAGE1_INCLUDES_LATERAL`` decides whether
-this module is reached at all.  While it is on, a stage-1 session sweeps and
-adjudicates as described below; with it off, no shipped session reaches this
-module — a round commits its configured Fc without scoring candidates and
-``fc_selection`` stays ``None``.
+**Whether anything runs this depends on a flag AND a consumer.**  The sweep
+fires at MEASURE-consume, and adjudicates at the walk's close, only for a
+lateral group that READS ITSELF -- ``crossover_v2_flow.STAGE1_INCLUDES_LATERAL``
+puts the ratified walk in the plan, and
+``crossover_v2.journey.lateral_adjudicates`` says whether that walk's consumer
+is this module.  With the flag on and the selector consumer, a stage-1 session
+sweeps and adjudicates as described below.  With the flag off, no shipped
+session reaches this module; and an operator's staged angle walk declares the
+forward-model consumer, so it runs the poses without ever reaching it either.
+Both ways a round commits its configured Fc and ``fc_selection`` stays
+``None``.
 
 The owner ruled the walk paused on 2026-08-18; the flip lands as PR #2717.
 Read that as a scheduled change, not as this module's state: consult the flag
-for which world you are in.  Either way nothing here changed and nothing here
-is dead — the flag's value is the only input, and the module is kept intact for
-the redesigned lateral statistic the pause is waiting on.  Read every "runs at"
-and "at the walk's close" below as "when a walk is in the plan".
+and the group's consumer for which world you are in.  Either way nothing here
+changed and nothing here is dead — what decides whether this module runs sits
+entirely outside it, in those two facts, and it is kept intact for the
+redesigned lateral statistic the pause is waiting on.  Read every "runs at" and
+"at the walk's close" below as "when an ADJUDICATING walk is in the plan".
 
 **Why it could not move until now.**  ``evaluate_candidate`` consumes a build
 product, and through it the linearization state and the cloud terms — which is
