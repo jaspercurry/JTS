@@ -50,6 +50,17 @@ classify a mixture.
 **Every verdict off this instrument is vertically blind, and says so.** See
 :data:`CAPTURES_ARE_VERTICALLY_BLIND`.
 
+**Why it lives here and not in** :mod:`jasper.audio_measurement`, where the DSP
+seams it uses live.  ``tests/test_correction_boundary_ssot.py``'s
+``test_audio_measurement_imports_neither_consumer_package`` pins that no file
+under ``jasper/audio_measurement/`` may import ``jasper.active_speaker`` or
+``jasper.correction`` — that invariant is what earns that package the home of
+the correction-boundary SSOT.  This module imports the verdict register and the
+phase names from ``jasper.active_speaker``, so relocating it there fails that
+guard with two offenders.  It reaches the ``audio_measurement`` seams from this
+side instead, which is the direction ``spatial.py`` and ``capture_dispatch.py``
+already run.  **If you are about to move this module, read that test first.**
+
 **What the lab harness did that this does not.** The 2026-08-19 campaign tools
 (``captures/*/tools/classify_*.py``) also fitted a single-delay null ladder
 through the dips and ran a 4000-trial randomisation against it, and read each

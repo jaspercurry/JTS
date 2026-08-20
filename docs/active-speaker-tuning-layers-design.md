@@ -1491,10 +1491,13 @@ So **two of six still fail the test outright** (2, 5), and **three more ship
 only on the prescribed path** (1, 3, 4) — a gate that refuses a bad proposal,
 never a stage that derives the right one. For rules 2 and 5 the campaign
 produced its verdicts with laptop-side analysis and none of that analysis has
-been promoted into the product. Rule 4's evidence is promoted only as far as a
-banked artifact a gate can READ — the classifier that would produce a
-`depth_db` per feature is still the lab's, so a round carries one only when
-somebody banked it, and a boost against a depthless verdict refuses by name.
+been promoted into the product. Rule 4's evidence now has a shipped producer —
+[`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+emits a `depth_db` per feature — but it runs OFFLINE over a banked round rather
+than inside one, so a round still carries a verdict only when somebody
+classified it, and a boost against a depthless verdict refuses by name. Every
+verdict that producer emits is `vertical_blind`, which the boost bar refuses
+on, so the shipped path to an admitted boost remains unexercised.
 
 **What "partial" is buying, said plainly**, because the distinction is the
 whole of what rules 1, 3 and 4 are worth: a bar that refuses cannot make a round

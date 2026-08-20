@@ -33,9 +33,13 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     CLASSIFICATIONS,
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
+    EGD_AMBIGUOUS,
     EGD_MIN_PHASE,
+    EGD_NON_MIN_PHASE,
     GATE_STABLE,
+    INTERFERENCE_BARRED,
     ROOM,
+    UNRESOLVED,
     defect_boostable_at,
     read_feature_verdicts,
 )
@@ -173,19 +177,32 @@ def test_a_minimum_phase_dip_is_classified_boostable_and_carries_its_depth(
     assert row["depth_db"] > 0.5
 
 
+#: How far either side of a resonance this test looks for manufactured
+#: shoulders. A literal, and wide enough to contain the ones the buggy first
+#: draft actually produced — 2338 Hz and 3908 Hz against a 3000 Hz resonance,
+#: which is 0.360 octaves below and 0.382 above. An earlier version of this
+#: test bounded the search at `NEIGHBOURHOOD_OCT` (0.333) and both of them
+#: escaped through the gap, so it passed against the very bug it names.
+_SHOULDER_SEARCH_OCT = 1.0
+
+
 def test_the_detrend_shoulders_of_a_resonance_are_not_features(peak_artifact):
     """A one-octave baseline manufactures a trough on each flank of a peak.
 
     The 2026-08-20 first draft of the detector reported both of them as
-    minimum-phase DIPS, 0.36 octaves either side of a resonance that has none —
-    and a dip's own shoulders are peaks, which could vouch for a cut at a
-    frequency the speaker is flat at. The two-sided prominence read off the
-    pre-detrend curve is what rejects them, so this asserts that nothing was
-    found within a third of an octave of the resonance but the resonance.
+    minimum-phase DIPS, either side of a resonance that has none — and a dip's
+    own shoulders are peaks, which could vouch for a cut at a frequency the
+    speaker is flat at. The two-sided prominence read off the PRE-detrend curve
+    is what rejects them, so this asserts that within an octave of the
+    resonance the instrument found the resonance and nothing else.
     """
-    for row in peak_artifact["rows"]:
-        distance = abs(math.log2(row["hz"] / RESONANCE_HZ))
-        assert distance < fx.FEATURE_HALF_OCT or distance > fx.NEIGHBOURHOOD_OCT
+    near = [
+        row["hz"]
+        for row in peak_artifact["rows"]
+        if abs(math.log2(row["hz"] / RESONANCE_HZ)) <= _SHOULDER_SEARCH_OCT
+    ]
+    assert len(near) == 1, near
+    assert abs(math.log2(near[0] / RESONANCE_HZ)) < fx.FEATURE_HALF_OCT
 
 
 #: A reflection arriving here is INSIDE the 7 ms window and OUTSIDE the 3 ms
@@ -223,6 +240,87 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     assert row["excess_loss_vs_null"]["3"] < -row["gate_slack"]["3"]
 
 
+def _composed(**overrides):
+    """One row through the composer, from a cell that is stable by default.
+
+    Lets a case move exactly one input and read the verdict, which is how the
+    two thresholds below are bracketed without either case being written as a
+    multiple of the constant it is testing.
+    """
+    egd = {
+        "pooled_excursion_us": overrides.pop("excursion_us", 0.0),
+        "sd_us": 0.0,
+        "nbhd_sd_us": overrides.pop("nbhd_sd_us", 100.0),
+        "p2p_us": 1.0,
+        "lead_sensitivity_us": 0.0,
+        "clean": True,
+    }
+    cell = {
+        "7": {"db_values": [1.0], "resolved": True},
+        "3": {
+            "db_values": [1.0],
+            "retention_per_capture_sd": 0.0,
+            "excess_loss_vs_null": 0.0,
+            "centre_shift_oct": overrides.pop("centre_shift_oct", 0.0),
+            "resolved": True,
+            "resolution_hz": 333.0,
+            "feature_width_hz": 400.0,
+        },
+    }
+    return fx._compose(
+        RESONANCE_HZ,
+        egd,
+        cell,
+        {"nmp_delta_us": overrides.pop("nmp_scale_us", 500.0)},
+        pooled_db=overrides.pop("pooled_db", 1.0),
+        measured_q=6.0,
+        controls_ok=True,
+        timing_available=True,
+        primary_key="7",
+        gates_ms=(3.0, 7.0),
+    )
+
+
+@pytest.mark.parametrize(
+    ("excursion_us", "expected_egd", "expected_class"),
+    # 400 / 175 / 50 microseconds against a 500 us non-minimum-phase control
+    # scale are fractions of 0.80 / 0.35 / 0.10, which BRACKET both shipped
+    # thresholds (0.50 and 0.25) from every side. Literals on purpose: a case
+    # written as a multiple of the constant it tests moves with the constant
+    # and pins nothing — the same defect this file already had once.
+    [
+        (400.0, EGD_NON_MIN_PHASE, INTERFERENCE_BARRED),
+        (175.0, EGD_AMBIGUOUS, UNRESOLVED),
+        (50.0, EGD_MIN_PHASE, DEFECT_CUTTABLE),
+    ],
+)
+def test_the_excess_gd_fraction_decides_the_phase_class(
+    excursion_us, expected_egd, expected_class
+):
+    """`interference-barred` is the instrument's headline safety verdict.
+
+    It is the answer that says a filter is STRUCTURALLY the wrong tool — a cut
+    aimed at a cancellation lowers the direct sound and its delayed copy
+    together — so the branch that produces it needs its own known input, not
+    coverage borrowed from a fixture that never reaches it.
+    """
+    composed = _composed(excursion_us=excursion_us)
+    assert composed["egd_verdict"] == expected_egd
+    assert composed["classification"] == expected_class
+
+
+def test_a_barred_feature_stays_barred_when_the_gate_also_moved():
+    """Precedence: a cancellation is not reclassified as the room.
+
+    Both are refusals, so the ORDER looks harmless — but the two send a reader
+    somewhere different, and `interference-barred` is the one that says no
+    filter of either sign belongs here.
+    """
+    composed = _composed(excursion_us=400.0, centre_shift_oct=0.10)
+    assert composed["gate_verdict"] == fx.GATE_MOVED
+    assert composed["classification"] == INTERFERENCE_BARRED
+
+
 @pytest.mark.parametrize(
     ("shift_oct", "expected_gate", "expected_class"),
     # 0.10 and 0.01 octaves BRACKET the shipped 1/24-octave tolerance, and both
@@ -240,37 +338,7 @@ def test_centre_movement_decides_the_gate_verdict(
     integration fixture exercises this branch. Feed the composer a cell whose
     retention is perfect and whose centre is the only thing that moved.
     """
-    cell = {
-        "7": {"db_values": [1.0], "resolved": True},
-        "3": {
-            "db_values": [1.0],
-            "retention_per_capture_sd": 0.0,
-            "excess_loss_vs_null": 0.0,
-            "centre_shift_oct": shift_oct,
-            "resolved": True,
-            "resolution_hz": 333.0,
-            "feature_width_hz": 400.0,
-        },
-    }
-    composed = fx._compose(
-        RESONANCE_HZ,
-        {
-            "pooled_excursion_us": 0.0,
-            "sd_us": 0.0,
-            "nbhd_sd_us": 1.0,
-            "p2p_us": 1.0,
-            "lead_sensitivity_us": 0.0,
-            "clean": True,
-        },
-        cell,
-        {"nmp_delta_us": 500.0},
-        pooled_db=1.0,
-        measured_q=6.0,
-        controls_ok=True,
-        timing_available=True,
-        primary_key="7",
-        gates_ms=(3.0, 7.0),
-    )
+    composed = _composed(centre_shift_oct=shift_oct)
     assert composed["gate_verdict"] == expected_gate
     assert composed["classification"] == expected_class
 
@@ -421,13 +489,22 @@ def test_the_artifact_conforms_to_the_register(peak_artifact):
     verdicts = read_feature_verdicts(peak_artifact)
     assert len(verdicts) == len(peak_artifact["rows"])
     for verdict, row in zip(verdicts, peak_artifact["rows"]):
+        # Every field the register types, bound — not a sample of them. A
+        # partial check would let the instrument stop emitting one of these and
+        # still read as conforming.
         assert verdict.freq_hz == row["hz"]
         assert verdict.classification == row["classification"]
-        assert verdict.classification in CLASSIFICATIONS
-        assert verdict.depth_db == row["depth_db"]
+        assert verdict.egd_verdict == row["egd_verdict"]
+        assert verdict.gate_verdict == row["gate_verdict"]
+        assert verdict.confidence == row["confidence"]
         assert verdict.measured_q == row["measured_q"]
+        assert verdict.depth_db == row["depth_db"]
+        assert verdict.vertical_blind == row["vertical_blind"]
+        assert verdict.classification in CLASSIFICATIONS
         assert verdict.confidence in {"low", "med", "high"}
-        assert verdict.to_dict()["hz"] == row["hz"]
+        # The register's own round-trip: what a packet publishes is readable
+        # back through the same reader.
+        assert read_feature_verdicts([verdict.to_dict()])[0] == verdict
 
 
 def test_every_verdict_is_vertically_blind(peak_artifact, dip_artifact):

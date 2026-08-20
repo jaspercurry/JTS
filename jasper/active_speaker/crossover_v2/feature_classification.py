@@ -224,6 +224,16 @@ class FeatureVerdict:
     #: cannot see vertical-plane interference at all. A verdict carrying it is
     #: not wrong; it is bounded, and a reader that hid the bound would be
     #: reporting more certainty than the instrument had.
+    #:
+    #: **A banked LAB artifact's ``false`` here is not a vertical-plane
+    #: sighting.** The 2026-08-19 records compute the field as "fewer than two
+    #: gates resolved", which is a fact about the gate test and not about the
+    #: plane, so most of their rows read ``false`` off a horizontal walk.
+    #: :mod:`.feature_classifier` emits ``true`` unconditionally for exactly
+    #: this reason — but the boost bar honours whatever the artifact says, so a
+    #: legacy record can still clear a bar this field exists to hold. Tracked
+    #: as issue #2783; do not read a ``false`` from an artifact this product
+    #: did not write as evidence.
     vertical_blind: bool
 
     @property

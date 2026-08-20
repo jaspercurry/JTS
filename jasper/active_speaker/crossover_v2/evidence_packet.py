@@ -152,6 +152,14 @@ _IDENTITY_FIELDS = (
 #: operator's own banked lab result carrying this name is read identically.
 #: Its absence is an ordinary ``source_absent`` and is reported, never papered
 #: over.
+#:
+#: **A legacy lab artifact's ``vertical_blind: false`` is not a vertical-plane
+#: sighting**, and this reader copies it through verbatim. The 2026-08-19
+#: records compute that field as "fewer than two gates resolved" — a fact about
+#: the gate test — so a horizontal walk can bank ``false`` rows, and the boost
+#: bar that exists to refuse a bounded sighting will honour them. Issue #2783.
+#: :mod:`.feature_classifier` emits ``true`` unconditionally; this caveat is
+#: about records it did not write.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: Verify-claim and state fields the packet carries. ``household_findings`` is

@@ -39,6 +39,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_text
+
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
     round_artifact_dir,
@@ -176,7 +178,9 @@ def main(argv: list[str] | None = None) -> int:
 
     destination = args.out or (round_dir / CLASSIFICATION_ARTIFACT)
     try:
-        destination.write_text(json.dumps(artifact, indent=1))
+        # Atomic: this file is durable evidence a later round reads, and a
+        # torn write would be read as a verdict rather than as a broken file.
+        atomic_write_text(destination, json.dumps(artifact, indent=1))
     except OSError as exc:
         return _fail(
             f"classified, but could not write {destination}: {exc}",
