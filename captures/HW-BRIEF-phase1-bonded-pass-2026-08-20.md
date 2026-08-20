@@ -153,7 +153,7 @@ live aloop use on the fleet is jts4 fan-in's usbsink idle-read fallback
 
 ## Deploy target — FINALIZED
 
-- **Deploy SHA: `315589bd`** on `claude/loopback-retirement-phase1-survey-7bg0mu`
+- **Deploy SHA: `c011c7e4`** (this brief is the tip; `315589bd` is the code seal) on `claude/loopback-retirement-phase1-survey-7bg0mu`
   (all six waves sealed 0/0/0: PR-2, PR-3, PR-4, PR-5, PR-6 + PR-0/PR-1 merged
   to main earlier). Deploy the branch tip, not main.
 - **`captures/` is a TEMPORARY transport commit** carrying the sealed design
