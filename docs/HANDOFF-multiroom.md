@@ -618,29 +618,28 @@ see `reconcile.py`).
    playback timing owner**. The leader's CamillaDSP is the Snapcast producer;
    member outputd consumes the explicit snapclient FIFO lane and has no
    optional Snapcast-producer side-reader.
-2. The leader runs its *own* `snapclient` against `127.0.0.1`,
-   playing to a real outputd content lane — **never a Loopback
-   PCM** (dodges the documented `snd_pcm_delay`-lies-on-snd-aloop
-   trap).
+2. The leader runs its *own* `snapclient` against `127.0.0.1`. What a
+   member's snapclient writes into must report time-to-DAC honestly —
+   a dumb member's raw-PCM FIFO, an endpoint's grouping ring — and
+   **never snd-aloop**, which lies (the `snd_pcm_delay` trap).
 3. Voice / wake / TTS stay **entirely off** the Snapcast path
    (§6).
 4. Software AEC consumes outputd's final-electrical localhost UDP monitor;
    the optional chip-AEC writer uses its dedicated XVF3800 reference PCM.
    Neither reference path shares the Snapcast producer transport.
 5. **Exactly one rate-adjuster per chain.** snapclient's
-   sample-stuffing is the rate-tracker, so each member's local
-   CamillaDSP runs `rate_adjust=false` / no resampler. **SHIPPED:**
-   the rule is one of two transforms in the grouping **member-config
+   sample-stuffing is the synced chain's rate-tracker, so no CamillaDSP
+   **in a bonded chain** runs `rate_adjust=true` — on either role. A DUMB
+   follower is the deliberate exception: its CamillaDSP is out of the
+   bonded path, feeding the inv-B fallback lane into a sink that really
+   does have a clock, so it keeps the solo `rate_adjust=true`.
+   **SHIPPED:** the leader-bake half is the grouping **member-config
    policy** (`jasper/multiroom/member_config.py`
-   `member_camilla_kwargs` — `is_active_member` decides; the other
-   transform is the channel-split), applied identically on EVERY
-   config path (`/sound`, `/correction`, and — when it lands — the
-   inv-2 reconciler), never threaded per call site. `jasper-doctor`'s
-   `check_grouping_rate_adjust` is the universal backstop — it reads
-   the ACTIVE config, so it catches every generator and a config
-   generated *before* the bond formed (stale → warns to regenerate).
-   (JTS already documented that `rate_adjust` + `AsyncSinc` together
-   oscillate.)
+   `member_camilla_kwargs`), applied identically on EVERY config path
+   (`/sound`, `/correction`, the grouping reconciler) rather than threaded
+   per call site. `jasper-doctor`'s `check_grouping_rate_adjust` is the
+   backstop and owns the full rule, including what a stray `true` on an
+   active endpoint does and does not cost.
 
 ### Canonical signal flow — THE target architecture (DECIDED 2026-06-10)
 
@@ -1769,7 +1768,7 @@ story; "parked-by-role" is surfaced state, NEVER a silent failure):
   ChannelPick), and outputd's round-trip lane FAIL-CLOSES on a non-single
   sink (`dac_content_lane_rejects_non_single_alsa_sink`). An **active**
   (multi-driver) follower realizes the driver-DSP-on-the-box path —
-  snapclient → loopback → CamillaDSP [crossover/protection only] → outputd
+  snapclient → grouping ring → CamillaDSP [crossover/protection only] → outputd
   active sink, with snapcast's per-client `--latency` compensating camilla's
   fixed latency — which **landed in distributed-active Slice 3** (code; the
   active follower routes around the `dac_content` lane via CamillaDSP
@@ -2949,4 +2948,10 @@ active-content lane reference, which now names the ACTIVE ring rather than
 snd-aloop pair 5. No other claim in this file was re-read; the rest stands as
 verified on 2026-08-04.
 
-Last verified: 2026-08-15
+2026-08-20 (Phase-1 grouping-ring cutover): re-verified only §2's inv-2 and
+inv-5 and §7.5's active-follower chain, against
+`jasper/multiroom/{reconcile,member_config,grouping_ring}.py` and
+`jasper.cli.doctor.grouping.check_grouping_rate_adjust`. No other claim in this
+file was re-read; the rest stands as verified on 2026-08-04.
+
+Last verified: 2026-08-20

@@ -503,8 +503,8 @@ keeps `camilla_stereo_prefix` (and PR-3's active emitter) free of any
 OWNS the current runtime behavior; this section is only a terse boundary index.
 Solo-active EQ remains safe in isolation because ordinary solo graphs do not
 carry grouping state. Bonded active members use the distributed-active
-driver-domain path: **CamillaDSP re-entry** (`snapclient → loopback → member
-camilla [Layer A only] → outputd`) for active followers, and the two-Camilla
+driver-domain path: **CamillaDSP re-entry** (`snapclient → grouping ring →
+member camilla [Layer A only] → outputd`) for active followers, and the two-Camilla
 active-leader path documented in the design-of-record. Both reuse the shipped
 emitter + `classify_camilla_graph` re-proof. The slices that formed the
 boundary:
@@ -514,7 +514,7 @@ boundary:
    + domain-mode per runtime role (the active emitter's `capture_device`
    param already exists; the compiler just threads it). *Slice 1.*
 2. **Active follower** — the reconciler points the follower's CamillaDSP
-   capture at the round-trip loopback, emits a driver-domain-only Layer-A
+   capture at the grouping ring, emits a driver-domain-only Layer-A
    graph, and disables outputd's `dac_content` `ChannelPick` on that box.
    *Slices 2–3.*
 3. **Active leader** — a leader that is *also* active needs a **second**

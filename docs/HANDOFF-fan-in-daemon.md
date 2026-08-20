@@ -157,8 +157,7 @@ Renderers (each on its own snd-aloop substream pair):
   correction/test      → hw:Loopback,0,4
   (pair 5 UNALLOCATED — formerly the outputd active lane; its PCM defs were
    deleted at P9-C once the ACTIVE ring became the roleful transport)
-  outputd content lane → hw:Loopback,0,6    [Camilla → outputd on a passive box; also the
-                                             active-follower grouping round-trip]
+  outputd content lane → hw:Loopback,0,6    [Camilla → outputd on a passive box]
 
 jasper-fanin (the new Rust daemon):
   reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
