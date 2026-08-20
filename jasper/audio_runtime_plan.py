@@ -269,14 +269,10 @@ _VALID_AUDIO_ROUTE_PROFILES = {
 # The route modes that mean "grouping is enabled" (leader/follower = enabled +
 # valid + role; invalid_grouping = enabled + config error). Being one of these is
 # NECESSARY but no longer SUFFICIENT to block ``shm_ring``: the block also needs
-# ``dac_content_lane_armed``. Arming that lane PINS
-# JASPER_OUTPUTD_CONTENT_BRIDGE=direct (outputd bails on a FIFO beside a
-# non-direct bridge), and under `direct` outputd reads the snd-aloop content PCM
-# that an armed ring moves CamillaDSP off — killing the box's own content and
-# the lane's inv-B starvation fallback. An ACTIVE endpoint's lane is cleared by
-# the same writer (CamillaDSP owns its channel-pick and split), so the ring
-# strands nothing; a PASSIVE leader, whose lane IS armed, stays blocked — and is
-# doubly safe by an identity neither function states:
+# ``dac_content_lane_armed`` (mechanism: GROUPED_SHM_RING_MECHANISM below; rule:
+# jasper.multiroom.reconcile.dac_content_lane_armed). An ACTIVE endpoint's lane
+# is cleared, so the ring strands nothing; a PASSIVE leader, whose lane IS armed,
+# stays blocked — and is doubly safe by an identity neither function states:
 # `topology_supports_shm_ring(t)` implies `topology_allows_flat_dac_graph(
 # classify_output_contract(t))`, so the ring can never already be live on a
 # bonded box the narrowing admits (pinned in tests/test_runtime_contract_ring).
@@ -290,13 +286,18 @@ _GROUPING_ENABLED_ROUTE_MODES = frozenset(
     {"active_leader", "active_follower", "invalid_grouping"}
 )
 _GROUPED_SHM_RING_REASON = "fanin_shm_ring_unsupported_with_dac_content_lane"
-_GROUPED_SHM_RING_DETAIL = (
+#: THE one operator-facing explanation, because an operator reading a doctor or
+#: journal line cannot follow a code citation. Every other gate on this rule
+#: appends its OWN action to it rather than restating the mechanism.
+GROUPED_SHM_RING_MECHANISM = (
     "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box "
     "plays a bond through outputd's dac_content lane: that lane pins "
     "JASPER_OUTPUTD_CONTENT_BRIDGE=direct, and under `direct` outputd reads the "
-    "snd-aloop content PCM an armed ring moves CamillaDSP off. Disarm the ring "
-    "(jasper-fanin-coupling-reconcile loopback) or ungroup this speaker; "
-    "keeping the coupling on loopback."
+    "snd-aloop content PCM an armed ring moves CamillaDSP off."
+)
+_GROUPED_SHM_RING_DETAIL = GROUPED_SHM_RING_MECHANISM + (
+    " Disarm the ring (jasper-fanin-coupling-reconcile loopback) or ungroup "
+    "this speaker; keeping the coupling on loopback."
 )
 
 

@@ -788,36 +788,32 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
       devices are fixed and the format is one per box. A wire whose format ever
       became topology-dependent would shear against this emit, and
       ``ring_edge_width_ready`` is the gate that reports that rather than a
-      parameter here that no caller passes. The
-      two rings are ONE coupling: an
-      armed box's ``/sound/`` save must emit a config whose capture is the ring
-      AND whose playback is the ring — a half-ring config (ring capture + ALSA
-      loopback playback, or vice versa) would strand one end. These kwargs flow
-      through :func:`coupling_capture_kwargs_from_env` into the product emitters
-      (``/sound/``, ``/correction/``,
+      parameter here that no caller passes. The two rings are ONE coupling on a
+      SOLO box: its ``/sound/`` save must emit a config whose capture AND
+      playback are the ring — a half-ring config would strand one end. (An emit
+      that already owns its sink takes only the capture half; see below.) These
+      kwargs flow through :func:`coupling_capture_kwargs_from_env` into the
+      product emitters (``/sound/``, ``/correction/``,
       ``audio_runtime_plan.apply_capture_precedence``) — but only when the
-      persisted coupling (``fanin.env``'s :data:`COUPLING_ENV_VAR`, read
-      file-fresh by :func:`coupling_capture_kwargs_from_env` on the live-env path
-      because the socket-activated wizards do NOT ``EnvironmentFile=`` it) resolves
-      to ``shm_ring``, so this is deliberate coherence-when-armed. The ring devices
-      only RESOLVE once P1's
-      ioplug conf.d block (``60-jts-ring.conf``) is installed and the coupling
-      reconciler has armed both rings; until then the flag stays unset (env unset
-      -> ``loopback`` -> ``{}``). The ring graph carries its own low-latency
-      CamillaDSP geometry: chunk 128 / target 128 / queue 1 / rate_adjust off.
-      Those values are coupled to the 2-slot Ring A default; chunk 256 would span
-      the entire 2-slot buffer.
+      persisted coupling (``fanin.env``'s :data:`COUPLING_ENV_VAR`, read file-fresh
+      on the live-env path because the socket-activated wizards do NOT
+      ``EnvironmentFile=`` it) resolves to ``shm_ring``: coherence-when-armed. The devices only RESOLVE once P1's ioplug conf.d
+      block (``60-jts-ring.conf``) is installed and the reconciler has armed both
+      rings; until then the flag stays unset (env unset -> ``loopback`` -> ``{}``).
+      The ring graph carries its own low-latency CamillaDSP geometry: chunk 128 /
+      target 128 / queue 1 / rate_adjust off, coupled to the 2-slot Ring A
+      default (chunk 256 would span the whole buffer).
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
     ``sample_format`` is the box's own declaration (:func:`resolve_ring_wire`,
     not a per-topology axis) and its width is :data:`RING_A_CHANNELS` — so it is
-    safe to thread anywhere, and it is the half that MUST move: an armed ring is
-    fan-in no longer feeding ``plug:jasper_capture``. PLAYBACK must never cross
-    into an emit whose sink is already owned: ``jts_ring_playback`` is the STEREO
-    Ring B, and pointing a ``File``/SNAPFIFO pipe (the bonded leader's bake) or a
-    roleful box's ACTIVE ring at it strands the bond or sends a full-range
-    program to a per-driver ring. ``resolve_output_layout`` owns that device.
+    safe anywhere, and it is the half that MUST move: an armed ring is fan-in no
+    longer feeding ``plug:jasper_capture``. PLAYBACK must never cross into an
+    emit whose sink is already owned: ``jts_ring_playback`` is the STEREO Ring B,
+    and pointing a ``File``/SNAPFIFO pipe (the leader's bake) or a roleful box's
+    ACTIVE ring at it strands the bond or sends a full-range program to a
+    per-driver ring. ``resolve_output_layout`` owns that device.
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:
@@ -843,9 +839,9 @@ CAPTURE_HALF_KEYS = ("capture_device", "capture_format")
 def capture_half(kwargs: Mapping[str, object]) -> dict[str, object]:
     """Keep only :data:`CAPTURE_HALF_KEYS` — ONE owner of which keys those are.
 
-    For the three emits against a sink they already own (the leader's program
-    bake and both carrier paths); see :func:`capture_kwargs_for_coupling` for why
-    only this half may cross.
+    For the three emits against a sink they already own (the leader's program bake
+    and both carrier paths); see :func:`capture_kwargs_for_coupling` for why only
+    this half may cross.
     """
     return {key: value for key, value in kwargs.items() if key in CAPTURE_HALF_KEYS}
 
@@ -939,15 +935,14 @@ def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool
 
     A bonded/grouped member (active-leader program bake, or a passive grouping
     follower leader) writes CamillaDSP's playback to the Snapcast pipe with
-    ``enable_rate_adjust=False`` (snapclient is the sole rate-tracker — the
-    multiroom inv-5). So when this is True, the local coupling must be a no-op for
-    that emit (the grouped topology is the Distributed-Active track's concern, not
-    this solo-speaker latency hop).
-    The solo defaults (``enable_rate_adjust`` truthy / absent, no
-    ``playback_pipe_path``) return False → coupling applies. Mirrors
-    ``jasper.multiroom.member_config``'s leader-vs-solo distinction without
-    importing it (keeps this module import-cheap for the socket-activated
-    emitters).
+    ``enable_rate_adjust=False`` (snapclient is the sole rate-tracker — inv-5).
+    True therefore means the SINK is already owned, so the callers that branch on
+    it drop the coupling's PLAYBACK half ONLY: the capture half is still threaded
+    through :func:`capture_half`, or a bonded leader's live camilla#1 re-emits
+    onto the tap an armed ring took fan-in off. The solo defaults return False →
+    both halves apply. Mirrors ``jasper.multiroom.member_config``'s
+    leader-vs-solo distinction without importing it (this module stays
+    import-cheap for the socket-activated emitters).
     """
     if not member_kwargs:
         return False

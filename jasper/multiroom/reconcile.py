@@ -1939,19 +1939,17 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE a bond whose local playback would read a lane the
-    # armed ring leaves without its CamillaDSP writer (P2, audit finding 3). The
+    # Ring-armed box: REFUSE a bond the armed ring would silence — subject and
+    # mechanism in `dac_content_lane_armed` above (P2, audit finding 3). The
     # SYMMETRIC half of the coupling support matrix, and it asks that matrix now
     # instead of hand-rolling its own rule — the two encoded DIFFERENT rules and
-    # coincided only because this one was stricter. Subject: outputd's dac_content
-    # lane, which pins CONTENT_BRIDGE=direct, under which outputd reads the
-    # snd-aloop content PCM an armed ring moves CamillaDSP off. An ACTIVE
-    # endpoint's lane is cleared by the same writer, so it may bond. Fail-SAFE to
-    # solo (the box keeps playing its own content) and surface the matrix's
-    # reason. Placed BEFORE snapcast provision / any bond wiring. The request
-    # stays in the wizard config; disarm the ring and the next reconcile bonds.
+    # coincided only because this one was stricter. Fail-SAFE to solo (the box
+    # keeps playing its own content) and surface the matrix's reason. Placed
+    # BEFORE snapcast provision / any bond wiring; the request stays in the wizard
+    # config, so disarming the ring lets the next reconcile bond.
     if active:
         from jasper.audio_runtime_plan import (
+            GROUPED_SHM_RING_MECHANISM,
             coupling_supported_for_route,
             route_mode_from_grouping_config,
         )
@@ -1967,22 +1965,19 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         if not coupling_support.supported:
-            # The matrix's TOKEN (one vocabulary, no local fallback — its blocked
-            # branch always sets one) but this side's DETAIL: the matrix's own
-            # ends in "keeping the coupling on loopback", which is the coupling
-            # reconciler's action. Here the coupling is untouched and the BOND is
-            # refused.
+            # The matrix's token AND its mechanism string; only the ACTION is
+            # this side's, because the matrix's own detail ends in "keeping the
+            # coupling on loopback" — the coupling reconciler's action. Here the
+            # coupling is untouched and the BOND is refused.
             endpoint_block_reason = coupling_support.reason
             log_event(
                 logger,
                 "multiroom.reconcile.ring_armed_bond_blocked",
                 reason=args.reason,
                 detail=(
-                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — this bond would "
-                    "play through outputd's dac_content lane, which an armed "
-                    "ring leaves with no writer. Disarm the ring "
-                    "(jasper-fanin-coupling-reconcile loopback) to group this "
-                    "speaker. Staying solo."
+                    GROUPED_SHM_RING_MECHANISM
+                    + " Disarm the ring (jasper-fanin-coupling-reconcile "
+                    "loopback) to group this speaker. Staying solo."
                 ),
                 level=logging.WARNING,
             )

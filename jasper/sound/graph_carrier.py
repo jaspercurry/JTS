@@ -252,10 +252,8 @@ class _StereoHostCarrier:
         # names the shared fan-in -> Camilla -> outputd SHM-ring capture/playback
         # devices: source-agnostic, and byte-identical when absent (loopback ->
         # {}). The carrier-preserved room PEQs, preference filters, trim, and
-        # member policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK
-        # member owns the SINK, so it takes the CAPTURE half only — dropping that
-        # too would re-emit a bonded leader's live camilla#1 onto the tap an armed
-        # ring no longer feeds, silencing the bond from a /sound save.
+        # member policy all fold in unchanged. PRECEDENCE, and why a pipe sink
+        # still takes the capture half: apply_capture_precedence.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
@@ -340,11 +338,9 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
-        # CAPTURE HALF ONLY, the same rule and the same owner as
-        # apply_capture_precedence. The pipe SINK means Ring B never crosses; but
-        # this rewrites the LIVE camilla#1 of the box producing the whole bond's
-        # audio, so keeping the default `plug:jasper_capture` under an armed ring
-        # is every member silent with every daemon healthy.
+        # CAPTURE HALF ONLY — same rule as apply_capture_precedence, which this
+        # carrier does not route through; see it for why the half is not
+        # optional. Ring B never crosses: the sink is the snapfifo.
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
         member_kwargs = {
@@ -439,10 +435,11 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
-        # shm_ring is solo-stereo-only; the active baseline keeps its roleful
-        # ALSA capture/playback graph. Accept the shared carrier keyword for
-        # interface uniformity (every carrier's reemit() takes it), but never
-        # thread it into active recomposition.
+        # REDUNDANT here, not forbidden by a stereo-only rule: an armed
+        # active-ring box already derives capture from its own recorded sink
+        # (`active_emit_devices("jts_ring_active_playback")` -> `jts_ring_capture`)
+        # and these STEREO kwargs would stomp a per-driver box. Keyword accepted
+        # for uniformity only.
         del fanin_coupling_capture_kwargs
         room_peqs = (
             extract_room_peqs_from_config(self._current_path)

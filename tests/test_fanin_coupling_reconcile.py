@@ -2916,8 +2916,9 @@ def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_pr
 
 def test_arm_shm_ring_refused_for_active_leader_keeps_loopback(tmp_path):
     # BLOCKER 2: arming shm_ring on a box whose bond plays through outputd's
-    # dac_content lane must be REFUSED before any daemon op — the armed ring
-    # would leave that lane with no writer. Never touch the rings; keep loopback.
+    # dac_content lane must be REFUSED before any daemon op — that lane pins
+    # CONTENT_BRIDGE=direct, under which outputd reads the snd-aloop content PCM
+    # an armed ring moves CamillaDSP off. Never touch the rings; keep loopback.
     # Reports the real desired coupling, not a hardcoded one.
     #
     # `active_leader_check` is the INJECTED route seam, which reports
@@ -2980,7 +2981,8 @@ def _drive_grouping_shape(monkeypatch, *, box_is_active: bool, flat_allowed: boo
 def test_arm_shm_ring_refused_for_a_dumb_member(tmp_path, monkeypatch):
     # The block covers a FOLLOWER too (not just leader). Its subject is the
     # dac_content lane: a PASSIVE box with a saved flat-capable layout plays the
-    # bond through that lane, and an armed ring would leave it with no writer.
+    # bond through that lane, which reads the snd-aloop content PCM an armed ring
+    # moves CamillaDSP off.
     _drive_grouping_shape(monkeypatch, box_is_active=False, flat_allowed=True)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")

@@ -1385,10 +1385,11 @@ def test_program_bake_carrier_follows_the_coupling_on_capture_only(tmp_path):
 
 
 def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
-    # shm_ring is solo-stereo-only; the active baseline keeps its roleful ALSA
-    # capture/playback graph regardless of the coupling. The carrier accepts
-    # the keyword for call-site uniformity (every carrier's reemit() takes
-    # it) but never threads it into active recomposition.
+    # REDUNDANT, not forbidden by a stereo-only rule: an armed active-ring box
+    # already derives capture from its own recorded sink, and these are the
+    # STEREO ring's kwargs, which would stomp a per-driver box. The carrier
+    # accepts the keyword for call-site uniformity (every carrier's reemit()
+    # takes it) but never threads it into active recomposition.
     path = tmp_path / "active_speaker_baseline.yml"
     path.write_text(_active_baseline_yaml("mono", 2))
     with mock.patch(
