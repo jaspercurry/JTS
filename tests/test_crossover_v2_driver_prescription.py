@@ -38,6 +38,7 @@ from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_KIND,
+    PRESCRIPTION_MAX_BYTES,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
 )
@@ -1311,7 +1312,7 @@ def test_the_class_size_cap_is_reachable_and_clears_the_largest_honest_document(
         "kind": DRIVER_PRESCRIPTION_KIND,
         "packet_fingerprint": "f" * 64,
         "prescriber": {"model": "m" * 64, "operator": "o" * 64},
-        "rationale": "r" * 1200,
+        "rationale": "r" * dp.RATIONALE_MAX_CHARS,
         "filters": [
             {"role": f"role{r}", "biquad_type": "Peaking",
              "freq": 12345.678, "q": 7.654321, "gain": -11.987654}
@@ -1479,14 +1480,20 @@ def _stage_driver(
     *,
     ordinal: int = 4,
     filters: Any = None,
+    classification: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """One accepted per-driver prescription, banked in a temporary spool."""
     spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    packet = _speaker(tmp_path / "bundle")
+    packet = _speaker(tmp_path / "bundle", classification=classification)
     document = _document(filters or [_cut()], packet)
     payload = json.dumps(document).encode()
     prescription = _gate(packet, document)
-    spool.stage_prescription(payload, prescription, for_round_ordinal=ordinal)
+    spool.stage_prescription(
+        payload,
+        prescription,
+        for_round_ordinal=ordinal,
+        classifications=packet_feature_classifications(packet),
+    )
     return packet, payload
 
 
@@ -1576,23 +1583,127 @@ def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(tmp_
     assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
 
 
-def test_a_filter_moved_off_its_verdict_refuses_on_the_classification_bar(tmp_path):
-    """The banked verdicts make the take's bar as strong as the staging step's.
+#: A minimum-phase DIP 0.143 octaves above the tweeter's cuttable peak — the
+#: 2026-08-19 record's own 4149/4582 gap, rebuilt around this fixture's feature.
+#: Inside :data:`VERDICT_MATCH_TOLERANCE_OCTAVES`, so the peak is a verdict the
+#: dip can be mistaken for whenever the dip is not in front of the gate.
+TWEETER_NEARBY_DIP_HZ = TWEETER_FEATURE_HZ * (2.0 ** 0.143)
 
-    Only the verdicts that vouched are offered back, so an edit that moves a
-    filter onto an unclassified feature refuses on the bar itself — by its own
-    name, rather than on a substitute like a missing-evidence slug.
+
+def _move_staged_filter(freq_hz: float) -> None:
+    """Aim the staged document's first filter somewhere else, digest and all.
+
+    The digest is recomputed because catching this edit is not its job — a
+    hand-edit that forgot to is already refused as malformed, and an edit that
+    stops at the digest never reaches the bar under test.
     """
-    _stage_driver(tmp_path, ordinal=4)
     path = spool.prescription_spool_path()
     envelope = json.loads(path.read_text())
-    assert envelope["classifications"][0]["hz"] == TWEETER_FEATURE_HZ
     document = json.loads(envelope["document"])
-    document["filters"][0]["freq"] = 12_000.0
+    document["filters"][0]["freq"] = freq_hz
     payload = json.dumps(document).encode()
     envelope["document"] = payload.decode()
     envelope["prescription_sha256"] = spool.prescription_sha256(payload)
     path.write_text(json.dumps(envelope))
+
+
+def test_the_take_is_offered_the_whole_classification_not_the_vouching_subset(
+    tmp_path,
+):
+    """What is banked is what the staging gate READ, dips included.
+
+    ``classification_basis`` holds only the verdicts that passed the bar, so
+    every verdict in it is cuttable by construction — banking that subset would
+    drop exactly the dips the nearest-verdict-decides rule needs to say no.
+    """
+    rows = [
+        _verdict(WOOFER_FEATURE_HZ),
+        _verdict(TWEETER_FEATURE_HZ),
+        _verdict(TWEETER_NEARBY_DIP_HZ, DEFECT_BOOSTABLE),
+    ]
+    _stage_driver(tmp_path, ordinal=4, classification=_classification(rows))
+
+    banked = json.loads(spool.prescription_spool_path().read_text())
+
+    assert [row["hz"] for row in banked["classifications"]] == [
+        row["hz"] for row in rows
+    ]
+
+
+def test_a_filter_moved_onto_a_nearby_dip_refuses_at_take_on_the_dips_own_verdict(
+    tmp_path,
+):
+    """The STRONG claim: the take's bar is the staging step's, not a weaker one.
+
+    A cut honestly aimed at the tweeter's classified peak, moved a seventh of an
+    octave onto the minimum-phase dip beside it, is the exact proposal
+    ``defect_cuttable_at``'s nearest-verdict rule exists to refuse — and it
+    still has a cuttable verdict inside the match radius to borrow. It must
+    refuse on the DIP, which it can only do if the dip was banked.
+    """
+    _stage_driver(
+        tmp_path,
+        ordinal=4,
+        classification=_classification([
+            _verdict(WOOFER_FEATURE_HZ),
+            _verdict(TWEETER_FEATURE_HZ),
+            _verdict(TWEETER_NEARBY_DIP_HZ, DEFECT_BOOSTABLE),
+        ]),
+    )
+    _move_staged_filter(TWEETER_NEARBY_DIP_HZ)
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        spool.take_staged_prescription(
+            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+        )
+
+    assert excinfo.value.reason == dp.FEATURE_NOT_CUTTABLE
+    assert excinfo.value.evidence["classification"] == DEFECT_BOOSTABLE
+    assert excinfo.value.evidence["hz"] == pytest.approx(TWEETER_NEARBY_DIP_HZ)
+
+
+def test_a_filter_moved_onto_a_peak_no_filter_targeted_is_admitted_at_take(tmp_path):
+    """The other half of the equality claim, and the subset got it wrong too.
+
+    ``classification_basis`` drops every cuttable feature no filter happened to
+    aim at, so banking that subset would refuse this one as UNCLASSIFIED — a
+    refusal the staging gate, holding the whole artifact, would never have
+    given. The take re-runs the bar rather than diffing the document; a document
+    that clears the bar clears it, and that is what makes the two answers the
+    same answer.
+    """
+    unclaimed_hz = 6000.0
+    assert abs(math.log2(unclaimed_hz / TWEETER_FEATURE_HZ)) > (
+        VERDICT_MATCH_TOLERANCE_OCTAVES
+    ), "must be out of the prescribed filter's own match radius to discriminate"
+    _stage_driver(
+        tmp_path,
+        ordinal=4,
+        classification=_classification([
+            _verdict(WOOFER_FEATURE_HZ),
+            _verdict(TWEETER_FEATURE_HZ),
+            _verdict(unclaimed_hz),
+        ]),
+    )
+    _move_staged_filter(unclaimed_hz)
+
+    staged = spool.take_staged_prescription(
+        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+    )
+
+    assert staged.prescription.filters[0]["freq"] == unclaimed_hz
+    assert staged.prescription.classification_basis[0].verdict.freq_hz == unclaimed_hz
+
+
+def test_a_filter_moved_off_its_verdict_refuses_on_the_classification_bar(tmp_path):
+    """The far move, refused for the other of the bar's two reasons.
+
+    12 kHz is outside every banked verdict's match radius, so nothing was
+    classified there at all — a different instruction to the prescriber than the
+    dip above, and the reason the bar returns two slugs rather than a boolean.
+    """
+    _stage_driver(tmp_path, ordinal=4)
+    _move_staged_filter(12_000.0)
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         spool.take_staged_prescription(
@@ -1600,6 +1711,112 @@ def test_a_filter_moved_off_its_verdict_refuses_on_the_classification_bar(tmp_pa
         )
 
     assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+
+
+def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
+    """Drive the real ``stage`` verb end to end, the way an operator does.
+
+    Not ``_stage_driver``: that calls :func:`stage_prescription` directly, so it
+    cannot see whether the CLI hands the spool the verdicts its own gate read.
+    Everything here is a path on disk and the only entry point is ``cli.main``.
+    """
+    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
+    session, _ = _bundle(tmp_path / "bundle")
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / "feature_classification.json").write_text(
+        json.dumps(_classification(rows))
+    )
+    draft = tmp_path / "draft.json"
+    draft.write_text(json.dumps(_draft()))
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
+    # The packet the CLI itself will build, from the same three inputs — a
+    # document written against any other one refuses on the fingerprint.
+    packet = build_crossover_evidence_packet(
+        session, state_path=state, driver_draft_path=draft
+    )
+    document = tmp_path / "prescription.json"
+    document.write_bytes(json.dumps(_document([_cut()], packet)).encode())
+    return cli.main([
+        "stage", str(session),
+        "--state", str(state),
+        "--drivers", str(draft),
+        "--prescription", str(document),
+    ])
+
+
+def test_the_stage_verb_banks_the_verdicts_its_own_gate_read_dips_included(
+    tmp_path, caplog,
+):
+    """The CLI's half of the anchor, against the 2026-08-19 record itself.
+
+    ``_gate`` reads the classification out of the packet and hands the SAME
+    tuple to the spool rather than letting ``stage`` re-read the packet, so what
+    is banked cannot be a set the gate never saw. Driven through ``cli.main``
+    because that wiring is the subject: a unit test calling
+    :func:`stage_prescription` directly passes whatever it passes.
+
+    The four minimum-phase DIPS are the assertion that matters — they are what
+    the pre-fix vouching subset dropped, and the cut here (5,396 Hz's peak
+    vouches for it) would have banked none of them.
+    """
+    rows = [
+        _verdict(hz, cls, confidence=conf, measured_q=q)
+        for hz, cls, conf, q in _BANKED_RECORD
+    ]
+
+    with caplog.at_level("INFO"):
+        exit_code = _cli_stage(tmp_path, rows)
+
+    assert exit_code == cli.EXIT_OK
+    banked = json.loads(spool.prescription_spool_path().read_text())
+    assert [row["hz"] for row in banked["classifications"]] == [
+        row[0] for row in _BANKED_RECORD
+    ]
+    assert [
+        row["hz"] for row in banked["classifications"]
+        if row["classification"] == DEFECT_BOOSTABLE
+    ] == [1037.0, 4582.0, 6245.0, 8530.0]
+    # And the newly-unbounded dimension is visible without opening the file.
+    line = next(
+        r.getMessage() for r in caplog.records
+        if "crossover_v2.prescription_staged" in r.getMessage()
+    )
+    assert f"classifications={len(_BANKED_RECORD)}" in line
+
+
+def test_the_banked_classification_stays_far_inside_the_envelope_cap(tmp_path):
+    """``SPOOL_MAX_BYTES``' derivation, re-derived rather than trusted.
+
+    The comment on that constant quotes a per-row cost, and a row's cost is the
+    length of its own strings rather than a constant — so the number is measured
+    HERE, by the route the comment names (stage twice through the real writer,
+    diff the bytes on disk), and what is asserted is the conclusion that has to
+    hold: the room left over is orders of magnitude past any real artifact.
+    """
+    record = [
+        _verdict(hz, cls, confidence=conf, measured_q=q)
+        for hz, cls, conf, q in _BANKED_RECORD
+    ]
+    # The anchor row is in BOTH envelopes, so it cancels exactly and the delta
+    # is the record's nine rows and nothing else. It is here because the staged
+    # document has to clear the bar in both runs to be staged at all.
+    anchor = [_verdict(TWEETER_FEATURE_HZ)]
+    _stage_driver(tmp_path / "with", classification=_classification(record + anchor))
+    with_rows = spool.prescription_spool_path().stat().st_size
+    _stage_driver(tmp_path / "without", classification=_classification(anchor))
+    without = spool.prescription_spool_path().stat().st_size
+
+    per_row = (with_rows - without) / len(_BANKED_RECORD)
+    # The escaping bound `SPOOL_MAX_BYTES`' own comment derives, so this test
+    # moves with that constant instead of restating a byte count.
+    headroom = spool.SPOOL_MAX_BYTES - 6 * PRESCRIPTION_MAX_BYTES
+    assert 200 <= per_row <= 320, f"per verdict row: {per_row:.1f} bytes"
+    assert headroom / per_row > 400, (
+        f"room for {headroom / per_row:.0f} rows; the record has "
+        f"{len(_BANKED_RECORD)}"
+    )
+    assert with_rows < spool.SPOOL_MAX_BYTES // 100
 
 
 def test_a_refused_document_is_consumed_too(tmp_path):
@@ -1660,7 +1877,10 @@ def test_the_blend_class_still_stages_and_takes_unchanged(tmp_path):
     document = _blend_document([_blend_cut()], packet)
     payload = json.dumps(document).encode()
     spool.stage_prescription(
-        payload, _blend_gate(packet, document), for_round_ordinal=7
+        payload,
+        _blend_gate(packet, document),
+        for_round_ordinal=7,
+        classifications=None,
     )
 
     staged = spool.take_staged_prescription(round_ordinal=7)
@@ -1686,7 +1906,10 @@ def test_an_envelope_written_before_the_class_existed_reads_as_the_blend_one(tmp
     document = _blend_document([_blend_cut()], packet)
     payload = json.dumps(document).encode()
     spool.stage_prescription(
-        payload, _blend_gate(packet, document), for_round_ordinal=7
+        payload,
+        _blend_gate(packet, document),
+        for_round_ordinal=7,
+        classifications=None,
     )
     path = spool.prescription_spool_path()
     envelope = json.loads(path.read_text())

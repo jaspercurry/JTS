@@ -120,7 +120,11 @@ def _accept(document: bytes) -> Any:
 def _stage(*, for_round_ordinal: int = 9, document: bytes | None = None) -> bytes:
     payload = _document() if document is None else document
     spool.stage_prescription(
-        payload, _accept(payload), for_round_ordinal=for_round_ordinal
+        payload,
+        _accept(payload),
+        for_round_ordinal=for_round_ordinal,
+        # The blend class has no classification bar; its anchor is its band.
+        classifications=None,
     )
     return payload
 
@@ -1135,7 +1139,7 @@ def test_the_stage_verb_stamps_the_round_the_receipt_says_is_next(
     document.write_bytes(_document())
     state = _write_state(tmp_path, ordinal=8)
     monkeypatch.setattr(
-        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}),
+        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None),
     )
 
     code = cli.main([
@@ -1232,7 +1236,7 @@ def test_a_stage_that_cannot_write_is_its_own_exit_code(tmp_path, monkeypatch):
     document.write_bytes(_document())
     state = _write_state(tmp_path, ordinal=8)
     monkeypatch.setattr(
-        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}),
+        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None),
     )
 
     def _cannot_write(*_args, **_kwargs):
@@ -1262,7 +1266,7 @@ def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
 
     def _counting_gate(_args):
         reached.append(_args.command)
-        return _document(), _accept(_document()), {}
+        return _document(), _accept(_document()), {}, None
 
     monkeypatch.setattr(cli, "_gate", _counting_gate)
 
@@ -1311,7 +1315,7 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
         band_hz=(float(lo), float(hi)),
         positional_evidence=None,
     )
-    cli._gate = lambda _args: (document, prescription, {})
+    cli._gate = lambda _args: (document, prescription, {}, None)
     raise SystemExit(
         cli.main([
             "stage", str(Path(doc_path).parent),
