@@ -9,10 +9,14 @@ module for the loop, the safety invariants and the exit-code meanings; this file
 is argument parsing, the two seam constructions, and the signal handlers that
 make SIGTERM take the same parking exit a clean finish takes.
 
-Runs ON the speaker, in the foreground, one run per walk::
+Runs ON the speaker, in the foreground, one run per walk. As ``pi``, which is
+the identity the shipped turntable unit uses (``User=pi`` plus ``dialout`` in
+``deploy/systemd/jasper-turntable-autostop@.service``) -- the adapter opens a
+serial port, so the identity is load-bearing::
 
-    sudo -u jasper /opt/jasper/.venv/bin/jasper-arm-walk \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22 \\
+    sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \\
+        --attest-rig-clear --hostname jts3.local \\
+        --expect-angles 7,-7,22,-22 \\
         --complete-after 5 --trail /tmp/walk.jsonl
 
 Start it BEFORE opening the measurement session: the first poll is what tells it
@@ -165,15 +169,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _install_park_on_signals() -> None:
-    """SIGTERM/SIGINT become ``SystemExit``, so the run's park still happens.
+    """The FIRST SIGTERM/SIGINT becomes ``SystemExit``; the rest are ignored.
 
     :meth:`~jasper.active_speaker.arm_walk.ArmWalk.run` parks in a ``finally``
     that a bare default SIGTERM would skip entirely -- the arm would be left
     wherever the walk stopped, which is the one state the rig must never be
     abandoned in.
+
+    **Disarming on the first fire is the other half of that promise.** The
+    unwind those handlers start IS the park, and the park drives the adapter as
+    a subprocess. A handler still armed during it would raise a second
+    ``SystemExit`` inside the walk's own ``finally`` -- worst timing, mid-travel
+    -- and abandon the arm at an unknown angle with no verification, which is
+    exactly the state one signal was meant to avoid. So one signal stops the
+    walk and every later one is ignored until the arm is home. The park is
+    bounded by the adapter's own subprocess timeout, and ``SIGKILL`` remains the
+    honest escape hatch for an operator who will not wait.
     """
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
+    def _stop_once(signum: int, _frame: object) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        sys.exit(143 if signum == signal.SIGTERM else 130)
+
+    signal.signal(signal.SIGTERM, _stop_once)
+    signal.signal(signal.SIGINT, _stop_once)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

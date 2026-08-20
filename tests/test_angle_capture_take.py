@@ -188,6 +188,29 @@ def test_a_document_the_spool_itself_refuses_is_reported_in_its_own_words(
     assert f"reason={spool.SPOOL_MALFORMED}" in line
 
 
+def test_a_banked_stop_past_the_movers_reach_refuses_at_the_take_too(slot, caplog):
+    """The door refuses these, and the take re-validates anyway.
+
+    ``walk_over_mover_envelope`` is decided by the request alone, so ``plan`` and
+    ``stage`` normally catch it. A document banked before that bound existed --
+    or edited on disk, as here -- reaches the take, and the take rebuilds every
+    banked document rather than trusting it. Same slug either way, so an
+    operator reading the journal is sent to the same place.
+    """
+    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    path = spool.angle_request_spool_path()
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["stops"][0]["angle_deg"] = ac.ARM_ENVELOPE_DEG + 1
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        assert _take(_arm_shape()) is None
+
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_OVER_MOVER_ENVELOPE}" in line
+    assert "consumed=true" in line and "session_continues=true" in line
+
+
 def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog):
     """Two lateral groups cannot share one session's index space.
 

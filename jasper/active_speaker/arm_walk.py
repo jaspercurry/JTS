@@ -24,12 +24,17 @@ the microphone taps to advance; this is the lab-arm path only, and it is opt-in
 **The safety invariants, held here rather than left to an operator's attention.**
 Each one is a test in ``tests/test_arm_walk.py``:
 
-* **Power is re-read before EVERY motion.** Not once at the start: a supply that
-  sags mid-walk is exactly the condition that makes a positioner miss steps, and
-  a walk that kept moving would bank angles the microphone never reached. Any
-  power sign -- current flags, since-boot flags, or an unreadable reading --
-  VOIDS the run's attestation, so the walk stops, parks, and exits
-  :data:`EXIT_POWER_VOID`.
+* **Power is re-read before every WALK move.** Not once at the start: a supply
+  that sags mid-walk is exactly the condition that makes a positioner miss
+  steps, and a walk that kept moving would bank angles the microphone never
+  reached. Any power sign -- current flags, since-boot flags, or an unreadable
+  reading -- VOIDS the run's attestation, so the walk stops, parks, and exits
+  :data:`EXIT_POWER_VOID`. The PARK's own move is not re-checked here and must
+  not be: the walk is frequently parking BECAUSE of a power sign, and a check
+  that refused to go home would strand the arm at the last measured angle. That
+  move still passes the adapter's own preflight, which blocks a motion under a
+  current flag -- so a park during a live brownout is refused by the adapter and
+  reported as ``ok=false``, not silently attempted.
 * **The envelope is clamped to** :data:`~jasper.active_speaker.angle_capture.ARM_ENVELOPE_DEG`
   before any move is issued -- belt and braces over the adapter's own refusal, so
   an out-of-envelope target is named by this loop rather than discovered as a
@@ -107,6 +112,12 @@ DEFAULT_IDLE_CEILING_S = 1200.0
 #: can press (issue #2506). Named rather than waited out.
 DEFAULT_STUCK_ALARM_S = 300.0
 
+#: The status endpoint unreadable for this long WITHOUT a single good read. A
+#: blip is absorbed (any readable poll clears the run); a wrong ``--hostname``,
+#: a 403, or a stopped wizard never clears and ends here by name. Short, because
+#: none of those get better by waiting and every one of them is a typo away.
+DEFAULT_UNREADABLE_CEILING_S = 60.0
+
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
 
@@ -142,6 +153,13 @@ EXIT_WALK_NOT_TAKEN = 10
 EXIT_SETTLE_FLOOR = 11
 #: The run was configured in a way this module refuses before it moves anything.
 EXIT_REFUSED = 12
+#: The session did not accept a position-ready. The microphone is at the angle
+#: it named, but nothing was released, so the walk stops rather than count a
+#: capture that never began.
+EXIT_RELEASE_REJECTED = 13
+#: The status endpoint could not be read for a whole
+#: :data:`DEFAULT_UNREADABLE_CEILING_S`. Usually the wrong ``--hostname``.
+EXIT_STATUS_UNREACHABLE = 14
 
 EXIT_NAMES: Mapping[int, str] = {
     EXIT_OK: "ok",
@@ -155,6 +173,8 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_WALK_NOT_TAKEN: "walk_not_taken",
     EXIT_SETTLE_FLOOR: "settle_floor",
     EXIT_REFUSED: "refused",
+    EXIT_RELEASE_REJECTED: "release_rejected",
+    EXIT_STATUS_UNREACHABLE: "status_unreachable",
 }
 
 
@@ -198,11 +218,22 @@ class Poll:
     ``relay.status == "failed"``. It rides the same payload the pending does, so
     reading it turns a dead session into an immediate, correctly attributed exit
     instead of a wait for :data:`DEFAULT_STUCK_ALARM_S` and a guess.
+
+    ``readable`` is whether the envelope was READ at all, and it is separate
+    from ``in_flight`` because conflating them mis-attributes the single most
+    likely operator error. An unreachable or 403ing status endpoint -- a wrong
+    ``--hostname``, a stopped wizard -- has no pending and no session verdict,
+    which looks exactly like a session sitting on a rejected capture. Reporting
+    that as :data:`EXIT_STUCK` would blame issue #2506 for a URL typo. An
+    unreadable poll still reports ``in_flight=True`` so a transient blip cannot
+    trip the idle ceiling; it is :data:`WalkConfig.unreadable_ceiling_s` that
+    ends an unbroken run of them, by its own name.
     """
 
     pending: Pending | None
     in_flight: bool
     failed_error: str | None = None
+    readable: bool = True
 
 
 class Mover(Protocol):
@@ -393,11 +424,20 @@ class LoopbackSession:
             return 0, f"{type(exc).__name__}: {exc}"
 
     def _csrf_token(self) -> str:
-        if self._csrf is None:
-            _, body = self._open(CSRF_PAGE_PATH)
-            match = _CSRF_META_RE.search(body)
-            self._csrf = match.group(1) if match else ""
-        return self._csrf
+        """The page's token, minted once and reused -- but only once MINTED.
+
+        A failed first mint (the wizard still starting, a blipped connection)
+        used to cache ``""`` forever, so every later POST in the run carried an
+        empty token and was refused 403 with nothing saying why. Only a real
+        token is cached; a failure leaves the slot empty and the next POST that
+        needs one tries again.
+        """
+        if self._csrf:
+            return self._csrf
+        _, body = self._open(CSRF_PAGE_PATH)
+        match = _CSRF_META_RE.search(body)
+        self._csrf = match.group(1) if match else None
+        return self._csrf or ""
 
     def _post(self, path: str, payload: Mapping[str, Any]) -> tuple[int, str]:
         return self._open(
@@ -472,6 +512,7 @@ class WalkConfig:
     poll_s: float = DEFAULT_POLL_S
     idle_ceiling_s: float = DEFAULT_IDLE_CEILING_S
     stuck_alarm_s: float = DEFAULT_STUCK_ALARM_S
+    unreadable_ceiling_s: float = DEFAULT_UNREADABLE_CEILING_S
     complete_after: int | None = None
     #: The non-zero angles the staged walk contributes. A session that refuses a
     #: staged walk degrades to its ordinary shape, whose every capture is a
@@ -570,6 +611,7 @@ class ArmWalk:
             envelope_deg=ARM_ENVELOPE_DEG,
             idle_ceiling_s=cfg.idle_ceiling_s,
             stuck_alarm_s=cfg.stuck_alarm_s,
+            unreadable_ceiling_s=cfg.unreadable_ceiling_s,
             complete_after=cfg.complete_after,
             expect_angles=",".join(f"{a:+d}" for a in cfg.expect_angles) or "-",
         )
@@ -591,12 +633,33 @@ class ArmWalk:
 
         now = self._clock()
         idle_since = last_progress = now
+        unreadable_since: float | None = None if first.readable else now
         while True:
             poll = self._session.poll()
             if poll.failed_error is not None:
                 self._trail.emit("session_failed", level=logging.ERROR,
                                  error=poll.failed_error)
                 return EXIT_SESSION_FAILED
+
+            if poll.readable:
+                unreadable_since = None
+            else:
+                if unreadable_since is None:
+                    unreadable_since = self._clock()
+                unreadable_for = self._clock() - unreadable_since
+                if unreadable_for > self._config.unreadable_ceiling_s:
+                    self._trail.emit(
+                        "status_unreachable",
+                        level=logging.ERROR,
+                        unreadable_s=round(unreadable_for, 1),
+                        released=len(self._served),
+                        detail=(
+                            "the status endpoint has not answered once -- check "
+                            "--hostname and --base-url before suspecting the "
+                            "session"
+                        ),
+                    )
+                    return EXIT_STATUS_UNREACHABLE
 
             if poll.pending is not None:
                 # An already-served hold -- one the gate has not cleared in the
@@ -611,9 +674,14 @@ class ArmWalk:
                     if self._complete_due():
                         return self._post_complete()
             elif (
-                poll.in_flight
+                poll.readable
+                and poll.in_flight
                 and self._clock() - last_progress > self._config.stuck_alarm_s
             ):
+                # ``readable`` is load-bearing, not belt-and-braces: this is a
+                # diagnosis of what the envelope SAID, and an envelope nobody
+                # could read says nothing. Without it a 403 reaches the operator
+                # as "a capture is awaiting a human", blaming #2506 for a typo.
                 self._trail.emit(
                     "stuck",
                     level=logging.ERROR,
@@ -649,8 +717,17 @@ class ArmWalk:
         is unanswerable (the take consumed the slot either way), and the loop
         falls back to :data:`EXIT_WALK_NOT_TAKEN` at the end, which catches every
         refusal class but only once the run is over.
+
+        The two reasons for skipping are reported SEPARATELY. "A session is
+        already open" is a fact read off the envelope; "the envelope could not
+        be read" is the absence of any fact, and claiming the first when the
+        second happened would put a confident sentence in the trail that nothing
+        supports.
         """
         if not self._config.expect_angles or self._walk_staged is None:
+            return None
+        if not first.readable:
+            self._trail.emit("staged_check_skipped", reason="status_unreadable")
             return None
         if first.in_flight:
             self._trail.emit("staged_check_skipped", reason="session_in_flight")
@@ -700,6 +777,24 @@ class ArmWalk:
                              floor_s=SETTLE_FLOOR_S)
             return EXIT_SETTLE_FLOOR
         status, body = self._session.release(pending.index)
+        if status != 200:
+            # A release is a REQUEST, and the session is free to refuse it: 409
+            # when the gate is waiting on a different capture, 403 when the CSRF
+            # pair is wrong, 400 on a malformed index, 0 when the POST never
+            # arrived. In none of those did a capture begin -- so counting the
+            # position as served would satisfy ``--expect-angles``, advance
+            # ``--complete-after``, and exit 0 on a walk that measured nothing.
+            # The same gate ``_post_complete`` already applies to its own POST.
+            self._trail.emit(
+                "release_rejected",
+                level=logging.ERROR,
+                index=pending.index,
+                attempt=pending.attempt,
+                degrees=pending.degrees,
+                http=status,
+                body=body[:300],
+            )
+            return EXIT_RELEASE_REJECTED
         self._trail.emit(
             "released",
             index=pending.index,
@@ -825,12 +920,13 @@ def pending_from_relay(relay: Mapping[str, Any]) -> Pending | None:
 def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     """``GET /correction/crossover/status`` -> one :class:`Poll`.
 
-    An unreadable status is ``in_flight=True`` with nothing pending: a transient
-    read failure must not be mistaken for "the session ended", which would let
-    the idle ceiling fire on a live walk.
+    ``None`` is an UNREADABLE envelope, reported as such: ``in_flight=True`` so
+    a transient read failure cannot be mistaken for "the session ended", and
+    ``readable=False`` so an unbroken run of them is named for what it is rather
+    than diagnosed as a stuck capture.
     """
     if status is None:
-        return Poll(None, True, None)
+        return Poll(None, True, None, readable=False)
     relay = status.get("relay")
     if not isinstance(relay, Mapping):
         return Poll(None, False, None)

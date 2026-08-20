@@ -5,16 +5,27 @@
 """Hardware-free coverage for ``jasper-arm-walk``.
 
 Every safety sentence the harness's docstrings make is a test here: power before
-every motion, the envelope clamp, the park-and-verify on each exit path, the
+every walk move, the envelope clamp, the park-and-verify on each exit path, the
 never-``set-zero`` rule, and the settle floor.
+
+Two harness-level rules the individual tests lean on: :class:`FakeClock` bounds
+the sleeps, so a loop that stops terminating FAILS rather than hangs; and
+:meth:`_RecordingTrail.error` records the log LEVEL, so a failure that quietly
+logged at INFO — invisible to an operator grepping the journal for trouble — is
+a test failure rather than a passing assertion about its fields.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
+import logging
+import os
 import signal
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -43,15 +54,26 @@ def _load_turntable():
 
 
 class FakeClock:
-    """Time only moves when something sleeps, so a measured settle is exact."""
+    """Time only moves when something sleeps, so a measured settle is exact.
 
-    def __init__(self) -> None:
+    ``max_sleeps`` is the bounded-waits rule: a loop that stops terminating
+    FAILS here, with a sentence, instead of hanging the suite until a timeout
+    kills it. Every scenario below finishes in tens of sleeps.
+    """
+
+    def __init__(self, max_sleeps: int = 500) -> None:
         self.t = 1000.0
+        self._sleeps_left = max_sleeps
 
     def now(self) -> float:
         return self.t
 
     def sleep(self, seconds: float) -> None:
+        self._sleeps_left -= 1
+        if self._sleeps_left < 0:
+            raise AssertionError(
+                "the walk loop slept past its bound without terminating"
+            )
         self.t += seconds
 
 
@@ -111,19 +133,36 @@ class FakeSession:
         return self._complete
 
 
+@contextlib.contextmanager
+def _own_signals():
+    """Install handlers for the block, then always give the process back.
+
+    A test that left SIGTERM on ``SIG_IGN`` would make every later test — and
+    pytest's own shutdown — unkillable.
+    """
+    previous = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous[0])
+        signal.signal(signal.SIGINT, previous[1])
+
+
 def _pending(index: int, degrees: int, attempt: int = 1) -> aw.Poll:
     return aw.Poll(aw.Pending(index, attempt, degrees, "onax"), True, None)
 
 
 _QUIET = aw.Poll(None, False, None)
 _IN_FLIGHT_QUIET = aw.Poll(None, True, None)
+#: What an unreachable, 403ing, or non-JSON status endpoint reads as.
+_UNREADABLE = aw.Poll(None, True, None, readable=False)
 
 
 def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
     clock = clock or FakeClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
-        "stuck_alarm_s": 300.0, **cfg,
+        "stuck_alarm_s": 300.0, "unreadable_ceiling_s": 60.0, **cfg,
     })
     return aw.ArmWalk(
         mover, session, config,
@@ -167,19 +206,39 @@ def test_the_geometry_ceiling_still_refuses_both_movers():
 
 
 # --------------------------------------------------------------------------- #
-# power is read before EVERY motion
+# power is read before every WALK move
 # --------------------------------------------------------------------------- #
 
 
-def test_power_is_read_before_every_move():
+def test_power_is_read_before_every_walk_move():
+    """One read immediately before each move the WALK makes.
+
+    The trailing park move is deliberately not preceded by one here — see
+    ``test_the_park_move_is_attempted_without_a_fresh_power_read`` for why that
+    is the safe direction and what gates it instead.
+    """
     mover = FakeMover()
     session = FakeSession([_pending(1, 0), _pending(2, 22), _QUIET])
     assert _walk(mover, session, idle_ceiling_s=10.0).run() == aw.EXIT_OK
-    # start preflight, then one power read immediately before each served move;
-    # the park's own move is the trailing one.
     order = [c[0] for c in mover.calls if c[0] in {"power", "move_to"}]
     assert order == ["power", "power", "move_to", "power", "move_to", "move_to"]
     assert mover.moves == [0, 22, 0]
+
+
+def test_the_park_move_is_attempted_without_a_fresh_power_read():
+    """A walk parking BECAUSE of a power sign must still be allowed home.
+
+    Re-checking here would refuse the park in exactly the case it matters most
+    and strand the arm at the last measured angle. The adapter's own preflight
+    still blocks a motion under a CURRENT flag, so a park during a live brownout
+    is refused there and reported, not silently attempted.
+    """
+    mover = FakeMover(power=[aw.PowerVerdict(False, "current=[under_voltage]")])
+    assert _walk(mover, FakeSession([_pending(1, 22)])).run() == aw.EXIT_POWER_VOID
+    # The void is the FIRST call; the park move follows it with no second read.
+    assert [c[0] for c in mover.calls if c[0] in {"power", "move_to"}] == [
+        "power", "move_to",
+    ]
 
 
 def test_a_power_sign_at_the_start_moves_nothing():
@@ -187,7 +246,9 @@ def test_a_power_sign_at_the_start_moves_nothing():
     session = FakeSession([_pending(1, 22)])
     assert _walk(mover, session).run() == aw.EXIT_POWER_VOID
     assert session.released == []
-    # Parked anyway: the arm may be anywhere, and home is the only safe place.
+    # No WALK move was issued. The single move is the park, which is attempted
+    # unconditionally; whether it succeeds is the adapter's call, and under a
+    # current flag like this one it will refuse and the park reports ok=false.
     assert mover.moves == [0]
 
 
@@ -202,7 +263,7 @@ def test_a_power_sign_mid_walk_stops_parks_and_reports():
     assert _walk(mover, session, trail=trail).run() == aw.EXIT_POWER_VOID
     assert session.released == [1]
     assert mover.moves == [7, 0]
-    void = trail.one("power_void")
+    void = trail.error("power_void")
     assert void["when"] == "before_move" and void["degrees"] == 22
     assert "under_voltage" in void["detail"]
 
@@ -238,7 +299,7 @@ def test_a_pending_outside_the_envelope_is_refused_before_any_move():
     assert _walk(mover, session, trail=trail).run() == aw.EXIT_MOVE_FAILED
     assert session.released == []
     assert mover.moves == [0]  # the park, and nothing else
-    refused = trail.one("move_refused")
+    refused = trail.error("move_refused")
     assert refused["reason"] == "envelope"
     assert refused["envelope_deg"] == aw.ARM_ENVELOPE_DEG
 
@@ -278,14 +339,14 @@ def test_the_park_readbacks_sign_is_never_consumed():
     off = FakeMover(offset=-0.9)
     off_trail = _RecordingTrail()
     _walk(off, FakeSession([_QUIET]), trail=off_trail, idle_ceiling_s=10.0).run()
-    assert off_trail.one("parked")["ok"] is False
+    assert off_trail.error("parked")["ok"] is False
 
 
 def test_an_unreadable_park_is_reported_not_assumed():
     mover = FakeMover(offset=None)
     trail = _RecordingTrail()
     _walk(mover, FakeSession([_QUIET]), trail=trail, idle_ceiling_s=10.0).run()
-    parked = trail.one("parked")
+    parked = trail.error("parked")
     assert parked["ok"] is False and parked["offset_deg"] == "unreadable"
 
 
@@ -300,7 +361,7 @@ def test_an_exception_out_of_the_loop_still_parks():
         _walk(mover, Exploding([_QUIET]), trail=trail).run()
     assert mover.moves == [0]
     assert trail.one("parked")["ok"] is True
-    assert "RuntimeError" in trail.one("aborted")["error"]
+    assert "RuntimeError" in trail.error("aborted")["error"]
 
 
 def test_a_park_that_fails_is_reported_and_never_masks_the_verdict():
@@ -315,7 +376,7 @@ def test_a_park_that_fails_is_reported_and_never_masks_the_verdict():
     session = FakeSession([aw.Poll(None, True, "the session failed")])
     walk = _walk(Unparkable(), session, trail=trail)
     assert walk.run() == aw.EXIT_SESSION_FAILED
-    assert "OSError" in trail.one("parked")["error"]
+    assert "OSError" in trail.error("parked")["error"]
 
 
 def test_a_sigterm_still_parks():
@@ -331,16 +392,50 @@ def test_a_sigterm_still_parks():
 
 
 def test_the_cli_turns_sigterm_into_that_systemexit():
-    previous = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
-    try:
+    with _own_signals():
         cli._install_park_on_signals()
         handler = signal.getsignal(signal.SIGTERM)
         with pytest.raises(SystemExit) as excinfo:
             handler(signal.SIGTERM, None)
         assert excinfo.value.code == 143
-    finally:
-        signal.signal(signal.SIGTERM, previous[0])
-        signal.signal(signal.SIGINT, previous[1])
+
+
+def test_the_first_signal_disarms_both_so_a_second_cannot_land():
+    with _own_signals():
+        cli._install_park_on_signals()
+        with pytest.raises(SystemExit):
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+
+
+def test_a_second_signal_during_the_park_cannot_abandon_the_arm():
+    """The worst timing there is: SIGTERM while the adapter is mid-travel.
+
+    With the handler still armed it raises a SECOND ``SystemExit`` inside the
+    walk's own ``finally``, and the arm stops at an unknown angle, unverified —
+    the state one signal was meant to avoid. The park's completion is what this
+    asserts; ``trail.one("parked")`` is absent entirely if the park was cut off.
+    """
+    class Signalling(FakeMover):
+        def move_to(self, degrees: int) -> bool:
+            super().move_to(degrees)
+            os.kill(os.getpid(), signal.SIGTERM)  # delivered DURING the park
+            return True
+
+    class Terminating(FakeSession):
+        def poll(self) -> aw.Poll:
+            os.kill(os.getpid(), signal.SIGTERM)  # the first signal
+            return _QUIET
+
+    mover = Signalling()
+    trail = _RecordingTrail()
+    with _own_signals():
+        cli._install_park_on_signals()
+        with pytest.raises(SystemExit):
+            _walk(mover, Terminating([_QUIET]), trail=trail).run()
+    assert mover.moves == [0]
+    assert trail.one("parked")["ok"] is True
 
 
 def test_the_park_runs_once():
@@ -503,7 +598,7 @@ def test_a_measured_settle_under_the_floor_ends_the_walk():
     walk = _walk(mover, session, clock=FrozenClock(), trail=trail)
     assert walk.run() == aw.EXIT_SETTLE_FLOOR
     assert session.released == []
-    assert trail.one("settle_floor")["floor_s"] == aw.SETTLE_FLOOR_S
+    assert trail.error("settle_floor")["floor_s"] == aw.SETTLE_FLOOR_S
 
 
 def test_the_settle_actually_taken_is_what_the_trail_states():
@@ -524,7 +619,7 @@ def test_a_failed_session_exits_immediately_with_its_own_error():
     session = FakeSession([aw.Poll(None, True, "the fit refused: level too low")])
     trail = _RecordingTrail()
     assert _walk(mover, session, trail=trail).run() == aw.EXIT_SESSION_FAILED
-    assert trail.one("session_failed")["error"] == "the fit refused: level too low"
+    assert trail.error("session_failed")["error"] == "the fit refused: level too low"
     assert mover.moves == [0]
 
 
@@ -533,7 +628,51 @@ def test_a_stuck_capture_is_named_rather_than_waited_out():
     walk = _walk(FakeMover(), FakeSession([_IN_FLIGHT_QUIET]), trail=trail,
                  stuck_alarm_s=10.0, idle_ceiling_s=600.0)
     assert walk.run() == aw.EXIT_STUCK
-    assert trail.one("stuck")["released"] == 0
+    assert trail.error("stuck")["released"] == 0
+
+
+def test_an_unreadable_status_is_never_diagnosed_as_a_stuck_capture():
+    """The mis-attribution S4 names: a wrong --hostname blamed on #2506.
+
+    A 403ing endpoint has no pending and no verdict, which looks exactly like a
+    session sitting on a rejected capture. It must be reported for what it is.
+    """
+    trail = _RecordingTrail()
+    walk = _walk(FakeMover(), FakeSession([_UNREADABLE]), trail=trail,
+                 unreadable_ceiling_s=30.0, stuck_alarm_s=10.0,
+                 idle_ceiling_s=600.0)
+    assert walk.run() == aw.EXIT_STATUS_UNREACHABLE
+    assert not [row for row in trail.rows if row["event"] == "stuck"]
+    unreachable = trail.error("status_unreachable")
+    assert unreachable["unreadable_s"] >= 30.0
+    assert "--hostname" in unreachable["detail"]
+
+
+def test_one_good_read_clears_an_unreadable_run():
+    """A blip is absorbed; only an UNBROKEN run of them ends the walk."""
+    class Flapping(FakeSession):
+        def __init__(self) -> None:
+            super().__init__([_IN_FLIGHT_QUIET])
+            self.reads = 0
+
+        def poll(self) -> aw.Poll:
+            self.reads += 1
+            # Two unreadable, one good, forever — never an unbroken ceiling.
+            return _UNREADABLE if self.reads % 3 else _IN_FLIGHT_QUIET
+
+    walk = _walk(FakeMover(), Flapping(), unreadable_ceiling_s=10.0,
+                 stuck_alarm_s=600.0, idle_ceiling_s=30.0)
+    assert walk.run() == aw.EXIT_IDLE_CEILING
+
+
+def test_an_unreadable_first_poll_does_not_claim_a_session_is_open():
+    """Two skip reasons, told apart: a read fact and the absence of one."""
+    trail = _RecordingTrail()
+    walk = _walk(FakeMover(), FakeSession([_UNREADABLE]), trail=trail,
+                 unreadable_ceiling_s=10.0, expect_angles=(7,),
+                 walk_staged=lambda: False)
+    assert walk.run() == aw.EXIT_STATUS_UNREACHABLE
+    assert trail.one("staged_check_skipped")["reason"] == "status_unreadable"
 
 
 def test_nothing_ever_pending_is_a_failure_not_a_quiet_zero():
@@ -565,6 +704,44 @@ def test_a_failed_move_stops_the_walk():
     session = FakeSession([_pending(1, 7), _QUIET])
     assert _walk(FakeMover(move_ok=False), session).run() == aw.EXIT_MOVE_FAILED
     assert session.released == []
+
+
+@pytest.mark.parametrize("status,body", [
+    (409, '{"error": "measurement 5 is waiting, not 4"}'),
+    (403, "forbidden"),
+    (400, '{"error": "index must be an integer"}'),
+    (0, "URLError: connection refused"),
+])
+def test_a_release_the_session_did_not_accept_stops_the_walk(status, body):
+    """No capture began, so nothing may be counted as measured.
+
+    Left ungated, a 409 (the gate moved on), a 403 (bad CSRF pair), a 400, or a
+    POST that never arrived would each mark the position served, satisfy
+    ``--expect-angles``, advance ``--complete-after``, and exit 0 on a walk that
+    measured nothing.
+    """
+    trail = _RecordingTrail()
+    session = FakeSession([_pending(4, 22), _QUIET], release=(status, body))
+    walk = _walk(FakeMover(), session, trail=trail, expect_angles=(22,))
+    assert walk.run() == aw.EXIT_RELEASE_REJECTED
+    rejected = trail.error("release_rejected")
+    assert rejected["http"] == status and rejected["index"] == 4
+    assert not [row for row in trail.rows if row["event"] == "released"]
+    assert walk.summary() == "no positions were released"
+
+
+def test_a_rejected_release_never_satisfies_an_expectation():
+    """The stated angle stays unserved, so the run cannot end 0 either way."""
+    session = FakeSession([_pending(1, 7), _QUIET], release=(409, "conflict"))
+    walk = _walk(FakeMover(), session, expect_angles=(7,))
+    assert walk.run() == aw.EXIT_RELEASE_REJECTED
+
+
+def test_a_rejected_release_never_advances_the_wired_completion():
+    session = FakeSession([_pending(1, 7), _QUIET], release=(403, "forbidden"))
+    assert _walk(FakeMover(), session,
+                 complete_after=1).run() == aw.EXIT_RELEASE_REJECTED
+    assert session.completes == 0
 
 
 def test_complete_after_closes_the_wired_stage():
@@ -603,7 +780,7 @@ def test_a_stated_walk_that_never_arrives_is_a_named_failure():
     walk = _walk(FakeMover(), session, trail=trail, idle_ceiling_s=10.0,
                  expect_angles=(7, -7))
     assert walk.run() == aw.EXIT_WALK_NOT_TAKEN
-    assert trail.one("walk_not_taken")["missing_angles"] == "+7,-7"
+    assert trail.error("walk_not_taken")["missing_angles"] == "+7,-7"
 
 
 def test_a_stated_walk_that_arrives_is_a_success():
@@ -678,14 +855,22 @@ def test_no_relay_block_is_no_session():
 
 
 class _FakeOpener:
-    def __init__(self, pages) -> None:
+    """``status`` other than 200 raises the ``HTTPError`` urllib really raises."""
+
+    def __init__(self, pages, *, status: int = 200) -> None:
         self.pages = pages
+        self.status = status
         self.requests: list = []
 
     def open(self, request, timeout=None):
         self.requests.append(request)
-        body = self.pages.get(request.selector if hasattr(request, "selector")
-                              else request.full_url, "")
+        if self.status != 200:
+            raise urllib.error.HTTPError(
+                request.full_url, self.status, "refused", {},
+                io.BytesIO(b"this JTS management page is only available from "
+                           b"the speaker's trusted LAN hostname"),
+            )
+        body = ""
         for path, page in self.pages.items():
             if request.full_url.endswith(path):
                 body = page
@@ -708,8 +893,8 @@ class _FakeResponse:
         return False
 
 
-def _loopback(pages):
-    opener = _FakeOpener(pages)
+def _loopback(pages, *, status: int = 200):
+    opener = _FakeOpener(pages, status=status)
     return aw.LoopbackSession(host_header="jts3.local", opener=opener), opener
 
 
@@ -740,6 +925,33 @@ def test_a_release_carries_the_double_submit_token_and_the_index():
     session.complete()
     assert sum(1 for r in opener.requests
                if r.full_url.endswith(aw.CSRF_PAGE_PATH)) == 1
+
+
+def test_a_failed_first_mint_is_retried_rather_than_cached_forever():
+    """Caching ``""`` would 403 every POST for the rest of the run, silently."""
+    pages = {aw.CSRF_PAGE_PATH: "<html>the wizard is still starting</html>",
+             aw.POSITION_READY_PATH: '{"ok": true}'}
+    session, opener = _loopback(pages)
+    session.release(1)
+    assert opener.requests[-1].get_header("X-csrf-token") == ""
+
+    pages[aw.CSRF_PAGE_PATH] = '<meta name="jts-csrf" content="tok456">'
+    session.release(1)
+    assert opener.requests[-1].get_header("X-csrf-token") == "tok456"
+    # …and once a REAL token is in hand it is cached, not re-fetched.
+    minted_before = sum(1 for r in opener.requests
+                        if r.full_url.endswith(aw.CSRF_PAGE_PATH))
+    session.complete()
+    assert sum(1 for r in opener.requests
+               if r.full_url.endswith(aw.CSRF_PAGE_PATH)) == minted_before
+
+
+def test_a_status_endpoint_that_refuses_reads_as_unreadable():
+    """A 403 — the shape a wrong --hostname produces — is not "no session"."""
+    session, _ = _loopback({}, status=403)
+    poll = session.poll()
+    assert poll.readable is False and poll.in_flight is True
+    assert poll.pending is None and poll.failed_error is None
 
 
 def test_the_endpoints_are_the_products_own():
@@ -773,6 +985,21 @@ def test_the_trail_file_reconstructs_the_walk(tmp_path):
     released = next(row for row in rows if row["event"] == "released")
     assert released["index"] == 1 and released["degrees"] == 7
     assert all("t" in row for row in rows)
+
+
+def test_the_trail_levels_separate_progress_from_trouble():
+    """Otherwise ``_RecordingTrail.error`` would be a vacuous assertion."""
+    trail = _RecordingTrail()
+    session = FakeSession([_pending(1, 7), _QUIET])
+    assert _walk(FakeMover(), session, trail=trail,
+                 idle_ceiling_s=10.0).run() == aw.EXIT_OK
+    for event in ("up", "pending", "moved", "released", "parked"):
+        assert trail.one(event)["level"] == logging.INFO
+
+    failing = _RecordingTrail()
+    _walk(FakeMover(move_ok=False), FakeSession([_pending(1, 7), _QUIET]),
+          trail=failing).run()
+    failing.error("move_failed")
 
 
 def test_the_summary_names_every_release():
@@ -823,19 +1050,34 @@ def test_the_console_script_is_installed():
 
 
 class _RecordingTrail(aw.Trail):
-    """A trail that keeps its rows in memory instead of a file."""
+    """A trail that keeps its rows in memory instead of a file.
+
+    ``level`` is recorded like any other field -- it is the severity an operator
+    greps the journal by, so a failure that logged at INFO would be a real
+    defect this double used to be blind to. :meth:`error` is how a failure
+    assertion states that expectation in one place.
+    """
 
     def __init__(self) -> None:
         super().__init__(None)
         self.rows: list[dict] = []
 
-    def emit(self, action: str, *, level=None, **fields) -> None:
-        self.rows.append({"event": action, **fields})
+    def emit(self, action: str, *, level: int = logging.INFO, **fields) -> None:
+        self.rows.append({"event": action, "level": level, **fields})
 
     def one(self, action: str) -> dict:
         matches = [row for row in self.rows if row["event"] == action]
         assert len(matches) == 1, f"{action}: {len(matches)} rows"
         return matches[0]
+
+    def error(self, action: str) -> dict:
+        """The one row for ``action``, which must have logged at ERROR."""
+        row = self.one(action)
+        assert row["level"] == logging.ERROR, (
+            f"{action} logged at {logging.getLevelName(row['level'])}, "
+            "so it would not surface as a failure in the journal"
+        )
+        return row
 
 
 class _Proc:
