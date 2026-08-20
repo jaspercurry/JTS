@@ -757,12 +757,24 @@ it is retired, because it bound *below* the derivation on real hardware
 ceiling rather than a backstop above one — capping the 2026-08-19 leveling
 session at 68.07 dB SPL against a 75–80 dB SPL target. `MAX_TEST_LEVEL_DBFS`
 is the global loudest-admissible test level every driver target already sits
-under, and here it is a runaway stop on an impossible declared delta (declared
-sensitivities carry no plausibility validation), not a level hedge. The
+under, and it is where a *legitimate* negative delta runs out of digital
+headroom rather than a level hedge: a high-sensitivity pro woofer (~97 dB)
+under a modest dome tweeter (~90 dB) gives Δ = −7, and the arithmetic correctly
+asks for more digital level so the quieter tweeter reaches the same SPL. The
 remaining live bounds are the derivation, the preset's
 `max_commissioning_level_db_spl`, and the leveling ramp's guards and stop path
 (owner ruling: operator target band plus a stop control, not dB nannies —
 issue #2761).
+
+**Residual, named:** the derivation is only as good as the declaration, and
+declared sensitivities carry no plausibility validation. A household that swaps
+the two sensitivity rows presents Δ ≤ 0 for a genuinely more-sensitive tweeter,
+and the ceiling lands at full scale — where the retired −35 hedge clamped it by
+accident. That empties `unsegmented_stimulus_ceiling_db` (documented
+mic-*independent*) of content for that box; the live stops left are the measured
+SPL band top and the ramp guards. Refusing to derive on Δ ≤ 0 is not the fix —
+it would break the legitimate pro-woofer case above. Validating the declaration
+is.
 The sensitivities' one owner is the DECLARATION — the design draft's
 `manual_settings` (`declared_driver_sensitivities`), never a second copy on
 the confirmed safety profile — so already-declared boxes (JTS3's persisted

@@ -510,10 +510,19 @@ hardware (9.8 dB low on JTS3, 14.3 dB on the CX120 coax), which capped the
 2026-08-19 leveling session at 68.07 dB SPL against a 75–80 dB SPL target.
 What bounds the level now is the derivation itself — the tweeter is admitted
 at the acoustic level its woofer is already admitted at — plus the global
-`MAX_TEST_LEVEL_DBFS` as a runaway stop on an impossible declared delta, the
-preset's `max_commissioning_level_db_spl` SPL band top, and the leveling
-ramp's stop path. Owner ruling: operator target band plus a stop control, not
-conservative level constants (issue #2761).
+`MAX_TEST_LEVEL_DBFS`, the preset's `max_commissioning_level_db_spl` SPL band
+top, and the leveling ramp's stop path. Owner ruling: operator target band plus
+a stop control, not conservative level constants (issue #2761).
+
+`MAX_TEST_LEVEL_DBFS` is not an error stop. A negative sensitivity delta is a
+legitimate configuration — a high-sensitivity pro woofer under a modest dome
+tweeter — where the arithmetic correctly asks for more digital level than the
+woofer's cap so the quieter tweeter reaches the same SPL; full scale is where
+that request runs out. The residual, named: declared sensitivities carry no
+plausibility validation, so a household that swaps the two rows presents Δ ≤ 0
+for a genuinely more-sensitive tweeter and lands at full scale, where the
+retired hedge clamped it by accident. Validating the declaration is the fix;
+refusing to derive on Δ ≤ 0 would break the legitimate case.
 
 That disclosure is no longer only
 assistant-facing: when an echoed peak sits exactly on its class ceiling, the

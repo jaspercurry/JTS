@@ -339,21 +339,54 @@ def test_zero_sensitivity_delta_lands_on_the_lf_cap_itself() -> None:
     assert ceiling == pytest.approx(-20.0)
 
 
-def test_impossible_declared_delta_is_stopped_at_the_global_test_ceiling() -> None:
-    """The one case the remaining bound exists for -- and it is not a hedge.
+def test_negative_delta_runs_out_of_headroom_at_the_global_test_ceiling() -> None:
+    """A NEGATIVE sensitivity delta is legitimate, and the clamp is where it
+    runs out of digital headroom — not an error stop.
 
-    Declared sensitivities carry no plausibility validation, so a swapped or
-    mis-typed pair can present a NEGATIVE delta, which the arithmetic would
-    turn into a ceiling above digital full scale (0.0 - -12 = +12 dBFS). A cap
-    above full scale switches off per-channel admission enforcement for that
-    driver entirely, so ``MAX_TEST_LEVEL_DBFS`` stops it. Nothing about a real
-    tweeter/woofer pair reaches this branch.
+    A high-sensitivity pro woofer (~97 dB) under a modest dome tweeter
+    (~90 dB) gives delta = −7. The arithmetic correctly asks for MORE digital
+    level than the woofer's own cap, because the quieter tweeter needs it to
+    reach the same SPL: 0.0 − (−7) = +7 dBFS. Full scale is simply where that
+    request runs out.
+
+    Still safe by the derivation's own argument, which is why no hedge is
+    wanted here: at the clamped 0 dBFS this tweeter makes ~90 dB while the
+    already-admitted woofer at ITS 0 dBFS cap makes ~97 dB — acoustically
+    quieter than something the ledger already permits.
     """
 
     ceiling = derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs=0.0,
-        sens_hf_db=80.0,
-        sens_lf_db=92.0,
+        sens_hf_db=90.0,
+        sens_lf_db=97.0,
     )
     assert ceiling == pytest.approx(MAX_TEST_LEVEL_DBFS)
     assert ceiling == pytest.approx(0.0)
+
+
+def test_a_swapped_declaration_is_not_caught_by_the_ledger() -> None:
+    """The residual the retirement leaves, pinned so it cannot be forgotten.
+
+    Sensitivities carry no plausibility validation, so swapping the two rows
+    of a real JTS3-shaped declaration (108.5 tweeter / 83.3 woofer typed the
+    wrong way round) presents delta = −25.2 for a driver that is genuinely
+    25.2 dB MORE sensitive. The derivation cannot tell, and the ceiling lands
+    at full scale — where the retired −35 dBFS hedge used to clamp it by
+    accident.
+
+    This is deliberately NOT fixed by refusing to derive on delta <= 0: the
+    test above shows that same shape is a legitimate pro-woofer configuration.
+    Validating the declaration is the fix; see issue notes in the block comment
+    above ``derive_hf_measurement_ceiling_dbfs``. Pinned as the honest current
+    behaviour so a reader is never surprised by it.
+    """
+
+    swapped = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=0.0,
+        sens_hf_db=83.3,
+        sens_lf_db=108.5,
+    )
+    assert swapped == pytest.approx(MAX_TEST_LEVEL_DBFS)
+    # 35 dB louder than the retired hedge would have allowed, on a declaration
+    # that is simply wrong. The ledger is not what catches this.
+    assert swapped - (-35.0) == pytest.approx(35.0)
