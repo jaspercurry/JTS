@@ -1072,6 +1072,16 @@ reference. Currently:
   Motivated by the e2e validation log; the verbatim deep-research report behind it
   is the linked primary source
   [`crossover-measurement-deep-research-2026-07-18.md`](docs/crossover-measurement-deep-research-2026-07-18.md).
+- [`crossover-design-guide-deep-research-2026-08-19.md`](docs/crossover-design-guide-deep-research-2026-08-19.md)
+  — Owner-supplied deep-research report (2026-08-19) on first-principles
+  active-DSP crossover design and optimization: directivity-matched
+  crossover-point selection, the DSP parameter set (filter/gain/polarity/
+  delay/PEQ), and the measure → flatten → cross → optimize → verify
+  workflow. Landed on `main` as the primary-source research archive for
+  the crossover-optimization build-out; a future crossover-agent
+  documentation pack cites it rather than restating it. Treat as source
+  material — every numeric anchor is a prior that in-situ measurement
+  decides, not a rule.
 - [`room-correction-information-design.md`](docs/room-correction-information-design.md)
   — **Product and architecture design of record** for the Room tab:
   server-owned screen visibility and readiness, disclosed six-position/flat
