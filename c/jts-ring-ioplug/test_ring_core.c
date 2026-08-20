@@ -3710,6 +3710,49 @@ static void test_pace_log_step_edges_and_rate_limit(void) {
           "the next window's bind is announced");
 }
 
+static void test_pace_log_survives_a_reprepare_with_a_bind_standing(void) {
+    // A (re)prepare while a bind is STANDING is ordinary XRUN recovery against a
+    // dead reader, and it zeroes pace_bound_ns. The ledger is DERIVED from that
+    // counter, so the log state has to be cleared with it. Left behind, the next
+    // call sees bound_ns fall from large to 0, reads that as a release edge, and
+    // reports it against the previous stream incarnation — with a delta that
+    // underflowed through zero into ~584 years.
+    const uint64_t interval = 60 * PACE_NS_PER_S;
+    jts_ring_pace_log_state_t ls;
+    memset(&ls, 0, sizeof(ls));
+    // Establish a standing, announced bind.
+    CHECK(jts_ring_pace_log_step(&ls, 1000000, 5 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_BIND,
+          "a bind is standing before the re-prepare");
+    uint64_t bind_bound_ns = 1000000; // what the plugin anchors its delta on
+
+    // THE HAZARD, shown rather than assumed: the counter resets, the log state does
+    // not, and the very next call manufactures a release out of nothing.
+    jts_ring_pace_log_state_t stale = ls;
+    CHECK(jts_ring_pace_log_step(&stale, 0, 6 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_RELEASE,
+          "a stale log state turns the counter reset into a phantom release");
+    CHECK(0ull - bind_bound_ns > 100ull * 365 * 24 * 3600 * PACE_NS_PER_S,
+          "...and its delta underflows to a centuries-long duration");
+
+    // THE FIX: both cleared together, exactly as jts_ring_prepare does it. The next
+    // call is silent, and a delta computed from the cleared anchor is zero.
+    memset(&ls, 0, sizeof(ls));
+    bind_bound_ns = 0;
+    for (int tick = 0; tick < 8; tick++) {
+        CHECK(jts_ring_pace_log_step(&ls, 0, (uint64_t)(6 + tick) * PACE_NS_PER_S,
+                                     interval) == JTS_RING_PACE_LOG_NONE,
+              "after a re-prepare clears both, no release is manufactured");
+    }
+    CHECK(0ull - bind_bound_ns == 0, "and the delta anchor cannot underflow");
+
+    // The new incarnation's first genuine bind still announces immediately — the
+    // cleared last_log_ns is the sentinel, not a timestamp inside the window.
+    CHECK(jts_ring_pace_log_step(&ls, 500, 14 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_BIND,
+          "and the fresh incarnation's first bind is not swallowed by the old window");
+}
+
 static void test_pace_burst_is_capped_at_one_buffer_however_long_the_idle(void) {
     // The burst bound, and the reason the bucket has a cap at all. However long a
     // governed stream sits idle, ONE wake may advance the report by at most one
@@ -4155,6 +4198,7 @@ int main(void) {
     test_pace_bound_ns_measures_time_not_call_rate();
     test_pace_start_only_anchors_a_governed_playback_pcm();
     test_pace_log_step_edges_and_rate_limit();
+    test_pace_log_survives_a_reprepare_with_a_bind_standing();
     test_pace_burst_is_capped_at_one_buffer_however_long_the_idle();
     test_pace_short_stall_catches_up_in_one_call();
     test_pace_sustained_rate_stays_within_nominal_plus_headroom();

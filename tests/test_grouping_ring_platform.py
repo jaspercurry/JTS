@@ -359,6 +359,21 @@ def test_the_governor_is_armed_from_prepare_and_not_from_start():
             "defect this pin exists to catch (a PREPARED stream never reaches it)"
         )
 
+    # The bind/release ledger is DERIVED from pace_bound_ns, which the arming line
+    # above zeroes, so the log state has to be cleared in the same callback. A
+    # prepare while a bind is standing is ordinary XRUN recovery against a dead
+    # reader; leaving these behind makes the next call emit a release attributed to
+    # the previous incarnation, with a delta underflowed through zero. Both fields
+    # live in the .c, so this is the half the host suite cannot see.
+    assert re.search(r"memset\(&p->pace_log,\s*0,\s*sizeof\(p->pace_log\)\)", prepare), (
+        "jts_ring_prepare must clear p->pace_log — a stale ledger turns the "
+        "pace_bound_ns reset into a phantom release"
+    )
+    assert re.search(r"p->pace_bind_bound_ns\s*=\s*0", prepare), (
+        "jts_ring_prepare must clear p->pace_bind_bound_ns — a stale anchor makes "
+        "the next delta underflow"
+    )
+
 
 def test_the_grouping_ring_slot_is_one_camilladsp_chunk():
     """One slot per chunk — the relationship every other ring in the tree ships.

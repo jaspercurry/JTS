@@ -355,6 +355,13 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
     jts_ring_pointer_prepare(&p->ptr_state, p->pace_nominal,
                              io->stream == SND_PCM_STREAM_PLAYBACK,
                              jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
+    // The log ledger is derived from pace_bound_ns, which the line above just
+    // zeroed, so it has to be cleared in the same breath. A prepare while a bind is
+    // STANDING is ordinary XRUN recovery against a dead reader — leave these and the
+    // next call reads a fallen bound_ns as a release edge, attributes it to the
+    // previous incarnation, and prints a delta that underflowed through zero.
+    memset(&p->pace_log, 0, sizeof(p->pace_log));
+    p->pace_bind_bound_ns = 0;
     return 0;
 }
 
