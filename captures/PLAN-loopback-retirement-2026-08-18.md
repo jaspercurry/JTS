@@ -1132,3 +1132,101 @@ the fleet settles it (low consequence by construction: any surprise
 degrades to an honest ok-skip naming what happened). Branch rebased onto
 current origin/main at this seal; post-rebase map appended below after the
 rebase.
+
+### 2026-08-20 — **PR-5 SEALED 0/0/0 BY ALL THREE LENSES** (safety-class panel;
+builder Opus). Range bddc9aea..7f09414e, eight commits: the atomic core
+(gate+bake+D1+D5), inv-5, rename+re-home, two core follow-ups, a 10-item fix
+round, a mutation-found pin commit, and a prose-SSOT micro-round. Round-1
+verdicts: HS **1 BLOCKER**/2SF/2N · RES 0B/3SF/4N · CORR 0B/4SF/2N.
+
+**THE BLOCKER — the campaign's first, and exactly the hazard class PR-5
+exists to prevent.** `apply_capture_precedence` discarded the coupling's
+capture half whenever the member was a pipe sink, justified by a
+mutual-exclusivity premise THIS PR's gate narrowing deletes. Consequence,
+demonstrated end-to-end: bond up + ring armed, an EQ save at /sound/ (or a
+/correction/ run) rewrote camilla#1's LIVE capture back to the dead
+plug:jasper_capture tap and silenced THE WHOLE BOND — daemons healthy,
+doctor green, no cue — while the on-disk bake still read correctly. The
+design's own resolver-census structurally could not surface it: these sites
+DO call the resolver, then discard its result three frames later. Correctness
+reached the same root independently (the resolver docstring's "a box with an
+active ring is a roleful box, so the emit these kwargs serve never runs
+there" — false once roleful boxes reach shm_ring). Fixed by PROMOTION:
+`capture_half` + `CAPTURE_HALF_KEYS` beside the resolver as one owner; the
+pipe-sink branch drops only the PLAYBACK half; the bake's hand-rolled copy
+deleted. **The builder then found a SECOND instance the panel brief missed —
+`_ProgramBakeCarrier.reemit`, which is the carrier a bonded active leader
+ACTUALLY has loaded** — i.e. fixing only the briefed site would have shipped
+a partial fix presented as complete. Both lenses ruled it in-scope-by-root;
+HS called it "the primary one, not a bonus". Mutation-proved at all three
+seams (M9/M10/M11); T-8b's TypeError kill still lands at the bake's own
+signature, not inside emit_sound_config.
+
+**CONDUCTOR PROSE-SSOT INTERVENTION (owner directive).** Measured mid-round:
+37% of the branch's added production lines were prose, and SEVEN sites each
+carried their own copy of the ring-vs-lane mechanism — the briefed fix would
+have made it TEN. Re-scoped to ONE OWNER PER AUDIENCE: operator =
+`GROUPED_SHM_RING_MECHANISM` (new reusable constant; the three operator
+strings INTERPOLATE it), code = `dac_content_lane_armed`'s docstring. Three
+sites had the mechanism DELETED keeping one clause naming the owner. The
+builder then collapsed a SECOND prose family unprompted (the capture-half
+consequence, 3 copies → 1). Result: **mechanism sites 7→2, consequence 3→1,
+4 comments deleted outright, micro-round production −5.** Standing rule from
+here: a falsified comment's default action is DELETE, correction only for
+the canonical owner. CORR's M13 proves the fold did not trade duplication
+for silence (gutting the single owner kills two tests); CORR also HASHED the
+primary operator string at both SHAs (identical) to disprove a byte change
+smuggled in under a "prose-only" refactor.
+
+Other fixes: UnicodeDecodeError fail-OPEN closed AT THE LOADER (one clause,
+every caller — RES measured 2 fail-open cells on a bonded box at 030b1a80,
+zero after); ~1,440 WARN/day journal spam removed by SHORT-CIRCUITING the
+writer's OFF path before the topology read (solo boxes now pay zero WARNs
+and zero reads; RES re-fuzzed 16,128 evaluations, 0 mismatches); the latent
+UnboundLocalError fixed with ImportError-first ordering (marked
+load-bearing) — it had converted a clean degrade into a crash on two new
+surfaces, one of which (audio_health) would have died as a SILENT daemon
+thread; the stale-bake window closed by kicking jasper-grouping-reconcile on
+a coupling flip, `no_block=True` + a 5 s ACCEPT bound + one `event=` line
+(RES: the old 15 s wait measured job COMPLETION against a unit with
+TimeoutStartSec=2526, so a SUCCESSFUL re-bake emitted a spurious WARN; the
+new bound measures ACCEPTANCE, sub-second, so the WARN became a true
+signal); the duplicate GROUPING_RECONCILE_UNIT collapsed to its one owner —
+RES gave that nit teeth: with the kick's result discarded, a drifted name
+would have made the whole stale-bake fix SILENTLY no-op, which is why the
+`event=` line was taken.
+
+Adjudications: C-8's invalid_grouping flip CORRECT (CORR traced
+solo-equivalence: an errored config forms no bond, so the lane is never
+armed; PR-0's "pin" was prose, not an assertion — trued); deviation-1
+(inv-5 scope) ENDORSED BY ALL THREE as faithful-to-invariant — the literal
+`is_active_member` would false-warn every bonded DUMB follower, whose
+`enable_rate_adjust=True` HS verified is LOAD-BEARING for outputd's inv-B
+never-silent fallback (turning it off would cause audible clicks), and RES
+proved the missed-warn set EMPTY BY CONSTRUCTION → **erratum #8 candidate**;
+M6's equivalent-mutant claim CONFIRMED; the commit-structure deviation
+ACCEPTABLE (CORR machine-checked the atomicity invariant at every commit in
+the range — no commit carries gate without bake or vice versa).
+
+Accounting: PR-5 production +815/−543 (net +272; ~70 genuinely-new
+executable statements after the rename/re-home MOVE and the prose share —
+CORR's gate-0 passed it and applied the deletion test to every new symbol).
+Fix + micro rounds together: **net −8**. On the SSOT question the conductor
+put to CORR — do `dac_content_lane_armed` (pure) and
+`box_dac_content_lane_armed` (live) both need to exist — it ruled NO
+COLLAPSE: one rule, one owner, two input-sourcing strategies; the pure half
+is what T-5's derived table and the writer-identity pin stand on, and
+merging would make it impure and force D1/D5 to re-read topology they
+already hold. Its sizing verdict: "Where I would collapse: nothing else."
+
+NEW TRAP MINTED: the venv's editable install uses a sys.meta_path finder
+hardcoding /home/user/JTS — an "isolated" export run silently tests the LIVE
+tree unless the finder is stripped and `jasper.__file__` is hard-asserted
+under the export before any probe. Every panel probe this wave did both.
+Also recorded: 8198c9cd (a pre-re-scope micro-round commit) was REPLACED by
+7f09414e rather than stacked with an undo — nothing had reviewed it.
+
+PR-6 LEDGER ADDITION (new since the count was taken, will be missed
+otherwise): docs/HANDOFF-distributed-active.md:453 "shm_ring is already
+blocked for grouped boxes" — in the doc's LIVE half, falsified by PR-5; the
+file's "18 sites + footer" tally predates this PR.
