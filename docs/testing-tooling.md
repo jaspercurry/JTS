@@ -42,6 +42,7 @@
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
+| Grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {frozen,per-seat,repeat,agreement}` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
@@ -2004,6 +2005,80 @@ built on synthetic speakers whose answers are known before the instrument runs
 (an RBJ resonance is minimum-phase by construction; a delayed copy inside the
 window is the room), lives in
 [`tests/test_crossover_v2_feature_classifier.py`](../tests/test_crossover_v2_feature_classifier.py).
+
+---
+
+## Round-grading comparison views
+
+`jasper-round-views`
+([`jasper/cli/round_views.py`](../jasper/cli/round_views.py), core in
+[`jasper/active_speaker/crossover_v2/round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py))
+is the product promotion of four laptop tools that had been re-derived by hand
+under `captures/linearization-night-2026-08-19/tools/` — `frozen_reference.py`,
+`per_seat.py`, `repeatability.py`, `agreement.py` — the numbers a crossover-v2
+tournament's "dominance decides" rule was actually judged on (issue #2769).
+`captures/` is gitignored; those originals never entered the repo, so there is
+nothing to `git rm` — this tool is the one copy going forward.
+
+Every subcommand reads a *banked round directory*, the tree
+`scripts/bank-crossover-round.sh <dest-dir>` produces (see "Crossover-v2 round
+banking" once that tool lands, and PR #2778): a `bundle/<session>/` evidence
+bundle, optional `state.json` / `design-draft.json`, and optional
+`dumps/wav/` + `dumps/sidecar/` dump-ring captures. No file is globbed or
+re-parsed by hand — positions and the graded spec come from
+[`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
+grading comes from
+[`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
+the `flat_spec_views` per-position/per-role building blocks, and the one DSP
+chain this module runs itself (recovering the VERIFY pose, which a round's
+`positions` block never carries a row for) is
+`deconvolve` → `gate_impulse_response` (the reflection-detecting gate, not a
+fixed window) → `magnitude_response` → `smooth_fractional_octave` — the same
+seams the shipped measurement pipeline uses, imported rather than
+re-implemented.
+
+```sh
+# grade a round shipped AND frozen to a baseline's own reference level —
+# the freeze §8.9 needed to show a prescribed cut was lowering its own
+# grading frame rather than actually flattening the response
+jasper-round-views frozen <baseline-round-dir> <target-round-dir>
+
+# every banked position plus the VERIFY pose, normalised onto one
+# comparable basis (each curve expressed as its own deviation from its
+# own median level — no cross-calibration assumption between the banked
+# cloud curves and the freshly-deconvolved VERIFY capture)
+jasper-round-views per-seat <round-dir>
+
+# session-to-session spread of the pooled honest figures — the stop
+# criterion: are session deltas within the measured repeat noise?
+jasper-round-views repeat <round-dir> [<round-dir> ...]
+
+# per-seat sign/magnitude testimony for every feature in the trusted
+# sweep, reported separately (a feature can agree in sign at every seat
+# and still split badly in size — the campaign's own 1400 Hz finding)
+jasper-round-views agreement <round-dir>
+```
+
+**No numeric microphone angle anywhere.** `evidence_packet.py` already made
+and documented that call: a round's bundle carries a position's `role`
+(`onax`/`offax`), never a degree. The campaign's `frozen_reference.py` carried
+a hardcoded `index -> degrees` table for exactly this reason; it is not
+ported. Every view here keys a position by its own stable `position_id`
+(`f"{phase}_{index:02d}"`, assigned once by the walk driver and stable across
+rounds that walk the same shape) instead.
+
+Each subcommand writes its JSON result into the round directory by default
+(`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
+round's own dir; `repeatability.json` under the first round dir for `repeat`)
+— `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
+success, `1` when a round directory could not be read into a comparable view.
+
+Hardware-free coverage, including a golden fixture whose `spec` block is a
+REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite
+rather than going unnoticed) and an end-to-end synthetic wired capture through
+the real `deconvolve`/`gate_impulse_response`/`magnitude_response` chain, lives
+in
+[`tests/test_active_speaker_crossover_v2_round_views.py`](../tests/test_active_speaker_crossover_v2_round_views.py).
 
 ---
 
