@@ -3236,8 +3236,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Code-owned protection bounds for one target, straight from the server
   // (design draft `driver_protection_policy_view`, re-derived on every load
   // that knows the topology — which the /sound/ endpoint always does). The
-  // page deliberately keeps NO copy of max_auto_level_dbfs or the absolute
-  // measurement ceiling: both are policy, and a second copy here would drift.
+  // page deliberately keeps NO copy of max_auto_level_dbfs: it is policy, and a
+  // second copy here would drift. (The view also carried an absolute
+  // measurement ceiling until 2026-08-20, on the same no-second-copy footing;
+  // that constant is retired and the field is gone from the wire.)
   function driverProtectionPolicy() {
     var policy = (driverResearch.designDraft || {}).driver_protection_policy_view;
     return (policy && typeof policy === 'object') ? policy : null;
