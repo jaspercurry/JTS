@@ -95,6 +95,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -118,7 +119,7 @@ from .driver_prescription import (
     check_driver_document_size,
     read_driver_prescription,
 )
-from .feature_classification import read_feature_verdicts
+from .feature_classification import FeatureVerdict, read_feature_verdicts
 
 logger = logging.getLogger(__name__)
 
@@ -211,11 +212,20 @@ BLEND_ONLY = frozenset({PRESCRIPTION_KIND})
 #: The document is stored verbatim as a JSON string, and JSON string escaping is
 #: at worst six characters per byte (``\uXXXX`` for a control character), so an
 #: envelope wrapping a document at :data:`.PRESCRIPTION_MAX_BYTES` cannot exceed
-#: six times it plus a handful of flat fields. Eight is that bound rounded up.
-#: The document's own cap is re-applied by its owner —
+#: six times it plus the anchors. Eight is that bound rounded up. The document's
+#: own cap is re-applied by its owner —
 #: :func:`~.blend_prescription.read_prescription_bytes` — when the take unwraps
 #: it, so there is exactly one number policing a prescription's size and it is
 #: not this one.
+#:
+#: The anchors are NOT bounded by the document: the per-driver class banks the
+#: round's whole classification, whose row count is the MEASUREMENT's fact
+#: rather than the prescription's. Measured in this envelope's own shape, the
+#: 2026-08-19 record's nine verdict rows cost **2,208 bytes** (245 per row)
+#: against the 128 KiB this cap leaves over even the pathological all-escaped
+#: document above — room for about 534 rows. A classification past that refuses
+#: the take by name (:data:`SPOOL_TOO_LARGE`) rather than truncating, which is
+#: the direction that cannot admit a filter nobody judged.
 SPOOL_MAX_BYTES = 8 * PRESCRIPTION_MAX_BYTES
 
 #: The highest frequency the gate's biquad evaluator is defined for.
@@ -370,24 +380,46 @@ class StagedPrescription:
 # --------------------------------------------------------------------------- #
 
 
-def _anchors(prescription: BlendPrescription | DriverPrescription) -> dict[str, Any]:
+def _anchors(
+    prescription: BlendPrescription | DriverPrescription,
+    classifications: Sequence[FeatureVerdict] | None,
+) -> dict[str, Any]:
     """The evidence anchors the take cannot re-derive, from the step that could.
 
     One per class, because the two gates are measured against different
     evidence. The blend document is bounded by ONE region, so its anchor is one
     band. The per-driver document is bounded by a band PER ROLE and, unlike its
     sibling, carries a second evidence bar — so its anchors are the role bands
-    and the verdicts that vouched for its filters.
+    and the round's WHOLE banked classification, exactly as the staging gate
+    read it.
 
     Banking the verdicts is what makes the driver class's re-validation as
     strong at take time as it was at staging time, which the blend class's is
     deliberately not: that one passes ``positional_evidence=None``, so a boost
     tampered into the document refuses on missing evidence rather than on the
-    bar. Here the SAME verdicts that admitted the filters are offered back, so a
+    bar. Here the SAME evidence that judged the filters is offered back, so a
     document edited to move a filter onto an unclassified — or an
     interference-barred — feature refuses on the bar itself, by its own name.
-    Offering only those verdicts is what keeps that honest: they cannot admit a
-    filter the staging step did not already admit.
+
+    **The whole row set, not the vouching subset, and that is the fix for a
+    hole the subset had.** ``classification_basis`` holds only the verdicts
+    that PASSED the bar, so every verdict in it is ``defect-cuttable`` by
+    construction and the minimum-phase DIPS are exactly what it drops. The bar
+    is ``defect_cuttable_at``'s nearest-verdict-decides rule, and it needs the
+    dips in order to say no: on the 2026-08-19 record a filter honestly aimed
+    at the 4149 Hz peak, moved 0.143 octaves onto the 4582 Hz dip, found the
+    peak still banked, no dip to outrank it, and was ACCEPTED — the precise
+    proposal the bar exists to refuse.
+
+    The property this buys is not "refuses more"; it is EQUALITY. Same
+    function, same evidence, same bands, so the take's answer on a document is
+    the answer the staging gate gave it, and the subset was wrong in both
+    directions rather than merely lenient: it hid the dips (a false accept, the
+    hole above) and it also hid every cuttable feature no filter happened to
+    aim at, so a filter moved onto one of THOSE refused as unclassified when
+    the staging step would have admitted it. A subset is an argument about how
+    much evidence is enough; handing back what the gate actually read needs no
+    argument.
     """
     if isinstance(prescription, DriverPrescription):
         return {
@@ -396,10 +428,7 @@ def _anchors(prescription: BlendPrescription | DriverPrescription) -> dict[str, 
                 [role, lo, hi] for role, lo, hi in prescription.passbands_hz
             ],
             "classifications": [
-                verdict.to_dict()
-                for verdict in dict.fromkeys(
-                    basis.verdict for basis in prescription.classification_basis
-                )
+                verdict.to_dict() for verdict in (classifications or ())
             ],
         }
     return {
@@ -413,6 +442,7 @@ def stage_prescription(
     prescription: BlendPrescription | DriverPrescription,
     *,
     for_round_ordinal: int,
+    classifications: Sequence[FeatureVerdict] | None,
 ) -> Path:
     """Bank one ALREADY-VALIDATED prescription for the next round.
 
@@ -422,6 +452,16 @@ def stage_prescription(
     not re-run that gate and deliberately cannot: it has no packet, and a
     staging step that validated with anything weaker than the packet would be
     the second, laxer reader this design exists to avoid.
+
+    ``classifications`` is the same round's banked verdicts, exactly as they
+    were handed to that gate — the unfiltered result of
+    :func:`~.evidence_packet.packet_feature_classifications` — and it is
+    REQUIRED rather than defaulted for the reason ``fitted`` is on
+    ``read_blend_prescription``'s rule: it is the input a caller can forget
+    while everything still looks fine at staging time, and the damage lands a
+    round later, at the take, on a bar quietly weaker than the one that
+    accepted the document. The blend class has no such evidence and passes
+    ``None``; :func:`_anchors` is where the two classes part.
 
     ``document`` is stored VERBATIM, not re-serialized from the parsed object.
     The digest banked beside it is over these bytes, so the take can prove the
@@ -456,7 +496,7 @@ def stage_prescription(
         "for_round_ordinal": int(for_round_ordinal),
         # The anchors the take cannot re-derive, from the step that could.
         "packet_fingerprint": prescription.packet_fingerprint,
-        **_anchors(prescription),
+        **_anchors(prescription, classifications),
         "prescription_sha256": prescription_sha256(document),
         "staged_at": time.time(),
         "document": document.decode("utf-8"),
@@ -715,11 +755,11 @@ def _validate(
             read_prescription_bytes(payload),
             packet_fingerprint=envelope.get("packet_fingerprint"),
             passbands_hz=_passbands(envelope.get("passbands_hz")),
-            # The verdicts that vouched at staging time, and ONLY those — see
-            # `_anchors`. They cannot admit a filter the staging step did not
-            # already admit, so a document edited to move a filter refuses on
-            # the classification bar by its own name rather than on a
-            # substitute.
+            # The round's WHOLE banked classification, as the staging gate read
+            # it — see `_anchors`. Same evidence, same bar, so a document edited
+            # to move a filter onto a dip refuses on the classification bar by
+            # its own name rather than on a substitute; a subset that dropped
+            # the dips could not, because it is the dips that say no.
             classifications=read_feature_verdicts(envelope.get("classifications")),
         )
     else:

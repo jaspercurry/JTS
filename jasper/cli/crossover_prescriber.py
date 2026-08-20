@@ -70,6 +70,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     packet_positional_evidence,
     packet_region_band_hz,
 )
+from jasper.active_speaker.crossover_v2.feature_classification import (
+    FeatureVerdict,
+)
 from jasper.active_speaker.crossover_v2.prescription_spool import (
     stage_prescription,
 )
@@ -141,13 +144,24 @@ def _read_payload(path: str) -> bytes:
 
 def _gate(
     args: argparse.Namespace,
-) -> tuple[bytes, BlendPrescription | DriverPrescription, dict[str, Any]]:
-    """The document, the validated prescription, and what it becomes — or a raise.
+) -> tuple[
+    bytes,
+    BlendPrescription | DriverPrescription,
+    dict[str, Any],
+    tuple[FeatureVerdict, ...] | None,
+]:
+    """The document, the validated prescription, what it becomes, what judged it.
 
     Shared WHOLE by ``propose`` and ``stage``, which is the property that makes
     the first a true dry run of the second. A staging verb with its own copy of
     these calls would be a second reader of the same document, and the two would
     drift on the day one of them learns a new bound.
+
+    The fourth value is the classification evidence read out of the packet, and
+    it is returned rather than re-derived by ``stage`` for the same reason: it
+    is what ``stage_prescription`` banks for the take's gate re-run, and a
+    second read of the packet could hand the spool verdicts the gate above
+    never saw. ``None`` for the blend class, which has no such bar.
 
     **ONE door for two classes.** The document names its own ``kind`` and that
     is what picks the gate — there is no ``--class`` flag and deliberately no
@@ -167,17 +181,19 @@ def _gate(
     payload = _read_payload(args.prescription)
     document = read_prescription_bytes(payload)
     prescription: BlendPrescription | DriverPrescription | None
+    classifications: tuple[FeatureVerdict, ...] | None = None
     if document.get("kind") == DRIVER_PRESCRIPTION_KIND:
         # The class's own size bound, applied the moment the class is known.
         # `read_prescription_bytes` above has already stopped anything too large
         # to parse, under the family's ceiling and the family's slug — bytes
         # that will not parse have no class to be refused in the name of.
         check_driver_document_size(payload)
+        classifications = packet_feature_classifications(packet)
         prescription = read_driver_prescription(
             document,
             packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=packet_driver_passbands_hz(packet),
-            classifications=packet_feature_classifications(packet),
+            classifications=classifications,
         )
         # `fitted=None` and not an oversight: at propose/stage time this round
         # has not measured, so no per-driver fit exists to merge the document
@@ -214,13 +230,13 @@ def _gate(
     # would crash the process instead of exiting with the contract's refusal
     # code — which would make the seam's own guard the one thing the CLI could
     # not report.
-    return payload, prescription, candidate_fields
+    return payload, prescription, candidate_fields, classifications
 
 
 def _cmd_propose(args: argparse.Namespace) -> int:
     """Read a prescription back through the gate, and say what it becomes."""
     try:
-        payload, prescription, candidate_fields = _gate(args)
+        payload, prescription, candidate_fields, _ = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EVIDENCE_UNREADABLE
@@ -329,7 +345,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         )
         return EXIT_EVIDENCE_UNREADABLE
     try:
-        payload, prescription, candidate_fields = _gate(args)
+        payload, prescription, candidate_fields, classifications = _gate(args)
         ordinal = _next_round_ordinal(args.state)
     except BlendPrescriptionRefused as exc:
         # FIRST. Every exception this handler names is a ``ValueError``
@@ -355,7 +371,12 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         return EXIT_EVIDENCE_UNREADABLE
 
     try:
-        path = stage_prescription(payload, prescription, for_round_ordinal=ordinal)
+        path = stage_prescription(
+            payload,
+            prescription,
+            for_round_ordinal=ordinal,
+            classifications=classifications,
+        )
     except OSError as exc:
         print(f"error: could not stage the prescription: {exc}", file=sys.stderr)
         return EXIT_STAGE_FAILED
