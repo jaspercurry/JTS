@@ -1741,10 +1741,13 @@ shape:
 | `jts_crossover_blend_prescription` | the SUMMED blend region | the round's crossover region | the candidate's `blend_correction` |
 | `jts_crossover_driver_prescription` | ONE driver's own full band | that driver's own declared band | the candidate's `linearization` |
 
-The per-driver class is **cuts only** (a cut removes level and cannot clip; a
-per-driver boost spends the graph's headroom budget, which is a gain-structure
-decision nobody has made) and every cut must be aimed at a feature a banked
-classification typed as a minimum-phase driver **peak**. It needs two pieces of
+The per-driver class carries **both signs**, and every filter must be aimed at
+a feature a banked classification typed as a minimum-phase driver defect of the
+MATCHING sign — a **peak** for a cut, a **dip** for a boost. A boost owes two
+things a cut does not: the vouching verdict must not be `vertical_blind`, and it
+must report a `depth_db` the boost does not exceed. Its cost is maximum SPL
+rather than safety (the graph attenuates before the split), bounded at 5.0 dB by
+a per-role composed budget. It needs two pieces of
 evidence, and they arrive by **different routes** — one flag, one file:
 
 ```sh

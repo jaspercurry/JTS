@@ -7,8 +7,8 @@
 The product register of the classification vocabulary the 2026-08-19 wired
 night produced in the lab.  It is the *verdict format*, not the pipeline: this
 module runs no excess-group-delay test, re-windows nothing, and computes no
-number.  It reads a banked record, types it, and answers one question —
-**is this feature one a cut may be aimed at?**
+number.  It reads a banked record, types it, and answers one question, once
+per sign — **is this feature one a cut (or a boost) may be aimed at?**
 
 **Why a register and not the instrument.**
 ``docs/active-speaker-tuning-layers-design.md``'s stage P3 rule 1 asks that
@@ -41,10 +41,11 @@ record already on disk.  :data:`DEFECT_CUTTABLE` is
 its own words.**  Run-log §9.2: *"``defect-*`` says EQ is not structurally
 barred.  It does NOT say EQ will help."*  Every EQ arm played that night
 measured worse against the frozen reference.  So a caller must read
-:func:`defect_cuttable_at` as a *bar*, never as a recommendation — it removes
-the features a cut is the wrong instrument for (an interference null, a room
-mode) and leaves the ones where a cut is at least the right *kind* of tool.
-Whether it helps is what the round measures afterwards.
+:func:`defect_cuttable_at` and :func:`defect_boostable_at` as *bars*, never as
+recommendations — they remove the features that sign of filter is the wrong
+instrument for (an interference null, a room mode) and leave the ones where it
+is at least the right *kind* of tool.  Whether it helps is what the round
+measures afterwards.
 
 **Fail-closed on every unreadable row.**  A row this module cannot type does
 not become an ``ambiguous`` verdict; it is dropped, so it can never vouch for
@@ -73,6 +74,7 @@ __all__ = [
     "UNRESOLVED",
     "VERDICT_MATCH_TOLERANCE_OCTAVES",
     "FeatureVerdict",
+    "defect_boostable_at",
     "defect_cuttable_at",
     "read_feature_verdicts",
 ]
@@ -213,6 +215,12 @@ class FeatureVerdict:
     #: than enforced, because a filter narrower than its target is a different
     #: (and cheaper) mistake than one wider than it.
     measured_q: float | None
+    #: How far the feature departs from its neighbours, dB, unsigned, when the
+    #: artifact carried one — a DIP's own depth. Optional because the
+    #: 2026-08-19 record does not carry it; a boost bar that needs it refuses
+    #: by name rather than substituting a number (see
+    #: :mod:`.driver_prescription`'s ``driver_feature_depth_unavailable``).
+    depth_db: float | None
     #: The classifier's own disclosure that a horizontal-turntable capture
     #: cannot see vertical-plane interference at all. A verdict carrying it is
     #: not wrong; it is bounded, and a reader that hid the bound would be
@@ -226,6 +234,16 @@ class FeatureVerdict:
         Not "will a cut help" — see this module's docstring and run-log §9.2.
         """
         return self.classification == DEFECT_CUTTABLE
+
+    @property
+    def is_defect_boostable(self) -> bool:
+        """Is a boost at least the right KIND of instrument for this feature?
+
+        The mirror of :attr:`is_defect_cuttable`, and just as insufficient: a
+        boost additionally owes a depth and a vertical-plane sighting, and
+        :mod:`.driver_prescription` is where those are required.
+        """
+        return self.classification == DEFECT_BOOSTABLE
 
     def to_dict(self) -> dict[str, Any]:
         """The verdict as a refusal, a packet block, or a receipt carries it.
@@ -244,6 +262,7 @@ class FeatureVerdict:
             "gate_verdict": self.gate_verdict,
             "confidence": self.confidence,
             "measured_q": self.measured_q,
+            "depth_db": self.depth_db,
             "vertical_blind": self.vertical_blind,
         }
 
@@ -286,7 +305,8 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
                 gate_verdict=_text(entry.get("gate_verdict")),
                 confidence=_text(entry.get("confidence")),
                 measured_q=_finite(entry.get("measured_q")),
-                vertical_blind=entry.get("vertical_blind") is True,
+                depth_db=_finite(entry.get("depth_db")),
+                vertical_blind=_blind(entry.get("vertical_blind")),
             )
         )
     return tuple(out)
@@ -294,6 +314,22 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _blind(value: Any) -> bool:
+    """Vertical-blindness, fail-CLOSED: only a literal ``false`` — or nothing at
+    all — reads as SIGHTED.
+
+    By IDENTITY, not truthiness and not equality. The rows are hand-authored, so
+    ``"true"``, ``1`` and ``"yes"`` are realistic spellings of the flag, and the
+    previous ``is True`` test admitted every one of them as sighted — the one
+    direction that lets a boost through a bound the classifier had declared.
+    ``0`` is read as BLIND for the reason this module refuses coercion
+    everywhere else: ``0 == False`` in Python, so an equality test would quietly
+    accept an integer nobody said was a boolean. A verdict is bounded until it
+    says plainly that it is not.
+    """
+    return value is not False and value is not None
 
 
 def defect_cuttable_at(
@@ -342,6 +378,42 @@ def defect_cuttable_at(
     raising: this function is reachable from a durable artifact and its contract
     is a finding, not an exception.
     """
+    return _vouching_at(verdicts, freq_hz, tolerance_octaves, DEFECT_CUTTABLE)
+
+
+def defect_boostable_at(
+    verdicts: Sequence[FeatureVerdict],
+    freq_hz: float,
+    *,
+    tolerance_octaves: float = VERDICT_MATCH_TOLERANCE_OCTAVES,
+) -> tuple[FeatureVerdict | None, FeatureVerdict | None]:
+    """The verdict that vouches for a BOOST at ``freq_hz``, and the nearest one.
+
+    :func:`defect_cuttable_at` with :data:`DEFECT_BOOSTABLE` as the eligible
+    class, through the same helper so the two cannot drift: nearest verdict
+    inside ``tolerance_octaves`` decides, a tie fails closed away from
+    boostable, and a non-positive or non-finite ``freq_hz`` matches nothing.
+
+    ``vouching`` is necessary and NOT sufficient. A minimum-phase dip is the
+    only feature a boost is structurally the right tool for, and it is still
+    the wrong tool when the classifier could not see the vertical plane or did
+    not report the dip's depth. :mod:`.driver_prescription` requires both.
+    """
+    return _vouching_at(verdicts, freq_hz, tolerance_octaves, DEFECT_BOOSTABLE)
+
+
+def _vouching_at(
+    verdicts: Sequence[FeatureVerdict],
+    freq_hz: float,
+    tolerance_octaves: float,
+    eligible: str,
+) -> tuple[FeatureVerdict | None, FeatureVerdict | None]:
+    """``(vouching, nearest)`` — the ONE nearest-verdict-decides rule.
+
+    One body rather than two, so the cut bar and the boost bar cannot disagree
+    about which verdict owns a frequency. ``eligible`` is the only difference
+    between them, and it is also what the tie-break moves away from.
+    """
     target = _finite(freq_hz)
     if target is None or target <= 0.0 or tolerance_octaves <= 0.0:
         return None, None
@@ -355,9 +427,9 @@ def defect_cuttable_at(
             continue
         if nearest is None or distance < nearest_distance:
             nearest, nearest_distance = verdict, distance
-        elif distance == nearest_distance and nearest.is_defect_cuttable:
-            # The tie-break, and it only ever moves AWAY from cuttable.
+        elif distance == nearest_distance and nearest.classification == eligible:
+            # The tie-break, and it only ever moves AWAY from eligible.
             nearest = verdict
     if nearest is None:
         return None, None
-    return (nearest if nearest.is_defect_cuttable else None), nearest
+    return (nearest if nearest.classification == eligible else None), nearest

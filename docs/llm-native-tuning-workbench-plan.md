@@ -219,8 +219,10 @@ existing owner.
 > ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py))
 > and one driver's own full band
 > ([`crossover_v2/driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py),
-> 2026-08-19). The second is cuts-only and additionally requires a banked
-> minimum-phase classification for every feature it aims at
+> 2026-08-19). The second carries cuts and boosts, and requires a banked
+> minimum-phase classification of the MATCHING SIGN for every feature it aims
+> at — a boost additionally owing a vertical-plane sighting and the dip's own
+> measured depth
 > ([`crossover_v2/feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
 > is the verdict register; nothing in the product produces a verdict yet).
 >
@@ -239,23 +241,26 @@ existing owner.
 > The operator carries the JSON both ways.
 >
 > One boundary the build established rather than assumed, recorded here because
-> it constrains any later tier: **no BOOST has a seam, in either class.** The
-> blend stage refuses a positive gain *and* is deliberately not a term in
+> it constrains any later tier: **a BOOST has a seam in exactly one class.**
+> The blend stage refuses a positive gain *and* is deliberately not a term in
 > `camilla_yaml.total_headroom_db`, so opening it is a gain-structure change
-> rather than a routing one; and a per-driver boost, while the `linearization`
-> seam can physically carry one, spends the graph's finite headroom budget
-> against no delta-probe prediction, which is the same kind of decision.
+> rather than a routing one, and it is still shut (`prescription_route`). The
+> per-driver class was opened by the owner on 2026-08-19 and is gated in
+> `driver_prescription.py`: the `linearization` seam already charges a boost
+> correctly, so what the gate adds is admission — a nearest banked
+> `defect-boostable` verdict that saw the vertical plane and reported its own
+> depth, no deeper than that depth, inside a per-role composed budget that
+> bounds the maximum-SPL spend at 5.0 dB. The cost is max SPL, not safety: the
+> graph attenuates before the split, so a boosted graph is never louder at any
+> frequency than an unboosted one at full scale.
 >
-> The two classes refuse a boost at **different points**, and the difference is
-> deliberate rather than an inconsistency. The blend gate runs every shape and
-> evidence bar first and refuses only at the route — so a prescriber, and an
-> owner deciding whether to fund the seam, learns whether the boost *would* have
-> qualified (`prescription_route`). The driver gate raises at the per-filter
-> bounds, immediately, before a class receipt can be derived from the gains; its
-> route refuses again so the promise holds for a value object built by some
-> other path (`driver_prescription_route`). There is no "would it have
-> qualified" question to answer there, because a per-driver boost's bar is a
-> headroom budget rather than an evidence one.
+> The two classes therefore answer a boost at **different points**, and the
+> difference is deliberate. The blend gate runs every shape and evidence bar
+> first and refuses only at the route, so an owner deciding whether to fund
+> that seam learns whether the boost *would* have qualified. The driver gate
+> admits or refuses on the bar itself, and its route refuses again for a value
+> object built by some other path (`driver_prescription_route`) — the promise
+> is a property of the function, not of the call graph.
 >
 > What that boundary does NOT bar, and did until 2026-08-19: a per-driver CUT.
 > The original wording read the per-driver seam as needing per-branch sweeps a
@@ -1546,11 +1551,13 @@ When implementation begins:
   design/privacy owners.
 
 **The `Last verified:` footer below was deliberately NOT bumped.** It is a
-whole-document claim and this document is mostly unbuilt plan; the pass that
-shipped the per-driver prescription class edited only §5.0's shipped-status
-callout — adding the second prescription class, and correcting a boundary note
-that read the per-driver seam as needing per-branch sweeps (true of a boost,
-false of a cut) and a sentence that said both classes refuse a boost at the same
-point (they do not). Nothing else here was re-read against the code.
+whole-document claim and this document is mostly unbuilt plan; two passes have
+edited only §5.0's shipped-status callout. The first added the second
+prescription class, and corrected a boundary note that read the per-driver seam
+as needing per-branch sweeps (true of a boost, false of a cut) and a sentence
+that said both classes refuse a boost at the same point (they do not). The
+second opened that class's boost route on the owner's 2026-08-19 ruling, which
+falsified the callout's headline claim that no boost has a seam in either class
+— one now does. Nothing else here was re-read against the code.
 
 Last verified: 2026-07-28

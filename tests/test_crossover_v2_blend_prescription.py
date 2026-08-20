@@ -959,7 +959,7 @@ def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
     assert excinfo.value.evidence["bars_cleared"] is True
     assert set(excinfo.value.evidence["blocked_by"]) == {
         "blend_stage_is_not_a_headroom_term",
-        "per_driver_seam_needs_per_branch_evidence",
+        "per_driver_seam_needs_a_banked_defect_boostable_verdict",
     }
 
 

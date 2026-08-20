@@ -303,6 +303,11 @@ PRESCRIPTION_MAX_CUT_Q = 8.0
 #: additionally refused outright by :func:`prescription_route` today, so this
 #: ceiling binds nothing that ships; it is here so the bound is stated rather
 #: than inherited when that route opens.
+#:
+#: **The per-driver class deliberately does NOT share this ceiling.** It is a
+#: ruled divergence rather than drift, and the argument for it lives with the
+#: constant that diverges — see
+#: :data:`~.driver_prescription.DRIVER_MAX_CUT_Q`.
 PRESCRIPTION_MAX_BOOST_Q = BLEND_FILTER_Q
 
 #: Narrowest Q one prescribed filter may use, either class. Below this a
@@ -345,6 +350,11 @@ def max_q_for_gain(gain_db: float) -> float:
 #: boosts silently re-tune what the deterministic solver may cut.
 #:
 #: Tunable by ruling, not by a caller: there is no keyword that widens it.
+#:
+#: **Restated by** :data:`~.driver_prescription.DRIVER_MAX_FILTER_BOOST_DB` on
+#: the same ruling, and pinned equal by
+#: ``tests/test_crossover_v2_driver_prescription.py`` — so a change here is a
+#: change to what BOTH classes may boost, and the pin is what says so out loud.
 PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 
 #: Ceiling on the COMPOSED boost's peak over the region, dB — the same shape as
@@ -358,6 +368,10 @@ PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 #: prescription from consuming a budget the rest of the graph needs. It is the
 #: FIRST of two independent bounds, never the only one — the emitter re-charges
 #: the composed graph's boost at the graph boundary and refuses there too.
+#:
+#: **Restated by** :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB`
+#: and pinned equal. On that seam it is load-bearing rather than latent: it is
+#: the number that bounds a prescribed boost's maximum-SPL spend at 5.0 dB.
 PRESCRIPTION_MAX_TOTAL_BOOST_DB = 4.0
 
 #: How deep a per-position deviation must be to count as "the dip is present
@@ -1480,15 +1494,18 @@ def prescription_route(prescription: BlendPrescription) -> str:
        packet is summed evidence.**
        :attr:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate.linearization`
        carries per-driver boosts to 12 dB, absorbed correctly by
-       ``linearization_headroom_db``. But the fit that fills it is derived from
-       the per-branch MEASURE sweeps, and ``LinearizationRequest`` raises
-       rather than accept a role with no measured response. A summed cloud
-       cannot say how much of a region's deficit belongs to the woofer — that
-       is :mod:`.blend_correction`'s scope tripwire verbatim — and every round
-       in the shipped corpus reports both per-branch verify claims as
-       ``not_evaluated``/``no_per_branch_verify_capture``. Writing a per-driver
-       boost inferred from summed evidence into a FINGERPRINTED field would
-       persist an attribution nothing measured.
+       ``linearization_headroom_db``, and since 2026-08-19
+       :mod:`.driver_prescription` can prescribe into it. Both producers are
+       per-DRIVER: the fit derives from the per-branch MEASURE sweeps
+       (``LinearizationRequest`` raises rather than accept a role with no
+       measured response), and the prescription needs a banked
+       ``defect-boostable`` verdict for the named driver. A summed cloud
+       supplies neither — it cannot say how much of a region's deficit belongs
+       to the woofer, which is :mod:`.blend_correction`'s scope tripwire
+       verbatim, and every round in the shipped corpus reports both per-branch
+       verify claims as ``not_evaluated``/``no_per_branch_verify_capture``.
+       Writing a per-driver boost inferred from summed evidence into a
+       FINGERPRINTED field would persist an attribution nothing measured.
 
     So the refusal is honest rather than conservative: no route exists that
     does not either weaken a pinned invariant or bank an unmeasured claim. The
@@ -1501,13 +1518,16 @@ def prescription_route(prescription: BlendPrescription) -> str:
     _refuse(
         BOOST_ROUTE_UNAVAILABLE,
         "this boost clears every shape and evidence bar, and there is still no "
-        "seam that can carry it: the summed blend stage refuses a positive gain "
-        "and is not a headroom term (opening it is a gain-structure change), and "
-        "the per-driver linearization seam that does carry boosts needs "
-        "per-branch sweeps this summed packet does not contain",
+        "seam THIS class can carry it on: the summed blend stage refuses a "
+        "positive gain and is not a headroom term (opening it is a "
+        "gain-structure change). The per-driver linearization seam does carry "
+        "one, and admits it only against a banked defect-boostable verdict for "
+        "the named driver — evidence a summed packet cannot supply, because it "
+        "cannot say which driver a region's deficit belongs to. Propose it as "
+        "a per-driver prescription against a round that banked one",
         blocked_by=[
             "blend_stage_is_not_a_headroom_term",
-            "per_driver_seam_needs_per_branch_evidence",
+            "per_driver_seam_needs_a_banked_defect_boostable_verdict",
         ],
         bars_cleared=True,
     )
