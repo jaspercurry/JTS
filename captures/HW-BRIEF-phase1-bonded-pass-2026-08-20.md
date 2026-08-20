@@ -151,10 +151,55 @@ narrow-close comment**: grouping is on the ring; pair 6 has one consumer left
 live aloop use on the fleet is jts4 fan-in's usbsink idle-read fallback
 (hardware-absent, errno=19).
 
-## FINALIZE BEFORE HANDOFF (conductor fills after PR-6)
+## Deploy target — FINALIZED
 
-- [ ] Deploy SHA = the sealed stack tip after PR-6 lands.
-- [ ] Any PR-5/PR-6 panel additions to spikes or drills.
-- [ ] Confirm §10.2's numeric bars verbatim against the design at handoff time.
+- **Deploy SHA: `315589bd`** on `claude/loopback-retirement-phase1-survey-7bg0mu`
+  (all six waves sealed 0/0/0: PR-2, PR-3, PR-4, PR-5, PR-6 + PR-0/PR-1 merged
+  to main earlier). Deploy the branch tip, not main.
+- **`captures/` is a TEMPORARY transport commit** carrying the sealed design
+  set + this brief + the campaign record. It is gitignored upstream and MUST
+  be dropped before any merge. It does not ship to the Pi in any harmful way
+  (install.sh rsyncs the checkout), but do not treat it as product.
+- §10.2's numeric bars govern the spikes verbatim — this brief adds the
+  campaign's banked findings, it does not restate or replace them. Read the
+  design's §10.2 alongside this file.
+
+## S0-SYNC CAVEAT — read before running S2/S3
+
+`scripts/s0-sync-bench.sh` and `HANDOFF-distributed-active.md`'s S0-sync
+section characterise the **snd-aloop seam Slice 3 originally shipped on**, not
+the shipped ring seam. Two independent reasons it does not transfer:
+
+1. PR-3 moved the bonded ingress to the grouping ring, so the bench's
+   transport is not the product's.
+2. The bench's MECHANISM cannot exist on the shipped path: `s0-sync-bench.sh:32`
+   has camilla nudge snd-aloop's `PCM Rate Shift` control to hold target_level;
+   a ring PCM is an ioplug, so CamillaDSP finds no mixer element to steer
+   (HANDOFF-distributed-active.md:349). Its PASS evidence ("camilla logs
+   `Capture device supports rate adjust`") is evidence for a mechanism the
+   shipped active-follower no longer has.
+
+The section is now explicitly DATED rather than neutralised, and both of its
+open forward-looking gates (the un-run ≥24 h soak; the clock-topology gate)
+fall inside that dating note. **A ring-seam de-risk is OWED and is not what
+this bench provides.** Do not let a green S0-sync bench stand in for S0's
+actual question (does snapclient negotiate against the ioplug at all).
+
+## Also owed, surfaced by the campaign — not blockers for the pass
+
+- **The five `correction_substream` probe rigs are already silently broken on
+  any ring-armed box** (`aec-probe-pinknoise.sh`, `aec-probe-latency.sh`,
+  `aec-probe-xvf-ref-level.sh`, `aec-probe-timing.py`, `s0-sync-bench.sh`):
+  they `aplay -D correction_substream` unconditionally, writing into a cable
+  with no reader. The product's own path is fine (`correction_play_device()`
+  resolves per spawn). Predates Phase 1; deliberately not fixed here (the
+  resolver is unreachable behind their documented standalone-no-jasper-import
+  exemption). **If you reach for one of these rigs during the pass, it will
+  measure silence and tell you nothing.**
+- `jasper-camilla.service` carries three recorded latent gaps:
+  `StartLimitBurst=5` (the test exemption), `RestartSec=2` exactly ON the ring
+  liveness window, and no `UMask` (it is also the grouping ring's reader end).
+  Latent today — all ring participants run as root. First place to look if the
+  soak produces a camilla EBUSY run.
 
 Last verified: 2026-08-20
