@@ -1300,14 +1300,17 @@ heading: what is absent there is a *guard*, not the capture it guards.
    vertical offsets, the household string-and-protractor method does not
    generalize as stated, and the lab arm's elevation capability is undetermined.
    P2 is the consumer that turns that deferral from tidy-later into blocking.
-3. **The forward model — PRESENT since 2026-08-19; the optimizer — MISSING.**
+3. **The forward model and the optimizer — PRESENT since 2026-08-19; a product
+   consumer — MISSING.**
    The complex-summation predictor is
    [`crossover_v2/forward_model.py`](../jasper/active_speaker/crossover_v2/forward_model.py)
    (`driver_plants` / `branch_operator` / `predict_sum`), with the candidate it
    predicts for, and that candidate's legality, in
    [`crossover_v2/candidate_space.py`](../jasper/active_speaker/crossover_v2/candidate_space.py).
-   Both are pure and fixture-tested; **nothing consumes them yet**, and the
-   enumeration/optimization search still does not exist. Two things the
+   Both are pure and fixture-tested, and the enumeration/optimization search
+   over them landed with #2739 as
+   [`crossover_v2/search.py`](../jasper/active_speaker/crossover_v2/search.py);
+   **nothing in the product consumes that search yet**. Two things the
    predictor's presence does NOT buy, stated here because presence reads as
    readiness: it has no objective in the grade's own currency, and its delay
    axis has never been graded against measurement — so it may not yet rank
@@ -1811,7 +1814,7 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, four times
+**The `Last verified:` footer below was deliberately NOT bumped**, five times
 now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
@@ -1822,7 +1825,10 @@ gave the angle walk a session to take (#2732) recorded the (a)-ruling in
 Stage P2 and trued up that stage's STATUS line, its lead-in, its fourth bullet
 and the per-pose-replay parenthesis below. The pass that opened the per-driver
 class's BOOST route trued up rules 1 and 4, the Stage P3 synopsis above them,
-and the failing-rule count below. Every one of those was a claim the change in
-hand falsified; none verified anything else here.
+and the failing-rule count below. The pass that made a woofer's declared floor
+answerable by the chain (#2760) trued up gap 3's status line and its
+no-consumer claim, which `crossover_v2/search.py` had falsified since #2739.
+Every one of those was a claim the change in hand falsified; none verified
+anything else here.
 
 Last verified: 2026-08-18

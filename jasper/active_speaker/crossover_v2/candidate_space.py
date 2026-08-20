@@ -27,9 +27,12 @@ owners and never restates their arithmetic:
 * the delay lobe, through
   :func:`~jasper.audio_measurement.program_analysis.half_period_us`.
 
-The realizable delay STEP is the one bound this module does not resolve: it is
-a property of the chain being proposed into (#2710), so the caller declares it
-on :attr:`CandidateBounds.delay_step_us` and this file never guesses one.
+Two bounds this module does not resolve, because neither is a declaration
+about a component — each is a property of the CHAIN being proposed into. The
+caller declares both and this file never guesses either: the realizable delay
+STEP (:attr:`CandidateBounds.delay_step_us`, #2710) and the STANDING high-pass
+a branch already carries outside the crossover
+(:attr:`CandidateBounds.standing_highpass_hz_by_role`, #2760).
 
 **Three sources of bound, with a precedence, because they are not the same kind
 of fact.** Adopted from the owner's crossover-design research review; the house
@@ -79,6 +82,15 @@ is saved and surfaces to a household as an ambiguous "could not confirm whether
 the DSP apply finished". A below-floor Fc must therefore never become a
 proposable candidate at all.
 
+Since #2760 the two doors read the same rule against a DIFFERENT number in one
+case, and it is bounded by a caller contract rather than by code. The backstop
+reads the crossover corner alone; this door reads the whole branch, so a
+:attr:`CandidateBounds.standing_highpass_hz_by_role` entry on the role the
+crossover itself protects would admit exactly the candidate the backstop then
+refuses. Nothing structural stops a caller writing one — the field's contract
+below forbids it instead, and the reason that is the right trade is recorded
+there.
+
 Two consequences for how the floor is read here, both non-obvious:
 
 * **The value comes from the same parse, not from a second resolver.** An
@@ -100,6 +112,57 @@ that only ever refuses more than the apply gate would is safe, because the
 backstop still catches everything this door lets through. That asymmetry is
 what makes the slope question below a legitimate future refinement rather than
 a contradiction.
+
+"Looser never" is a rule this file obeys and no longer *proves*, and the
+distinction matters to whoever edits next. Within a candidate it still holds
+absolutely: :func:`_protecting_highpass_hz` compares the candidate's own
+crossover corner whenever it proposes one, so no standing value can rescue a
+corner a candidate actually asks for. What it cannot bound is a caller that
+declares a standing high-pass for the crossover-protected role — see
+:attr:`CandidateBounds.standing_highpass_hz_by_role`, which forbids it in
+prose because the guard that would enforce it needs a protected-role name this
+package publishes no owner for.
+
+**A high-pass the candidate does not propose is still protection (#2760).** A
+two-way crossover gives the LOWER driver a low-pass and never a high-pass, so a
+woofer declaring a 40 Hz protective floor has no crossover corner to compare it
+against. Reading that as "unprotected" refused every candidate in the space —
+1681 of 1681, the incumbent included — the first time a confirmed driver-safety
+profile was supplied, and the session could only proceed by withholding the
+woofer's floor.
+
+The emitted graph disagrees, because the crossover is not the only filter on
+the branch. ``camilla_yaml._driver_baseline_filter_chain`` prepends the
+bass-management high-pass AHEAD of the crossover; a sealed bass-extension
+profile adds a subsonic high-pass; and the crossover-v2 measurement graph emits
+each role's own confirmed ``required_protection_filters`` (through
+:func:`~jasper.active_speaker.branch_chain.confirmed_protection_sections`).
+None of those is a crossover section: no candidate proposes them and no
+candidate can remove them.
+
+Not one of them is unconditional, and they do not stack. The confirmed
+protection sections belong to the MEASUREMENT graph while bass management
+belongs to the applied baseline, and ``camilla_yaml._bass_management_active``
+emits even that one only when the preset carries a local subwoofer; the sealed
+subsonic filter sits far below any floor it would be asked to satisfy. So the
+corner a caller owes is the APPLIED graph's, which in practice means the
+bass-management high-pass — the only one of the three both routinely present
+and high enough to answer a real floor.
+
+This module may not assume that corner exists any more than it may assume it
+does not. The caller declares what its chain actually carries on
+:attr:`CandidateBounds.standing_highpass_hz_by_role`; absent means absent, and
+a driver left genuinely open below its declared floor is refused by the same
+slug as before.
+
+**A standing filter never rescues a corner the candidate itself proposes.**
+When a candidate high-passes a role, THAT corner is the number compared to the
+floor and the standing value is not consulted. This is what keeps the front
+door a superset of the backstop rather than a hole in it: the apply gate reads
+the CROSSOVER corner alone, so crediting a standing filter against a too-low
+proposed corner would admit a candidate the apply door then refuses — after the
+Sound declaration is written, which is the ordering failure this whole pairing
+exists to prevent.
 
 **Slope is NOT part of the floor comparison, and this PR is what makes that
 observable.** The shared predicate compares corner FREQUENCIES only
@@ -146,7 +209,8 @@ record: ``_hz`` frequencies, ``_us`` microseconds, ``_db`` decibels,
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis import half_period_us
@@ -231,6 +295,12 @@ CANDIDATE_REFUSAL_REASONS = frozenset({
 # That declared step is #2710's +/-20.833 us integer-sample alignment on a
 # 48 kHz chain, which is four hundred times coarser and is a real bound.
 _DELAY_STEP_TOLERANCE_US = 0.05
+
+# "This chain high-passes nothing outside its crossover." Shared and immutable
+# so every bounds object that declares no standing protection points at one
+# object nobody can write into — see the field on :class:`CandidateBounds` for
+# why it reaches the dataclass through a factory.
+_NO_STANDING_HIGHPASS: Mapping[str, float] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -332,9 +402,40 @@ class CandidateBounds:
     ``declared_floor_hz_by_role`` is the H1 wall: the minimum recommended
     crossover frequency each role's driver declares. It binds a role's
     HIGH-PASS corners only, which is the physically exact statement — a low-pass
-    corner never exposes a driver below its floor — and it generalizes the
-    corner sweep's two-way ``hf_hard_floor_hz`` without changing it, because in
-    a two-way the single corner IS the HF role's high-pass corner.
+    corner never exposes a driver below its floor.
+
+    Per-role rather than the corner sweep's two-way ``hf_hard_floor_hz``, and
+    that IS a widening rather than a restatement: the sweep compares one floor,
+    the HF role's band edge (``crossover_v2_flow``'s ``hf_hard_floor_hz``), and
+    a per-role map admits floors the sweep never had a term for. #2760 is what
+    that widening cost when the extra floors were compared to the crossover
+    alone — see ``standing_highpass_hz_by_role`` below and the module docstring.
+
+    ``standing_highpass_hz_by_role`` is what the branch ALREADY high-passes at,
+    outside the crossover, on the chain being proposed into — declared by the
+    caller for the same reason ``delay_step_us`` is, and read only for a role
+    the candidate does not high-pass itself. A role with no entry has no
+    standing high-pass; the module docstring enumerates the graph's possible
+    sources for one and why each is conditional, which is why an absent entry
+    must mean absent rather than "probably fine".
+
+    **The graph that counts is the one the candidate will be APPLIED to**, not
+    whichever graph is playing while the search runs: a shortlist measured on
+    the crossover-v2 program graph is applied as a baseline. Which of the
+    graph's standing filters that leaves you declaring, and why the other two
+    are not it, is the module docstring's to say.
+
+    Declare it for the role the chain high-passes OUTSIDE the split — in a
+    two-way that is the woofer, whose branch the emitter high-passes ahead of
+    the crossover and whose floor no candidate can honour. Do NOT declare one
+    for the role the crossover itself protects: the apply gate compares that
+    role's CROSSOVER corner and nothing else, so a standing entry there could
+    only ever admit a candidate the apply door then refuses. That contract is
+    the whole guard, deliberately: enforcing it in code means naming the
+    protected role, which every sibling gate spells as a bare literal because
+    the package publishes no owner for it (``crossover_declaration``'s
+    ``_PROTECTED_ROLE`` comment says exactly that), and adding one more
+    unowned spelling here would cost more than the contract does.
 
     ``beaming_ceiling_hz`` is GUIDANCE and never refuses. #1675 defines the ka
     prior as something to warn on rather than a fence, and on jts3 the ceiling
@@ -359,6 +460,22 @@ class CandidateBounds:
     delay_step_us: float
     gain_db_range: tuple[float, float]
     undeclared_roles: tuple[str, ...]
+    # The CHAIN's standing protection, defaulted empty so a caller that declares
+    # nothing gets exactly the pre-#2760 wall rather than a silent credit.
+    #
+    # ``default_factory`` returning the ONE shared proxy rather than the proxy
+    # itself as a plain default, and the reason is a portability break rather
+    # than style. ``dataclasses`` rejects a default whose
+    # ``__class__.__hash__`` is ``None``, and ``mappingproxy`` only gained a
+    # ``__hash__`` in 3.12 — so this field's plain default raises
+    # ``ValueError: mutable default <class 'mappingproxy'>`` on 3.11 at IMPORT
+    # time (taking every test in the package with it) while passing silently on
+    # 3.12, which is exactly the shape a local run cannot see. Measured on both
+    # interpreters. The factory hands back ``_NO_STANDING_HIGHPASS`` itself, so
+    # identity and immutability are unchanged.
+    standing_highpass_hz_by_role: Mapping[str, float] = field(
+        default_factory=lambda: _NO_STANDING_HIGHPASS,
+    )
     # The MEASURED layer, defaulted absent because it does not exist until a
     # per-driver per-angle capture does. Supplied through
     # ``with_measured_directivity`` rather than by ``bounds_from_declarations``,
@@ -427,6 +544,7 @@ def bounds_from_declarations(
     incumbent_fc_hz: float,
     geometry_seed_us: float,
     delay_step_us: float,
+    standing_highpass_hz_by_role: Mapping[str, float] | None = None,
     gain_db_range: tuple[float, float] = (-30.0, 0.0),
 ) -> CandidateBounds:
     """Resolve every bound from DECLARATIONS, calling each fact's owner.
@@ -461,6 +579,13 @@ def bounds_from_declarations(
     :func:`protection_highpass_floor_satisfied` reads an absent floor as
     satisfied. See the module docstring for why matching the apply layer
     exactly matters more here than being conservative.
+
+    ``standing_highpass_hz_by_role`` is passed through unresolved, exactly like
+    ``delay_step_us``: it is a fact about the CHAIN, not a declaration about a
+    component, and this function's contract is declarations. Resolving it would
+    mean reading the preset's bass-management state from a module whose whole
+    promise is that it reads none — and the caller is the one holding the graph
+    it is proposing into.
 
     The delay window is ``geometry_seed_us`` plus or minus one half-period at
     the incumbent corner — the lobe
@@ -504,6 +629,10 @@ def bounds_from_declarations(
         delay_step_us=float(delay_step_us),
         gain_db_range=(float(gain_db_range[0]), float(gain_db_range[1])),
         undeclared_roles=search.undeclared_roles,
+        standing_highpass_hz_by_role={
+            str(role): float(hz)
+            for role, hz in (standing_highpass_hz_by_role or {}).items()
+        },
     )
 
 
@@ -536,18 +665,20 @@ def strictest_highpass_hz(candidate: XoverCandidate, role: str) -> float | None:
     :func:`~jasper.active_speaker.test_signal_plan.strictest_crossover_highpass_hz`,
     which reads the same quantity off a compiled preset (``max`` of the
     regions whose ``upper_driver`` is this role). Same rule, same ``max``, same
-    ``None`` — because the front door and the emit gate have to be answering
-    one question about one number.
+    ``None`` — the two have to answer one question about one number, and the
+    question is *the crossover's* corner rather than the branch's protection.
 
     ``max`` and not ``min``: cascading high-passes compound, so a role
     high-passed at both 500 Hz and 2000 Hz is protected to 2000. Taking the
     lowest corner would refuse a fully-protected branch for a section that is
     not the one doing the protecting.
 
-    ``None`` means this candidate gives the role NO high-pass at all — the
-    driver would run open in the emitted graph. Against a declared floor the
-    shared predicate reads that as unsatisfied, which is the whole point: a
-    missing corner is the hazard, not the absence of one.
+    ``None`` means this CANDIDATE gives the role no high-pass — not that the
+    role has none, which is a question about the whole branch and is
+    :func:`_protecting_highpass_hz`'s to answer (#2760: a two-way's woofer is
+    never high-passed by the split, yet the chain may high-pass it ahead of
+    one). Do not compare this value to a declared floor directly; reading its
+    ``None`` as "the driver runs open" is the refusal that zeroed a search.
     """
     corners = [
         float(section.fc_hz)
@@ -555,6 +686,38 @@ def strictest_highpass_hz(candidate: XoverCandidate, role: str) -> float | None:
         if section.highpass
     ]
     return max(corners) if corners else None
+
+
+def _protecting_highpass_hz(
+    candidate: XoverCandidate, bounds: CandidateBounds, role: str,
+) -> float | None:
+    """The high-pass corner ``role``'s branch is protected at, or ``None``.
+
+    The candidate's own crossover high-pass when it proposes one, otherwise the
+    standing high-pass the caller declared for that role on the chain. ``None``
+    means nothing high-passes the branch at all — the hazard the floor exists
+    for, and the reading :func:`protection_highpass_floor_satisfied` refuses.
+
+    **The candidate's corner WINS rather than combining with the standing one,
+    and that asymmetry is the safety property.** A ``max`` of the two would be
+    the physically complete answer — cascaded high-passes compound, so a branch
+    carrying both is protected at the higher — but it would also let a standing
+    filter rescue a crossover corner the candidate actively proposes below a
+    declared floor. The apply gate reads the CROSSOVER corner alone, so that
+    candidate would be admitted here and refused there, one durable Sound write
+    too late. Refusing it here is the module docstring's "stricter than the
+    backstop is allowed; looser never is", applied to the one case where the
+    two answers differ.
+
+    So the standing value is consulted only when the crossover says nothing —
+    which is exactly the two-way lower driver #2760 is about, and never the
+    upper driver whose high-pass IS the split.
+    """
+    crossover_hz = strictest_highpass_hz(candidate, role)
+    if crossover_hz is not None:
+        return crossover_hz
+    standing_hz = bounds.standing_highpass_hz_by_role.get(role)
+    return None if standing_hz is None else float(standing_hz)
 
 
 def refusal_for(
@@ -596,6 +759,12 @@ def refusal_for(
     roles: the declaration decides who gets checked, and a candidate cannot opt
     out of a wall by staying silent about the driver it protects.
 
+    What silence does NOT mean is "no filter" — only "no filter this candidate
+    proposes". :func:`_protecting_highpass_hz` is the one number the floor is
+    compared against, and #2760 is what reading a bare crossover corner instead
+    cost: a two-way's woofer is never high-passed by the split, so its declared
+    floor refused the entire space including the incumbent.
+
     Roles are walked in sorted order so a candidate with two violations always
     reports the same one. A refusal that varies with dictionary order is a
     refusal an operator cannot reproduce.
@@ -605,12 +774,17 @@ def refusal_for(
     third outcome and no adjusted candidate.
     """
     # Pass 1 — the safety wall, driven by the DECLARATIONS rather than by the
-    # candidate. Mirrors the emit gate exactly: one strictest corner per role
-    # through the one shared predicate, so "floor declared, no readable corner"
-    # refuses on both doors and "no floor declared" is honoured on both.
+    # candidate: one high-pass per role through the one shared predicate, so
+    # "floor declared, nothing high-passing this role" refuses and "no floor
+    # declared" is honoured, on this door and on the emit gate alike.
+    #
+    # The emit gate compares the CROSSOVER corner and only the tweeter's
+    # (``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``); this
+    # door is per-role, so it also has to know what else high-passes a role.
+    # ``_protecting_highpass_hz`` is that one number.
     for role in sorted(bounds.declared_floor_hz_by_role):
         if not protection_highpass_floor_satisfied(
-            highpass_hz=strictest_highpass_hz(candidate, role),
+            highpass_hz=_protecting_highpass_hz(candidate, bounds, role),
             floor_hz=bounds.declared_floor_hz_by_role.get(role),
         ):
             return FC_REJECT_BELOW_DECLARED_FLOOR
