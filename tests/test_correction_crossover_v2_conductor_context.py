@@ -275,8 +275,9 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     """The W6.5 gate blocker probe: ``resolve_conductor_context`` must resolve
     caps on the proven-HP path with the declaration's sensitivities — the
     reviewer proved the derived ceiling was inert here (context caps
-    {tweeter: -65} vs admission caps {tweeter: -35}; composed CHECK pilot
-    -65.01). Runs the REAL resolver against a REAL confirmed safety profile
+    {tweeter: -65} vs admission caps {tweeter: -35} as the derivation stood
+    then, before the absolute hedge was retired 2026-08-20; composed CHECK
+    pilot -65.01). Runs the REAL resolver against a REAL confirmed safety profile
     plus a declaration-shaped draft, and asserts the context caps EQUAL what
     admission resolves with the same inputs — one derivation, two consumers.
     """
@@ -371,10 +372,12 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
 
     context = v2host.resolve_conductor_context(status)
 
-    # The derived {-8, -35}, not the pre-fix {-8, -65}.
+    # The derived {-8, -33.2}, not the pre-fix {-8, -65}. -33.2 is the
+    # sensitivity arithmetic outright (-8 less the 25.2 dB delta); the
+    # provisional -35 dBFS absolute hedge over it was retired 2026-08-20.
     assert context.driver_caps_dbfs == {
         "woofer": -8.0,
-        "tweeter": pytest.approx(-35.0),
+        "tweeter": pytest.approx(-33.2),
     }
     assert context.declared_sensitivities == {"woofer": 83.3, "tweeter": 108.5}
     assert context.session_volume_db == -20.0
