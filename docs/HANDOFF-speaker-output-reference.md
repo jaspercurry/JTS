@@ -1379,18 +1379,22 @@ rejected — see the "Stage 2a landed" callout above.)
   under a width-agnostic `composite` `/state` block. The Observability section
   below prescribes it and `SinkMode::as_str` defers it as "a separate change",
   so that container is live work — only the `.state` leaf this bullet used to
-  spell is unprescribed. **Real gaps remain, and there are at least three:**
-  the divergence branch logs
-  `event=outputd.dual_apple.delay_diverged` before it bails, but the
-  bad-PCM-state bail beside it does not, and neither do the two child-write
-  bails — a repeated `Ok(0)` ("writei returned 0 frames repeatedly") and the
-  non-`EPIPE` `writei` propagate that a removal takes. `write_dac_fail_closed`
-  carries exactly one `eprintln!` in its whole body, the xrun line, so every
-  other exit from it is silent; `run_alsa` propagates with a bare `?` and
-  `main` logs only config-class errors, so nothing upstream rescues them. All
-  three faults are therefore visible only as the bail message and the restart
-  — this section's "observable" promise is the composite's weakest, not a
-  single missing line. Child-presence gating is the
+  spell is unprescribed. **Real gaps remain, and there are at least four:** the
+  divergence branch logs `event=outputd.dual_apple.delay_diverged` before it
+  bails, and the reprime branches log
+  `event=outputd.dual_apple.reprime`, but four bails are silent — the
+  bad-PCM-state one beside the divergence check; `start_dacs`' group-start
+  refusal ("did not both enter Running state", which is the docstring's "a
+  group start that does not reach `Running`" the next bullet points at); and
+  the two child-write bails, a repeated `Ok(0)` ("writei returned 0 frames
+  repeatedly") and the non-`EPIPE` `writei` propagate that a removal takes.
+  `write_dac_fail_closed` carries exactly one `eprintln!` in its whole body,
+  the xrun line, so every other exit from it is silent, and `start_dacs` has
+  none at all; `run_alsa` propagates with a bare `?` and `main` logs only
+  config-class errors, so nothing upstream rescues them. Those faults are
+  visible only as the bail message and the restart — this section's
+  "observable" promise is the composite's weakest, not a single missing line.
+  Child-presence gating is the
   **reconciler's**, not the unit's: `dual_apple_runtime_mapping`
   (`jasper/output_hardware.py`) refuses unless exactly two child devices with
   PCMs resolve, while the single `ExecCondition` on `jasper-outputd.service`
@@ -2217,10 +2221,10 @@ re-touched since carries forward from its most recent entry below.
   `state.rs`). Rewrote it to the shipped bail → `Restart=on-failure` →
   `StartLimitAction=reboot` path, pointed at the reconcile-to-`single_alsa`
   convergence that actually handles a departed child, and recorded the genuine
-  observability gaps: `write_dac_fail_closed` holds exactly one `eprintln!`, so
-  the bad-PCM-state bail, a repeated `Ok(0)`, and the non-`EPIPE` propagate are
-  all silent, unlike `event=outputd.dual_apple.delay_diverged` beside them.
-  Split the trailing
+  observability gaps: `write_dac_fail_closed` holds exactly one `eprintln!` and
+  `start_dacs` none, so the bad-PCM-state bail, the group-start refusal, a
+  repeated `Ok(0)`, and the non-`EPIPE` propagate are all silent, unlike the
+  divergence and reprime branches beside them. Split the trailing
   gating claim, which was half true — `dual_apple_runtime_mapping` does require
   two child PCMs, but the unit's single `ExecCondition` checks only the one
   resolved `JASPER_AUDIO_DAC_CARD`. **Four corrections from this PR's
@@ -2249,9 +2253,11 @@ re-touched since carries forward from its most recent entry below.
   kernel behaviour no static read settles, which is why the doc now scopes the
   negative to the errno rather than to the scenario. Fourth, this pass's first
   draft also called the bad-PCM-state bail "the one place" the section's
-  observable promise is unmet; it is one of at least three, per the
-  single-`eprintln!` count above — a universal asserted from a verified narrow
-  case, which is the same shape as the other three.
+  observable promise is unmet; it is one of at least four, per the
+  `eprintln!` counts above — a universal asserted from a verified narrow case,
+  which is the same shape as the other three. (The count was hedged to "at
+  least" precisely because an exact enumeration is the failure mode this entry
+  keeps recording; the review then named the fourth, in `start_dacs`.)
   **Nothing else in this pass:** the remaining Resilience
   bullets, the change set, and Observability stand as last verified, which is
   why the footer below still reads 2026-08-15.
