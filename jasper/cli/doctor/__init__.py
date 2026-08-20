@@ -1053,7 +1053,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--probe-aec", action="store_true",
-        help="Active probe — play a brief sine into correction_substream "
+        help="Active probe — play a brief sine into the correction lane "
              "and verify the AEC bridge's `ref` rises in its rms log. "
              "Skips the standard checks and runs only this one test. "
              "Refuses if a renderer is currently playing.",

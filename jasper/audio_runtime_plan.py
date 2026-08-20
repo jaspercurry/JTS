@@ -1722,10 +1722,6 @@ def transport_topology_for_coupling(
                 "chunksize": RING_CAMILLA_CHUNKSIZE,
                 "target_level": RING_CAMILLA_TARGET_LEVEL,
                 "queuelimit": RING_CAMILLA_QUEUELIMIT,
-                # The one-clock ring graph is already DAC-paced by outputd's
-                # blocking read/write chain; the validated chunk-128 PoC ran
-                # rate_adjust off, while the rate_adjust-on Ring A+B lesson
-                # packed the queues and measured ~194 ms.
                 "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
                 "capture_resampler": None,
             },

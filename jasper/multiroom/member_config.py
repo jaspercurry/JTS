@@ -26,9 +26,10 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     ALSA loopback, which HAS a clock to track).
   - ACTIVE FOLLOWER (multi-driver, distributed-active Slice 3): NOT this path.
     An active follower relocates Layer A onto its OWN CamillaDSP IN the bonded
-    path — it captures the round-trip snd-aloop loopback and runs the
-    driver-domain crossover so the tweeter is never fed full-range. That config
-    is emitted by the active-speaker driver-domain emitter and applied by
+    path — it captures the grouping ring
+    (:mod:`jasper.multiroom.grouping_ring`) and runs the driver-domain
+    crossover so the tweeter is never fed full-range. That config is emitted
+    by the active-speaker driver-domain emitter and applied by
     :mod:`jasper.multiroom.follower_config` (the reconciler's active-follower
     arm), not by ``member_camilla_kwargs`` / ``emit_sound_config``. This
     function only governs the leader bake + the dumb-member solo defaults.

@@ -418,8 +418,7 @@ install_jts_ring_platform() {
     # (park_low_memory_build_units, gated on a low-memory box) that runs before
     # this step, so no statement about who is parked here holds on every box.
     # The escalation asymmetry holds in every ordering, which is why it is the
-    # reason recorded. Design §3.4:
-    # captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md.
+    # reason recorded. Grouping-ring design §3.4.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring

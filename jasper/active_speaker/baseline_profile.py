@@ -3435,7 +3435,7 @@ async def _apply_baseline_profile_locked(
     """Apply the saved baseline candidate through the shared DSP transaction.
 
     ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
-    so the reconciler can apply a follower's round-trip-loopback baseline. It
+    so the reconciler can apply a follower's grouping-ring baseline. It
     stays ``None`` by default rather than materialising the tap here, so the
     apply path reaches that function's one device derivation instead of pinning
     the capture half against a sink it does not look at.

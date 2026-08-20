@@ -64,14 +64,6 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
 #   (active Nch DSP rides the ACTIVE ring, not snd-aloop — pair 5 UNALLOCATED)
 #   passive stereo DSP ← outputd_content_*        ← hw:Loopback,0/1,6
-#     ALSO the active-follower grouping round-trip (distributed-active
-#     Slice 3): a bonded active follower's snapclient writes 0,6 and its
-#     CamillaDSP captures 1,6 to run Layer A. Safe to share with the
-#     passive content lane: the two uses are mutually exclusive by hardware
-#     mode — an active follower's outputd is always Composite, reads the
-#     ACTIVE ring, and never opens the passive lane on 6. Why they share a
-#     pair rather than take one each is the allocation owner's argument:
-#     deploy/modprobe.d/snd-aloop.conf.
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
@@ -170,12 +162,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #       is the ONE legal ACTIVE endpoint, so there is no `--endpoint aloop` to
 #       resolve and no way to point a graph back here. Recovery from a parked
 #       roleful box is forward only — re-arm the ring.
-#   6 — outputd post-DSP content lane (Camilla -> outputd, passive box) AND
-#       the active-follower grouping round-trip (snapclient -> the follower's
-#       CamillaDSP; distributed-active Slice 3). Mutually exclusive by hardware
-#       mode — an active follower's outputd is Composite and reads the ACTIVE
-#       ring, so it never opens lane 6. The sharing argument is the allocation
-#       owner's: see deploy/modprobe.d/snd-aloop.conf.
+#   6 — outputd post-DSP content lane (Camilla -> outputd, passive box)
 #   7 — fan-in daemon's summed output → CamillaDSP (its only reader)
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
@@ -235,9 +222,8 @@ pcm.correction_substream {
 # JASPER_OUTPUTD_CONTENT_FORMAT, emitted by jasper-audio-hardware-reconcile).
 # These two stay `type plug` deliberately, unlike the raw active lane above:
 # the plug is open-order grace on a lane whose openers can arrive in either
-# order, and the follower-side snapclient writer keeps its own format
-# adaptation. The slave pin is what makes the lane's width a declaration
-# rather than a race — tests/test_outputd_wiring.py asserts it.
+# order. The slave pin is what makes the lane's width a declaration rather
+# than a race — tests/test_outputd_wiring.py asserts it.
 pcm.outputd_content_playback {
     type plug
     slave {

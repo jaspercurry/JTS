@@ -457,9 +457,7 @@ def snapclient_argv(
 
     PURE: a deterministic function of `cfg` (+ the optional `player_fifo`).
     The host is the loopback when this speaker is the leader (it runs its own
-    server), otherwise the leader's address. The ``--latency`` value is
-    the fixed client PCM/output-path latency compensation, not the group
-    stream buffer.
+    server), otherwise the leader's address.
 
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.

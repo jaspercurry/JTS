@@ -689,8 +689,9 @@ if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
     install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
 fi
 # Forward selected env vars into the remote install.sh (non-empty only).
-# SKIP_RESTART is forwarded for install.sh and this script's own bounded
-# post-install restart policy.
+# SKIP_RESTART rides along with the install env, but install.sh does not read
+# it: its only reader is this script's own bounded post-install restart policy
+# below.
 for key in \
     JASPER_CAPTURE_RELAY_BASE \
     JASPER_CAPTURE_ORIGIN \

@@ -990,8 +990,7 @@ cannot drift from the address-plan owner, and are
 pinned by `tests/test_lib_usb_gadget_advisory.py`.
 
 **Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
-`SKIP_RESTART=1` (install but don't restart/reconcile; forwarded into
-install.sh),
+`SKIP_RESTART=1` (install but don't restart/reconcile),
 `JTS_ACCEPT_NEW_IDENTITY=1` (accept a changed deploy-target peer_id),
 `JASPER_DEPLOY_ALLOW_DOWNGRADE=1` (deploy an older commit deliberately),
 `PI_HOST=...`, `PI_USER=...`, `JASPER_HOSTNAME=...`

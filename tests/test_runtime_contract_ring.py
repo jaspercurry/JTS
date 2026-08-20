@@ -5,7 +5,7 @@
 """Ring (shm_ring) topology-contract citizenship + statefile seeding (P2).
 
 Two P2 contracts:
-  1. topology_supports_shm_ring — ring is solo-stereo-only (not roleful, not
+  1. topology_supports_shm_ring — ring is stereo-only (not roleful, not
      composite; requires an explicit passive stereo layout). This is what the
      multiroom bond prechecks + reconciler consult.
   2. safe_graph_for_current_topology(coupling="shm_ring") re-seeds the RING flat

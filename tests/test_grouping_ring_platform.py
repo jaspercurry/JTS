@@ -482,7 +482,7 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     ``install_jts_ring_platform``'s body, this one scans the whole file, so an
     ``rm -f`` added anywhere in ``ring-platform.sh`` is caught too.
 
-    Design §3.4, ``captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md``.
+    Grouping-ring design §3.4.
     """
     from jasper.ring_assets import (
         RING_A_PROGRAM_FILE,
