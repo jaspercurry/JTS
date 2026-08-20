@@ -5813,6 +5813,13 @@ class CrossoverV2Session:
                 None if self._alignment_prescription is None
                 else self._alignment_prescription.delay_us
             ),
+            # The basin half of the same record. Translated by the record's own
+            # ``polarity_sign`` rather than here, so the candidate's word and the
+            # analysis frame's sign keep the single mapping they already share.
+            explicit_alignment_polarity_sign=(
+                None if self._alignment_prescription is None
+                else self._alignment_prescription.polarity_sign
+            ),
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:

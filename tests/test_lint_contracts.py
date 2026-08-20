@@ -783,7 +783,9 @@ MAX_LINES_BY_PATH = {
     # file learned that it may HOLD a second prescription class, which is a fact
     # about the session, and that its ceiling reader has four ways to have no
     # answer rather than one; it learned nothing about linearization.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_225,
+    # 2026-08-20 basin pin: 13,225 -> 13,232. Argued in the dated block at the
+    # end of this dict, beside the `program_analysis` bump it moves with.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_232,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1268,7 +1270,36 @@ MAX_LINES_BY_PATH = {
     # this repo has already paid for. The cheaper-looking alternative — leave
     # the literal and let the new module restate it — buys this integer back by
     # creating exactly the drift the ratchet is downstream of.
-    "jasper/audio_measurement/program_analysis.py": 7_262,
+    #
+    # 2026-08-20 (basin pin): the `alignment_prescription` session key gained an
+    # optional `polarity`, so a staged round can hold the basin still while it
+    # measures something else. Earned by the 2026-08-19 linearization night,
+    # where three successive stage-1 fits at ONE physical configuration solved
+    # three different (delay, polarity, trim) basins — the measured-best one
+    # (off-axis 2.37 vs 3.10 dB pooled) could not be held, and the round that
+    # re-rolled into the anti-phase basin measured 3.86 on axis and was
+    # auto-rolled back. A two-variable round is not a round.
+    #
+    #  * `crossover_v2_flow` 13,225 -> 13,232. +7, of which 4 execute: the
+    #    conductor hands the record's `polarity_sign` down beside the delay it
+    #    already hands down. Three comment lines say why the word->sign
+    #    translation lives on the record rather than here — a second translation
+    #    site is exactly how the candidate's `keep`/`invert` and the analysis
+    #    frame's `normal`/`inverted` would drift.
+    #  * `program_analysis` 7,262 -> 7,356. +94 net (115 added, 21 replaced), of
+    #    which 30 execute: one prior, one `_build_candidate` kwarg, the selector
+    #    kwarg and its one-line grid narrowing, the low-SNR arm's committed
+    #    sign, one `AlignmentPairSelection` field with the two lines that read
+    #    it, and the basin on two journal lines. The other 64 are prose, and two
+    #    thirds of that is one argument the reviewer should get to see: this
+    #    field makes `polarity_agrees_with_sum` answerable in a NEW way, because
+    #    `_FLAT_SUM_POLARITY_OBJECTIVES` membership had silently meant "both
+    #    polarities were scored" and no longer does. Recording that the
+    #    membership rule is now necessary-but-not-sufficient, at the set, at the
+    #    property, and at the selector, is what stops the next reader restoring
+    #    a `True` that no search produced. Compressing it would keep the number
+    #    flat and leave the trap.
+    "jasper/audio_measurement/program_analysis.py": 7_356,
 }
 
 

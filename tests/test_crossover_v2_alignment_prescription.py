@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_alignment import POLARITY_KEEP
+from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     PRESCRIPTION_MALFORMED,
     PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
+    PRESCRIPTION_POLARITY_INVALID,
     PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_REFUSAL_REASONS,
     AlignmentPrescription,
@@ -68,6 +69,7 @@ from jasper.audio_measurement.program_analysis import (
     _build_candidate,
     _select_alignment_pair,
     half_period_us,
+    polarity_label,
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -359,6 +361,7 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
         (_arm(-450.0, basis_artifacts=[]), FC_HZ),
         (_arm(-450.0), 0.0),
         (_arm(0.0), FC_HZ),
+        (_arm(-450.0, polarity="inverted"), FC_HZ),
     ):
         with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
             _read(body, fc_hz=fc_hz)
@@ -371,6 +374,88 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
     raised.add(excinfo.value.reason)
     assert raised <= PRESCRIPTION_REFUSAL_REASONS
     assert raised == PRESCRIPTION_REFUSAL_REASONS
+
+
+# --------------------------------------------------------------------------- #
+# 2b. the optional basin pin — the field, and the words it admits
+# --------------------------------------------------------------------------- #
+#
+# Why the field exists at all, from the 2026-08-19 linearization night: three
+# successive stage-1 fits at ONE physical configuration solved three different
+# basins — (tweeter +34 µs, keep), (woofer +314 µs, invert), (woofer +314 µs,
+# keep). The second measured best off axis (2.37 vs 3.10 dB pooled) and was
+# kept; the third is the anti-phase notch (3.86 on axis, auto-rolled back). A
+# staged EQ round could not hold the measured-best basin, so a one-variable
+# round was not expressible.
+
+
+@pytest.mark.parametrize(
+    ("word", "sign"), [(POLARITY_KEEP, 1), (POLARITY_INVERT, -1)],
+)
+def test_a_pinned_basin_survives_the_gate_as_a_word_and_a_sign(word, sign):
+    """Both directions: the bug is symmetric, so the pin has to be.
+
+    The word is what a prescriber writes and what the receipt banks; the sign is
+    what the fit searches over. One record owns both so the two cannot drift.
+    """
+    prescription = _read(_arm(-450.0, polarity=word))
+
+    assert prescription.polarity == word
+    assert prescription.polarity_sign == sign
+    # …and the bound is unaffected: pinning a basin is not a delay excursion.
+    assert prescription.residual_us == pytest.approx(-44.3)
+
+
+def test_an_unpinned_prescription_is_the_automatic_path_for_the_polarity():
+    """Absent and explicit ``null`` are one answer, and it is "do not pin"."""
+    assert _read(_arm(-450.0)).polarity is None
+    assert _read(_arm(-450.0)).polarity_sign is None
+    assert _read(_arm(-450.0, polarity=None)).polarity_sign is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        # The measurement frame's words — the likeliest mistake, because the
+        # journal and `analysis_json` both speak them one layer away.
+        "inverted", "normal",
+        # The third polarity ACTION, which a candidate does not admit either.
+        "review",
+        # Shapes an encoder or a hand-edit produces.
+        "flip", "KEEP", "", -1, 1, True,
+        # Unhashable: `x in frozenset` would raise TypeError past every refusal
+        # handler rather than naming a reason.
+        ["keep"], {"polarity": "keep"},
+    ),
+)
+def test_an_unknown_basin_is_refused_by_name_never_ignored(value):
+    """A silently-dropped pin would leave the round measuring a re-rolled basin.
+
+    Under the arm's name, which is the same class of dishonesty the delay half
+    of this gate exists to prevent — so it refuses, and refuses with its OWN
+    reason rather than the generic malformed one, because a misspelled basin
+    sends an operator to the vocabulary and not to the shape.
+    """
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(_arm(-450.0, polarity=value))
+
+    assert excinfo.value.reason == PRESCRIPTION_POLARITY_INVALID
+    assert "keep" in excinfo.value.detail and "invert" in excinfo.value.detail
+
+
+def test_the_pinnable_basins_are_exactly_the_ones_a_candidate_admits():
+    """One vocabulary, pinned as a contract rather than as two literals.
+
+    The gate and
+    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverAlignment`
+    read the two words from the same module, but nothing structural stops one
+    side from later admitting a third. A pin the candidate would refuse is a
+    round that dies ten minutes downstream instead of at the tap.
+    """
+    from jasper.active_speaker import measured_crossover_candidate as mcc
+    from jasper.active_speaker.crossover_v2 import alignment_prescription as ap
+
+    assert ap._PINNABLE_POLARITIES == mcc._POLARITY_VALUES
 
 
 def test_the_presets_declared_window_is_asked_at_the_tap_not_ten_minutes_later():
@@ -539,13 +624,17 @@ def test_the_prescription_is_committed_exactly_not_snapped_to_a_better_neighbour
     assert prescribed.flatness_improvement_db < 0.0
 
 
-def test_the_prescription_leaves_the_polarity_to_the_objective_that_owns_it():
+def test_an_unpinned_prescription_leaves_the_polarity_to_the_objective():
     """Separation of concerns, in one assertion.
 
-    A prescription is about the DELAY. The polarity axis is still searched at
-    that delay, so a seed sign that would command a null is still overridden,
-    and ``polarity_agrees_with_sum`` reports a comparison that really happened
-    rather than ``None``.
+    A prescription that states only a delay is about the DELAY. The polarity
+    axis is still searched at that delay, so a seed sign that would command a
+    null is still overridden, and ``polarity_agrees_with_sum`` reports a
+    comparison that really happened rather than ``None``.
+
+    Scoped to UNPINNED since the basin pin: with one, the axis holds and the
+    section below grades that instead. The name said "the objective that owns
+    it" unqualified, which stopped being the whole story.
     """
     freqs, W, T = _lr4_branches()
     selection = _select_alignment_pair(
@@ -555,6 +644,137 @@ def test_the_prescription_leaves_the_polarity_to_the_objective_that_owns_it():
     assert selection.delay_us == -450.0
     assert selection.polarity_sign == 1
     assert selection.polarity_agrees_with_sum is False
+
+
+@pytest.mark.parametrize("pinned_sign", (1, -1))
+def test_a_pinned_basin_is_the_one_the_fit_solves_in(pinned_sign):
+    """The basin bug, in both directions, at the SOLVE.
+
+    A matched LR4 pair at ``-450 µs`` scores flattest in ``+1``, so the unpinned
+    prescription commits ``+1`` whatever the seed said — that is the fit
+    re-rolling the basin. Pinned, the axis holds the requested sign, and the
+    delay is still exactly the prescribed number: the pin narrows the search, it
+    does not replace it.
+
+    Mutation control: restore ``signs = (1, -1)`` in ``_select_alignment_pair``
+    and the ``-1`` case commits ``+1``, failing here.
+    """
+    freqs, W, T = _lr4_branches()
+    unpinned = _select_alignment_pair(
+        freqs, W, T, **_selector_kwargs(explicit_delay_us=-450.0),
+    )
+    assert unpinned.polarity_sign == 1
+
+    pinned = _select_alignment_pair(
+        freqs, W, T,
+        **_selector_kwargs(
+            explicit_delay_us=-450.0, explicit_polarity_sign=pinned_sign,
+        ),
+    )
+    assert pinned.polarity_sign == pinned_sign
+    assert pinned.delay_us == -450.0
+    # Still a prescription commitment, so the receipt's ``committed`` bit keeps
+    # meaning what it means.
+    assert pinned.objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    assert pinned.objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
+
+
+def test_a_pin_beats_the_seed_the_flat_minimum_would_otherwise_prefer():
+    """The pin is a CONSTRAINT, not a tie-break nudge.
+
+    The flat-minimum epsilon resolves a shallow basin toward the seed's own
+    polarity. Pinned against the seed, that preference has nothing to reach
+    for — the losing sign is not a candidate at all, so a shallow basin cannot
+    quietly return it.
+    """
+    freqs, W, T = _lr4_branches()
+    pinned = _select_alignment_pair(
+        freqs, W, T,
+        **_selector_kwargs(
+            seed_polarity_sign=1, explicit_delay_us=-450.0,
+            explicit_polarity_sign=-1,
+        ),
+    )
+    assert pinned.polarity_sign == -1
+    assert pinned.seed_polarity_sign == 1
+
+
+@pytest.mark.parametrize("pinned_sign", (1, -1))
+def test_a_pinned_round_reports_no_agreement_because_nothing_was_compared(
+    pinned_sign,
+):
+    """The honesty half, and the reason ``polarity_pinned`` is recorded at all.
+
+    ``polarity_agrees_with_sum`` answers "did correlation's polarity survive the
+    flat-sum objective". Under a pin the axis held one value and no comparison
+    ran, so the honest answer is ``None`` — the same answer the low-SNR path
+    already gives. Without this a pin that happened to match the seed would
+    publish ``True``: correlation "confirmed" by a search that never ran.
+    """
+    freqs, W, T = _lr4_branches()
+    pinned = _select_alignment_pair(
+        freqs, W, T,
+        **_selector_kwargs(
+            seed_polarity_sign=pinned_sign,
+            explicit_delay_us=-450.0, explicit_polarity_sign=pinned_sign,
+        ),
+    )
+    assert pinned.polarity_pinned is True
+    assert pinned.polarity_agrees_with_sum is None
+
+
+def test_a_pinned_basin_holds_through_the_low_snr_refusal_too():
+    """That refusal costs the capture's own answers, and a pin is not one.
+
+    An UNPINNED prescription on a refused capture commits declared ``+1``,
+    because polarity is the question the capture was refused for. A pin did not
+    come from this capture any more than the delay did, so the refusal has
+    nothing to say about it — and a round that silently measured ``+1`` under
+    an inverted arm's name is exactly the confound this field removes.
+    """
+    freqs, W, T = _lr4_branches()
+    low_snr = dict(
+        branch_snr_insufficient=True,
+        applied_alignment=AppliedAlignment(delay_us=96.0),
+        explicit_delay_us=-450.0,
+    )
+    unpinned = _select_alignment_pair(freqs, W, T, **_selector_kwargs(**low_snr))
+    assert unpinned.polarity_sign == 1
+    assert unpinned.polarity_pinned is False
+
+    pinned = _select_alignment_pair(
+        freqs, W, T, **_selector_kwargs(**low_snr, explicit_polarity_sign=-1),
+    )
+    assert pinned.polarity_sign == -1
+    assert pinned.delay_us == -450.0
+    assert pinned.objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
+    # The declared-polarity set governs the anchor withdrawal, and the capture
+    # is still refused — so membership is unchanged by the pin.
+    assert pinned.objective in ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
+    assert pinned.polarity_agrees_with_sum is None
+
+
+def test_a_delay_only_prescription_selects_exactly_what_it_selected_before():
+    """The regression pin for tonight's shipped callers (the armrun shape).
+
+    Every prescription in the field today states a delay and no polarity. Its
+    selection must be unchanged in every field — the polarity still searched,
+    the agreement still answered, the delay still exact — so adding the pin
+    cannot have moved a round nobody asked to move.
+    """
+    freqs, W, T = _lr4_branches()
+    kwargs = _selector_kwargs(seed_polarity_sign=-1, explicit_delay_us=-450.0)
+
+    before = _select_alignment_pair(freqs, W, T, **kwargs)
+    explicitly_unpinned = _select_alignment_pair(
+        freqs, W, T, **kwargs, explicit_polarity_sign=None,
+    )
+
+    assert before == explicitly_unpinned
+    assert before.polarity_pinned is False
+    # The two properties a pin would have changed, still answering as they did.
+    assert before.polarity_sign == 1
+    assert before.polarity_agrees_with_sum is False
 
 
 def test_the_prescription_outranks_the_low_snr_ladder():
@@ -718,7 +938,7 @@ def _published_agreement(*, seed_sign: int, prescribed: float | None):
     return candidate
 
 
-def _analyzed(prescribed_us: float | None):
+def _analyzed(prescribed_us: float | None, polarity_sign: int | None = None):
     """A REAL published :class:`ProgramAnalysis`, prescription and all.
 
     Through ``analyze_program_capture`` rather than ``_build_candidate``: the
@@ -749,6 +969,7 @@ def _analyzed(prescribed_us: float | None):
         priors=MeasurementPriors(
             crossover_fc_hz=2000.0,
             explicit_alignment_delay_us=prescribed_us,
+            explicit_alignment_polarity_sign=polarity_sign,
         ),
         geometry=MeasurementGeometry(),
     )
@@ -824,6 +1045,50 @@ def test_an_arm_that_asked_nothing_publishes_none_not_a_false_agreement():
     candidate, _predicted = _low_snr_candidate_at(-450.0)
     assert candidate.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
     assert candidate.polarity_agrees_with_sum is None
+
+
+@pytest.mark.parametrize(
+    ("pinned_sign", "word"), [(1, POLARITY_KEEP), (-1, POLARITY_INVERT)],
+)
+def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
+    pinned_sign, word,
+):
+    """End to end, through the REAL analysis, to the field the graph applies.
+
+    ``_analyzed`` runs ``analyze_program_capture`` on a synthesized capture
+    whose branches are inverted relative to each other, so the automatic answer
+    is a real result rather than a default — and the pin has to survive every
+    hop from the prior to
+    :func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`,
+    which is where the measurement frame's word becomes the candidate's action.
+
+    The prescribed delay rides through unchanged in both cases, which is what
+    makes this a pin on the BASIN rather than on the whole alignment.
+    """
+    analysis = _analyzed(-450.0, polarity_sign=pinned_sign)
+
+    assert analysis.alignment.polarity_sign == pinned_sign
+    assert analysis.alignment.polarity == polarity_label(pinned_sign)
+    # …and the published agreement is honestly absent, one hop from every
+    # durable surface that reads it.
+    assert analysis.alignment.polarity_agrees_with_sum is None
+
+    _magnitude, _role, polarity = alignment_to_candidate_fields(
+        analysis, woofer_role="woofer", tweeter_role="tweeter",
+    )
+    assert polarity == word
+
+
+def test_an_unpinned_analysis_still_solves_its_own_basin():
+    """The control for the pair above, and the regression pin for today.
+
+    Same capture, same prescribed delay, no pin: the objective still answers the
+    polarity question and still publishes an agreement. If the pin had leaked a
+    default into the automatic path, this is what would go ``None``.
+    """
+    analysis = _analyzed(-450.0)
+
+    assert analysis.alignment.polarity_agrees_with_sum is not None
 
 
 def test_a_prescription_that_reaches_no_commitment_says_so_at_warning(caplog):
@@ -909,6 +1174,55 @@ def test_the_selection_event_names_the_prescribed_delay(caplog):
     assert "prescribed_delay_us=null" in automatic_text
 
 
+def test_the_selection_event_names_the_prescribed_basin(caplog):
+    """The deciding value for a basin sweep, on the line that decided it.
+
+    Three states, because two would not separate them: ``null`` when no
+    prescription was made at all (matching its delay sibling, so a non-null
+    value stays greppable as "prescribed"), ``unpinned`` when a prescription
+    left the basin to the objective, and the basin itself when one was pinned.
+
+    Spelled in the analysis frame so the three polarity fields on this ONE line
+    — ``seed_polarity``, ``prescribed_polarity``, ``polarity`` — read in one
+    vocabulary and can be compared by eye. The request's own word (keep/invert)
+    is what the receipt banks, and is asserted where the receipt is.
+    """
+    woofer_ir = np.zeros(8192)
+    tweeter_ir = np.zeros(8192)
+    woofer_ir[1000] = 1.0
+    tweeter_ir[1011] = 1.0
+
+    def _emit(prescribed, polarity_sign):
+        alignment = AlignmentEstimate(
+            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
+            polarity="normal", polarity_sign=1, confidence=0.9,
+            status=ALIGNMENT_OK,
+            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
+        )
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            _build_candidate(
+                woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
+                alignment, None,
+                alignment_delay_bounds_us=(0.0, 1100.0),
+                explicit_alignment_delay_us=prescribed,
+                explicit_alignment_polarity_sign=polarity_sign,
+            )
+        return caplog.text
+
+    assert "prescribed_polarity=null" in _emit(None, None)
+    assert "prescribed_polarity=unpinned" in _emit(-450.0, None)
+
+    inverted = _emit(-450.0, -1)
+    assert "prescribed_polarity=inverted" in inverted
+    # The pin decided the commitment, and the line says so: the agreement is
+    # honestly absent rather than claiming a comparison.
+    assert "polarity=inverted" in inverted
+    assert "polarity_agrees_with_sum=null" in inverted
+
+    assert "prescribed_polarity=normal" in _emit(-450.0, 1)
+
+
 def test_both_prescription_objectives_are_registered_in_the_vocabulary():
     """A commitment nothing can name is a commitment a forensic reader loses."""
     assert ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES <= ALIGNMENT_COMMITMENTS
@@ -963,6 +1277,35 @@ def test_a_session_with_no_prescription_selects_exactly_what_it_selected_before(
 def test_the_prior_defaults_to_absent():
     """A construction site that predates this field runs the automatic path."""
     assert MeasurementPriors().explicit_alignment_delay_us is None
+    assert MeasurementPriors().explicit_alignment_polarity_sign is None
+
+
+def test_a_pinned_basin_survives_a_swept_corner():
+    """``priors.candidate_priors``'s claim, for the basin as for the delay.
+
+    Which basin the drivers sum in is a fact about how they are wired, not
+    about where the corner sits, so an Fc sweep re-points the corner and carries
+    the pin. ``candidate_priors`` is a ``dataclasses.replace``, so this holds
+    structurally — and is pinned because the docstring in
+    :mod:`~jasper.active_speaker.crossover_v2.priors` says it, and a
+    re-spelled constructor there would drop the field with nothing failing.
+    """
+    from jasper.active_speaker.branch_chain import sections_by_role
+    from jasper.active_speaker.crossover_v2 import priors as _priors
+
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    base = MeasurementPriors(
+        crossover_fc_hz=FC_HZ,
+        explicit_alignment_delay_us=-450.0,
+        explicit_alignment_polarity_sign=-1,
+    )
+    swept = _priors.candidate_priors(
+        base, 1847.7, sections_by_role(preset.crossover_regions),
+    )
+
+    assert swept.crossover_fc_hz == 1847.7 != base.crossover_fc_hz
+    assert swept.explicit_alignment_delay_us == -450.0
+    assert swept.explicit_alignment_polarity_sign == -1
 
 
 # --------------------------------------------------------------------------- #
@@ -1125,6 +1468,29 @@ def test_an_adopted_arms_receipt_names_what_its_timing_rests_on():
     # guessing which corner's lobe 44.3 µs cleared.
     assert banked["checked_at_fc_hz"] == pytest.approx(FC_HZ)
     assert banked["lobe_us"] == pytest.approx(half_period_us(FC_HZ))
+    # A delay-only arm banks an explicit "no basin was pinned", which is a
+    # different fact from a receipt written before the field existed.
+    assert banked["polarity"] is None
+
+
+@pytest.mark.parametrize("word", (POLARITY_KEEP, POLARITY_INVERT))
+def test_a_pinned_arms_receipt_banks_the_basin_in_the_operators_own_words(word):
+    """What the round ASKED for, in the vocabulary it was asked in.
+
+    The receipt is the surface a human reads a week later to know why a
+    configuration was kept, and "invert" is the word the bench notes and the
+    candidate's own alignment use. The analysis frame's ``inverted`` lives on
+    the journal line beside the other two polarity fields; the two frames meet
+    at exactly one translation, which
+    ``test_a_pinned_basin_survives_the_gate_as_a_word_and_a_sign`` owns.
+    """
+    prescription = _read(_arm(-450.0, polarity=word), fc_hz=FC_HZ)
+    banked = _round_measurements_for(prescription)["alignment_prescription"]
+
+    assert banked["polarity"] == word
+    # The pin does not change what the arm asked of the timing.
+    assert banked["delay_us"] == -450.0
+    assert banked["committed"] is True
 
 
 @pytest.mark.parametrize(

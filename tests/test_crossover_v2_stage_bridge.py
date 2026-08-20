@@ -748,6 +748,11 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
         # measured against, and the corner is nowhere else in the block.
         "checked_at_fc_hz": pytest.approx(2500.0),
         "lobe_us": pytest.approx(200.0),
+        # The optional basin pin, absent on this delay-only arm — banked as an
+        # explicit ``None`` rather than an absent key so a reader of the receipt
+        # can tell "this round left the basin to the fit" from "this receipt
+        # predates the field".
+        "polarity": None,
     }
 
     # ...and the read half, on a fresh stage-2 conductor.
@@ -762,6 +767,59 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     # The OUTCOME crosses beside the request. Without it the grading stage can
     # bank an arm's provenance for a round that committed the estimator's seed.
     assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
+
+
+def test_a_pinned_basin_crosses_the_same_boundary_and_reaches_the_priors(monkeypatch):
+    """The basin half of the same crossing, through the REAL gate.
+
+    The pin is useless unless it arrives at the fit, and the hop that could
+    silently not be wired is the conductor's own ``_measure_priors`` — a field
+    parsed, banked, and then never handed down would leave every surface saying
+    "invert" while the round re-rolled the basin anyway. So this asserts the
+    PRIOR, which is one hop from the selection that reads it.
+    """
+    prepared = v2host.prepare_v2_session(
+        {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": "invert"}},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    assert conductor.alignment_prescription_record["polarity"] == "invert"
+    priors = conductor._measure_priors()
+    assert priors.explicit_alignment_polarity_sign == -1
+    assert priors.explicit_alignment_delay_us == -450.0
+
+
+def test_an_unpinned_prescription_hands_down_no_basin(monkeypatch):
+    """The control: today's shipped callers must reach the automatic path.
+
+    ``None`` here is what keeps every delay-only arm byte-identical, so it is
+    asserted rather than assumed.
+    """
+    prepared = v2host.prepare_v2_session(
+        {"alignment_prescription": dict(_PRESCRIPTION_BODY)},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+
+    assert conductor._measure_priors().explicit_alignment_polarity_sign is None
+
+
+@pytest.mark.parametrize("value", ("inverted", "review", "flip", -1))
+def test_an_unknown_basin_refuses_the_session_before_it_opens(value):
+    """Fail-closed at the tap, by name — never a silently-dropped pin.
+
+    Same shape as the out-of-lobe refusal beside it: the operator learns at the
+    tap rather than after a ten-minute measurement, and the reason slug is in
+    the message so a scripted sweep can branch on it.
+    """
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"alignment_prescription": {**_PRESCRIPTION_BODY, "polarity": value}},
+            status=_status(), run_async=None, camilla_factory=None,
+        )
+
+    assert "prescription_polarity_invalid" in str(excinfo.value)
 
 
 def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):

@@ -176,6 +176,7 @@ def measure_priors(
     alignment_delay_bounds_us: tuple[float, float] | None,
     applied_alignment: AppliedAlignment | None,
     explicit_alignment_delay_us: float | None,
+    explicit_alignment_polarity_sign: int | None,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 
@@ -221,6 +222,14 @@ def measure_priors(
     swept corner needs: a prescription is a fact about the drivers' physical
     arrival gap, and that gap does not move when the crossover corner does.
 
+    ``explicit_alignment_polarity_sign`` is the same request's OPTIONAL basin
+    pin, and rides every one of those rules — same origin, same boundary, same
+    survival through a swept corner (which basin the drivers sum in is a fact
+    about their wiring, not about the corner).  Its own line is that ``None``
+    here is the ordinary answer even on a prescribed round: pinning the delay is
+    common, pinning the basin is what a round does when it needs to hold the
+    basin still to measure something else.
+
     The three configured-path fields are gated on ``protection_sections_by_role``
     together, and that grouping is load-bearing:
     ``_compose_configured_path_ir`` RAISES on a partial prior set, so a
@@ -235,6 +244,7 @@ def measure_priors(
         alignment_delay_bounds_us=alignment_delay_bounds_us,
         applied_alignment=applied_alignment,
         explicit_alignment_delay_us=explicit_alignment_delay_us,
+        explicit_alignment_polarity_sign=explicit_alignment_polarity_sign,
         ambient_report=ambient_report,
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role

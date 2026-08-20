@@ -4852,9 +4852,13 @@ cross-check that had no production reader before #2598 and now travels in
 `correction.crossover_v2_measure_diag`. A disagreement between correlation and
 the objective is ordinary operation, not a fault. `polarity_agrees_with_sum` is
 `None` — not `False` — on any commitment the flat-sum objective did not make on
-the polarity axis (the low-SNR path and both seed fallbacks): reporting
-disagreement for a comparison that never ran is the same dishonesty this issue
-is about.
+the polarity axis (the low-SNR path, both seed fallbacks, and — since the
+`alignment_prescription` basin pin — any round whose polarity axis the request
+held to one sign): reporting disagreement for a comparison that never ran is
+the same dishonesty this issue is about. That last one is why the selection
+carries `polarity_pinned` at all: a pinned round still commits
+`explicit_prescription_committed`, so the objective alone cannot say whether
+the question was put.
 
 **The household surface.** The objective reaches the review screen through
 `_candidate_summary` → `_candidate_review_payload` → the wizard's

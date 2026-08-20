@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ONE inter-driver delay, prescribed from a named measurement (#2662).
+"""ONE inter-driver delay — and optionally its polarity basin — prescribed from
+a named measurement (#2662).
 
 A sibling of :mod:`.blend_correction`: pure functions, no I/O, no session, and
 the strict reader for one prescription the host hands the machinery.  That
@@ -20,6 +21,22 @@ negatives stand — it is answered by letting a bench measurement *say the
 number*, and then making the ordinary machinery measure and grade that number
 like any other candidate.
 
+**Why the polarity may be pinned too.**  ``polarity`` is OPTIONAL and defaults
+to absent, which is the automatic path: the flat-sum objective solves the
+polarity as it always has.  It exists because delay and polarity are one
+decision with two degenerate answers — invert plus half a period at Fc sums
+almost identically on axis — so a fit re-run at one physical configuration can
+land in a different basin each time.  On 2026-08-19 three successive stage-1
+fits of one speaker solved three: (tweeter +34 µs, keep), (woofer +314 µs,
+invert), and (woofer +314 µs, keep).  The second measured best off axis (2.37
+vs 3.10 dB pooled, on axis unchanged) and was kept; the third is the anti-phase
+notch the first two are not (3.86 on axis, auto-rolled back by the delta
+probe).  A staged round that wants to measure ONE variable — a blend cut, an
+Fc — cannot do so while the basin re-rolls underneath it, so pinning the basin
+is what makes a round single-variable.  It is a constraint on the SOLVE and not
+a stamp on the answer: the trims and the delay re-solve underneath the pinned
+polarity, so the candidate is coherent rather than edited.
+
 **One field, one owner.**  This module produces no second runtime knob.  A
 prescription is a way of COMPUTING the delay that
 :class:`~jasper.audio_measurement.program_analysis.AlignmentEstimate` already
@@ -28,7 +45,12 @@ owns: it is handed down as
 ``_select_alignment_pair`` as that estimate's ``delay_us``, and folded onto the
 candidate by the same
 :func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`
-every automatic round goes through.  Every consumer downstream of that estimate
+every automatic round goes through.  A pinned polarity travels the identical
+route — down as ``MeasurementPriors.explicit_alignment_polarity_sign``,
+committed by the same selection as that estimate's ``polarity_sign``, folded on
+by the same function — for the same reason, and so that the two halves of one
+alignment can never enter by two different doors.  Every consumer downstream of
+that estimate
 — the summed model's residual, the predicted sum the accountability gate
 grades, the commanded delta, the headroom recompute, the emitted graph and its
 ``prove_static_delay_binding`` proof, VERIFY's tracking reference — reads the
@@ -97,6 +119,10 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
+from jasper.active_speaker.crossover_alignment import (
+    POLARITY_INVERT,
+    POLARITY_KEEP,
+)
 from jasper.audio_measurement.program_analysis import half_period_us
 from jasper.log_event import log_event
 
@@ -139,6 +165,12 @@ PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: about a number the request could have been refused for at the tap. Its own
 #: reason, never that screen's.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
+#: A ``polarity`` that is neither of the two words the candidate's own alignment
+#: speaks. Its own reason rather than :data:`PRESCRIPTION_MALFORMED`, because a
+#: misspelled basin ("inverted", "flip", "-1") is the one shape an operator
+#: walking a basin sweep will actually type, and the refusal has to send them to
+#: the vocabulary rather than to the shape.
+PRESCRIPTION_POLARITY_INVALID = "prescription_polarity_invalid"
 PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_MALFORMED,
     PRESCRIPTION_DELAY_INVALID,
@@ -147,6 +179,7 @@ PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_FC_UNKNOWN,
     PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
+    PRESCRIPTION_POLARITY_INVALID,
 })
 
 #: The field names a prescription may carry.  Anything else is refused rather
@@ -158,6 +191,9 @@ _PRESCRIPTION_FIELDS = frozenset({
     "basis_delay_us",
     "basis_artifacts",
     "basis_note",
+    # Optional, and the one field here that pins something OTHER than the
+    # timing. Absent is the automatic path.
+    "polarity",
     # Written BY the gate, not supplied to it — but accepted on the way back in
     # so a durable block round-trips through the same parser rather than
     # needing a second, laxer one. A request that supplies them is harmless:
@@ -203,12 +239,26 @@ class AlignmentPrescription:
     count, a method) and is optional — it is what a reader wants and not
     something a validator can meaningfully check, so requiring it would buy
     ceremony rather than trust.
+
+    ``polarity`` is the OPTIONAL basin pin, in the candidate's own vocabulary
+    (:data:`~jasper.active_speaker.crossover_alignment.POLARITY_KEEP` /
+    ``POLARITY_INVERT``) rather than the measurement frame's ``normal`` /
+    ``inverted``, because a prescriber writes what the speaker should DO with
+    the region's persisted polarity — the same thing
+    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverAlignment`
+    means by the word.  Both admit exactly the two ACTIONS and not
+    ``POLARITY_REVIEW`` — "surface it, do not auto-decide" is not a basin a round
+    can be pinned to — and both read the two names from the one module that
+    declares them, with ``tests/test_crossover_v2_alignment_prescription.py``
+    pinning the two sets equal.  ``None`` leaves the polarity to the objective
+    that owns it.
     """
 
     delay_us: float
     basis_delay_us: float
     basis_artifacts: tuple[str, ...]
     basis_note: str = ""
+    polarity: str | None = None
     #: The corner the bound was evaluated at, and the lobe it produced.  Filled
     #: by :func:`read_alignment_prescription` after the bound passes, so a
     #: receipt states not only the residual but WHAT IT WAS COMPARED AGAINST —
@@ -219,6 +269,21 @@ class AlignmentPrescription:
     #: pre-#2662 block, or a hand-built one).
     checked_at_fc_hz: float | None = None
     lobe_us: float | None = None
+
+    @property
+    def polarity_sign(self) -> int | None:
+        """The pin in the MEASUREMENT frame, or ``None`` when unpinned.
+
+        The one place the candidate's action word becomes the sign
+        :func:`~jasper.audio_measurement.program_analysis._select_alignment_pair`
+        searches over, mirroring
+        :func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`
+        on the way back out. Kept here rather than at the hand-down site because
+        the module that owns the word owns its translation.
+        """
+        if self.polarity is None:
+            return None
+        return -1 if self.polarity == POLARITY_INVERT else 1
 
     @property
     def residual_us(self) -> float:
@@ -238,6 +303,7 @@ class AlignmentPrescription:
             "residual_us": self.residual_us,
             "basis_artifacts": list(self.basis_artifacts),
             "basis_note": self.basis_note,
+            "polarity": self.polarity,
             "checked_at_fc_hz": self.checked_at_fc_hz,
             "lobe_us": self.lobe_us,
         }
@@ -312,9 +378,38 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
         basis_delay_us=basis_delay_us,
         basis_artifacts=artifacts,
         basis_note=note,
+        polarity=_read_polarity(raw.get("polarity")),
         checked_at_fc_hz=_optional_number(raw.get("checked_at_fc_hz")),
         lobe_us=_optional_number(raw.get("lobe_us")),
     )
+
+
+#: The basins a round may be pinned to: the candidate's two polarity ACTIONS.
+#: Derived from the module that declares the words rather than restating them,
+#: and deliberately without ``POLARITY_REVIEW`` — see
+#: :class:`AlignmentPrescription`'s docstring.
+_PINNABLE_POLARITIES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
+
+
+def _read_polarity(value: Any) -> str | None:
+    """The optional basin pin, strictly, or ``None`` for the automatic path.
+
+    ``None`` and absent are one answer here, unlike ``delay_us``: a prescription
+    that omits the field is not making a claim about polarity, and an explicit
+    ``null`` is the same non-claim spelled by a JSON encoder.
+    """
+    if value is None:
+        return None
+    # ``isinstance`` before membership, and not merely for tidiness: a JSON list
+    # is unhashable, so ``value in frozenset`` would raise TypeError past every
+    # refusal handler instead of naming the reason.
+    if not isinstance(value, str) or value not in _PINNABLE_POLARITIES:
+        raise AlignmentPrescriptionRefused(
+            PRESCRIPTION_POLARITY_INVALID,
+            f"polarity must be one of {sorted(_PINNABLE_POLARITIES)} or absent, "
+            f"got {value!r}",
+        )
+    return value
 
 
 def _optional_number(value: Any) -> float | None:
