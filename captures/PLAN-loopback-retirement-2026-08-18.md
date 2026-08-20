@@ -1096,3 +1096,39 @@ Branch rebased onto current origin/main at this seal. Post-rebase object
 map: PR-2=a0cc0e70 (+fix 5aa081c7), PR-3 flip=6bf8e03d, unit+T7=5337f1b2,
 EG-4=e3c57a29, installer=56b063ce, fix=face7e5d+9091cdcc, micro=dff65539;
 the reviewed pre-rebase range 256fd79..f782d3e0 is historical.
+
+### 2026-08-20 — **PR-4 SEALED 0/0/0** (single gate, three rounds; builder
+Sonnet). Reviewed range 80c0d485..712345e9. Round 1 on 54ab1fa2 (0B/3SF/3N)
+found THE finding of the wave: the version record lived in tmpfs and the
+reconciler's every-pass call rewrites it empty post-reboot — the gate's
+seven-step lifecycle walk proved the drift warn structurally dead after the
+first reboot and FALSE-OK on a same-boot upgrade; its Fix A (probe
+`snapclient --version` live in the doctor check, delete the entire
+provision-side record path) was adjudicated and landed as 66be5986,
+SHRINKING the PR (provision.py's executable code returned byte-identical to
+pre-PR-4; only VALIDATED_SNAPCAST_VERSION + two trued docstrings remain).
+Round 2 (0B/2SF/0N) caught the recast dropping the returncode guard — a
+demonstrated rc=127 broken-lib scenario fabricated a version warn — and the
+untested except limb; round 3 landed the three-limb idiom (non-zero exit →
+ok-skip surfacing the process's own error), anti-fabrication pin ("differs
+from" NOT in detail), except-limb pin, and the stdout-before-stderr order
+pin; the gate re-killed its two surviving mutations (N6/N7) plus the new
+guard drop, each a narrow one-test kill. Final accounting: 4 files, +85
+production / +138 tests / 0 docs; no new file/module/abstraction/import.
+DESIGN ERRATUM #7 recorded (errata doc): §8.1/T-9's record-compare framing
+inherited ring_wire_caps_ready's shape whose justifying properties (durable
+record, per-pass re-derivation) don't transfer; the probe belongs at the
+verification surface. SF-3 fixed a PRE-EXISTING false claim at both its
+instances (ensure_snapcast_installed runs on every active reconcile pass;
+the missing-binaries gate is the function's own short-circuit). NEW TRAP
+MINTED: the venv's editable install uses a sys.meta_path finder hardcoding
+/home/user/JTS — an "isolated" export run silently tests the LIVE tree
+unless the finder is stripped and `jasper.__file__` is hard-asserted under
+the export before any test runs (the gate's harness does both; every future
+isolated probe must). HW-PASS ITEM banked: snapclient is not installed in
+this container, so the real binary's exit code/stream/text are unverified —
+one `sudo /opt/jasper/.venv/bin/jasper-doctor | grep 'snapcast version'` on
+the fleet settles it (low consequence by construction: any surprise
+degrades to an honest ok-skip naming what happened). Branch rebased onto
+current origin/main at this seal; post-rebase map appended below after the
+rebase.

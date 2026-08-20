@@ -91,4 +91,25 @@ clamp :3839-3843 — signature byte-identical, so T-8b's TypeError kill
 holds); graph_carrier.py:414 → :440; setup_status.py grouping_allowed sites
 → :719/:836/:1210.
 
-Last verified: 2026-08-19
+## 7. §8.1 / T-9 — the record-compare framing doesn't survive its own
+precedent (found and resolved in PR-4's gate rounds)
+
+§8.1's "probe and record" and T-9's "the provision version record is written
+and surfaced" inherited `ring_wire_caps_ready`'s record-compare shape — but
+both properties that justify that precedent are absent here: the ring's
+record is durable (/var/lib, installer-written) and re-derived against the
+live artifact on every pass; the provision status file is tmpfs (/run) and
+is REWRITTEN EMPTY by the reconciler's every-pass call after any reboot
+(reconcile.py's bare `if active:` — the "binaries are missing" gate lives
+inside the function, not at the caller). The gate's lifecycle walk showed
+the drift warn structurally dead after the first reboot and affirmatively
+FALSE-OK on a same-boot upgrade. Executed shape (PR-4, sealed 0/0/0): the
+doctor check probes `snapclient --version` live — bounded, fail-soft, five
+ok-skip branches including non-zero exit with the process's own error
+surfaced in the detail — and compares against VALIDATED_SNAPCAST_VERSION
+(one owner, provision.py). No record exists; §8.1's probe-not-pin intent is
+served at the verification surface, and production ended SMALLER than the
+record version. T-9's intent (warn on mismatch, ok on match) is unchanged;
+only its "record" vehicle is retired.
+
+Last verified: 2026-08-20
