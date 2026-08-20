@@ -209,6 +209,9 @@ from jasper.active_speaker.crossover_v2.intervention import (
 from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
     GROUP_PHASES,
+    LATERAL_CONSUMER_FC_SELECTOR,
+    LATERAL_CONSUMER_FORWARD_MODEL,
+    LATERAL_CONSUMERS,
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOSING,
@@ -222,6 +225,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
+    lateral_adjudicates,
+    validated_lateral_consumer,
 )
 from jasper.active_speaker.fc_selector import (
     FcCandidateEvaluation,
@@ -1048,17 +1053,28 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
     return _walk_shape(cloud_walk_reach_cm(positions), post_apply=post_apply)
 
 
-def walk_shape_for(*, cloud_positions: int, lateral: bool) -> str:
+def walk_shape_for(
+    *,
+    cloud_positions: int,
+    lateral: bool,
+    lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+) -> str:
     """The orientation sentence for a stage-1 session's ACTUAL groups (R16).
 
     One sentence for whichever groups run, quoting the FURTHEST reach of any of
     them — a household needs to know how much room the whole session wants, and
     two sentences quoting two ceilings would just make them pick one.
+
+    ``lateral_prompts`` is the walk actually taken (default: the ratified
+    table). A taken angle walk can reach far past 40 cm — a ±45° stop is a metre
+    off a 1 m mark — and quoting 40 cm at a household about to be walked past it
+    is this sentence's own dishonesty.
     """
     reach = max(
         cloud_walk_reach_cm(cloud_positions) if cloud_positions else 0.0,
         (
-            cloud_walk_reach_cm_of(LATERAL_POSE_PROMPTS) if lateral else 0.0
+            cloud_walk_reach_cm_of(lateral_prompts or LATERAL_POSE_PROMPTS)
+            if lateral else 0.0
         ),
     )
     return _walk_shape(reach)
@@ -1790,6 +1806,7 @@ def build_v2_cloud_index_phase_map(
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
+    lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> dict[int, str]:
     """Capture-plan index → session phase for a STAGE-1 (measure) session.
 
@@ -1826,6 +1843,10 @@ def build_v2_cloud_index_phase_map(
     Single source of truth: ``build_v2_capture_plan`` builds its entries from
     this same function, so an entry's prompt can never address a different
     phase than the session believes it is running.
+
+    ``lateral_prompts`` is the walk's own table — L is its length — threaded
+    rather than read from the module so a taken angle walk and this map cannot
+    disagree about how many captures it is. ``None`` is the shipped table.
     """
     shape = _shape_from_kwargs(
         plan_shape,
@@ -1834,12 +1855,13 @@ def build_v2_cloud_index_phase_map(
         cloud_verify_positions=cloud_verify_positions,
     )
     n = shape.cloud_measure_positions
+    lateral_table = lateral_prompts or LATERAL_POSE_PROMPTS
     mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
     nxt = 3
     if include_lateral:
-        for offset in range(len(LATERAL_POSE_PROMPTS)):
+        for offset in range(len(lateral_table)):
             mapping[nxt + offset] = PHASE_LATERAL
-        nxt += len(LATERAL_POSE_PROMPTS)
+        nxt += len(lateral_table)
     if include_cloud_measure:
         for offset in range(n - 1):
             mapping[nxt + offset] = PHASE_CLOUD_MEASURE
@@ -4977,6 +4999,8 @@ class CrossoverV2Session:
         alignment_prescription: "AlignmentPrescription | None" = None,
         blend_prescription: "BlendPrescription | None" = None,
         blend_prescription_sha256: str = "",
+        lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
+        lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -5148,9 +5172,24 @@ class CrossoverV2Session:
         # is one summed curve — putting the two in one list would give the
         # combiner an input it cannot combine. Idempotent per index exactly like
         # ``_group_positions``: a retake replaces its pose. Bounded by
-        # ``LATERAL_POSE_PROMPTS``; each pose holds two curves on the fixed
+        # ``self._lateral_prompts``; each pose holds two curves on the fixed
         # ~120-point basis, so the whole walk is a few thousand complex values.
         self._lateral_poses: list[LateralPose] = []
+        # WHO this session's lateral group is FOR, and the ONE table it walks.
+        # The defaults reproduce the shipped session exactly. The pair is judged
+        # by its vocabulary's own owner (fail-closed, and why, at
+        # ``validated_lateral_consumer``); restated here as the flow's error so
+        # constructing a session refuses in one vocabulary.
+        try:
+            self._lateral_consumer = validated_lateral_consumer(
+                lateral_consumer, states_own_poses=lateral_prompts is not None,
+            )
+        except ValueError as exc:
+            raise CrossoverV2FlowError(str(exc)) from exc
+        self._lateral_prompts: tuple[CloudPositionPrompt, ...] = (
+            tuple(lateral_prompts) if lateral_prompts is not None
+            else LATERAL_POSE_PROMPTS
+        )
         # WO-1: the per-position evidence metadata handed to the retention
         # seam, kept by position id so the group close can serialize the
         # members alongside the aggregate (attribution plan §6 / §11.1 A7).
@@ -6479,10 +6518,12 @@ class CrossoverV2Session:
             position = offsets.index(index)
         except ValueError:
             position = 0
-        # R16: the lateral walk has its own (derived) table and its own length.
-        # Same front-loading rule, same builder enumeration order.
+        # R16: the lateral walk has its own table and its own length. Same
+        # front-loading rule, same builder enumeration order. The SESSION's
+        # table, never the module constant, so the prompt banked with a pose is
+        # the prompt that pose was captured at.
         table = (
-            LATERAL_POSE_PROMPTS if phase == PHASE_LATERAL
+            self._lateral_prompts if phase == PHASE_LATERAL
             else CLOUD_POSITION_PROMPTS
         )
         if position < len(table):
@@ -6884,10 +6925,15 @@ class CrossoverV2Session:
             # 8 banked rounds reached with the walk on. Re-arming the walk
             # (``STAGE1_INCLUDES_LATERAL``) re-arms the sweep with it; that
             # flag's comment carries why the pause sits on the walk.
-            if verdict.accepted and PHASE_LATERAL in self._journey.plan.phases:
+            #
+            # An EVIDENCE walk is a lateral group whose close never adjudicates,
+            # so ``_adjudicating_walk`` — not the phase alone — is the question:
+            # arming the sweep for one would build the barred statistic's inputs
+            # for a walk with nothing to spend them at.
+            if verdict.accepted and self._adjudicating_walk:
                 self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
-            verdict = self._consume_lateral_pose(index, attempt, analysis)
+            verdict = self._consume_lateral_pose(index, attempt, analysis, result)
         elif phase in GROUP_PHASES:
             verdict = self._consume_cloud_position(
                 phase, index, attempt, analysis, result
@@ -7551,7 +7597,13 @@ class CrossoverV2Session:
         # that predates five minutes of evidence the household was just asked to
         # produce — the exact defect the 2026-07-27 decision removed for the
         # cloud. The lateral group's last accepted pose closes it instead.
-        if PHASE_CLOUD_MEASURE in self._journey.plan.phases or PHASE_LATERAL in self._journey.plan.phases:
+        #
+        # **That reason is false of an EVIDENCE walk.** "The walk is the fit's
+        # input" is not true of one feeding an offline model, and deferring for
+        # it would leave the household waiting on a candidate only
+        # ``_close_lateral_walk`` publishes — the method such a walk never
+        # reaches. It publishes on the no-walk branch below instead.
+        if PHASE_CLOUD_MEASURE in self._journey.plan.phases or self._adjudicating_walk:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
         # The no-deferral shape — and since the 2026-08-18 lateral pause it is
@@ -7597,8 +7649,23 @@ class CrossoverV2Session:
             phase, min_resolved_cloud_positions=MIN_RESOLVED_CLOUD_POSITIONS,
         )
 
+    @property
+    def _adjudicating_walk(self) -> bool:
+        """Does this session run a lateral group that READS ITSELF as a whole?
+
+        Both halves in one predicate, because every reader wants both and a
+        reader that checked only the phase is exactly the bug this guards:
+        :func:`~jasper.active_speaker.crossover_v2.journey.lateral_adjudicates`
+        over the consumer this session was built with. ``False`` on an evidence
+        walk — same program, same poses, same retention, none of the reading.
+        """
+        return (
+            PHASE_LATERAL in self._journey.plan.phases
+            and lateral_adjudicates(self._lateral_consumer)
+        )
+
     def _consume_lateral_pose(
-        self, index: int, attempt: int, analysis: ProgramAnalysis,
+        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
         """One pose of the R16 lateral walk (plan §4.4).
 
@@ -7658,6 +7725,7 @@ class CrossoverV2Session:
             attempt=attempt, offset_cm=pose.offset_cm, position_role=pose.role,
             at_mark=pose.at_mark, curves=len(pose.curves),
         )
+        self._retain_lateral_pose(pose, prompt, result)
         # ONE critical section for retain + close, exactly as the cloud's
         # position verdict takes: the candidate build reads the whole walk, and
         # a retain that landed half-way through it would fit a session that
@@ -7671,6 +7739,33 @@ class CrossoverV2Session:
             if self._journey.plan.is_last_index_of_group(PHASE_LATERAL, index):
                 payload.update(self._close_lateral_walk())
             return PhaseVerdict(True, payload=payload)
+
+    def _retain_lateral_pose(
+        self, pose: LateralPose, prompt: CloudPositionPrompt, result: Any,
+    ) -> None:
+        """Bank one accepted pose's RAW capture, through :meth:`_hand_to_retention`.
+
+        Until this existed a pose was retained in MEMORY only — two curves,
+        nothing on disk. Survivable while every consumer was in-session; not
+        survivable for an OFFLINE forward model, which needs the WAV and the
+        bearing it was taken at, months later. No branch on consumer, so an
+        un-paused selector walk's poses land in the same shape an evidence
+        walk's do. ``prompt`` is the one the operator was ACTUALLY shown,
+        threaded in for :meth:`_prompt_shown_for`'s reason: a sidecar naming a
+        spot they were told to abandon is worse than none. Called outside
+        ``_close_lock``, unlike the cloud's retention, because nothing written
+        here is read by a close.
+        """
+        self._hand_to_retention(
+            pose.pose_id, PHASE_LATERAL, result,
+            _spatial.lateral_pose_record(
+                pose,
+                position_deg=position_angle_deg(prompt),
+                lateral_consumer=self._lateral_consumer,
+                session_id=self.session_id,
+                wav_sha256=_capture_wav_sha256(result),
+            ),
+        )
 
     def _close_lateral_walk(self) -> dict[str, Any]:
         """Build the candidate the household reviews, once the walk is done.
@@ -7691,7 +7786,26 @@ class CrossoverV2Session:
 
         A walk where nothing was captured still closes: the anchor already owns
         the coefficients (see :meth:`_group_position_floor`).
+
+        **An EVIDENCE walk closes nothing, and this is the ONE place that is
+        decided** — not at each of the two routes in (an accepted last pose, a
+        settled one), which would be two branches to keep in step and a third
+        route away from a gap. Its candidate was published at MEASURE, and
+        everything below is the adjudication #2711 bars. Suppressed by name, not
+        by silence: "did not run" has to be a positive journal statement.
         """
+        if not self._adjudicating_walk:
+            log_event(
+                logger, "correction.crossover_v2_lateral_close_suppressed",
+                session_id=self.session_id,
+                reason=f"lateral_consumer_{self._lateral_consumer}",
+                planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
+                captured=len(self._lateral_poses),
+                mark_return_drift_db=self.lateral_mark_return_drift_db(),
+                fc_adjudication="suppressed",
+                fc_statistic_paused=True,
+            )
+            return {}
         if self._measure_analysis is None:
             raise CrossoverV2FlowError(
                 "lateral walk closed with no retained MEASURE analysis"
@@ -8003,19 +8117,34 @@ class CrossoverV2Session:
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
         ] = metadata
+        self._hand_to_retention(position.position_id, phase, result, metadata)
+
+    def _hand_to_retention(
+        self, take_id: str, phase: str, result: Any, metadata: Mapping[str, Any],
+    ) -> bool:
+        """Hand one accepted take's bytes to the evidence seam. ONE boundary.
+
+        Three kinds of take are retained — a cloud position, an R16 lateral
+        pose, and #2291's entry baseline — and the boundary is the same fact
+        about all three rather than three agreeing copies of it: no seam bound
+        is not an error, and a bound seam that fails is forensics lost, never a
+        gate. A full disk must not turn an acoustically-good capture into a
+        retake. Returns whether the bytes were stored, which is what lets the
+        entry baseline record an artifact reference only when there is one.
+        """
         if self._seams.retain_position is None:
-            return
+            return False
         try:
-            self._seams.retain_position(position.position_id, result, metadata)
+            self._seams.retain_position(take_id, result, metadata)
         except (OSError, RuntimeError, TypeError, ValueError):
-            # Evidence retention is forensics, never a gate: a full disk must
-            # not turn an acoustically-good position into a retake.
             log_event(
                 logger, "correction.crossover_v2_position_retain_failed",
                 level=logging.WARNING,
                 session_id=self.session_id, phase=phase,
-                position_id=position.position_id, exc_info=True,
+                position_id=take_id, exc_info=True,
             )
+            return False
+        return True
 
     def _close_cloud_group(
         self, phase: str, position: _CloudPosition | None
@@ -9665,19 +9794,10 @@ class CrossoverV2Session:
             wav_sha256=_capture_wav_sha256(result),
         )
         take_id = str(metadata["take_id"])
-        artifact_ref = ""
-        if self._seams.retain_position is not None:
-            try:
-                self._seams.retain_position(take_id, result, metadata)
-            except (OSError, RuntimeError, TypeError, ValueError):
-                log_event(
-                    logger, "correction.crossover_v2_position_retain_failed",
-                    level=logging.WARNING,
-                    session_id=self.session_id, phase=PHASE_ENTRY_BASELINE,
-                    position_id=take_id, exc_info=True,
-                )
-            else:
-                artifact_ref = take_id
+        stored = self._hand_to_retention(
+            take_id, PHASE_ENTRY_BASELINE, result, metadata,
+        )
+        artifact_ref = take_id if stored else ""
         from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
         self._measure_entry_baseline = EntryBaseline.from_measurement(
@@ -11774,6 +11894,7 @@ def build_v2_capture_plan(
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
+    lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan (§5.7 + flat-linearization PR-3b).
 
@@ -11857,6 +11978,7 @@ def build_v2_capture_plan(
         include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
+        lateral_prompts=lateral_prompts,
     )
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
@@ -11957,8 +12079,9 @@ def build_v2_capture_plan(
     lateral_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
     ]
+    lateral_table = lateral_prompts or LATERAL_POSE_PROMPTS
     for offset, capture_index in enumerate(lateral_indexes):
-        prompt = _positioned_prompt(LATERAL_POSE_PROMPTS[offset], shape)
+        prompt = _positioned_prompt(lateral_table[offset], shape)
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
@@ -12524,6 +12647,7 @@ def build_v2_session_spec(
     include_cloud_measure: bool = True,
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
+    lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
     """One relay v3 stage-1 spec, optionally including the pre-apply cloud (§5.7).
@@ -12555,6 +12679,7 @@ def build_v2_session_spec(
         include_cloud_measure=include_cloud_measure,
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
+        lateral_prompts=lateral_prompts,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     # R16: EITHER group makes this a walk. The consent copy below was gated on
@@ -12591,6 +12716,7 @@ def build_v2_session_spec(
                     include_cloud_measure=include_cloud_measure,
                     include_lateral=include_lateral,
                     include_entry_baseline=include_entry_baseline,
+                    lateral_prompts=lateral_prompts,
                 )
             )
             if walked
@@ -12611,6 +12737,7 @@ def build_v2_session_spec(
                 shape.cloud_measure_positions if include_cloud_measure else 0
             ),
             lateral=include_lateral,
+            lateral_prompts=lateral_prompts,
         ),
         **spec_kwargs,
     )
@@ -12879,6 +13006,9 @@ __all__ = [
     "PHASE_REVIEW",
     "PHASE_CLOSING",
     "PHASE_LATERAL",
+    "LATERAL_CONSUMER_FC_SELECTOR",
+    "LATERAL_CONSUMER_FORWARD_MODEL",
+    "LATERAL_CONSUMERS",
     "LATERAL_POSE_PROMPTS",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",

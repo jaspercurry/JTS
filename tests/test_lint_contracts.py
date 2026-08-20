@@ -695,7 +695,40 @@ MAX_LINES_BY_PATH = {
     # lines are the paragraph recording that the strictness is CORRECT — it is
     # why a receipt cannot bank half a prescription — so the next author moves
     # the field rather than loosening the reader.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_055,
+    #
+    # ...and 13,055 -> 13,088 (#2732 P2, the angle walk's take). A RAISE, and
+    # the smaller half of the story: this change first CUT 97 net by moving the
+    # R16 lateral-evidence block — `LateralPose`, `LateralPoseCurve`,
+    # `_primary_sweep_bands`, the shared grid and its two constants — verbatim
+    # into `crossover_v2/spatial.py`, whose charter (what a take records)
+    # already covered it, keeping 17 re-export lines here. The file went
+    # 13,055 -> 12,958 -> 13,088, so the additions are +130 and this ceiling
+    # rises by 33. What the +130 is, hunk by hunk:
+    #   * +51  the walk's own pose table and its consumer reach the builders and
+    #          the session: `lateral_prompts` threaded through `walk_shape_for`,
+    #          the index map, the capture plan and the spec (a session that
+    #          takes an operator's walk must not prompt from the ratified
+    #          table), plus two ctor kwargs whose refusal belongs to
+    #          `journey.validated_lateral_consumer` because that module owns the
+    #          vocabulary being validated.
+    #   * +45  the ONE predicate (`_adjudicating_walk`) and the suppression
+    #          guard with its named journal line, plus the four branch points
+    #          that stopped asking "is there a lateral group" and started asking
+    #          "does it adjudicate". This is the whole of what keeps #2711's
+    #          paused statistic unreachable from an evidence walk, and it is the
+    #          part of this diff that is not allowed to be terse.
+    #   * +28  per-pose evidence retention, which did not exist at all: a
+    #          lateral pose was retained in memory only, so neither its WAV nor
+    #          the bearing it was taken at reached the bundle an offline
+    #          consumer reads.
+    #   * +6   the fail-soft retention boundary, which this change would
+    #          otherwise have made a THIRD copy of, became one
+    #          `_hand_to_retention` — the new method costs 17 and deletes 11
+    #          from the cloud position and the entry baseline.
+    # Compressing correct prose to keep this number flat would be gaming the
+    # guard; raising it by the lines earned, in the diff that earned them, is
+    # the guard working.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_088,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -953,7 +986,31 @@ MAX_LINES_BY_PATH = {
     # keep a capped file from growing is the next place growth goes. This file
     # learned no new fact about crossovers beyond "this apply may owe the
     # declaration a write".
-    "jasper/web/correction_crossover_v2.py": 8_889,
+    #
+    # 2026-08-19 (#2732 P2, the angle walk's take): 8,889 -> 8,996, +107, one
+    # deleted line. Hunk by hunk:
+    #    76  `_take_staged_angle_walk`, the module-level twin of
+    #        `_take_staged_blend_prescription` beside it and named for that
+    #        function's reason (a take drivable in a test without a relay). 27
+    #        of the 76 execute; the rest is the paragraph recording WHY the
+    #        consumer identity is assigned at the take and never carried in the
+    #        document — it is the single fact that decides whether #2711's
+    #        paused statistic runs, and a second writer of it is the defect this
+    #        whole change is shaped to avoid.
+    #    24  the call site: one take, feeding the index map, the emitted spec
+    #        and the conductor's two kwargs, plus the rebuild of the map when a
+    #        walk is taken and the comment saying why that rebuild is still ONE
+    #        decision rather than a second reading of the flags.
+    #     7  threading `lateral_prompts` / `lateral_consumer` into the spec
+    #        build and `hydrate`, with the note that both read the same take.
+    # No seam to cut here, and the composition is not this module's: resolving
+    # a request into poses and refusing an incompatible pair belongs to
+    # `active_speaker/angle_capture.py` (uncapped, and the module that already
+    # owns every other angle question), and the consumer vocabulary belongs to
+    # `crossover_v2/journey.py`. What lands here is the take itself — which is
+    # exactly the fact a session host owns — and this file learned no new fact
+    # about angles, poses or programs.
+    "jasper/web/correction_crossover_v2.py": 8_996,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

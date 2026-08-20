@@ -4312,7 +4312,12 @@ def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
     # this fact, so the chooser and the session cannot drift (#2098).
     assert "include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE" in source
     assert STAGE1_INCLUDES_CLOUD_MEASURE is False
-    assert source.count("include_cloud_measure=include_cloud_measure") == 2
+    # THREE since #2732's angle-walk take: the base index→phase map, the same
+    # map rebuilt when a staged walk is taken, and the emitted spec. Every one
+    # of them reads the single ``include_cloud_measure`` local above, which is
+    # what this count is actually about — a literal at any of the three would
+    # be the drift, not the number of call sites.
+    assert source.count("include_cloud_measure=include_cloud_measure") == 3
     assert "confirmed_protection_sections(" in source
     assert "protection_sections_by_role=protection_sections" in source
     assert "measurement_protection_sections_by_role=protection_sections" in source

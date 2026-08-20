@@ -155,6 +155,86 @@ CAPTURE_PHASES = (
 # phase, because one phase spans many prompted positions.
 GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
 
+# --------------------------------------------------------------------------- #
+# who READS a lateral group
+# --------------------------------------------------------------------------- #
+#
+# ``PHASE_LATERAL`` says what a group PLAYS; these say who the group is FOR.
+# The two were one fact while there was exactly one lateral walk — R16/R17's
+# stage-1 selector walk — and the walk's close therefore always ran R17's
+# adjudication. A per-driver walk taken from the angle-capture door
+# (:mod:`jasper.active_speaker.angle_capture`) plays the identical program at
+# the identical poses and banks the identical per-pose evidence, and yet must
+# NOT reach that adjudication: the statistic it computes was paused on
+# 2026-08-18 pending the re-introduction bar recorded on
+# ``STAGE1_INCLUDES_LATERAL`` and issue #2711, and #2717's own evidence is that
+# the poses are clean while the max-over-poses REDUCTION is what cannot separate
+# candidates. So the consumer is the fact that separates them, and it is one
+# fact with one owner rather than a second boolean beside the phase.
+#
+# The conductor derives ONE predicate from this — "does this walk adjudicate?" —
+# and every branch that used to key off ``PHASE_LATERAL in plan.phases`` alone
+# reads that predicate instead.
+
+#: The R16/R17 stage-1 selector walk: its last pose closes the walk, which is
+#: where ``_close_lateral_walk`` runs R17's Fc adjudication. The DEFAULT, so a
+#: session that declares nothing is exactly the session that shipped.
+LATERAL_CONSUMER_FC_SELECTOR = "fc_selector"
+
+#: An EVIDENCE walk: the poses are banked for the offline P2 forward model and
+#: nothing in-session reads the walk as a whole. Its last pose therefore closes
+#: nothing — no candidate is deferred to it, no Fc candidate sweep is armed for
+#: it, and the paused statistic is not reachable from it.
+LATERAL_CONSUMER_FORWARD_MODEL = "forward_model_evidence"
+
+LATERAL_CONSUMERS = (LATERAL_CONSUMER_FC_SELECTOR, LATERAL_CONSUMER_FORWARD_MODEL)
+
+
+def lateral_adjudicates(consumer: str) -> bool:
+    """Does a group for this consumer READ ITSELF as a whole?
+
+    THE predicate, and the reason the vocabulary above is worth having: every
+    branch that used to key off "is there a lateral group at all" asks this
+    instead.  Derived rather than carried as a second boolean beside the
+    consumer, so there is one writer of one fact.
+
+    ``True`` — the selector walk — is the shipped behaviour in full: MEASURE
+    defers its candidate to the walk, the Fc candidate sweep arms on the anchor,
+    and the walk's last pose runs the close where the adjudication happens.
+    """
+    return consumer == LATERAL_CONSUMER_FC_SELECTOR
+
+
+def validated_lateral_consumer(consumer: str, *, states_own_poses: bool) -> str:
+    """One (consumer, does-it-state-its-own-poses) pair, checked or refused.
+
+    Vocabulary validation, so it sits with the vocabulary rather than at the
+    session that happens to accept it first.  Fail-closed, because #2711's
+    paused statistic is what sits on the other side of a mistake:
+
+    * an unknown consumer is a caller believing something no session implements;
+    * a stated pose table on a SELECTOR walk would run the ratified
+      adjudication over poses nobody ratified — the bar-dodge
+      :mod:`jasper.active_speaker.angle_capture` exists to avoid;
+    * an evidence walk with no table would silently borrow the selector's,
+      leaving "which poses did this measure" unanswerable from the record.
+
+    The last two are one rule stated once, not two checks that can disagree:
+    stating your own poses and being the evidence consumer are the same fact.
+    """
+    if consumer not in LATERAL_CONSUMERS:
+        raise ValueError(
+            f"a lateral consumer must be one of {LATERAL_CONSUMERS}, "
+            f"got {consumer!r}"
+        )
+    if states_own_poses != (consumer == LATERAL_CONSUMER_FORWARD_MODEL):
+        raise ValueError(
+            f"exactly the {LATERAL_CONSUMER_FORWARD_MODEL} walk states its own "
+            f"poses: {LATERAL_CONSUMER_FC_SELECTOR} adjudicates over the "
+            "ratified table, and neither walk may borrow the other's"
+        )
+    return consumer
+
 
 # --------------------------------------------------------------------------- #
 # the plan — which phases this session walks, and over which indexes

@@ -56,11 +56,23 @@ arguments:
   cannot separate candidates."
 
 This module therefore **never constructs**
-:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL`, never reads or
-writes ``STAGE1_INCLUDES_LATERAL``, and never reaches the walk's close
-(``_close_lateral_walk``) where the selector term is computed.  A capture taken
-through this seam cannot reach the paused statistic, because the code path that
-computes it is not on this one.  The ratified design frames the same split as
+:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL` and never reads
+or writes ``STAGE1_INCLUDES_LATERAL``: it returns poses and refusals, and the
+session host is what tags indexes with a phase.
+
+**Where the bar is actually held, since a session takes these walks (2026-08-19,
+option (a) of the ratified ruling).**  A taken walk DOES run as the session's
+lateral group — same program, same screens, same retention — so it reaches
+``_close_lateral_walk``, which is where the selector term is computed.  What
+keeps the paused statistic unreachable is the group's declared CONSUMER
+(:data:`~jasper.active_speaker.crossover_v2.journey.LATERAL_CONSUMERS`): a walk
+taken from this seam is
+:data:`~jasper.active_speaker.crossover_v2.journey.LATERAL_CONSUMER_FORWARD_MODEL`,
+the close suppresses itself by name for one, and R17's candidate sweep never
+arms.  Do not read the sentence above as "this seam is upstream of the bar" —
+it is upstream of the PHASE, and the bar is held one layer down, with its own
+pins in ``tests/test_crossover_v2_lateral_evidence.py``.  The ratified design
+frames the same split as
 what this seam is for: the off-axis capability returns as "a 4-capture
 per-driver off-axis **reporter, never a score term**"
 (``docs/active-speaker-tuning-layers-design.md``, "Sequencing, and what this
@@ -86,6 +98,8 @@ from jasper.audio_measurement.program import ExcitationProgram
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .crossover_v2_flow import (
+    CLOUD_RETAKE_ALLOWANCE,
+    GEOMETRY_RETRY_POSITIONS,
     MARK_DISTANCE_M,
     POSITION_DEG_KEY,
     POSITION_ROLE_KEY,
@@ -121,6 +135,13 @@ __all__ = [
     "program_for_stop",
     "index_phase_map",
     "announced_indexes",
+    "WALK_REGIME_UNSUPPORTED",
+    "WALK_MOVER_MISMATCH",
+    "WALK_OVER_RELAY_CAPACITY",
+    "WALK_LATERAL_GROUP_ALREADY_PLANNED",
+    "WALK_REFUSAL_REASONS",
+    "LateralWalkRefused",
+    "session_lateral_walk",
 ]
 
 
@@ -206,7 +227,7 @@ def _validated_angle(angle_deg: object) -> int:
     function exists to remove. So the test is :class:`numbers.Integral`, which
     ``np.int64`` satisfies and ``np.float64`` does not. ``bool`` is excluded
     explicitly because it *is* an ``Integral`` subclass in Python: ``True``
-    would otherwise sail through as ``+1 deg``, which is a real bearing and a
+    would otherwise sail through as ``+1 deg``, which is a real bearing and an
     obvious caller error at the same time.
 
     Returns a plain :class:`int` so nothing downstream carries a numpy scalar
@@ -539,6 +560,128 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
     :func:`announced_capture_indexes`) work over an angle walk unchanged.
     """
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
+
+
+#: The stops of a staged walk are not all per-driver.  Refused rather than
+#: silently narrowed: a summed stop asks the system-response question, and a
+#: session lateral group plays MEASURE's per-driver object at every pose, so
+#: taking one would measure something other than what was asked for.
+WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
+
+#: The staged walk's mover and the session's positioning tier disagree.  An arm
+#: walk inside a hand-walked session would auto-advance into a microphone
+#: nobody is moving; a hand walk inside an arm session would wait on a position
+#: gate no driver is going to satisfy.
+WALK_MOVER_MISMATCH = "walk_mover_mismatch"
+
+#: The composed session would need more relay blob indexes than exist.
+WALK_OVER_RELAY_CAPACITY = "walk_over_relay_capacity"
+
+#: The session already plans a lateral group of its own.  Declared here so the
+#: refusal vocabulary has ONE home, and raised by the CALLER rather than by
+#: :func:`session_lateral_walk`: "does this session already walk one" is a fact
+#: about the session's flags, and this module does not read those (see the
+#: module docstring).
+WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
+
+WALK_REFUSAL_REASONS = frozenset({
+    WALK_REGIME_UNSUPPORTED,
+    WALK_MOVER_MISMATCH,
+    WALK_OVER_RELAY_CAPACITY,
+    WALK_LATERAL_GROUP_ALREADY_PLANNED,
+})
+
+
+class LateralWalkRefused(CrossoverV2FlowError):
+    """A staged walk may not be composed into THIS session, with a slug.
+
+    The same shape ``angle_capture_spool.AngleRequestRefused`` has, and for the
+    same reason: a machine-readable ``reason`` for the journal, a ``detail``
+    sentence for a person, and the flow's own error as the base so existing
+    handlers keep working.  A separate class rather than that one because the
+    spool imports this module -- and because the two answer different questions:
+    that one is "may this document be read", this one is "may this walk run
+    HERE".
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = detail
+
+
+def session_lateral_walk(
+    request: AngleCaptureRequest,
+    *,
+    externally_positioned: bool,
+    base_entries: int,
+) -> tuple[CloudPositionPrompt, ...]:
+    """The poses a measurement session should walk for this request.
+
+    **The whole composition, and nothing about the session's journey.** It
+    returns POSES -- the same ``CloudPositionPrompt`` vocabulary every shipped
+    prompted walk is stated in -- in the request's own stop order, so the
+    caller threads one table into the plan builders and this module never names
+    a session phase (see the module docstring on why no stop here is ever
+    tagged as the paused walk's phase).
+
+    Three refusals, all of them properties of the PAIR (this walk, this
+    session) rather than of the document, which is why they live here and not
+    in the spool's own validation:
+
+    * :data:`WALK_REGIME_UNSUPPORTED` -- per-driver only, for now. The
+      composition is real either way; what does not exist yet is a session
+      group that plays the summed object at a stated bearing, and pretending
+      otherwise would bank a per-driver capture under a summed request.
+    * :data:`WALK_MOVER_MISMATCH` -- the mover axis is the one thing a request
+      and a session must already agree about, because the session's tier is
+      what decides auto-advance and the position gate.
+    * :data:`WALK_OVER_RELAY_CAPACITY` -- the relay stores one blob per
+      admitted attempt, so entries PLUS retakes are bounded for the whole
+      session. ``MAX_STOPS`` alone does not bound this: the spool's ceiling is
+      a wall-clock bound on the walk, and a walk at that ceiling composes past
+      the relay's index space. The arithmetic rides in the message because the
+      operator's only lever is to stage fewer stops.
+
+    The capacity bound is deliberately the CONSERVATIVE one -- the retake
+    budget ``V2PlanShape.max_attempts`` uses, geometry retries included -- for
+    the reason ``assert_cloud_plan_fits_relay_capacity`` is conservative in the
+    same direction: this seam cannot see whether the session it is composed
+    into also walks a position cloud, and a refusal costs a walk of 23 stops
+    that has no measurement argument for existing, while an under-count strands
+    an operator mid-walk at a blob index the Worker rejects.
+    """
+    # Lazily, exactly as the flow imports it: the relay's TRANSPORT ceiling is
+    # a different layer, and importing it at module scope would tie this seam's
+    # import graph to it.
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    off_regime = sorted({
+        stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
+    })
+    if off_regime:
+        raise LateralWalkRefused(
+            WALK_REGIME_UNSUPPORTED,
+            f"a session walk plays the {REGIME_PER_DRIVER} program at every "
+            f"pose, so it cannot take {', '.join(off_regime)} stops",
+        )
+    if request.externally_positioned != externally_positioned:
+        raise LateralWalkRefused(
+            WALK_MOVER_MISMATCH,
+            f"the walk states mover={request.mover!r} "
+            f"(externally_positioned={request.externally_positioned}) but this "
+            f"session is externally_positioned={externally_positioned}",
+        )
+    allowance = GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+    attempts = base_entries + len(request.stops) + allowance
+    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
+        raise LateralWalkRefused(
+            WALK_OVER_RELAY_CAPACITY,
+            f"{base_entries} session captures + {len(request.stops)} stops + "
+            f"{allowance} retake allowance = {attempts} relay blob indexes, "
+            f"over the ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
+        )
+    return tuple(stop.prompt for stop in resolve_request(request))
 
 
 def announced_indexes(request: AngleCaptureRequest) -> tuple[int, ...]:

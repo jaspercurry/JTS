@@ -1594,6 +1594,15 @@ there is no group to wait for, so the fit runs at MEASURE's accept; #2291's
 entry baseline follows it without deferring it, because that capture is the
 round's "before" rather than an input to the fit.
 
+**And the one lateral group that is NOT the flag's — only a walk the FIT reads
+defers it.** Since #2732's take (2026-08-19) a lateral group declares its
+consumer, and a walk an operator staged with `jasper-angle-capture` declares the
+offline forward model. Nothing in-session reads that one as a whole, so MEASURE
+publishes at its own accept, `_close_lateral_walk` suppresses itself by name
+(`event=correction.crossover_v2_lateral_close_suppressed`), and R17's candidate
+sweep never arms. Everything above this paragraph is the selector walk's, and
+unchanged.
+
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
 | index | phase | gate | what it is |

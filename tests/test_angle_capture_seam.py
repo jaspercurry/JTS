@@ -500,3 +500,155 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
         )
         # the shipped 40 cm slide is the confound this replaces
         assert chord_radius_m == pytest.approx(1.077, abs=0.001)
+
+
+# --------------------------------------------------------------------------- #
+# 5. composing a walk INTO a session (#2732 P2)
+# --------------------------------------------------------------------------- #
+#
+# The three refusals are properties of the PAIR (this walk, this session), which
+# is why they live in the seam and not in the spool's document validation: the
+# same document is fine against a differently-shaped session.
+
+
+def _relay_ceiling() -> int:
+    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+
+    return MAX_CAPTURE_PLAN_ATTEMPTS
+
+
+def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
+    """The happy path: poses, in the request's stop order, in the vocabulary
+    every shipped prompted walk is already stated in."""
+    prompts = ac.session_lateral_walk(
+        ac.per_driver_at(list(_SHIPPED_ANGLES)),
+        externally_positioned=False,
+        base_entries=3,
+    )
+    assert len(prompts) == len(_SHIPPED_ANGLES)
+    assert [flow.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
+    # Poses, not stops: what the plan builders and the conductor consume.
+    assert all(isinstance(p, flow.CloudPositionPrompt) for p in prompts)
+
+
+def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
+    """A session lateral group plays MEASURE's per-driver object at every pose.
+
+    Taking a summed stop would therefore bank a per-driver capture under a
+    request for the system response — a silent narrowing, which is the one
+    outcome worse than a refusal.
+    """
+    for request in (
+        ac.summed_at([0]),
+        ac.both_at([7]),  # mixed: one per-driver stop is not enough
+    ):
+        with pytest.raises(ac.LateralWalkRefused) as excinfo:
+            ac.session_lateral_walk(
+                request, externally_positioned=False, base_entries=3,
+            )
+        assert excinfo.value.reason == ac.WALK_REGIME_UNSUPPORTED
+        assert ac.REGIME_SUMMED in excinfo.value.detail
+
+
+def test_a_mover_mismatch_refuses_in_both_directions() -> None:
+    """The mover is the one axis a request and a session must already agree on.
+
+    An arm walk in a hand-walked session auto-advances into a microphone nobody
+    is moving; a hand walk in an arm session waits on a position gate no driver
+    will satisfy. Both are stalls, so neither is silently coerced.
+    """
+    for mover, session_positioned in (
+        (ac.MOVER_ARM, False),
+        (ac.MOVER_HUMAN, True),
+    ):
+        with pytest.raises(ac.LateralWalkRefused) as excinfo:
+            ac.session_lateral_walk(
+                ac.per_driver_at([7], mover=mover),
+                externally_positioned=session_positioned,
+                base_entries=3,
+            )
+        assert excinfo.value.reason == ac.WALK_MOVER_MISMATCH
+    # ...and both matched pairs compose.
+    for mover, session_positioned in (
+        (ac.MOVER_ARM, True),
+        (ac.MOVER_HUMAN, False),
+    ):
+        assert ac.session_lateral_walk(
+            ac.per_driver_at([7], mover=mover),
+            externally_positioned=session_positioned,
+            base_entries=3,
+        )
+
+
+def test_the_relay_index_space_bounds_the_walk_and_max_stops_does_not() -> None:
+    """A walk at the spool's own ``MAX_STOPS`` composes PAST the relay ceiling.
+
+    ``MAX_STOPS`` is a wall-clock bound on the walk; this is a bound on the
+    session the walk lands in, and the two are not the same number. Without
+    this refusal a legally-staged 24-stop walk would be admitted and then
+    refused mid-walk by the Worker at a blob index that does not exist — a
+    stall discovered by an operator standing in a room, not by a gate.
+
+    The boundary is asserted on both sides, so a shifted-by-one bound fails
+    rather than silently widening.
+    """
+    from jasper.active_speaker.angle_capture_spool import MAX_STOPS
+
+    base_entries = 3
+    allowance = ac.GEOMETRY_RETRY_POSITIONS + ac.CLOUD_RETAKE_ALLOWANCE
+    largest = _relay_ceiling() - base_entries - allowance
+
+    fits = ac.session_lateral_walk(
+        ac.per_driver_at(list(range(1, largest + 1))),
+        externally_positioned=False,
+        base_entries=base_entries,
+    )
+    assert len(fits) == largest
+
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.session_lateral_walk(
+            ac.per_driver_at(list(range(1, largest + 2))),
+            externally_positioned=False,
+            base_entries=base_entries,
+        )
+    assert excinfo.value.reason == ac.WALK_OVER_RELAY_CAPACITY
+    # The arithmetic rides in the message, because the operator's only lever is
+    # to stage fewer stops and they need the numbers to pick a count.
+    detail = excinfo.value.detail
+    for number in (base_entries, largest + 1, allowance, _relay_ceiling()):
+        assert str(number) in detail
+
+    # ...and this is why the refusal is load-bearing rather than theoretical:
+    # the spool will happily bank a walk longer than the largest that fits.
+    assert MAX_STOPS > largest
+
+
+def test_the_pose_record_states_the_seams_own_regime_word() -> None:
+    """One vocabulary for "what was played", across an import cycle.
+
+    ``spatial.lateral_pose_record`` writes the regime onto every banked pose,
+    and it cannot import this module (this one imports the flow, and the flow
+    imports that one). So the word is a literal there and this is the pin that
+    keeps the two spellings one fact.
+    """
+    from jasper.active_speaker.crossover_v2.spatial import LATERAL_POSE_REGIME
+
+    assert LATERAL_POSE_REGIME == ac.REGIME_PER_DRIVER
+
+
+def test_composing_a_walk_still_mints_no_session_phase() -> None:
+    """Section 3's ruling, re-asserted over the NEW entry point.
+
+    ``session_lateral_walk`` is the first function here whose whole purpose is
+    to feed a measurement session, which is exactly the shape that would invite
+    a phase constant. It returns poses; the caller tags the indexes.
+    """
+    prompts = ac.session_lateral_walk(
+        ac.per_driver_at([0, 22]), externally_positioned=False, base_entries=3,
+    )
+    assert not any(
+        PHASE_LATERAL in (getattr(p, field, "") or "")
+        for p in prompts
+        for field in ("headline", "detail")
+    )
+    assert flow.STAGE1_INCLUDES_LATERAL is False
