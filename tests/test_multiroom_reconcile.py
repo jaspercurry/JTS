@@ -20,6 +20,7 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import os
 
@@ -3548,6 +3549,47 @@ def test_box_lane_verdict_reads_the_topology_the_writer_reads(monkeypatch):
     # there too (no declared speaker to send a flat program to).
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, False))
     assert reconcile_mod.box_dac_content_lane_armed(cfg) is False
+
+
+def test_topology_state_survives_an_unimportable_dependency(monkeypatch):
+    """ORDER IS LOAD-BEARING: the ImportError limb must precede the
+    OutputTopologyError one.
+
+    `OutputTopologyError` is bound by an import INSIDE the try, so if any earlier
+    lazy import fails, evaluating the `except OutputTopologyError` clause raises
+    UnboundLocalError instead — which neither of this function's two new callers
+    catches, and in the audio_health sampler that kills a daemon thread silently.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jasper.active_speaker.playback_route", None)
+
+    assert reconcile_mod._output_topology_state() == (None, False)
+
+
+def test_box_lane_verdict_reads_no_topology_for_a_non_member(monkeypatch):
+    """The writer's OFF path is answered BEFORE any topology read.
+
+    `_output_topology_state` logs a WARN per call on an unreadable topology, and
+    this predicate is on the 60 s route sampler and every /state build — so a
+    SOLO box that has no lane at all must not pay either the I/O or the spam.
+    """
+    calls = []
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_output_topology_state",
+        lambda: calls.append(1) or (False, True),
+    )
+
+    solo = dataclasses.replace(_leader(), enabled=False)
+    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
+    invalid = dataclasses.replace(_leader(), error="JASPER_GROUPING_BOND_ID is empty")
+    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
+    assert calls == [], "a non-member must not read the topology at all"
+
+    # …and a real member still does.
+    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
+    assert calls == [1]
 
 
 def test_box_lane_verdict_fails_closed_on_an_unreadable_topology(monkeypatch):
