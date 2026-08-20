@@ -13,15 +13,24 @@ half of that campaign; every DSP and grading primitive it uses is imported
 from the seam that already owns it:
 
 * :mod:`~jasper.active_speaker.crossover_v2.evidence_packet` reads a banked
-  round's bundle (this module never globs ``cloud_verify.json`` by hand).
+  round's bundle (this module never globs ``cloud_verify.json`` by hand) and
+  its persisted ``spec`` block rehydrates through
+  :meth:`~jasper.active_speaker.flat_spec.FlatSpecReport.from_dict` — the
+  product's own inverse of ``to_dict()``, not a private per-caller copy.
 * :mod:`~jasper.active_speaker.flat_spec` grades a curve
   (:func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`); this module
   never re-derives a reference level or a band tolerance.
 * :mod:`~jasper.active_speaker.flat_spec_views` re-reads an already-graded
-  report per position/role (:func:`~jasper.active_speaker.flat_spec_views._evaluate_position`,
-  :func:`~jasper.active_speaker.flat_spec_views._pool`) — the same building
-  blocks the campaign's own ``frozen_reference.py`` used, imported here rather
-  than re-implemented.
+  report per position/role. :func:`repeatability_spread` — no per-position
+  reference to substitute — uses the PUBLIC
+  :func:`~jasper.active_speaker.flat_spec_views.role_split_flatness`.
+  :func:`frozen_reference_grade` reaches for the private
+  :func:`~jasper.active_speaker.flat_spec_views._evaluate_position` /
+  :func:`~jasper.active_speaker.flat_spec_views._pool` building blocks
+  instead — the same ones the campaign's own ``frozen_reference.py`` used —
+  because grading a position against a SUBSTITUTED per-position reference is
+  exactly the one thing the public function has no parameter for; that
+  private coupling is load-bearing there and nowhere else in this module.
 * :mod:`~jasper.audio_measurement.deconv` (``deconvolve``,
   ``magnitude_response``), :mod:`~jasper.audio_measurement.gating`
   (``gate_impulse_response``, the reflection-detecting gate — NOT the
@@ -31,7 +40,7 @@ from the seam that already owns it:
   round's bundle does not already carry pre-computed: the VERIFY pose.
 
 **Input shape**: a *banked round directory*, the tree
-``scripts/bank-crossover-round.sh <dest-dir>`` produces (PR #2778) —
+``scripts/bank-crossover-round.sh <dest-dir>`` produces —
 
 .. code-block:: text
 
@@ -43,14 +52,19 @@ from the seam that already owns it:
       dumps/sidecar/*.json           dump-ring sidecars, one per wav (optional)
 
 **What this module deliberately does NOT do.** No numeric microphone angle
-is recovered for any position. :mod:`.evidence_packet` already made and
-documented that call — a round's bundle carries a position's ``role``
-(``onax``/``offax``), never a degree, and recovering one means reading a
-walk-driver log that is not part of any banked round. The campaign's
-``frozen_reference.py`` carried a hardcoded ``index -> degrees`` table for
-exactly this reason; it is not ported. Every view here keys a position by
-its own stable ``position_id`` instead (``f"{phase}_{index:02d}"``, assigned
-once by the walk driver and stable across rounds that walk the same shape).
+is recovered for any position this module reads. That is narrower than "a
+round's bundle never carries one" — :func:`~.spatial.lateral_pose_record`
+DOES stamp a signed whole-degree ``position_deg`` for a per-driver LATERAL
+walk pose — but this module (via :mod:`.evidence_packet`) only ever reads
+the CLOUD positions block, built from
+:func:`~.spatial.cloud_position_record`, which carries a coarse ``role``
+(``onax``/``offax``) and no angle at all. Recovering one for a cloud
+position means reading a walk-driver log that is not part of any banked
+round. The campaign's ``frozen_reference.py`` carried a hardcoded
+``index -> degrees`` table for exactly this reason; it is not ported.
+Every view here keys a position by its own stable ``position_id`` instead
+(``f"{phase}_{index:02d}"``, assigned once by the walk driver and stable
+across rounds that walk the same shape).
 """
 
 from __future__ import annotations
@@ -63,14 +77,17 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.active_speaker import flat_spec
-from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport, evaluate_flat_spec
+from jasper.active_speaker.flat_spec import REFERENCE_BAND_HZ, FlatSpecReport, evaluate_flat_spec
 from jasper.active_speaker.flat_spec_views import (
     PositionCurve,
+    role_split_flatness,
     _evaluate_position,
+    _exclusion_mask,
     _pool,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
+    _EVIDENCE_GLOB,
     build_crossover_evidence_packet,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
@@ -79,6 +96,8 @@ from jasper.audio_measurement.gating import gate_impulse_response
 from jasper.audio_measurement.sweep import read_wav_mono
 
 __all__ = [
+    "AGREEMENT_DISSENT_MAX",
+    "AGREEMENT_TESTIFY_MIN",
     "AgreementFeature",
     "BankedRound",
     "FrozenReferenceResult",
@@ -88,6 +107,7 @@ __all__ = [
     "SeatCurve",
     "VerifyPoseResult",
     "agreement_table",
+    "default_agreement_lo_hz",
     "frozen_reference_grade",
     "load_banked_round",
     "per_seat_curves",
@@ -107,10 +127,11 @@ DEFAULT_PRIMARY_ROLE = "onax"
 VERIFY_ROLE = "verify"
 VERIFY_POSITION_ID = "verify"
 
-#: Where a session bundle keeps its round artifacts, mirroring
-#: :mod:`.evidence_packet`'s own ``_EVIDENCE_GLOB`` — duplicated as a literal
-#: rather than imported because the private name is that module's own.
-_EVIDENCE_GLOB = "evidence/v1/artifacts/crossover_v2/*"
+#: The campaign's own literal agreement thresholds (``agreement.py``:
+#: ``test >= 3 and diss <= 1``), NOT a seat-count-relative generalisation —
+#: see :func:`agreement_table` for why a generalisation is the wrong port.
+AGREEMENT_TESTIFY_MIN = 3
+AGREEMENT_DISSENT_MAX = 1
 
 
 class RoundViewsError(ValueError):
@@ -152,62 +173,6 @@ def _bundle_session_dir(round_dir: Path) -> Path:
             f"{bundle_dir}: expected exactly one session directory, found {len(children)}"
         )
     return children[0]
-
-
-def _band_result_from_dict(raw: Mapping[str, Any]) -> BandResult:
-    """One persisted band back into its dataclass, field for field.
-
-    Mirrors ``scripts/render-metric-views.py``'s ``_band_result_from_dict`` —
-    the same rehydration of ``BandResult.to_dict()``'s own shape. Kept local
-    rather than imported because that script has no importable package
-    surface (it is a lab CLI, not a module); not promoted onto
-    :class:`~jasper.active_speaker.flat_spec.BandResult` itself because this
-    PR's scope is the four campaign views, not a refactor of the safety-
-    reviewed spec module's serialization contract.
-    """
-    return BandResult(
-        f_lo_hz=float(raw["f_lo_hz"]),
-        f_hi_hz=float(raw["f_hi_hz"]),
-        tolerance_db=float(raw["tolerance_db"]),
-        max_deviation_db=raw.get("max_deviation_db"),
-        max_deviation_hz=raw.get("max_deviation_hz"),
-        rms_deviation_db=raw.get("rms_deviation_db"),
-        n_bins=int(raw["n_bins"]),
-        n_excluded=int(raw["n_excluded"]),
-        evaluable=bool(raw["evaluable"]),
-        passed=raw.get("passed"),
-        level_deviation_db=raw.get("level_deviation_db"),
-        max_ripple_db=raw.get("max_ripple_db"),
-        max_ripple_hz=raw.get("max_ripple_hz"),
-        graded_lo_hz=raw.get("graded_lo_hz"),
-        max_at_graded_edge=raw.get("max_at_graded_edge"),
-    )
-
-
-def _report_from_spec_dict(spec: Mapping[str, Any]) -> FlatSpecReport:
-    """The packet's ``spec`` block back into a :class:`FlatSpecReport`.
-
-    The packet copies ``cloud_verify.json``'s ``spec`` verbatim
-    (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.build_crossover_evidence_packet`),
-    which is itself ``FlatSpecReport.to_dict()`` — so this is a rehydration,
-    not a re-derivation. No band edge, floor, or reference is recomputed.
-    """
-    reference_band = spec.get("reference_band_hz")
-    kwargs: dict[str, Any] = {}
-    if reference_band is not None:
-        kwargs["reference_band_hz"] = (float(reference_band[0]), float(reference_band[1]))
-    return FlatSpecReport(
-        reference_db=float(spec["reference_db"]),
-        bands=tuple(_band_result_from_dict(b) for b in spec["bands"]),
-        overall_passed=bool(spec["overall_passed"]),
-        excluded_intervals=tuple(
-            (float(lo), float(hi)) for lo, hi in spec.get("excluded_intervals", ())
-        ),
-        best_effort_above_hz=float(spec["best_effort_above_hz"]),
-        smoothing_fraction=int(spec["smoothing_fraction"]),
-        trusted_floor_hz=spec.get("trusted_floor_hz"),
-        **kwargs,
-    )
 
 
 def load_banked_round(round_dir: Path) -> BankedRound:
@@ -258,7 +223,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     if not positions:
         raise RoundViewsError(f"{round_dir}: every position row is missing its magnitude_db")
 
-    report = _report_from_spec_dict(spec_block)
+    report = FlatSpecReport.from_dict(spec_block)
     return BankedRound(
         round_dir=round_dir,
         session_dir=session_dir,
@@ -280,21 +245,11 @@ def _own_reference_db(position: PositionCurve, report: FlatSpecReport) -> float:
     graded = evaluate_flat_spec(
         np.asarray(position.freqs_hz, dtype=float),
         np.asarray(position.magnitude_db, dtype=float),
-        _mask_from_intervals(position.freqs_hz, report.excluded_intervals),
+        _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
         smoothing_fraction=position.smoothing_fraction,
         trusted_floor_hz=report.trusted_floor_hz,
     )
     return float(graded.reference_db)
-
-
-def _mask_from_intervals(
-    freqs_hz: np.ndarray, intervals: tuple[tuple[float, float], ...]
-) -> np.ndarray:
-    freqs = np.asarray(freqs_hz, dtype=float)
-    mask = np.zeros(freqs.size, dtype=bool)
-    for lo, hi in intervals:
-        mask |= (freqs >= lo) & (freqs <= hi)
-    return mask
 
 
 class _FrozenReference:
@@ -309,7 +264,17 @@ class _FrozenReference:
     ``evaluate_flat_spec`` calls FIRST to build ``reference_db`` and only
     afterwards, inside the band loop, to build each band's own level — so
     patching only the first call is the whole trick. Landing is asserted by
-    the caller (:func:`frozen_reference_grade`), never trusted silently.
+    the caller (:func:`_frozen_assert`, run by :func:`frozen_reference_grade`
+    before it trusts a single graded number), never assumed from the call
+    count alone.
+
+    **Not thread-safe or reentrant.** The patch is a module-level attribute
+    on :mod:`jasper.active_speaker.flat_spec`, shared process-wide for the
+    duration of the ``with`` block; two overlapping frozen gradings on
+    different threads (or a nested ``with _FrozenReference(...)`` inside
+    this one) would each restore the OTHER's ``_real`` on exit and corrupt
+    both. This module's own callers only ever use one at a time, synchronously,
+    which is the only usage this class is safe for.
     """
 
     def __init__(self, value: float) -> None:
@@ -331,11 +296,44 @@ class _FrozenReference:
         flat_spec._power_mean_db = self._real
 
 
+def _frozen_assert(
+    positions: tuple[PositionCurve, ...], report: FlatSpecReport, frozen_refs: Mapping[str, float]
+) -> None:
+    """Prove the substitution lands: a frozen call must report exactly the
+    reference it was given.
+
+    Restored from the campaign's own ``frozen_reference.py`` (the same four
+    lines, same failure mode named). ``_grade_positions``'s ``patch.calls <
+    1`` check only proves ``_power_mean_db`` was called at all — it is
+    silent about whether ``evaluate_flat_spec``'s internal call order still
+    puts the REFERENCE computation first. This function is the independent,
+    fail-loud proof of that stronger claim, run once per grading pass before
+    any frozen number is trusted.
+    """
+    for position in positions:
+        seat = position.position_id
+        with _FrozenReference(frozen_refs[seat]):
+            got = evaluate_flat_spec(
+                np.asarray(position.freqs_hz, dtype=float),
+                np.asarray(position.magnitude_db, dtype=float),
+                _exclusion_mask(np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals),
+                smoothing_fraction=position.smoothing_fraction,
+                trusted_floor_hz=report.trusted_floor_hz,
+            )
+        if got.reference_db != frozen_refs[seat]:
+            raise RoundViewsError(
+                f"{seat}: frozen reference did not land — asked {frozen_refs[seat]!r}, "
+                f"evaluator reports {got.reference_db!r}. evaluate_flat_spec's internal "
+                "call order has changed; this module must be re-derived before any "
+                "number it prints is used."
+            )
+
+
 def _grade_positions(
     positions: tuple[PositionCurve, ...],
     report: FlatSpecReport,
     frozen_refs: Mapping[str, float] | None,
-) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+) -> tuple[dict[str, float], dict[str, float]]:
     """One grading pass — shipped when ``frozen_refs`` is ``None``, frozen to
     the supplied per-position references otherwise.
 
@@ -407,10 +405,10 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
     construction in that case — the freeze changes nothing when a round is
     compared against itself). Raises :class:`RoundViewsError` when a
     position present in ``target`` has no counterpart
-    (matched by ``position_id``) in ``baseline``, or when any position is
-    not evaluable under its own report's frame.
+    (matched by ``position_id``) in ``baseline``, when any position is not
+    evaluable under its own report's frame, or when :func:`_frozen_assert`
+    finds the substitution did not land.
     """
-    baseline_pooled, baseline_positions = _grade_positions(baseline.positions, baseline.report, None)
     baseline_refs = {
         position.position_id: _own_reference_db(position, baseline.report)
         for position in baseline.positions
@@ -425,6 +423,7 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
         position.position_id: _own_reference_db(position, target.report)
         for position in target.positions
     }
+    _frozen_assert(target.positions, target.report, baseline_refs)
     shipped_pooled, shipped_positions = _grade_positions(target.positions, target.report, None)
     frozen_pooled, frozen_positions = _grade_positions(target.positions, target.report, baseline_refs)
     return FrozenReferenceResult(
@@ -496,11 +495,19 @@ def verify_pose_curve(
     banked program, gate, smooth, and resample onto ``banked.curve_grid_hz``.
 
     Multiple captures are averaged in dB (matching the campaign tool's own
-    per-seat averaging). ``smoothing_fraction`` defaults to the round's own
-    (``banked.report.smoothing_fraction``) so the result is smoothed the
-    same as the cloud positions it will be compared against — a different
-    fraction would make a shape difference an artifact of the comparison
-    rather than the speaker.
+    per-seat averaging). ``smoothing_fraction`` defaults to the POSITIONS'
+    own fraction (``banked.positions[i].smoothing_fraction`` — every
+    position shares one, read off the packet's ``curve_grid`` in
+    :func:`load_banked_round`), NOT ``banked.report.smoothing_fraction``.
+    The two are not the same number: the report's fraction is what the
+    COMBINED, spatially-averaged curve was smoothed at, while the cloud
+    smooths each MEMBER position finer before combining (1/6 vs 1/3 octave
+    on a real corpus, per :class:`~jasper.active_speaker.flat_spec_views.PositionCurve`'s
+    own docstring). This view compares the VERIFY pose against the member
+    positions, not the combined curve, so it must match their fraction —
+    using the report's coarser one measured as a 1.03 dB comparison
+    artifact on a real banked round: the VERIFY curve read smoother than
+    every position it was being compared to for no acoustic reason at all.
     """
     program_path = _find_program_wav(banked.session_dir, phase=phase)
     if program_path is None:
@@ -510,7 +517,7 @@ def verify_pose_curve(
         return VerifyPoseResult(
             None, 0, f"no dump-ring capture tagged phase={phase!r} under dumps/"
         )
-    fraction = smoothing_fraction if smoothing_fraction is not None else banked.report.smoothing_fraction
+    fraction = smoothing_fraction if smoothing_fraction is not None else banked.positions[0].smoothing_fraction
     if fraction <= 0:
         fraction = 12
 
@@ -650,21 +657,37 @@ def repeatability_spread(
 
     ``rounds`` is ``(label, banked_round)`` pairs — the label is whatever
     the caller wants printed (a session id, a timestamp, an attempt name).
-    Each round is graded SHIPPED (no frozen substitution) via the same
-    :func:`~jasper.active_speaker.flat_spec_views._evaluate_position` /
-    :func:`~jasper.active_speaker.flat_spec_views._pool` building blocks
-    :func:`frozen_reference_grade` uses, so the two views agree on the
-    shipped number by construction.
+    Every round is graded SHIPPED (no frozen substitution) through the
+    PUBLIC :func:`~jasper.active_speaker.flat_spec_views.role_split_flatness`
+    — unlike :func:`frozen_reference_grade`, this view has no per-position
+    reference to substitute, so it has no reason to reach for the private
+    ``_evaluate_position``/``_pool`` building blocks the freeze needs.
+    ``role_split_flatness`` reports BOTH poolings per role (``rms_db``, the
+    shipped per-bin weighting, and ``log_rms_db``, the per-octave
+    re-weighting) and this view carries both through, correctly named —
+    an earlier version of this function hand-pooled with ``_pool`` and
+    labelled the result ``log_pooled`` while actually computing the LINEAR
+    (per-bin) pool, because ``_pool`` is the one weighted-mean identity both
+    poolings share and only the caller's choice of weights (bin count vs
+    octave span) tells them apart.
     """
     role_pooled: dict[str, dict[str, float]] = {}
+    log_role_pooled: dict[str, dict[str, float]] = {}
     linear_pooled: dict[str, float] = {}
     position_values: dict[str, dict[str, float]] = {}
     for label, banked in rounds:
-        pooled, per_position = _grade_positions(banked.positions, banked.report, None)
-        for role, value in pooled.items():
-            role_pooled.setdefault(role, {})[label] = value
-        for seat, value in per_position.items():
-            position_values.setdefault(seat, {})[label] = value
+        split = role_split_flatness(banked.report, banked.positions, primary_role=primary_role)
+        roles = ([split.primary] if split.primary is not None else []) + list(split.others)
+        for role_flatness in roles:
+            if role_flatness.rms_db is not None:
+                role_pooled.setdefault(role_flatness.role, {})[label] = role_flatness.rms_db
+            if role_flatness.log_rms_db is not None:
+                log_role_pooled.setdefault(role_flatness.role, {})[label] = role_flatness.log_rms_db
+            for position_flatness in role_flatness.positions:
+                if position_flatness.rms_db is not None:
+                    position_values.setdefault(position_flatness.position_id, {})[
+                        label
+                    ] = position_flatness.rms_db
         # The SHIPPED linear-pooled figure — spec_convergence_residual's own
         # number, lifted from the report rather than recomputed — carried
         # beside the per-octave/per-role re-poolings above so a caller can
@@ -676,12 +699,15 @@ def repeatability_spread(
     labels = tuple(label for label, _banked in rounds)
     metrics = [RepeatabilityMetric("shipped_linear_pool_db", dict(linear_pooled))]
     for role in sorted(role_pooled):
-        name = f"{role}_log_pooled_db" if role != primary_role else f"{role}_log_pooled_db(primary)"
-        metrics.append(RepeatabilityMetric(name, dict(role_pooled[role])))
-    per_position = [
+        metrics.append(RepeatabilityMetric(f"{role}_linear_pooled_db", dict(role_pooled[role])))
+    for role in sorted(log_role_pooled):
+        metrics.append(RepeatabilityMetric(f"{role}_log_pooled_db", dict(log_role_pooled[role])))
+    per_position_metrics = [
         RepeatabilityMetric(seat, dict(values)) for seat, values in sorted(position_values.items())
     ]
-    return RepeatabilityResult(round_labels=labels, metrics=tuple(metrics), per_position=tuple(per_position))
+    return RepeatabilityResult(
+        round_labels=labels, metrics=tuple(metrics), per_position=tuple(per_position_metrics)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -705,7 +731,12 @@ class AgreementFeature:
     n_dissent: int
     spread_db: float
     ratio: float
-    common_mode: bool
+    #: ``True``/``False`` when ``len(seats) >= AGREEMENT_TESTIFY_MIN`` (the
+    #: campaign's own literal threshold can in principle be met); ``None`` —
+    #: a NAMED not-evaluable state, never a vacuous boolean — below it, where
+    #: ``n_testify >= AGREEMENT_TESTIFY_MIN`` cannot be satisfied by
+    #: construction. See :func:`agreement_table`.
+    common_mode: bool | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -722,13 +753,28 @@ class AgreementFeature:
 
 
 def _detrend(grid: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
-    """Each seat expressed against its own 1-octave moving average.
+    """Each seat expressed against its own local ~1-octave background.
 
     A feature is a local excursion, not the gross tilt no narrow biquad can
-    or should chase. ``smooth_fractional_octave(..., fraction=1)`` IS a
-    1-octave (``2**-0.5`` .. ``2**0.5``) power-mean window, so this is the
-    product smoothing seam applied at the campaign tool's own fraction,
-    never a hand-rolled second implementation of octave averaging.
+    or should chase — the campaign's own ``agreement.py`` made the same call,
+    subtracting a per-bin ``[fc*2**-0.5, fc*2**0.5)`` window average from
+    each curve before hunting for features.
+
+    **This is the same QUESTION, not the same ARITHMETIC.** The campaign's
+    detrend is a plain arithmetic mean of dB values over a half-open window;
+    ``smooth_fractional_octave(..., fraction=1)`` is the product seam's
+    POWER-mean (linear-energy average) over a very slightly different,
+    inclusive-topped window. The two track each other closely for the small
+    ripple this function is built to isolate, but they are NOT byte-
+    identical — this module's numbers will not reproduce the campaign's own
+    published detrend tables bin-for-bin, and a caller comparing the two
+    should compare verdicts (which feature, which sign, roughly what size),
+    never subtract one table's cell from the other's. Reusing the product
+    seam here — rather than porting the campaign's exact arithmetic — is the
+    deliberate choice: one owner of "1-octave window average" across this
+    module (:func:`verify_pose_curve` already depends on the SAME function
+    for its own smoothing) beats a second, bespoke implementation of the
+    same idea that could drift from it.
     """
     return curve_db - smooth_fractional_octave(grid, curve_db, fraction=1)
 
@@ -771,6 +817,23 @@ def _local_features(
     return merged
 
 
+def default_agreement_lo_hz(banked: BankedRound) -> float:
+    """The trusted sweep's low edge when a caller does not name one.
+
+    The round's OWN trusted floor (:attr:`FlatSpecReport.trusted_floor_hz`)
+    when it recorded one — a caller sweeping below a session's own honesty
+    floor would be grading bins that session itself could not vouch for.
+    Falls back to the spec's nominal reference-band edge
+    (:data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`) for a round
+    that recorded no floor, rather than a campaign-specific literal (the
+    previous default, ``357.14`` Hz, was one session's ``f_trusted_floor_hz``
+    at its particular 7 ms gate window — a coincidence of that campaign, not
+    a general default).
+    """
+    floor = banked.report.trusted_floor_hz
+    return float(floor) if floor is not None else float(REFERENCE_BAND_HZ[0])
+
+
 def agreement_table(
     seats: Sequence[SeatCurve],
     grid: np.ndarray,
@@ -786,12 +849,32 @@ def agreement_table(
 
     ``testify`` = same sign as the pooled curve AND ``|seat| >= testify_db``.
     ``dissent`` = opposite sign AND ``|seat| >= testify_db``. ``common_mode``
-    requires BOTH sign agreement (``n_testify >= len(seats) - 1`` and
-    ``n_dissent <= 1``, ported from the campaign's ``test >= 3 and diss <=
-    1`` at 5 seats — generalised to "all but one testify, at most one
-    dissents") AND magnitude agreement (``ratio <= magnitude_ratio_ok``).
+    requires BOTH sign agreement (``n_testify >= AGREEMENT_TESTIFY_MIN`` and
+    ``n_dissent <= AGREEMENT_DISSENT_MAX``) AND magnitude agreement
+    (``ratio <= magnitude_ratio_ok``).
+
+    **The sign-agreement counts are the campaign's own LITERAL thresholds**
+    (``test >= 3 and diss <= 1``), not a seat-count-relative generalisation.
+    An earlier version of this function scaled the testify requirement to
+    ``len(seats) - 1``, which is not the same rule: at the real 5-seat
+    default it demands testify >= 4 where the campaign's own measurement-
+    validated frame demands only >= 3, flipping the verdict on any feature
+    exactly 3 seats testify to (sign-agreement fails under the generalised
+    rule, holds under the literal one) — and at 1-2 seats it returns a
+    vacuous ``True`` (``max(n_seats - 1, 0)`` floors at 0, so an
+    unconstrained "at least 0 testify" trivially passes). Below
+    ``AGREEMENT_TESTIFY_MIN`` seats the literal threshold can never be
+    satisfied by construction, so ``common_mode`` is ``None`` there — a
+    named NOT-EVALUABLE state, distinct from both a real pass and a real
+    fail, matching the same "absence is not a zero" rule
+    :class:`~jasper.active_speaker.flat_spec.BandResult` follows for an
+    unevaluable band. ``n_testify``, ``n_dissent``, ``spread_db`` and
+    ``ratio`` are still reported at any seat count — they are measurements,
+    not verdicts, and remain informative even where the verdict is not.
     """
     grid = np.asarray(grid, dtype=float)
+    if not seats:
+        raise RoundViewsError("agreement_table: no seats supplied")
     detrended = np.vstack([_detrend(grid, seat.normalized_db) for seat in seats])
     pooled = detrended.mean(axis=0)
     features = []
@@ -804,7 +887,12 @@ def agreement_table(
         dissent = int(np.sum((np.sign(seat_values) != sign) & (np.abs(seat_values) >= testify_db)))
         spread = float(seat_values.max() - seat_values.min())
         ratio = float(np.abs(seat_values).max() / max(np.abs(seat_values).min(), 0.01))
-        sign_ok = testify >= max(n_seats - 1, 0) and dissent <= 1
+        common_mode: bool | None
+        if n_seats < AGREEMENT_TESTIFY_MIN:
+            common_mode = None
+        else:
+            sign_ok = testify >= AGREEMENT_TESTIFY_MIN and dissent <= AGREEMENT_DISSENT_MAX
+            common_mode = bool(sign_ok and ratio <= magnitude_ratio_ok)
         features.append(
             AgreementFeature(
                 center_hz=float(grid[i]),
@@ -815,7 +903,7 @@ def agreement_table(
                 n_dissent=dissent,
                 spread_db=spread,
                 ratio=ratio,
-                common_mode=bool(sign_ok and ratio <= magnitude_ratio_ok),
+                common_mode=common_mode,
             )
         )
     return tuple(features)

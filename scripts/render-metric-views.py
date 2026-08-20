@@ -10,13 +10,18 @@ LAB TOOLING. Reads gitignored `captures/` evidence, prints a report, writes
 nothing back into the bundle. Every MEASUREMENT here comes from
 `jasper.active_speaker.flat_spec_views`, which is product code, so this tool
 cannot compute a residual, offset, or weight the product will not later
-compute the same way. What lives here is the part that IS lab-only — walking a
-receipts tree, rehydrating a persisted report, joining an arm's positions to
-the walk log that drove them, and the two subtractions this table wants and no
-consumer does: the `gap` column and the bins-per-octave `ratio`. Both are
-differences of numbers the views already publish, and both carry a display
-choice — which "other" role to put in a single column when a cloud sampled
-several — that would turn into product policy if it moved onto a result type.
+compute the same way. Rehydrating a persisted `spec` block back into a
+`FlatSpecReport` is likewise product-owned now (`FlatSpecReport.from_dict`,
+issue #2769) — the two independent copies of that logic this script and
+`jasper.active_speaker.crossover_v2.round_views` used to carry were exactly
+the kind of drift a single owner exists to prevent. What lives here is the
+part that IS genuinely lab-only — walking a receipts tree, joining an arm's
+positions to the walk log that drove them, and the two subtractions this
+table wants and no consumer does: the `gap` column and the bins-per-octave
+`ratio`. Both are differences of numbers the views already publish, and both
+carry a display choice — which "other" role to put in a single column when a
+cloud sampled several — that would turn into product policy if it moved onto
+a result type.
 
 Usage:
 
@@ -60,7 +65,7 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker.crossover_v2_flow import POSITION_ROLE_ONAX
-from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
+from jasper.active_speaker.flat_spec import FlatSpecReport
 from jasper.active_speaker.flat_spec_views import (
     DirectivityTable,
     LogPooledResidual,
@@ -96,57 +101,6 @@ def _fmt(value: float | None, width: int = 8, places: int = 3) -> str:
     if value is None:
         return "—".rjust(width)
     return f"{value:>{width}.{places}f}"
-
-
-def _band_result_from_dict(raw: dict[str, Any]) -> BandResult:
-    """One persisted band back into its dataclass, field for field.
-
-    `BandResult.to_dict` is the only writer of this shape; this is its inverse
-    and nothing here re-derives a value the writer did not store.
-    """
-    return BandResult(
-        f_lo_hz=float(raw["f_lo_hz"]),
-        f_hi_hz=float(raw["f_hi_hz"]),
-        tolerance_db=float(raw["tolerance_db"]),
-        max_deviation_db=raw.get("max_deviation_db"),
-        max_deviation_hz=raw.get("max_deviation_hz"),
-        rms_deviation_db=raw.get("rms_deviation_db"),
-        n_bins=int(raw["n_bins"]),
-        n_excluded=int(raw["n_excluded"]),
-        evaluable=bool(raw["evaluable"]),
-        passed=raw.get("passed"),
-        level_deviation_db=raw.get("level_deviation_db"),
-        max_ripple_db=raw.get("max_ripple_db"),
-        max_ripple_hz=raw.get("max_ripple_hz"),
-        graded_lo_hz=raw.get("graded_lo_hz"),
-        max_at_graded_edge=raw.get("max_at_graded_edge"),
-    )
-
-
-def _report_from_dict(raw: dict[str, Any]) -> FlatSpecReport:
-    """The banked `spec` block back into a `FlatSpecReport`.
-
-    The receipt stores `FlatSpecReport.to_dict()` verbatim, so this is a
-    rehydration and not a reconstruction: no band edge, floor, or reference is
-    recomputed here. The dataclass defaults cover a report written before a
-    field existed, which is exactly what they are documented to be for.
-    """
-    reference_band = raw.get("reference_band_hz")
-    kwargs: dict[str, Any] = {}
-    if reference_band is not None:
-        kwargs["reference_band_hz"] = (float(reference_band[0]), float(reference_band[1]))
-    return FlatSpecReport(
-        reference_db=float(raw["reference_db"]),
-        bands=tuple(_band_result_from_dict(b) for b in raw["bands"]),
-        overall_passed=bool(raw["overall_passed"]),
-        excluded_intervals=tuple(
-            (float(lo), float(hi)) for lo, hi in raw.get("excluded_intervals", ())
-        ),
-        best_effort_above_hz=float(raw["best_effort_above_hz"]),
-        smoothing_fraction=int(raw["smoothing_fraction"]),
-        trusted_floor_hz=raw.get("trusted_floor_hz"),
-        **kwargs,
-    )
 
 
 def _walk_log_angles(path: Path) -> dict[JoinKey, float]:
@@ -247,7 +201,7 @@ def _load_arm(
     spec = payload.get("spec")
     if not isinstance(spec, dict) or not spec.get("bands"):
         return None
-    report = _report_from_dict(spec)
+    report = FlatSpecReport.from_dict(spec)
     block = payload.get("positions") or {}
     rows = block.get("positions") or []
     grid = np.asarray((block.get("curve_grid") or {}).get("freqs_hz") or [], dtype=float)

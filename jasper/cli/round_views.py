@@ -43,8 +43,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.round_views import (
+    AGREEMENT_TESTIFY_MIN,
     RoundViewsError,
     agreement_table,
+    default_agreement_lo_hz,
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
@@ -54,6 +56,21 @@ from jasper.active_speaker.crossover_v2.round_views import (
 
 EXIT_OK = 0
 EXIT_ERROR = 1
+
+#: A banked round directory is operator-pulled evidence, not a validated
+#: input — the documented failure shapes it can hand back are broader than
+#: the product module's own typed :class:`RoundViewsError`: a truncated
+#: dump-ring WAV is the ring's NORMAL failure shape (``read_wav_mono`` /
+#: ``scipy.io.wavfile.read`` raise ``ValueError`` or ``EOFError`` on one), a
+#: malformed evidence document can be missing a key (``KeyError``) or hold
+#: the wrong type at one (``TypeError``), and any of the files this tool
+#: reads can simply not exist or not be readable (``OSError``). Every one of
+#: these is "the round is unreadable", exactly what exit 1 already means —
+#: this tuple is what makes that the ACTUAL behaviour instead of an
+#: unhandled traceback the first time a real, imperfect round hits it.
+_ROUND_READ_ERRORS: tuple[type[Exception], ...] = (
+    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError,
+)
 
 
 def _write_json(payload: Any, out: str | None, default_path: Path) -> Path | None:
@@ -76,7 +93,7 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
         baseline = load_banked_round(Path(args.baseline_dir))
         target = load_banked_round(Path(args.target_dir))
         result = frozen_reference_grade(baseline, target)
-    except RoundViewsError as exc:
+    except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     written = _write_json(
@@ -97,7 +114,7 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
         seats = per_seat_curves(
             banked, verify.curve, norm_band_hz=(args.norm_lo, args.norm_hi)
         )
-    except RoundViewsError as exc:
+    except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     payload = {
@@ -132,7 +149,7 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
     try:
         rounds = [(round_dir, load_banked_round(Path(round_dir))) for round_dir in args.round_dirs]
         result = repeatability_spread(rounds)
-    except RoundViewsError as exc:
+    except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     default_path = Path(args.round_dirs[0]) / "repeatability.json"
@@ -151,6 +168,7 @@ def _cmd_repeat(args: argparse.Namespace) -> int:
 def _cmd_agreement(args: argparse.Namespace) -> int:
     try:
         banked = load_banked_round(Path(args.round_dir))
+        lo_hz = args.lo if args.lo is not None else default_agreement_lo_hz(banked)
         verify = verify_pose_curve(banked)
         seats = per_seat_curves(
             banked, verify.curve, norm_band_hz=(args.norm_lo, args.norm_hi)
@@ -158,26 +176,31 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
         features = agreement_table(
             seats,
             banked.curve_grid_hz,
-            lo_hz=args.lo,
+            lo_hz=lo_hz,
             hi_hz=args.hi,
             feature_db=args.feature_db,
             testify_db=args.testify_db,
         )
-    except RoundViewsError as exc:
+    except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     payload = {
         "round_dir": str(banked.round_dir),
         "seats": [seat.position_id for seat in seats],
-        "swept_band_hz": [args.lo, args.hi],
+        "swept_band_hz": [lo_hz, args.hi],
         "feature_db": args.feature_db,
         "testify_db": args.testify_db,
         "features": [feature.to_dict() for feature in features],
     }
     written = _write_json(payload, args.out, Path(args.round_dir) / "agreement.json")
-    n_common = sum(1 for f in features if f.common_mode)
+    # `common_mode is True`, never a bare truthiness test: `None` (not
+    # evaluable, below AGREEMENT_TESTIFY_MIN seats) must not be silently
+    # counted alongside `False` (evaluated and failed the bar).
+    n_common = sum(1 for f in features if f.common_mode is True)
+    n_not_evaluable = sum(1 for f in features if f.common_mode is None)
     print(
-        f"agreement: {len(features)} feature(s), {n_common} common-mode"
+        f"agreement: {len(features)} feature(s), {n_common} common-mode, "
+        f"{n_not_evaluable} not-evaluable (< {AGREEMENT_TESTIFY_MIN} seats)"
         f"{f' -> {written}' if written else ''}",
         file=sys.stderr,
     )
@@ -220,7 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
     agreement.add_argument("round_dir", help="banked round directory")
     _add_norm_band_args(agreement)
-    agreement.add_argument("--lo", type=float, default=357.14, help="trusted sweep low edge, Hz")
+    agreement.add_argument(
+        "--lo", type=float, default=None,
+        help="trusted sweep low edge, Hz (default: this round's own trusted_floor_hz)",
+    )
     agreement.add_argument("--hi", type=float, default=16000.0, help="trusted sweep high edge, Hz")
     agreement.add_argument("--feature-db", type=float, default=0.4, help="minimum |pooled dB| to count as a feature")
     agreement.add_argument("--testify-db", type=float, default=0.4, help="minimum |seat dB| to testify or dissent")

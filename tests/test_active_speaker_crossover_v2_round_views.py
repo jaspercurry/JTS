@@ -35,6 +35,9 @@ from jasper.active_speaker.crossover_v2.round_views import (
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.audio_measurement import sweep
+from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.deconv import deconvolve, magnitude_response
+from jasper.audio_measurement.gating import gate_impulse_response
 
 #: A log-spaced curve grid spanning all three SPEC_BANDS rows
 #: (250-2000 / 2000-8000 / 8000-16000 Hz) with plenty of bins in each.
@@ -53,10 +56,15 @@ def _flat_curve(*, offset_db: float = 0.0, ripple_db: float = 0.0) -> np.ndarray
     return curve
 
 
-def _spec_dict(combined_db: np.ndarray) -> dict[str, Any]:
+def _spec_dict(
+    combined_db: np.ndarray, *, smoothing_fraction: int = 12, trusted_floor_hz: float | None = None
+) -> dict[str, Any]:
     """A real ``FlatSpecReport.to_dict()`` for ``combined_db`` on :data:`GRID`."""
     mask = np.zeros(GRID.shape, dtype=bool)
-    report = evaluate_flat_spec(GRID, combined_db, mask, smoothing_fraction=12, trusted_floor_hz=None)
+    report = evaluate_flat_spec(
+        GRID, combined_db, mask,
+        smoothing_fraction=smoothing_fraction, trusted_floor_hz=trusted_floor_hz,
+    )
     return report.to_dict()
 
 
@@ -66,12 +74,22 @@ def _make_round_dir(
     *,
     position_curves: dict[str, tuple[str, np.ndarray]],
     combined_db: np.ndarray | None = None,
+    spec_smoothing_fraction: int = 12,
+    positions_smoothing_fraction: int | None = None,
+    trusted_floor_hz: float | None = None,
 ) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
     produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/``.
 
     ``position_curves`` maps ``position_id -> (role, magnitude_db)``.
+    ``spec_smoothing_fraction`` / ``positions_smoothing_fraction`` are
+    separate on purpose (they default equal): a real banked round's
+    combined-curve ``spec`` block and its per-position ``curve_grid`` block
+    are not always smoothed at the same fraction, and B3's mismatched-
+    fraction test needs to set them apart deliberately.
     """
+    if positions_smoothing_fraction is None:
+        positions_smoothing_fraction = spec_smoothing_fraction
     round_dir = tmp_path / name
     session_dir = round_dir / "bundle" / "sess1"
     relay_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
@@ -105,10 +123,12 @@ def _make_round_dir(
     ]
     cloud = {
         "kind": "jts_crossover_v2_cloud_evidence", "schema_version": 1,
-        "trusted_floor_hz": None, "validity_floor_hz": None,
+        "trusted_floor_hz": trusted_floor_hz, "validity_floor_hz": None,
         "curve": {"freqs_hz": GRID.tolist(), "magnitude_db": combined_db.tolist()},
         "flatness": {"evaluable": True, "n_bins": len(GRID), "n_excluded": 0, "rms_db": 0.0},
-        "spec": _spec_dict(combined_db),
+        "spec": _spec_dict(
+            combined_db, smoothing_fraction=spec_smoothing_fraction, trusted_floor_hz=trusted_floor_hz,
+        ),
         "merged_excluded_bands_hz": [], "screen_excluded_bands_hz": [],
         "null_registry": {"classification": "insufficient_evidence", "nulls": []},
         "null_registry_crossover_region": {"classification": "insufficient_evidence"},
@@ -116,8 +136,8 @@ def _make_round_dir(
         "positions": {
             "available": True, "schema": "jts_attribution_position_evidence/1",
             "curve_grid": {
-                "freqs_hz": GRID.tolist(), "fractional_octave": 12,
-                "smoothing_fraction": 12, "floor_hz": None, "floor_source": None,
+                "freqs_hz": GRID.tolist(), "fractional_octave": positions_smoothing_fraction,
+                "smoothing_fraction": positions_smoothing_fraction, "floor_hz": None, "floor_source": None,
             },
             "positions": positions,
         },
@@ -246,12 +266,21 @@ def test_frozen_reference_refuses_a_target_position_absent_from_baseline(tmp_pat
 
 
 def _write_wired_capture(
-    round_dir: Path, session_dir: Path, *, phase: str = "verify", n_takes: int = 1
+    round_dir: Path,
+    session_dir: Path,
+    *,
+    phase: str = "verify",
+    n_takes: int = 1,
+    reflection_delay_samples: int | None = None,
+    reflection_gain: float = 0.0,
+    noise_scale: float = 1e-5,
+    noise_seed: int = 0,
 ) -> np.ndarray:
     """Bank a ``{phase}_program.wav`` plus ``n_takes`` dump-ring captures of
-    it through a pure-delay "room" (an identity system beyond a fixed
-    propagation delay), the same synthetic-IR shape
-    ``tests/test_correction_sweep_deconv.py`` uses for the underlying DSP.
+    it through a synthetic "room" — a pure delay by default (an identity
+    system beyond a fixed propagation delay, the same synthetic-IR shape
+    ``tests/test_correction_sweep_deconv.py`` uses for the underlying DSP),
+    plus one optional reflection.
 
     Returns the truth IR's peak sample offset, for the caller's own checks.
     """
@@ -261,9 +290,14 @@ def _write_wired_capture(
     sweep.write_sweep_wav(relay_dir / f"{phase}_program.wav", sig, sr)
 
     delay_samples = 480  # 10 ms
-    ir_truth = np.zeros(delay_samples + 50, dtype=np.float64)
+    length = delay_samples + 50
+    if reflection_delay_samples is not None:
+        length = max(length, delay_samples + reflection_delay_samples + 50)
+    ir_truth = np.zeros(length, dtype=np.float64)
     ir_truth[delay_samples] = 1.0
-    rng = np.random.default_rng(0)
+    if reflection_delay_samples is not None:
+        ir_truth[delay_samples + reflection_delay_samples] = reflection_gain
+    rng = np.random.default_rng(noise_seed)
 
     wav_dir = round_dir / "dumps" / "wav"
     sidecar_dir = round_dir / "dumps" / "sidecar"
@@ -271,9 +305,11 @@ def _write_wired_capture(
     sidecar_dir.mkdir(parents=True)
     for i in range(n_takes):
         captured = fftconvolve(sig.astype(np.float64), ir_truth, mode="full")
-        # A trace of noise so the post-arrival span is not exact digital
-        # silence (the reflection-envelope detector expects a real floor).
-        captured = captured + rng.normal(scale=1e-5, size=captured.shape)
+        # Noise so the post-arrival span is not exact digital silence (the
+        # reflection-envelope detector expects a real floor); amplified by
+        # ``noise_scale`` past the default trace where a test needs the
+        # raw, un-smoothed magnitude response to carry measurable ripple.
+        captured = captured + rng.normal(scale=noise_scale, size=captured.shape)
         basename = f"{1000 + i}_{phase}_synthetic"
         sweep.write_sweep_wav(wav_dir / f"{basename}.wav", captured.astype(np.float32), sr)
         (sidecar_dir / f"{basename}.json").write_text(json.dumps({"phase": phase}))
@@ -315,6 +351,123 @@ def test_verify_pose_curve_recovers_a_flat_response_from_an_identity_capture(tmp
     assert np.max(np.abs(verify_seat.normalized_db[trusted])) < 3.0
 
 
+def test_verify_pose_curve_smooths_at_the_positions_fraction_not_the_spec_ones(tmp_path):
+    """B3: a real banked round's combined-curve ``spec`` and per-position
+    ``curve_grid`` are not always smoothed at the same fraction (the cloud
+    smooths member positions finer than the combined curve on a real
+    corpus), AND a real round often carries a non-``None`` trusted floor.
+    Both are exercised here at once, matching real-round shape. The VERIFY
+    pose must smooth at the POSITIONS' fraction (6, coarser) — using the
+    spec's (3, finer) would leave more raw FFT ripple in the result, an
+    artifact of which report field this function happened to read rather
+    than of anything the speaker did.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        spec_smoothing_fraction=3, positions_smoothing_fraction=6, trusted_floor_hz=180.0,
+    )
+    banked = load_banked_round(round_dir)
+    assert banked.report.smoothing_fraction == 3
+    assert banked.positions[0].smoothing_fraction == 6
+    assert banked.report.trusted_floor_hz == 180.0
+    _write_wired_capture(round_dir, banked.session_dir, n_takes=1)
+
+    result = verify_pose_curve(banked)
+    assert result.curve is not None
+    assert result.curve.smoothing_fraction == 6, (
+        "verify_pose_curve must default to the POSITIONS' smoothing fraction, "
+        "not the report's (spec's)"
+    )
+
+
+def test_verify_pose_curve_gating_removes_a_reflection_comb_artifact(tmp_path):
+    """S6 mutation-killer: a synthetic "room" with a real reflection (0.5
+    gain, 3 ms after the direct arrival — squarely inside
+    ``gating.SEARCH_T_MIN_MS``..``SEARCH_T_MAX_MS``) produces a comb-
+    filtered magnitude response if left ungated. ``verify_pose_curve``'s
+    real (gated) result stays flat within a tolerance the manually
+    reconstructed UNGATED curve — built from the SAME captured bytes via
+    the same ``deconvolve``/``magnitude_response``/``smooth_fractional_octave``
+    calls, just skipping ``gate_impulse_response`` — measurably exceeds.
+    Deleting the gate call inside ``verify_pose_curve`` would make its
+    output equal the ungated curve computed here, which fails this bound.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+    _write_wired_capture(
+        round_dir, banked.session_dir, n_takes=1,
+        reflection_delay_samples=144, reflection_gain=0.5,  # 3 ms, -6 dB
+    )
+
+    result = verify_pose_curve(banked)
+    assert result.curve is not None
+    seats = per_seat_curves(banked, result.curve)
+    verify_seat = next(s for s in seats if s.position_id == "verify")
+    trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
+    gated_max_dev = float(np.max(np.abs(verify_seat.normalized_db[trusted])))
+
+    # The same bytes, the same deconvolution, the same smoothing — the ONLY
+    # difference is that gating is skipped.
+    relay_dir = next(banked.session_dir.glob("evidence/v1/artifacts/crossover_v2/*"))
+    program, program_sr = sweep.read_wav_mono(relay_dir / "verify_program.wav")
+    captured, sr = sweep.read_wav_mono(next((round_dir / "dumps" / "wav").glob("*.wav")))
+    assert sr == program_sr
+    ir = deconvolve(captured, program, sr)
+    freqs_lin, mag_db_lin = magnitude_response(ir, sr)  # NOT gated
+    mag_smoothed = smooth_fractional_octave(freqs_lin, mag_db_lin, fraction=result.curve.smoothing_fraction)
+    ungated_curve = np.interp(banked.curve_grid_hz, freqs_lin, mag_smoothed)
+    sel = (banked.curve_grid_hz >= 400.0) & (banked.curve_grid_hz <= 8000.0)
+    ungated_normalized = ungated_curve - float(np.median(ungated_curve[sel]))
+    ungated_max_dev = float(np.max(np.abs(ungated_normalized[trusted])))
+
+    tolerance = 4.0
+    assert gated_max_dev < tolerance, gated_max_dev
+    assert ungated_max_dev > tolerance, ungated_max_dev
+
+
+def test_verify_pose_curve_smoothing_reduces_raw_fft_roughness(tmp_path):
+    """S6 mutation-killer: amplified capture noise (still a fixed seed —
+    fully deterministic) leaves measurable ripple in the RAW magnitude
+    response; ``smooth_fractional_octave`` must reduce it. Compares the
+    real ``verify_pose_curve`` result's roughness (sum of squared bin-to-
+    bin differences over the trusted band) against the SAME bytes run
+    through the identical chain with the smoothing step skipped. Deleting
+    the ``smooth_fractional_octave`` call inside ``verify_pose_curve``
+    would make its output equal the unsmoothed curve computed here, which
+    fails the ratio bound.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        positions_smoothing_fraction=3,
+    )
+    banked = load_banked_round(round_dir)
+    assert banked.positions[0].smoothing_fraction == 3
+    _write_wired_capture(round_dir, banked.session_dir, n_takes=1, noise_scale=0.02)
+
+    result = verify_pose_curve(banked)
+    assert result.curve is not None
+    seats = per_seat_curves(banked, result.curve)
+    verify_seat = next(s for s in seats if s.position_id == "verify")
+    trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
+    smoothed_roughness = float(np.sum(np.diff(verify_seat.normalized_db[trusted]) ** 2))
+
+    relay_dir = next(banked.session_dir.glob("evidence/v1/artifacts/crossover_v2/*"))
+    program, program_sr = sweep.read_wav_mono(relay_dir / "verify_program.wav")
+    captured, sr = sweep.read_wav_mono(next((round_dir / "dumps" / "wav").glob("*.wav")))
+    assert sr == program_sr
+    ir = deconvolve(captured, program, sr)
+    gated_ir, _fragment = gate_impulse_response(ir, sr)
+    freqs_lin, mag_db_lin = magnitude_response(gated_ir, sr)  # NOT smoothed
+    unsmoothed_curve = np.interp(banked.curve_grid_hz, freqs_lin, mag_db_lin)
+    sel = (banked.curve_grid_hz >= 400.0) & (banked.curve_grid_hz <= 8000.0)
+    unsmoothed_normalized = unsmoothed_curve - float(np.median(unsmoothed_curve[sel]))
+    unsmoothed_roughness = float(np.sum(np.diff(unsmoothed_normalized[trusted]) ** 2))
+
+    assert unsmoothed_roughness > 1.5 * smoothed_roughness, (smoothed_roughness, unsmoothed_roughness)
+
+
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
     round_dir = _make_round_dir(
         tmp_path, "r1",
@@ -343,6 +496,36 @@ def test_per_seat_curves_refuses_an_empty_norm_band(tmp_path):
     banked = load_banked_round(round_dir)
     with pytest.raises(RoundViewsError, match="norm band"):
         per_seat_curves(banked, None, norm_band_hz=(50000.0, 60000.0))
+
+
+def test_per_seat_curves_normalises_by_median_not_mean(tmp_path):
+    """Pins the MEDIAN normalisation specifically: a single huge outlier
+    bin inside the norm band pulls the MEAN of that band well away from
+    the baseline level, but the median (66 bins, one outlier) is untouched.
+    A mutation that swapped ``np.median`` for ``np.mean`` would shift every
+    baseline bin's ``normalized_db`` off zero by the outlier's pull —
+    ~1.06 dB here, far outside float tolerance.
+    """
+    curve = _flat_curve()
+    # GRID spans [280, 16000] Hz log-spaced; the default norm band is
+    # [400, 8000] Hz. Push ONE bin inside that band to a large positive
+    # outlier, leaving the rest of the band (and the whole curve) untouched.
+    sel = (GRID >= 400.0) & (GRID <= 8000.0)
+    outlier_idx = int(np.where(sel)[0][0])
+    curve[outlier_idx] = 50.0
+    assert np.median(curve[sel]) == pytest.approx(REFERENCE_DB)
+    assert np.mean(curve[sel]) != pytest.approx(REFERENCE_DB, abs=0.5)
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", curve)},
+    )
+    banked = load_banked_round(round_dir)
+    seats = per_seat_curves(banked, None)
+    seat = seats[0]
+    # A baseline bin OUTSIDE the outlier and inside the norm band must
+    # normalise to exactly zero under median normalisation.
+    baseline_idx = int(np.where(sel)[0][1])
+    assert seat.normalized_db[baseline_idx] == pytest.approx(0.0, abs=1e-9)
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +581,27 @@ def test_repeatability_spread_single_round_has_no_spread(tmp_path):
     result = repeatability_spread([("only", r1)])
     shipped = next(m for m in result.metrics if m.name == "shipped_linear_pool_db")
     assert shipped.spread() is None
+
+
+def test_repeatability_metric_spread_uses_sample_variance_ddof1_not_population():
+    """Pins the ``ddof=1`` (Bessel-corrected, SAMPLE) standard deviation,
+    distinguished from the population (``ddof=0``) one on values chosen so
+    the two read differently to more than rounding: for ``[1, 2, 3]``, the
+    sample sd is exactly ``1.0`` and the population sd is
+    ``sqrt(2/3) ≈ 0.8165`` — a mutation that dropped the ``-1`` (or changed
+    ``len(vs) - 1`` to ``len(vs)``) would silently swap one for the other.
+    """
+    from jasper.active_speaker.crossover_v2.round_views import RepeatabilityMetric
+
+    metric = RepeatabilityMetric("test", {"a": 1.0, "b": 2.0, "c": 3.0})
+    spread = metric.spread()
+    assert spread is not None
+    assert spread["mean"] == pytest.approx(2.0)
+    assert spread["sd"] == pytest.approx(1.0, abs=1e-9)
+    # The population figure this must NOT equal, named so the distinction
+    # is checkable rather than asserted from memory.
+    population_sd = (sum((v - 2.0) ** 2 for v in (1.0, 2.0, 3.0)) / 3.0) ** 0.5
+    assert spread["sd"] != pytest.approx(population_sd, abs=1e-9)
 
 
 # --------------------------------------------------------------------------- #
@@ -461,11 +665,12 @@ def test_agreement_reports_sign_ok_size_split_when_magnitude_disagrees():
 
 def test_agreement_reports_dissent_when_a_seat_disagrees_in_sign():
     """Three seats dip, one rises: the dissenting seat is counted and named,
-    even though — matching the campaign's own ``diss <= 1`` tolerance,
-    generalised here to ``n_seats - 1`` — a single dissenter among four
-    still leaves the feature COMMON-MODE. What this test pins is the
-    counting, not the verdict: ``n_dissent`` must isolate exactly the one
-    seat whose sign disagreed, never miscount it as a testifying seat."""
+    and — the campaign's own literal ``diss <= 1`` tolerance — a single
+    dissenter among four testify=3 seats still leaves the feature
+    COMMON-MODE (testify(3) >= AGREEMENT_TESTIFY_MIN(3), dissent(1) <=
+    AGREEMENT_DISSENT_MAX(1)). What this test pins is the counting, not
+    just the verdict: ``n_dissent`` must isolate exactly the one seat whose
+    sign disagreed, never miscount it as a testifying seat."""
     grid = np.geomspace(400.0, 16000.0, 60)
     dip_idx = 25
     signs = [-1.0, -1.0, -1.0, +1.0]  # one seat goes the OTHER way
@@ -479,7 +684,90 @@ def test_agreement_reports_dissent_when_a_seat_disagrees_in_sign():
     feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
     assert feature.n_testify == 3
     assert feature.n_dissent == 1
+    assert feature.common_mode is True
     assert set(feature.seat_values_db) == {"s0", "s1", "s2", "s3"}
+
+
+def test_agreement_n5_uses_the_literal_threshold_not_a_seat_count_generalisation():
+    """B2's regression: at the REAL DEFAULT 5-seat cloud, a generalisation
+    that scaled the testify requirement to ``len(seats) - 1`` (4 of 5) would
+    refuse this feature; the campaign's own literal threshold (``testify >=
+    3``) accepts it. 3 seats dip deep, 2 dip shallow but same-sign and
+    within magnitude-agreement ratio of the deep three — sign agreement
+    (testify=3, dissent=0) and magnitude agreement (ratio <= 3.0) both hold
+    under the literal rule.
+    """
+    grid = np.geomspace(400.0, 16000.0, 60)
+    dip_idx = 25
+    depths = [6.0, 6.0, 6.0, 4.0, 4.0]
+    seats = []
+    for i, depth in enumerate(depths):
+        curve = np.zeros_like(grid)
+        curve[dip_idx - 1 : dip_idx + 2] -= depth
+        seats.append(_seat_curve(f"s{i}", "onax", curve))
+
+    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
+    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
+    assert len(seats) == 5
+    assert feature.n_testify == 3  # < 5 - 1 = 4: a seat-count-relative rule would refuse this
+    assert feature.n_dissent == 0
+    assert feature.ratio <= 3.0
+    assert feature.common_mode is True
+
+
+def test_agreement_below_testify_min_seats_is_not_evaluable_never_a_vacuous_bool():
+    """Below AGREEMENT_TESTIFY_MIN seats, ``testify >= 3`` cannot be
+    satisfied by construction (there are not 3 seats to testify). The
+    verdict is ``None`` — a named not-evaluable state — at both 1 and 2
+    seats, never a fabricated ``True`` (the old ``n_seats - 1``
+    generalisation floored at 0 and returned a vacuous pass there) and
+    never a fabricated ``False`` either. The measurements themselves
+    (``n_testify``, ``n_dissent``) are still reported — they are not
+    verdicts, and stay informative even where the verdict cannot be.
+    """
+    grid = np.geomspace(400.0, 16000.0, 60)
+    dip_idx = 25
+    for n_seats in (1, 2):
+        seats = []
+        for i in range(n_seats):
+            curve = np.zeros_like(grid)
+            curve[dip_idx - 1 : dip_idx + 2] -= 6.0
+            seats.append(_seat_curve(f"s{i}", "onax", curve))
+        features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
+        feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
+        assert feature.n_testify == n_seats
+        assert feature.common_mode is None, f"n_seats={n_seats}"
+
+
+def test_agreement_dissent_above_max_fails_the_bar_even_with_testify_and_magnitude_ok():
+    """Pins ``AGREEMENT_DISSENT_MAX`` specifically, isolated from the
+    testify count and the magnitude ratio: 3 seats testify (meets
+    ``AGREEMENT_TESTIFY_MIN``), 2 dissent (exceeds ``AGREEMENT_DISSENT_MAX
+    == 1``), and the ratio is <= 3.0 (magnitude agreement holds). Only the
+    dissent count can be failing the bar here — a mutation that widened
+    ``AGREEMENT_DISSENT_MAX`` to 2 (or dropped the check) would flip this
+    from ``False`` to ``True`` with nothing else changing.
+    """
+    grid = np.geomspace(400.0, 16000.0, 60)
+    dip_idx = 25
+    combo = [-6.0, -6.0, -6.0, 4.0, 4.0]
+    seats = []
+    for i, depth in enumerate(combo):
+        curve = np.zeros_like(grid)
+        curve[dip_idx - 1 : dip_idx + 2] += depth
+        seats.append(_seat_curve(f"s{i}", "onax", curve))
+    features = agreement_table(seats, grid, lo_hz=400.0, hi_hz=16000.0, feature_db=0.4, testify_db=0.4)
+    feature = min(features, key=lambda f: abs(f.center_hz - grid[dip_idx]))
+    assert feature.n_testify == 3
+    assert feature.n_dissent == 2
+    assert feature.ratio <= 3.0
+    assert feature.common_mode is False
+
+
+def test_agreement_table_refuses_an_empty_seat_list():
+    grid = np.geomspace(400.0, 16000.0, 60)
+    with pytest.raises(RoundViewsError, match="no seats"):
+        agreement_table([], grid, lo_hz=400.0, hi_hz=16000.0)
 
 
 def test_agreement_respects_the_swept_band(tmp_path):

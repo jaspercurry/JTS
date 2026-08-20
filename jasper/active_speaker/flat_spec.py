@@ -85,7 +85,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -313,6 +313,34 @@ class BandResult:
             "max_at_graded_edge": self.max_at_graded_edge,
         }
 
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "BandResult":
+        """The exact inverse of :meth:`to_dict` -- a rehydration, never a
+        re-derivation. No band edge, floor, or tolerance is recomputed;
+        every field is read back verbatim. The five fields defaulted on the
+        dataclass itself (``level_deviation_db`` through
+        ``max_at_graded_edge``) are read with :meth:`dict.get` so a report
+        persisted before that split existed rehydrates with the same
+        ``None`` the dataclass default would give a hand-built one.
+        """
+        return cls(
+            f_lo_hz=float(raw["f_lo_hz"]),
+            f_hi_hz=float(raw["f_hi_hz"]),
+            tolerance_db=float(raw["tolerance_db"]),
+            max_deviation_db=raw.get("max_deviation_db"),
+            max_deviation_hz=raw.get("max_deviation_hz"),
+            rms_deviation_db=raw.get("rms_deviation_db"),
+            n_bins=int(raw["n_bins"]),
+            n_excluded=int(raw["n_excluded"]),
+            evaluable=bool(raw["evaluable"]),
+            passed=raw.get("passed"),
+            level_deviation_db=raw.get("level_deviation_db"),
+            max_ripple_db=raw.get("max_ripple_db"),
+            max_ripple_hz=raw.get("max_ripple_hz"),
+            graded_lo_hz=raw.get("graded_lo_hz"),
+            max_at_graded_edge=raw.get("max_at_graded_edge"),
+        )
+
 
 @dataclass(frozen=True)
 class FlatSpecReport:
@@ -377,6 +405,33 @@ class FlatSpecReport:
             "trusted_floor_hz": self.trusted_floor_hz,
             "reference_band_hz": list(self.reference_band_hz),
         }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "FlatSpecReport":
+        """The exact inverse of :meth:`to_dict` -- a rehydration, never a
+        re-derivation. No band edge, floor, or reference is recomputed;
+        every field is read back verbatim through :meth:`BandResult.from_dict`
+        and this report's own optional fields. ``reference_band_hz`` is read
+        with :meth:`dict.get` so a report persisted before that field
+        existed rehydrates with the dataclass's own default
+        (:data:`REFERENCE_BAND_HZ`) rather than raising.
+        """
+        kwargs: dict[str, Any] = {}
+        reference_band = raw.get("reference_band_hz")
+        if reference_band is not None:
+            kwargs["reference_band_hz"] = (float(reference_band[0]), float(reference_band[1]))
+        return cls(
+            reference_db=float(raw["reference_db"]),
+            bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
+            overall_passed=bool(raw["overall_passed"]),
+            excluded_intervals=tuple(
+                (float(lo), float(hi)) for lo, hi in raw.get("excluded_intervals", ())
+            ),
+            best_effort_above_hz=float(raw["best_effort_above_hz"]),
+            smoothing_fraction=int(raw["smoothing_fraction"]),
+            trusted_floor_hz=raw.get("trusted_floor_hz"),
+            **kwargs,
+        )
 
 
 @dataclass(frozen=True)
