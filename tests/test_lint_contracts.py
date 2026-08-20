@@ -722,7 +722,68 @@ MAX_LINES_BY_PATH = {
     # there are now two, and the comment saying why a pose's retention runs
     # outside the close lock. A second copy of a gate's arithmetic is the
     # defect; this is what removing it costs.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_072,
+    #
+    # 2026-08-20 (PR-B, the per-driver class's round wiring): 13,072 -> 13,225,
+    # +170 / -17, and TWELVE of the added lines run. Hunk by hunk:
+    #    13  the `_prescribed_driver` field, 1 executing. The rest is the two
+    #        ways it differs from the blend field beside it, both of which a
+    #        reader would otherwise have to derive: its door is the candidate's
+    #        role-keyed `linearization` rather than a region list, so the merge
+    #        lives where the fit is final and not in a reader here; and it
+    #        carries NO digest twin, because the blend one exists solely for the
+    #        receipt and this class has no receipt lane yet — a field nothing
+    #        reads being the permissive-default trap this file's neighbours name.
+    #     7  the hand-off in `_build_candidate`, 1 executing, saying why this
+    #        one is passed RAW where its neighbour goes through a reader: the
+    #        blend field has three sources to rank and this has none, so a
+    #        method would be a pass-through with nothing to decide.
+    #     3  `_blend_prescription`'s source 0 naming its CLASS. The enumeration
+    #        read as "the prescription path" and there are now two; the
+    #        deletion-adjacent trap is that the sentence never had to mention
+    #        the other class to become misleading about it.
+    #    32  `_mic_trust_ceiling_hz`, net +29, of which 2 execute. The gate's
+    #        BLOCKER: the tier it scans for is what stops the delta probe
+    #        grading above the microphone's own trust limit (#2649, ~90% of the
+    #        squared error on the 2026-08-16 round), and a per-driver document
+    #        naming every role used to leave no entry carrying one — ceiling
+    #        `None`, silently. Two of the four `None` arms were silent before
+    #        PR-B as well, on every ineligible or failed fit; all four now say
+    #        which one it was through the slug that already existed. The lines
+    #        are the four-case enumeration, why the tier is read off the
+    #        CANDIDATE (the only carrier that crosses into the grading stage,
+    #        so a session field could not answer on stage 2), and the reason a
+    #        first-entry scan is sound (one round, one microphone). Four are
+    #        given back by the inline `log_event` the helper replaced.
+    #     4  the VERIFY-prediction coherence comment, net +4, zero executing:
+    #        SF1 makes "the exact thing the emitted graph now carries" true for
+    #        a prescribed round too, and the comment now says through what.
+    #    90  the pre-Apply bar becoming TWO bars, ~10 executing — the ruling
+    #        this file is the right home for, because the module docstring of
+    #        the gate it feeds says the threshold and the reason code are the
+    #        CALLER's to own and that it never branches on either. `_prescribed_
+    #        roles` reads which branches a candidate carries by document rather
+    #        than by fit (off the graph, not off session state);
+    #        `PRESCRIBED_NON_WORSENING_DB` is its own named datum beside the
+    #        reader that chooses; and `_assert_accountable` gains the branch. The
+    #        rest is the argument, which is the whole point of the entry: 0.5 dB
+    #        is a POOLED-RMS figure measured on the fit, a per-driver
+    #        prescription is a narrow high-Q filter aimed at ONE banked feature,
+    #        measuring 0.077-0.152 dB pooled
+    #        even when it is exactly right, and applying the fitted bar to it
+    #        would refuse the class before its first hardware exercise rather
+    #        than judge it. A number that blocks a whole class needs its reason
+    #        beside it or the next reader deletes the branch.
+    #     3  the type-only import; 1 the ctor argument; 3 the second reason
+    #        code's import and export.
+    # The seam WAS cut, and it is where the behaviour actually went: the merge
+    # and the prediction recomposition — the two new decisions in this change —
+    # are `crossover_v2.planning.build_candidate`'s and
+    # `crossover_v2.intervention.compose_linearized_prediction`'s, both uncapped
+    # modules that already own candidate assembly and the summed model. This
+    # file learned that it may HOLD a second prescription class, which is a fact
+    # about the session, and that its ceiling reader has four ways to have no
+    # answer rather than one; it learned nothing about linearization.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_225,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -849,16 +910,18 @@ MAX_LINES_BY_PATH = {
     #       could legitimately match. Guarding it behind a readable state file
     #       would be the #2699 trap this docstring already calls standing,
     #       reintroduced one indirection further out.
-    #   51  `_take_staged_blend_prescription`, the ONE place a staged
-    #       prescription enters and the one place its refusal becomes a round
-    #       that carries on. ~14 execute. The rest states the two directions and
-    #       why they are not in tension: fail-CLOSED on content (a document that
-    #       is stale, tampered, oversized, or a boost never reaches the
-    #       candidate) and fail-OPEN on transport (the round still runs, on
-    #       decision 10's deterministic instruction, because an optional
-    #       instruction must not cost a household a measurement session). Named
-    #       and module-level on `alignment_prescription_prior_from_state`'s
-    #       rule, which is what makes the seeding path drivable without a relay.
+    #   51  `_take_staged_blend_prescription` — renamed `_take_staged_
+    #       prescription` by PR-B, when it learned the second class — the ONE
+    #       place a staged prescription enters and the one place its refusal
+    #       becomes a round that carries on. ~14 execute. The rest states the
+    #       two directions and why they are not in tension: fail-CLOSED on
+    #       content (a document that is stale, tampered, oversized, or aimed
+    #       where its class may not correct never reaches the candidate) and
+    #       fail-OPEN on transport (the round still runs, on its class's own
+    #       deterministic answer, because an optional instruction must not cost
+    #       a household a measurement session). Named and module-level on
+    #       `alignment_prescription_prior_from_state`'s rule, which is what
+    #       makes the seeding path drivable without a relay.
     #   11  the durable `verify_priors.blend_prescription` key, 3 executing. It
     #       crosses stages for `alignment_prescription`'s reason, read the same
     #       way — stage 1 TAKES the prescription and stage 2 banks the receipt,
@@ -984,7 +1047,8 @@ MAX_LINES_BY_PATH = {
     # 2026-08-19 (#2732 P2, the angle walk's take): 8,889 -> 8,984, +95, no
     # deletions. Hunk by hunk:
     #    68  `_take_staged_angle_walk`, the module-level twin of
-    #        `_take_staged_blend_prescription` beside it and named for that
+    #        `_take_staged_prescription` beside it (then still spelled
+    #        `_take_staged_blend_prescription`) and named for that
     #        function's reason (a take drivable in a test without a relay). 27
     #        of the 68 execute; the rest is its contract and the two journal
     #        lines, which carry the deciding numbers so the take is readable
@@ -1019,7 +1083,39 @@ MAX_LINES_BY_PATH = {
     #     1  gate round 2, nit A: one 125-char comment line wrapped to the
     #        block's convention. No words changed, and E501 is not in the ruff
     #        set, so the wrap is the whole of it.
-    "jasper/web/correction_crossover_v2.py": 9_022,
+    #
+    # ...and 9,022 -> 9,079 (PR-B, the per-driver class's round wiring), +57, no
+    # deletions, ~14 executing. Every line is on the ONE take — this file's own
+    # charter, since it is the flow's untrusted-input boundary — and the split
+    # it now performs:
+    #    19  the take's contract gaining the two-class paragraphs: that
+    #        `accepts` is now `STAGEABLE_KINDS` and what each class lands in,
+    #        and that the pair is returned already SPLIT, made here on the
+    #        envelope's class field rather than by `isinstance` (the spool's own
+    #        rule) and here rather than at the call site, so the class
+    #        vocabulary has one reader instead of two to keep in step.
+    #    17  the journal line and the split return, 8 executing. `roles` is the
+    #        per-driver class's deciding number — WHICH branches stopped being
+    #        fitted this round — and `prescription_kind` is the document's class
+    #        beside a `prescription_class` that has meant cut-versus-boost since
+    #        it shipped; the comment is there because one key carrying two facts
+    #        is exactly the defect a reader would otherwise introduce, and the
+    #        `cast` earns its own sentence because narrowing a type is not the
+    #        same act as deciding a class.
+    #     6  the ctor argument at the hydrate, and why the per-driver class
+    #        rides the MEASURING stage for the blend argument's reason with a
+    #        different door.
+    #     4  the call site: one take, two locals.
+    #     9  imports and the call itself — the `driver_prescription` block (4),
+    #        `STAGEABLE_KINDS` (1), the take call spreading to carry `accepts=`
+    #        (2), and the `typing` line wrapping to take `cast` (2).
+    #     2  the fail-open/fail-closed paragraph, which named ONE class's
+    #        deterministic fallback ("decision 10's instruction") where there
+    #        are now two — the per-driver arm falls back to the Layer-1a fit.
+    # No seam to cut: the take, the refusal-that-leaves-a-round-running, and the
+    # split are one act, and it is exactly the act an untrusted-input boundary
+    # owns. What did NOT land here is the merge — see the flow's entry above.
+    "jasper/web/correction_crossover_v2.py": 9_079,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis import (
@@ -76,11 +76,18 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.log_event import log_event
 
 from ..branch_chain import CrossoverSection, sections_by_role
+from ..linearization_fit import linearization_filters_by_role
 from .candidates import CloudFitEvidence, LinearizationState
 from .contracts import CandidateAcousticContext
+from .driver_prescription import (
+    LINEARIZATION_CANDIDATE_FIELD,
+    DriverPrescription,
+    driver_prescription_to_candidate_fields,
+)
 from .intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     LinearizationPlan,
+    compose_linearized_prediction,
     driver_response_by_role,
     request_from_analysis,
 )
@@ -624,6 +631,7 @@ def build_candidate(
     exclusion_evidence: Callable[[CloudFitEvidence], Mapping[str, Any]],
     journal: Callable[[Any], None],
     blend_correction: Sequence[Mapping[str, Any]] = (),
+    driver_prescription: DriverPrescription | None = None,
 ) -> tuple[Any, LinearizationState]:
     """Build one candidate, and return what its linearization produced.
 
@@ -650,6 +658,17 @@ def build_candidate(
     :class:`~.candidates.CloudFitEvidence`'s own docstring names — a defect
     waiting for a caller that does not. A ``journal`` that RAISES stays
     safe either way: see the guard below.
+
+    ``driver_prescription`` is the round's staged per-driver instruction, and
+    ``None`` — every ordinary round — leaves this function byte-identical to
+    the pre-PR-B path.  It is merged HERE rather than folded on by the caller
+    because the merge needs the fit, and the fit is only final inside this
+    function: ``MeasuredCrossoverCandidate.fingerprint`` is ``field(init=False)``,
+    so a value stamped on afterwards is refused as ``candidate_tampered``.  It
+    is DEFAULTED where ``journal`` is not, and the asymmetry is the same rule
+    read the same way: a forgotten ``journal`` silences a disclosure the caller
+    already owed, while a forgotten prescription is what every round that
+    staged nothing legitimately passes.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverAlignment,
@@ -673,6 +692,11 @@ def build_candidate(
     # linearization dict). See ineligible_reason / plan_for_candidate.
     role_attenuations_db: Mapping[str, float] = dict(cand.trim_db)
     linearization: Mapping[str, Any] = {}
+    # The plan itself, held so the per-driver merge below can recompose the
+    # prediction from the frame it composed one. ``None`` on every arm that
+    # produced no fit, which is the same set of arms that leaves
+    # ``state.linearized_predicted_sum`` ``None``.
+    fit_plan: LinearizationPlan | None = None
     ineligible = ineligible_reason(
         analysis, woofer_role=woofer_role, tweeter_role=tweeter_role,
     )
@@ -761,6 +785,73 @@ def build_candidate(
             role_attenuations_db = dict(fit.role_attenuations_db)
             linearization = dict(fit.linearization)
             state = LinearizationState.from_plan(fit)
+            fit_plan = fit
+
+    # A9/PR-B. The staged per-driver instruction, folded onto the fit at the one
+    # moment the fit is final — through the route, never off the object's own
+    # ``filters``, so the promise that a boost cannot populate this field is a
+    # property of every path into it (the blend seam's rule, and the route
+    # re-asks it here rather than trusting that the take already did).
+    #
+    # TWO locals, and the split is between two consumers with two different
+    # right answers rather than a convenience:
+    #
+    #   * ``linearization`` — the FIT's map — is what ``exclusion_evidence``
+    #     below still tests. That record names what the cloud envelope fed the
+    #     FIT, and the comment beside it already refuses to let it ride a
+    #     candidate whose corrections came from anywhere else. A prescribed role
+    #     is exactly such an elsewhere.
+    #   * ``candidate_linearization`` — the SHIPPING map — is what the candidate
+    #     carries and what the prediction below is recomposed from, because both
+    #     of those describe the graph the speaker will actually emit.
+    #
+    # ``linearization_outcome`` keeps naming the FIT's verdict, on the gauge
+    # rule that gave it one writer. What tells a prescribed branch from a fitted
+    # one is the branch itself: every prescribed role carries ``prescribed_by``
+    # and no fit-quality field, which is
+    # ``driver_prescription_to_candidate_fields``' own stated design. That same
+    # rule is why a prescription rides a ``fit_failed`` round rather than being
+    # dropped with the fit: the document passed its own evidence gates twice —
+    # at staging against the packet and at the take against the banked
+    # classification — and the fit engine falling over says nothing about it.
+    # (The mic-trust ceiling is the one thing such a round genuinely loses, and
+    # ``_mic_trust_ceiling_hz`` says so on the journal rather than going quiet.)
+    candidate_linearization: Mapping[str, Any] = linearization
+    if driver_prescription is not None:
+        candidate_linearization = driver_prescription_to_candidate_fields(
+            driver_prescription, fitted=linearization
+        )[LINEARIZATION_CANDIDATE_FIELD]
+        # SF1: the prediction must model the EMITTED graph. Recomposed through
+        # the fit module's own single composition rather than a second copy of
+        # that arithmetic here, from the same raw branches and the same trim the
+        # fit committed — so the only thing that changed is which filters the
+        # branches carry.
+        #
+        # **Skipped when the fit produced no frame — ineligible, or the SF2
+        # degrade — and that arm is NOT equivalent to an ordinary unfitted
+        # round.** An ordinary one emits no correction, so the raw sum models it
+        # exactly. Here the graph carries the document's cuts while the
+        # prediction stays raw: measured at 2.9699 dB of divergence against
+        # VERIFY's 1.5 dB tolerance, `declared_transfer` reads zero, and the
+        # accountability gate abstains (`LEDGER_NO_LINEARIZATION`) — so a round
+        # on this arm would false-fail VERIFY. What to do about it is a design
+        # call this PR deliberately does not make: recompose from the raw
+        # branches, refuse the document on an unfitted round, or mark the round
+        # unverifiable. Tracked as issue #2757 rather than settled here, and
+        # the session path this class is being exercised on is the FITTED one,
+        # so the arm is not live.
+        frame = None if fit_plan is None else fit_plan.summation_frame
+        if frame is not None and state.linearized_predicted_sum is not None:
+            state = replace(
+                state,
+                linearized_predicted_sum=compose_linearized_prediction(
+                    frame,
+                    filters_by_role=linearization_filters_by_role(
+                        candidate_linearization
+                    ),
+                    role_attenuations_db=role_attenuations_db,
+                ),
+            )
 
     return MeasuredCrossoverCandidate(
         program_id=analysis.program_id,
@@ -768,7 +859,7 @@ def build_candidate(
         source_preset=source_preset,
         role_attenuations_db=role_attenuations_db,
         alignment=alignment,
-        linearization=linearization,
+        linearization=candidate_linearization,
         # The exclusion reason of record (plan PR-6b). Empty — the
         # pre-move shape — whenever no cloud evidence reached the fit,
         # INCLUDING when the fit itself failed above: a record of what the

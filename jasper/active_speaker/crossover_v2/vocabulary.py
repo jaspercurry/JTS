@@ -330,6 +330,17 @@ REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
 # materially better than the measured pre-apply response. Applying it would
 # spend the household's speaker on a change we can already show does not help.
 REASON_CORRECTION_NOT_AN_IMPROVEMENT = "correction_not_an_improvement"
+# ...and the same finding about a PRESCRIBED correction (PR-B). Its own code
+# purely because of WHO the copy has to address: the refused tuning is a
+# document an operator wrote and staged, so "the tuning JTS worked out" is a
+# misattribution, and "re-check the driver details" sends a household to fix
+# something that is not what is wrong. The remedy is to revise or withdraw the
+# prescription. The gate that raises it is identical; only the bar it applied
+# and the sentence it produces differ, and the journal's ``required_db`` is
+# what tells the two bars apart on the wire.
+REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT = (
+    "prescribed_correction_not_an_improvement"
+)
 # Delta-probe verdicts (linearization-integrity PR-L5). Unlike the two above,
 # these fire AFTER the apply — they are what the post-apply sweep found — so
 # each one rolls the correction back before it names itself. The household is
@@ -1138,6 +1149,19 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The tuning JTS worked out would not have made this speaker measure "
         "better, so it was not applied. Re-check the driver details in speaker "
         "setup, then measure again.",
+    ),
+    # The sibling above, addressed to the right author. No hardware noun and no
+    # "re-check the driver details": nothing about the speaker's description is
+    # implicated when a STAGED document is the thing that would not have helped,
+    # and sending someone to speaker setup would cost them a real change to fix
+    # a problem that is not there. The one action that changes the outcome is
+    # naming the document.
+    REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT: ReasonSpec(
+        REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT, TEMPLATE_HARD_STOP, 0, "",
+        "The prescribed tuning that was staged for this round would have made "
+        "this speaker measure worse, so it was not applied and nothing about "
+        "your sound changed. Revise or withdraw the prescription, then measure "
+        "again.",
     ),
     # PR-L5 delta-probe rollbacks. All three are TEMPLATE_HARD_STOP with no
     # retry budget: the correction has already been undone, so "try again"

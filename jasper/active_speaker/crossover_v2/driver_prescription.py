@@ -151,6 +151,10 @@ from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     declared_protection_lowpass_ceiling_hz,
 )
+# ...and the owner of the persisted linearization entry this module merges INTO
+# — imported for its one key name rather than restating the literal, because
+# three modules have to agree on it or a hearing-relevant ceiling goes quiet.
+from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
 
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
@@ -1682,6 +1686,39 @@ def driver_prescription_to_candidate_fields(
     carried instead, so a reader of the persisted candidate can tell a
     prescribed branch from a fitted one without joining it back to a receipt.
 
+    **...with ONE exception, and the line is fit-QUALITY versus
+    measurement-PROVENANCE.** :data:`MIC_TIER_FIELD` is carried forward from the
+    role's own fitted entry when it had one. It is not a claim about this
+    correction; it names the MICROPHONE that measured the round, and replacing a
+    role's filters does not change which microphone that was. It has to survive
+    because the candidate is the only carrier that crosses into the grading
+    stage, and ``CrossoverV2Session._mic_trust_ceiling_hz`` reads the tier off
+    this map to decide where the delta probe may grade at all (#2649). Dropping
+    it on a document that names every role removed the ceiling silently and
+    handed the probe untrusted HF — the exact defect #2649 closed.
+
+    Nothing else crosses that line, and each omission was checked against its
+    reader rather than assumed. ``reason_summary`` and
+    ``fit_band_hz``/``residual_rms_db`` are read by the fit-reason disclosure
+    and the attempt replay's comparability check, both of which SHOULD skip a
+    prescribed branch; ``driver_class`` has no reader on this map at all (the
+    browser surface reads it from the design draft), so carrying it would be
+    the speculative flexibility the paragraph above trims.
+
+    ``headroom_cost_db`` is the one omission that is a KNOWN GAP rather than a
+    true answer, and it is stated here because it became one when the bounded
+    boost route opened (#2754). What reaches the GRAPH is unaffected — the
+    charge that protects the speaker is computed by
+    ``camilla_yaml.linearization_headroom_db`` from the filters themselves and
+    absorbed by ``active_baseline_headroom``, and neither reads this key. What
+    is affected is the DISCLOSURE: ``worst_headroom_cost_db`` reduces this map
+    for the household-facing max-level cost, so a prescribed BOOST branch
+    currently reports 0.0 there and under-states what the correction costs in
+    maximum SPL. Carrying the replaced fit's number would be worse — it is that
+    fit's charge for filters that are no longer emitted — and deriving the
+    branch's own charge needs the crossover chain, which this pure merge does
+    not have and should not grow. Tracked as issue #2759.
+
     ``{}`` for a ``None`` prescription, whatever ``fitted`` holds: with no
     document there is nothing to merge, and the fit reaches the candidate by its
     own ordinary path. That keeps the no-prescription path byte-identical to
@@ -1701,7 +1738,7 @@ def driver_prescription_to_candidate_fields(
         if isinstance(role, str) and role.strip()
     }
     for role in prescription.roles:
-        merged[role] = {
+        entry: dict[str, Any] = {
             "filters": [dict(f) for f in prescription.filters_for(role)],
             "prescribed_by": {
                 "model": prescription.prescriber_model,
@@ -1709,6 +1746,13 @@ def driver_prescription_to_candidate_fields(
                 PACKET_FINGERPRINT_FIELD: prescription.packet_fingerprint,
             },
         }
+        # The one field that survives replacement — see the docstring. Read off
+        # the entry being replaced, so a role the fit never reached carries none
+        # and the ceiling's reader is told rather than left to infer.
+        previous = merged.get(role)
+        if isinstance(previous, Mapping) and previous.get(MIC_TIER_FIELD):
+            entry[MIC_TIER_FIELD] = str(previous[MIC_TIER_FIELD])
+        merged[role] = entry
     return {field: merged}
 
 
@@ -1974,9 +2018,14 @@ def driver_prescription_response_format() -> dict[str, Any]:
             "jts_validates_and_measures": True,
             "note": (
                 "an accepted prescription becomes an ordinary measured "
-                "candidate: the same admission, safety-envelope, headroom, "
-                "variance and verify gates every automatic round faces, and "
-                "the round's own adoption verdict decides keep or restore"
+                "candidate: the same admission, safety-envelope, headroom and "
+                "variance gates every automatic round faces, and the round's "
+                "own adoption verdict decides keep or restore. On a round "
+                "whose per-driver fit ran, the verify gates apply identically "
+                "— the round models the graph your filters will actually "
+                "produce. The pre-apply screen asks only that the prediction "
+                "not be WORSE than the measurement it replaces; what settles "
+                "whether a cut helped is the measured round, not a model"
             ),
         },
     }

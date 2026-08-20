@@ -1780,8 +1780,10 @@ tolerance, so a cuttable peak nearby cannot vouch for a filter sitting on a dip.
 with the round the flow state says is next. The next crossover round takes it
 **once**, re-validates it, and consumes it; a household Undo withdraws it
 unrun; and a document staged for a round that has already run is refused as
-`prescription_not_staged_for_this_round` while the round carries on with the
-deterministic correction. `--state` is required here (it is optional for the
+`prescription_not_staged_for_this_round` while the round carries on with its
+class's own deterministic answer — the previous round's banked blend
+instruction, or the automatic per-driver fit. `--state` is required here (it is
+optional for the
 other two verbs) because the round ordinal is read from it — staging without
 one would file a prescription against a series the command cannot see. Staging
 twice is last-wins: the slot holds one instruction, and the overwrite is logged

@@ -81,7 +81,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -89,6 +89,7 @@ from ..branch_chain import (
     HEADROOM_MARGIN_DB,
     CrossoverSection,
     branch_chain_peak_db,
+    chain_response,
     headroom_charge_db,
     radiating_band_hz,
 )
@@ -141,9 +142,11 @@ __all__ = [
     "PlannerError",
     "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
+    "SummationFrame",
     "TrimDecision",
     "anchor_trims",
     "check_level_consistency",
+    "compose_linearized_prediction",
     "compose_sigma_db",
     "decide_trim",
     "driver_response_by_role",
@@ -1116,6 +1119,89 @@ def decide_trim(
 
 
 @dataclass(frozen=True)
+class SummationFrame:
+    """The two RAW branches, and the frame a prediction of their sum is taken in.
+
+    Everything :func:`compose_linearized_prediction` needs except the filters
+    and the trims — held together because a prediction composed from one
+    round's branches in another round's frame is a number with no meaning, and
+    a caller assembling five loose arguments is where that happens.
+
+    ``residual_delay_us`` is already the RESIDUAL relative to the
+    argmax-referenced frame (:func:`summed_model_residual_delay_us`'s answer),
+    never the applied delay — passing the applied delay double-counts the
+    measured peak gap, which is the reverted fix-2 failure mode that function's
+    docstring names.
+    """
+
+    freqs_hz: np.ndarray
+    woofer_role: str
+    tweeter_role: str
+    woofer_tf: np.ndarray
+    tweeter_tf: np.ndarray
+    polarity_sign: int
+    residual_delay_us: float
+
+
+def compose_linearized_prediction(
+    frame: SummationFrame,
+    *,
+    filters_by_role: Mapping[str, Sequence[Mapping[str, Any]]],
+    role_attenuations_db: Mapping[str, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """A model of exactly what the emitted graph will do, as ``(freqs, dB)``.
+
+    THE composition, and the reason it is a function rather than eight inlined
+    lines: two callers now need it and they correct different filter sets.
+    :func:`plan_linearization` composes from the FIT's filters; the per-driver
+    prescription merge recomposes from the filters that will actually ship. A
+    second implementation of this arithmetic is how a prediction and a graph
+    drift apart, which is the defect the #1668 PR-D coherence fix closed after
+    it cost a deterministic 1.688-1.699 dB VERIFY mismatch against a 1.5 dB
+    tolerance on JTS3.
+
+    The correction is COMPLEX (minimum-phase), not a zero-phase magnitude scale
+    (#1667): the emitted biquads rotate phase near their corners and this
+    summation is phase-dominated, so a magnitude-only model mistracked the
+    measured VERIFY summation by ~2.0 dB — WORSE than modelling no correction
+    at all — where the complex model tracks to ~0.5 dB.
+
+    ONE grid for both branches, and that is a precondition rather than a
+    simplification: the branch product and the sum below are elementwise, so a
+    pair on two grids has never meant anything here — which is why the caller
+    this replaced already passed the woofer's grid to ``predicted_branch_sum``
+    for both.
+
+    ``filters_by_role`` is the PERSISTED filter shape
+    (``{role: [{biquad_type, freq, q, gain}, ...]}``) — what
+    ``linearization_filters_by_role`` reduces a candidate's own map to, and what
+    the emitter re-validates — so both callers speak one shape and neither has
+    to rebuild value objects to be understood here. A role with no entry is
+    corrected by unity: :func:`~..branch_chain.chain_response` returns ones for
+    an empty filter list, so an unfitted, unprescribed branch survives raw.
+    """
+    corrections = {
+        role: chain_response(
+            [dict(f) for f in filters_by_role.get(role, ())], frame.freqs_hz,
+        )
+        for role in (frame.woofer_role, frame.tweeter_role)
+    }
+    predicted = predicted_branch_sum(
+        frame.woofer_tf * corrections[frame.woofer_role],
+        frame.tweeter_tf * corrections[frame.tweeter_role],
+        role_attenuations_db[frame.woofer_role],
+        role_attenuations_db[frame.tweeter_role],
+        int(frame.polarity_sign),
+        freqs_hz=frame.freqs_hz,
+        residual_delay_us=frame.residual_delay_us,
+    )
+    return (
+        frame.freqs_hz,
+        20.0 * np.log10(np.maximum(np.abs(predicted), 1e-12)),
+    )
+
+
+@dataclass(frozen=True)
 class LinearizationPlan:
     """One candidate's complete prescription, as a value.
 
@@ -1148,6 +1234,16 @@ class LinearizationPlan:
     moved this candidate's anchor and cannot.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray]
+    summation_frame: "SummationFrame"
+    """The RAW material :attr:`linearized_predicted_sum` was composed from.
+
+    Carried so a caller that changes which filters will actually ship can
+    recompose the prediction through :func:`compose_linearized_prediction` —
+    the one composition — instead of either shipping a prediction of a graph
+    nobody will emit or growing a second implementation of this arithmetic.
+    Its only such caller today is
+    :func:`~.planning.build_candidate`'s per-driver prescription merge.
+    """
     radiating_band_hz: Mapping[str, tuple[float, float]]
     journal: tuple[JournalRecord, ...] = field(default=())
     journal_dropped: tuple[str, ...] = field(default=())
@@ -2136,21 +2232,31 @@ def plan_linearization(
     # ``MeasuredCrossoverAlignment`` — so "the committed delay" here is
     # literally the delay that reaches the graph. Site 1 deriving its residual
     # from the same two values is what leaves the raw and linearized predictions
-    # differing by the correction filters and nothing else.
-    predicted_lin = predicted_branch_sum(
-        w_lin,
-        t_lin,
-        role_attenuations_db[woofer_role],
-        role_attenuations_db[tweeter_role],
-        int(request.polarity_sign),
+    # differing by the SHIPPING correction filters and nothing else.
+    #
+    # "Shipping" rather than "fitted" since PR-B, and the frame below is what
+    # keeps that true: a per-driver prescription replaces a role's filters after
+    # this function has returned, and ``planning.build_candidate`` recomposes
+    # through the SAME function rather than leaving a prediction of a graph
+    # nobody will emit. This call is the no-document case of that one call.
+    summation_frame = SummationFrame(
         freqs_hz=freqs,
+        woofer_role=woofer_role,
+        tweeter_role=tweeter_role,
+        woofer_tf=responses[woofer_role].complex_tf,
+        tweeter_tf=responses[tweeter_role].complex_tf,
+        polarity_sign=int(request.polarity_sign),
         residual_delay_us=summed_model_residual_delay_us(
             request.anchor_delay_us, request.delay_us
         ),
     )
-    linearized_predicted_sum = (
-        freqs,
-        20.0 * np.log10(np.maximum(np.abs(predicted_lin), 1e-12)),
+    linearized_predicted_sum = compose_linearized_prediction(
+        summation_frame,
+        filters_by_role={
+            role: [f.to_dict() for f in fits[role].filters]
+            for role in (woofer_role, tweeter_role)
+        },
+        role_attenuations_db=role_attenuations_db,
     )
 
     # The headroom charge, computed now that the trim is committed (#1808).
@@ -2222,6 +2328,7 @@ def plan_linearization(
         trim_band_estimate_db=banked_trim_estimate_db,
         level_consistency=level_consistency,
         linearized_predicted_sum=linearized_predicted_sum,
+        summation_frame=summation_frame,
         radiating_band_hz=radiating_bands,
         journal=tuple(records),
         journal_dropped=tuple(dropped),
