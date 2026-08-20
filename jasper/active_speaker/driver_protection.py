@@ -234,18 +234,22 @@ def driver_protection_profile(
 # move it. Two mic-independent stops do survive the swap, which is what bounds
 # the residual to ~10 dB over intent at the loudest bankable volume rather than
 # leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
-# 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp window to
-# the same), and the nominal measurement stimulus peaks at -12.0 dBFS
+# 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp's volume
+# ceiling to the same), and the nominal measurement stimulus peaks at -12.0 dBFS
 # (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS). The
 # measured SPL band top and the ramp's runaway guard sit above those as the
 # mic-DEPENDENT layer.
 #
 # Refusing to derive on delta <= 0 is NOT the fix -- it would break the
-# legitimate pro-woofer case above, and the two shapes are separated by 0.7 dB,
-# so no constant here can tell them apart. Validating the declaration is the
-# fix, and it needs no invented per-style anchor: the preset already ships the
-# woofer's own sensitivity_db (83.3 on JTS3), which a swapped draft
-# contradicts. Tracked as issue #2765.
+# legitimate pro-woofer case above, and the two shapes derive the SAME ceiling:
+# both ask for more than full scale and both clamp to MAX_TEST_LEVEL_DBFS, so
+# they are 0.0 dB apart and no constant here can tell them apart even in
+# principle. Nor can a backstop be parked just under full scale to catch the
+# swap: an ordinary CORRECT coax (88.5 woofer / 89.2 tweeter) derives -0.70,
+# so the near-full-scale regime is where correct hardware already lives.
+# Validating the declaration is the fix, and it needs no invented per-style
+# anchor: the preset already ships the woofer's own sensitivity_db (83.3 on
+# JTS3), which a swapped draft contradicts. Tracked as issue #2765.
 
 
 def derive_hf_measurement_ceiling_dbfs(

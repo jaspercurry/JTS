@@ -775,8 +775,8 @@ accident. That removes the *derivation's* contribution to
 
 Two mic-independent stops survive a swapped declaration even so, which is why
 the residual is bounded rather than open-ended: `MAX_TEST_LEVEL_DBFS` still
-clamps the derived cap at 0.0 dBFS (and `HARD_CEILING_DBFS` clamps the ramp
-window to the same), and the nominal measurement stimulus itself peaks at
+clamps the derived cap at 0.0 dBFS (and `HARD_CEILING_DBFS` clamps the ramp's
+volume ceiling to the same), and the nominal measurement stimulus itself peaks at
 −12 dBFS (`AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS`), so the signal reaching
 the driver sits that far under full scale. The measured SPL band top and the
 ramp guards are then the mic-*dependent* layer on top. Refusing to derive on
