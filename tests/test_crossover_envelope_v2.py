@@ -81,6 +81,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     verify_inconclusive_cause,
     verify_inconclusive_message,
 )
+from jasper.active_speaker.crossover_v2.verification import RESULT_VERIFIED_TARGET
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.gate_disclosure import describe_gate
@@ -784,6 +785,35 @@ def _cloud_verify_spec(passed: bool):
     }
 
 
+def _shipped_claims(integration: str = "pass", absolute: str = "pass") -> dict:
+    """The §7 claim record a post-R18 VERIFY writes. SYNTHETIC numbers.
+
+    ``crossover_v2_flow._verify_claims`` ALWAYS returns an ``integration``
+    entry, so ``_post_apply_grade``'s ``result_evidence`` is true — and its
+    terminal result code therefore reaches the done screen — on every shipped
+    session whose VERIFY produced a tracking analysis. A VERIFY that refuses
+    before that record is written (a gate refusal, the pilot-transfer
+    level-shift arm) writes no claims, and neither does a PRE-CLAIMS durable
+    state; on both, no result code exists to qualify the screen's copy. The
+    tests below that rely on that say so out loud (#2738: four of them relied
+    on it silently, so none of them exercised the graded shape).
+    """
+    branch = {"status": "not_evaluated", "reason": "no_per_branch_capture"}
+    return {
+        "woofer_branch": dict(branch),
+        "hf_branch": dict(branch),
+        "integration": {
+            "status": integration, "max_db": 0.61, "tolerance_db": 1.5,
+            "band_hz": [1200.0, 2400.0],
+        },
+        "absolute": {
+            "status": absolute, "max_db": 1.42, "rms_db": 0.71,
+            "worst_db": 1.42, "worst_hz": 1780.0, "tolerance_db": 2.5,
+            "band_hz": [1200.0, 2400.0],
+        },
+    }
+
+
 def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
     """PR-L4 item 7: the spec verdict gets a vote where it cannot be collapsed.
 
@@ -791,9 +821,15 @@ def test_done_headline_states_an_out_of_spec_result_in_primary_copy():
     which asks whether the speaker matched its own prediction — not whether it
     is flat. On 2026-07-27 the one instrument that compares the result to flat
     failed all three bands and reached only a line inside a collapsed
-    disclosure, so a household read "Your speaker is tuned" over it."""
+    disclosure, so a household read "Your speaker is tuned" over it.
+
+    On the SHIPPED shape since #2738: the claims block gives this session a
+    terminal result code, and a failed spatial grade caps it — so the vote
+    below is the one this test was written to pin rather than one a fixture
+    without claims happened to leave unopposed."""
     env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"},
+        phase="done",
+        verify={"outcome": "pass", "claims": _shipped_claims()},
         candidate=_candidate_summary(), applied=True,
         cloud=_cloud_verify_spec(False),
     ))
@@ -835,31 +871,57 @@ def test_done_headline_will_not_call_an_unmeasurable_group_a_miss():
     to grade as well as for one that was graded and missed, so the screen used
     to tell a household its speaker "measures further from flat than the
     target" on the strength of a measurement that never produced a number.
-    The two states now get two sentences."""
+    The two states now get two sentences.
+
+    **UNMEASURABLE is not FAILED, so #2738's cap must not reach it** — that is
+    the second arm below, and it is what keeps the cap from turning "could not
+    be graded" into a miss by the back door. The sentence itself is pinned on a
+    PRE-CLAIMS durable state (no claims block, so no terminal result code
+    qualifies the copy): on a shipped post-R18 session the result code's copy
+    replaces it, which is #2605's override behaving as specified for an absent
+    spatial verdict, not a regression of this branch."""
+    unmeasurable = {PHASE_CLOUD_VERIFY: {
+        **_cloud_verify_spec(False)[PHASE_CLOUD_VERIFY],
+        "flatness": {
+            "max_db": None, "max_hz": None, "max_band_hz": None,
+            "tolerance_db": None, "rms_db": None, "n_bins": 0,
+            "n_excluded": 900, "evaluable": False, "passed": False,
+        },
+    }}
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, applied=True,
-        candidate=_candidate_summary(),
-        cloud={PHASE_CLOUD_VERIFY: {
-            **_cloud_verify_spec(False)[PHASE_CLOUD_VERIFY],
-            "flatness": {
-                "max_db": None, "max_hz": None, "max_band_hz": None,
-                "tolerance_db": None, "rms_db": None, "n_bins": 0,
-                "n_excluded": 900, "evaluable": False, "passed": False,
-            },
-        }},
+        candidate=_candidate_summary(), cloud=unmeasurable,
     ))
     verdict = env["verdict_text"].lower()
     assert "could not read enough of the sound" in verdict
     assert "further from flat" not in verdict
     # And the badge stops claiming a miss it cannot support either.
     assert "crossover_v2_out_of_spec" not in {n["code"] for n in env["nudges"]}
+    # The shipped shape: a result code is present and the cap leaves it alone,
+    # because no spatial verdict failed.
+    shipped = build_crossover_envelope_v2(_status(
+        phase="done", applied=True, candidate=_candidate_summary(),
+        verify={"outcome": "pass", "claims": _shipped_claims()},
+        cloud=unmeasurable,
+    ))
+    assert "further from flat" not in shipped["verdict_text"].lower()
+    assert {n["code"] for n in shipped["nudges"]} == {
+        "crossover_v2_verified_target",
+    }
 
 
 def test_done_headline_says_a_full_session_never_closed_its_wider_check():
     """#2098: a Full session that verified at the mark and never closed its
     post-apply group read as an unqualified "Your speaker is tuned" — the
     widest of the three claims on the narrowest evidence. The local pass is
-    still stated; what is added is the part that is unproven."""
+    still stated; what is added is the part that is unproven.
+
+    A PRE-CLAIMS durable state, deliberately: with no claims block there is no
+    terminal result code, so this sentence is the screen's answer. On a shipped
+    post-R18 session the result copy replaces it — the spatial verdict is
+    ABSENT here, not failed, so #2738's cap does not reach it and #2605's
+    override stands as specified. Named rather than left implicit (#2738: this
+    test read as shipped-shape coverage and was not)."""
     env = build_crossover_envelope_v2(_status(
         phase="done", tier="full", verify={"outcome": "pass"}, applied=True,
         candidate=_candidate_summary(),
@@ -1470,12 +1532,18 @@ def test_the_round_key_is_present_on_every_screen():
 
 
 def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
-    """Two instruments, two claims, neither silencing the other."""
+    """Two instruments, two claims, neither silencing the other.
+
+    On the SHIPPED shape since #2738: the claims block gives this session a
+    terminal result code, which used to return before the caveat was appended
+    at all — so a household with a level mismatch under a failed spatial grade
+    saw one green badge and no caveat."""
     env = build_crossover_envelope_v2(_status(
         phase="done",
         verify={
             "outcome": "pass",
             "delta_probe": {"verdict": "level_mismatch"},
+            "claims": _shipped_claims(),
         },
         candidate=_candidate_summary(), applied=True,
         cloud=_cloud_verify_spec(False),
@@ -1483,6 +1551,122 @@ def test_a_level_mismatch_rides_beside_an_out_of_spec_badge_too():
     assert {n["code"] for n in env["nudges"]} == {
         "crossover_v2_out_of_spec", "crossover_v2_level_mismatch",
     }
+
+
+def test_a_failed_spatial_grade_caps_the_result_badge_and_the_primary_copy():
+    """#2738 (ruled 2026-08-19), reproduced from the issue's own probe.
+
+    ``absolute`` passed at the mark, so the producer grades this session
+    ``verified_target`` — and its post-apply group closed FAILED at −4.63 dB
+    near 1650 Hz. Before the cap the household read a green "Target verified."
+    over copy saying the result reached the target, with the −4.63 dB reachable
+    only inside the collapsed expert disclosure. The twin of #2464's cap, one
+    surface over: the badge and the primary copy may not claim verified over a
+    failed spatial grade, and the caveat still rides beside whichever badge
+    won.
+
+    The PRODUCER's fields are untouched — ``/state`` still reports the result
+    code and the grade — because this is a cap on what the household SCREEN may
+    claim, not a second opinion about what was measured.
+    """
+    status = _status(
+        phase="done", tier="full", applied=True,
+        candidate=_candidate_summary(),
+        verify={
+            "outcome": "pass",
+            "delta_probe": {"verdict": "level_mismatch"},
+            "claims": _shipped_claims(),
+        },
+        cloud={PHASE_CLOUD_VERIFY: {
+            **_cloud_verify_spec(False)[PHASE_CLOUD_VERIFY],
+            "flatness": {
+                "max_db": -4.628, "max_hz": 1650.0,
+                "max_band_hz": [1000.0, 2000.0], "tolerance_db": 2.5,
+                "rms_db": 2.1, "n_bins": 900, "n_excluded": 0,
+                "evaluable": True, "passed": False,
+            },
+        }},
+    )
+    grade = status["crossover_v2"]["post_apply_grade"]
+    assert grade["outcome"] == RESULT_VERIFIED_TARGET
+    assert grade["spatial"] == GRADE_SPATIAL_FAILED
+    assert grade["spatial_worst_db"] == -4.628
+
+    env = build_crossover_envelope_v2(status)
+    assert {n["code"] for n in env["nudges"]} == {
+        "crossover_v2_out_of_spec", "crossover_v2_level_mismatch",
+    }
+    assert all(n["severity"] == "warn" for n in env["nudges"])
+    verdict = env["verdict_text"].lower()
+    assert "further from flat" in verdict
+    assert "reached the target" not in verdict
+    assert "undo" in verdict
+    # The numbers still ride the disclosure — the claim moved, not the data.
+    assert any("1650 Hz" in line for line in env["expert_details"])
+
+
+def test_a_probe_caveat_rides_beside_a_result_badge():
+    """The composer's own rule — appended beside whichever badge won, never
+    replacing it — applied to the badge a result code earns (#2738).
+
+    The spatial grade PASSED here, so nothing is capped and the result badge
+    is the honest one. The caveat is still owed: the probe never answered the
+    shape question, and every other word on the screen says the target was
+    reached. Returning early for the result code dropped it on every graded
+    session."""
+    env = build_crossover_envelope_v2(_status(
+        phase="done", tier="full", applied=True,
+        candidate=_candidate_summary(),
+        verify={
+            "outcome": "pass",
+            "delta_probe": {"verdict": "level_mismatch"},
+            "claims": _shipped_claims(),
+        },
+        cloud=_cloud_verify_spec(True),
+    ))
+    assert {n["code"] for n in env["nudges"]} == {
+        "crossover_v2_verified_target", "crossover_v2_level_mismatch",
+    }
+    assert "reached the target" in env["verdict_text"].lower()
+
+
+def test_the_cap_leaves_the_warn_result_badges_and_their_copy_alone():
+    """#2738 caps the claim "verified", not every result code.
+
+    ``keep_previous`` and ``inconclusive`` already refuse that claim, and
+    ``keep_previous``'s "should not replace the previous sound" is the more
+    urgent of the two sentences — swapping either for the out-of-spec badge
+    would assert a prediction match one of them explicitly denies, and would
+    undo the honest routing #2605 shipped. Both ride a FAILED spatial grade, the
+    cell the cap fires on for ``verified_target``.
+
+    ``keep_previous`` also pins the non-pass path: a result code renders its
+    badge on a screen whose VERIFY did not pass, where the composer would
+    otherwise return no badge at all."""
+    def _done(**verify):
+        return build_crossover_envelope_v2(_status(
+            phase="done", tier="full", applied=True,
+            candidate=_candidate_summary(), verify=verify,
+            cloud=_cloud_verify_spec(False),
+        ))
+
+    inconclusive = _done(
+        outcome="pass", claims=_shipped_claims(absolute="not_evaluated"),
+    )
+    assert {n["code"] for n in inconclusive["nudges"]} == {
+        "crossover_v2_inconclusive",
+    }
+    assert "not enough complete evidence" in inconclusive["verdict_text"]
+
+    keep_previous = _done(outcome="fail", claims=_shipped_claims(
+        integration="fail", absolute="fail",
+    ))
+    assert {n["code"] for n in keep_previous["nudges"]} == {
+        "crossover_v2_keep_previous",
+    }
+    assert "should not replace the previous sound" in (
+        keep_previous["verdict_text"]
+    )
 
 
 def test_a_frame_mismatch_caveats_the_pass_screen():

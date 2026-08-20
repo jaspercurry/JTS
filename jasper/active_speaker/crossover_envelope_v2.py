@@ -1806,10 +1806,18 @@ def _done_nudges(
     Ordering is deliberate: the strongest claim about the SPEAKER wins the
     badge slot (out-of-spec over verified), and the probe caveat is appended
     beside whichever badge won rather than replacing it. They answer different
-    questions, so neither may silence the other.
+    questions, so neither may silence the other. The terminal result code, when
+    the caller has one, is the widest of those speaker claims and takes the
+    slot — but it takes only the SLOT. Returning early for it silenced the
+    caveats on every graded session (#2738), against this paragraph's own rule.
+    ``result_outcome`` arrives already CAPPED, the way ``spec_passed`` arrives
+    already reduced; the caller owns that rule and states it.
 
     A non-pass outcome gets no badge at all, exactly as before — that screen is
-    the verify_fail one and carries its own copy.
+    the verify_fail one and carries its own copy — unless a result code
+    qualified it, the one claim that outlives a failed comparison (#2605). The
+    caveats stay behind the pass either way: each is a finding about a
+    mark-VERIFY comparison that a non-pass screen never completed.
     """
     result_badges = {
         RESULT_VERIFIED_TARGET: ("ok", "Target verified."),
@@ -1819,32 +1827,32 @@ def _done_nudges(
         RESULT_KEEP_PREVIOUS: ("warn", "Keep the previous sound."),
         RESULT_INCONCLUSIVE: ("warn", "Result inconclusive."),
     }
-    if result_outcome in result_badges:
-        severity, text = result_badges[result_outcome]
-        return _with_remote_disclosure(
-            [{"code": f"crossover_v2_{result_outcome}", "severity": severity,
-              "text": text}],
-            tier,
-        )
-    if verify.get("outcome") != "pass":
+    result_badge = result_badges.get(result_outcome)
+    verified = verify.get("outcome") == "pass"
+    if result_badge is None and not verified:
         # The verify_fail screen, which carries its own copy and delivered no
         # result to qualify. Nothing to disclose about the shape of evidence
         # that did not produce a verdict.
         return []
-    nudges: list[dict[str, str]] = [
-        {
+    badge: dict[str, str]
+    if result_badge is not None:
+        badge = {"code": f"crossover_v2_{result_outcome}",
+                 "severity": result_badge[0], "text": result_badge[1]}
+    elif spec_passed is False:
+        badge = {
             "code": "crossover_v2_out_of_spec",
             "severity": "warn",
             "text": "Verified against the prediction, but not flat to target.",
         }
-        if spec_passed is False
-        else {
+    else:
+        badge = {
             "code": "crossover_v2_verified",
             "severity": "ok",
             "text": "Verified.",
         }
-    ]
-    nudges = _with_remote_disclosure(nudges, tier)
+    nudges: list[dict[str, str]] = _with_remote_disclosure([badge], tier)
+    if not verified:
+        return nudges
     probe = _mapping(verify.get("delta_probe"))
     if probe.get("verdict") == VERDICT_LEVEL_MISMATCH:
         nudges.append({
@@ -3951,6 +3959,29 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "undo if it sounds worse than before."
             )
         result_outcome = str(grade.get("outcome") or "")
+        # **A failed spatial grade caps this claim whatever the result code
+        # says** (#2738, ruled 2026-08-19) — the twin of #2464's cap, one
+        # surface over. ``_verify_claims`` always writes an ``integration``
+        # entry, so ``result_evidence`` is true on every post-R18 session
+        # whose VERIFY produced a tracking analysis — one that refuses earlier
+        # (a gate refusal, the pilot-transfer level-shift arm) never reaches
+        # that record — and the override below fired on all of them: the
+        # 2026-08-07 jts3 shape, a group that closed FAILED at −4.63 dB, is
+        # what today's code renders as "Target verified." over copy saying the
+        # result reached the target, with the number reachable only inside the
+        # collapsed disclosure.
+        #
+        # Capped HERE, where the grade is already reduced to ``spec_passed``,
+        # so the copy below and ``_done_nudges`` read one capped fact instead
+        # of each re-deriving the rule. ``verified_target`` is the one code
+        # that claims the target was reached; the other three are NOT capped
+        # and keep the copy #2605 shipped, because each already refuses that
+        # claim — and ``keep_previous``'s "should not replace the previous
+        # sound" is the more urgent of the two sentences, so swapping it for
+        # "Your speaker is tuned, but…" would endorse a result its own grade
+        # declined.
+        if spec_passed is False and result_outcome == RESULT_VERIFIED_TARGET:
+            result_outcome = ""
         if result_outcome in {
             RESULT_VERIFIED_TARGET,
             RESULT_VERIFIED_BEST_EVALUATED,
