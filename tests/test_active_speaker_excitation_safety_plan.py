@@ -232,7 +232,9 @@ def test_naked_path_keeps_legacy_ceiling_even_with_sensitivities_declared():
 
 def test_program_admission_path_derives_jts3_ceiling():
     # The JTS3 worked example: woofer cap -8, sensitivities 83.3/108.5 ->
-    # derived = min(-8 - 25.2, -35) = -35 (the abs ceiling binds).
+    # derived = -8 - 25.2 = -33.2. The provisional -35 hedge that used to clamp
+    # this by a further 1.8 dB was retired 2026-08-20; the sensitivity
+    # arithmetic is the operative ceiling.
     _topology, profile, targets = _profile_and_targets(
         woofer_peak=-8, tweeter_peak=-65,
     )
@@ -242,7 +244,7 @@ def test_program_admission_path_derives_jts3_ceiling():
         program_admission=True,
         declared_sensitivities=_JTS3_SENSITIVITIES,
     )
-    assert ceiling == pytest.approx(-35.0)
+    assert ceiling == pytest.approx(-33.2)
     # The woofer itself is a low-frequency role: its own ceiling is untouched
     # by the two-invariant HF derivation regardless of the flag.
     _woofer_band, woofer_ceiling = resolve_driver_excitation_ceilings(

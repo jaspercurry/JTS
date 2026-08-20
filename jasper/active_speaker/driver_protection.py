@@ -174,7 +174,82 @@ def driver_protection_profile(
 # at 27 dB in-band SNR, while the woofer's comfortable pilots ran -26 dBFS
 # effective -- a 25.2 dB sensitivity delta (B&C DE250-8 ~108.5 dB vs Dayton
 # Epique E150HE-44 ~83.3 dB) the class default never accounted for.
-HF_MEASUREMENT_ABS_CEILING_DBFS = -35.0  # provisional pending W6 bench validation; a hearing-safety bound, not derived from any driver's declared data
+#
+# The -35.0 dBFS absolute hedge this derivation carried until 2026-08-20 is
+# RETIRED, and nothing replaces it in that role. It landed "provisional pending
+# W6 bench validation"; W6 never ran, and the hedge quietly became the
+# OPERATIVE ceiling rather than a backstop above one. On the shipped JTS3
+# preset it bound 9.8 dB below the derivation (lf cap 0.0 dBFS, 25.2 dB
+# sensitivity delta -> -25.2 derived, clamped to -35), and on the CX120 coax
+# fixture 14.3 dB below it (lf cap -20.0, 0.7 dB delta -> -20.7 derived). A
+# constant that binds below the physics on real hardware is a level nanny, not
+# a bound.
+#
+# Measured consequence, 2026-08-19 overnight linearization session
+# (captures/linearization-night-2026-08-19/): the seat-SPL leveling ramp takes
+# its mic-independent ceiling from min(driver caps) - stimulus peak
+# (session_volume_plan.unsegmented_stimulus_ceiling_db), so the tweeter's -35
+# WAS min(caps) and capped the whole session at 68.07 dB SPL at the seat
+# against the operator's 75-80 dB SPL target.
+#
+# Owner ratification, 2026-08-20, verbatim: "i use a fixed gain amp and
+# digitally control the volume. i can hit loud volumes - im confident the
+# woofer and or tweeter can hit 75db at the mic distance." And on the safety
+# model that stands in the hedge's place: "we should allow the user to ramp up
+# to 75 or 80db but in the UX have a big stop button that saves them if
+# anything goes wrong. no random db nannys!" (issue #2761 carries the stop-
+# button UX half; this module owns the ledger half.)
+#
+# What bounds a high-frequency driver's measurement level now:
+#   * the derivation below -- the high-frequency driver is admitted at the same
+#     ACOUSTIC level its low-frequency sibling is already admitted at. When the
+#     tweeter is the more sensitive driver (delta > 0, the usual case) the
+#     ceiling sits the full sensitivity delta BELOW that sibling's own cap;
+#   * MAX_TEST_LEVEL_DBFS, the same global loudest-admissible test level every
+#     other driver target is clamped to -- one owner for that bound, not a
+#     second private constant. Note what this clamp is NOT: it is not an
+#     error stop, because delta <= 0 is a legitimate configuration, not a
+#     mistake. A high-sensitivity pro woofer (~97 dB) under a modest dome
+#     tweeter (~90 dB) gives delta = -7, and the arithmetic correctly asks for
+#     MORE digital level than the woofer's cap so the quieter tweeter can reach
+#     the same SPL. Full scale is simply where that request runs out, and the
+#     result is still safe by the same argument: at 0 dBFS that tweeter makes
+#     ~90 dB while the already-admitted woofer at its own 0 dBFS cap makes
+#     ~97 dB;
+#   * unchanged and outside this module -- the wrong-frequency-range invariant
+#     (declared hard band + the proven protective high-pass), the preset's
+#     ``max_commissioning_level_db_spl`` SPL band top (85 dB SPL on JTS3), and
+#     the leveling ramp's runaway guard, volume latch, and restore-on-every-
+#     exit path.
+#
+# The residual this retirement leaves, named rather than hidden: the derivation
+# is only as good as the DECLARATION, and declared sensitivities carry no
+# plausibility validation (design_draft.declared_driver_sensitivities parses
+# for finiteness and nothing else). A household that swaps the two sensitivity
+# rows presents delta <= 0 for a genuinely more-sensitive tweeter, and the
+# ceiling then lands at full scale -- where the retired -35 hedge used to clamp
+# it by accident. On the leveling path that empties
+# session_volume_plan.unsegmented_stimulus_ceiling_db of content for that box,
+# and it is documented as mic-INDEPENDENT precisely so a bad microphone cannot
+# move it. Two mic-independent stops do survive the swap, which is what bounds
+# the residual to ~10 dB over intent at the loudest bankable volume rather than
+# leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
+# 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp's volume
+# ceiling to the same), and the nominal measurement stimulus peaks at -12.0 dBFS
+# (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS). The
+# measured SPL band top and the ramp's runaway guard sit above those as the
+# mic-DEPENDENT layer.
+#
+# Refusing to derive on delta <= 0 is NOT the fix -- it would break the
+# legitimate pro-woofer case above, and the two shapes derive the SAME ceiling:
+# both ask for more than full scale and both clamp to MAX_TEST_LEVEL_DBFS, so
+# they are 0.0 dB apart and no constant here can tell them apart even in
+# principle. Nor can a backstop be parked just under full scale to catch the
+# swap: an ordinary CORRECT coax (88.5 woofer / 89.2 tweeter) derives -0.70,
+# so the near-full-scale regime is where correct hardware already lives.
+# Validating the declaration is the fix, and it needs no invented per-style
+# anchor: the preset already ships the woofer's own sensitivity_db (83.3 on
+# JTS3), which a swapped draft contradicts. Tracked as issue #2765.
 
 
 def derive_hf_measurement_ceiling_dbfs(
@@ -187,14 +262,17 @@ def derive_hf_measurement_ceiling_dbfs(
 
     Same acoustic ceiling CLASS as the low-frequency driver's own declared
     cap, corrected for the sensitivity delta between the two declared driver
-    specs, bounded by the absolute hearing-safety ceiling. Pure arithmetic --
-    the caller owns picking valid inputs (a proven-protective-HP graph, an
+    specs, bounded by :data:`MAX_TEST_LEVEL_DBFS` -- the global loudest
+    admissible test level, which is where a legitimate negative delta (a
+    less-sensitive tweeter under a high-sensitivity woofer) runs out of digital
+    headroom rather than a level hedge (block comment above). Pure arithmetic
+    -- the caller owns picking valid inputs (a proven-protective-HP graph, an
     unsuperseded class-default seed, and both drivers' declared sensitivities).
     """
 
     return min(
         declared_lf_driver_cap_dbfs - (sens_hf_db - sens_lf_db),
-        HF_MEASUREMENT_ABS_CEILING_DBFS,
+        MAX_TEST_LEVEL_DBFS,
     )
 
 

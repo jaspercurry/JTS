@@ -231,6 +231,40 @@ def test_the_unsegmented_ceiling_tracks_the_stimulus_peak():
     )
 
 
+def test_the_seat_level_ramps_ceiling_is_the_derived_hf_value():
+    """The ceiling that actually bound on JTS3, end to end, with the retirement
+    of the -35 dBFS hedge visible as a number.
+
+    ``jasper-seat-level`` reads its mic-independent ceiling from exactly this
+    call (``jasper.cli.seat_level._derive_bounds``). The shipped preset's numbers:
+    woofer admitted at 0.0 dBFS, declared sensitivities 108.5 / 83.3 -> a
+    25.2 dB delta -> the tweeter's derived cap is -25.2, and it is ``min(caps)``
+    so it IS the ceiling.
+
+    On 2026-08-19 the retired absolute hedge made that cap -35.0 instead, and
+    the overnight leveling session converged at 68.07 dB SPL against a 75-80
+    target. Mutation guard for the whole chain: restore the hedge and this
+    fails at -35.0, 9.8 dB adrift.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
+    ceiling = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=0.0,
+        declared_sensitivities={"woofer": 83.3, "tweeter": 108.5},
+    )
+    assert ceiling == pytest.approx(-25.2)
+
+    # Without the declared sensitivities the derivation cannot fire and the
+    # class default stands — the fail-quiet direction, unchanged by this PR.
+    assert (
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=0.0
+        )
+        == -65.0
+    )
+
+
 def test_the_unsegmented_ceiling_refuses_a_non_finite_stimulus_peak():
     profile, targets = _profile_and_targets()
     with pytest.raises(SessionVolumePlanError):
@@ -243,9 +277,10 @@ def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
     """W6.5 pin: this module exclusively serves the program-admission v2
     conductor, so it always resolves ceilings on the proven-HP path. With
     JTS3's DECLARED sensitivities threaded through and the tweeter at its -65
-    seed, the tweeter's OWN resolved cap moves from -65 to -35 (derived) --
-    but ``max(caps)`` is still the woofer's -8, so the derived session volume
-    is unchanged. No behavior change expected; this pins that.
+    seed, the tweeter's OWN resolved cap moves from -65 to -33.2 (derived: the
+    woofer's -8 less the 25.2 dB sensitivity delta) -- but ``max(caps)`` is
+    still the woofer's -8, so the derived session volume is unchanged. No
+    behavior change expected; this pins that.
     """
     profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
     assert (

@@ -6987,8 +6987,10 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
             declared_sensitivities=declared,
         )
         caps[role] = float(cap)
-    # Probe (a): context caps == admission caps == the derived {-8, -35}.
-    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-35.0)}
+    # Probe (a): context caps == admission caps == the derived {-8, -33.2}.
+    # -33.2 is the sensitivity arithmetic (-8 less the 25.2 dB delta); the
+    # provisional -35 dBFS absolute hedge over it was retired 2026-08-20.
+    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
     sv = session_measurement_volume_db(
         profile, targets.values(), declared_sensitivities=declared
     )
@@ -7009,9 +7011,9 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
         driver_spacing_m=0.15,
     )
     # Probe (b): the composed CHECK tweeter hi pilot rides the DERIVED cap
-    # (back_off margin under -35), not the legacy -65.01 the gate measured.
+    # (back_off margin under -33.2), not the legacy -65.01 the gate measured.
     t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
-    assert t_hi.effective_peak_dbfs == pytest.approx(-35.0 - GAIN_CAP_BACKOFF_DB)
+    assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
     adm = admit_excitation_program(
@@ -7021,7 +7023,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition():
     )
     assert adm.allowed, adm.refusals
     facts = {f.role: f for f in adm.channels}
-    assert facts["tweeter"].cap_dbfs == pytest.approx(-35.0)
+    assert facts["tweeter"].cap_dbfs == pytest.approx(-33.2)
     # Without the declared mapping (the pre-fix admission view) the SAME
     # composed program is refused — the incoherence the threading closes.
     stale = admit_excitation_program(

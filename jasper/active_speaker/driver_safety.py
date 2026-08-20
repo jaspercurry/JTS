@@ -27,7 +27,6 @@ from jasper.output_topology import OutputTopology
 
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
-    HF_MEASUREMENT_ABS_CEILING_DBFS,
     HIGH_FREQUENCY_ROLES,
     apply_driver_low_limit,
     driver_low_limit_plausibility_band_hz,
@@ -200,15 +199,21 @@ def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
     topology cannot re-derive either one and returns the disk copy untouched;
     the /sound/ page always loads with a topology.)
 
-    It exists because the browser has to answer two questions before anything
-    is saved, and both are policy the browser must not own a second copy of:
+    It exists because the browser has to answer one question before anything is
+    saved, and it is policy the browser must not own a second copy of: *is this
+    target's declared peak sitting on the delegation sentinel?* — which needs
+    that target's ``max_auto_level_dbfs``.  The confirmed safety profile
+    carries the same number in ``code_owned_policy``, but only **after** a
+    save; the echo-back panel renders straight after a paste.
 
-    * *Is this target's declared peak sitting on the delegation sentinel?* —
-      needs that target's ``max_auto_level_dbfs``.  The confirmed safety
-      profile carries the same number in ``code_owned_policy``, but only
-      **after** a save; the echo-back panel renders straight after a paste.
-    * *What bounds the level protection then picks?* — needs
-      ``HF_MEASUREMENT_ABS_CEILING_DBFS``, which no artifact carries at all.
+    It answered a second question until 2026-08-20 — *what bounds the level
+    protection then picks?* — by publishing ``HF_MEASUREMENT_ABS_CEILING_DBFS``.
+    That constant is retired (see the block comment above
+    ``derive_hf_measurement_ceiling_dbfs``): the bound is now the per-driver
+    sensitivity derivation, which this topology-only view cannot compute — it
+    has neither the confirmed caps nor the declared sensitivities.  So the
+    field is gone rather than restated as the global test ceiling, which would
+    have told the household a true but empty number.
 
     ``role_class`` travels with each target so the page never has to keep its
     own copy of which roles are high-frequency.
@@ -227,7 +232,6 @@ def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
 
     return {
         "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
-        "hf_measurement_abs_ceiling_dbfs": HF_MEASUREMENT_ABS_CEILING_DBFS,
         "targets": [
             {
                 "target_id": str(target["target_id"]),

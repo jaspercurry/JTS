@@ -2393,15 +2393,11 @@ def test_protection_policy_view_reads_policy_never_restates_it(
     keeps its own copy of which roles are high-frequency.
     """
 
-    from jasper.active_speaker.driver_protection import (
-        HF_MEASUREMENT_ABS_CEILING_DBFS,
-        driver_protection_profile,
-    )
+    from jasper.active_speaker.driver_protection import driver_protection_profile
     from jasper.active_speaker.driver_safety import driver_protection_policy_view
 
     view = driver_protection_policy_view(_topology_with_tweeter_style(style))
 
-    assert view["hf_measurement_abs_ceiling_dbfs"] == HF_MEASUREMENT_ABS_CEILING_DBFS
     by_target = {entry["target_id"]: entry for entry in view["targets"]}
     assert set(by_target) == {"mono:woofer", "mono:tweeter"}
 
@@ -2427,7 +2423,12 @@ def test_protection_policy_view_reads_policy_never_restates_it(
         "max_auto_level_dbfs",
         "min_highpass_hz",
     }
-    assert set(view) == {"policy_version", "hf_measurement_abs_ceiling_dbfs", "targets"}
+    # `hf_measurement_abs_ceiling_dbfs` is deliberately absent: the provisional
+    # -35 dBFS constant it published was retired 2026-08-20, and the bound that
+    # replaced it (the per-driver sensitivity derivation) is not computable from
+    # a topology alone. Pinned as an exact key set so re-adding it — or
+    # restating the global test ceiling in its place — fails here.
+    assert set(view) == {"policy_version", "targets"}
 
 
 def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
@@ -2459,7 +2460,9 @@ def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
         topology
     )
 
-    # Poison the persisted copy the way a policy change would.
+    # Poison the persisted copy the way a policy change would — including with
+    # a field the view no longer emits, which is exactly what every draft
+    # written before the -35 dBFS ceiling was retired carries on disk today.
     raw = json.loads(path.read_text())
     raw["driver_protection_policy_view"]["hf_measurement_abs_ceiling_dbfs"] = -99.0
     raw["driver_protection_policy_view"]["targets"] = []
@@ -2932,15 +2935,16 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
 
     The CX120 reply declares the tweeter at -65 because it has no published
     level limit. On the proven-high-pass path that delegates the choice: the
-    derived ceiling is -35 dBFS, thirty decibels louder than the declared
+    derived ceiling is -20.7 dBFS, forty-four decibels louder than the declared
     number. Declaring -66 instead — a deliberate quieter limit — is honoured
     literally. Both are intended; the discontinuity is documented at the
     equality site in excitation_safety_plan and in the research ask itself.
-    """
 
-    from jasper.active_speaker.driver_protection import (
-        HF_MEASUREMENT_ABS_CEILING_DBFS,
-    )
+    This fixture is also the second real-hardware case that motivated retiring
+    the provisional -35 dBFS hedge on 2026-08-20: a 0.7 dB sensitivity delta
+    puts the honest ceiling at -20.7, so the constant bound 14.3 dB below the
+    physics on an ordinary coax.
+    """
 
     profile, sensitivities = _cx120_confirmed_profile()
     # Pad-free declaration, so the effective sensitivities are the datasheet
@@ -2956,10 +2960,10 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
         program_admission=True,
         declared_sensitivities=sensitivities,
     )
-    # woofer cap -20, sensitivity delta 0.7 dB -> min(-20.7, -35) = -35: the
-    # absolute hearing-safety ceiling binds, not the sensitivity arithmetic.
-    assert ceiling == pytest.approx(HF_MEASUREMENT_ABS_CEILING_DBFS)
-    assert ceiling == pytest.approx(-35.0)
+    # woofer cap -20, sensitivity delta 0.7 dB -> -20.7: the sensitivity
+    # arithmetic IS the ceiling. Mutation guard: restore the -35 hedge and this
+    # fails, because -35 would clamp a real coax 14.3 dB below its own physics.
+    assert ceiling == pytest.approx(-20.7)
 
     # Without the proven-high-pass path the declared number stands. Delegation
     # is what the protective high-pass buys; it is not unconditional.

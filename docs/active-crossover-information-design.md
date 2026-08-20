@@ -492,25 +492,50 @@ For a high-frequency role on the proven-high-pass path,
 `resolve_driver_excitation_ceilings` reads a declared
 `max_effective_peak_dbfs` that exactly equals the class default as "no
 driver-specific level intent was expressed" and supersedes it with the
-sensitivity-derived ceiling, bounded by `HF_MEASUREMENT_ABS_CEILING_DBFS` — a
-hearing-safety bound, not derived from any driver's declared data, and
-provisional pending W6 bench validation; any
+sensitivity-derived ceiling; any
 other declared value is honoured literally. So a tweeter declared at the class
-default can be measured up to 30 dB louder than that number suggests, while one
+default can be measured tens of decibels louder than that number suggests
+(−25.2 dBFS against the −65 seed on the shipped JTS3 preset), while one
 declared a single dB quieter is taken at face value. That discontinuity predates
 the estimate contract, but the research ask is now its first automated writer,
 so the ask tells the assistant what declaring the ceiling actually delegates,
 and the template value, the class default, and the equality comparison are
 pinned as one three-link chain in
-`tests/test_active_speaker_driver_safety.py`. That disclosure is no longer only
+`tests/test_active_speaker_driver_safety.py`.
+
+The derivation carried a provisional `HF_MEASUREMENT_ABS_CEILING_DBFS` of
+−35 dBFS until 2026-08-20. It is retired: it was landed pending a bench
+validation that never ran, and it bound *below* the derivation on real
+hardware (9.8 dB low on JTS3, 14.3 dB on the CX120 coax), which capped the
+2026-08-19 leveling session at 68.07 dB SPL against a 75–80 dB SPL target.
+What bounds the level now is the derivation itself — the tweeter is admitted
+at the acoustic level its woofer is already admitted at — plus the global
+`MAX_TEST_LEVEL_DBFS`, the preset's `max_commissioning_level_db_spl` SPL band
+top, and the leveling ramp's stop path. Owner ruling: operator target band plus
+a stop control, not conservative level constants (issue #2761).
+
+`MAX_TEST_LEVEL_DBFS` is not an error stop. A negative sensitivity delta is a
+legitimate configuration — a high-sensitivity pro woofer under a modest dome
+tweeter — where the arithmetic correctly asks for more digital level than the
+woofer's cap so the quieter tweeter reaches the same SPL; full scale is where
+that request runs out. The residual, named: declared sensitivities carry no
+plausibility validation, so a household that swaps the two rows presents Δ ≤ 0
+for a genuinely more-sensitive tweeter and lands at full scale, where the
+retired hedge clamped it by accident. Validating the declaration is the fix;
+refusing to derive on Δ ≤ 0 would break the legitimate case.
+
+That disclosure is no longer only
 assistant-facing: when an echoed peak sits exactly on its class ceiling, the
 echo-back panel says so in the operator's own words — the level is left to JTS,
-picked once a protective high-pass is in place, and never above
-`HF_MEASUREMENT_ABS_CEILING_DBFS`. Both that bound and the per-target class
-default reach the page from `driver_protection_policy_view`, re-stamped on
-every design-draft load so a persisted copy can never be read back as current
-policy; the page keeps no copy of either. A missing bound produces no sentence
-rather than a fabricated number (issue #2192, folded into #2195).
+picked once a protective high-pass is in place, from that driver's declared
+sensitivity against the low-frequency driver's own limit. The sentence names
+*what* sets the level and quotes no dBFS number, because the bound is now
+per-driver and `driver_protection_policy_view` — which is topology-only — cannot
+compute it; the view stopped emitting an absolute ceiling with the constant's
+retirement. The per-target class default still reaches the page from that view,
+re-stamped on every design-draft load so a persisted copy can never be read back
+as current policy; the page keeps no copy of it (issue #2192, folded into
+#2195).
 
 ### Step 3A: manual crossover
 

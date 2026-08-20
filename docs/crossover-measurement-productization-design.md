@@ -748,9 +748,41 @@ protection is now exactly two invariants, one owner each: wrong-frequency-range
 only — a graph that carries the driver's crossover HP by construction — an
 HF driver's ceiling is derived from a low-frequency sibling's own cap and the
 two drivers' declared sensitivities, `min(declared_lf_cap − (sens_hf −
-sens_lf), −35 dBFS)`, superseding the class-default seed only when the
-household hasn't already typed a real, different value. Every other caller
+sens_lf), MAX_TEST_LEVEL_DBFS)`, superseding the class-default seed only when
+the household hasn't already typed a real, different value. Every other caller
 (isolated driver capture, the v1 ramp solver, ear-check ramps) is unaffected.
+That second term was a provisional −35 dBFS absolute hedge until 2026-08-20;
+it is retired, because it bound *below* the derivation on real hardware
+(−25.2 derived on JTS3, −20.7 on the CX120 coax) and so became the operative
+ceiling rather than a backstop above one — capping the 2026-08-19 leveling
+session at 68.07 dB SPL against a 75–80 dB SPL target. `MAX_TEST_LEVEL_DBFS`
+is the global loudest-admissible test level every driver target already sits
+under, and it is where a *legitimate* negative delta runs out of digital
+headroom rather than a level hedge: a high-sensitivity pro woofer (~97 dB)
+under a modest dome tweeter (~90 dB) gives Δ = −7, and the arithmetic correctly
+asks for more digital level so the quieter tweeter reaches the same SPL. The
+remaining live bounds are the derivation, the preset's
+`max_commissioning_level_db_spl`, and the leveling ramp's guards and stop path
+(owner ruling: operator target band plus a stop control, not dB nannies —
+issue #2761).
+
+**Residual, named:** the derivation is only as good as the declaration, and
+declared sensitivities carry no plausibility validation. A household that swaps
+the two sensitivity rows presents Δ ≤ 0 for a genuinely more-sensitive tweeter,
+and the ceiling lands at full scale — where the retired −35 hedge clamped it by
+accident. That removes the *derivation's* contribution to
+`unsegmented_stimulus_ceiling_db` (documented mic-*independent*) for that box.
+
+Two mic-independent stops survive a swapped declaration even so, which is why
+the residual is bounded rather than open-ended: `MAX_TEST_LEVEL_DBFS` still
+clamps the derived cap at 0.0 dBFS (and `HARD_CEILING_DBFS` clamps the ramp's
+volume ceiling to the same), and the nominal measurement stimulus itself peaks at
+−12 dBFS (`AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS`), so the signal reaching
+the driver sits that far under full scale. The measured SPL band top and the
+ramp guards are then the mic-*dependent* layer on top. Refusing to derive on
+Δ ≤ 0 is not the fix — it would break the legitimate pro-woofer case above.
+Validating the declaration is; see the issue linked from the block comment above
+`derive_hf_measurement_ceiling_dbfs`.
 The sensitivities' one owner is the DECLARATION — the design draft's
 `manual_settings` (`declared_driver_sensitivities`), never a second copy on
 the confirmed safety profile — so already-declared boxes (JTS3's persisted

@@ -3236,8 +3236,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Code-owned protection bounds for one target, straight from the server
   // (design draft `driver_protection_policy_view`, re-derived on every load
   // that knows the topology — which the /sound/ endpoint always does). The
-  // page deliberately keeps NO copy of max_auto_level_dbfs or the absolute
-  // measurement ceiling: both are policy, and a second copy here would drift.
+  // page deliberately keeps NO copy of max_auto_level_dbfs: it is policy, and a
+  // second copy here would drift. (The view also carried an absolute
+  // measurement ceiling until 2026-08-20, on the same no-second-copy footing;
+  // that constant is retired and the field is gone from the wire.)
   function driverProtectionPolicy() {
     var policy = (driverResearch.designDraft || {}).driver_protection_policy_view;
     return (policy && typeof policy === 'object') ? policy : null;
@@ -3373,22 +3375,26 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // The delegation sentinel, disclosed (#2192, folded into #2195). A
   // high-frequency target left sitting exactly on its class ceiling is read by
   // resolve_driver_excitation_ceilings as "no driver-specific level intent",
-  // and the measurement level is then DERIVED — up to the absolute ceiling the
-  // server hands us. Confirming that number without this line would tell the
-  // household they had capped something they had actually delegated. The bound
-  // is never hardcoded here; no bound from the server means no sentence.
+  // and the measurement level is then DERIVED. Confirming that number without
+  // this line would tell the household they had capped something they had
+  // actually delegated.
+  //
+  // The sentence named an absolute dBFS bound until 2026-08-20, when the
+  // provisional -35 dBFS constant behind it was retired: the bound is now this
+  // driver's own sensitivity derivation against its woofer's limit, which the
+  // server's topology-only policy view cannot compute and so no longer sends.
+  // Naming WHAT sets the level is the honest replacement for naming a global
+  // number that no longer exists; no number is quoted here, so there is none
+  // to fabricate or to drift.
   function driverEchoSentinelText(targetId, setting) {
     var policy = driverProtectionPolicyForTarget(targetId);
-    var bound = manualNumberValue(
-      (driverProtectionPolicy() || {}).hf_measurement_abs_ceiling_dbfs
-    );
-    if (!policy || policy.role_class !== 'high_frequency' || bound == null) return '';
+    if (!policy || policy.role_class !== 'high_frequency') return '';
     var ceiling = manualNumberValue(policy.max_auto_level_dbfs);
     var peak = manualNumberValue(setting.max_effective_peak_dbfs);
     if (ceiling == null || peak == null || peak !== ceiling) return '';
     return 'Test level here is left to JTS. It picks the level once a ' +
-      'protective high-pass is in place, and never goes above ' +
-      fmtDb(bound) + ' dBFS.';
+      'protective high-pass is in place, from this driver’s declared ' +
+      'sensitivity against the low-frequency driver’s own limit.';
   }
   function driverEchoBackRowsHtml(targetId, driver) {
     var setting = driverSetting(targetId);
