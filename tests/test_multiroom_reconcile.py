@@ -3535,6 +3535,50 @@ def _arm_ring_for_reconcile(monkeypatch):
     )
 
 
+def test_box_lane_verdict_reads_the_topology_the_writer_reads(monkeypatch):
+    """`box_dac_content_lane_armed` is the live twin of the pure predicate, for
+    the two gates that hold only a route mode. It must answer from the SAME
+    `_output_topology_state` the writer's own caller reads."""
+    cfg = _leader()
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, True))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is True  # DUMB member
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False  # ACTIVE endpoint
+    # A passive box whose layout was never saved: the writer clears the lane
+    # there too (no declared speaker to send a flat program to).
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, False))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False
+
+
+def test_box_lane_verdict_fails_closed_on_an_unreadable_topology(monkeypatch):
+    """UNCERTAINTY FAILS CLOSED, and only on the axis that was unreadable.
+
+    `_output_topology_state` answers `(None, False)` when topology.json cannot
+    be read — the 2026-05-23 filesystem-loss class — and that cannot separate a
+    DUMB member (lane armed) from an ACTIVE endpoint (lane cleared). Answering
+    "not armed" there would let a box arm the ring while a stale
+    `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is still live in outputd's env, and
+    outputd fail-closes on FIFO + a non-`direct` bridge — the boot-loop shape
+    the T5.1 guard exists to contain. So the rule is asked with the worst-case
+    shape instead.
+
+    A solo or invalid config still answers False, because that is the writer's
+    OFF-path answer and no guess was needed on that axis.
+    """
+    import dataclasses
+
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (None, False))
+    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
+    assert reconcile_mod.box_dac_content_lane_armed(_follower()) is True
+
+    solo = dataclasses.replace(_leader(), enabled=False)
+    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
+    invalid = dataclasses.replace(
+        _leader(), error="JASPER_GROUPING_BOND_ID is empty"
+    )
+    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
+
+
 def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     """B1's subject, from the other direction: an ACTIVE-speaker box whose
     dac_content lane the writer clears is NOT refused by the ring gate.
