@@ -676,14 +676,19 @@ the module, not a second copy here.
    the SSOT, folded through any declared in-line pad. The same mapping threads
    into program admission *and* play-time readmission, so composed levels and
    the admission gate can never disagree about a derived ceiling.
-3. **Session volume is `min(−20 dB, max(caps))`, not `min(caps)`.**
+3. **Session volume is `min(reference, max(caps))`, not `min(caps)`.**
    `session_measurement_volume_db` lets the least-sensitive driver reach the
    reference level while more-sensitive drivers attenuate down digitally —
    attenuating downward is always satisfiable, so every driver's cap is
    enforceable at this volume. `min(caps)` starved multi-way systems. Latched
    once per session; refused below the −60 dB emergency floor
    (`EMERGENCY_MEASUREMENT_VOLUME_DB`). **Nothing moves it, including the
-   apply boundary.**
+   apply boundary.** The `reference` half is the codified −20 dB
+   (`MEASUREMENT_REFERENCE_VOLUME_DB`) until an operator runs the calibrated
+   seat-SPL leveling step (`jasper-seat-level`), which banks the measured
+   volume in `seat_level_reference.py` for this derivation to read. The caps
+   half is not operator-derivable: whatever the reference says, `min` keeps
+   every driver's excitation ceiling binding.
 4. **Analysis is a pure function of `(program, WAV)`.** No side-channel state.
    The `program_id` is a content hash and fingerprints both the analysis and
    the candidate, so a re-run can never be mistaken for a resume.

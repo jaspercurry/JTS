@@ -196,3 +196,20 @@ def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
         "JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE",
         str(tmp_path_factory.mktemp("capture-entry") / "capture_entry.json"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
+    """Point the measured seat-SPL reference at a per-test (absent) temp file.
+
+    ``session_measurement_volume_db`` reads this statefile for the reference
+    half of its derivation, so on a speaker that has actually run the leveling
+    step the default /var/lib/jasper path would silently change the number every
+    session-volume test pins. Absent here means the derivation falls back to the
+    codified ``MEASUREMENT_REFERENCE_VOLUME_DB`` — the hermetic baseline; the
+    tests that exercise a BANKED reference pass their own path explicitly.
+    """
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE",
+        str(tmp_path_factory.mktemp("seat-level") / "seat_level_reference.json"),
+    )

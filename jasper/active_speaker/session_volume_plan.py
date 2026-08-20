@@ -32,10 +32,11 @@ lease does not:
   ``unresolved`` (the volume_recovery path) when readback cannot confirm.
 
 The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
-DERIVES it per profile from the active drivers' excitation ceilings, and the
-SAME value feeds both the program composer's downstream gain and program
-admission — one definition path (SSOT), so caps are enforced regardless of its
-value.
+DERIVES it as ``min`` of two halves — a REFERENCE level (measured by the
+seat-SPL leveling step when a box has run it, else the codified default) and the
+active drivers' excitation CEILING — and the SAME value feeds both the program
+composer's downstream gain and program admission — one definition path (SSOT),
+so caps are enforced regardless of its value.
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
+from .seat_level_reference import seat_level_reference_volume_db
 from .volume_latch import (
     EMERGENCY_MEASUREMENT_VOLUME_DB,
     GetMainVolumeDb,
@@ -82,11 +84,14 @@ DEFAULT_WALL_CLOCK_CEILING_S = 1800.0
 MAX_WALL_CLOCK_CEILING_S = 3600.0
 
 # The codified measurement reference level: the fixed session volume when no
-# driver cap binds below it. -20 dB gives the least-sensitive driver a usable
-# acoustic measurement level while leaving 20 dB of digital+DSP margin under the
-# 0 dB ceiling. PROVISIONAL pending W6 bench validation — the value is a design
-# input (2026-07-18 W2 gate ruling), not yet a hardware-measured one; W6 may
-# retune it against measured SNR at ~1 m.
+# driver cap binds below it AND no measured reference has been banked. -20 dB
+# gives the least-sensitive driver a usable acoustic measurement level while
+# leaving 20 dB of digital+DSP margin under the 0 dB ceiling. It is a design
+# input (2026-07-18 W2 gate ruling), not a hardware-measured one — which is
+# exactly why it is now a DEFAULT rather than the only answer: a box that has
+# run the seat-SPL leveling step
+# (:mod:`jasper.active_speaker.seat_level_ramp`) replaces it with the volume
+# that measured the operator's chosen seat SPL on that speaker in that room.
 MEASUREMENT_REFERENCE_VOLUME_DB = -20.0
 
 _DEFAULT_STATE_PATH = Path(
@@ -118,11 +123,60 @@ class SessionVolumeRestoreResult(str, Enum):
     FAILED = "failed"
 
 
+def measurement_reference_volume_db(
+    *, reference_state_path: str | Path | None = None
+) -> float:
+    """The reference half of the session volume: measured if banked, else -20.
+
+    One reader of the seat-SPL leveling step's one written fact
+    (:func:`jasper.active_speaker.seat_level_reference.seat_level_reference_volume_db`).
+    Absent, unreadable, or implausible state resolves to
+    :data:`MEASUREMENT_REFERENCE_VOLUME_DB`, so a box that never ran the step
+    behaves exactly as it did before the step existed.
+    """
+    measured = seat_level_reference_volume_db(state_path=reference_state_path)
+    return MEASUREMENT_REFERENCE_VOLUME_DB if measured is None else measured
+
+
+def driver_cap_ceiling_db(
+    safety_profile: Mapping[str, Any],
+    target_fingerprints: Iterable[str],
+    *,
+    declared_sensitivities: Mapping[str, float] | None = None,
+) -> float:
+    """``max(caps)`` — the loudest main volume every driver's cap still permits.
+
+    The caps half of :func:`session_measurement_volume_db`, extracted so the
+    seat-SPL leveling ramp can bound its climb by the SAME derivation the
+    session volume is bounded by, instead of growing a second copy of it. See
+    that function for why ``max`` (not ``min``) is the right reduction.
+
+    ``program_admission=True``: this ceiling exists ONLY to serve the v2
+    session's CHECK/MEASURE programs and the leveling step that sizes their
+    volume — always the proven-HP path.
+    """
+    caps: list[float] = []
+    for target_fingerprint in target_fingerprints:
+        _band, maximum_peak = resolve_driver_excitation_ceilings(
+            safety_profile,
+            target_fingerprint,
+            program_admission=True,
+            declared_sensitivities=declared_sensitivities,
+        )
+        caps.append(float(maximum_peak))
+    if not caps:
+        raise SessionVolumePlanError(
+            "cannot derive a session measurement volume with no driver targets"
+        )
+    return max(caps)
+
+
 def session_measurement_volume_db(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
     *,
     declared_sensitivities: Mapping[str, float] | None = None,
+    reference_state_path: str | Path | None = None,
 ) -> float:
     """The fixed session measurement volume DERIVED from the profile's ceilings.
 
@@ -132,8 +186,13 @@ def session_measurement_volume_db(
     attenuating downward is always satisfiable, so every driver's cap is
     enforceable at this volume (2026-07-18 W2 gate ruling)::
 
-        session_volume = min(MEASUREMENT_REFERENCE_VOLUME_DB, max over drivers
-                             of resolve_driver_excitation_ceilings()[1])
+        session_volume = min(measurement_reference_volume_db(),
+                             driver_cap_ceiling_db())
+
+    The reference half is operator-derivable (the seat-SPL leveling step banks a
+    measured value; absent one it is the codified -20 dB default) and the caps
+    half is not: whatever the reference says, ``min`` means every driver's
+    excitation ceiling still binds.
 
     Worked example — woofer cap 0.0 dBFS, tweeter (compression driver) cap
     -65 dBFS: V = min(-20, max(0, -65)) = **-20 dB**. The tweeter's program
@@ -160,26 +219,18 @@ def session_measurement_volume_db(
     Raises if no targets are given or a ceiling cannot be resolved (fail-closed:
     an underivable session volume is a refusal, never a guessed default).
     """
-    caps: list[float] = []
-    for target_fingerprint in target_fingerprints:
-        # program_admission=True: this session volume exists ONLY to serve
-        # the v2 session's CHECK/MEASURE programs (this module's own
-        # docstring) -- always the proven-HP path. ``declared_sensitivities``
-        # (the declaration's per-role datasheet values) rides along so the
-        # caps entering max(caps) are the SAME derived caps admission
-        # enforces.
-        _band, maximum_peak = resolve_driver_excitation_ceilings(
-            safety_profile,
-            target_fingerprint,
-            program_admission=True,
-            declared_sensitivities=declared_sensitivities,
-        )
-        caps.append(float(maximum_peak))
-    if not caps:
-        raise SessionVolumePlanError(
-            "cannot derive a session measurement volume with no driver targets"
-        )
-    volume = min(MEASUREMENT_REFERENCE_VOLUME_DB, max(caps))
+    # ``declared_sensitivities`` (the declaration's per-role datasheet values)
+    # rides into the caps derivation so the caps entering max(caps) are the SAME
+    # derived caps admission enforces.
+    ceiling = driver_cap_ceiling_db(
+        safety_profile,
+        target_fingerprints,
+        declared_sensitivities=declared_sensitivities,
+    )
+    volume = min(
+        measurement_reference_volume_db(reference_state_path=reference_state_path),
+        ceiling,
+    )
     if not math.isfinite(volume) or volume > 0.0:
         raise SessionVolumePlanError(
             "derived session measurement volume must be finite and non-positive"
