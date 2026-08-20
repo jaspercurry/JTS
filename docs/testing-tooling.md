@@ -67,6 +67,7 @@
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
 | Find out what a measurement change actually moved — including the readings a tolerance absorbed and the prose homes that restate them, neither of which any lane can go red on | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Reproduce a flake that only appears when the box is busy, without leaking a CPU burner onto a machine other agent sessions are sharing | [Reproducing a load-dependent flake](#reproducing-a-load-dependent-flake) |
+| Run a lane or tool from a worktree/export and be sure it exercised THAT copy, not the main checkout | [Running a lane in an isolated checkout](#running-a-lane-in-an-isolated-checkout) |
 | Fix a test that only flakes in a loaded full-suite run (spawn/thread/FD exhaustion), without papering over a real failure | [Guard & contract test patterns](#guard--contract-test-patterns) — transient-resource retry row |
 | Find out *why* a loaded run runs out of file descriptors, instead of retrying around it | [Guard & contract test patterns](#guard--contract-test-patterns) — fd-leak row |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
@@ -186,6 +187,16 @@ for p in ${=PIDS}; do kill "$p"; done      # NOT 2>/dev/null
 Time-bound the loop body as well, keeping the bound comfortably above your
 repro's own runtime, so a cleanup you lose anyway self-heals in under a
 minute instead of burning a core until someone else notices.
+
+---
+
+## Running a lane in an isolated checkout
+
+The venv's editable install appends a `sys.meta_path` finder that **hardcodes
+the main checkout's path**, so a worktree or export silently imports the LIVE
+tree's `jasper/` unless an earlier `sys.path` entry wins — pin the isolated
+copy with `PYTHONPATH=<isolated root>`. Nothing errors; the run just reports on
+code it never touched.
 
 ---
 
@@ -942,9 +953,10 @@ in `/tmp/` during a specific investigation and get promoted to
 | Tool | Status | Purpose |
 |---|---|---|
 | [`scripts/verify-ref-no-silence-bug.sh`](../scripts/verify-ref-no-silence-bug.sh) | in repo | Verifies the ref-path fixes from PRs #150 / #154 / #157 are active on the deployed build (resampler HF loss, silence fallback, drain-newest dup-frame bug). Run after any deploy that touched the bridge. |
-| [`scripts/aec-probe-latency.sh`](../scripts/aec-probe-latency.sh) | in repo | Injects a chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus one selected XVF3800 capture channel, and reports the reference-to-mic lag. Use `MIC_CHANNEL=0` or `MIC_CHANNEL=1` for chip ASR beams and `MIC_CHANNEL=2` for the raw channel used in older timing comparisons. |
-| [`scripts/aec-probe-xvf-ref-level.sh`](../scripts/aec-probe-xvf-ref-level.sh) | in repo | Bounded diagnostic for chip-reference legality and level. It injects a short chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus all XVF3800 capture channels, reports L/R reference parity, clipping, chip-ref 16 kHz mono model, `AUDIO_MGR_REF_GAIN` estimate, per-channel RMS/correlation, and selected XVF profile readbacks. See [`docs/AEC-DIAG-06-xvf-format-level-profile.md`](AEC-DIAG-06-xvf-format-level-profile.md). |
-| [`scripts/aec-probe-timing.py`](../scripts/aec-probe-timing.py) | in repo | Diagnostic-only timing probe for explicit reference sources: `outputd_udp` and `chip_ref_tee`. Writes JSON/CSV/Markdown plus short WAV artifacts, labels mic channels (`ch0` conference/beam, `ch1` ASR beam, `ch2` raw mic0), snapshots outputd state, and can run outputd period/buffer profiles `default`, `1024/2048`, and `512/1024`. See [`docs/AEC-DIAG-03-timing-probe.md`](AEC-DIAG-03-timing-probe.md). |
+| [`scripts/aec-probe-latency.sh`](../scripts/aec-probe-latency.sh) | in repo | Injects a chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus one selected XVF3800 capture channel, and reports the reference-to-mic lag. Use `MIC_CHANNEL=0` or `MIC_CHANNEL=1` for chip ASR beams and `MIC_CHANNEL=2` for the raw channel used in older timing comparisons. **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-xvf-ref-level.sh`](../scripts/aec-probe-xvf-ref-level.sh) | in repo | Bounded diagnostic for chip-reference legality and level. It injects a short chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus all XVF3800 capture channels, reports L/R reference parity, clipping, chip-ref 16 kHz mono model, `AUDIO_MGR_REF_GAIN` estimate, per-channel RMS/correlation, and selected XVF profile readbacks. See [`docs/AEC-DIAG-06-xvf-format-level-profile.md`](AEC-DIAG-06-xvf-format-level-profile.md). **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-timing.py`](../scripts/aec-probe-timing.py) | in repo | Diagnostic-only timing probe for explicit reference sources: `outputd_udp` and `chip_ref_tee`. Writes JSON/CSV/Markdown plus short WAV artifacts, labels mic channels (`ch0` conference/beam, `ch1` ASR beam, `ch2` raw mic0), snapshots outputd state, and can run outputd period/buffer profiles `default`, `1024/2048`, and `512/1024`. See [`docs/AEC-DIAG-03-timing-probe.md`](AEC-DIAG-03-timing-probe.md). **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-pinknoise.sh`](../scripts/aec-probe-pinknoise.sh) | in repo | Runs the bridge with stationary pink noise as the far-end signal and logs RMS attenuation per 5-second window. Pink noise is AEC3's best case (stationary, broad-spectrum), so the plateau here is the engine's upper-bound attenuation for the setup — compare against music-as-far-end, typically 5–10 dB worse. Stops shairport-sync and jasper-voice for the run and restores them after; plays loud-ish noise at whatever the remote's volume is set to. **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
 | `scripts/xvf-interrogate.sh` | in repo | Deep XVF3800 diagnostic — USB descriptors, ALSA card state, all chip params, RMS levels. Tagged by chip iSerial. Run when the mic seems off and you want a full dump before changing anything. |
 | `/tmp/analyze_aec_distortion.py` | **NOT in repo** | Per-clip peak / RMS / crest / tanh-zone occupancy / hard-clip count. Promote to `scripts/_analyze_aec_distortion.py` when stable. |
 | `/tmp/analyze_tearing.py` | **NOT in repo** | NS musical noise / RS HF gating (`hf_CV`) / frame-boundary clicks / AGC pumping / HF aliasing detectors. Promote to `scripts/_analyze_tearing.py` when stable. |
@@ -991,12 +1003,16 @@ The throwaway feasibility harness for multi-room grouping (stereo pair,
 2.1 wireless sub). Answers the one gating unknown before any product
 code: **does Snapcast hold inter-speaker sync on WiFi, at what buffer
 depth + codec, and what does the FLAC encode cost on a 1 GB Pi?** Runs
-entirely off the live JTS audio path; cleans up after itself.
+entirely off the live JTS audio path; cleans up after itself. The last two
+rows are a later, narrower gate — the **S0-sync** bench, which asks what the
+*active* follower's re-entry seam adds — and carry their own dated caveat.
 
 | Tool | Methodology | When to use |
 |---|---|---|
 | [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Stands up a throwaway `snapserver` + `snapclient`s (leader + 2nd Pi + Pi Zero sub) reading a hand-fed FIFO, sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/`. | Before P1: pick the buffer/codec that holds the p99<5 ms L/R bound on WiFi. |
 | [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer. `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — ground-truth inter-speaker offset), `summarize` (PASS/FAIL vs target + RAM/CPU + recommended cell). | Analyze a spike run; the acoustic mode is the authoritative comb-filtering check. |
+| [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) | Laptop-side SSH harness for the S0-sync de-risk gate (throwaway, not product). Stands up two throwaway **active** followers whose seam is `snapclient` → snd-aloop → crossover-only CamillaDSP → real DAC, feeds a 1 Hz broadband click, and soaks for the xrun / CPU / temp budget. Answers the one thing the dumb-follower path deliberately avoids: the loopback re-entry and its `rate_adjust`-no-resampler clock seam. | **Dated — characterises the retired `snd-aloop` seam, not the ring.** Its clock contract has CamillaDSP nudge snd-aloop's `PCM Rate Shift` control, a mixer element a ring PCM (an ioplug) does not have, so the mechanism under test cannot exist on the shipped path. A green run must not stand in for the ring seam's question (#2768). |
+| [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py) | Pure-stdlib analyzer, the measurement half of the bench. `acoustic --wav` (single-mic autocorrelation of the broadband click → inter-speaker arrival offset) and `soak --dir` (parse soak logs for snd-aloop xrun totals + CPU/temp/throttle/Pss, run the acoustic estimate over every periodic capture, report p50/p95/p99/max raw *and* placement-detrended, count resync jumps, emit the combined PASS/FAIL). | Analyze an `s0-sync-bench.sh` run. Carries the same dated caveat as the row above — the numbers describe the aloop seam (#2768). |
 
 **Safety note:** the spike plays a test track/music straight through a
 throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`

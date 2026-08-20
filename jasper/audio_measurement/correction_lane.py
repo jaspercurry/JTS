@@ -105,7 +105,7 @@ have meant ten synchronized edits. Now:
   kwargs are byte-identical minus the added ``umask``.
 * ``tests/test_correction_lane_play.py`` pins the argv/kwargs of every
   migrated site shape and carries the conventions guard that fails any NEW
-  inline ``aplay``/``-D`` spawn outside this module's allowlist. The five
+  inline ``aplay``/``-D`` spawn outside this module's allowlist. The four
   stdlib-only lab probe scripts under ``scripts/`` remain exempt by design
   (see "Scope of the drift guard" above — same exemption, same reason).
 
