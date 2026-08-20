@@ -372,8 +372,8 @@ async def precheck_active_leader(
     # If a second File-sink emitter ever needs this, promote the filter into
     # `fanin_coupling.py` beside its parent instead of copying it.
     coupling_kwargs = coupling_capture_kwargs_from_env()
-    bake_capture_kwargs = {
-        key: value
+    bake_capture_kwargs: dict[str, str] = {
+        key: str(value)
         for key, value in coupling_kwargs.items()
         if key in ("capture_device", "capture_format")
     }
@@ -383,6 +383,11 @@ async def precheck_active_leader(
         output_trim_db=output_trim_db(profile, settings),
         out_path=LEADER_BAKE_CONFIG_PATH,
         profile_id=f"grouping-{cfg.bond_id or 'bond'}",
+        # ``**`` of a str-keyed dict cannot be narrowed to the two keyword
+        # parameters it actually carries, so mypy sees it against every one of
+        # the emitter's params (including the int/float ones). The filter above
+        # is what makes it safe, and T-8b pins that an unfiltered splat is a
+        # TypeError rather than a silent redirect.
         **bake_capture_kwargs,  # type: ignore[arg-type]
     )
     # Program-bake graphs cannot carry the optional baseline bass block, so

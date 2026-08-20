@@ -1972,9 +1972,11 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         if not coupling_support.supported:
-            endpoint_block_reason = (
-                coupling_support.reason or "ring_armed_box_cannot_bond"
-            )
+            # The matrix's token, with no local fallback — one vocabulary, one
+            # owner, exactly as the active-leader precheck consumes it. Its
+            # blocked branch always sets a reason, and the support-matrix tests
+            # pin that.
+            endpoint_block_reason = coupling_support.reason
             log_event(
                 logger,
                 "multiroom.reconcile.ring_armed_bond_blocked",
