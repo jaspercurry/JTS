@@ -192,11 +192,12 @@ minute instead of burning a core until someone else notices.
 
 ## Running a lane in an isolated checkout
 
-The venv's editable install appends a `sys.meta_path` finder that **hardcodes
-the main checkout's path**, so a worktree or export silently imports the LIVE
-tree's `jasper/` unless an earlier `sys.path` entry wins — pin the isolated
-copy with `PYTHONPATH=<isolated root>`. Nothing errors; the run just reports on
-code it never touched.
+[`DEEP-AUDIT-PLAYBOOK.md`](DEEP-AUDIT-PLAYBOOK.md) item 4 owns the rule — pin
+`PYTHONPATH` to the checkout under test and confirm a known edit is visible
+before trusting a green run. The mechanism behind it: the venv's editable
+install appends a `sys.meta_path` finder that **hardcodes the main checkout's
+path**, so it answers whenever nothing earlier on `sys.path` does, and an
+isolated worktree or export imports the LIVE tree with no error at all.
 
 ---
 
@@ -1004,22 +1005,27 @@ The throwaway feasibility harness for multi-room grouping (stereo pair,
 code: **does Snapcast hold inter-speaker sync on WiFi, at what buffer
 depth + codec, and what does the FLAC encode cost on a 1 GB Pi?** Runs
 entirely off the live JTS audio path; cleans up after itself. The last two
-rows are a later, narrower gate — the **S0-sync** bench, which asks what the
-*active* follower's re-entry seam adds — and carry their own dated caveat.
+rows are a later, narrower gate — the **S0-sync** bench, which characterises an
+snd-aloop re-entry seam rather than P0's buffer/codec question — and carry
+their own scope caveat.
 
 | Tool | Methodology | When to use |
 |---|---|---|
 | [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Stands up a throwaway `snapserver` + `snapclient`s (leader + 2nd Pi + Pi Zero sub) reading a hand-fed FIFO, sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/`. | Before P1: pick the buffer/codec that holds the p99<5 ms L/R bound on WiFi. |
 | [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer. `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — ground-truth inter-speaker offset), `summarize` (PASS/FAIL vs target + RAM/CPU + recommended cell). | Analyze a spike run; the acoustic mode is the authoritative comb-filtering check. |
-| [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) | Laptop-side SSH harness for the S0-sync de-risk gate (throwaway, not product). Stands up two throwaway **active** followers whose seam is `snapclient` → snd-aloop → crossover-only CamillaDSP → real DAC, feeds a 1 Hz broadband click, and soaks for the xrun / CPU / temp budget. Answers the one thing the dumb-follower path deliberately avoids: the loopback re-entry and its `rate_adjust`-no-resampler clock seam. | **Dated — characterises the retired `snd-aloop` seam, not the ring.** Its clock contract has CamillaDSP nudge snd-aloop's `PCM Rate Shift` control, a mixer element a ring PCM (an ioplug) does not have, so the mechanism under test cannot exist on the shipped path. A green run must not stand in for the ring seam's question (#2768). |
-| [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py) | Pure-stdlib analyzer, the measurement half of the bench. `acoustic --wav` (single-mic autocorrelation of the broadband click → inter-speaker arrival offset) and `soak --dir` (parse soak logs for snd-aloop xrun totals + CPU/temp/throttle/Pss, run the acoustic estimate over every periodic capture, report p50/p95/p99/max raw *and* placement-detrended, count resync jumps, emit the combined PASS/FAIL). | Analyze an `s0-sync-bench.sh` run. Carries the same dated caveat as the row above — the numbers describe the aloop seam (#2768). |
+| [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) | Laptop-side SSH harness for the S0-sync de-risk gate (throwaway, not product). Stands up two throwaway **active** followers whose seam is `snapclient` → snd-aloop → crossover-only CamillaDSP → real DAC, feeds a 1 Hz broadband click, and soaks for the xrun / CPU / temp budget. Answers the one thing the dumb-follower path deliberately avoids: the loopback re-entry and its `rate_adjust`-no-resampler clock seam. | **Not evidence about a ring-backed seam.** The bench stands up its own throwaway snd-aloop rig and characterises the aloop clock-tracking mechanism — CamillaDSP nudging the `PCM Rate Shift` control on its snd-aloop *capture* device. A ring PCM is an ioplug and exposes no such mixer control, so a green run here answers nothing about a ring transport. See #2766 for the bonded grouping round-trip's move onto a ring, and #2768 for the owed ring-seam de-risk. |
+| [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py) | Pure-stdlib analyzer, the measurement half of the bench. `acoustic --wav` (single-mic autocorrelation of the broadband click → inter-speaker arrival offset) and `soak --dir` (parse soak logs for snd-aloop xrun totals + CPU/temp/throttle/Pss, run the acoustic estimate over every periodic capture, report p50/p95/p99/max raw *and* placement-detrended, count resync jumps, emit the combined PASS/FAIL). | Analyze an `s0-sync-bench.sh` run. Same scope caveat as the row above — the numbers describe an snd-aloop rig, not a ring-backed seam (#2768). |
 
-**Safety note:** the spike plays a test track/music straight through a
-throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`
-ceiling, and its leader-side client can contend with `jasper-outputd`
-for the DAC. Run it with the JTS audio daemons stopped (or on bring-up
-hardware), and set a conservative volume before the first sweep. See
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8.
+**Safety note — the P0 spike rows only:** `multiroom-spike.sh` plays a test
+track/music straight through a throwaway `snapclient`, **bypassing**
+CamillaDSP's `volume_limit: 0.0` ceiling, and its leader-side client can
+contend with `jasper-outputd` for the DAC. Run it with the JTS audio daemons
+stopped (or on bring-up hardware), and set a conservative volume before the
+first sweep. See [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8. The S0
+bench is not in that class — it drives the DACs outside outputd, but its
+throwaway CamillaDSP keeps `volume_limit: 0.0`, negative-only gains, and a
+protective Layer-A high-pass. It still needs exclusive DAC ownership, so
+`--up` stops the live stack on both Pis and `--teardown` restores it.
 
 ---
 

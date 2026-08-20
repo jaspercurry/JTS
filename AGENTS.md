@@ -477,7 +477,7 @@ Revisit only when ≥2 plugins genuinely need runtime probes *and* you're
 ready to give the registry a list-returning shape; until then a bespoke
 `check_<plugin>` is cheaper and clearer.
 
-**And a drift check needs a reference the thing it checks cannot rewrite.**
+**A drift check needs a reference the thing it checks cannot rewrite.**
 Comparing a live artifact against a record under `/run` is structurally dead
 when a reconciler regenerates that record from the same live state on every
 pass — `/run` is tmpfs, so after a reboot the record is re-derived from the
