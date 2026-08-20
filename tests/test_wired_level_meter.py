@@ -167,3 +167,40 @@ def test_level_meter_stop_is_idempotent_and_closes_the_pcm():
     meter.stop()
     meter.stop()
     assert pcm.closed is True
+
+
+def test_level_meter_partial_frame_is_a_loud_failure():
+    """A short read that is not a whole number of frames must SAY so.
+
+    The reshape cannot represent it, and a meter that silently skipped such
+    chunks would go quiet without ever reporting why.
+    """
+    go_partial = threading.Event()
+
+    class PartialPcm:
+        def read(self):
+            if go_partial.wait(timeout=0.005):
+                # claims 4 frames but the buffer is not a whole number of
+                # samples, let alone frames — the shape numpy cannot represent
+                return 4, _frames_bytes([(1000, 0)] * 3) + b"\x01\x02"
+            return 16, _frames_bytes([(1000, 0)] * 16)
+
+        def close(self):
+            pass
+
+    meter = WiredLevelMeter(
+        "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS, pcm_factory=PartialPcm
+    )
+    meter.start(ready_timeout_s=5.0)
+    go_partial.set()
+    try:
+        for _ in range(200):
+            try:
+                meter.drain()
+            except WiredCaptureError as exc:
+                assert "partial frame" in str(exc)
+                return
+            time.sleep(0.005)
+    finally:
+        meter.stop()
+    raise AssertionError("a partial frame must surface as a loud drain failure")

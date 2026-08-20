@@ -15,9 +15,17 @@ import json
 import os
 import re
 import subprocess
+import time
+from datetime import datetime as _datetime, timezone
 from pathlib import Path
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
+from ...active_speaker.seat_level_reference import (
+    load_seat_level_reference,
+    seat_level_reference_state_path,
+    seat_level_reference_volume_db,
+)
+from ...active_speaker.session_volume_plan import MEASUREMENT_REFERENCE_VOLUME_DB
 from ...web._systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 
 def _correction_root() -> Path:
@@ -948,3 +956,66 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         "applied but never graded: no post-apply check completed for this "
         "correction — re-verify at /correction/ to confirm it, or undo",
     )
+
+
+def _classify_seat_level_reference(
+    path: Path, *, now: float | None = None
+) -> CheckResult:
+    """Classify the banked seat-SPL measurement reference at ``path``.
+
+    Split from the check so tests can point it at a tmp file. Granular on
+    purpose: the runtime reader
+    (``session_volume_plan.measurement_reference_volume_db``) deliberately
+    collapses missing, unreadable and implausible into "use the codified -20 dB
+    default" — the fail-safe direction, and the right one there. That silence is
+    exactly why an operator needs a line here saying WHICH of those states the
+    file is in, and what number the next measurement session will actually hold.
+    """
+    label = "seat-SPL measurement reference"
+    now = time.time() if now is None else now
+    if not path.exists():
+        # A box that never ran `jasper-seat-level`. Not a warning: the session
+        # falls back to the codified reference and measures exactly as before.
+        return CheckResult(
+            label, "ok",
+            f"not measured — sessions use the codified "
+            f"{MEASUREMENT_REFERENCE_VOLUME_DB:g} dB reference "
+            "(run jasper-seat-level to measure this room)",
+        )
+    record = load_seat_level_reference(state_path=path)
+    volume_db = seat_level_reference_volume_db(state_path=path)
+    if record is None or volume_db is None:
+        return CheckResult(
+            label, "warn",
+            f"present but unusable — sessions silently fall back to "
+            f"{MEASUREMENT_REFERENCE_VOLUME_DB:g} dB. Re-run jasper-seat-level, "
+            f"or delete {path}",
+        )
+    serial = (record.get("mic_sensitivity") or {}).get("serial")
+    measured = record.get("measured_db_spl")
+    detail = (
+        f"{volume_db:.2f} dB"
+        + (f" measured {float(measured):.1f} dB SPL" if measured is not None else "")
+        + f" (mic {serial or 'serial unknown'})"
+    )
+    raw_ts = record.get("updated_at")
+    try:
+        stamped = _datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        age_days = (
+            _datetime.now(timezone.utc) - stamped
+        ).total_seconds() / 86400.0
+        detail += f", measured {age_days:.0f}d ago"
+    except (TypeError, ValueError):
+        detail += f", unparseable updated_at: {raw_ts!r}"
+    return CheckResult(label, "ok", detail)
+
+
+@doctor_check(order=32.55, group="correction")
+def check_seat_level_reference() -> CheckResult:
+    """Surface the measured seat-SPL reference the next session will hold.
+
+    One line, because the number it reports is otherwise invisible: its only
+    runtime reader falls back silently, so a stale or unusable reference changes
+    how loud every measurement runs without ever announcing itself.
+    """
+    return _classify_seat_level_reference(seat_level_reference_state_path())

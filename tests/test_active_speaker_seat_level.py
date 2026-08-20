@@ -4,21 +4,32 @@
 
 """Calibrated seat-SPL leveling: the conversion, the guards, the banked result.
 
-Synthetic throughout — a fake clock, a fake confirming volume pair, a modelled
-mic chain (``mic_dbfs = commanded volume + G``) and a blocking tone. No ALSA, no
-CamillaDSP, no mic.
+Synthetic throughout — a fake clock, a fake confirming volume pair, a blocking
+tone, and a mic that hears the POWER SUM of a room floor and a speaker that only
+contributes while the tone plays. No ALSA, no CamillaDSP, no microphone.
+
+That mic model is the point of this file. A speaker quieter than the room pins
+the reading at ambient for the first several steps, so the level does not track
+the commanded volume down there — and every rule about "is the microphone
+actually hearing this" has to survive that without either false-aborting a
+healthy chain or passing a mic that is not listening.
 
 What must hold, and what would break if it did not:
 
 * the dBFS -> dB SPL conversion matches a hand-computed value from a real
   UMIK-2 header — every SPL decision downstream is this arithmetic;
 * a mic that is plugged in but NOT observing the speaker aborts the climb
-  (``mic_not_observing``) instead of walking the volume to the ceiling. The
+  (``mic_not_observing``) instead of walking the volume to the ceiling; the
   mutation test below removes the guard and shows the ramp doing exactly that;
+* a speaker quieter than the room is NOT aborted, and the no-op control shows
+  the first-reading-relative rule really did abort it;
+* a non-finite feed scores as no rise rather than leaving the guard unarmed;
+* a stuck-constant mic never banks a reference, and the control shows that
+  without a measured ambient floor it banked the ramp's own start volume;
 * a measured level above the profile's commissioning ceiling aborts;
 * an unreachable target refuses and banks NOTHING;
 * the household volume is restored on every exit path — converged, refused,
-  aborted;
+  aborted, raised — and the hold is visible to the shared recovery machinery;
 * only a converged, in-window lock writes a reference, and the reader accepts
   it only inside the safe envelope.
 """
@@ -27,10 +38,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import time
 
 import pytest
 
 from jasper.active_speaker import seat_level_ramp as slr
+from jasper.active_speaker.session_volume_plan import (
+    SessionVolumePlan,
+    live_measurement_session,
+)
 from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
@@ -110,33 +127,59 @@ class Volume:
         return self.value
 
 
-class Mic:
-    """A modelled mic feed.
+def _power_sum_db(*levels: float) -> float:
+    """Incoherent sum of independent sources, the way a real mic hears them."""
+    return 10.0 * math.log10(sum(10.0 ** (level / 10.0) for level in levels))
 
-    ``gain_db`` is the chain gain ``G`` in ``mic_dbfs = commanded + G``.
-    ``deaf=True`` models the failure this whole guard exists for: the device is
-    open and delivering samples, but they never respond to the speaker — a mic
-    capturing the wrong card, sealed in a bag, or muted at the OS. It pins at
-    ``deaf_dbfs`` forever.
+
+class Mic:
+    """A modelled mic feed: the room's ambient floor plus whatever plays.
+
+    The speaker contributes only while the tone is running (``mic_dbfs =
+    commanded + gain_db``), and the mic hears the POWER SUM of that and the
+    room. That is what makes the pre-tone ambient window meaningful and what
+    reproduces the shape the runaway guard has to tolerate: a speaker quieter
+    than the room pins the reading at ambient for the first several steps, so
+    the level does NOT track the commanded volume 1:1 down there.
+
+    ``deaf=True`` is the failure the guard exists for: the device is open and
+    delivering samples, but they never respond to the speaker — the wrong card,
+    a mic in a bag, muted at the OS. It pins at ``stuck_dbfs`` forever, and
+    because its ambient reading IS its signal reading, its rise is zero.
     """
 
     def __init__(
         self,
         volume: Volume,
+        tone: BlockingTone,
         *,
         gain_db: float = -10.0,
+        ambient_dbfs: float = -80.0,
         deaf: bool = False,
-        deaf_dbfs: float = -75.0,
+        stuck_dbfs: float = -75.0,
+        nan_once_playing: bool = False,
     ) -> None:
         self._volume = volume
+        self._tone = tone
         self.gain_db = gain_db
+        self.ambient_dbfs = ambient_dbfs
         self.deaf = deaf
-        self.deaf_dbfs = deaf_dbfs
+        self.stuck_dbfs = stuck_dbfs
+        self.nan_once_playing = nan_once_playing
         self._seq = 0
+
+    def _rms_dbfs(self) -> float:
+        if self.deaf:
+            return self.stuck_dbfs
+        if not self._tone.started:
+            return self.ambient_dbfs
+        if self.nan_once_playing:
+            return float("nan")
+        return _power_sum_db(self.ambient_dbfs, self._volume.value + self.gain_db)
 
     async def next_samples(self) -> list[LevelSample]:
         self._seq += 1
-        rms = self.deaf_dbfs if self.deaf else self._volume.value + self.gain_db
+        rms = self._rms_dbfs()
         return [
             LevelSample(
                 seq=self._seq,
@@ -149,19 +192,23 @@ class Mic:
         ]
 
 
+def gain_for_seat_spl(db_spl: float, *, at_volume_db: float) -> float:
+    """Chain gain that puts the seat at ``db_spl`` when main volume is given."""
+    return UMIK2.dbfs_from_db_spl(db_spl) - at_volume_db
+
+
 async def _level(
     *,
     mic: Mic,
     volume: Volume,
+    tone: BlockingTone,
     tmp_path,
     target: SeatLevelTarget = TARGET,
     sensitivity: MicSensitivity = UMIK2,
     max_main_volume_db: float = CEILING_DB,
     spl_ceiling_db_spl: float = SPL_CEILING,
-    noise_floor_dbfs: float | None = -80.0,
 ):
     clock = FakeClock()
-    tone = BlockingTone()
     result = await slr.run_seat_level_ramp(
         target=target,
         sensitivity=sensitivity,
@@ -172,13 +219,28 @@ async def _level(
         play_continuous_tone=tone.play,
         cancel_tone=tone.cancel,
         next_samples=mic.next_samples,
-        noise_floor_dbfs=noise_floor_dbfs,
         clock=clock.now,
         sleep=clock.sleep,
         volume_state_path=tmp_path / "seat_level_volume.json",
         reference_state_path=tmp_path / "seat_level_reference.json",
     )
-    return result, tone
+    return result
+
+
+def _always_ambient(value: float):
+    """A stand-in for the ambient measurement that reports a fixed floor."""
+
+    async def _measure(next_samples, *, clock, sleep, window_s=None):
+        return value
+
+    return _measure
+
+
+def _rig(**mic_kwargs) -> tuple[Volume, BlockingTone, Mic]:
+    """A speaker, a tone, and a mic that hears both the room and the speaker."""
+    volume = Volume()
+    tone = BlockingTone()
+    return volume, tone, Mic(volume, tone, **mic_kwargs)
 
 
 # --- the conversion ---------------------------------------------------------
@@ -293,9 +355,10 @@ def test_ramp_config_refuses_a_band_too_narrow_for_the_overshoot_invariant():
 
 
 def test_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
-    volume = Volume()
-    mic = Mic(volume, gain_db=-10.0)
-    result, tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
 
     assert result.status == "converged", result.reason
     # G = -10, so the band [-31.07, -26.07] dBFS is reached at [-21.07, -16.07]
@@ -317,20 +380,20 @@ def test_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
     assert banked["mic_sensitivity"]["analog_gain_db"] == 18.0
 
 
-def test_the_ramp_never_commands_above_the_driver_cap_ceiling(tmp_path):
-    volume = Volume()
-    mic = Mic(volume, gain_db=-10.0)
-    asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+def test_the_ramp_never_commands_above_the_stimulus_ceiling(tmp_path):
+    volume, tone, mic = _rig(gain_db=-10.0)
+    asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
     assert max(volume.commanded) <= CEILING_DB + 1e-9
 
 
-# --- the runaway guard (the load-bearing one) -------------------------------
+# --- the runaway guard, and the ambient floor it reads ----------------------
 
 
 def test_a_mic_that_is_not_observing_aborts_the_climb(tmp_path):
-    volume = Volume()
-    mic = Mic(volume, deaf=True)
-    result, tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    volume, tone, mic = _rig(deaf=True)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
 
     assert result.status == "refused"
     assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
@@ -339,7 +402,6 @@ def test_a_mic_that_is_not_observing_aborts_the_climb(tmp_path):
     assert highest <= slr.SEAT_LEVEL_START_DB + slr.MIC_RESPONSE_PROBE_DB + 2.0
     assert highest < CEILING_DB
     assert tone.cancelled
-    # Nothing banked.
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
@@ -349,44 +411,186 @@ def test_removing_the_runaway_guard_lets_a_dead_mic_walk_to_the_ceiling(
     """Mutation proof for the guard above.
 
     Neuter ONLY the runaway predicate and re-run the identical dead-mic
-    scenario. The hazard then happens: the staircase walks the speaker all the
-    way to the driver-cap ceiling on a mic that never heard a thing, ~32 dB
-    louder than where the guard stops it. Neither the kernel's feed-liveness
-    timeout (samples ARE arriving) nor its trust floor (they are merely
-    dropped) prevents that climb — only this guard does.
+    scenario. The hazard then happens: the staircase walks the speaker to the
+    ceiling on a mic that never heard a thing. Neither the kernel's
+    feed-liveness timeout (samples ARE arriving) nor its trust floor (they are
+    merely dropped) prevents that climb — only this guard does.
     """
     monkeypatch.setattr(
         slr._MicObservationGuard, "_runaway", lambda self, commanded_db: False
     )
-    volume = Volume()
-    mic = Mic(volume, deaf=True)
-    result, _tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    volume, tone, mic = _rig(deaf=True)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
 
     assert max(volume.commanded) == pytest.approx(CEILING_DB)
     assert result.reason != slr.REFUSE_MIC_NOT_OBSERVING
-    # The guarded run stops ~32 dB quieter than this.
-    assert CEILING_DB - (slr.SEAT_LEVEL_START_DB + slr.MIC_RESPONSE_PROBE_DB) > 30.0
+    assert CEILING_DB - (slr.SEAT_LEVEL_START_DB + slr.MIC_RESPONSE_PROBE_DB) > 20.0
 
 
-def test_a_responding_mic_never_trips_the_runaway_guard(tmp_path):
-    # A very quiet chain: every early reading is under the trust floor (so the
-    # kernel drops them all) yet the level DOES track the commanded volume. The
-    # guard must read the untrusted samples and let this through.
+@pytest.mark.parametrize(
+    "seat_spl_at_start, ambient_db_spl",
+    [
+        pytest.param(35.0, 45.0, id="chain_80_ambient_45"),
+        pytest.param(32.0, 42.0, id="chain_85_ambient_42"),
+    ],
+)
+def test_a_speaker_quieter_than_the_room_is_not_falsely_aborted(
+    tmp_path, seat_spl_at_start, ambient_db_spl
+):
+    """The gate's false-abort cases, and they must converge.
+
+    At the quiet start the speaker is 10 dB BELOW the room, so the mic reads
+    ambient and the level does not track the commanded volume at all down
+    there. Measuring rise against the ambient floor (rather than against the
+    first reading) is what lets this chain climb through the room and converge.
+    """
+    gain = gain_for_seat_spl(seat_spl_at_start, at_volume_db=slr.SEAT_LEVEL_START_DB)
+    volume, tone, mic = _rig(
+        gain_db=gain, ambient_dbfs=UMIK2.dbfs_from_db_spl(ambient_db_spl)
+    )
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+    assert result.status == "converged", result.reason
+    assert TARGET.low_db_spl <= result.measured_db_spl <= TARGET.high_db_spl
+
+
+def test_a_first_reading_relative_guard_would_have_aborted_those(tmp_path):
+    """The no-op control for the test above: the OLD rule really did fire.
+
+    Swap the ambient-relative predicate back to the first-reading-relative one
+    the gate found, leave everything else identical, and the same healthy chain
+    is refused. This is what makes the pass above evidence rather than a
+    coincidence.
+    """
+    gain = gain_for_seat_spl(35.0, at_volume_db=slr.SEAT_LEVEL_START_DB)
+
+    def _first_reading_relative(self, commanded_db: float) -> bool:
+        if self._first_seen is None:
+            self._first_seen = self._max_rms_dbfs
+        if commanded_db - self._start_volume_db < 12.0:
+            return False
+        return (self._max_rms_dbfs or 0.0) - (self._first_seen or 0.0) < 6.0
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        slr._MicObservationGuard, "_first_seen", None, raising=False
+    )
+    monkeypatch.setattr(
+        slr._MicObservationGuard, "_runaway", _first_reading_relative
+    )
+    try:
+        volume, tone, mic = _rig(
+            gain_db=gain, ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0)
+        )
+        result = asyncio.run(
+            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+        )
+    finally:
+        monkeypatch.undo()
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+
+
+def test_a_non_finite_feed_cannot_defeat_the_guard(tmp_path):
+    """NaN scores as no rise, never as no evidence.
+
+    The ambient window sees finite room samples; every sample once the tone
+    starts is NaN. Nothing raises the observed maximum, so the rise stays zero
+    and the guard fires — rather than sitting unarmed while the volume climbs.
+    """
+    volume, tone, mic = _rig(gain_db=-10.0, nan_once_playing=True)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert max(volume.commanded) < CEILING_DB
+
+
+def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
     volume = Volume()
-    mic = Mic(volume, gain_db=-45.0)
-    result, _tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
-    assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
+    tone = BlockingTone()
+
+    async def _silent() -> list:
+        return []
+
+    clock = FakeClock()
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=_silent,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+    assert result.reason == slr.REFUSE_MIC_FEED_LOST
+    assert not tone.started
+
+
+# --- convergence needs a real rise, not just an in-band number --------------
+
+
+def test_a_stuck_constant_in_band_mic_refuses_instead_of_banking(tmp_path):
+    """The gate's repro: a mic pinned at a value that happens to sit inside the
+    target window settles and confirms, and used to bank -50.0 dB — the ramp's
+    own start volume — as a measured reference. Its ambient reading IS its
+    signal reading, so its rise is zero and convergence now refuses."""
+    in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
+    volume, tone, mic = _rig(deaf=True, stuck_dbfs=in_band_dbfs)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+
+    assert result.status == "refused"
+    assert result.reference_volume_db is None
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_without_a_measured_ambient_floor_the_stuck_mic_banks_minus_fifty(
+    tmp_path, monkeypatch
+):
+    """The control that names the fix: measuring the room is what stops it.
+
+    Replace the measured ambient floor with a floor so low nothing can be
+    ambient-dominated — which is exactly the pre-fix state, where the kernel was
+    handed no noise floor at all — and change NOTHING else. The same stuck mic
+    now settles, confirms, and banks the ramp's own quiet start volume as a
+    "measured" reference: the gate's reported -50.0 dB, reproduced.
+    """
+    monkeypatch.setattr(
+        slr, "measure_ambient_dbfs", _always_ambient(-120.0)
+    )
+    in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
+    volume, tone, mic = _rig(deaf=True, stuck_dbfs=in_band_dbfs)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+
+    assert result.status == "converged"
+    assert result.reference_volume_db == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert (tmp_path / "seat_level_reference.json").exists()
 
 
 # --- the SPL ceiling --------------------------------------------------------
 
 
 def test_a_measured_level_over_the_commissioning_ceiling_aborts(tmp_path):
-    # G = +35 puts the very first quiet-start reading at -15 dBFS == 91 dB SPL,
-    # above the profile's 85 dB SPL ceiling.
-    volume = Volume()
-    mic = Mic(volume, gain_db=35.0)
-    result, tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    # G = +35 puts the very first reading once the tone starts at -15 dBFS ==
+    # 91 dB SPL, above the profile's 85 dB SPL ceiling.
+    volume, tone, mic = _rig(gain_db=35.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
 
     assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
     assert tone.cancelled
@@ -397,10 +601,13 @@ def test_a_measured_level_over_the_commissioning_ceiling_aborts(tmp_path):
 
 
 def test_an_unreachable_target_refuses_and_banks_nothing(tmp_path):
-    # G = -60: the band would need ~+30 dB of main volume, far above the cap.
-    volume = Volume()
-    mic = Mic(volume, gain_db=-60.0)
-    result, _tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    # G = -40: quiet enough that the band needs ~+11 dB of main volume, far
+    # above the cap -- but loud enough to clear the room floor on the way, so
+    # this is a genuine ceiling refusal and not a mic that never spoke.
+    volume, tone, mic = _rig(gain_db=-40.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
 
     assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
     assert result.reference_volume_db is None
@@ -411,15 +618,14 @@ def test_an_unreachable_target_refuses_and_banks_nothing(tmp_path):
     "mic_kwargs",
     [
         pytest.param({"gain_db": -10.0}, id="converged"),
-        pytest.param({"gain_db": -60.0}, id="unreachable"),
+        pytest.param({"gain_db": -40.0}, id="unreachable"),
         pytest.param({"deaf": True}, id="mic_not_observing"),
         pytest.param({"gain_db": 35.0}, id="spl_ceiling_exceeded"),
     ],
 )
 def test_the_household_volume_is_restored_on_every_exit_path(tmp_path, mic_kwargs):
-    volume = Volume()
-    mic = Mic(volume, **mic_kwargs)
-    asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    volume, tone, mic = _rig(**mic_kwargs)
+    asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
     assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
     # The latch resolved itself rather than leaving a stale intent behind.
     state = json.loads((tmp_path / "seat_level_volume.json").read_text())
@@ -430,13 +636,20 @@ def test_a_raising_ramp_still_restores_the_household_volume(tmp_path):
     # The `finally` is the contract: even a caller-visible explosion inside the
     # kernel must not leave the speaker parked at the measurement level.
     volume = Volume()
-    mic = Mic(volume, gain_db=-10.0)
+    tone = BlockingTone()
+    calls = {"n": 0}
 
     async def _boom() -> list[LevelSample]:
+        calls["n"] += 1
+        if calls["n"] <= 30:  # let the ambient window collect a floor first
+            return [
+                LevelSample(
+                    seq=calls["n"], t_client_ms=0, rms_dbfs=-80.0, peak_dbfs=-77.0
+                )
+            ]
         raise KeyboardInterrupt("operator hit ctrl-c")
 
     clock = FakeClock()
-    tone = BlockingTone()
 
     async def _go():
         await slr.run_seat_level_ramp(
@@ -449,7 +662,6 @@ def test_a_raising_ramp_still_restores_the_household_volume(tmp_path):
             play_continuous_tone=tone.play,
             cancel_tone=tone.cancel,
             next_samples=_boom,
-            noise_floor_dbfs=-80.0,
             clock=clock.now,
             sleep=clock.sleep,
             volume_state_path=tmp_path / "seat_level_volume.json",
@@ -459,7 +671,6 @@ def test_a_raising_ramp_still_restores_the_household_volume(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         asyncio.run(_go())
     assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
-    del mic
 
 
 def test_an_unconfirmable_volume_latch_refuses_before_any_ramp(tmp_path):
@@ -469,10 +680,75 @@ def test_an_unconfirmable_volume_latch_refuses_before_any_ramp(tmp_path):
             return True  # accepted, but the readback never moves
 
     volume = Drifting()
-    mic = Mic(volume, gain_db=-10.0)
-    result, tone = asyncio.run(_level(mic=mic, volume=volume, tmp_path=tmp_path))
+    tone = BlockingTone()
+    mic = Mic(volume, tone, gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
     assert result.reason == slr.REFUSE_VOLUME_LATCH_UNCONFIRMED
     assert not tone.started
+
+
+# --- the recovered-latch family ---------------------------------------------
+
+
+def test_a_live_measurement_session_refuses_the_leveling_pass(tmp_path):
+    """The same door jasper-angle-capture stands behind: a session holding the
+    speaker means this may not start, read off the SHARED durable state."""
+    state = tmp_path / "seat_level_volume.json"
+    state.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "jts_crossover_session_volume",
+                "status": "active",
+                "reason": None,
+                "opened_at": time.time(),
+                "wall_clock_ceiling_s": 1800.0,
+                "measurement_volume_db": -20.0,
+                "original_main_volume_db": -30.0,
+            }
+        )
+    )
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+
+    assert result.reason == slr.REFUSE_SESSION_ALREADY_LIVE
+    assert "already running" in (result.detail or "")
+    assert "leveling the seat SPL" in (result.detail or "")
+    assert not tone.started
+    assert not volume.commanded  # nothing was touched
+
+
+def test_the_hold_is_visible_to_the_recovery_family(tmp_path):
+    """A killed pass must be drainable by the machinery that already exists.
+
+    The interlock and the volume-recovery screen both read one durable file; if
+    the hold went anywhere else they would report an idle speaker while it sat
+    at measurement volume. Here: a leveling pass's own live state is exactly
+    what the shared reader calls busy.
+    """
+    state = tmp_path / "seat_level_volume.json"
+    volume, tone, mic = _rig(gain_db=-10.0)
+
+    seen: list[str | None] = []
+    original_close = SessionVolumePlan.close
+
+    async def _peek(self, *a, **kw):
+        # Mid-pass, before the restore drains it.
+        seen.append(live_measurement_session(state_path=state))
+        return await original_close(self, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SessionVolumePlan, "close", _peek)
+        asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert seen and seen[0] is not None
+    assert "already running" in seen[0]
+    # ...and once it closes cleanly the family sees an idle speaker again.
+    assert live_measurement_session(state_path=state) is None
 
 
 # --- the persisted reference ------------------------------------------------

@@ -20,9 +20,10 @@ staircase, the stop-ahead pre-window, the settled jump, the confirm streak, the
 clip abort, the trust floor, the feed-liveness abort, the derived safety
 timeout, and the fade-before-tone-kill. The restore latch is
 :class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan` (durable
-intent before the first mutation, set-and-confirm, restore exactly once), given
-its OWN statefile so it cannot collide with the crossover session's plan. This
-module contributes exactly three things the kernel cannot know:
+intent before the first mutation, set-and-confirm, restore exactly once) on the
+SAME durable statefile a measurement session uses, so the recovery machinery
+that already watches that file watches a leveling pass too. This module
+contributes exactly three things the kernel cannot know:
 
 1. **The window is a dB SPL band, not a dBFS one.** The mic's calibration file
    carries the absolute reference
@@ -30,17 +31,22 @@ module contributes exactly three things the kernel cannot know:
    converts the operator's seat-SPL band into the mic-dBFS window the kernel
    ramps toward. No calibration means no absolute level, so the step REFUSES
    (``mic_calibration_unavailable``) rather than chasing an uncalibrated number.
-2. **Two ceilings the kernel has no vocabulary for** — the driver-cap volume
-   ceiling (``driver_cap_ceiling_db``, the same derivation the session volume is
-   bounded by) as the ramp's cap, and the profile's
-   ``max_commissioning_level_db_spl`` as a live, measured seat-SPL ceiling.
-3. **The runaway guard.** A wired measurement mic that is plugged in but not
-   observing the speaker — capturing the wrong card, in a bag, muted at the
-   OS — keeps delivering samples at its noise floor, so neither the feed-
-   liveness timeout (samples ARE arriving) nor the trust floor (they are simply
-   dropped) stops the climb: the kernel would walk all the way to its cap.
-   :class:`_MicObservationGuard` requires the observed level to actually RISE
-   as the commanded volume rises, and aborts the moment it does not.
+2. **A ceiling the kernel has no vocabulary for** — the loudest main volume at
+   which the ACTUAL stimulus admits for EVERY driver
+   (``unsegmented_stimulus_ceiling_db``). It is derived from the excitation
+   ledger and the stimulus bytes and contains no measured level, so a
+   mis-calibrated microphone cannot move it. The measured seat-SPL ceiling
+   (``max_commissioning_level_db_spl``) is a second, softer stop that shares the
+   calibration's fate — which is exactly why it is not the one holding the line.
+3. **The ambient floor, and the two rules that read it.** A wired measurement
+   mic that is plugged in but not observing the speaker — capturing the wrong
+   card, in a bag, muted at the OS — keeps delivering samples at its noise
+   floor, so neither the feed-liveness timeout (samples ARE arriving) nor the
+   trust floor (they are simply dropped) stops the climb. Measuring the room
+   ONCE before the tone gives the kernel its trust threshold, gives
+   :class:`_MicObservationGuard` a "did anything actually rise" test that does
+   not false-abort a speaker quieter than the room, and gives convergence the
+   same test so a stuck-constant mic can never bank a reference.
 
 Every refusal restores the household volume through the latch and persists
 nothing. Only a converged, in-window lock banks a reference.
@@ -51,11 +57,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.env_load import bounded_env_float
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.ramp import (
     HARD_CEILING_DBFS,
@@ -73,15 +81,15 @@ from .seat_level_reference import (
     write_seat_level_reference,
 )
 from .session_volume_plan import (
+    DEFAULT_SESSION_VOLUME_STATE_PATH,
     SessionVolumeOpenResult,
     SessionVolumePlan,
     SessionVolumePlanError,
+    live_measurement_session,
 )
 from .volume_latch import GetMainVolumeDb, SetMainVolumeDb
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_seat_level_volume.json")
 
 # The quiet floor the climb starts from. The kernel's own default, and 30 dB
 # below the codified -20 dB reference, so the first audible moment of a leveling
@@ -104,15 +112,33 @@ SEAT_LEVEL_MAX_LOOP_LATENCY_S = 0.5
 # seat-SPL ceiling and the kernel's own 0 dB hard ceiling.
 SEAT_LEVEL_CAP_BUMP_DB = 120.0
 
-# The runaway guard. Once the commanded volume has climbed this far above the
-# level at which the mic first reported, the observed level must have risen by
-# at least MIC_RESPONSE_MIN_RISE_DB. The chain is LTI and main_volume adds in dB,
-# so a mic that is genuinely listening rises ~1 dB per commanded dB; demanding
-# half of it tolerates room noise, reading jitter and a compressed early chain,
-# while a mic that is not listening (rise ~0) fails decisively. 12 dB is ~16
-# staircase steps — reached long before the pre-window on any working chain, and
-# ~6 s at the default cadence.
-MIC_RESPONSE_PROBE_DB = 12.0
+# How long the mic listens to a silent room before the tone starts. The measured
+# ambient floor it produces is the ONE measurement three rules read: the kernel's
+# trust threshold, the runaway guard's "did anything rise", and convergence's
+# "did the reading rise at all". One second of a stationary room is plenty for a
+# median; longer just delays the operator.
+AMBIENT_WINDOW_S = 1.0
+
+# The runaway guard, and the same rise convergence requires. Once the commanded
+# volume has climbed MIC_RESPONSE_PROBE_DB above the ramp's start, the observed
+# level must sit at least MIC_RESPONSE_MIN_RISE_DB ABOVE the measured ambient
+# floor.
+#
+# Measuring rise against AMBIENT rather than against the first reading is what
+# keeps a real chain from being falsely aborted: a speaker that starts quieter
+# than the room pins the mic at ambient for the first several steps, so a 1:1
+# "track the commanded volume" test fires on a perfectly good mic in a normal
+# room (chain 80 dB / ambient 45 dB, and 85/42, both do this). Against ambient,
+# such a chain simply has to emerge — which it does, long before the ceiling —
+# while a mic that is not listening never emerges at all, because ITS ambient
+# reading and ITS signal reading are the same number.
+#
+# 20 dB of probe span is ~27 staircase steps (~13 s), sized so a chain starting
+# below the room floor has room to climb through it. Both are deploy-time knobs
+# (ramp.py's convention for every hardware-gated threshold) because the right
+# span depends on the room's floor and the amp's gain, which only hardware
+# knows.
+MIC_RESPONSE_PROBE_DB = 20.0
 MIC_RESPONSE_MIN_RISE_DB = 6.0
 
 # Refusal codes. Stable strings: they are the operator-facing reason and the
@@ -128,6 +154,8 @@ REFUSE_RAMP_CONFIG_INVALID = "ramp_config_invalid"
 REFUSE_SPL_TARGET_UNCAPTURABLE = "spl_target_uncapturable"
 REFUSE_VOLUME_CEILING_TOO_LOW = "volume_ceiling_below_ramp_start"
 REFUSE_VOLUME_LATCH_UNCONFIRMED = "volume_latch_unconfirmed"
+# Reuses jasper-angle-capture's slug verbatim: same door, same durable fact.
+REFUSE_SESSION_ALREADY_LIVE = "measurement_session_already_live"
 
 
 class SeatLevelRampError(RuntimeError):
@@ -144,6 +172,7 @@ class SeatLevelResult:
 
     status: str
     reason: str | None = None
+    detail: str | None = None
     reference_volume_db: float | None = None
     measured_db_spl: float | None = None
     ramp: dict[str, Any] = field(default_factory=dict)
@@ -156,6 +185,7 @@ class SeatLevelResult:
         return {
             "status": self.status,
             "reason": self.reason,
+            "detail": self.detail,
             "reference_volume_db": self.reference_volume_db,
             "measured_db_spl": self.measured_db_spl,
             "ramp": self.ramp,
@@ -163,6 +193,30 @@ class SeatLevelResult:
 
 
 SampleSource = Callable[[], Awaitable[list[LevelSample]]]
+
+
+async def measure_ambient_dbfs(
+    next_samples: SampleSource,
+    *,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+    window_s: float = AMBIENT_WINDOW_S,
+) -> float | None:
+    """Median mic level over a silent window — the ONE measurement three rules read.
+
+    Called after the latch has parked the volume at the quiet floor and before
+    the tone starts, so the room is as silent as this session will see it.
+    Returns ``None`` when the mic delivered nothing finite; the caller refuses
+    rather than assuming a floor.
+    """
+    readings: list[float] = []
+    deadline = clock() + float(window_s)
+    while clock() < deadline:
+        for sample in await next_samples():
+            if math.isfinite(sample.rms_dbfs):
+                readings.append(sample.rms_dbfs)
+        await sleep(0.05)
+    return statistics.median(readings) if readings else None
 
 
 class _MicObservationGuard:
@@ -177,6 +231,10 @@ class _MicObservationGuard:
     volume). The loop re-checks the cancel flag at the top of each tick and ticks
     every 10 ms, while it steps the volume only every ``step_interval_s``
     (0.5 s), so an abort lands with no further volume step.
+
+    :attr:`rise_db` — how far the loudest observed reading sits above the
+    measured ambient floor — is the guard's whole state, and convergence reads
+    the same number so a stuck-constant mic cannot bank a reference.
     """
 
     def __init__(
@@ -186,16 +244,38 @@ class _MicObservationGuard:
         source: SampleSource,
         sensitivity: MicSensitivity,
         spl_ceiling_db_spl: float,
+        ambient_dbfs: float,
+        start_volume_db: float,
+        probe_db: float,
+        min_rise_db: float,
     ) -> None:
         self._controller = controller
         self._source = source
         self._sensitivity = sensitivity
         self._spl_ceiling_db_spl = float(spl_ceiling_db_spl)
+        self._ambient_dbfs = float(ambient_dbfs)
+        self._start_volume_db = float(start_volume_db)
+        self._probe_db = float(probe_db)
+        self._min_rise_db = float(min_rise_db)
         self.refusal: str | None = None
         self.last_rms_dbfs: float | None = None
-        self._first_rms_dbfs: float | None = None
-        self._first_commanded_db: float | None = None
         self._max_rms_dbfs: float | None = None
+
+    @property
+    def min_rise_db(self) -> float:
+        """The rise the guard demands — convergence demands the same one."""
+        return self._min_rise_db
+
+    @property
+    def rise_db(self) -> float:
+        """Loudest observed reading minus the ambient floor. Never negative.
+
+        A non-finite feed never raises ``_max_rms_dbfs``, so NaN/inf samples
+        score as no rise instead of defeating the guard by leaving it unarmed.
+        """
+        if self._max_rms_dbfs is None:
+            return 0.0
+        return max(0.0, self._max_rms_dbfs - self._ambient_dbfs)
 
     async def __call__(self) -> list[LevelSample]:
         batch = await self._source()
@@ -206,9 +286,6 @@ class _MicObservationGuard:
             if not math.isfinite(sample.rms_dbfs):
                 continue
             self.last_rms_dbfs = sample.rms_dbfs
-            if self._first_rms_dbfs is None:
-                self._first_rms_dbfs = sample.rms_dbfs
-                self._first_commanded_db = commanded
             self._max_rms_dbfs = (
                 sample.rms_dbfs
                 if self._max_rms_dbfs is None
@@ -224,25 +301,21 @@ class _MicObservationGuard:
                 )
                 return batch
         if self._runaway(commanded):
-            first_commanded = float(self._first_commanded_db or 0.0)
-            first_rms = float(self._first_rms_dbfs or 0.0)
             await self._abort(
                 REFUSE_MIC_NOT_OBSERVING,
-                commanded_climb_db=f"{commanded - first_commanded:.2f}",
-                observed_rise_db=f"{float(self._max_rms_dbfs or 0.0) - first_rms:.2f}",
-                required_rise_db=f"{MIC_RESPONSE_MIN_RISE_DB:.2f}",
+                commanded_climb_db=f"{commanded - self._start_volume_db:.2f}",
+                ambient_dbfs=f"{self._ambient_dbfs:.1f}",
+                observed_rise_db=f"{self.rise_db:.2f}",
+                required_rise_db=f"{self._min_rise_db:.2f}",
                 commanded_db=f"{commanded:.2f}",
             )
         return batch
 
     def _runaway(self, commanded_db: float) -> bool:
-        """True once the volume has climbed the probe span without a response."""
-        if self._first_commanded_db is None or self._first_rms_dbfs is None:
+        """True once the volume climbed the probe span without emerging from ambient."""
+        if commanded_db - self._start_volume_db < self._probe_db:
             return False
-        if commanded_db - self._first_commanded_db < MIC_RESPONSE_PROBE_DB:
-            return False
-        rise = float(self._max_rms_dbfs or self._first_rms_dbfs) - self._first_rms_dbfs
-        return rise < MIC_RESPONSE_MIN_RISE_DB
+        return self.rise_db < self._min_rise_db
 
     async def _abort(self, reason: str, **evidence: str) -> None:
         self.refusal = reason
@@ -329,11 +402,10 @@ async def run_seat_level_ramp(
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
     next_samples: SampleSource,
-    noise_floor_dbfs: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     session_id: str = "seat_level",
-    volume_state_path: str | Path | None = DEFAULT_STATE_PATH,
+    volume_state_path: str | Path | None = None,
     reference_state_path: str | Path | None = None,
 ) -> SeatLevelResult:
     """Ramp to the seat-SPL band and bank the volume that reached it.
@@ -343,27 +415,60 @@ async def run_seat_level_ramp(
     ceiling live, on measured samples, which is a different job from admitting
     the request.
 
-    ``max_main_volume_db`` is the driver-cap volume ceiling from
-    :func:`jasper.active_speaker.session_volume_plan.driver_cap_ceiling_db`. The
-    ramp never commands above it.
+    ``max_main_volume_db`` is the mic-independent ceiling from
+    :func:`jasper.active_speaker.session_volume_plan.unsegmented_stimulus_ceiling_db`
+    — the loudest volume at which the actual stimulus admits for EVERY driver.
+    The ramp never commands above it.
 
-    The household volume is snapshotted and restored through
-    :class:`SessionVolumePlan` on EVERY exit path — converged, refused, or
-    raised — and the plan holds its own statefile so it never contends with the
-    crossover session's. A plan that cannot confirm its restore latches
-    unresolved for the recovery path exactly as it does for a session.
+    **The hold rides the crossover session's own volume plan, on its own
+    statefile.** A leveling pass holds the speaker exactly as a session does, so
+    it joins the family the recovery machinery already watches: the volume
+    recovery screen, ``/state.crossover_v2.needs_recovery``, and the flow's
+    force-drain all see a killed leveling process, and it refuses to start under
+    a live or unresolved session for the same reason
+    ``jasper-angle-capture stage`` does (:func:`live_measurement_session`). A
+    private statefile would have been invisible to every one of them.
 
-    Persists a reference only on a converged, in-window lock.
+    Persists a reference only on a converged, in-window lock whose reading rose
+    clear of the measured ambient floor.
     """
     config = build_seat_level_ramp_config(
         target=target,
         sensitivity=sensitivity,
         max_main_volume_db=max_main_volume_db,
     )
-    plan = SessionVolumePlan(state_path=volume_state_path)
-    if plan.needs_recovery:
-        await plan.recover_unresolved(set_main_volume_db, get_main_volume_db)
-        plan = SessionVolumePlan(state_path=volume_state_path)
+    probe_db = bounded_env_float(
+        "JASPER_SEAT_LEVEL_PROBE_DB", MIC_RESPONSE_PROBE_DB, lo=3.0, hi=40.0
+    )
+    min_rise_db = bounded_env_float(
+        "JASPER_SEAT_LEVEL_MIN_RISE_DB", MIC_RESPONSE_MIN_RISE_DB, lo=1.0, hi=20.0
+    )
+    busy = live_measurement_session(
+        state_path=None if volume_state_path is None else Path(volume_state_path),
+        action="leveling the seat SPL",
+    )
+    if busy is not None:
+        log_event(
+            logger,
+            "active_speaker.seat_level_refused",
+            level=logging.WARNING,
+            reason=REFUSE_SESSION_ALREADY_LIVE,
+            detail=busy,
+        )
+        return SeatLevelResult(
+            status="refused", reason=REFUSE_SESSION_ALREADY_LIVE, detail=busy
+        )
+    plan = SessionVolumePlan(
+        state_path=(
+            DEFAULT_SESSION_VOLUME_STATE_PATH
+            if volume_state_path is None
+            else volume_state_path
+        )
+    )
+    # A leveling pass is bounded by the kernel's own derived safety timeout, so
+    # a killed process should surface far sooner than a measurement session's
+    # 30-minute walked-away window.
+    plan.set_wall_clock_ceiling_s(config.safety_timeout + 60.0)
     try:
         opened = await plan.open(
             SEAT_LEVEL_START_DB, set_main_volume_db, get_main_volume_db
@@ -403,23 +508,52 @@ async def run_seat_level_ramp(
         spl_ceiling_db_spl=f"{spl_ceiling_db_spl:.1f}",
         start_db=f"{config.start_db:.1f}",
         step_db=f"{config.step_db:.2f}",
+        # The absolute SPL is only as true as the capture gain the vendor's
+        # sens factor assumes. An operator reads journal lines, not docstrings.
+        precondition="mic capture volume must be at maximum (amixer -c <card>)",
     )
 
-    controller = RampController(session_id=session_id, config=config)
-    guard = _MicObservationGuard(
-        controller=controller,
-        source=next_samples,
-        sensitivity=sensitivity,
-        spl_ceiling_db_spl=spl_ceiling_db_spl,
-    )
     try:
+        ambient_dbfs = await measure_ambient_dbfs(
+            next_samples, clock=clock, sleep=sleep
+        )
+        if ambient_dbfs is None:
+            log_event(
+                logger,
+                "active_speaker.seat_level_refused",
+                level=logging.WARNING,
+                session=session_id,
+                reason=REFUSE_MIC_FEED_LOST,
+                detail="the microphone delivered no finite sample before the tone",
+            )
+            return SeatLevelResult(status="refused", reason=REFUSE_MIC_FEED_LOST)
+        log_event(
+            logger,
+            "active_speaker.seat_level_ambient",
+            session=session_id,
+            ambient_dbfs=f"{ambient_dbfs:.1f}",
+            ambient_db_spl=f"{sensitivity.db_spl_from_dbfs(ambient_dbfs):.1f}",
+            probe_db=f"{probe_db:.1f}",
+            required_rise_db=f"{min_rise_db:.1f}",
+        )
+        controller = RampController(session_id=session_id, config=config)
+        guard = _MicObservationGuard(
+            controller=controller,
+            source=next_samples,
+            sensitivity=sensitivity,
+            spl_ceiling_db_spl=spl_ceiling_db_spl,
+            ambient_dbfs=ambient_dbfs,
+            start_volume_db=config.start_db,
+            probe_db=probe_db,
+            min_rise_db=min_rise_db,
+        )
         data = await controller.run(
             get_main_volume_db=get_main_volume_db,
             set_main_volume_db=set_main_volume_db,
             play_continuous_tone=play_continuous_tone,
             cancel_tone=cancel_tone,
             next_samples=guard,
-            noise_floor_dbfs=noise_floor_dbfs,
+            noise_floor_dbfs=ambient_dbfs,
             clock=clock,
             sleep=sleep,
         )
@@ -465,6 +599,11 @@ def _finish(
         and data.lock_kind is RampLockKind.IN_WINDOW
         and data.locked_main_volume_db is not None
         and last_rms_dbfs is not None
+        # The SAME rise the runaway guard measures. A mic stuck at a constant
+        # that happens to sit inside the target window would otherwise settle,
+        # confirm, and bank a reference for a level nothing produced -- and
+        # because its ambient reading IS its signal reading, its rise is zero.
+        and guard.rise_db >= guard.min_rise_db
     )
     if not converged:
         reason = _refusal_for(data.state, data, guard.refusal)

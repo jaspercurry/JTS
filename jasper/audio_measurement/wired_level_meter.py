@@ -23,12 +23,12 @@ import time
 from typing import Any, Callable
 
 from jasper.audio_measurement.wired_capture import (
-    _BYTES_PER_SAMPLE,
-    _MAX_CONSECUTIVE_READ_FAILURES,
-    _START_TIMEOUT_S,
+    BYTES_PER_SAMPLE,
+    MAX_CONSECUTIVE_READ_FAILURES,
+    START_TIMEOUT_S,
     CapturePcm,
     WiredCaptureError,
-    _open_alsa_capture_pcm,
+    open_alsa_capture_pcm,
 )
 
 __all__ = ["WiredLevelMeter"]
@@ -90,7 +90,7 @@ class WiredLevelMeter:
         self._sample_rate_hz = int(sample_rate_hz)
         self._channels = int(channels)
         self._pcm_factory = pcm_factory or (
-            lambda: _open_alsa_capture_pcm(
+            lambda: open_alsa_capture_pcm(
                 device,
                 sample_rate_hz=self._sample_rate_hz,
                 channels=self._channels,
@@ -109,7 +109,7 @@ class WiredLevelMeter:
     def _measure(self, data: bytes, length: int) -> tuple[float, float, bool]:
         import numpy as np
 
-        frame_bytes = self._channels * _BYTES_PER_SAMPLE
+        frame_bytes = self._channels * BYTES_PER_SAMPLE
         frames = np.frombuffer(
             data[: length * frame_bytes], dtype="<i4"
         ).reshape(-1, self._channels)
@@ -137,7 +137,7 @@ class WiredLevelMeter:
                     ) from exc
                 if length <= 0:
                     consecutive_failures += 1
-                    if consecutive_failures >= _MAX_CONSECUTIVE_READ_FAILURES:
+                    if consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
                         raise WiredCaptureError(
                             f"wired level meter on {self._device} failed "
                             f"{consecutive_failures} consecutive reads — "
@@ -145,7 +145,16 @@ class WiredLevelMeter:
                         )
                     continue
                 consecutive_failures = 0
-                rms_dbfs, peak_dbfs, clip = self._measure(data, length)
+                try:
+                    rms_dbfs, peak_dbfs, clip = self._measure(data, length)
+                except ValueError as exc:
+                    # A short read that is not a whole number of frames: the
+                    # reshape cannot represent it, and a meter that silently
+                    # skipped such chunks would go quiet without saying so.
+                    raise WiredCaptureError(
+                        f"wired level meter got a partial frame from "
+                        f"{self._device} ({length} frames): {exc}"
+                    ) from exc
                 with self._lock:
                     self._seq += 1
                     self._pending.append(
@@ -163,7 +172,7 @@ class WiredLevelMeter:
             self._reader_error = exc
             self._first_chunk.set()
 
-    def start(self, *, ready_timeout_s: float = _START_TIMEOUT_S) -> None:
+    def start(self, *, ready_timeout_s: float = START_TIMEOUT_S) -> None:
         """Open the device and block until real audio has been measured."""
         if self._thread is not None:
             raise WiredCaptureError("level meter already started")
@@ -200,7 +209,7 @@ class WiredLevelMeter:
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=_START_TIMEOUT_S)
+            thread.join(timeout=START_TIMEOUT_S)
         pcm, self._pcm = self._pcm, None
         if pcm is not None:
             try:

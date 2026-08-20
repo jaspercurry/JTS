@@ -42,6 +42,7 @@
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
+| Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
@@ -1925,6 +1926,115 @@ the composition and its refusals in
 take in [`tests/test_angle_capture_take.py`](../tests/test_angle_capture_take.py),
 and the suppression pins in
 [`tests/test_crossover_v2_lateral_evidence.py`](../tests/test_crossover_v2_lateral_evidence.py).
+
+---
+
+## Seat-SPL leveling
+
+`jasper-seat-level` ([`jasper/cli/seat_level.py`](../jasper/cli/seat_level.py))
+answers one question on real hardware: **what main volume makes this speaker
+measure a stated dB SPL at the listening seat?** It rolls the volume slowly up
+from a quiet floor while a calibrated measurement mic watches, stops inside the
+requested band, and banks the volume that got there as the crossover session's
+measurement reference — replacing the codified −20 dB
+`MEASUREMENT_REFERENCE_VOLUME_DB` that every session held before.
+
+```sh
+# the ordinary run: converge on 75-80 dB SPL and bank the result
+jasper-seat-level --stimulus-wav /var/lib/jasper/.../check.wav --mic-serial 810-8494
+
+# a different band, an explicit calibration file, machine-readable
+jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
+    --target-db-spl 72 --tolerance-db 2 --json
+```
+
+**It measures nothing by itself — it reuses the level-match kernel.** The ramp is
+[`jasper.audio_measurement.ramp`](../jasper/audio_measurement/ramp.py)'s
+`RampController` (quiet start, coarse staircase, stop-ahead pre-window, settled
+two-point jump, confirm streak, clip abort, feed-liveness abort, derived safety
+timeout, fade before the tone is killed); the mic feed is
+[`wired_level_meter.py`](../jasper/audio_measurement/wired_level_meter.py); the
+volume hold is the crossover session's own `SessionVolumePlan`. What this verb
+adds is the SPL domain: the band, the ceilings, and the ambient floor.
+
+**The ceiling is mic-independent, and that is deliberate.** The ramp's hard bound
+is `unsegmented_stimulus_ceiling_db` — `min(driver caps) − stimulus peak`, the
+excitation ledger solved for main volume against the ACTUAL stimulus bytes.
+`min`, not `max`: nothing attenuates a flat WAV down to the quieter drivers'
+ledgers the way a composed program's per-segment gains do. No measured level
+enters that number, so a mis-calibrated microphone cannot move it. The profile's
+`max_commissioning_level_db_spl` is a second, measured stop — softer by
+construction, because it shares the calibration's fate.
+
+**The room is measured once, before the tone, and three rules read it.** That one
+ambient number is the kernel's trust threshold, the runaway guard's "did anything
+actually rise", and convergence's "did the reading rise at all". Measuring rise
+against ambient rather than against the first reading is what stops a speaker
+quieter than the room from being falsely aborted while it climbs through the
+floor — and a mic that is not listening never emerges at all, because its ambient
+reading IS its signal reading.
+
+**Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
+header line that the curve parser has always skipped
+([`calibration.py`](../jasper/audio_measurement/calibration.py),
+`parse_calibration_sensitivity`), as `dB SPL = dBFS − sens_factor + 94`. **The
+precondition is yours to check**: that figure is quoted at the mic's MAXIMUM
+capture volume, so confirm `amixer -c <card>` shows the capture control at 100%
+before trusting any absolute number. No calibration means no absolute level and
+the verb refuses; it never guesses a sensitivity.
+
+**Exit codes are the contract**: `0` converged and banked, `1` any refusal. Every
+refusal restores the household volume and banks nothing.
+
+| refusal | why |
+|---|---|
+| `mic_calibration_unavailable` | no parseable `Sens Factor` for this mic |
+| `measurement_mic_absent` | no measurement-class capture card is present |
+| `stimulus_wav_missing` | the named stimulus is not a file |
+| `measurement_session_already_live` | a crossover session (or an unresolved one) holds the speaker — the same door `jasper-angle-capture stage` stands behind, read off the same durable state |
+| `seat_spl_target_rejected` | the band's TOP exceeds the profile's commissioning ceiling |
+| `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset |
+| `spl_target_uncapturable` | the band sits above digital full scale at this mic |
+| `volume_ceiling_below_ramp_start` | the ledger leaves no room to climb |
+| `mic_not_observing` | the volume climbed the probe span and the mic never rose above the room |
+| `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
+| `spl_target_unreachable` | the ceiling was reached without entering the band |
+| `mic_feed_lost` / `mic_clipping` / `ramp_timeout` | the kernel's own aborts |
+
+Read the journal, not the code, to find out what happened:
+
+| `event=active_speaker.seat_level_…` | says |
+|---|---|
+| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, start, step, and the amixer precondition |
+| `_ambient` | the measured room floor in dBFS and dB SPL, and the rise the guard will demand |
+| `_abort` | which guard fired, with the climb, the ambient, and the observed rise |
+| `_converged` | the banked volume, the measured dB SPL, and the recovered chain gain |
+| `_refused` | the refusal slug and the ramp terminal behind it |
+
+**What it does not do**: it designs no stimulus (point `--stimulus-wav` at the
+program the session will actually measure with — choosing a safe excitation is
+the admission subsystem's job) and it opens no measurement session. It writes one
+document to `/var/lib/jasper/active_speaker_seat_level_reference.json`; the next
+session reads it through `measurement_reference_volume_db`, and **absent is
+normal** — a box that never runs this behaves exactly as it did before the verb
+existed. `jasper-doctor`'s `seat-SPL measurement reference` line reports which
+state that file is in.
+
+Two deploy-time knobs, both bounded and both falling back to their defaults on a
+bad value: `JASPER_SEAT_LEVEL_PROBE_DB` (how far the volume climbs before the
+guard demands evidence, default 20) and `JASPER_SEAT_LEVEL_MIN_RISE_DB` (how far
+above ambient counts as evidence, default 6).
+
+Hardware-free coverage: the conversion, the guards, the ambient model and the
+banked artifact in
+[`tests/test_active_speaker_seat_level.py`](../tests/test_active_speaker_seat_level.py),
+the verb and its pre-audio refusals in
+[`tests/test_cli_seat_level.py`](../tests/test_cli_seat_level.py), the mic feed in
+[`tests/test_wired_level_meter.py`](../tests/test_wired_level_meter.py), the
+derivation it feeds in
+[`tests/test_active_speaker_session_volume_plan.py`](../tests/test_active_speaker_session_volume_plan.py),
+and the doctor line in
+[`tests/test_doctor_state_files.py`](../tests/test_doctor_state_files.py).
 
 ---
 

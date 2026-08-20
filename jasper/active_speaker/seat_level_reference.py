@@ -16,8 +16,8 @@ Ownership, deliberately narrow:
   closed-loop ramp converged on a calibrated seat SPL;
 * **one reader** — ``session_volume_plan.measurement_reference_volume_db``;
 * **absent is normal.** A box that has never run the leveling step, or whose
-  statefile is unreadable/implausible, resolves to exactly today's
-  ``-20.0`` default. Nothing regresses by not having run it.
+  statefile is unreadable/implausible, resolves to the codified ``-20.0``
+  default. Nothing regresses by not having run it.
 
 The target BAND is not stored here and is not a property of the speaker: it is
 what the operator wants tonight's session to sound like, passed per run and
@@ -104,8 +104,13 @@ class SeatLevelTarget:
         }
 
 
-def _state_path(path: str | Path | None = None) -> Path:
+def seat_level_reference_state_path(path: str | Path | None = None) -> Path:
+    """Where the reference lives: an explicit path, the env override, or the
+    default. One resolver, so the doctor probes the same file the reader reads."""
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+
+
+_state_path = seat_level_reference_state_path
 
 
 def _utc_now() -> str:

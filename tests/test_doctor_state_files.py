@@ -4,8 +4,8 @@
 
 """Doctor checks for the /var/lib/jasper persisted-state files.
 
-`check_supervisor_reboot_state` (resilience) and `check_mux_mode_state`
-(renderers) surface state files whose runtime readers are deliberately
+`check_supervisor_reboot_state` (resilience), `check_mux_mode_state`
+(renderers) and `check_seat_level_reference` (correction) surface state files whose runtime readers are deliberately
 fail-open — the daemons silently treat missing/corrupt as "default
 behaviour", which is right at runtime but means a corrupt file or a
 dropped manual pin is invisible without these doctor lines. The tests
@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 
+from jasper.cli.doctor import correction
 from jasper.cli.doctor.env import _classify_state_group_write
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.cli.doctor.resilience import (
@@ -26,6 +27,7 @@ from jasper.cli.doctor.resilience import (
     check_supervisor_runtime_snapshots,
 )
 from jasper.music_sources import MUSIC_SOURCES
+from tests.doctor_test_support import _registered_check_names
 
 
 # ---- supervisor reboot state ----------------------------------------
@@ -323,3 +325,82 @@ def test_mux_mode_manual_unknown_source_warns(tmp_path):
     res = _classify_mux_mode(p)
     assert res.status == "warn"
     assert "betamax" in res.detail
+
+
+# --- seat-SPL measurement reference -----------------------------------------
+
+
+def _bank(path, **overrides):
+    from jasper.active_speaker.seat_level_reference import (
+        SeatLevelTarget,
+        write_seat_level_reference,
+    )
+
+    payload = dict(
+        reference_volume_db=-17.25,
+        measured_db_spl=77.4,
+        target=SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5),
+        sensitivity={"sens_factor_db": -12.07, "serial": "8108494"},
+        max_main_volume_db=-30.0,
+        state_path=path,
+    )
+    payload.update(overrides)
+    return write_seat_level_reference(**payload)
+
+
+def test_seat_level_reference_absent_is_ok_not_a_warning(tmp_path):
+    # A box that never ran the leveling step is healthy: the session falls back
+    # to the codified reference and measures exactly as it always did.
+    result = correction._classify_seat_level_reference(tmp_path / "absent.json")
+    assert result.status == "ok"
+    assert "not measured" in result.detail
+    assert "-20 dB" in result.detail
+
+
+def test_seat_level_reference_reports_the_value_the_session_will_hold(tmp_path):
+    path = tmp_path / "ref.json"
+    _bank(path)
+    result = correction._classify_seat_level_reference(path)
+    assert result.status == "ok"
+    assert "-17.25 dB" in result.detail
+    assert "77.4 dB SPL" in result.detail
+    assert "8108494" in result.detail
+    assert "0d ago" in result.detail
+
+
+def test_seat_level_reference_present_but_unusable_warns(tmp_path):
+    """The reader falls back silently; the doctor must not.
+
+    An out-of-envelope value reads as absent at runtime — the speaker measures
+    at -20 dB and says nothing. That silence is the whole reason for this line.
+    """
+    path = tmp_path / "ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "jts_active_speaker_seat_level_reference",
+                "artifact_schema_version": 1,
+                "reference_volume_db": 3.0,
+            }
+        )
+    )
+    result = correction._classify_seat_level_reference(path)
+    assert result.status == "warn"
+    assert "unusable" in result.detail
+    assert "jasper-seat-level" in result.detail
+
+
+def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_path):
+    path = tmp_path / "ref.json"
+    _bank(path)
+    raw = json.loads(path.read_text())
+    raw["updated_at"] = "not-a-date"
+    path.write_text(json.dumps(raw))
+    result = correction._classify_seat_level_reference(path)
+    assert result.status == "ok"
+    assert "-17.25 dB" in result.detail
+    assert "unparseable updated_at" in result.detail
+
+
+def test_seat_level_reference_check_is_registered():
+    assert "check_seat_level_reference" in _registered_check_names()

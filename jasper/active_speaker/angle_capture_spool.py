@@ -161,6 +161,15 @@ class AngleRequestRefused(CrossoverV2FlowError):
         self.detail = detail
 
 
+# ``live_measurement_session`` moved to ``session_volume_plan`` when the
+# seat-SPL leveling door became its second consumer: the question it answers
+# is the volume plan's, not angle capture's. Re-exported so this module's
+# own name for it (and ``__all__``) keeps working.
+from .session_volume_plan import (  # noqa: E402
+    live_measurement_session as live_measurement_session,
+)
+
+
 def _refuse(reason: str, detail: str) -> NoReturn:
     raise AngleRequestRefused(reason, detail)
 
@@ -192,86 +201,6 @@ def _consumed_path(pending: Path) -> Path:
 # --------------------------------------------------------------------------- #
 # the one rule this module owns: is the speaker already measuring?
 # --------------------------------------------------------------------------- #
-
-
-def live_measurement_session(
-    *, state_path: Path | None = None, now: float | None = None,
-) -> str | None:
-    """The reason a walk may not start right now, or ``None``.
-
-    **This reuses the flow's own cross-process exclusivity fact rather than
-    minting a second one, and WHICH fact it reuses is the whole point.** The
-    crossover flow has three exclusion layers and only one of them is visible
-    from another process:
-
-    * ``correction_setup._crossover_blocking_phase`` (the balance/sync/correction
-      interlock) and ``_begin_relay_capture``'s single relay slot are BOTH
-      module-globals of the ``jasper-correction-web`` process. A CLI cannot see
-      either, and a copy of them here would be a second answer that is wrong the
-      moment the real one changes.
-    * :class:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan`'s
-      durable state IS cross-process: it is a file, written when a session opens
-      the fixed measurement volume and drained on every close/abandon/ceiling
-      path. A session holding the speaker records ``status == "active"`` in it.
-
-    So this asks the volume state file -- the same file ``prepare_v2_session``
-    itself gates on before it will open anything. The read is
-    :attr:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.needs_recovery`,
-    and it is exact here for a reason worth stating: that property is
-    ``unresolved OR (durably active AND not opened by this process)``, and a
-    freshly-constructed plan in a CLI process has opened nothing. So in THIS
-    process it reads as "unresolved or active", which is precisely the question
-    being asked. Two conditions refuse, for two different reasons:
-
-    * **active** -- a session owns the speaker. Staging a walk under it would
-      queue an instruction for a session already past the point of taking one.
-    * **unresolved** -- a prior session left the measurement volume in a state
-      that must be drained before any new session opens. Staging into that is
-      staging for a session that will refuse to start, so the refusal belongs
-      here where the operator can act on it.
-
-    A **stale** active state -- one past its own wall-clock ceiling -- is NOT a
-    live session and does not refuse: that is the crashed-session shape the
-    flow's own open path force-drains
-    (``reconcile_session_volume_for_new_session``), and blocking on it would
-    make a crash permanently un-stageable from this door.
-
-    Returns the refusal detail (a sentence), or ``None`` when the coast is
-    clear -- including when there is no state file at all, which is the ordinary
-    idle speaker.
-    """
-    from .session_volume_plan import (
-        DEFAULT_SESSION_VOLUME_STATE_PATH,
-        SessionVolumePlan,
-    )
-
-    # The path is EXPLICIT, and that is load-bearing rather than tidy: a
-    # ``SessionVolumePlan()`` with no ``state_path`` reads no file at all and
-    # would answer "idle" for every speaker on earth. A guard that cannot see
-    # the state it guards is worse than no guard, because it reads as one.
-    plan = SessionVolumePlan(
-        state_path=(
-            DEFAULT_SESSION_VOLUME_STATE_PATH if state_path is None else state_path
-        )
-    )
-    if not plan.needs_recovery:
-        return None
-    # ``stale_active`` is the crash shape, and it is deliberately NOT a refusal.
-    # Tested BEFORE the two arms below because a stale state is durably
-    # "active" too, so answering the active arm first would refuse exactly the
-    # session the flow is able to force-drain.
-    if plan.stale_active(now):
-        return None
-    if plan.unresolved_volume_safety is not None:
-        return (
-            "a previous measurement left the speaker's measurement volume "
-            "unresolved; recover it at http://jts.local/correction/crossover/ "
-            "before staging a walk"
-        )
-    return (
-        "a measurement session is already running (the speaker is held at its "
-        "measurement volume); finish or stop it before staging a walk"
-    )
 
 
 # --------------------------------------------------------------------------- #

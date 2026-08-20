@@ -13,8 +13,8 @@ answer as the crossover session's measurement reference
 This module is wiring only. Every decision it makes belongs to someone else:
 
 * the ramp, its guards, and the refusal codes — :mod:`jasper.active_speaker.seat_level_ramp`
-* the volume ceiling — ``session_volume_plan.driver_cap_ceiling_db``, the SAME
-  derivation the session volume is bounded by
+* the volume ceiling — ``session_volume_plan.unsegmented_stimulus_ceiling_db``,
+  the excitation ledger solved for THIS stimulus's peak
 * the SPL ceiling — the profile's ``max_commissioning_level_db_spl``
 * the absolute level reference — the mic's own calibration file
 * the mic feed — :class:`jasper.audio_measurement.wired_level_meter.WiredLevelMeter`
@@ -23,9 +23,12 @@ This module is wiring only. Every decision it makes belongs to someone else:
 **Why the stimulus is named, not designed here.** Choosing a safe excitation for
 a summed, seat-position measurement is the excitation-admission subsystem's job,
 not a CLI's. Point ``--stimulus-wav`` at the program this session will actually
-measure with: the driver-cap ceiling this verb ramps under is derived for a
-full-scale-peak program, so a 0 dBFS-peak stimulus at that ceiling is exactly
-the admitted worst case, and anything quieter is strictly inside it.
+measure with; its true peak is read from the bytes and the ceiling is solved so
+that peak admits for EVERY driver at every commanded volume.
+
+**Precondition an operator must check.** The mic's ``Sens Factor`` is quoted at
+its maximum capture volume. Confirm ``amixer -c <card>`` shows the capture
+control at 100% before trusting any absolute SPL this prints.
 
 Usage::
 
@@ -41,6 +44,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -57,9 +61,11 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
 )
+from jasper.active_speaker import ActiveSpeakerConfigError
+from jasper.active_speaker.commission_wiring import CommissionPresetResolutionError
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlanError,
-    driver_cap_ceiling_db,
+    unsegmented_stimulus_ceiling_db,
 )
 
 REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
@@ -104,9 +110,35 @@ def _resolve_sensitivity(args: argparse.Namespace) -> Any:
     return parse_calibration_sensitivity(text)
 
 
-def _derive_bounds(args: argparse.Namespace) -> tuple[float, float]:
-    """``(driver-cap volume ceiling, commissioning SPL ceiling)`` for this box."""
-    from jasper.active_speaker.commission_wiring import resolve_commission_inputs
+def stimulus_peak_dbfs(path: Path) -> float:
+    """True peak of a stimulus WAV, dBFS, across ALL channels.
+
+    The max over the whole interleaved array — deliberately NOT a downmix.
+    ``sweep.read_wav_mono`` averages channels, which halves the peak of a
+    program whose stimulus sits on one channel while the other is silent, and
+    an under-reported peak would RAISE the derived volume ceiling. This reads
+    the worst case instead, which is the only direction that is safe.
+
+    A peak of zero raises: a silent file would derive an absurdly high ceiling.
+    """
+    import numpy as np
+    from scipy.io import wavfile
+
+    _rate, data = wavfile.read(str(path))
+    magnitudes = np.abs(np.asarray(data).astype(np.float64))
+    peak = float(magnitudes.max()) if magnitudes.size else 0.0
+    if np.issubdtype(np.asarray(data).dtype, np.integer):
+        peak /= float(np.iinfo(np.asarray(data).dtype).max)
+    if not (peak > 0.0) or not math.isfinite(peak):
+        raise ValueError(
+            f"{path} carries no signal; a silent stimulus cannot bound a volume"
+        )
+    return 20.0 * math.log10(peak)
+
+
+def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, float]:
+    """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``."""
+    from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
         declared_driver_sensitivities,
         load_design_draft,
@@ -125,12 +157,17 @@ def _derive_bounds(args: argparse.Namespace) -> tuple[float, float]:
     fingerprints = [
         str(target["target_fingerprint"]) for target in active_driver_targets(topology)
     ]
-    ceiling_db = driver_cap_ceiling_db(
+    ceiling_db = unsegmented_stimulus_ceiling_db(
         safety_profile,
         fingerprints,
+        stimulus_peak_dbfs=stimulus_peak_dbfs(stimulus),
         declared_sensitivities=declared_driver_sensitivities(draft),
     )
-    preset, _preview = resolve_commission_inputs()
+    # ``resolve_capture_preset`` is the sibling every capture-analysis surface
+    # uses: it resolves the preview-compiled preset and only then falls back to
+    # the bundled one. ``resolve_commission_inputs()`` alone returns ``None``
+    # for the preset on an ordinary box.
+    preset = resolve_capture_preset(topology)
     spl_ceiling = float(preset.safety.max_commissioning_level_db_spl)
     return ceiling_db, spl_ceiling
 
@@ -165,8 +202,15 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         )
 
     try:
-        ceiling_db, spl_ceiling = _derive_bounds(args)
-    except (SessionVolumePlanError, OSError, ValueError, KeyError) as exc:
+        ceiling_db, spl_ceiling = _derive_bounds(args, stimulus)
+    except (
+        SessionVolumePlanError,
+        CommissionPresetResolutionError,
+        ActiveSpeakerConfigError,
+        OSError,
+        ValueError,
+        KeyError,
+    ) as exc:
         return _refused(REFUSE_CEILING_UNDERIVABLE, str(exc))
 
     target = SeatLevelTarget(
@@ -210,7 +254,6 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
             play_continuous_tone=_play,
             cancel_tone=_cancel,
             next_samples=_samples,
-            noise_floor_dbfs=args.noise_floor_dbfs,
         )
     except SeatLevelRampError as exc:
         # The refusal code is the first token of the message (build_seat_level_
@@ -224,7 +267,7 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         f"reference {result.reference_volume_db:.2f} dB measured "
         f"{result.measured_db_spl:.1f} dB SPL"
         if result.converged
-        else "nothing was banked"
+        else (result.detail or "nothing was banked")
     )
     return result, detail
 
@@ -235,7 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Ramp the measurement volume until a calibrated mic at the seat "
             "reads the target dB SPL, then bank that volume as the crossover "
-            "session's measurement reference."
+            "session's measurement reference. PRECONDITION: the mic's Sens "
+            "Factor is quoted at MAXIMUM capture volume — confirm "
+            "`amixer -c <card>` shows the capture control at 100%, or every "
+            "absolute SPL below is wrong by the shortfall."
         ),
     )
     parser.add_argument(
@@ -271,13 +317,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="capture channel count the mic enumerates (default 1)",
-    )
-    parser.add_argument(
-        "--noise-floor-dbfs",
-        type=float,
-        default=None,
-        help="room noise floor; readings under floor+trust margin are never "
-        "trusted as level evidence",
     )
     parser.add_argument("--topology", default=None)
     parser.add_argument("--json", action="store_true")

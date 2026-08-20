@@ -138,22 +138,17 @@ def measurement_reference_volume_db(
     return MEASUREMENT_REFERENCE_VOLUME_DB if measured is None else measured
 
 
-def driver_cap_ceiling_db(
+def _driver_caps_dbfs(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
     *,
     declared_sensitivities: Mapping[str, float] | None = None,
-) -> float:
-    """``max(caps)`` — the loudest main volume every driver's cap still permits.
+) -> list[float]:
+    """Every active driver's admitted effective-peak cap, one derivation path.
 
-    The caps half of :func:`session_measurement_volume_db`, extracted so the
-    seat-SPL leveling ramp can bound its climb by the SAME derivation the
-    session volume is bounded by, instead of growing a second copy of it. See
-    that function for why ``max`` (not ``min``) is the right reduction.
-
-    ``program_admission=True``: this ceiling exists ONLY to serve the v2
-    session's CHECK/MEASURE programs and the leveling step that sizes their
-    volume — always the proven-HP path.
+    ``program_admission=True``: these caps serve the v2 session's CHECK/MEASURE
+    programs and the leveling step that sizes their volume — always the
+    proven-HP path.
     """
     caps: list[float] = []
     for target_fingerprint in target_fingerprints:
@@ -168,7 +163,79 @@ def driver_cap_ceiling_db(
         raise SessionVolumePlanError(
             "cannot derive a session measurement volume with no driver targets"
         )
-    return max(caps)
+    return caps
+
+
+def loudest_driver_cap_dbfs(
+    safety_profile: Mapping[str, Any],
+    target_fingerprints: Iterable[str],
+    *,
+    declared_sensitivities: Mapping[str, float] | None = None,
+) -> float:
+    """``max(caps)`` — the cap of the LOUDEST-permitted driver. Read the warning.
+
+    This is the caps half of :func:`session_measurement_volume_db` and **only**
+    that. It is safe there because a v2 program carries a per-segment digital
+    gain per driver: every driver other than the highest-cap one is attenuated
+    DOWN to its own cap inside the program, so `max` is the volume at which the
+    least-sensitive driver can finally be measured.
+
+    **It is NOT "the loudest volume every driver permits", and it is not a safe
+    ceiling for playing an un-segmented signal.** On the repo's own
+    woofer/compression-driver fixture it returns ``0.0`` dB while the tweeter's
+    cap sits at −65: a flat WAV played at 0 dB main volume would land 65 dB over
+    that driver's ledger. Anything playing one signal through the whole graph
+    with no per-driver segment gain must use
+    :func:`unsegmented_stimulus_ceiling_db` instead.
+    """
+    return max(
+        _driver_caps_dbfs(
+            safety_profile,
+            target_fingerprints,
+            declared_sensitivities=declared_sensitivities,
+        )
+    )
+
+
+def unsegmented_stimulus_ceiling_db(
+    safety_profile: Mapping[str, Any],
+    target_fingerprints: Iterable[str],
+    *,
+    stimulus_peak_dbfs: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
+) -> float:
+    """The loudest main volume at which ONE un-segmented signal admits everywhere.
+
+    Program admission's per-channel rule is ``true_peak_dbfs + main_volume <=
+    cap`` for that channel's driver
+    (:mod:`jasper.active_speaker.program_admission`, ``effective_true_peak_dbfs``).
+    A signal played through the whole graph carries no per-driver segment gain,
+    so every driver may see the full stimulus peak and the rule must hold for
+    all of them at once. Solved for the volume::
+
+        ceiling = min(caps) - stimulus_peak_dbfs
+
+    ``min``, not ``max``: the TIGHTEST cap binds, because nothing attenuates the
+    signal down to the quieter drivers' ledgers the way a composed program's
+    segment gains do. Deliberately conservative in one direction — without a
+    per-channel role map this cannot know that a given channel only reaches the
+    woofer, so it bounds every channel by the tightest driver. Conservative here
+    means quieter, which is the safe direction, and the caller reports
+    ``spl_target_unreachable`` rather than exceeding it.
+
+    Mic-independent by construction: no calibration, sensitivity, or measured
+    level enters this number, so a mis-scaled microphone cannot move it.
+    """
+    if not math.isfinite(stimulus_peak_dbfs):
+        raise SessionVolumePlanError(
+            f"stimulus peak must be finite, got {stimulus_peak_dbfs!r}"
+        )
+    caps = _driver_caps_dbfs(
+        safety_profile,
+        target_fingerprints,
+        declared_sensitivities=declared_sensitivities,
+    )
+    return min(caps) - float(stimulus_peak_dbfs)
 
 
 def session_measurement_volume_db(
@@ -187,7 +254,7 @@ def session_measurement_volume_db(
     enforceable at this volume (2026-07-18 W2 gate ruling)::
 
         session_volume = min(measurement_reference_volume_db(),
-                             driver_cap_ceiling_db())
+                             loudest_driver_cap_dbfs())
 
     The reference half is operator-derivable (the seat-SPL leveling step banks a
     measured value; absent one it is the codified -20 dB default) and the caps
@@ -222,7 +289,7 @@ def session_measurement_volume_db(
     # ``declared_sensitivities`` (the declaration's per-role datasheet values)
     # rides into the caps derivation so the caps entering max(caps) are the SAME
     # derived caps admission enforces.
-    ceiling = driver_cap_ceiling_db(
+    ceiling = loudest_driver_cap_dbfs(
         safety_profile,
         target_fingerprints,
         declared_sensitivities=declared_sensitivities,
@@ -242,6 +309,93 @@ def session_measurement_volume_db(
             "the profile cannot be measured at a safe session volume"
         )
     return volume
+
+
+def live_measurement_session(
+    *,
+    state_path: Path | None = None,
+    now: float | None = None,
+    action: str = "staging a walk",
+) -> str | None:
+    """The reason an operator door may not act right now, or ``None``.
+
+    ``action`` names what the caller was about to do and closes both refusal
+    sentences. Two doors ask this today -- ``jasper-angle-capture stage`` and
+    ``jasper-seat-level`` -- and they must get the SAME answer from the SAME
+    file, which is why the question lives here beside the plan rather than in
+    either door.
+
+    **This reuses the flow's own cross-process exclusivity fact rather than
+    minting a second one, and WHICH fact it reuses is the whole point.** The
+    crossover flow has three exclusion layers and only one of them is visible
+    from another process:
+
+    * ``correction_setup._crossover_blocking_phase`` (the balance/sync/correction
+      interlock) and ``_begin_relay_capture``'s single relay slot are BOTH
+      module-globals of the ``jasper-correction-web`` process. A CLI cannot see
+      either, and a copy of them here would be a second answer that is wrong the
+      moment the real one changes.
+    * :class:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan`'s
+      durable state IS cross-process: it is a file, written when a session opens
+      the fixed measurement volume and drained on every close/abandon/ceiling
+      path. A session holding the speaker records ``status == "active"`` in it.
+
+    So this asks the volume state file -- the same file ``prepare_v2_session``
+    itself gates on before it will open anything. The read is
+    :attr:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.needs_recovery`,
+    and it is exact here for a reason worth stating: that property is
+    ``unresolved OR (durably active AND not opened by this process)``, and a
+    freshly-constructed plan in a CLI process has opened nothing. So in THIS
+    process it reads as "unresolved or active", which is precisely the question
+    being asked. Two conditions refuse, for two different reasons:
+
+    * **active** -- a session owns the speaker. Acting under it would either
+      queue an instruction for a session already past the point of taking one,
+      or fight it for the very volume it is holding.
+    * **unresolved** -- a prior session left the measurement volume in a state
+      that must be drained before any new session opens. Staging into that is
+      staging for a session that will refuse to start, so the refusal belongs
+      here where the operator can act on it.
+
+    A **stale** active state -- one past its own wall-clock ceiling -- is NOT a
+    live session and does not refuse: that is the crashed-session shape the
+    flow's own open path force-drains
+    (``reconcile_session_volume_for_new_session``), and blocking on it would
+    make a crash permanently un-stageable from this door.
+
+    Returns the refusal detail (a sentence), or ``None`` when the coast is
+    clear -- including when there is no state file at all, which is the ordinary
+    idle speaker.
+    """
+    # The path is EXPLICIT, and that is load-bearing rather than tidy: a
+    # ``SessionVolumePlan()`` with no ``state_path`` reads no file at all and
+    # would answer "idle" for every speaker on earth. A guard that cannot see
+    # the state it guards is worse than no guard, because it reads as one.
+    # The public name, resolved as a module global at CALL time, so a test (or
+    # an operator override) that repoints it is seen here.
+    plan = SessionVolumePlan(
+        state_path=(
+            DEFAULT_SESSION_VOLUME_STATE_PATH if state_path is None else state_path
+        )
+    )
+    if not plan.needs_recovery:
+        return None
+    # ``stale_active`` is the crash shape, and it is deliberately NOT a refusal.
+    # Tested BEFORE the two arms below because a stale state is durably
+    # "active" too, so answering the active arm first would refuse exactly the
+    # session the flow is able to force-drain.
+    if plan.stale_active(now):
+        return None
+    if plan.unresolved_volume_safety is not None:
+        return (
+            "a previous measurement left the speaker's measurement volume "
+            "unresolved; recover it at http://jts.local/correction/crossover/ "
+            f"before {action}"
+        )
+    return (
+        "a measurement session is already running (the speaker is held at its "
+        f"measurement volume); finish or stop it before {action}"
+    )
 
 
 @dataclass(frozen=True)

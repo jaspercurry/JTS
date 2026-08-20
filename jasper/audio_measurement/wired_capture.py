@@ -149,7 +149,7 @@ ZERO_RUN_MIN_SAMPLES = 128
 ZERO_RUN_RECORD_CAP = 8
 
 # S32_LE interleaved: 4 bytes per sample per channel.
-_BYTES_PER_SAMPLE = 4
+BYTES_PER_SAMPLE = 4
 
 # How long start() waits for the first chunk before declaring the device
 # dead. Generous relative to a ~21 ms period (1024 frames at 48 kHz) so a
@@ -157,14 +157,14 @@ _BYTES_PER_SAMPLE = 4
 # device fails before any excitation plays — the same posture
 # jasper.route_latency.mic_readers.DEFAULT_UDP_READ_TIMEOUT_SECONDS takes,
 # and the same value.
-_START_TIMEOUT_S = 5.0
+START_TIMEOUT_S = 5.0
 
 # Consecutive failed reads (overrun / zero-length) before the reader gives
 # up. pyalsaaudio recovers an overrun internally (snd_pcm_prepare) and
 # returns the negative once, so a healthy stream never chains failures;
 # a chain this long means the device is gone, and the honest move is a loud
 # error rather than a capture that is mostly gaps.
-_MAX_CONSECUTIVE_READ_FAILURES = 8
+MAX_CONSECUTIVE_READ_FAILURES = 8
 
 
 class WiredCaptureError(RuntimeError):
@@ -276,7 +276,7 @@ class CapturePcm(Protocol):
     def close(self) -> None: ...
 
 
-def _open_alsa_capture_pcm(
+def open_alsa_capture_pcm(
     device: str, *, sample_rate_hz: int, channels: int, period_frames: int,
 ) -> CapturePcm:
     """The production PCM: blocking ALSA capture, native S32_LE.
@@ -359,7 +359,7 @@ class WiredRecorder:
         self._channels = int(channels)
         self._max_frames = int(round(max_capture_s * sample_rate_hz))
         self._pcm_factory = pcm_factory or (
-            lambda: _open_alsa_capture_pcm(
+            lambda: open_alsa_capture_pcm(
                 device,
                 sample_rate_hz=self._sample_rate_hz,
                 channels=self._channels,
@@ -382,7 +382,7 @@ class WiredRecorder:
 
     def _run_reader(self) -> None:
         assert self._pcm is not None
-        frame_bytes = self._channels * _BYTES_PER_SAMPLE
+        frame_bytes = self._channels * BYTES_PER_SAMPLE
         rate = self._sample_rate_hz
         # CLOCK RULE anchor: every loss estimate is derived from fresh
         # per-read monotonic timestamps, never from a sample-count
@@ -406,7 +406,7 @@ class WiredRecorder:
                     self._gap_frames += max(1, int(round(elapsed_s * rate)))
                     last_read_ns = now
                     consecutive_failures += 1
-                    if consecutive_failures >= _MAX_CONSECUTIVE_READ_FAILURES:
+                    if consecutive_failures >= MAX_CONSECUTIVE_READ_FAILURES:
                         raise WiredCaptureError(
                             f"wired capture on {self._device} failed "
                             f"{consecutive_failures} consecutive reads — "
@@ -443,7 +443,7 @@ class WiredRecorder:
 
     # -- caller side -------------------------------------------------------- #
 
-    def start(self, *, ready_timeout_s: float = _START_TIMEOUT_S) -> None:
+    def start(self, *, ready_timeout_s: float = START_TIMEOUT_S) -> None:
         """Open the device and block until capture is confirmed live.
 
         Returning means at least one real chunk has been read — the
@@ -504,7 +504,7 @@ class WiredRecorder:
             # live device and errors on a dead one; a thread still alive after
             # this is a wedged kernel read, which the close below unblocks or
             # the loud error reports.
-            thread.join(timeout=_START_TIMEOUT_S)
+            thread.join(timeout=START_TIMEOUT_S)
         pcm, self._pcm = self._pcm, None
         if pcm is not None:
             try:
@@ -610,7 +610,7 @@ def encode_wav_s32(mono_int32: Any, *, sample_rate_hz: int) -> tuple[bytes, int]
     buf = io.BytesIO()
     with wave.open(buf, "wb") as writer:
         writer.setnchannels(1)
-        writer.setsampwidth(_BYTES_PER_SAMPLE)
+        writer.setsampwidth(BYTES_PER_SAMPLE)
         writer.setframerate(int(sample_rate_hz))
         writer.writeframes(samples.tobytes())
     return buf.getvalue(), encoded_frames

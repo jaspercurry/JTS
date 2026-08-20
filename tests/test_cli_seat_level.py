@@ -13,6 +13,8 @@ ramping a speaker against an uncalibrated number.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jasper.audio_measurement.calibration import MicSensitivity
@@ -104,3 +106,138 @@ def test_defaults_are_the_operators_stated_band():
         target_db_spl=args.target_db_spl, tolerance_db=args.tolerance_db
     )
     assert (target.low_db_spl, target.high_db_spl) == (75.0, 80.0)
+
+
+# --- the whole verb, on a stubbed healthy box -------------------------------
+
+
+def _stereo_wav(path, *, peak_int16=16384):
+    """A two-channel WAV whose true peak is a known fraction of full scale."""
+    import struct
+    import wave
+
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(48_000)
+        out.writeframes(
+            b"".join(struct.pack("<hh", peak_int16, 0) for _ in range(64))
+        )
+    return path
+
+
+def test_stimulus_peak_reads_the_loudest_channel_not_a_downmix(tmp_path):
+    # Half of int16 full scale on ONE channel, silence on the other. A downmix
+    # would average to a quarter and report ~-12 dBFS, which would hand the
+    # ceiling 6 dB it has not earned.
+    wav = _stereo_wav(tmp_path / "half.wav", peak_int16=16384)
+    assert seat_level.stimulus_peak_dbfs(wav) == pytest.approx(-6.02, abs=0.05)
+
+
+def test_a_silent_stimulus_is_refused_not_treated_as_infinitely_quiet(tmp_path):
+    wav = _stereo_wav(tmp_path / "silent.wav", peak_int16=0)
+    with pytest.raises(ValueError, match="no signal"):
+        seat_level.stimulus_peak_dbfs(wav)
+
+
+def test_the_verb_reaches_the_ramp_on_a_healthy_commissioned_box(
+    tmp_path, monkeypatch, capsys
+):
+    """End-to-end through main() to the ramp boundary.
+
+    The regression this pins: ``_derive_bounds`` used to call
+    ``resolve_commission_inputs()``, which returns ``(None, preview)`` on an
+    ordinary box, and then dereferenced ``preset.safety`` — an AttributeError
+    that escaped ``main()`` before any of this ran. Every stub below is a
+    collaborator; the assertions are about what the CLI computed and handed on.
+    """
+    stimulus = _stereo_wav(tmp_path / "check.wav", peak_int16=32767)
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+
+    handed: dict = {}
+
+    async def _fake_ramp(**kwargs):
+        handed.update(kwargs)
+        from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+        return SeatLevelResult(
+            status="converged", reference_volume_db=-17.5, measured_db_spl=77.4
+        )
+
+    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    monkeypatch.setattr(
+        seat_level, "_derive_bounds", lambda args, stim: (-30.0, 85.0)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
+        lambda *a, **k: SimpleNamespace(
+            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller",
+        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
+    )
+
+    code = seat_level.main(
+        [
+            "--stimulus-wav",
+            str(stimulus),
+            "--calibration-file",
+            str(cal),
+            "--target-db-spl",
+            "77.5",
+        ]
+    )
+
+    assert code == 0
+    assert "converged" in capsys.readouterr().out
+    # The bounds and the calibration reached the ramp intact.
+    assert handed["max_main_volume_db"] == -30.0
+    assert handed["spl_ceiling_db_spl"] == 85.0
+    assert handed["sensitivity"].sens_factor_db == -12.07
+    assert (handed["target"].low_db_spl, handed["target"].high_db_spl) == (75.0, 80.0)
+
+
+def test_derive_bounds_resolves_a_preset_without_an_explicit_one(monkeypatch, tmp_path):
+    """The B1 root cause, isolated: the preset resolver must produce a preset.
+
+    ``resolve_commission_inputs()`` alone returns ``None`` for the preset on an
+    ordinary box; ``resolve_capture_preset(topology)`` is the sibling that
+    compiles one or falls back to the bundled preset. This drives the REAL
+    resolver against a stubbed topology/draft and asserts a real SPL ceiling
+    comes back rather than an AttributeError on ``None``.
+    """
+    stimulus = _stereo_wav(tmp_path / "s.wav")
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        lambda _p: SimpleNamespace(topology_id="t"),
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.load_design_draft",
+        lambda **kw: {"driver_safety_profile": {"drivers": []}},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.design_draft.declared_driver_sensitivities",
+        lambda draft: {},
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.measurement.active_driver_targets",
+        lambda topo: [{"target_fingerprint": "fp-woofer"}],
+    )
+    # The CLI binds this at import, so patch it where the CLI looks it up.
+    monkeypatch.setattr(
+        seat_level, "unsegmented_stimulus_ceiling_db", lambda *a, **k: -30.0
+    )
+
+    args = seat_level.build_parser().parse_args(["--stimulus-wav", str(stimulus)])
+    ceiling_db, spl_ceiling = seat_level._derive_bounds(args, stimulus)
+
+    assert ceiling_db == -30.0
+    # A real number from a real preset — never an AttributeError on None.
+    assert 45.0 <= spl_ceiling <= 85.0

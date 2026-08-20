@@ -31,7 +31,8 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     SessionVolumePlanError,
     SessionVolumeRestoreResult,
-    driver_cap_ceiling_db,
+    loudest_driver_cap_dbfs,
+    unsegmented_stimulus_ceiling_db,
     measurement_reference_volume_db,
     session_measurement_volume_db,
 )
@@ -196,7 +197,46 @@ def test_driver_caps_still_bind_over_a_measured_reference(tmp_path):
         )
         == -30.0
     )
-    assert driver_cap_ceiling_db(profile, targets.values()) == -30.0
+    assert loudest_driver_cap_dbfs(profile, targets.values()) == -30.0
+
+
+def test_an_unsegmented_stimulus_is_bounded_by_the_TIGHTEST_driver_cap():
+    """The gate's B2 repro, pinned.
+
+    ``loudest_driver_cap_dbfs`` is 0.0 dB on the repo's own woofer/compression
+    fixture — safe as the session volume, because a composed program attenuates
+    the tweeter's own segment down to its -65 ledger. Nothing attenuates a flat
+    WAV played through the whole graph, so the same 0 dB would put a 0 dBFS
+    stimulus 65 dB over that driver. The un-segmented ceiling is the tightest
+    cap instead.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
+    assert loudest_driver_cap_dbfs(profile, targets.values()) == 0.0
+    ceiling = unsegmented_stimulus_ceiling_db(
+        profile, targets.values(), stimulus_peak_dbfs=0.0
+    )
+    assert ceiling == -65.0
+    assert loudest_driver_cap_dbfs(profile, targets.values()) - ceiling == 65.0
+
+
+def test_the_unsegmented_ceiling_tracks_the_stimulus_peak():
+    # A quieter stimulus earns exactly its own headroom back, one for one:
+    # cap - peak, the admission rule solved for main volume.
+    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
+    assert (
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=-12.0
+        )
+        == -53.0
+    )
+
+
+def test_the_unsegmented_ceiling_refuses_a_non_finite_stimulus_peak():
+    profile, targets = _profile_and_targets()
+    with pytest.raises(SessionVolumePlanError):
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=float("nan")
+        )
 
 
 def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
