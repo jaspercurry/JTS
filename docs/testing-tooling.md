@@ -1733,36 +1733,55 @@ which runs the same offline checks `--selftest` does.
 evidence off the Pi into a directory you name — never a hardcoded campaign
 path, unlike the throwaway `night_bank.sh` / `pull_dumps.sh` /
 `integrity_summary.py` scripts this productizes (most recently
-`captures/linearization-night-2026-08-19/tools/`). It pulls the newest
-session bundle, the crossover-v2 flow state, the design draft, a bounded
-journal window (the four units a round speaks through:
-`jasper-correction-web`, `jasper-control`, `jasper-camilla`,
-`jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
-under-voltage grep counts), the round's own prediction fields lifted out of
-the flow state before the next round overwrites them (`priors.predicted_sum`
-/ `predicted_spec` / `fc_selection` / etc.), and the dump-ring captures
-(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
-and `dumps/sidecar/`).
+`captures/linearization-night-2026-08-19/tools/`). `<dest-dir>` must not
+already exist non-empty — re-running into a used directory is refused
+(exit `1`) rather than silently truncating the prior pull, since every
+artifact below is written with a plain `>` redirect.
 
-Every pull above is best-effort and independently reported to stderr; the
-only gate is the last step. `jasper.audio_measurement.capture_integrity`
-checks every sidecar under `dumps/sidecar/` against the wired capture
-chain's own definition of clean (the two independent frame counts agree,
-zero ALSA gaps, zero capture-FIFO dropouts, not truncated, the wired
-`capture_chain` tag, and a reconciled frame ledger), and the bank script's
-own exit code **is** that check's:
+The first thing written, before any Pi round-trip, is `provenance.json`
+— the host and user actually banked, a UTC timestamp, and this script's
+own commit — so a banked tree always names its own source even if every
+pull below it fails. This is also where an explicit `PI_HOST=` /
+`PI_USER=` override is guaranteed to win: `_lib.sh` sources `.env.local`
+with `set -a`, which can otherwise silently overwrite an
+already-exported `PI_HOST` before the `${PI_HOST:-jts.local}` fallback
+ever runs (repo-wide, tracked as #2689) — this script captures the
+caller's export before sourcing `_lib.sh` and re-applies it after, so
+`PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>`
+reliably banks jts3 even when `.env.local` points somewhere else.
+
+It then pulls the newest session bundle, the crossover-v2 flow state, the
+design draft, a bounded journal window (the four units a round speaks
+through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
+`jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
+under-voltage grep counts), the round's own prediction fields lifted out
+of the flow state before the next round overwrites them
+(`verify_priors.predicted_sum` / `verify_priors.predicted_spec` /
+`fc_selection` / etc.), and the dump-ring captures
+(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
+and `dumps/sidecar/`). Every pull is best-effort and independently
+reported to stderr, and a per-artifact status summary prints at the end
+regardless of outcome.
+
+Two things can make the script refuse a run, and neither ever deletes a
+file that was already pulled — the refusal is the exit code plus the
+printed findings, forensics stay on disk:
 
 | Exit | Meaning |
 |---|---|
-| `0` | at least one sidecar was found and every one is clean |
-| `1` | nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) |
-| `2` | at least one sidecar is dirty, including one whose JSON could not be parsed — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
+| `0` | the round bundle and flow state were both pulled, and `jasper.audio_measurement.capture_integrity` found every dump-ring sidecar clean |
+| `1` | a usage-level refusal — `<dest-dir>` was missing/non-empty — **or** the capture-integrity check found nothing to check (no dump-ring sidecars were pulled: the operator never created the `ENABLED` marker for this round, or the directory could not be read) |
+| `2` | the round bundle and flow state were both pulled, but capture-integrity found at least one dump-ring sidecar dirty (including one whose JSON could not be parsed) — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
+| `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank; this overrides whatever capture-integrity found, even a clean dump-ring |
 
-A dirty or unreadable run never deletes anything already pulled — the
-refusal is the exit code plus the printed findings, never a missing file.
-Standalone: `python -m jasper.audio_measurement.capture_integrity
-<sidecar-dir> [<dir> ...]`. Hardware-free coverage — clean / dirty /
-unreadable fixture trees, plus one test per named finding class — lives in
+Exit `0`/`1`/`2` are exactly `jasper.audio_measurement.capture_integrity`'s
+own contract, propagated unchanged; exit `3` is this script's own,
+layered on top of it. Standalone: `python -m
+jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`
+(that command alone never returns `3` — the incomplete-bank check is the
+bank script's job, not the checker's). Hardware-free coverage — clean /
+dirty / unreadable fixture trees, the exit-code values themselves (not
+just the names), and one test per named finding class — lives in
 [`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py).
 
 ---

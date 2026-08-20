@@ -21,62 +21,126 @@
 #   bash scripts/bank-crossover-round.sh <dest-dir>
 #   SINCE='2026-08-20 21:00:00' bash scripts/bank-crossover-round.sh <dest-dir>
 #   PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>
+#   PYTHON=/path/to/python bash scripts/bank-crossover-round.sh <dest-dir>
+#
+# A caller-exported PI_HOST / PI_USER always wins over whatever
+# .env.local sets — captured before _lib.sh sources .env.local (which can
+# otherwise clobber it, see the comment at the top of the script body) and
+# re-applied after. <dest-dir> must not already exist non-empty: re-running
+# into a used directory is refused rather than silently truncating a prior
+# pull.
 #
 # Pulls into <dest-dir>/:
-#   bundle/<session>/...   the newest active-speaker session bundle (evidence
-#                          packet's info.json + evidence/v1/artifacts/...)
-#   state.json             the crossover-v2 flow state
-#                          (/var/lib/jasper/active_speaker_crossover_v2_state.json)
-#   design-draft.json      the active-speaker design draft
-#                          (/var/lib/jasper/active_speaker_design_draft.json)
-#   journal/<unit>.log     journal window for the units that speak during a
-#                          round, plus journal/combined.log
-#   power.txt              vcgencmd get_throttled + under-voltage grep counts
-#   prediction.json         the round's own priors.predicted_sum /
-#                          predicted_spec / fc_selection / etc., copied out of
-#                          state.json before the next round overwrites them
-#   dumps/wav/*.wav        dump-ring captures (XOVER_CAPTURE_DUMP_DIR),
-#   dumps/sidecar/*.json   split by extension — root-owned on the Pi, so this
-#                          step needs sudo; empty when the operator never
-#                          created the ENABLED marker for this round
+#   provenance.json         the host/user actually banked, in UTC, plus this
+#                           script's own commit — written FIRST, so a banked
+#                           tree names its source even if every other pull
+#                           below fails
+#   bundle/<session>/...    the newest active-speaker session bundle (evidence
+#                           packet's info.json + evidence/v1/artifacts/...)
+#   state.json              the crossover-v2 flow state
+#                           (/var/lib/jasper/active_speaker_crossover_v2_state.json)
+#   design-draft.json       the active-speaker design draft
+#                           (/var/lib/jasper/active_speaker_design_draft.json)
+#   journal/<unit>.log      journal window for the units that speak during a
+#                           round, plus journal/combined.log
+#   power.txt               vcgencmd get_throttled + under-voltage grep counts
+#   prediction.json         the round's own verify_priors.predicted_sum /
+#                           verify_priors.predicted_spec / fc_selection / etc.,
+#                           copied out of state.json before the next round
+#                           overwrites them
+#   dumps/wav/*.wav         dump-ring captures (XOVER_CAPTURE_DUMP_DIR),
+#   dumps/sidecar/*.json    split by extension — root-owned on the Pi, so this
+#                           step needs sudo; empty when the operator never
+#                           created the ENABLED marker for this round
 #
-# Every pull is best-effort and independently reported — one failed pull
-# (or an empty dump-ring because the operator never enabled it) does not
-# stop the others. The ONLY gate is the last step: capture-integrity is
-# checked over dumps/sidecar/, and this script's own exit code IS that
-# check's exit code (0 clean / 1 nothing to check / 2 dirty — see
-# jasper/audio_measurement/capture_integrity.py). A dirty or unreadable
-# verdict never deletes anything that was pulled — every file stays on disk
-# for forensics; the refusal is the exit code plus the printed findings.
+# Every pull above is best-effort and independently reported to stderr, and
+# a per-artifact summary prints at the end regardless of outcome — no silent
+# failure paths. Two things can make this script refuse the run, and neither
+# ever deletes a file that was already pulled (the refusal is the exit code
+# plus the printed findings, forensics stay on disk):
+#
+#   * the round's own identity — the session BUNDLE or the flow STATE —
+#     failed to pull. A bank that can't say which round it banked is not a
+#     bank: exit 3 ("incomplete"), regardless of what the capture-integrity
+#     check below found.
+#   * capture-integrity over dumps/sidecar/ found the round dirty (or found
+#     nothing to check). This script's own exit code IS that check's exit
+#     code in this case — 0 clean / 1 nothing to check / 2 dirty — see
+#     jasper/audio_measurement/capture_integrity.py.
 
 set -uo pipefail
 
 DEST="${1:?usage: bank-crossover-round.sh <dest-dir>}"
 SINCE="${SINCE:-1 hour ago}"
 
+# B1: _lib.sh sources .env.local with `set -a` (plain assignments), which
+# unconditionally overwrites an already-exported PI_HOST/PI_USER — the
+# `${PI_HOST:-...}` fallback below it never gets a chance to prefer the
+# caller's value, because by then PI_HOST is already non-empty (issue
+# #2689, repo-wide; not fixed here). Capture the caller's explicit exports
+# now, before sourcing can clobber them, and re-apply below.
+_caller_pi_host="${PI_HOST:-}"
+_caller_pi_user="${PI_USER:-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_lib.sh"
+[[ -n "$_caller_pi_host" ]] && PI_HOST="$_caller_pi_host"
+[[ -n "$_caller_pi_user" ]] && PI_USER="$_caller_pi_user"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_diagnostic_redaction.sh"
+
+PYTHON="$(resolve_repo_python)"
+
+# N5: a bare `>` redirect per pulled file means re-running into an existing
+# $DEST silently truncates whatever was banked there before. Refuse instead
+# of guessing the operator meant to overwrite — pick a fresh directory, or
+# remove the old one on purpose.
+if [[ -d "$DEST" ]] && [[ -n "$(find "$DEST" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
+    echo "bank-crossover-round: refusing -- $DEST already exists and is not empty (re-running into it would truncate the prior pull); remove it or pick a fresh directory" >&2
+    exit 1
+fi
+mkdir -p "$DEST"
+
+# B1: provenance manifest, written before any Pi round-trip so a banked
+# tree always names its own source even if every pull below fails.
+UTC_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SCRIPT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [[ "$SCRIPT_SHA" != "unknown" ]] && ! git -C "$REPO_ROOT" diff-index --quiet HEAD -- 2>/dev/null; then
+    SCRIPT_SHA="${SCRIPT_SHA}-dirty"
+fi
+cat > "$DEST/provenance.json" <<EOF
+{
+  "pi_host": "${PI_HOST}",
+  "pi_user": "${PI_USER}",
+  "banked_at_utc": "${UTC_NOW}",
+  "script_commit": "${SCRIPT_SHA}"
+}
+EOF
+echo "provenance -> $DEST/provenance.json (host=$PI_HOST user=$PI_USER banked_at=$UTC_NOW)" >&2
 
 remote() {
     ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "$@"
 }
 
-mkdir -p "$DEST"
 echo "Banking crossover-v2 round from ${PI_USER}@${PI_HOST} -> ${DEST}/" >&2
 
 # --------------------------------------------------------------------- #
 # 1. Evidence bundle — the newest session bundle by mtime, whole tree.
+#    Gates exit 3 below: this IS the round's identity.
 # --------------------------------------------------------------------- #
+bundle_ok=0
+bundle_status="no session bundles found on the Pi"
 BUNDLE="$(remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")"
 if [[ -n "$BUNDLE" ]]; then
     mkdir -p "$DEST/bundle"
     if remote "sudo tar -C /var/lib/jasper/active_speaker/sessions -cf - '$BUNDLE'" \
             | tar -C "$DEST/bundle" -xf -; then
+        bundle_ok=1
+        bundle_status="ok ($BUNDLE)"
         echo "bundle -> $DEST/bundle/$BUNDLE" >&2
     else
+        bundle_status="FAILED to pull $BUNDLE"
         echo "bundle: FAILED to pull $BUNDLE" >&2
     fi
 else
@@ -85,9 +149,14 @@ fi
 
 # --------------------------------------------------------------------- #
 # 2. Crossover-v2 flow state — per-claim verdicts live only here.
+#    Gates exit 3 below: this IS the round's identity.
 # --------------------------------------------------------------------- #
+state_ok=0
+state_status="FAILED or not present"
 if remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/null" \
         > "$DEST/state.json" && [[ -s "$DEST/state.json" ]]; then
+    state_ok=1
+    state_status="ok ($(wc -c < "$DEST/state.json") bytes)"
     echo "state -> $DEST/state.json ($(wc -c < "$DEST/state.json") bytes)" >&2
 else
     rm -f "$DEST/state.json"
@@ -96,9 +165,12 @@ fi
 
 # --------------------------------------------------------------------- #
 # 3. Active-speaker design draft — the confirmed driver-safety profile.
+#    NOT part of the round's identity — reported, not gated.
 # --------------------------------------------------------------------- #
+design_draft_status="FAILED or not present"
 if remote "sudo cat /var/lib/jasper/active_speaker_design_draft.json 2>/dev/null" \
         > "$DEST/design-draft.json" && [[ -s "$DEST/design-draft.json" ]]; then
+    design_draft_status="ok ($(wc -c < "$DEST/design-draft.json") bytes)"
     echo "design-draft -> $DEST/design-draft.json ($(wc -c < "$DEST/design-draft.json") bytes)" >&2
 else
     rm -f "$DEST/design-draft.json"
@@ -111,11 +183,13 @@ fi
 #    round's units instead of the whole install.
 # --------------------------------------------------------------------- #
 units=(jasper-correction-web jasper-control jasper-camilla jasper-outputd)
+journal_ok_count=0
 mkdir -p "$DEST/journal"
 for u in "${units[@]}"; do
     out="$DEST/journal/${u}.log"
     if remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
             | redact_jasper_diagnostics > "$out"; then
+        journal_ok_count=$((journal_ok_count + 1))
         echo "  journal/${u}.log: $(wc -l < "$out") lines" >&2
     else
         echo "  journal/${u}.log: failed" >&2
@@ -126,13 +200,16 @@ combined_flags=()
 for u in "${units[@]}"; do
     combined_flags+=(-u "$u")
 done
+combined_ok="failed"
 if remote "journalctl --since '$SINCE' --no-pager --output=short-iso ${combined_flags[*]} 2>/dev/null" \
         | redact_jasper_diagnostics > "$DEST/journal/combined.log"; then
+    combined_ok="ok"
     echo "  journal/combined.log: $(wc -l < "$DEST/journal/combined.log") lines" >&2
 else
     echo "  journal/combined.log: failed" >&2
     rm -f "$DEST/journal/combined.log"
 fi
+journal_status="${journal_ok_count}/${#units[@]} unit logs, combined=${combined_ok}"
 
 # --------------------------------------------------------------------- #
 # 5. Power re-check. Any sign of under-voltage VOIDS the attestation.
@@ -155,14 +232,15 @@ if remote "sudo tar -C /var/lib/jasper/xover-capture-dump -cf - --exclude=ENABLE
 fi
 n_wav=$(find "$DEST/dumps/wav" -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
 n_sidecar=$(find "$DEST/dumps/sidecar" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
-echo "dumps -> $DEST/dumps (wav=$n_wav, sidecar=$n_sidecar)" >&2
+dumps_status="wav=$n_wav, sidecar=$n_sidecar"
+echo "dumps -> $DEST/dumps ($dumps_status)" >&2
 
 # --------------------------------------------------------------------- #
 # 7. Prediction snapshot — copied out of state.json before the next round
-#    overwrites priors.predicted_sum / predicted_spec / fc_selection / etc.
-#    Pure local read; no second Pi round-trip.
+#    overwrites verify_priors.predicted_sum / verify_priors.predicted_spec /
+#    fc_selection / etc. Pure local read; no second Pi round-trip.
 # --------------------------------------------------------------------- #
-python3 - "$DEST/state.json" "$DEST/prediction.json" 1>&2 <<'PY'
+"$PYTHON" - "$DEST/state.json" "$DEST/prediction.json" 1>&2 <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -208,21 +286,41 @@ if not found:
 PY
 
 # --------------------------------------------------------------------- #
-# 8. The gate. Capture-integrity over the dump-ring sidecars is the ONLY
-#    thing this script refuses a run on; every earlier pull above is
-#    best-effort and already reported. Exit code is exactly the check's.
+# 8. Capture-integrity over the dump-ring sidecars. Its own 0/1/2 contract
+#    is unaffected by anything below — the bank-level exit-3 override
+#    (step 9) can still supersede it.
 # --------------------------------------------------------------------- #
-PYTHON="$(resolve_repo_python)"
 echo "" >&2
 echo "=== capture integrity (dumps/sidecar) ===" >&2
 PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" "$PYTHON" \
     -m jasper.audio_measurement.capture_integrity "$DEST/dumps/sidecar"
-rc=$?
+checker_rc=$?
+
+# --------------------------------------------------------------------- #
+# 9. Per-artifact summary, then the final verdict. A bank that never
+#    pulled its own round identity (bundle and/or flow state) is not a
+#    bank, no matter how clean the dump-ring is — exit 3 overrides
+#    whatever the checker said. Otherwise this script's exit code IS the
+#    checker's.
+# --------------------------------------------------------------------- #
+echo "" >&2
+echo "=== artifact pull summary ===" >&2
+echo "  bundle:       $bundle_status" >&2
+echo "  state:        $state_status" >&2
+echo "  design-draft: $design_draft_status" >&2
+echo "  journal:      $journal_status" >&2
+echo "  dumps:        $dumps_status" >&2
+
+if (( bundle_ok == 0 )) || (( state_ok == 0 )); then
+    echo "" >&2
+    echo "bank-crossover-round: INCOMPLETE (exit 3) -- the round bundle and/or flow state could not be pulled; a bank without its own round identity is not a bank. Every pulled file is kept under $DEST for forensics." >&2
+    exit 3
+fi
 
 echo "" >&2
-if (( rc == 0 )); then
+if (( checker_rc == 0 )); then
     echo "bank-crossover-round: CLEAN -> $DEST" >&2
 else
-    echo "bank-crossover-round: REFUSED (exit $rc) -- every pulled file is kept under $DEST for forensics" >&2
+    echo "bank-crossover-round: REFUSED (exit $checker_rc) -- every pulled file is kept under $DEST for forensics" >&2
 fi
-exit "$rc"
+exit "$checker_rc"

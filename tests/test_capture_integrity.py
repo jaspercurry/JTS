@@ -67,6 +67,22 @@ def _sidecar(*, capture_integrity: dict | None = None, frame_ledger: dict | None
 
 
 # --------------------------------------------------------------------------- #
+# The exit-code contract itself — the VALUES, not just the constant names
+# --------------------------------------------------------------------------- #
+
+
+def test_exit_code_values_are_pinned():
+    # A caller scripts against the INTEGER `$?` a subprocess returns, never
+    # against the Python symbol. `main(...) == EXIT_DIRTY` alone does not pin
+    # that promise: if EXIT_DIRTY quietly became 1 (or EXIT_UNREADABLE
+    # quietly became 0 — a false-CLEAN), every `== EXIT_*` comparison in this
+    # file would still balance, because both sides moved together. Only a
+    # literal-int assertion catches that class of mutation; see the CLI test
+    # below for the same guarantee at the actual call site.
+    assert (EXIT_CLEAN, EXIT_UNREADABLE, EXIT_DIRTY) == (0, 1, 2)
+
+
+# --------------------------------------------------------------------------- #
 # check_sidecar — pure function, one test per defect class
 # --------------------------------------------------------------------------- #
 
@@ -201,6 +217,34 @@ def test_main_treats_unparseable_json_as_dirty(tmp_path, capsys):
     assert main([str(d)]) == EXIT_DIRTY
     out = capsys.readouterr().out
     assert "DIRTY sidecar=corrupt.json finding=sidecar_unreadable" in out
+
+
+def test_main_treats_non_object_json_as_dirty(tmp_path, capsys):
+    d = tmp_path / "sidecar"
+    d.mkdir(parents=True)
+    (d / "array.json").write_text("[1, 2, 3]")
+
+    assert main([str(d)]) == EXIT_DIRTY
+    out = capsys.readouterr().out
+    assert "DIRTY sidecar=array.json finding=sidecar_not_an_object" in out
+
+
+def test_main_exit_codes_are_the_literal_ints_a_caller_scripts_against(tmp_path):
+    # Decoupled from the EXIT_* symbols on purpose (see
+    # test_exit_code_values_are_pinned's docstring): a caller's `$?` is an
+    # integer, and this is the assertion that fails if either constant's
+    # VALUE quietly moves even though every symbolic comparison still holds.
+    clean_dir = tmp_path / "clean"
+    _write_sidecar(clean_dir, "a.json", _sidecar())
+    assert main([str(clean_dir)]) == 0
+
+    dirty_dir = tmp_path / "dirty"
+    ci = _clean_capture_integrity(**{REPORT_KEY_RENDER_GAPS: 1})
+    _write_sidecar(dirty_dir, "a.json", _sidecar(capture_integrity=ci))
+    assert main([str(dirty_dir)]) == 2
+
+    missing_dir = tmp_path / "does-not-exist"
+    assert main([str(missing_dir)]) == 1
 
 
 def test_main_exits_unreadable_when_directory_is_absent(tmp_path, capsys):

@@ -14,6 +14,18 @@ definition of clean. It computes no new number and re-derives nothing that
 :mod:`~jasper.audio_measurement.frame_ledger` did not already put in the
 sidecar; it only reads their fields back and names what disagrees.
 
+**Not the same "capture integrity" as the two other things in this repo
+carrying that name.**
+:class:`~jasper.audio_measurement.program_analysis.CaptureIntegrity` is
+computed DURING a live VERIFY capture (schedule/locate/clip checks on the
+signal itself), and
+:data:`~jasper.active_speaker.crossover_v2.verification.CAPTURE_INTEGRITY_CLEAN`
+/ :data:`~jasper.active_speaker.crossover_v2.verification.CAPTURE_INTEGRITY_FAILED`
+are the live per-capture validity verdict a running session gates on. Both
+run in-process, on the capture the session just took. This module runs
+OFFLINE, afterwards, on a JSON sidecar someone already pulled off the Pi —
+same vocabulary, unrelated code path, no shared state.
+
 **What "clean" means**, checked against ``capture_integrity`` (the wired
 recorder's own per-take account,
 :func:`~jasper.audio_measurement.wired_capture.build_capture_integrity_report`)
@@ -44,7 +56,9 @@ back from the sidecar JSON exactly as the recorder wrote them:
   failing capture.
 * ``2`` — at least one sidecar was checked and found dirty, including a
   sidecar whose JSON could not even be parsed (``sidecar_unreadable`` — a
-  capture nobody can read back is not a clean one).
+  capture nobody can read back is not a clean one) or whose top-level JSON
+  value was not an object (``sidecar_not_an_object`` — the recorder always
+  writes a mapping, so anything else is not this checker's sidecar).
 
 Each defect prints its own line, ``DIRTY sidecar=<name> finding=<code>
 detail=<text>``, so a caller can gate on the exit code and grep the findings
