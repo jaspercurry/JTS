@@ -236,7 +236,7 @@ def test_the_seat_level_ramps_ceiling_is_the_derived_hf_value():
     of the -35 dBFS hedge visible as a number.
 
     ``jasper-seat-level`` reads its mic-independent ceiling from exactly this
-    call (``jasper.cli.seat_level._ceilings``). The shipped preset's numbers:
+    call (``jasper.cli.seat_level._derive_bounds``). The shipped preset's numbers:
     woofer admitted at 0.0 dBFS, declared sensitivities 108.5 / 83.3 -> a
     25.2 dB delta -> the tweeter's derived cap is -25.2, and it is ``min(caps)``
     so it IS the ceiling.

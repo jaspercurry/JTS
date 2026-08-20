@@ -375,10 +375,12 @@ def test_a_swapped_declaration_is_not_caught_by_the_ledger() -> None:
     accident.
 
     This is deliberately NOT fixed by refusing to derive on delta <= 0: the
-    test above shows that same shape is a legitimate pro-woofer configuration.
-    Validating the declaration is the fix; see issue notes in the block comment
-    above ``derive_hf_measurement_ceiling_dbfs``. Pinned as the honest current
-    behaviour so a reader is never surprised by it.
+    test above shows that same shape is a legitimate pro-woofer configuration,
+    and the two are separated by 0.7 dB, so no constant here can tell them
+    apart. Validating the declaration is the fix -- tracked as issue #2765, and
+    it needs no invented anchor because the preset already ships the woofer's
+    own ``sensitivity_db``. Pinned as the honest current behaviour so a reader
+    is never surprised by it.
     """
 
     swapped = derive_hf_measurement_ceiling_dbfs(

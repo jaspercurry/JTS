@@ -770,11 +770,19 @@ issue #2761).
 declared sensitivities carry no plausibility validation. A household that swaps
 the two sensitivity rows presents Δ ≤ 0 for a genuinely more-sensitive tweeter,
 and the ceiling lands at full scale — where the retired −35 hedge clamped it by
-accident. That empties `unsegmented_stimulus_ceiling_db` (documented
-mic-*independent*) of content for that box; the live stops left are the measured
-SPL band top and the ramp guards. Refusing to derive on Δ ≤ 0 is not the fix —
-it would break the legitimate pro-woofer case above. Validating the declaration
-is.
+accident. That removes the *derivation's* contribution to
+`unsegmented_stimulus_ceiling_db` (documented mic-*independent*) for that box.
+
+Two mic-independent stops survive a swapped declaration even so, which is why
+the residual is bounded rather than open-ended: `MAX_TEST_LEVEL_DBFS` still
+clamps the derived cap at 0.0 dBFS (and `HARD_CEILING_DBFS` clamps the ramp
+window to the same), and the nominal measurement stimulus itself peaks at
+−12 dBFS (`AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS`), so the signal reaching
+the driver sits that far under full scale. The measured SPL band top and the
+ramp guards are then the mic-*dependent* layer on top. Refusing to derive on
+Δ ≤ 0 is not the fix — it would break the legitimate pro-woofer case above.
+Validating the declaration is; see the issue linked from the block comment above
+`derive_hf_measurement_ceiling_dbfs`.
 The sensitivities' one owner is the DECLARATION — the design draft's
 `manual_settings` (`declared_driver_sensitivities`), never a second copy on
 the confirmed safety profile — so already-declared boxes (JTS3's persisted

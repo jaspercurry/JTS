@@ -4598,10 +4598,11 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
 // which named a number to distrust without naming which one.
 //
 // The view carried an `hf_measurement_abs_ceiling_dbfs` until 2026-08-20, and
-// these fixtures deliberately set it to a number that was not the real -35 so a
-// page hardcoding the constant would fail. The constant is retired and the
-// field is gone from the wire; the sentinel test now pins that the page quotes
-// no dBFS bound at all, which no fixture value can fake.
+// these fixtures deliberately SET it to a number that was not the real -35, so
+// a page hardcoding the constant would have failed here. That constant is
+// retired and the field no longer goes on the wire; the sentinel test pins
+// instead that the page quotes no dBFS bound at all, which no fixture value
+// can fake.
 const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
 // The low-frequency class ceiling, which LIMITS permits a woofer to declare
 // exactly. Delegation is a high-frequency-only rule, so landing on this number

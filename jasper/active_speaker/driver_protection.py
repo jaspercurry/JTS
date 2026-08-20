@@ -231,9 +231,21 @@ def driver_protection_profile(
 # it by accident. On the leveling path that empties
 # session_volume_plan.unsegmented_stimulus_ceiling_db of content for that box,
 # and it is documented as mic-INDEPENDENT precisely so a bad microphone cannot
-# move it; the live stops left are the measured SPL band top and the ramp's own
-# guards. Refusing to derive on delta <= 0 is NOT the fix -- it would break the
-# legitimate pro-woofer case above. Validating the declaration is.
+# move it. Two mic-independent stops do survive the swap, which is what bounds
+# the residual to ~10 dB over intent at the loudest bankable volume rather than
+# leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
+# 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp window to
+# the same), and the nominal measurement stimulus peaks at -12.0 dBFS
+# (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS). The
+# measured SPL band top and the ramp's runaway guard sit above those as the
+# mic-DEPENDENT layer.
+#
+# Refusing to derive on delta <= 0 is NOT the fix -- it would break the
+# legitimate pro-woofer case above, and the two shapes are separated by 0.7 dB,
+# so no constant here can tell them apart. Validating the declaration is the
+# fix, and it needs no invented per-style anchor: the preset already ships the
+# woofer's own sensitivity_db (83.3 on JTS3), which a swapped draft
+# contradicts. Tracked as issue #2765.
 
 
 def derive_hf_measurement_ceiling_dbfs(
