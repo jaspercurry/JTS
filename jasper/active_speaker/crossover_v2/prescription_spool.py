@@ -220,12 +220,28 @@ BLEND_ONLY = frozenset({PRESCRIPTION_KIND})
 #:
 #: The anchors are NOT bounded by the document: the per-driver class banks the
 #: round's whole classification, whose row count is the MEASUREMENT's fact
-#: rather than the prescription's. Measured in this envelope's own shape, the
-#: 2026-08-19 record's nine verdict rows cost **2,208 bytes** (245 per row)
-#: against the 128 KiB this cap leaves over even the pathological all-escaped
-#: document above — room for about 534 rows. A classification past that refuses
-#: the take by name (:data:`SPOOL_TOO_LARGE`) rather than truncating, which is
-#: the direction that cannot admit a filter nobody judged.
+#: rather than the prescription's. A row's cost is not a constant — it is the
+#: length of that verdict's own strings — so the figure below names its
+#: derivation route rather than standing as a bare number, and a test re-derives
+#: it instead of trusting this comment.
+#:
+#: **Route: stage the same document twice through this module's own writer —
+#: once with N extra rows, once without — and diff the bytes on disk.** Not a
+#: hand-built payload: the envelope's nesting and ``indent=2`` are part of the
+#: answer, and a payload assembled by hand measures a shape this module does not
+#: write. On the 2026-08-19 record's nine rows, rendered by the repo's own
+#: fixture for them, that delta is **≈2.2 KiB — 244 bytes per row**, leaving
+#: room for roughly 500 rows in the 128 KiB this cap keeps over even the
+#: pathological all-escaped document above.
+#:
+#: Treat the row figure as an order of magnitude rather than a constant. It
+#: moves a few percent with a verdict's own string lengths, and the whole-file
+#: figure jitters by a byte or two with ``staged_at``'s serialization — while
+#: the conclusion sits two orders of magnitude from caring. A classification
+#: past it refuses the take by name (:data:`SPOOL_TOO_LARGE`) rather than
+#: truncating, which is the direction that cannot admit a filter nobody judged.
+#: Re-derived on every run, by this route, in
+#: ``test_the_banked_classification_stays_far_inside_the_envelope_cap``.
 SPOOL_MAX_BYTES = 8 * PRESCRIPTION_MAX_BYTES
 
 #: The highest frequency the gate's biquad evaluator is defined for.
@@ -411,15 +427,22 @@ def _anchors(
     peak still banked, no dip to outrank it, and was ACCEPTED — the precise
     proposal the bar exists to refuse.
 
-    The property this buys is not "refuses more"; it is EQUALITY. Same
-    function, same evidence, same bands, so the take's answer on a document is
-    the answer the staging gate gave it, and the subset was wrong in both
-    directions rather than merely lenient: it hid the dips (a false accept, the
-    hole above) and it also hid every cuttable feature no filter happened to
-    aim at, so a filter moved onto one of THOSE refused as unclassified when
-    the staging step would have admitted it. A subset is an argument about how
-    much evidence is enough; handing back what the gate actually read needs no
+    The property this buys is not "refuses more"; it is EQUALITY, **and it is
+    equality on the classification bar alone.** Same function, same verdicts,
+    so the take's answer to "may this filter be cut here" is the answer the
+    staging gate gave it — and the subset was wrong in both directions rather
+    than merely lenient: it hid the dips (a false accept, the hole above) and
+    it also hid every cuttable feature no filter happened to aim at, so a
+    filter moved onto one of THOSE refused as unclassified when the staging
+    step would have admitted it. A subset is an argument about how much
+    evidence is enough; handing back what the gate actually read needs no
     argument.
+
+    The OTHER anchor on this class, ``passbands_hz``, keeps the weaker property
+    it has always had and that #2740's review examined and accepted: it is the
+    envelope's own copy of the bands, bounded only by Nyquist, so it can be
+    widened by whoever can write the file. That is inside the spool's threat
+    model — a 0640 operator-written file — and nothing here changes it.
     """
     if isinstance(prescription, DriverPrescription):
         return {
@@ -517,6 +540,12 @@ def stage_prescription(
         # name for "a prescription was staged" would make an operator grepping
         # the journal for staging see half of them.
         prescription_kind=payload[ENVELOPE_KIND_FIELD],
+        # Read off the PAYLOAD, not the argument: this reports what the envelope
+        # actually carries. It is the one dimension of this file the document's
+        # own cap does not bound (see :data:`SPOOL_MAX_BYTES`), so an operator
+        # watching a spool creep towards `spool_too_large` can see it grow
+        # without opening the file.
+        classifications=len(payload.get("classifications") or ()),
         replaced=replaced,
     )
     return path

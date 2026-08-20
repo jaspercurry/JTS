@@ -38,6 +38,7 @@ from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_KIND,
+    PRESCRIPTION_MAX_BYTES,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
 )
@@ -1710,6 +1711,112 @@ def test_a_filter_moved_off_its_verdict_refuses_on_the_classification_bar(tmp_pa
         )
 
     assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+
+
+def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
+    """Drive the real ``stage`` verb end to end, the way an operator does.
+
+    Not ``_stage_driver``: that calls :func:`stage_prescription` directly, so it
+    cannot see whether the CLI hands the spool the verdicts its own gate read.
+    Everything here is a path on disk and the only entry point is ``cli.main``.
+    """
+    spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
+    session, _ = _bundle(tmp_path / "bundle")
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / "feature_classification.json").write_text(
+        json.dumps(_classification(rows))
+    )
+    draft = tmp_path / "draft.json"
+    draft.write_text(json.dumps(_draft()))
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
+    # The packet the CLI itself will build, from the same three inputs — a
+    # document written against any other one refuses on the fingerprint.
+    packet = build_crossover_evidence_packet(
+        session, state_path=state, driver_draft_path=draft
+    )
+    document = tmp_path / "prescription.json"
+    document.write_bytes(json.dumps(_document([_cut()], packet)).encode())
+    return cli.main([
+        "stage", str(session),
+        "--state", str(state),
+        "--drivers", str(draft),
+        "--prescription", str(document),
+    ])
+
+
+def test_the_stage_verb_banks_the_verdicts_its_own_gate_read_dips_included(
+    tmp_path, caplog,
+):
+    """The CLI's half of the anchor, against the 2026-08-19 record itself.
+
+    ``_gate`` reads the classification out of the packet and hands the SAME
+    tuple to the spool rather than letting ``stage`` re-read the packet, so what
+    is banked cannot be a set the gate never saw. Driven through ``cli.main``
+    because that wiring is the subject: a unit test calling
+    :func:`stage_prescription` directly passes whatever it passes.
+
+    The four minimum-phase DIPS are the assertion that matters — they are what
+    the pre-fix vouching subset dropped, and the cut here (5,396 Hz's peak
+    vouches for it) would have banked none of them.
+    """
+    rows = [
+        _verdict(hz, cls, confidence=conf, measured_q=q)
+        for hz, cls, conf, q in _BANKED_RECORD
+    ]
+
+    with caplog.at_level("INFO"):
+        exit_code = _cli_stage(tmp_path, rows)
+
+    assert exit_code == cli.EXIT_OK
+    banked = json.loads(spool.prescription_spool_path().read_text())
+    assert [row["hz"] for row in banked["classifications"]] == [
+        row[0] for row in _BANKED_RECORD
+    ]
+    assert [
+        row["hz"] for row in banked["classifications"]
+        if row["classification"] == DEFECT_BOOSTABLE
+    ] == [1037.0, 4582.0, 6245.0, 8530.0]
+    # And the newly-unbounded dimension is visible without opening the file.
+    line = next(
+        r.getMessage() for r in caplog.records
+        if "crossover_v2.prescription_staged" in r.getMessage()
+    )
+    assert f"classifications={len(_BANKED_RECORD)}" in line
+
+
+def test_the_banked_classification_stays_far_inside_the_envelope_cap(tmp_path):
+    """``SPOOL_MAX_BYTES``' derivation, re-derived rather than trusted.
+
+    The comment on that constant quotes a per-row cost, and a row's cost is the
+    length of its own strings rather than a constant — so the number is measured
+    HERE, by the route the comment names (stage twice through the real writer,
+    diff the bytes on disk), and what is asserted is the conclusion that has to
+    hold: the room left over is orders of magnitude past any real artifact.
+    """
+    record = [
+        _verdict(hz, cls, confidence=conf, measured_q=q)
+        for hz, cls, conf, q in _BANKED_RECORD
+    ]
+    # The anchor row is in BOTH envelopes, so it cancels exactly and the delta
+    # is the record's nine rows and nothing else. It is here because the staged
+    # document has to clear the bar in both runs to be staged at all.
+    anchor = [_verdict(TWEETER_FEATURE_HZ)]
+    _stage_driver(tmp_path / "with", classification=_classification(record + anchor))
+    with_rows = spool.prescription_spool_path().stat().st_size
+    _stage_driver(tmp_path / "without", classification=_classification(anchor))
+    without = spool.prescription_spool_path().stat().st_size
+
+    per_row = (with_rows - without) / len(_BANKED_RECORD)
+    # The escaping bound `SPOOL_MAX_BYTES`' own comment derives, so this test
+    # moves with that constant instead of restating a byte count.
+    headroom = spool.SPOOL_MAX_BYTES - 6 * PRESCRIPTION_MAX_BYTES
+    assert 200 <= per_row <= 320, f"per verdict row: {per_row:.1f} bytes"
+    assert headroom / per_row > 400, (
+        f"room for {headroom / per_row:.0f} rows; the record has "
+        f"{len(_BANKED_RECORD)}"
+    )
+    assert with_rows < spool.SPOOL_MAX_BYTES // 100
 
 
 def test_a_refused_document_is_consumed_too(tmp_path):
