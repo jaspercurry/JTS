@@ -174,7 +174,49 @@ def driver_protection_profile(
 # at 27 dB in-band SNR, while the woofer's comfortable pilots ran -26 dBFS
 # effective -- a 25.2 dB sensitivity delta (B&C DE250-8 ~108.5 dB vs Dayton
 # Epique E150HE-44 ~83.3 dB) the class default never accounted for.
-HF_MEASUREMENT_ABS_CEILING_DBFS = -35.0  # provisional pending W6 bench validation; a hearing-safety bound, not derived from any driver's declared data
+#
+# The -35.0 dBFS absolute hedge this derivation carried until 2026-08-20 is
+# RETIRED, and nothing replaces it in that role. It landed "provisional pending
+# W6 bench validation"; W6 never ran, and the hedge quietly became the
+# OPERATIVE ceiling rather than a backstop above one. On the shipped JTS3
+# preset it bound 9.8 dB below the derivation (lf cap 0.0 dBFS, 25.2 dB
+# sensitivity delta -> -25.2 derived, clamped to -35), and on the CX120 coax
+# fixture 14.3 dB below it (lf cap -20.0, 0.7 dB delta -> -20.7 derived). A
+# constant that binds below the physics on real hardware is a level nanny, not
+# a bound.
+#
+# Measured consequence, 2026-08-19 overnight linearization session
+# (captures/linearization-night-2026-08-19/): the seat-SPL leveling ramp takes
+# its mic-independent ceiling from min(driver caps) - stimulus peak
+# (session_volume_plan.unsegmented_stimulus_ceiling_db), so the tweeter's -35
+# WAS min(caps) and capped the whole session at 68.07 dB SPL at the seat
+# against the operator's 75-80 dB SPL target.
+#
+# Owner ratification, 2026-08-20, verbatim: "i use a fixed gain amp and
+# digitally control the volume. i can hit loud volumes - im confident the
+# woofer and or tweeter can hit 75db at the mic distance." And on the safety
+# model that stands in the hedge's place: "we should allow the user to ramp up
+# to 75 or 80db but in the UX have a big stop button that saves them if
+# anything goes wrong. no random db nannys!" (issue #2761 carries the stop-
+# button UX half; this module owns the ledger half.)
+#
+# What bounds a high-frequency driver's measurement level now:
+#   * the derivation below -- the high-frequency driver is admitted at the same
+#     ACOUSTIC level its low-frequency sibling is already admitted at, so for
+#     any real pair (a tweeter is the more sensitive driver, delta > 0) the
+#     ceiling stays the full sensitivity delta BELOW that sibling's own cap;
+#   * MAX_TEST_LEVEL_DBFS, the same global loudest-admissible test level every
+#     other driver target is clamped to -- one owner for that bound, not a
+#     second private constant. It is a runaway stop on an impossible declared
+#     delta, not a level hedge: sensitivities carry no plausibility validation
+#     (design_draft.declared_driver_sensitivities), so a swapped or mis-typed
+#     pair (delta <= 0) would otherwise derive a ceiling ABOVE full scale and
+#     switch off per-channel admission enforcement for that driver entirely;
+#   * unchanged and outside this module -- the wrong-frequency-range invariant
+#     (declared hard band + the proven protective high-pass), the preset's
+#     ``max_commissioning_level_db_spl`` SPL band top (85 dB SPL on JTS3), and
+#     the leveling ramp's runaway guard, volume latch, and restore-on-every-
+#     exit path.
 
 
 def derive_hf_measurement_ceiling_dbfs(
@@ -187,14 +229,17 @@ def derive_hf_measurement_ceiling_dbfs(
 
     Same acoustic ceiling CLASS as the low-frequency driver's own declared
     cap, corrected for the sensitivity delta between the two declared driver
-    specs, bounded by the absolute hearing-safety ceiling. Pure arithmetic --
-    the caller owns picking valid inputs (a proven-protective-HP graph, an
-    unsuperseded class-default seed, and both drivers' declared sensitivities).
+    specs, bounded by :data:`MAX_TEST_LEVEL_DBFS` -- the global loudest
+    admissible test level, which is here a runaway stop on an impossible
+    declared delta rather than a level hedge (block comment above). Pure
+    arithmetic -- the caller owns picking valid inputs (a proven-protective-HP
+    graph, an unsuperseded class-default seed, and both drivers' declared
+    sensitivities).
     """
 
     return min(
         declared_lf_driver_cap_dbfs - (sens_hf_db - sens_lf_db),
-        HF_MEASUREMENT_ABS_CEILING_DBFS,
+        MAX_TEST_LEVEL_DBFS,
     )
 
 

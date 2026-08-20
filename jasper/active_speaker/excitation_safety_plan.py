@@ -606,8 +606,11 @@ def resolve_driver_excitation_ceilings(
     # below never running.
     #
     # The discontinuity is real and deliberate: on this path -65.0 resolves to
-    # the derived ceiling (up to HF_MEASUREMENT_ABS_CEILING_DBFS) while -66.0
-    # resolves to -66.0. Anything that changes the class default, or the value
+    # the sensitivity-derived ceiling -- since the provisional absolute hedge
+    # was retired on 2026-08-20, that is the low-frequency sibling's own cap
+    # less the declared sensitivity delta, tens of decibels louder than the
+    # seed -- while -66.0 resolves to -66.0. Anything that changes the class
+    # default, or the value
     # the research template emits, must move both together --
     # tests/test_active_speaker_driver_safety.py's
     # test_template_tweeter_peak_lands_on_the_derivation_sentinel pins the

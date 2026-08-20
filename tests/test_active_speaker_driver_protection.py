@@ -8,13 +8,13 @@ import pytest
 
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
+    MAX_TEST_LEVEL_DBFS,
     MIN_TEST_LEVEL_DBFS,
     calibration_level_payload,
 )
 from jasper.active_speaker.driver_protection import (
     AUTO_LEVEL_DECISION_KIND,
     DRIVER_PROTECTION_KIND,
-    HF_MEASUREMENT_ABS_CEILING_DBFS,
     auto_level_decision,
     derive_hf_measurement_ceiling_dbfs,
     driver_protection_payload,
@@ -245,41 +245,111 @@ def test_undeclared_tweeter_style_keeps_conservative_floor_when_hardware_ceiling
 # --- derive_hf_measurement_ceiling_dbfs (W6.5 two-invariant protection model) -
 
 
-def test_jts3_worked_example_abs_ceiling_binds() -> None:
-    # The operator's own worked example (2026-07-19 ruling): woofer cap -8,
-    # sensitivities 83.3 (Epique E150HE-44) / 108.5 (B&C DE250-8) -> a 25.2 dB
-    # delta. min(-8 - 25.2, -35) = min(-33.2, -35) = -35: the absolute
-    # hearing-safety ceiling binds, not the sensitivity-relative one.
+def test_shipped_jts3_preset_numbers_derive_the_operative_ceiling() -> None:
+    """The shipped preset's own numbers, hand-computed, with no hedge left.
+
+    ``bc_de250_dayton_e150he44_v1`` as commissioned on JTS3: the woofer's
+    admitted cap is 0.0 dBFS (its declared peak, clamped by the low-frequency
+    class default ``MAX_TEST_LEVEL_DBFS``), and the declared sensitivities are
+    108.5 dB (B&C DE250) against 83.3 dB (Dayton Epique E150HE-44).
+
+        108.5 - 83.3 = 25.2 dB delta
+        0.0 - 25.2   = -25.2 dBFS
+
+    The retired -35.0 dBFS absolute hedge would have clamped this to -35, which
+    is the 9.8 dB of unvalidated conservatism that capped the 2026-08-19
+    leveling session at 68.07 dB SPL. Mutation guard: restore that hedge and
+    this fails.
+    """
+
+    ceiling = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=0.0,
+        sens_hf_db=108.5,
+        sens_lf_db=83.3,
+    )
+    assert ceiling == pytest.approx(-25.2)
+
+
+def test_operator_worked_example_derives_without_the_retired_hedge() -> None:
+    # The operator's own worked example (2026-07-19 ruling), woofer cap -8 with
+    # the same 25.2 dB delta: -8 - 25.2 = -33.2. The retired -35 hedge clamped
+    # even this, 1.8 dB below the sensitivity arithmetic.
     ceiling = derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs=-8.0,
         sens_hf_db=108.5,
         sens_lf_db=83.3,
     )
-    assert ceiling == pytest.approx(-35.0)
-    assert ceiling == HF_MEASUREMENT_ABS_CEILING_DBFS
+    assert ceiling == pytest.approx(-33.2)
 
 
-def test_sensitivity_relative_ceiling_binds_when_lower_than_abs_ceiling() -> None:
-    # A quieter LF cap (-30) with a 16 dB sensitivity delta: -30 - 16 = -46,
-    # BELOW the -35 abs ceiling, so the sensitivity-relative term is the more
-    # restrictive (quieter) of the two and binds instead of the abs ceiling.
+def test_ceiling_never_exceeds_the_lf_cap_less_the_sensitivity_delta() -> None:
+    """The anti-runaway direction, over the whole realistic input envelope.
+
+    The invariant that replaced the absolute hedge: a high-frequency driver is
+    admitted at the ACOUSTIC level its low-frequency sibling is already
+    admitted at, so its ceiling sits the full sensitivity delta below that
+    sibling's own cap and can never be raised past it by the derivation.
+    """
+
+    for lf_cap in (0.0, -8.0, -20.0, -30.0, -55.0):
+        for sens_hf, sens_lf in (
+            (108.5, 83.3),
+            (100.0, 84.0),
+            (89.2, 88.5),
+            (90.0, 90.0),
+        ):
+            ceiling = derive_hf_measurement_ceiling_dbfs(
+                declared_lf_driver_cap_dbfs=lf_cap,
+                sens_hf_db=sens_hf,
+                sens_lf_db=sens_lf,
+            )
+            assert ceiling <= lf_cap - (sens_hf - sens_lf) + 1e-9
+            # A real pair has the more sensitive driver on top, so the ceiling
+            # also stays at or below the sibling's own cap.
+            assert ceiling <= lf_cap + 1e-9
+
+
+def test_sensitivity_relative_ceiling_is_the_operative_one() -> None:
+    # A quieter LF cap (-30) with a 16 dB sensitivity delta: -30 - 16 = -46.
+    # Under the retired hedge this was the interesting case only because it
+    # fell BELOW -35; it is now simply what the derivation returns.
     ceiling = derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs=-30.0,
         sens_hf_db=100.0,
         sens_lf_db=84.0,
     )
     assert ceiling == pytest.approx(-46.0)
-    assert ceiling < HF_MEASUREMENT_ABS_CEILING_DBFS
 
 
-def test_zero_sensitivity_delta_still_bounded_by_abs_ceiling() -> None:
-    # Equal sensitivities: the sensitivity-relative term equals the LF cap
-    # outright (-20), but the -35 abs ceiling is still more restrictive, so
-    # it wins -- this is a hearing-safety FLOOR the relative term can never
-    # exceed, not merely a tie-break.
+def test_zero_sensitivity_delta_lands_on_the_lf_cap_itself() -> None:
+    # Equal sensitivities: the derivation returns the LF cap outright, because
+    # equal-sensitivity drivers reach the same acoustic level at the same
+    # digital level. The retired -35 hedge overrode this by 15 dB; nothing
+    # does now, which is the point -- the LF driver's own admitted cap is the
+    # bound, not a constant.
     ceiling = derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs=-20.0,
         sens_hf_db=90.0,
         sens_lf_db=90.0,
     )
-    assert ceiling == pytest.approx(-35.0)
+    assert ceiling == pytest.approx(-20.0)
+
+
+def test_impossible_declared_delta_is_stopped_at_the_global_test_ceiling() -> None:
+    """The one case the remaining bound exists for -- and it is not a hedge.
+
+    Declared sensitivities carry no plausibility validation, so a swapped or
+    mis-typed pair can present a NEGATIVE delta, which the arithmetic would
+    turn into a ceiling above digital full scale (0.0 - -12 = +12 dBFS). A cap
+    above full scale switches off per-channel admission enforcement for that
+    driver entirely, so ``MAX_TEST_LEVEL_DBFS`` stops it. Nothing about a real
+    tweeter/woofer pair reaches this branch.
+    """
+
+    ceiling = derive_hf_measurement_ceiling_dbfs(
+        declared_lf_driver_cap_dbfs=0.0,
+        sens_hf_db=80.0,
+        sens_lf_db=92.0,
+    )
+    assert ceiling == pytest.approx(MAX_TEST_LEVEL_DBFS)
+    assert ceiling == pytest.approx(0.0)

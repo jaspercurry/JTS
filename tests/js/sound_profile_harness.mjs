@@ -4597,10 +4597,11 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
 // bare tally ("2 of these limits came from the research reply as estimates"),
 // which named a number to distrust without naming which one.
 //
-// `hf_measurement_abs_ceiling_dbfs` is deliberately NOT -35 in these fixtures:
-// a page that hardcoded the real constant instead of reading the server's
-// value would pass a -35 fixture and fail this one.
-const ECHO_HF_ABS_CEILING_DBFS = -42.5;
+// The view carried an `hf_measurement_abs_ceiling_dbfs` until 2026-08-20, and
+// these fixtures deliberately set it to a number that was not the real -35 so a
+// page hardcoding the constant would fail. The constant is retired and the
+// field is gone from the wire; the sentinel test now pins that the page quotes
+// no dBFS bound at all, which no fixture value can fake.
 const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
 // The low-frequency class ceiling, which LIMITS permits a woofer to declare
 // exactly. Delegation is a high-frequency-only rule, so landing on this number
@@ -4613,7 +4614,6 @@ const ECHO_WOOFER_CLASS_CEILING_DBFS = 0;
 function echoProtectionPolicy(overrides = {}) {
   return {
     policy_version: "driver_protection_auto_level_v1",
-    hf_measurement_abs_ceiling_dbfs: ECHO_HF_ABS_CEILING_DBFS,
     targets: [
       {
         target_id: "main:woofer",
@@ -4888,10 +4888,23 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
       onSentinel,
     });
   }
-  // The bound comes from the server, so the fixture's own number is what shows.
-  if (!onSentinel.includes("never goes above -42.5 dBFS")) {
-    fail("the sentinel bound must be read from the server, never hardcoded", {
-      onSentinel,
+  // The sentence names WHAT sets the level, never a dBFS number. The absolute
+  // ceiling it used to quote was retired on 2026-08-20 (the provisional -35
+  // dBFS constant); the real bound is the per-driver sensitivity derivation,
+  // which this topology-only policy view cannot compute. A number here would
+  // have to be invented, so any dBFS in this sentence is a regression.
+  if (!onSentinel.includes(
+    "from this driver’s declared sensitivity against the low-frequency " +
+    "driver’s own limit"
+  )) {
+    fail("the sentinel must name what sets the level", { onSentinel });
+  }
+  const sentinelSentence = onSentinel.slice(
+    onSentinel.indexOf("Test level here is left to JTS")
+  ).split("</p>")[0];
+  if (/dBFS/.test(sentinelSentence)) {
+    fail("the sentinel must quote no dBFS bound — the -35 constant is retired", {
+      sentinelSentence,
     });
   }
 
@@ -4916,15 +4929,23 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
     });
   }
 
-  // And the narrower case the `policy: null` fixture cannot reach: per-target
-  // policy present, absolute ceiling absent. Dropping the bound check alone
-  // would render "+0.0 dBFS" here -- a number nothing supplied.
+  // The inverse of the pin this replaced. Until 2026-08-20 the sentence
+  // required an absolute ceiling from the server and stayed silent without one
+  // (so that a dropped bound could not render a fabricated "+0.0 dBFS"). The
+  // server no longer sends any such field, so that guard would now silence the
+  // delegation disclosure on every real box. Pinned in the new direction: a
+  // policy view carrying NO ceiling field still discloses, and still quotes no
+  // number.
   const noBound = echoPanel(await echoHarness(echoDraft({
     policy: echoProtectionPolicy({ hf_measurement_abs_ceiling_dbfs: null }),
   })));
-  if (noBound.includes("Test level here is left to JTS") ||
-      noBound.includes("dBFS.")) {
-    fail("a missing bound must produce no sentence, not a fabricated 0", {
+  if (!noBound.includes("Test level here is left to JTS")) {
+    fail("the disclosure must not depend on a server-sent absolute bound", {
+      noBound,
+    });
+  }
+  if (noBound.includes("dBFS.")) {
+    fail("a ceiling field on the wire must not resurrect a quoted bound", {
       noBound,
     });
   }
@@ -4932,10 +4953,10 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
   // The role_class gate, pinned. Delegation is a HIGH-FREQUENCY rule --
   // resolve_driver_excitation_ceilings only supersedes a declared peak for an
   // HF role -- but LIMITS lets a woofer declare exactly 0.0 dBFS, which is its
-  // own class ceiling. Without the gate that woofer gets "never goes above
-  // -42.5 dBFS" printed directly under a row reading 0.0 dBFS: a 42.5 dB
-  // understatement, on the biggest driver, about a delegation the server never
-  // performs.
+  // own class ceiling. Without the gate that woofer is told its level is "left
+  // to JTS", picked from a sensitivity derivation, directly under a row where
+  // the household typed the number itself: a delegation claim the server never
+  // performs, on the biggest driver.
   const lfOnCeiling = echoResearchPacket();
   lfOnCeiling.drivers[0].level_duration_limits = {
     max_effective_peak_dbfs: ECHO_WOOFER_CLASS_CEILING_DBFS,

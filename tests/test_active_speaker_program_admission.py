@@ -213,9 +213,14 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     the production conductor context resolves them (``program_admission=True``
     + the declared mapping), and the gain plan is clamped through the
     production ``back_off_gain`` derivation against those caps -- NOT a
-    hand-fed number -- so this pins that the derived -35 ceiling
-    (min(-8 - 25.2, -35) = -35, abs ceiling binds) actually drives what gets
-    composed, then admits end-to-end with the same mapping.
+    hand-fed number -- so this pins that the derived -33.2 ceiling
+    (-8 - 25.2, the sensitivity arithmetic with no hedge over it) actually
+    drives what gets composed, then admits end-to-end with the same mapping.
+
+    The provisional -35 dBFS absolute hedge that used to clamp this by a
+    further 1.8 dB was retired 2026-08-20; this is the end-to-end mutation
+    guard for that retirement -- restore the hedge and every number below
+    moves.
     """
     from jasper.active_speaker.crossover_v2_flow import back_off_gain
     from jasper.active_speaker.excitation_safety_plan import (
@@ -238,7 +243,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
             declared_sensitivities=declared,
         )
         caps[role] = float(cap)
-    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-35.0)}
+    assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
     sv = session_measurement_volume_db(
         profile, targets.values(), declared_sensitivities=declared
     )
@@ -247,8 +252,8 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     assert sv == -20.0
     # The production composition clamp (the same call _compose_measure_program
     # makes): nominal reference gain backed off against each resolved cap. The
-    # tweeter's composed level is cap-DRIVEN: -35 - sv - 0.01 = -15.01 dB
-    # digital -> -35.01 dBFS effective. Under the old -65 cap this program
+    # tweeter's composed level is cap-DRIVEN: -33.2 - sv - 0.01 = -13.21 dB
+    # digital -> -33.21 dBFS effective. Under the old -65 cap this program
     # would have been refused as CHANNEL_PEAK_OVER_CAP.
     gains = {
         role: back_off_gain(BASE_STIMULUS_PEAK_DBFS, sv, caps[role])
@@ -262,11 +267,11 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     )
     assert adm.allowed
     by_id = {s.segment_id: s for s in adm.segments}
-    assert by_id["sweep_t"].effective_peak_dbfs == pytest.approx(-35.01)
+    assert by_id["sweep_t"].effective_peak_dbfs == pytest.approx(-33.21)
     assert by_id["sweep_t"].execution_allowed
     facts = {c.role: c for c in adm.channels}
-    assert facts["tweeter"].cap_dbfs == pytest.approx(-35.0)
-    assert facts["tweeter"].effective_true_peak_dbfs == pytest.approx(-35.0, abs=0.1)
+    assert facts["tweeter"].cap_dbfs == pytest.approx(-33.2)
+    assert facts["tweeter"].effective_true_peak_dbfs == pytest.approx(-33.2, abs=0.1)
     assert facts["tweeter"].peak_within_cap
     # The woofer's own cap is untouched (low-frequency role): still -8.
     assert facts["woofer"].cap_dbfs == pytest.approx(-8.0)

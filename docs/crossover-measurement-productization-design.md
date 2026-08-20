@@ -748,9 +748,21 @@ protection is now exactly two invariants, one owner each: wrong-frequency-range
 only — a graph that carries the driver's crossover HP by construction — an
 HF driver's ceiling is derived from a low-frequency sibling's own cap and the
 two drivers' declared sensitivities, `min(declared_lf_cap − (sens_hf −
-sens_lf), −35 dBFS)`, superseding the class-default seed only when the
-household hasn't already typed a real, different value. Every other caller
+sens_lf), MAX_TEST_LEVEL_DBFS)`, superseding the class-default seed only when
+the household hasn't already typed a real, different value. Every other caller
 (isolated driver capture, the v1 ramp solver, ear-check ramps) is unaffected.
+That second term was a provisional −35 dBFS absolute hedge until 2026-08-20;
+it is retired, because it bound *below* the derivation on real hardware
+(−25.2 derived on JTS3, −20.7 on the CX120 coax) and so became the operative
+ceiling rather than a backstop above one — capping the 2026-08-19 leveling
+session at 68.07 dB SPL against a 75–80 dB SPL target. `MAX_TEST_LEVEL_DBFS`
+is the global loudest-admissible test level every driver target already sits
+under, and here it is a runaway stop on an impossible declared delta (declared
+sensitivities carry no plausibility validation), not a level hedge. The
+remaining live bounds are the derivation, the preset's
+`max_commissioning_level_db_spl`, and the leveling ramp's guards and stop path
+(owner ruling: operator target band plus a stop control, not dB nannies —
+issue #2761).
 The sensitivities' one owner is the DECLARATION — the design draft's
 `manual_settings` (`declared_driver_sensitivities`), never a second copy on
 the confirmed safety profile — so already-declared boxes (JTS3's persisted
