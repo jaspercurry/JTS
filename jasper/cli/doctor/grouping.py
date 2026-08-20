@@ -307,34 +307,57 @@ def check_grouping_snapcast_version() -> CheckResult:
 
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
-    """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond LEADER's local
-    CamillaDSP must run ``enable_rate_adjust: false``.
+    """inv-5 (docs/HANDOFF-multiroom.md §2): no CamillaDSP **in a bonded chain**
+    runs ``enable_rate_adjust: true`` — on either role.
 
     snapclient's sample-stuffing is the single rate-tracker for the synced
     chain; a second rate-adjuster in the leader's CamillaDSP (the one
     daemon writing the shared stream) fights it and oscillates (the
     documented ``rate_adjust`` + ``AsyncSinc`` trap). The no-rate-adjust rule is
     SPECIFIC to the leader's pipe-writing CamillaDSP (a File/pipe sink has no
-    output clock, so snapclient is the sole tracker). A FOLLOWER is out of this
-    check's scope: a passive follower's CamillaDSP sits outside the bonded path
-    entirely, and an ACTIVE follower's CamillaDSP IS in the bonded path
+    output clock, so snapclient is the sole tracker). An ACTIVE follower's
+    CamillaDSP IS in the bonded path
     (distributed-active Slice 3 — it captures the grouping ring and runs
     Layer A) but is not a tracker there either. snapclient is — in BOTH endpoint
     roles, follower and active leader, each writing its own box's grouping ring.
     CamillaDSP's ``enable_rate_adjust`` follows the SINK it plays into, and on a
     ring CAPTURE the request cannot be actuated at all — a ring PCM is an
     ioplug, so CamillaDSP builds no HCtl and finds no mixer element to steer.
+    A stray ``true`` on an active follower is therefore INERT, which is exactly
+    why this stays ``warn`` rather than ``fail``: it is an observability lie, not
+    a hazard, and the check's job is to catch a bond apply that did not land.
+
+    A DUMB (passive, single-DAC) follower is the one bonded shape still OUT of
+    scope, and deliberately so: it plays the round-tripped stream through
+    outputd's ``dac_content`` lane, and its own CamillaDSP stays on the solo
+    fallback feed — which :func:`jasper.multiroom.member_config.member_camilla_kwargs`
+    emits with ``enable_rate_adjust=True`` on purpose, into a sink that really
+    does have a clock. There is no bond apply on that box for this check to
+    catch, so including it would warn on a correctly-configured speaker.
+
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...multiroom.config import is_active_leader, load_config
+    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import is_active_speaker_box
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not is_active_leader(cfg):
-        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+    # "In the bonded chain" for the instance this check reads (camilla#1): a
+    # LEADER of either kind bakes the program to the snapfifo, and an
+    # ACTIVE-speaker FOLLOWER captures the grouping ring and runs Layer A. A dumb
+    # follower's camilla#1 is neither. `is_active_speaker_box` is total and
+    # fail-soft to False, so an unreadable topology narrows the scope rather than
+    # inventing a warn.
+    in_bonded_chain = is_active_member(cfg) and (
+        cfg.role == "leader" or is_active_speaker_box()
+    )
+    if not in_bonded_chain:
+        return CheckResult(
+            label, "ok", "no local CamillaDSP in a bonded chain here (n/a)"
+        )
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -350,12 +373,23 @@ def check_grouping_rate_adjust() -> CheckResult:
     if rate_adjust is True:
         return CheckResult(
             label, "warn",
-            f"{config_path} has enable_rate_adjust:true but this is an active "
-            "bond LEADER — snapclient + local rate_adjust will oscillate; "
+            f"{config_path} has enable_rate_adjust:true but this box is a "
+            "bonded member — snapclient is the chain's only rate-tracker; "
             "the reconciler's bond apply did not land (check "
             "jasper-grouping-reconcile's journal, or re-save /sound)",
         )
-    return CheckResult(label, "ok", f"rate_adjust off for active leader ({config_path})")
+    if rate_adjust is None:
+        # ``_devices_rate_adjust_from_text`` returns None for ABSENT *or*
+        # unparseable, and neither supports the claim "rate_adjust off" — the
+        # old ``ok`` here reported a fact the file does not carry. The invariant
+        # is unconfirmed, so say so.
+        return CheckResult(
+            label, "warn",
+            f"could not confirm enable_rate_adjust in {config_path} — the "
+            "devices block has no readable enable_rate_adjust key, so this "
+            "bonded member's rate-tracking cannot be verified",
+        )
+    return CheckResult(label, "ok", f"rate_adjust off for bonded member ({config_path})")
 
 
 @doctor_check(order=75, group="grouping")

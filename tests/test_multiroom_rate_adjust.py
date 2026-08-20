@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""inv-5 (docs/HANDOFF-multiroom.md §2) — the bonded LEADER's local CamillaDSP
-runs rate_adjust OFF, because snapclient's sample-stuffing is the single
-rate-tracker for the synced chain (two rate-adjusters oscillate). A follower's
-local CamillaDSP is out of the bonded path (canonical model, Increment 5) and
-keeps solo defaults. Covers the shared predicate, the member-config policy,
-the generator param on the live generators, and the jasper-doctor backstops
-(active-config rate_adjust + leader pipe + outputd channel-pick env drift)."""
+"""inv-5 (docs/HANDOFF-multiroom.md §2) — no CamillaDSP IN A BONDED CHAIN runs
+rate_adjust, because snapclient's sample-stuffing is the single rate-tracker for
+the synced chain (two rate-adjusters oscillate). That is the leader's
+pipe-writing CamillaDSP and the ACTIVE follower's ring-capturing one. A DUMB
+follower's local CamillaDSP is out of the bonded path (canonical model,
+Increment 5) and keeps solo defaults — rate_adjust ON, correctly. Covers the
+shared predicate, the member-config policy, the generator param on the live
+generators, and the jasper-doctor backstops (active-config rate_adjust + leader
+pipe + outputd channel-pick env drift)."""
 from __future__ import annotations
 
 from jasper.multiroom.config import (
@@ -204,24 +206,136 @@ def test_doctor_parser_reads_devices_enable_rate_adjust():
         "filters:\n  enable_rate_adjust: true\n") is None
 
 
-def test_doctor_check_skips_when_not_active_leader(monkeypatch):
+def _stub_active_box(monkeypatch, active: bool):
+    """Drive `is_active_speaker_box`'s answer without touching a topology file.
+
+    The check imports it function-locally, so patching the owning module is what
+    the call resolves.
+    """
+    import jasper.multiroom.reconcile as mr
+
+    monkeypatch.setattr(mr, "is_active_speaker_box", lambda: active)
+
+
+def test_doctor_check_skips_when_no_local_camilla_is_in_the_chain(monkeypatch):
     import jasper.multiroom.config as cfgmod
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
+
+    _stub_active_box(monkeypatch, False)
     # solo
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
     result = check_grouping_rate_adjust()
     assert result.status == "ok"
-    assert "not an active bond leader" in result.detail
-    # active FOLLOWER: out of scope by design — its local CamillaDSP feeds
-    # only the inv-B fallback lane, where rate_adjust=true is correct.
+    assert "no local CamillaDSP in a bonded chain" in result.detail
+    # Enabled-but-INVALID: nothing streams, so no bonded chain exists.
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="", channel="left", bond_id="",
+                             error="JASPER_GROUPING_BOND_ID is empty"),
+    )
+    result = check_grouping_rate_adjust()
+    assert result.status == "ok"
+    assert "no local CamillaDSP in a bonded chain" in result.detail
+
+
+def test_doctor_check_covers_the_active_follower(monkeypatch, tmp_path):
+    """The widening: inv-5 is not leader-only. An ACTIVE follower's camilla#1 IS
+    in the bonded chain (it captures the grouping ring and runs Layer A), and the
+    check's own docstring used to assert the opposite for every follower
+    ("rate_adjust: true is REQUIRED there") — already false on a ring-armed box
+    and false everywhere once the ingress is on the ring, because a ring PCM is
+    an ioplug: CamillaDSP builds no HCtl and the request cannot be actuated.
+    """
+    import jasper.cli.doctor.correction as corrmod
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_rate_adjust
+
+    _stub_active_box(monkeypatch, True)
     monkeypatch.setattr(
         cfgmod, "load_config",
         lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
                              bond_id="b", leader_addr="jts.local"),
     )
+    config_file = tmp_path / "active.yml"
+    config_file.write_text("devices:\n  enable_rate_adjust: true\n")
+    monkeypatch.setattr(
+        corrmod, "_active_camilla_config_path",
+        lambda: ("statefile", str(config_file)),
+    )
+
+    result = check_grouping_rate_adjust()
+    assert result.status == "warn"
+    assert "bonded member" in result.detail
+
+    # Severity stays warn, never fail: on a ring capture the key is INERT, so
+    # this is an observability lie rather than a hazard. Escalating would red a
+    # fleet over a cosmetic key.
+    config_file.write_text("devices:\n  enable_rate_adjust: false\n")
+    assert check_grouping_rate_adjust().status == "ok"
+
+
+def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
+    """The scope's OTHER edge, and the reason it is not a bare `is_active_member`.
+
+    A DUMB (passive, single-DAC) follower plays the bond through outputd's
+    dac_content lane; its own camilla#1 stays on the solo fallback feed, which
+    `member_camilla_kwargs` emits with `enable_rate_adjust=True` DELIBERATELY,
+    into a sink that has a clock. Warning there would red every correctly
+    configured passive follower in the fleet — a doctor that cries wolf — and
+    there is no bond apply on that box for this check to catch.
+    """
+    import jasper.cli.doctor.correction as corrmod
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_rate_adjust
+    from jasper.multiroom.member_config import member_camilla_kwargs
+
+    dumb_follower = _cfg(enabled=True, role="follower", channel="right",
+                         bond_id="b", leader_addr="jts.local")
+    # Re-derived, not assumed: this is what the member policy emits there.
+    assert member_camilla_kwargs(dumb_follower)["enable_rate_adjust"] is True
+
+    _stub_active_box(monkeypatch, False)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: dumb_follower)
+    config_file = tmp_path / "active.yml"
+    config_file.write_text("devices:\n  enable_rate_adjust: true\n")
+    monkeypatch.setattr(
+        corrmod, "_active_camilla_config_path",
+        lambda: ("statefile", str(config_file)),
+    )
+
     result = check_grouping_rate_adjust()
     assert result.status == "ok"
-    assert "not an active bond leader" in result.detail
+    assert "no local CamillaDSP in a bonded chain" in result.detail
+
+
+def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
+    monkeypatch, tmp_path,
+):
+    """The fail-soft asymmetry: `_devices_rate_adjust_from_text` returns None for
+    ABSENT *or* unparseable, and the check tested only `is True` — so a config
+    with no key reported ok "rate_adjust off", a claim the file does not
+    support. Unconfirmed is now warn."""
+    import jasper.cli.doctor.correction as corrmod
+    import jasper.multiroom.config as cfgmod
+    from jasper.cli.doctor.grouping import check_grouping_rate_adjust
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left",
+                             bond_id="b"),
+    )
+    config_file = tmp_path / "active.yml"
+    # A devices block with no enable_rate_adjust key at all.
+    config_file.write_text("devices:\n  samplerate: 48000\n")
+    monkeypatch.setattr(
+        corrmod, "_active_camilla_config_path",
+        lambda: ("statefile", str(config_file)),
+    )
+
+    result = check_grouping_rate_adjust()
+    assert result.status == "warn"
+    assert "could not confirm" in result.detail
+    assert "rate_adjust off" not in result.detail
 
 
 def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_path):
@@ -240,7 +354,11 @@ def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_p
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
     result = check_grouping_rate_adjust()
     assert result.status == "warn"
-    assert "oscillate" in result.detail
+    # The detail names the INVARIANT (snapclient is the chain's sole tracker),
+    # not the leader-only symptom: the same message now serves a follower,
+    # where a stray `true` is inert rather than oscillating.
+    assert "only rate-tracker" in result.detail
+    assert "bond apply did not land" in result.detail
 
 
 def test_doctor_check_ok_active_leader_rate_adjust_off(monkeypatch, tmp_path):
