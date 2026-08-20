@@ -46,6 +46,8 @@
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
+| Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
+| Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -2250,7 +2252,7 @@ a checkout), never as an import.
 |---|---|
 | power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `rc 3`. Stricter than the adapter's own gate, which is right for a human at the rig and not for an unattended walk. The PARK's own move is not re-checked, deliberately: the walk is often parking *because* of a power sign, and refusing to go home would strand the arm at the last measured angle. That move still passes the adapter's own preflight, so a park during a live brownout is refused there and reported `ok=false` |
 | ±45° clamp | belt-and-braces over the adapter's own refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
-| park and verify on every exit | clean finish, exception, or SIGTERM. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
+| park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
 | `set-zero` is unreachable | `power`, `position` and `offset` are the complete set of verbs this tool can emit |
 | the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED, so the trail states what was taken, not what was intended |
 
@@ -2291,8 +2293,15 @@ fine. Stating the walk's non-zero angles turns that into `rc 10`. The envelope
 cannot be asked "did you take a walk", so the pre-motion half of the check is
 narrower: with no session yet in flight, a walk must still be staged (`rc 9`).
 
-**A signal stops the walk once.** SIGTERM/SIGINT becomes the `SystemExit` whose
-unwind IS the park — and the handler disarms itself on that first fire, because
+**A signal stops the walk once — and SIGHUP is one of them.** A remote walk is
+stopped by its ssh transport going away: sshd closes the PTY and the kernel
+hangs up this process group. Python's *default* for SIGHUP is death with no
+unwinding, so until `PARK_ON_SIGNALS` gained it, every dropped link — an
+operator's laptop sleeping, a driver terminating its own ssh client — left the
+arm wherever it stood, with the walk's log ending mid-sentence. Signal endings
+exit `128 + signum` (`129` hangup, `130` interrupt, `143` terminate, all named
+`*_parked` in `EXIT_NAMES`) so a trail can tell them from a failure.
+SIGTERM/SIGINT/SIGHUP becomes the `SystemExit` whose unwind IS the park — and the handler disarms itself on that first fire, because
 a second signal arriving mid-park would abandon the arm at an unknown angle with
 no verification, which is the state one signal was meant to avoid. Later signals
 are ignored until the arm is home; `SIGKILL` remains the escape hatch.
@@ -2302,6 +2311,125 @@ are ignored until the arm is home; `SIGKILL` remains the escape hatch.
 `parked`, `walk_not_taken`, …) — failures at `ERROR`, progress at `INFO` — each
 line carrying the deciding numbers, and the same fields as JSONL rows under
 `--trail`: one call site, so the two can never disagree.
+
+---
+
+## Crossover round runner
+
+`scripts/run-crossover-round.py`
+([source](../scripts/run-crossover-round.py)) runs ONE crossover-v2 round end
+to end from the laptop. It composes the pieces above — `jasper-angle-capture
+stage`, `jasper-arm-walk`, the wizard's own endpoints, and
+`bank-crossover-round.sh` — and builds nothing new on the Pi. Every campaign
+had rebuilt this as chained shell (`stage1.sh` → `walk8.sh` → `cycle.sh` in
+`captures/linearization-night-2026-08-19/tools/`): launch a walk driver, sleep,
+POST the open, grep a log for `released index=N`, sleep again, bank.
+
+```sh
+# measure (stage 1), lab arm walking five angles
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r1 --tier remote \
+    --angles 0,7,-7,22,-22 --regime per_driver \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+
+# …read the candidate it printed, decide, THEN apply it BY NAME
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
+
+# the post-apply check (stage 2)
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r1-verify --stage verify \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+```
+
+**The apply gate is why the file exists.** The chained scripts had none, and a
+round applied a candidate nobody had sanctioned — one measured round, lost. So
+a measurement run NEVER applies: it ends with the candidate's fingerprint and
+its numbers printed on stdout and banked as `<campaign>/<label>/candidate.json`,
+and stops. Applying is a second invocation that must NAME the fingerprint, and
+the runner re-reads the live candidate and refuses **before any POST leaves the
+laptop** when the two differ (the envelope GET that reads the live candidate is
+the one request it does make — the promise is about what it never SENDS) (`rc 11`, and
+[`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
+asserts nothing was sent, not merely that the exit code was non-zero). The
+endpoint runs that same comparison server-side and would refuse the same
+request — the local check is not a second opinion about the candidate, it is
+what keeps a mistyped or stale fingerprint from becoming a state-changing
+request at all. What closes the hole is upstream of either check: that an apply
+is a separate invocation naming the fingerprint, instead of a step a chain
+filled in for itself.
+
+**Phase order, and why.** The walk is launched *before* the session opens,
+because `jasper-arm-walk`'s first poll is what checks a staged walk is still
+waiting — opening first would make that check unreachable. It is launched only
+when `--attest-rig-clear` is given: the attestation is the operator's, and the
+runner never invents one, so without it the round runs the same phases minus
+the walk. `--angles` / `--regime` / `--expect-angles` are forwarded as written
+— bounds, whole-degree-ness and the regime vocabulary are the seam's, and a
+second validator here would be a second answer. A walk staged by a round that
+then aborted stays staged, single-use and last-wins: the next session takes it,
+or `jasper-angle-capture withdraw` removes it.
+
+**Stopping a walk is a transport drop, and the park happens elsewhere.** An
+aborted round terminates its ssh client; that drops the PTY, which hangs up the
+remote walk, which parks in its own unwind — on the speaker, after the local
+client is already gone. The runner therefore reports the hangup, never the arm
+as parked: the one thing it can see is its own client exiting.
+[`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
+drives a real two-process double (a client, and a remote running the harness's
+own signal handlers) and asserts the PARK MARKER, so removing SIGHUP from
+`PARK_ON_SIGNALS` or dropping `-tt` each fail it.
+
+**`--tier` is ignored by `--stage verify`.** Stage 2 takes the instrument the
+MEASURING session recorded in durable state, so the household's one choice at
+the tier chooser governs both stages — passing a different tier to the verify
+invocation changes nothing, and is not a way to re-instrument a round.
+
+**Three configurations are refused before anything runs**: an `--apply` with an
+empty fingerprint (an absent live candidate also reads as empty, so comparing
+would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
+will serve, which otherwise costs ten minutes and ends as a misnamed idle
+ceiling), and an unreadable `--alignment-prescription`.
+
+**Completion is polled, not slept.** The runner waits for the session id to
+move off the one that was there before the open, *and* for the phase to leave
+the running set — every capture phase plus `closing` and `applying`, the two
+control-page phases that are a session mid-flight. Both conditions matter: a
+previous round's terminal phase would otherwise read as this round's completion
+the moment the poll started, and treating `closing`/`applying` as terminal
+banks a round while its fit is still running.
+
+**No verdict is re-mapped.** `jasper-arm-walk`'s exit code rides through under
+its own name (`arm_walk_exit=6 arm_walk_exit_name=stuck`), and
+`bank-crossover-round.sh`'s `0/1/2/3/4` decides the round: `0` clean and `1`
+nothing to grade both continue, while `2` dirty, `3` incomplete and `4`
+destination-in-use abort it. A failing walk stops the round *before* banking —
+the walk's rc is the verdict and a bank on top would be a second one — and the
+runner prints the one `bank-crossover-round.sh` command that keeps the evidence
+still sitting on the Pi.
+
+**Exit codes are the contract**: `0` done, `3` the staged walk was refused, `4`
+the session would not open, `5` the walk did not finish clean, `6` the verify
+would not open, `7` the stage never finished inside `--stage-timeout-s`, `8`
+the session reported a failure, `9` the bank refused, `10` the apply was
+refused/blocked/failed, `11` the named fingerprint is not the live candidate
+(nothing was sent). Each carries its deciding value on the phase line and in
+the `--trail` JSONL.
+
+**Which speaker — and both halves of the answer.** The ssh target and the
+speaker's *name* resolve independently, so exporting only `PI_HOST` takes the
+first from you and the second from `.env.local`: a round can then ssh to one
+speaker carrying another's `Host:` header, which the management-host guard
+403s. The runner discloses the pair and where each half came from (the
+`identity` trail row), and a 403 on the open names the mismatch as a possible
+cause with both values — it does not guess which one you meant. `--hostname`
+sets the name explicitly.
+
+An exported `PI_HOST`/`PI_USER` wins over `.env.local`,
+which wins over the `jts.local` default — `scripts/_lib.sh`'s own resolution
+with the caller's exports re-applied over it (the
+[#2689](https://github.com/jaspercurry/JTS/issues/2689) shape). The resolved
+host is named in the trail and exported into the bank, so one round can never
+measure one Pi and bank another.
 
 ---
 

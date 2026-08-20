@@ -24,7 +24,11 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
+import tempfile
+import textwrap
+import time
 import urllib.error
 from pathlib import Path
 
@@ -139,13 +143,17 @@ def _own_signals():
 
     A test that left SIGTERM on ``SIG_IGN`` would make every later test — and
     pytest's own shutdown — unkillable.
+
+    Keyed off ``PARK_ON_SIGNALS`` rather than a hand-listed pair: a signal
+    added to the park set is one this fixture must hand back, and a list that
+    fell behind would leave it disarmed for the rest of the session.
     """
-    previous = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+    previous = {sig: signal.getsignal(sig) for sig in aw.PARK_ON_SIGNALS}
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous[0])
-        signal.signal(signal.SIGINT, previous[1])
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def _pending(index: int, degrees: int, attempt: int = 1) -> aw.Poll:
@@ -405,8 +413,71 @@ def test_the_first_signal_disarms_both_so_a_second_cannot_land():
         cli._install_park_on_signals()
         with pytest.raises(SystemExit):
             signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
-        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        for sig in aw.PARK_ON_SIGNALS:
+            assert signal.getsignal(sig) is signal.SIG_IGN
+
+
+def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
+    """One rule, both ends: the handler exits 128+signum and EXIT_NAMES says so.
+
+    SIGHUP is the load-bearing member. A remote walk is stopped by its ssh
+    transport going away, which hangs up this process group — and Python's
+    DEFAULT for SIGHUP is death with no unwinding, so before it joined this set
+    every dropped link left the arm wherever it stood.
+    """
+    with _own_signals():
+        cli._install_park_on_signals()
+        for sig in aw.PARK_ON_SIGNALS:
+            handler = signal.getsignal(sig)
+            assert callable(handler), sig
+            with pytest.raises(SystemExit) as excinfo:
+                handler(sig, None)
+            assert excinfo.value.code == aw.SIGNAL_EXIT_BASE + int(sig)
+            assert aw.EXIT_NAMES[aw.SIGNAL_EXIT_BASE + int(sig)].endswith("_parked")
+            # Re-arm for the next iteration: the first fire disarms them all.
+            cli._install_park_on_signals()
+    assert signal.SIGHUP in aw.PARK_ON_SIGNALS
+
+
+def test_a_real_sighup_runs_the_park_rather_than_killing_the_process():
+    """A DELIVERED SIGHUP, in a real process — not a hand-called handler.
+
+    The bug this pins is Python's default disposition, so calling the handler
+    in-process cannot see it: that path is already unwinding. Only an actual
+    kill(SIGHUP) against a process that installed the handlers proves the
+    ``finally`` still runs, which on a speaker is the park.
+    """
+    child = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(ROOT)!r})
+        from jasper.cli.arm_walk import _install_park_on_signals
+        _install_park_on_signals()
+        try:
+            open(sys.argv[1], "w").write("ready")
+            while True:
+                time.sleep(0.02)
+        finally:
+            open(sys.argv[2], "w").write("parked")
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        ready, parked = Path(tmp) / "ready", Path(tmp) / "parked"
+        proc = subprocess.Popen([sys.executable, "-c", child, str(ready), str(parked)])
+        try:
+            deadline = time.monotonic() + 60
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert ready.exists(), "the child never installed its handlers"
+            proc.send_signal(signal.SIGHUP)
+            rc = proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+        # Inside the temporary directory's lifetime, or the marker is gone
+        # before it is read and the assertion below fails for the wrong reason.
+        assert parked.exists(), "SIGHUP killed the process without running the park"
+        assert rc == aw.SIGNAL_EXIT_BASE + int(signal.SIGHUP) == 129
 
 
 def test_a_second_signal_during_the_park_cannot_abandon_the_arm():

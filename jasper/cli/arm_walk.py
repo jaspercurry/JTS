@@ -42,7 +42,9 @@ from jasper.active_speaker.arm_walk import (
     DEFAULT_TOOL_PATH,
     EXIT_NAMES,
     EXIT_REFUSED,
+    PARK_ON_SIGNALS,
     SETTLE_FLOOR_S,
+    SIGNAL_EXIT_BASE,
     ArmWalk,
     ArmWalkRefused,
     LoopbackSession,
@@ -169,12 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _install_park_on_signals() -> None:
-    """The FIRST SIGTERM/SIGINT becomes ``SystemExit``; the rest are ignored.
+    """The FIRST SIGHUP/SIGTERM/SIGINT becomes ``SystemExit``; the rest are ignored.
 
     :meth:`~jasper.active_speaker.arm_walk.ArmWalk.run` parks in a ``finally``
     that a bare default SIGTERM would skip entirely -- the arm would be left
     wherever the walk stopped, which is the one state the rig must never be
     abandoned in.
+
+    **SIGHUP is in that set because it is how a REMOTE walk is stopped.** This
+    runs in the foreground of an ssh session, and when that session's transport
+    goes away -- the operator's link drops, their laptop sleeps, or a driver
+    terminates its own ssh client -- sshd closes the PTY and the kernel sends
+    SIGHUP to this process group. Python's default for SIGHUP is death without
+    unwinding, so before this every one of those endings abandoned the arm
+    wherever it stood, silently, with the walk's own log ending mid-sentence.
+    A hangup is the ordinary remote spelling of "stop", and it has to reach the
+    same park the local spellings do.
 
     **Disarming on the first fire is the other half of that promise.** The
     unwind those handlers start IS the park, and the park drives the adapter as
@@ -187,12 +199,15 @@ def _install_park_on_signals() -> None:
     honest escape hatch for an operator who will not wait.
     """
     def _stop_once(signum: int, _frame: object) -> None:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        sys.exit(143 if signum == signal.SIGTERM else 130)
+        for sig in PARK_ON_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        # 128 + signum, the shell's own spelling for "ended by this signal", so
+        # the three endings stay distinguishable in a trail. EXIT_NAMES names
+        # them; SIGNAL_EXIT_BASE is where the rule lives.
+        sys.exit(SIGNAL_EXIT_BASE + signum)
 
-    signal.signal(signal.SIGTERM, _stop_once)
-    signal.signal(signal.SIGINT, _stop_once)
+    for sig in PARK_ON_SIGNALS:
+        signal.signal(sig, _stop_once)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
