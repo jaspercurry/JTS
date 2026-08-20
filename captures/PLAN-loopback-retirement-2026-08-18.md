@@ -1230,3 +1230,98 @@ PR-6 LEDGER ADDITION (new since the count was taken, will be missed
 otherwise): docs/HANDOFF-distributed-active.md:453 "shm_ring is already
 blocked for grouped boxes" — in the doc's LIVE half, falsified by PR-5; the
 file's "18 sites + footer" tally predates this PR.
+
+### 2026-08-20 — **PR-6 SEALED 0/0/0 — THE FINAL WAVE, AND THE DELETION WAVE.**
+Range 3cf83da0..2dfa8887, four commits, 29 files. Single gate, three rounds
+(0B/2SF/2N → 0B/1SF/0N → SEALED). Builder Opus.
+
+**ACCOUNTING (the wave the owner asked for):** total **net −15**; production
+**net −25**; production prose **net −25** with **executable production code
+net 0** — proven mechanically at every round by AST comparison with
+docstrings normalised (exactly FOUR changed string constants across the whole
+wave, every other Python file AST-identical, 0 non-comment changed lines in
+all five non-Python production files). Zero new files, zero renames, zero
+behaviour change. Docs +11, of which the fix round's honest **+9** disclosure
+— gate ruled ACCEPTABLE with nothing to trim: "a dating note is additive by
+nature — you cannot date a section by deleting it", and padding deletions
+elsewhere to hit ≤0 would have been target-gaming the bar.
+
+**SWEEPS:** tense-grep --all 2273→2272, zero newly-flagged files, per-file
+headers identical at every round. Subject sweep: `round-trip loopback` 7→1,
+`round-trip snd-aloop` 1→0, `solo-stereo-only` 1→0, `pair 6` 27→23,
+`Loopback,0,6` 10→6, `Loopback,1,6` 9→7. Wrap-tolerant/variant sweep 58→45→
+(class) 8→0 live sites. Every survivor adjudicated by the gate reading the
+PARAGRAPH, not the matched line — the AXIS-1 fan-in↔CamillaDSP coupling axis
+legitimately still HAS a loopback mode and is not a grouping-cutover
+residual (fanin_coupling.py:908, HANDOFF-multiroom.md:713, two USB-latency
+docs, HANDOFF-audio-latency-foundation.md:287).
+
+**THREE (now FOUR) MECHANICAL SWEEP BLIND SPOTS — the wave's durable lesson,
+carry into Phase 2.** Every one of the ELEVEN sites that survived a sweep was
+invisible for a mechanical reason, not a judgment one:
+ (i) **DELETED-VALUE limb missing** — a falsified pinned-value block matched
+     no term because it named VALUES (`rate_adjust: true`, `chunksize >=
+     1024`), not the transport. Found only by reading the paragraph.
+ (ii) **LINE-WRAPPED bigrams** — `grep -F "round-trip loopback"` returns 0
+     when the phrase spans `\n    # `. (reconcile.py:2174)
+ (iii) **SLASHED / VARIANT literals** — `Loopback,0/1,6` matches neither
+     `Loopback,0,6` nor `Loopback,1,6`; possessives (`camilla#2's … loopback`)
+     defeat noun-anchored patterns; and **markdown emphasis inside a phrase**
+     (`snd-aloop *input* loopback`) defeats the literal — the gate found this
+     fourth one in its own final pass and flagged it explicitly.
+ (iv) **VOCABULARY no term list enumerates** — "loopback path", "loopback
+     channel pick", "camilla#2 loopback" matched none of the 13 terms.
+**The instrument that actually worked, three times running: READING RADIUS —
+read the whole block around every edit.** Three separate times a falsehood sat
+1-4 lines below an edited paragraph; once the real defect was a DUPLICATE,
+visible only from the module docstring (the owner had been trued; the copy
+rotted). AGENTS.md rule 11 already says tense-grep is a floor; this wave is
+the worked example of what it costs to mistake the floor for the ceiling.
+**Never read "sweep returns 0" as proof of completeness.**
+
+**RULINGS.** Item-8 probe rigs (five `correction_substream` sites) DEFERRED
+and the gate UPHELD it as correct scoping — verified the campaign never
+touched the correction lane, prose is the wrong instrument (the rigs would
+still measure silence), and the resolver is structurally unreachable behind
+correction_lane.py's DELIBERATE standalone-no-jasper-import exemption;
+copying it into four rigs would manufacture four copies of one SSOT.
+**GATE CAVEAT — OWED: that rationale currently lives only in captures/,
+which is dropped at merge, so it needs a durable ISSUE — four lab rigs
+silently measure silence on every armed box, a live trap for the §10.2 pass.**
+Four un-bumped `Last verified:` footers UPHELD (documentation-paradigm rule 3
+verbatim: bump on re-verify, not on edit). The two footers that WERE bumped
+carry explicit scope sentences naming what was re-read and what was not.
+
+**A TEST THAT PINNED THE FALSEHOOD became a test that pins the fact:**
+tests/test_multiroom_rate_adjust.py asserted `"loopback" in r.detail` — it
+pinned the bug, in its assertion AND its function name. Retargeted to
+`GROUPING_RING_PCM`; the gate mutation-proved it bites in BOTH drift
+directions (operator string drifts from the PCM → fails; PCM constant moves →
+fails), so the literal in the operator strings is a guarded second SPELLING,
+not an unguarded second source of truth — the same cross-validation pattern
+correction_lane.py documents for asoundrc ↔ CORRECTION_SUBSTREAM.
+
+**REFINEMENT OF THE DATED-RECORD TEST (better than the gate's own, and the
+gate said so).** A dated block can contain BOTH a record and a specification,
+and **datedness protects only the record**: a measurement is read backwards
+(what a rig produced), a spec is read forwards (what a maintainer
+implements). Worked example: HANDOFF-distributed-active.md's latency table —
+col 3 `+85–125 ms` is the measurement (byte-unchanged) while col 2 "TTS
+injected at" is a forward spec for UNBUILT Slice-5 work, and it contradicted
+its own row's col 1. Four-column tables let you tell them apart BY COLUMN.
+Carry this into Phase 2's archaeology decisions.
+
+**S0-SYNC — dated, not neutralised, and this reaches the hardware pass.**
+The bench measures the snd-aloop seam Slice 3 originally shipped on; PR-3
+moved the bonded ingress to the grouping ring; and the bench's MECHANISM
+cannot exist on the shipped path — s0-sync-bench.sh:32 has camilla nudge
+`PCM Rate Shift`, and a ring PCM is an ioplug with no mixer element to steer
+(§349). So neither the bench nor its clock-lock PASS evidence transfers, and
+a ring-seam de-risk is OWED. The partial neutralisation was the defect; the
+fix restored the transport names and DATED the section, covering both open
+forward-looking gates (:853's un-run ≥24 h soak, :935's clock-topology gate).
+**§10.2's S2/S3 must not treat that bench as characterising the shipped seam.**
+
+Campaign totals across all six waves: production +1121/−803 on 28 files.
+PR-2+PR-3 net −14, PR-4 +85, PR-5 +272 (~70 genuinely-new executable
+statements after the rename/re-home MOVE and the prose share), PR-6 −25.
