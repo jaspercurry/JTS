@@ -1,5 +1,13 @@
 # Crossover design guide — owner-supplied research (2026-08-19)
 
+> **Status: research.** Verbatim primary source — an owner-supplied
+> deep-research report on first-principles active-DSP crossover design and
+> optimization. The "Adoptions" line below is a pointer, not this file's own
+> status: what the build-out took from the report is tracked in the build
+> dispatches and PR coordination sections, not here. This file preserves the
+> report as received; every numeric anchor in it is a PRIOR, not a shipped
+> spec.
+
 **Provenance:** deep-research report supplied by the owner during the
 crossover-optimization build-out; reviewed by the conductor the same day.
 **Adoptions** (recorded in the build dispatches and PR coordination
@@ -12,10 +20,11 @@ slope-aware distortion-informed tweeter floor as a candidate_space
 refinement with the #2736 apply gate as the conservative backstop.
 **Standing caution:** every numeric anchor below is a PRIOR that seeds
 the search space — in-situ measurement decides (the report's own rule,
-and the house fresh-eyes rule). Verbatim report follows.
+and the house fresh-eyes rule).
 **Archive status:** landed on `main` from `claude/night-driver` on
 2026-08-19 as the primary-source research archive for this report;
-later crossover-agent documentation cites it rather than restating it.
+later crossover-agent documentation will cite it rather than restating it.
+Verbatim report follows.
 
 ---
 

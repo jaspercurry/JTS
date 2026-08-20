@@ -1079,7 +1079,7 @@ reference. Currently:
   delay/PEQ), and the measure → flatten → cross → optimize → verify
   workflow. Landed on `main` as the primary-source research archive for
   the crossover-optimization build-out; a future crossover-agent
-  documentation pack cites it rather than restating it. Treat as source
+  documentation pack will cite it rather than restating it. Treat as source
   material — every numeric anchor is a prior that in-situ measurement
   decides, not a rule.
 - [`room-correction-information-design.md`](docs/room-correction-information-design.md)
