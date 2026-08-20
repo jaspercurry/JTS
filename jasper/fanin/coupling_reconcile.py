@@ -125,7 +125,8 @@ VOICE_UNIT = "jasper-voice.service"
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 # Fallback ``event=`` result token for a route-unsupported coupling block (the
 # route policy's own ``support.reason`` normally wins). Today the only blocked
-# combination is shm_ring on a grouped box.
+# combination is shm_ring on a grouped box whose outputd dac_content lane is
+# armed.
 UNSUPPORTED_COUPLING_BLOCK_REASON = "coupling_unsupported_for_route"
 
 # Legacy env key of the REMOVED ``transport_pipe`` coupling (the Camilla -> outputd

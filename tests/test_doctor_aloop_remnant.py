@@ -2,12 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The grouping-remnant guard (#2285 P9-C).
+"""The aloop-remnant guard (#2285 P9-C).
 
 Pins the contract that every OPEN snd-aloop substream has a purpose registered
 by one of the constants that own the pair allocation, and that anything holding
 a substream with no such purpose — pair 5, whose PCM definitions P9-C deleted —
 is a FAIL that names the offender.
+
+The guard measures fan-in's lanes and outputd's passive content lane and nothing
+about grouping, so it lives in the doctor's audio-runtime module with those
+constants; grouping's bonded ingress rides `jasper.multiroom.grouping_ring`'s
+SHM ring and declares no aloop pair at all.
 
 Two of these tests are the load-bearing ones:
 
@@ -27,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.cli.doctor import grouping
+from jasper.cli.doctor import audio_runtime
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
@@ -51,9 +56,9 @@ def _make_card(tmp_path: Path, open_subs: dict[str, list[int]] | None = None) ->
     """
     open_subs = open_subs or {}
     root = tmp_path / "asound"
-    card = root / grouping._ALOOP_CARD_ID
-    for pcm_dir in grouping._ALOOP_PCM_DIRS:
-        for pair in range(grouping._ALOOP_SUBSTREAMS):
+    card = root / audio_runtime._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
             sub = card / pcm_dir / f"sub{pair}"
             sub.mkdir(parents=True)
             is_open = pair in open_subs.get(pcm_dir, [])
@@ -66,7 +71,7 @@ def _make_card(tmp_path: Path, open_subs: dict[str, list[int]] | None = None) ->
 @pytest.fixture()
 def proc_root(monkeypatch, tmp_path):
     def _set(root: Path) -> None:
-        monkeypatch.setenv(grouping._ALOOP_PROC_ROOT_ENV, str(root))
+        monkeypatch.setenv(audio_runtime._ALOOP_PROC_ROOT_ENV, str(root))
 
     return _set
 
@@ -80,20 +85,22 @@ def test_no_aloop_card_is_ok(proc_root, tmp_path):
     empty = tmp_path / "asound"
     empty.mkdir()
     proc_root(empty)
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
     assert "not loaded" in result.detail
 
 
 def test_all_closed_is_ok(proc_root, tmp_path):
     proc_root(_make_card(tmp_path))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
-    assert "no non-grouping pair currently open" in result.detail
+    assert "no other pair currently open" in result.detail
     # The remnant's size is REPORTED, not merely asserted — risk 5.1 in the
     # design is "the remnant becomes permanent by silence".
     assert "aloop remnant on pair 6" in result.detail
-    assert "#2508" in result.detail
+    # …and it names the lane that still owns the pair, not a closed issue
+    # number (see test_check_text_names_the_remnants_remaining_owner).
+    assert "passive content lane" in result.detail
 
 
 def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
@@ -105,19 +112,19 @@ def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
     box is HEALTHY. If this check ever fails it, the check is wrong.
     """
     proc_root(_make_card(tmp_path, {"pcm1c": [3]}))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
     assert "[3]" in result.detail
 
 
-def test_grouping_pair_open_is_ok(proc_root, tmp_path):
-    """A bonded box holding pair 6 is the remnant working as designed."""
+def test_content_pair_open_is_ok(proc_root, tmp_path):
+    """A box holding pair 6 is the remnant working as designed — that pair is
+    outputd's passive content lane."""
     proc_root(_make_card(tmp_path, {"pcm0p": [6], "pcm1c": [6]}))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
-    # Pair 6 is the grouping pair itself, so it is not listed as a
-    # "non-grouping pair".
-    assert "no non-grouping pair currently open" in result.detail
+    # Pair 6 IS the content pair, so it is never one of the "other" pairs.
+    assert "no other pair currently open" in result.detail
 
 
 @pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
@@ -129,7 +136,7 @@ def test_positive_control_foreign_substream_fails(proc_root, tmp_path, pcm_dir):
     directions so a walker that only scanned the playback side would fail this.
     """
     proc_root(_make_card(tmp_path, {pcm_dir: [5]}))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "fail"
     assert f"{pcm_dir}/sub5" in result.detail
     assert "no registered purpose" in result.detail
@@ -138,7 +145,7 @@ def test_positive_control_foreign_substream_fails(proc_root, tmp_path, pcm_dir):
 def test_positive_control_names_the_offender(proc_root, tmp_path):
     """The FAIL names the offender — the design asks for pid/process."""
     proc_root(_make_card(tmp_path, {"pcm0p": [5]}))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "fail"
     assert "pid=4242" in result.detail
     # And it tells the operator what to do about it.
@@ -148,28 +155,29 @@ def test_positive_control_names_the_offender(proc_root, tmp_path):
 def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
     """A pathological box cannot produce an unbounded doctor line.
 
-    The registered set is shrunk to the grouping pair alone — which is also
-    the reduce's END STATE — so every other pair reads as an offender and the
-    offender count (28) genuinely exceeds the cap. An earlier version of this
-    test opened only pair 5 across the four PCM dirs, giving exactly 4
-    offenders against a cap of 4; `[:cap]` and `[:]` were then
+    The registered set is shrunk to the content pair alone, so every other pair
+    reads as an offender and the offender count (28) genuinely exceeds the cap.
+    An earlier version of this test opened only pair 5 across the four PCM dirs,
+    giving exactly 4 offenders against a cap of 4; `[:cap]` and `[:]` were then
     indistinguishable and the bound was asserted but never proven.
     """
     monkeypatch.setattr(
-        grouping, "_derive_registered_pairs", lambda: ({6: "grouping"}, 6)
+        audio_runtime,
+        "_derive_registered_pairs",
+        lambda: ({6: "outputd passive content lane"}, 6),
     )
     proc_root(
         _make_card(
             tmp_path,
             {
-                pcm: [p for p in range(grouping._ALOOP_SUBSTREAMS) if p != 6]
-                for pcm in grouping._ALOOP_PCM_DIRS
+                pcm: [p for p in range(audio_runtime._ALOOP_SUBSTREAMS) if p != 6]
+                for pcm in audio_runtime._ALOOP_PCM_DIRS
             },
         )
     )
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "fail"
-    cap = grouping._ALOOP_OFFENDER_DETAIL_CAP
+    cap = audio_runtime._ALOOP_OFFENDER_DETAIL_CAP
     shown = result.detail.count("/sub")
     assert shown <= cap, f"detail listed {shown} offenders, cap is {cap}"
     # The truncation is DISCLOSED, not silent — an operator must not think
@@ -185,12 +193,12 @@ def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
     root in CI.
     """
     root = tmp_path / "asound"
-    card = root / grouping._ALOOP_CARD_ID
-    for pcm_dir in grouping._ALOOP_PCM_DIRS:
-        for pair in range(grouping._ALOOP_SUBSTREAMS):
+    card = root / audio_runtime._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
             (card / pcm_dir / f"sub{pair}" / "status").mkdir(parents=True)
     proc_root(root)
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "warn"
     assert "could not be verified" in result.detail
 
@@ -198,25 +206,25 @@ def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
 def test_missing_substreams_are_not_evidence(proc_root, tmp_path):
     """A narrower snd-aloop is not a fault — absence is not an offender."""
     root = tmp_path / "asound"
-    card = root / grouping._ALOOP_CARD_ID
+    card = root / audio_runtime._ALOOP_CARD_ID
     sub = card / "pcm0p" / "sub0"
     sub.mkdir(parents=True)
     (sub / "status").write_text("closed\n", encoding="utf-8")
     proc_root(root)
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
 
 
 def test_check_never_raises_on_hostile_status(proc_root, tmp_path):
     """A garbage/empty status file must not crash the doctor."""
     root = _make_card(tmp_path)
-    card = root / grouping._ALOOP_CARD_ID
+    card = root / audio_runtime._ALOOP_CARD_ID
     (card / "pcm0p" / "sub0" / "status").write_text("", encoding="utf-8")
     (card / "pcm0p" / "sub1" / "status").write_text(
         "\x00\xff garbage", encoding="utf-8", errors="replace"
     )
     proc_root(root)
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status in {"ok", "warn", "fail"}
 
 
@@ -244,7 +252,7 @@ def _modprobe_substreams() -> int:
 
 def test_walker_range_matches_modprobe_pcm_substreams():
     """The walker must scan exactly the substreams the module creates."""
-    assert grouping._ALOOP_SUBSTREAMS == _modprobe_substreams()
+    assert audio_runtime._ALOOP_SUBSTREAMS == _modprobe_substreams()
 
 
 
@@ -255,8 +263,6 @@ def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
     `pcm.outputd_content_playback` slave actually opens, or the doctor's
     derivation and the shipped ALSA config drift apart silently.
     """
-    from jasper.cli.doctor import audio_runtime
-
     text = audio_runtime._asound_non_comment_text(
         _ASOUNDRC_JASPER.read_text(encoding="utf-8")
     )
@@ -293,7 +299,7 @@ def test_derived_set_matches_the_expected_allocation():
     the reconciler names no aloop pair at all now, so nothing in the grouping
     path can feed this derivation to begin with.
     """
-    derived, content_pair = grouping._derive_registered_pairs()
+    derived, content_pair = audio_runtime._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
     assert content_pair == 6
 
@@ -308,12 +314,12 @@ def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
     that a real box holds open is a red doctor on healthy hardware.
     """
     proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok", f"pair {pair} open read as {result.detail}"
 
 
-def test_grouping_pair_is_always_registered():
-    """Replaces the old 'grouping pair missing from the registry' warn branch.
+def test_content_pair_is_always_registered():
+    """Replaces the old 'content pair missing from the registry' warn branch.
 
     That branch existed because a hand-maintained table could drift from its
     source constant. The derived set inserts the content pair (pair 6) from
@@ -321,7 +327,7 @@ def test_grouping_pair_is_always_registered():
     drift is now structurally impossible and the branch was deleted as
     unreachable. This is the invariant that replaced it.
     """
-    derived, content_pair = grouping._derive_registered_pairs()
+    derived, content_pair = audio_runtime._derive_registered_pairs()
     assert content_pair in derived
 
 
@@ -335,7 +341,7 @@ def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
         "_FANIN_EXPECTED_ALOOP_INPUTS",
         [("spotify", "hw:Loopback,1,0"), ("airplay", "not-a-pcm")],
     )
-    assert grouping._derive_registered_pairs() is None
+    assert audio_runtime._derive_registered_pairs() is None
 
 
 def test_derivation_rejects_a_non_loopback_card(monkeypatch):
@@ -344,7 +350,7 @@ def test_derivation_rejects_a_non_loopback_card(monkeypatch):
     monkeypatch.setattr(
         audio_runtime, "_FANIN_EXPECTED_OUTPUT_PCM", "hw:SomeOtherCard,0,7"
     )
-    assert grouping._derive_registered_pairs() is None
+    assert audio_runtime._derive_registered_pairs() is None
 
 
 def test_unparseable_content_pcm_constant_is_warn(proc_root, tmp_path, monkeypatch):
@@ -355,7 +361,7 @@ def test_unparseable_content_pcm_constant_is_warn(proc_root, tmp_path, monkeypat
 
     monkeypatch.setattr(audio_runtime, "_OUTPUTD_CONTENT_ALOOP_PCM", "not-a-pcm")
     proc_root(_make_card(tmp_path))
-    result = grouping.check_grouping_aloop_remnant()
+    result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "warn"
     assert "could not derive" in result.detail
 
@@ -371,7 +377,7 @@ def test_ring_armed_lanes_still_reserve_their_aloop_pair():
     """
     import inspect
 
-    source = inspect.getsource(grouping._derive_registered_pairs)
+    source = inspect.getsource(audio_runtime._derive_registered_pairs)
     assert "_FANIN_EXPECTED_ALOOP_INPUTS" in source
     assert "_fanin_expected_inputs" not in source
 
@@ -386,7 +392,7 @@ def test_pair_five_is_not_registered():
     all — its ingress is the grouping ring now, so it has no pair to allocate
     and no standing to document one.
     """
-    derived, _ = grouping._derive_registered_pairs()
+    derived, _ = audio_runtime._derive_registered_pairs()
     assert 5 not in derived
     text = _MODPROBE_CONF.read_text(encoding="utf-8")
     assert "unallocated" in text.lower(), (
@@ -396,7 +402,7 @@ def test_pair_five_is_not_registered():
 
 def test_registered_pairs_are_within_the_module_range():
     substreams = _modprobe_substreams()
-    derived, _ = grouping._derive_registered_pairs()
+    derived, _ = audio_runtime._derive_registered_pairs()
     for pair in derived:
         assert 0 <= pair < substreams, (
             f"registered pair {pair} is outside pcm_substreams={substreams}"
@@ -407,14 +413,24 @@ def test_no_phase_labels_in_the_registry():
     """The retirement pointer is gone: retirement is mechanical (a pair leaves
     when its owning constant stops naming it), so there is no phase label here
     to drift against the campaign's own vocabulary."""
-    source = Path(grouping.__file__).read_text(encoding="utf-8")
+    source = Path(audio_runtime.__file__).read_text(encoding="utf-8")
     assert "retires_with" not in source
     assert "P9-E (" not in source
 
 
-def test_check_text_carries_the_eol_issue():
-    """Design risk 5.1's mitigation: the EOL issue is referenced from the
-    doctor check's own text, so an operator reading it learns where the
-    remnant is scheduled to die."""
-    source = Path(grouping.__file__).read_text(encoding="utf-8")
-    assert "2508" in source
+def test_check_text_names_the_remnants_remaining_owner():
+    """Design risk 5.1's mitigation: the check names, in its own text, who owns
+    what is left, so an operator reading it learns where the remnant is
+    scheduled to die.
+
+    #2508 retired the GROUPING half of the remnant and this campaign closes it,
+    so pointing an operator at that number would send them to a closed issue.
+    What survives on pair 6 is outputd's passive content lane, whose retirement
+    is AXIS-1's; the historical attribution stays greppable alongside it.
+    """
+    import inspect
+
+    check_source = inspect.getsource(audio_runtime.check_aloop_registered_substreams)
+    assert "AXIS-1" in check_source
+    module_source = Path(audio_runtime.__file__).read_text(encoding="utf-8")
+    assert "2508" in module_source
