@@ -206,13 +206,23 @@ existing owner.
 > is an installed console script with three verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
 > ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
-> `propose` reads a correction back through a strict gate
-> ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py)),
-> which owns the response format and enforces it, and `stage` (2026-08-19)
-> leaves an accepted correction where the next crossover round takes it
+> `propose` reads a correction back through a strict gate, and `stage`
+> (2026-08-19) leaves an accepted correction where the next crossover round
+> takes it
 > ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)).
 > It follows this section's CLI conventions and the laptop-agent-as-SSH-client
 > split exactly.
+>
+> There are **two** correction classes behind that one door, each owning its own
+> response format and the gate that enforces it, and a document's own `kind`
+> picks which: the summed blend region
+> ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py))
+> and one driver's own full band
+> ([`crossover_v2/driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py),
+> 2026-08-19). The second is cuts-only and additionally requires a banked
+> minimum-phase classification for every feature it aims at
+> ([`crossover_v2/feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
+> is the verdict register; nothing in the product produces a verdict yet).
 >
 > `stage` closed the gap the first wired night hit: until it shipped, an
 > accepted prescription had nowhere to go, and the loop was proven only up to
@@ -229,13 +239,31 @@ existing owner.
 > The operator carries the JSON both ways.
 >
 > One boundary the build established rather than assumed, recorded here because
-> it constrains any later tier: a **summed-region boost has no seam**. The blend
-> stage refuses a positive gain *and* is deliberately not a term in
+> it constrains any later tier: **no BOOST has a seam, in either class.** The
+> blend stage refuses a positive gain *and* is deliberately not a term in
 > `camilla_yaml.total_headroom_db`, so opening it is a gain-structure change
-> rather than a routing one; and the per-driver `linearization` seam that does
-> carry boosts is derived from per-branch sweeps a summed packet cannot contain.
-> The gate therefore validates a boost fully and then refuses to route it,
-> naming both facts. See `prescription_route`.
+> rather than a routing one; and a per-driver boost, while the `linearization`
+> seam can physically carry one, spends the graph's finite headroom budget
+> against no delta-probe prediction, which is the same kind of decision.
+>
+> The two classes refuse a boost at **different points**, and the difference is
+> deliberate rather than an inconsistency. The blend gate runs every shape and
+> evidence bar first and refuses only at the route — so a prescriber, and an
+> owner deciding whether to fund the seam, learns whether the boost *would* have
+> qualified (`prescription_route`). The driver gate raises at the per-filter
+> bounds, immediately, before a class receipt can be derived from the gains; its
+> route refuses again so the promise holds for a value object built by some
+> other path (`driver_prescription_route`). There is no "would it have
+> qualified" question to answer there, because a per-driver boost's bar is a
+> headroom budget rather than an evidence one.
+>
+> What that boundary does NOT bar, and did until 2026-08-19: a per-driver CUT.
+> The original wording read the per-driver seam as needing per-branch sweeps a
+> summed packet cannot contain, which is true of a boost — the FIT that fills
+> that field is derived from them — and not of a cut prescribed from outside,
+> whose bound is the driver's own DECLARED band and whose evidence is a banked
+> feature classification. A cut removes level and cannot clip, so it needed no
+> new safety design.
 
 The superseded execution plan was explicit about process placement; this
 plan keeps the same, repo-standard split. Treat this as decided:
@@ -1516,5 +1544,13 @@ When implementation begins:
 - PR-W1 adds the `jasper/tuning_workbench/**` route to this plan and
   `PRIVACY.md`; PR-W4 adds the operational HANDOFF without removing those
   design/privacy owners.
+
+**The `Last verified:` footer below was deliberately NOT bumped.** It is a
+whole-document claim and this document is mostly unbuilt plan; the pass that
+shipped the per-driver prescription class edited only §5.0's shipped-status
+callout — adding the second prescription class, and correcting a boundary note
+that read the per-driver seam as needing per-branch sweeps (true of a boost,
+false of a cut) and a sentence that said both classes refuse a boost at the same
+point (they do not). Nothing else here was re-read against the code.
 
 Last verified: 2026-07-28

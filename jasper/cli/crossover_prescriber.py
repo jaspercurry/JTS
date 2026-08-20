@@ -55,9 +55,18 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DRIVER_PRESCRIPTION_KIND,
+    DriverPrescription,
+    check_driver_document_size,
+    driver_prescription_to_candidate_fields,
+    read_driver_prescription,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
+    packet_driver_passbands_hz,
+    packet_feature_classifications,
     packet_positional_evidence,
     packet_region_band_hz,
 )
@@ -75,6 +84,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     return build_crossover_evidence_packet(
         Path(args.session_dir),
         state_path=Path(args.state) if args.state else None,
+        driver_draft_path=Path(args.drivers) if args.drivers else None,
     )
 
 
@@ -131,27 +141,60 @@ def _read_payload(path: str) -> bytes:
 
 def _gate(
     args: argparse.Namespace,
-) -> tuple[bytes, BlendPrescription, dict[str, Any]]:
+) -> tuple[bytes, BlendPrescription | DriverPrescription, dict[str, Any]]:
     """The document, the validated prescription, and what it becomes — or a raise.
 
     Shared WHOLE by ``propose`` and ``stage``, which is the property that makes
     the first a true dry run of the second. A staging verb with its own copy of
-    these four calls would be a second reader of the same document, and the two
-    would drift on the day one of them learns a new bound.
+    these calls would be a second reader of the same document, and the two would
+    drift on the day one of them learns a new bound.
 
-    ``BlendPrescriptionRefused`` for a refusal (the caller reports it and exits
-    ``2``), ``CrossoverEvidencePacketError``/``OSError`` when the inputs cannot
-    be read at all (exit ``1``).
+    **ONE door for two classes.** The document names its own ``kind`` and that
+    is what picks the gate — there is no ``--class`` flag and deliberately no
+    inference from the shape. A flag would let an operator hand a blend document
+    to the per-driver gate and be told its filters were malformed rather than
+    that it was the wrong file; inference would make the answer depend on which
+    optional fields happened to be present. The discriminator is the thing the
+    document already asserts about itself, and a document naming neither kind is
+    refused by whichever gate its ``kind`` most nearly matches — which, for a
+    document naming nothing, is the blend one, exactly as before.
+
+    ``BlendPrescriptionRefused`` for a refusal from either gate (the caller
+    reports it and exits ``2``), ``CrossoverEvidencePacketError``/``OSError``
+    when the inputs cannot be read at all (exit ``1``).
     """
     packet = _load_packet(args)
     payload = _read_payload(args.prescription)
     document = read_prescription_bytes(payload)
-    prescription = read_blend_prescription(
-        document,
-        packet_fingerprint=packet.get("packet_fingerprint"),
-        band_hz=packet_region_band_hz(packet),
-        positional_evidence=packet_positional_evidence(packet),
-    )
+    prescription: BlendPrescription | DriverPrescription | None
+    if document.get("kind") == DRIVER_PRESCRIPTION_KIND:
+        # The class's own size bound, applied the moment the class is known.
+        # `read_prescription_bytes` above has already stopped anything too large
+        # to parse, under the family's ceiling and the family's slug — bytes
+        # that will not parse have no class to be refused in the name of.
+        check_driver_document_size(payload)
+        prescription = read_driver_prescription(
+            document,
+            packet_fingerprint=packet.get("packet_fingerprint"),
+            passbands_hz=packet_driver_passbands_hz(packet),
+            classifications=packet_feature_classifications(packet),
+        )
+        # `fitted=None` and not an oversight: at propose/stage time this round
+        # has not measured, so no per-driver fit exists to merge the document
+        # into. The merge happens when a round builds its candidate, with the
+        # fit it just produced. What this prints is therefore what the document
+        # contributes, not the branch map the graph will carry.
+        candidate_fields = driver_prescription_to_candidate_fields(
+            prescription, fitted=None
+        )
+    else:
+        prescription = read_blend_prescription(
+            document,
+            packet_fingerprint=packet.get("packet_fingerprint"),
+            band_hz=packet_region_band_hz(packet),
+            positional_evidence=packet_positional_evidence(packet),
+        )
+        candidate_fields = blend_prescription_to_candidate_fields(prescription)
     if prescription is None:
         # Unreachable today — `read_blend_prescription` returns None only for a
         # null document, and `read_prescription_bytes` has already refused one.
@@ -165,12 +208,13 @@ def _gate(
         raise BlendPrescriptionRefused(
             PRESCRIPTION_MALFORMED, "the prescription document was empty"
         )
-    # Inside the gate, because the seam re-asks the route and can therefore
-    # refuse too. Computed by the caller instead, a prescription that reached
-    # the seam by some other path would crash the process instead of exiting
-    # with the contract's refusal code — which would make the seam's own guard
-    # the one thing the CLI could not report.
-    return payload, prescription, blend_prescription_to_candidate_fields(prescription)
+    # The candidate fields are computed INSIDE the gate, above, because each
+    # seam re-asks its own route and can therefore refuse too. Computed by the
+    # caller instead, a prescription that reached a seam by some other path
+    # would crash the process instead of exiting with the contract's refusal
+    # code — which would make the seam's own guard the one thing the CLI could
+    # not report.
+    return payload, prescription, candidate_fields
 
 
 def _cmd_propose(args: argparse.Namespace) -> int:
@@ -197,23 +241,56 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        print(
-            f"accepted {prescription.prescription_class} prescription: "
-            f"{len(prescription.filters)} filter(s) over "
-            f"{prescription.band_hz[0]:.1f}-{prescription.band_hz[1]:.1f} Hz",
-            file=sys.stderr,
-        )
-        for entry in prescription.filters:
-            print(
-                f"  Peaking {entry['freq']:.1f} Hz Q{entry['q']:g} "
-                f"{entry['gain']:+.2f} dB",
-                file=sys.stderr,
-            )
+        _print_prescription(prescription, "accepted")
         print(
             f"  these become the candidate's {sorted(candidate_fields)} at build time",
             file=sys.stderr,
         )
     return EXIT_OK
+
+
+def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
+    """What this prescription's filters were bounded BY, in one phrase.
+
+    Two classes, two bounds, and the summary has to name the one that actually
+    applied: an operator told "over 1200-2400 Hz" about a per-driver
+    prescription would read the crossover region into a document that was never
+    checked against it.
+    """
+    if isinstance(prescription, DriverPrescription):
+        return ", ".join(
+            f"{role} {lo:.0f}-{hi:.0f} Hz"
+            for role, lo, hi in prescription.passbands_hz
+            if role in prescription.roles
+        )
+    return f"{prescription.band_hz[0]:.1f}-{prescription.band_hz[1]:.1f} Hz"
+
+
+def _print_prescription(
+    prescription: BlendPrescription | DriverPrescription,
+    verb: str,
+    *,
+    qualifier: str = "",
+) -> None:
+    """The human summary, shared by both verbs and both classes.
+
+    Extracted rather than copied when the second class arrived, and the exact
+    wording of both lines is preserved: ``stage``'s "for round N" sits where it
+    always did, because a test in a real subprocess reads that sentence to prove
+    the CLI's logging configuration did not swallow the operator's own output.
+    """
+    print(
+        f"{verb} {prescription.prescription_class} prescription{qualifier}: "
+        f"{len(prescription.filters)} filter(s) over {_scope(prescription)}",
+        file=sys.stderr,
+    )
+    for entry in prescription.filters:
+        role = f"{entry['role']} " if "role" in entry else ""
+        print(
+            f"  {role}Peaking {entry['freq']:.1f} Hz Q{entry['q']:g} "
+            f"{entry['gain']:+.2f} dB",
+            file=sys.stderr,
+        )
 
 
 def _next_round_ordinal(state_path: str | None) -> int:
@@ -295,12 +372,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        print(
-            f"staged {prescription.prescription_class} prescription for round "
-            f"{ordinal}: {len(prescription.filters)} filter(s) over "
-            f"{prescription.band_hz[0]:.1f}-{prescription.band_hz[1]:.1f} Hz",
-            file=sys.stderr,
-        )
+        _print_prescription(prescription, "staged", qualifier=f" for round {ordinal}")
         print(f"  {path}", file=sys.stderr)
         print(
             "  the next round takes it once and consumes it; an Undo withdraws "
@@ -329,6 +401,19 @@ _STATE_HELP_REQUIRED = (
 )
 
 
+#: What ``--drivers`` is. Optional for BOTH verbs, unlike ``--state``: a blend
+#: prescription never needs it, and a per-driver one is refused by name without
+#: it — which is the packet's own honesty rule applied to a second evidence
+#: source, not a reason to make every operator pass a path they do not use.
+_DRIVERS_HELP = (
+    "the active-speaker design draft JSON, which carries the confirmed "
+    "driver-safety profile (default location on a speaker: "
+    "/var/lib/jasper/active_speaker_design_draft.json). Optional; without it "
+    "the packet cannot say where each driver's own band starts and ends, and "
+    "a per-driver prescription has no bound to be checked against"
+)
+
+
 def _add_evidence_args(
     parser: argparse.ArgumentParser, *, state_help: str = _STATE_HELP_OPTIONAL
 ) -> None:
@@ -343,6 +428,7 @@ def _add_evidence_args(
     # two speaker-level questions are asked, and the command owns a sentence
     # that says WHY the flag matters here. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
+    parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
 
 
 def build_parser() -> argparse.ArgumentParser:

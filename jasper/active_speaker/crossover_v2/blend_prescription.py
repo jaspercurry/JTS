@@ -152,12 +152,14 @@ __all__ = [
     "PRESCRIPTION_MIN_Q",
     "PRESCRIPTION_REFUSAL_REASONS",
     "PRESCRIPTION_SCHEMA_VERSION",
+    "PROHIBITED_PRESCRIPTION_KEYS",
     "BlendPrescription",
     "BlendPrescriptionRefused",
     "PositionalEvidence",
     "PositionalSupport",
     "blend_prescription_from_mapping",
     "blend_prescription_to_candidate_fields",
+    "find_prohibited_keys",
     "max_q_for_gain",
     "positional_support",
     "prescription_response_format",
@@ -490,7 +492,14 @@ _FILTER_FIELDS = frozenset({"biquad_type", "freq", "q", "gain"})
 #: rather than the tuple. ``tests/test_crossover_v2_blend_prescription.py``
 #: pins that the room set stays a subset, so the two cannot drift apart
 #: silently.
-_PROHIBITED_KEYS = frozenset({
+#:
+#: **Public because it has a second consumer.** :mod:`.driver_prescription`
+#: gates a different seam against the same class of attempt, and a second
+#: hand-written copy of a security blocklist is exactly how one of them
+#: silently falls behind a key added to the other. The name is this module's
+#: because this module is where the vocabulary was first written down; the
+#: FACT is the family's.
+PROHIBITED_PRESCRIPTION_KEYS = frozenset({
     "audio_bytes",
     "camilladsp_config",
     "camilladsp_yaml",
@@ -684,6 +693,16 @@ def prescription_response_format() -> dict[str, Any]:
     return {
         "artifact_schema_version": PRESCRIPTION_SCHEMA_VERSION,
         "kind": "jts_crossover_blend_prescription_contract",
+        # A reader handed one contract must be able to find the other, or the
+        # packet is only the single document a prescriber reads for whichever
+        # class it happened to open first. Named rather than described, so the
+        # pointer stays true when either contract's own prose changes.
+        "the_other_class": (
+            "this contract is for the SUMMED blend region. One driver's own "
+            "full-band shape is a different class with different bounds and its "
+            "own contract in this packet's 'driver_response_format' block; a "
+            "filter aimed outside this region is refused here at any Q"
+        ),
         "required_top_level": {
             "artifact_schema_version": PRESCRIPTION_SCHEMA_VERSION,
             "kind": PRESCRIPTION_KIND,
@@ -759,7 +778,7 @@ def prescription_response_format() -> dict[str, Any]:
             ),
         },
         "refusal_reasons": sorted(PRESCRIPTION_REFUSAL_REASONS),
-        "prohibited_keys": sorted(_PROHIBITED_KEYS),
+        "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
         "execution_boundary": {
             "model_may_propose": True,
             "model_may_execute": False,
@@ -960,25 +979,29 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
     return number
 
 
-def _find_prohibited(value: Any, *, depth: int = 0) -> list[str]:
+def find_prohibited_keys(value: Any, *, depth: int = 0) -> list[str]:
     """Every blocked key anywhere in the document, at any depth.
 
     Recursive like ``calibration_agent.response._find_prohibited_keys``, and
     depth-bounded unlike it: this reader is pointed at operator-supplied files,
     and a deeply nested document is a cheap way to spend a recursion limit in a
     process that is about to touch the DSP graph.
+
+    Public for :data:`PROHIBITED_PRESCRIPTION_KEYS`' reason — the walk and the
+    set it walks against are one fact, and a sibling gate that imported the set
+    but re-wrote the walk would get the depth bound wrong on its own schedule.
     """
     if depth > 12:
         return ["<nesting too deep>"]
     found: list[str] = []
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if str(key).strip().lower() in _PROHIBITED_KEYS:
+            if str(key).strip().lower() in PROHIBITED_PRESCRIPTION_KEYS:
                 found.append(str(key).strip().lower())
-            found.extend(_find_prohibited(child, depth=depth + 1))
+            found.extend(find_prohibited_keys(child, depth=depth + 1))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         for child in value:
-            found.extend(_find_prohibited(child, depth=depth + 1))
+            found.extend(find_prohibited_keys(child, depth=depth + 1))
     return found
 
 
@@ -1280,7 +1303,7 @@ def _parse_prescription(
     # `role_attenuations_db` as a typo. Those are different facts — one is a
     # misspelling, the other is an attempt to reach past "numbers into a fixed
     # shape" — and only the second is worth a distinct slug.
-    prohibited = sorted(set(_find_prohibited(raw)))
+    prohibited = sorted(set(find_prohibited_keys(raw)))
     if prohibited:
         _refuse(
             PRESCRIPTION_PROHIBITED_FIELD,

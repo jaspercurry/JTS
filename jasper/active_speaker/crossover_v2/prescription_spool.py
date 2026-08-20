@@ -70,6 +70,23 @@ braces, and the half that still works if a process died between them.
 **Cuts only.**  The route has not changed: a boost still has no seam to land in
 and :func:`~.blend_prescription.prescription_route` still refuses one.  This
 module opens no route; it carries the class the seam already accepts.
+
+**Two prescription classes, ONE door.**  Since the per-driver class
+(:mod:`.driver_prescription`) there are two shapes an operator may stage — a
+blend-region correction and one driver's own full-band cuts — and they share
+this slot rather than each getting one.  A round takes AN instruction, and two
+slots would be two things to keep consistent, two things Undo has to remember,
+and an ordering question ("which wins?") nothing in this design answers.  The
+envelope therefore names its document's class in :data:`ENVELOPE_KIND_FIELD`,
+and every taker says which classes it can actually run.
+
+**The take is fail-closed about the class, and that is deliberate.**
+:func:`take_staged_prescription`'s ``accepts`` defaults to the blend class
+alone.  A caller that has not been taught to route a per-driver prescription
+therefore cannot be handed one by accident — it refuses by name instead, which
+is the honest answer while the round's own consumption of that class is still
+being built.  The direction matters: a permissive default here would hand an
+unrecognised class to a caller whose next line assumes the other one.
 """
 
 from __future__ import annotations
@@ -87,6 +104,7 @@ from jasper.log_event import log_event
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .blend_prescription import (
+    PRESCRIPTION_KIND,
     PRESCRIPTION_MAX_BYTES,
     BlendPrescription,
     BlendPrescriptionRefused,
@@ -94,12 +112,22 @@ from .blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
+from .driver_prescription import (
+    DRIVER_PRESCRIPTION_KIND,
+    DriverPrescription,
+    check_driver_document_size,
+    read_driver_prescription,
+)
+from .feature_classification import read_feature_verdicts
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "BLEND_ONLY",
     "CONSUMED_SUFFIX",
     "DEFAULT_PRESCRIPTION_SPOOL_PATH",
+    "ENVELOPE_KIND_FIELD",
+    "PRESCRIPTION_CLASS_NOT_ACCEPTED",
     "PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND",
     "SPOOL_KIND",
     "SPOOL_MALFORMED",
@@ -107,6 +135,7 @@ __all__ = [
     "SPOOL_REFUSAL_REASONS",
     "SPOOL_SCHEMA_VERSION",
     "SPOOL_TOO_LARGE",
+    "STAGEABLE_KINDS",
     "StagedPrescription",
     "prescription_spool_path",
     "set_prescription_spool_path_for_tests",
@@ -145,7 +174,36 @@ SPOOL_KIND = "jts_crossover_blend_prescription_staged"
 #: Bumped when an older reader would misread a newer envelope. Load-bearing for
 #: the same reason the packet's is: an envelope naming a version this build does
 #: not speak is refused, never best-effort parsed.
+#:
+#: **NOT bumped by the two-class change**, and the rule is what says so rather
+#: than convenience. An older reader handed a per-driver envelope ignores
+#: :data:`ENVELOPE_KIND_FIELD` (this reader has never rejected unknown envelope
+#: fields), unwraps the document, and hands it to
+#: :func:`~.blend_prescription.read_blend_prescription` — which refuses on the
+#: document's own ``kind`` before it looks at a single number. That is a named
+#: refusal, not a misread, and it is exactly what the document naming itself has
+#: always been for. A bump would buy nothing and would invalidate any envelope
+#: staged across a deploy.
 SPOOL_SCHEMA_VERSION = 1
+
+#: Which class the staged document is, named on the envelope so a taker can
+#: refuse a class it cannot run WITHOUT unwrapping and parsing the document
+#: first. Absent means the blend class: every envelope written before the
+#: per-driver class existed carries a blend document, and reading absence as
+#: anything else would misdate the corpus.
+ENVELOPE_KIND_FIELD = "prescription_kind"
+
+#: The classes this slot can carry.
+STAGEABLE_KINDS = frozenset({PRESCRIPTION_KIND, DRIVER_PRESCRIPTION_KIND})
+
+#: The default ``accepts`` set: the blend class alone.
+#:
+#: Named rather than spelled inline at the default, because it is a statement
+#: about which class has a live consumer in the round today, and that fact will
+#: change. A caller that has learned to route the per-driver class passes
+#: :data:`STAGEABLE_KINDS`; every other caller keeps the fail-closed answer
+#: without being edited.
+BLEND_ONLY = frozenset({PRESCRIPTION_KIND})
 
 #: Byte ceiling on the envelope FILE, read before it is parsed.
 #:
@@ -195,6 +253,14 @@ SPOOL_TOO_LARGE = "spool_too_large"
 #: round receipt the flow banked.
 PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND = "prescription_not_staged_for_this_round"
 
+#: This document's class is not one the taker can run.
+#:
+#: A LIFECYCLE refusal and not a content one, which is why it lives in this
+#: vocabulary: the prescription may be perfectly valid, and would be accepted by
+#: a caller that had a route for it. What it says is "not here, not yet" — the
+#: same shape as the ordinal refusal beside it, about a different axis.
+PRESCRIPTION_CLASS_NOT_ACCEPTED = "prescription_class_not_accepted"
+
 #: The lifecycle vocabulary, beside rather than inside
 #: :data:`~.blend_prescription.PRESCRIPTION_REFUSAL_REASONS`.
 #:
@@ -214,6 +280,7 @@ SPOOL_REFUSAL_REASONS = frozenset({
     SPOOL_MALFORMED,
     SPOOL_TOO_LARGE,
     PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND,
+    PRESCRIPTION_CLASS_NOT_ACCEPTED,
 })
 
 
@@ -264,16 +331,23 @@ def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
 
 @dataclass(frozen=True)
 class StagedPrescription:
-    """One validated prescription, and the two facts the round needs about it."""
+    """One validated prescription, and the three facts the round needs about it."""
 
-    #: Re-validated at take time, never rehydrated from the banked class.
-    prescription: BlendPrescription
+    #: Re-validated at take time, never rehydrated from the banked class. Which
+    #: of the two types it is, is :attr:`prescription_kind` — a caller that
+    #: passed a single-class ``accepts`` already knows, and one that passed
+    #: both must ask rather than isinstance-sniff a value object.
+    prescription: BlendPrescription | DriverPrescription
     #: The digest of the document bytes, carried from staging and re-proved
     #: against the stored document before this object exists.
     prescription_sha256: str
     #: The round this was staged for, and the round that took it — equal by
     #: construction, since a mismatch refuses instead of returning.
     for_round_ordinal: int
+    #: The document's own ``kind``, one of :data:`STAGEABLE_KINDS`. Defaulted to
+    #: the blend class so every existing construction of this record — the
+    #: tests' included — keeps meaning what it meant.
+    prescription_kind: str = PRESCRIPTION_KIND
 
     def record(self) -> dict[str, Any]:
         """The provenance a round receipt carries.
@@ -296,9 +370,47 @@ class StagedPrescription:
 # --------------------------------------------------------------------------- #
 
 
+def _anchors(prescription: BlendPrescription | DriverPrescription) -> dict[str, Any]:
+    """The evidence anchors the take cannot re-derive, from the step that could.
+
+    One per class, because the two gates are measured against different
+    evidence. The blend document is bounded by ONE region, so its anchor is one
+    band. The per-driver document is bounded by a band PER ROLE and, unlike its
+    sibling, carries a second evidence bar — so its anchors are the role bands
+    and the verdicts that vouched for its filters.
+
+    Banking the verdicts is what makes the driver class's re-validation as
+    strong at take time as it was at staging time, which the blend class's is
+    deliberately not: that one passes ``positional_evidence=None``, so a boost
+    tampered into the document refuses on missing evidence rather than on the
+    bar. Here the SAME verdicts that admitted the filters are offered back, so a
+    document edited to move a filter onto an unclassified — or an
+    interference-barred — feature refuses on the bar itself, by its own name.
+    Offering only those verdicts is what keeps that honest: they cannot admit a
+    filter the staging step did not already admit.
+    """
+    if isinstance(prescription, DriverPrescription):
+        return {
+            ENVELOPE_KIND_FIELD: DRIVER_PRESCRIPTION_KIND,
+            "passbands_hz": [
+                [role, lo, hi] for role, lo, hi in prescription.passbands_hz
+            ],
+            "classifications": [
+                verdict.to_dict()
+                for verdict in dict.fromkeys(
+                    basis.verdict for basis in prescription.classification_basis
+                )
+            ],
+        }
+    return {
+        ENVELOPE_KIND_FIELD: PRESCRIPTION_KIND,
+        "band_hz": [prescription.band_hz[0], prescription.band_hz[1]],
+    }
+
+
 def stage_prescription(
     document: bytes,
-    prescription: BlendPrescription,
+    prescription: BlendPrescription | DriverPrescription,
     *,
     for_round_ordinal: int,
 ) -> Path:
@@ -342,9 +454,9 @@ def stage_prescription(
         "artifact_schema_version": SPOOL_SCHEMA_VERSION,
         "kind": SPOOL_KIND,
         "for_round_ordinal": int(for_round_ordinal),
-        # The two anchors the take cannot re-derive, from the step that could.
+        # The anchors the take cannot re-derive, from the step that could.
         "packet_fingerprint": prescription.packet_fingerprint,
-        "band_hz": [prescription.band_hz[0], prescription.band_hz[1]],
+        **_anchors(prescription),
         "prescription_sha256": prescription_sha256(document),
         "staged_at": time.time(),
         "document": document.decode("utf-8"),
@@ -361,6 +473,10 @@ def stage_prescription(
         logger, "crossover_v2.prescription_staged",
         for_round_ordinal=int(for_round_ordinal),
         prescription_sha256=payload["prescription_sha256"],
+        # The established event, extended rather than twinned: a second event
+        # name for "a prescription was staged" would make an operator grepping
+        # the journal for staging see half of them.
+        prescription_kind=payload[ENVELOPE_KIND_FIELD],
         replaced=replaced,
     )
     return path
@@ -388,8 +504,16 @@ def staged_prescription_pending() -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def take_staged_prescription(*, round_ordinal: int) -> StagedPrescription | None:
+def take_staged_prescription(
+    *,
+    round_ordinal: int,
+    accepts: frozenset[str] = BLEND_ONLY,
+) -> StagedPrescription | None:
     """THE reader. Consumes first, then validates, and never returns a reused one.
+
+    ``accepts`` names the prescription classes THIS caller can route. It
+    defaults to :data:`BLEND_ONLY` — fail-closed — so a caller that has not
+    learned the per-driver class cannot be handed one; see the module docstring.
 
     ``None`` — no instruction, the deterministic path untouched — when no
     document is staged, which is every ordinary round.
@@ -452,7 +576,7 @@ def take_staged_prescription(*, round_ordinal: int) -> StagedPrescription | None
             max_bytes=SPOOL_MAX_BYTES,
             got_bytes=len(raw),
         )
-    return _validate(raw, round_ordinal=round_ordinal)
+    return _validate(raw, round_ordinal=round_ordinal, accepts=accepts)
 
 
 def _consume(pending: Path) -> None:
@@ -473,7 +597,9 @@ def _consume(pending: Path) -> None:
             pass
 
 
-def _validate(raw: bytes, *, round_ordinal: int) -> StagedPrescription:
+def _validate(
+    raw: bytes, *, round_ordinal: int, accepts: frozenset[str]
+) -> StagedPrescription:
     """The envelope's own gate, then the prescription gate re-run on top."""
     try:
         envelope = json.loads(raw.decode("utf-8"))
@@ -497,6 +623,33 @@ def _validate(raw: bytes, *, round_ordinal: int) -> StagedPrescription:
             f"this build speaks staged-prescription schema "
             f"{SPOOL_SCHEMA_VERSION}, got "
             f"{envelope.get('artifact_schema_version')!r}",
+        )
+    # BEFORE the ordinal, because the class decides which anchors the rest of
+    # this function is even entitled to read, and an envelope naming a class
+    # this build does not stage is unreadable rather than merely mistimed.
+    # Absent means the blend class: see `ENVELOPE_KIND_FIELD`.
+    staged_kind = envelope.get(ENVELOPE_KIND_FIELD, PRESCRIPTION_KIND)
+    # The `isinstance` is load-bearing, not decoration: `x in frozenset` HASHES
+    # `x`, so a list or dict in this field raised `TypeError: unhashable type`
+    # straight out of a refusal path — an unnamed exception reaching the
+    # preparer as a programmer string in the wizard's 400. Caught by the
+    # envelope fuzz on the first run after this field was added, which is what
+    # that sweep is for.
+    if not isinstance(staged_kind, str) or staged_kind not in STAGEABLE_KINDS:
+        _refuse(
+            SPOOL_MALFORMED,
+            f"a staged prescription must name a class this build stages "
+            f"({', '.join(sorted(STAGEABLE_KINDS))}), got {staged_kind!r}",
+        )
+    if staged_kind not in accepts:
+        _refuse(
+            PRESCRIPTION_CLASS_NOT_ACCEPTED,
+            f"this prescription is a {staged_kind!r} and the round taking it "
+            f"can run {', '.join(sorted(accepts)) or 'no class'}; the "
+            "prescription may be perfectly valid, but nothing here has a route "
+            "for it",
+            staged_kind=staged_kind,
+            accepts=sorted(accepts),
         )
     staged_for = envelope.get("for_round_ordinal")
     if not isinstance(staged_for, int) or isinstance(staged_for, bool):
@@ -549,26 +702,79 @@ def _validate(raw: bytes, *, round_ordinal: int) -> StagedPrescription:
             staged_sha256=digest,
             actual_sha256=actual,
         )
-    band = _band(envelope.get("band_hz"))
     # The gate itself, re-run — same function, same bounds, same closed
-    # vocabulary. `positional_evidence` is None because the packet is gone and
-    # inventing one would be the self-certifying read this module refuses to be:
-    # a boost tampered into the document therefore refuses on
-    # `insufficient_positional_evidence` before it ever reaches the route, which
-    # is the correct answer rather than a lucky one.
-    prescription = read_blend_prescription(
-        read_prescription_bytes(payload),
-        packet_fingerprint=envelope.get("packet_fingerprint"),
-        band_hz=band,
-        positional_evidence=None,
-    )
+    # vocabulary, one per class.
+    prescription: BlendPrescription | DriverPrescription | None
+    if staged_kind == DRIVER_PRESCRIPTION_KIND:
+        # The class's own size bound, and this reader is the one place it can be
+        # applied BEFORE the document is parsed at all: the envelope names the
+        # class, so the take already knows what it is holding. The stat above
+        # bounded the envelope; this bounds the document inside it.
+        check_driver_document_size(payload)
+        prescription = read_driver_prescription(
+            read_prescription_bytes(payload),
+            packet_fingerprint=envelope.get("packet_fingerprint"),
+            passbands_hz=_passbands(envelope.get("passbands_hz")),
+            # The verdicts that vouched at staging time, and ONLY those — see
+            # `_anchors`. They cannot admit a filter the staging step did not
+            # already admit, so a document edited to move a filter refuses on
+            # the classification bar by its own name rather than on a
+            # substitute.
+            classifications=read_feature_verdicts(envelope.get("classifications")),
+        )
+    else:
+        # `positional_evidence` is None because the packet is gone and inventing
+        # one would be the self-certifying read this module refuses to be: a
+        # boost tampered into the document therefore refuses on
+        # `insufficient_positional_evidence` before it ever reaches the route,
+        # which is the correct answer rather than a lucky one.
+        prescription = read_blend_prescription(
+            read_prescription_bytes(payload),
+            packet_fingerprint=envelope.get("packet_fingerprint"),
+            band_hz=_band(envelope.get("band_hz")),
+            positional_evidence=None,
+        )
     if prescription is None:  # pragma: no cover - `read_prescription_bytes` refuses
         _refuse(SPOOL_MALFORMED, "the staged prescription document was empty")
     return StagedPrescription(
         prescription=prescription,
         prescription_sha256=actual,
         for_round_ordinal=staged_for,
+        prescription_kind=staged_kind,
     )
+
+
+def _passbands(raw: Any) -> dict[str, tuple[float, float]]:
+    """The banked per-role bands, or ``{}`` so the gate refuses them by name.
+
+    ``{}`` rather than a raise, on :func:`_band`'s rule:
+    :data:`~.driver_prescription.PASSBAND_UNAVAILABLE` already owns the sentence
+    for a prescription with no band to be checked against, and a second spelling
+    of it here would be a second owner of the same refusal.
+
+    The Nyquist bound :func:`_band` carries is here too and for its reason: a
+    band read off disk is handed to a gate that EVALUATES biquads across it, so
+    an edge this reader lets through is an edge ``chain_response`` has to
+    survive. A role whose band does not clear it is DROPPED rather than
+    failing the whole read, so one corrupt row cannot silently widen another
+    role's — the gate then refuses that role by name.
+    """
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for entry in raw:
+        if not isinstance(entry, list) or len(entry) != 3:
+            continue
+        role = entry[0]
+        if not isinstance(role, str) or not role.strip():
+            continue
+        try:
+            lo, hi = float(entry[1]), float(entry[2])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0.0 < lo < hi <= _EVALUABLE_MAX_HZ:
+            out[role.strip()] = (lo, hi)
+    return out
 
 
 def _band(raw: Any) -> tuple[float, float] | None:
