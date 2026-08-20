@@ -1334,10 +1334,37 @@ rejected — see the "Stage 2a landed" callout above.)
 
 ### Resilience (every failure: detect → fail-closed → observable)
 
-- **Composite child loss:** `sink.health()` checked **before** the write; a
-  non-Running child is a hard fault → mute **all** children, `event=outputd.
-  composite.child_lost`, `/state.composite.children[].state`. The reconciler/
-  ExecCondition gates a composite on **all** child cards present.
+- **Composite child loss:** a non-Running child is a hard fault, and the
+  fail-closed action is a **bail** — there is no mute-all-children path. The
+  check lives in `PairedCompositeSink::check_delay_delta`
+  (`rust/jasper-outputd/src/alsa_backend.rs`), which runs **after** each
+  period's write in `write_dual_period` and is entered only when both children
+  already read `State::Running`; a child that has left `Running` by the time
+  the two `snd_pcm_delay` reads complete raises `outputd dual Apple bad PCM
+  state: dac_a=… dac_b=…`. That error propagates out of `run_alsa` to `main`
+  and, not being config-class (which would exit 78 into
+  `RestartPreventExitStatus`), exits non-zero onto the same
+  `Restart=on-failure` → `StartLimitBurst=5` → `StartLimitAction=reboot` ladder
+  the xrun-budget bail below rides. The observable surface is the
+  `/state.dual_apple` block (rendered only when `sink_mode == "dual_apple"`):
+  `dac_a_pcm`, `dac_b_pcm`, `linked`, `delay_delta_frames`,
+  `delay_delta_baseline_frames`, `delay_delta_error_frames`,
+  `max_delay_delta_frames`, plus the recovery counters the next bullet names.
+  **Never built, and named here so a reader who greps for them stops looking:**
+  a `sink.health()` API, an `event=outputd.composite.child_lost` line, and a
+  `/state.composite.children[].state` surface. This bullet asserted all three
+  as current truth until 2026-08-20; the mute-all design they belonged to was
+  superseded by the bail-and-restart policy below (#2255), so they are stale
+  design intent rather than outstanding work. **One real gap does remain:**
+  unlike the divergence branch beside it
+  (`event=outputd.dual_apple.delay_diverged`), the bad-PCM-state bail emits no
+  `event=` line of its own, so the fault is visible only as the bail message
+  and the restart — the one place this section's "observable" promise is unmet
+  for a composite. Child-presence gating is the **reconciler's**, not the
+  unit's: `dual_apple_runtime_mapping` (`jasper/output_hardware.py`) refuses
+  unless exactly two child devices with PCMs resolve, while the single
+  `ExecCondition` on `jasper-outputd.service` tests only the one resolved
+  `JASPER_AUDIO_DAC_CARD` under `/proc/asound`.
 - **Unified xrun policy (#2255).** One recovery budget, `xrun_policy` in
   `alsa_backend.rs`, is shared by the coherent single sink's `write_dac_frames`
   and the composite's child write: three recoveries per period, then bail.
@@ -2143,6 +2170,28 @@ re-touched since carries forward from its most recent entry below.
   resolver. **Nothing else in this pass** — the DAC-edge table, the rollback
   runbook, barge-in, and multiroom stand as last verified.
   Canonical: [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+- **2026-08-20 (composite child-loss bullet — never-implemented resilience
+  surface).** Re-verified only the "Composite child loss" bullet in the
+  design-of-record Resilience list, which described a `sink.health()` pre-write
+  check whose non-Running child muted **all** children and reported
+  `event=outputd.composite.child_lost` / `/state.composite.children[].state`.
+  All four were false: no `fn health` exists anywhere in `rust/`; the check is
+  `PairedCompositeSink::check_delay_delta`, which runs *after* the period write
+  in `write_dual_period` (its sole caller) and `anyhow::bail!`s rather than
+  muting; and a repo-wide grep for `child_lost` returned exactly one hit — the
+  doc line itself. The bullet also contradicted its own neighbour, which
+  already documented the real `/state.dual_apple` block (`CompositeStatus`,
+  `alsa_backend.rs`; serialized under `sink_mode == "dual_apple"` in
+  `state.rs`). Rewrote it to the shipped bail → `Restart=on-failure` →
+  `StartLimitAction=reboot` path, named the three never-built symbols so a
+  grep for them terminates, and recorded the one genuine gap: the
+  bad-PCM-state bail emits no `event=` line, unlike
+  `event=outputd.dual_apple.delay_diverged` beside it. Split the trailing
+  gating claim, which was half true — `dual_apple_runtime_mapping` does require
+  two child PCMs, but the unit's single `ExecCondition` checks only the one
+  resolved `JASPER_AUDIO_DAC_CARD`. **Nothing else in this pass** — the rest of
+  the Resilience list, the change set, and Observability stand as last
+  verified, which is why the footer below still reads 2026-08-15.
 
 Last verified: 2026-08-15 (two scoped passes — see the two 2026-08-15 entries
 above for what each re-verified; prior 2026-08-08 was the last full-document
