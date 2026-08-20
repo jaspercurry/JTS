@@ -1735,7 +1735,7 @@ path, unlike the throwaway `night_bank.sh` / `pull_dumps.sh` /
 `integrity_summary.py` scripts this productizes (most recently
 `captures/linearization-night-2026-08-19/tools/`). `<dest-dir>` must not
 already exist non-empty — re-running into a used directory is refused
-(exit `1`) rather than silently truncating the prior pull, since every
+(exit `4`) rather than silently truncating the prior pull, since every
 artifact below is written with a plain `>` redirect.
 
 The first thing written, before any Pi round-trip, is `provenance.json`
@@ -1763,26 +1763,34 @@ and `dumps/sidecar/`). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end
 regardless of outcome.
 
-Two things can make the script refuse a run, and neither ever deletes a
-file that was already pulled — the refusal is the exit code plus the
-printed findings, forensics stay on disk:
+Three things can make the script refuse a run, and none of them ever
+deletes a file that was already pulled — the refusal is the exit code
+plus the printed findings, forensics stay on disk. Each has its own exit
+code, on purpose: a caller scripting a retry loop over this command needs
+to tell "this destination is unusable" apart from "nothing to check yet"
+without parsing stderr.
 
 | Exit | Meaning |
 |---|---|
 | `0` | the round bundle and flow state were both pulled, and `jasper.audio_measurement.capture_integrity` found every dump-ring sidecar clean |
-| `1` | a usage-level refusal — `<dest-dir>` was missing/non-empty — **or** the capture-integrity check found nothing to check (no dump-ring sidecars were pulled: the operator never created the `ENABLED` marker for this round, or the directory could not be read) |
+| `1` | the capture-integrity check found nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) — **or** `<dest-dir>` was omitted entirely (bash's own `${1:?…}` exit code; a one-time invocation mistake, not a state a retry loop cycles through, so it is not worth a distinct code) |
 | `2` | the round bundle and flow state were both pulled, but capture-integrity found at least one dump-ring sidecar dirty (including one whose JSON could not be parsed) — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
 | `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank; this overrides whatever capture-integrity found, even a clean dump-ring |
+| `4` | `<dest-dir>` already exists and is non-empty. Nothing was pulled — a caller retrying into the same destination after a failed bank needs this distinguishable from `1`'s "nothing to check" |
 
 Exit `0`/`1`/`2` are exactly `jasper.audio_measurement.capture_integrity`'s
-own contract, propagated unchanged; exit `3` is this script's own,
-layered on top of it. Standalone: `python -m
-jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`
-(that command alone never returns `3` — the incomplete-bank check is the
-bank script's job, not the checker's). Hardware-free coverage — clean /
-dirty / unreadable fixture trees, the exit-code values themselves (not
-just the names), and one test per named finding class — lives in
-[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py).
+own contract, propagated unchanged; `3` and `4` are this script's own,
+layered on top of it (that command alone never returns either — the
+non-empty-`<dest-dir>` and incomplete-bank checks are the bank script's
+job, not the checker's). Standalone: `python -m
+jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`.
+Hardware-free coverage — clean / dirty / unreadable fixture trees, the
+exit-code values themselves (not just the names), and one test per named
+finding class — lives in
+[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py);
+the bank script's own non-empty-`<dest-dir>` refusal (exit `4`, no Pi
+needed — the check runs before any SSH call) is pinned in
+[`tests/test_bank_crossover_round_script.py`](../tests/test_bank_crossover_round_script.py).
 
 ---
 

@@ -55,17 +55,21 @@
 #
 # Every pull above is best-effort and independently reported to stderr, and
 # a per-artifact summary prints at the end regardless of outcome — no silent
-# failure paths. Two things can make this script refuse the run, and neither
-# ever deletes a file that was already pulled (the refusal is the exit code
-# plus the printed findings, forensics stay on disk):
+# failure paths. Three things can make this script refuse the run, and none
+# of them ever deletes a file that was already pulled (the refusal is the
+# exit code plus the printed findings, forensics stay on disk). Each has its
+# own exit code so a caller scripting a retry loop can tell them apart
+# without parsing stderr:
 #
-#   * the round's own identity — the session BUNDLE or the flow STATE —
-#     failed to pull. A bank that can't say which round it banked is not a
-#     bank: exit 3 ("incomplete"), regardless of what the capture-integrity
-#     check below found.
-#   * capture-integrity over dumps/sidecar/ found the round dirty (or found
-#     nothing to check). This script's own exit code IS that check's exit
-#     code in this case — 0 clean / 1 nothing to check / 2 dirty — see
+#   * exit 4 — <dest-dir> already exists and is non-empty. Nothing was
+#     pulled; pick a fresh directory or remove the old one.
+#   * exit 3 — the round's own identity, the session BUNDLE or the flow
+#     STATE, failed to pull. A bank that can't say which round it banked is
+#     not a bank, regardless of what the capture-integrity check below
+#     found.
+#   * exit 0 / 1 / 2 — capture-integrity over dumps/sidecar/ ran (bundle and
+#     state both pulled) and this script's own exit code IS that check's:
+#     0 clean, 1 nothing to check (no dump-ring sidecars), 2 dirty — see
 #     jasper/audio_measurement/capture_integrity.py.
 
 set -uo pipefail
@@ -95,10 +99,13 @@ PYTHON="$(resolve_repo_python)"
 # N5: a bare `>` redirect per pulled file means re-running into an existing
 # $DEST silently truncates whatever was banked there before. Refuse instead
 # of guessing the operator meant to overwrite — pick a fresh directory, or
-# remove the old one on purpose.
+# remove the old one on purpose. Own exit code (4), never 1: a retry loop
+# that just hit exit 1 from the capture-integrity check's "nothing to
+# check" meaning and retries into the SAME $DEST must be able to tell that
+# apart from "this destination is unusable" without parsing stderr.
 if [[ -d "$DEST" ]] && [[ -n "$(find "$DEST" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
     echo "bank-crossover-round: refusing -- $DEST already exists and is not empty (re-running into it would truncate the prior pull); remove it or pick a fresh directory" >&2
-    exit 1
+    exit 4
 fi
 mkdir -p "$DEST"
 
