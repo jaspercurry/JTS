@@ -1,0 +1,696 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Pins ``scripts/run-crossover-round.py`` — above all, its apply gate.
+
+Every assertion here runs the real script as a subprocess against a fake
+``ssh`` on ``PATH`` and a real HTTP server on loopback, so no Pi, no
+turntable, and no network are involved. The script resolves its own repo root
+from its own location, so it is copied into a temp checkout beside a fake
+``bank-crossover-round.sh`` and a ``.env.local`` — which is also what lets the
+``PI_HOST`` precedence be checked without touching the operator's own file.
+
+**The gate is the point.** A measurement run must POST the apply endpoint
+never, and an ``--apply`` naming a fingerprint that is not the live candidate
+must POST NOTHING AT ALL — not the apply, not even the CSRF mint that would
+precede it. Both are asserted against a server that records every request it
+receives, because "did not apply" is only true if nothing was sent.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "run-crossover-round.py"
+
+CSRF_PAGE = '<html><meta name="jts-csrf" content="tok-abcdefghijklmnopqrstuvwxyz012345"></html>'
+FINGERPRINT = "cand-4f2a9b"
+
+CANDIDATE = {
+    "fingerprint": FINGERPRINT,
+    "predicted_ripple_db": 1.8,
+    "headroom_cost_db": 0.0,
+    "alignment": {"polarity": "keep", "delay_status": "measured"},
+}
+
+
+# --------------------------------------------------------------------------- #
+# the fake speaker
+# --------------------------------------------------------------------------- #
+
+
+class _Wizard(ThreadingHTTPServer):
+    """A correction wizard that records every request and scripts its phase."""
+
+    daemon_threads = True
+
+    def __init__(self, **behaviour: Any) -> None:
+        super().__init__(("127.0.0.1", 0), _Handler)
+        self.requests: list[tuple[str, str]] = []          # (method, path)
+        self.posts: list[tuple[str, Any]] = []             # (path, body)
+        self.open_status: int = behaviour.get("open_status", 200)
+        self.apply_status: int = behaviour.get("apply_status", 200)
+        self.apply_body: dict[str, Any] = behaviour.get(
+            "apply_body", {"status": "applied", "expected_post_apply_offset_db": -0.2}
+        )
+        self.v2: dict[str, Any] = dict(
+            behaviour.get("v2", {"phase": "review", "session_id": "before",
+                                 "candidate": CANDIDATE})
+        )
+        #: What the block becomes once a stage has been opened and polled once
+        #: — a NEW session id and a terminal phase, which is what the runner's
+        #: completion rule is looking for.
+        self.after_open: dict[str, Any] = dict(
+            behaviour.get("after_open", {"phase": "review", "session_id": "after",
+                                         "candidate": CANDIDATE})
+        )
+        self.opened = False
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+
+class _Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_args: Any) -> None:  # keep pytest output clean
+        return
+
+    def _send(self, status: int, body: bytes, ctype: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Set-Cookie", "jts_csrf=tok-abcdefghijklmnopqrstuvwxyz012345; Path=/")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        server: _Wizard = self.server
+        server.requests.append(("GET", self.path))
+        if self.path == "/sound/crossover/":
+            self._send(200, CSRF_PAGE.encode(), "text/html")
+            return
+        if self.path == "/correction/crossover/status":
+            block = server.after_open if server.opened else server.v2
+            self._send(200, json.dumps({"crossover_v2": block}).encode(),
+                       "application/json")
+            return
+        self._send(404, b"{}", "application/json")
+
+    def do_POST(self) -> None:
+        server: _Wizard = self.server
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        try:
+            body = json.loads(raw.decode() or "{}")
+        except ValueError:
+            body = raw.decode()
+        server.requests.append(("POST", self.path))
+        server.posts.append((self.path, body))
+        if self.path.endswith("/v2/apply"):
+            self._send(server.apply_status, json.dumps(server.apply_body).encode(),
+                       "application/json")
+            return
+        if server.open_status != 200:
+            self._send(server.open_status,
+                       json.dumps({"ok": False, "error": "synthetic refusal"}).encode(),
+                       "application/json")
+            return
+        server.opened = True
+        self._send(200, json.dumps({"relay": {"status": "awaiting_phone"}}).encode(),
+                   "application/json")
+
+
+@pytest.fixture
+def wizard():
+    server = _Wizard()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# the fake checkout
+# --------------------------------------------------------------------------- #
+
+
+def _executable(path: Path, body: str) -> None:
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path):
+    """A repo the script can resolve itself from, with the Pi side faked."""
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+    shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    (repo / ".env.local").write_text(
+        "PI_HOST=checkout.invalid\nPI_USER=checkout-user\n", encoding="utf-8"
+    )
+    _executable(scripts / "bank-crossover-round.sh", """\
+        #!/usr/bin/env bash
+        printf '%s\\t%s\\t%s\\t%s\\n' "$1" "${PI_HOST:-}" "${PI_USER:-}" "${SINCE:-}" \\
+            >> "$FAKE_BANK_LOG"
+        mkdir -p "$1"
+        exit "${FAKE_BANK_EXIT:-0}"
+        """)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    # The arm-walk arm sleeps in the BACKGROUND and waits: a foreground sleep
+    # would not run the TERM trap until it finished, which is the opposite of
+    # what the park-on-terminate assertion needs to observe.
+    _executable(fake_bin / "ssh", """\
+        #!/usr/bin/env bash
+        remote="${*: -1}"
+        printf '%s\\n' "$*" >> "$FAKE_SSH_LOG"
+        case "$remote" in
+            *jasper-angle-capture*) exit "${FAKE_STAGE_EXIT:-0}" ;;
+            *jasper-arm-walk*)
+                trap 'exit 143' TERM
+                sleep "${FAKE_WALK_SLEEP:-0}" &
+                wait $!
+                exit "${FAKE_WALK_EXIT:-0}" ;;
+        esac
+        exit 0
+        """)
+    return repo, fake_bin, tmp_path
+
+
+def _run(checkout, wizard, args: list[str], **env_overrides: str):
+    repo, fake_bin, tmp_path = checkout
+    ssh_log = tmp_path / "ssh.log"
+    bank_log = tmp_path / "bank.log"
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+    env.update({
+        "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+        "PYTHONPATH": str(ROOT),
+        "FAKE_SSH_LOG": str(ssh_log),
+        "FAKE_BANK_LOG": str(bank_log),
+    })
+    env.update(env_overrides)
+    proc = subprocess.run(
+        # The interpreter running pytest, never a bare ``python3``: the script
+        # imports the product for its own vocabulary, so it needs the same
+        # environment the suite is running in.
+        [sys.executable, str(repo / "scripts" / SCRIPT.name),
+         "--base-url", wizard.url, "--poll-s", "0.05", "--stage-timeout-s", "10",
+         *args],
+        capture_output=True, text=True, timeout=180, env=env,
+    )
+    ssh_lines = ssh_log.read_text().splitlines() if ssh_log.exists() else []
+    bank_lines = bank_log.read_text().splitlines() if bank_log.exists() else []
+    return proc, ssh_lines, bank_lines
+
+
+def _trail(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+MEASURE_ARGS = [
+    "--tier", "remote", "--angles", "0,7,-7", "--regime", "per_driver",
+    "--attest-rig-clear", "--expect-angles", "7,-7", "--complete-after", "3",
+]
+
+
+# --------------------------------------------------------------------------- #
+# phase ordering
+# --------------------------------------------------------------------------- #
+
+
+def test_a_round_runs_its_phases_in_order(checkout, wizard, tmp_path):
+    """Stage, launch, open, walk, await, bank, candidate — in that order.
+
+    The walk is launched BEFORE the session opens because the arm harness's
+    first poll is what checks a staged walk is still waiting; a runner that
+    opened first would make that check unreachable.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert [row["step"] for row in _trail(trail)] == [
+        "target", "stage", "walk_launched", "open", "walk", "await", "bank",
+        "candidate",
+    ]
+    assert all(row["ok"] for row in _trail(trail))
+    assert len(bank_lines) == 1
+    assert (tmp_path / "camp" / "r1" / "candidate.json").exists()
+
+
+def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
+    checkout, wizard, tmp_path
+):
+    """Angles, regime, expectations and attestation are FORWARDED, not derived."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    assert "stage --mover arm" in stage_cmd
+    assert "--angles 0,7,-7" in stage_cmd and "--regime per_driver" in stage_cmd
+    assert "--attest-rig-clear" in walk_cmd
+    assert "--expect-angles 7,-7" in walk_cmd
+    assert "--complete-after 3" in walk_cmd
+
+
+def test_without_an_attestation_no_walk_is_launched(checkout, wizard, tmp_path):
+    """The attestation is the operator's. The runner never makes one up."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not any("jasper-arm-walk" in line for line in ssh_lines)
+    assert len(bank_lines) == 1  # the rest of the round still runs
+
+
+def test_a_verify_stage_opens_the_post_apply_check(checkout, wizard, tmp_path):
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "v1", "--stage", "verify"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert wizard.posts == [("/correction/crossover/v2/verify", {"stage": "post_apply"})]
+
+
+def test_an_alignment_prescription_is_posted_verbatim(checkout, wizard, tmp_path):
+    """The gate that judges a prescription is the open's own, not this one's."""
+    document = {"delay_us": -120.0, "basis_delay_us": -100.0,
+                "basis_artifacts": ["round-7"], "polarity": "invert"}
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document))
+
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--alignment-prescription", str(path)],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    _, body = wizard.posts[0]
+    assert body["alignment_prescription"] == document
+    assert body["tier"] == "remote"  # always explicit; an absent tier inherits
+
+
+def test_an_unreadable_prescription_is_refused_before_anything_is_staged(
+    checkout, wizard, tmp_path
+):
+    """An argument the operator wrote wrongly ends as argparse's refusal."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--alignment-prescription", str(tmp_path / "missing.json"), *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 2  # argparse's own usage exit
+    assert "Traceback" not in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.posts == []
+
+
+# --------------------------------------------------------------------------- #
+# THE APPLY GATE
+# --------------------------------------------------------------------------- #
+
+
+def test_a_measurement_round_never_posts_the_apply_endpoint(
+    checkout, wizard, tmp_path
+):
+    """The whole reason this script exists. A round measures; it does not apply."""
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not any(path.endswith("/v2/apply") for _, path in wizard.requests)
+    # …and the candidate it declined to apply is on stdout, by fingerprint.
+    assert FINGERPRINT in proc.stdout
+    assert "predicted_ripple_db = 1.8" in proc.stdout
+
+
+def test_apply_refuses_a_fingerprint_that_is_not_live_and_sends_nothing(
+    checkout, wizard, tmp_path
+):
+    """A named fingerprint that is not the live candidate ends on the laptop.
+
+    Nothing is POSTed — not the apply, and not the CSRF mint that precedes
+    one. The endpoint's own freshness guard would also refuse this, which is
+    exactly why the assertion is about what was SENT rather than about the
+    exit code alone.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, _, _ = _run(
+        checkout, wizard, ["--apply", "cand-somethingelse", "--trail", str(trail)]
+    )
+
+    assert proc.returncode == 11  # EXIT_FINGERPRINT, literal on purpose
+    assert not any(method == "POST" for method, _ in wizard.requests)
+    assert not any(path == "/sound/crossover/" for _, path in wizard.requests)
+    row = _trail(trail)[-1]
+    assert row["step"] == "apply" and row["ok"] is False
+    assert row["named"] == "cand-somethingelse" and row["live"] == FINGERPRINT
+
+
+def test_apply_refuses_when_no_candidate_is_published(checkout, tmp_path):
+    server = _Wizard(v2={"phase": "measure", "session_id": "s0", "candidate": None})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 11
+    assert not any(method == "POST" for method, _ in server.requests)
+
+
+def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
+    checkout, wizard, tmp_path
+):
+    proc, ssh_lines, bank_lines = _run(checkout, wizard, ["--apply", FINGERPRINT])
+
+    assert proc.returncode == 0, proc.stderr
+    assert wizard.posts == [
+        ("/correction/crossover/v2/apply",
+         {"expected_candidate_fingerprint": FINGERPRINT}),
+    ]
+    # An apply measures nothing and banks nothing.
+    assert ssh_lines == [] and bank_lines == []
+
+
+def test_a_blocked_apply_is_a_failure_even_though_it_answers_409(
+    checkout, tmp_path
+):
+    """``blocked`` is 409 and ``apply_failed`` is 200 — the BODY is the verdict."""
+    server = _Wizard(apply_status=409,
+                     apply_body={"status": "blocked",
+                                 "issue": {"id": "stage_2_cannot_open"}})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 10  # EXIT_APPLY
+
+
+def test_an_apply_that_answers_200_but_did_not_apply_is_a_failure(checkout):
+    server = _Wizard(apply_status=200, apply_body={"status": "apply_failed"})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, _ = _run(checkout, server, ["--apply", FINGERPRINT])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 10
+
+
+# --------------------------------------------------------------------------- #
+# propagation — nobody else's verdict is re-mapped
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("bank_exit,expected_rc,banked", [
+    (0, 0, True),    # clean
+    (1, 0, True),    # nothing to grade: no dump-ring sidecars, not a dirty round
+    (2, 9, False),   # dirty captures
+    (3, 9, False),   # the bank could not pull the round's own identity
+    (4, 9, False),   # the destination was already used
+])
+def test_the_banks_own_exit_contract_decides_the_round(
+    checkout, wizard, tmp_path, bank_exit, expected_rc, banked
+):
+    trail = tmp_path / "trail.jsonl"
+    proc, _, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--trail", str(trail)],
+        FAKE_BANK_EXIT=str(bank_exit),
+    )
+
+    assert proc.returncode == expected_rc, proc.stderr
+    assert len(bank_lines) == 1
+    row = next(r for r in _trail(trail) if r["step"] == "bank")
+    assert row["bank_exit"] == bank_exit
+    assert (tmp_path / "camp" / "r1" / "candidate.json").exists() is banked
+
+
+def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
+    checkout, wizard, tmp_path
+):
+    """``jasper-arm-walk``'s rc rides through untranslated, and nothing banks."""
+    trail = tmp_path / "trail.jsonl"
+    proc, _, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--trail", str(trail),
+         *MEASURE_ARGS],
+        FAKE_WALK_EXIT="6",
+    )
+
+    assert proc.returncode == 5  # EXIT_WALK — this runner's own phase code
+    row = next(r for r in _trail(trail) if r["step"] == "walk")
+    assert row["arm_walk_exit"] == 6 and row["arm_walk_exit_name"] == "stuck"
+    assert bank_lines == []
+    # The evidence is still on the Pi, and the operator is told how to keep it.
+    assert "bank-crossover-round.sh" in proc.stderr
+
+
+def test_a_refused_stage_stops_before_anything_opens(checkout, wizard, tmp_path):
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+        FAKE_STAGE_EXIT="2",
+    )
+
+    assert proc.returncode == 3  # EXIT_STAGE
+    assert not any("jasper-arm-walk" in line for line in ssh_lines)
+    assert wizard.posts == [] and bank_lines == []
+
+
+def test_a_session_that_will_not_open_stops_the_round(checkout, tmp_path):
+    server = _Wizard(open_status=400)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, bank_lines = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 4  # EXIT_OPEN
+    assert bank_lines == []
+
+
+def test_a_walk_does_not_outlive_the_round_that_launched_it(checkout, tmp_path):
+    """An aborted round terminates its walk instead of leaving it driving.
+
+    The walk it launched would otherwise still be serving position holds when
+    the NEXT session opens — banking angles for a round nobody asked for. The
+    terminate is what makes the arm park, since the park is the walk's own
+    SIGTERM unwind.
+    """
+    import time as _time
+
+    server = _Wizard(open_status=400)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    started = _time.monotonic()
+    try:
+        trail = tmp_path / "trail.jsonl"
+        proc, _, _ = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+             "--trail", str(trail), *MEASURE_ARGS],
+            FAKE_WALK_SLEEP="120",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 4  # EXIT_OPEN
+    # Terminated, not waited out: the walk had 120 s left on the clock.
+    assert _time.monotonic() - started < 60
+    assert [r["step"] for r in _trail(trail)][-1] == "walk_stopped"
+
+
+def test_a_session_failure_is_named_rather_than_waited_out(checkout, tmp_path):
+    server = _Wizard(after_open={"phase": "measure", "session_id": "after",
+                                 "failure": {"code": "capture_rejected"}})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, bank_lines = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 8  # EXIT_SESSION_FAILED
+    assert bank_lines == []
+
+
+def test_a_stage_that_never_finishes_times_out_instead_of_banking(checkout, tmp_path):
+    """A previous round's terminal phase must not read as this round's finish."""
+    server = _Wizard(after_open={"phase": "cloud_measure", "session_id": "after"})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, bank_lines = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+             "--stage-timeout-s", "0.4"],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 7  # EXIT_INCOMPLETE
+    assert bank_lines == []
+
+
+def test_a_terminal_phase_left_by_a_PRIOR_session_does_not_end_this_one(
+    checkout, tmp_path
+):
+    """The session id must MOVE before a terminal phase counts as completion."""
+    server = _Wizard(
+        v2={"phase": "review", "session_id": "same", "candidate": CANDIDATE},
+        after_open={"phase": "review", "session_id": "same", "candidate": CANDIDATE},
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc, _, bank_lines = _run(
+            checkout, server,
+            ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+             "--stage-timeout-s", "0.4"],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert proc.returncode == 7  # EXIT_INCOMPLETE, not a banked non-round
+    assert bank_lines == []
+
+
+# --------------------------------------------------------------------------- #
+# which speaker
+# --------------------------------------------------------------------------- #
+
+
+def test_an_exported_PI_HOST_beats_the_checkouts_env_local(checkout, wizard, tmp_path):
+    """The #2689 shape: ``_lib.sh`` sources ``.env.local`` over the export."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+        PI_HOST="caller.invalid", PI_USER="caller-user",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert all("caller-user@caller.invalid" in line for line in ssh_lines)
+    # …and the bank is handed the SAME speaker, so one round cannot measure
+    # one Pi and bank another.
+    dest, bank_host, bank_user, _since = bank_lines[0].split("\t")
+    assert (bank_host, bank_user) == ("caller.invalid", "caller-user")
+    assert dest == str(tmp_path / "camp" / "r1")
+
+
+def test_without_an_export_the_checkouts_env_local_is_used(checkout, wizard, tmp_path):
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert all("checkout-user@checkout.invalid" in line for line in ssh_lines)
+    assert bank_lines[0].split("\t")[1:3] == ["checkout.invalid", "checkout-user"]
+
+
+def test_the_speakers_own_name_is_the_host_header_and_the_walks_hostname(
+    checkout, wizard, tmp_path
+):
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--hostname", "jts9.local", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    assert "--hostname jts9.local" in walk_cmd
+
+
+# --------------------------------------------------------------------------- #
+# the contract is the product's
+# --------------------------------------------------------------------------- #
+
+
+def test_the_endpoints_are_the_products_own():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_round_runner", SCRIPT)
+    assert spec and spec.loader
+    runner = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: a `@dataclass` under `from __future__ import
+    # annotations` resolves its field types through `sys.modules[__module__]`,
+    # so a module executed outside it raises inside dataclasses itself.
+    sys.modules[spec.name] = runner
+    try:
+        spec.loader.exec_module(runner)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    from jasper.web.correction_setup import _POST_ROUTES
+
+    for path in (runner.SESSION_PATH, runner.VERIFY_PATH, runner.APPLY_PATH):
+        assert path.startswith("/correction/")
+        assert path[len("/correction"):] in _POST_ROUTES
+
+    from jasper.active_speaker.arm_walk import EXIT_NAMES, STATUS_PATH
+
+    assert runner.ARM_WALK_EXIT_NAMES is EXIT_NAMES
+    assert runner.STATUS_PATH == STATUS_PATH
+
+    # Every capture phase counts as "still running": a phase added to the
+    # journey must not silently read as a finished stage.
+    from jasper.active_speaker.crossover_v2.journey import CAPTURE_PHASES
+
+    assert set(CAPTURE_PHASES) <= runner.RUNNING_PHASES
