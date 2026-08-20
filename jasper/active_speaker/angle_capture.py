@@ -113,6 +113,8 @@ __all__ = [
     "MOVER_HUMAN",
     "MOVERS",
     "MAX_ANGLE_DEG",
+    "ARM_ENVELOPE_DEG",
+    "MOVER_MAX_ANGLE_DEG",
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
@@ -126,6 +128,7 @@ __all__ = [
     "announced_indexes",
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
+    "WALK_OVER_MOVER_ENVELOPE",
     "WALK_OVER_RELAY_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
@@ -174,7 +177,30 @@ MOVERS = (MOVER_ARM, MOVER_HUMAN)
 #: metres of offset. 80 deg already puts the microphone 5.7 m off a 1 m mark,
 #: which is past any room this measures in -- so this refuses an unmeasurable
 #: request rather than silently banking an absurd ``offset_cm``.
+#:
+#: This is the GEOMETRY's ceiling, which every angle passes. A given mover may
+#: reach less far; that second, narrower bound is :data:`MOVER_MAX_ANGLE_DEG`.
 MAX_ANGLE_DEG = 80
+
+#: How far the lab positioner can actually travel. The turntable adapter
+#: (``experiments/usb-turntable/jts_turntable.py``) refuses a ``position``
+#: outside +/-45 deg, so a stop past it is a request the arm can never serve.
+#: Restated here rather than imported because ``experiments/`` is not a package
+#: this one may depend on; ``tests/test_arm_walk.py`` pins the two together.
+ARM_ENVELOPE_DEG = 45
+
+#: The per-mover bound :class:`AngleCaptureRequest` enforces -- the only place
+#: that knows BOTH the mover and its stops. A person can stand anywhere the
+#: geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is bounded by its own
+#: travel. Checked when the walk is STATED rather than when a
+#: session takes it, because the alternative is a session that stalls: the
+#: position gate publishes a target no positioner can reach and then spends its
+#: whole ``REMOTE_POSITION_HOLD_BUDGET_S`` (600 s) per stop waiting for a report
+#: that cannot come.
+MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
+    MOVER_ARM: ARM_ENVELOPE_DEG,
+    MOVER_HUMAN: MAX_ANGLE_DEG,
+})
 
 #: Which composed program object each regime plays -- stated as the PHASE whose
 #: program it is, so :func:`program_for_stop` can delegate to the shipped
@@ -294,6 +320,22 @@ class AngleCaptureRequest:
         if self.mover not in MOVERS:
             raise CrossoverV2FlowError(
                 f"mover must be one of {MOVERS}, got {self.mover!r}"
+            )
+        bound = MOVER_MAX_ANGLE_DEG[self.mover]
+        outside = tuple(
+            stop.angle_deg for stop in self.stops if abs(stop.angle_deg) > bound
+        )
+        if outside:
+            # A LateralWalkRefused rather than a bare CrossoverV2FlowError so the
+            # refusal carries the walk vocabulary's own machine slug: this IS a
+            # walk refusal, it is simply the one decidable from the request alone
+            # (mover plus angles), with no session needed to judge it.
+            raise LateralWalkRefused(
+                WALK_OVER_MOVER_ENVELOPE,
+                f"mover={self.mover!r} travels +/-{bound} deg, so it cannot "
+                "reach "
+                + ", ".join(f"{deg:+d}" for deg in outside)
+                + " deg",
             )
 
     @property
@@ -560,6 +602,12 @@ WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 #: session stalls: a countdown into a mic nobody moves, or a gate no arm feeds.
 WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 
+#: A stop is outside the stated mover's own reach (:data:`MOVER_MAX_ANGLE_DEG`).
+#: Decided by :class:`AngleCaptureRequest` itself, so a walk the arm cannot serve
+#: is refused where it is STATED -- at ``jasper-angle-capture plan``/``stage`` --
+#: rather than stalling a live session one 600 s hold at a time.
+WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
+
 #: The composed session would need more relay blob indexes than exist.
 WALK_OVER_RELAY_CAPACITY = "walk_over_relay_capacity"
 
@@ -578,6 +626,7 @@ WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
+    WALK_OVER_MOVER_ENVELOPE,
     WALK_OVER_RELAY_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
@@ -585,7 +634,13 @@ WALK_REFUSAL_REASONS = frozenset({
 
 
 class LateralWalkRefused(CrossoverV2FlowError):
-    """A staged walk may not run in THIS session.
+    """A walk may not run -- either as STATED, or in THIS session.
+
+    Most of its reasons are properties of the pair (walk, session) and can only
+    be judged by :func:`session_lateral_walk`. One,
+    :data:`WALK_OVER_MOVER_ENVELOPE`, is a property of the request alone and is
+    therefore raised by :class:`AngleCaptureRequest` at statement time -- same
+    vocabulary, decided as early as it can be.
 
     ``reason`` is from :data:`WALK_REFUSAL_REASONS`; ``detail`` is the sentence
     a person reads. Same shape as ``angle_capture_spool.AngleRequestRefused``,
