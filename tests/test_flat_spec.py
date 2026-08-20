@@ -508,6 +508,93 @@ def test_to_dict_round_trip_stability_keys_and_types():
     json.dumps(d)
 
 
+def test_from_dict_round_trips_and_field_count_is_pinned():
+    """The inverse of `to_dict`: `from_dict(report.to_dict()) == report`.
+
+    A caller that persists these reports (issue #2769's round-grading views
+    among them) needs one owner for this round trip rather than a private
+    per-caller rehydration -- the trap that motivated `from_dict` existing at
+    all was two independent copies of this exact logic already living in the
+    repo (`scripts/render-metric-views.py` and a crossover-v2 module), each
+    one more chance to drift from `to_dict`'s actual shape.
+
+    Two tripwires, not one: the field COUNT of each dataclass is pinned, so
+    a field added to `BandResult` or `FlatSpecReport` without a matching
+    `to_dict`/`from_dict` update fails this test immediately by count alone;
+    and every field is given a NON-DEFAULT value before the round trip, so a
+    field silently dropped by `to_dict` (and therefore invisible to
+    `from_dict`) produces a report that differs from the original rather
+    than one that happens to match by coincidence of a shared default.
+    """
+    import dataclasses
+
+    assert len(dataclasses.fields(BandResult)) == 15
+    assert len(dataclasses.fields(FlatSpecReport)) == 8
+
+    band = BandResult(
+        f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
+        max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
+        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+        level_deviation_db=0.5, max_ripple_db=-1.5, max_ripple_hz=160.0,
+        graded_lo_hz=110.0, max_at_graded_edge=True,
+    )
+    report = FlatSpecReport(
+        reference_db=-20.0, bands=(band,), overall_passed=False,
+        excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
+        smoothing_fraction=6, trusted_floor_hz=142.86,
+        reference_band_hz=(250.0, 8000.0),
+    )
+    assert FlatSpecReport.from_dict(report.to_dict()) == report
+
+    # A report predating the #1857/#2551 optional fields (all five `None` on
+    # BandResult, `trusted_floor_hz=None`, default `reference_band_hz`)
+    # rehydrates to the dataclass's own defaults, not a fabricated value.
+    bare_band = BandResult(
+        f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
+        max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
+        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+    )
+    bare_report = FlatSpecReport(
+        reference_db=-20.0, bands=(bare_band,), overall_passed=False,
+        excluded_intervals=(), best_effort_above_hz=16000.0, smoothing_fraction=3,
+    )
+    assert FlatSpecReport.from_dict(bare_report.to_dict()) == bare_report
+
+
+def test_from_dict_raises_on_a_document_missing_an_original_vintage_field():
+    """The mutation this guards against: an earlier version of ``from_dict``
+    read every field with ``.get()``, so a document missing an
+    original-vintage (#1741) field silently rehydrated a plausible-looking
+    default instead of raising -- ``excluded_intervals`` defaulted to ``()``
+    (reads as "nothing was excluded" when the truth is "the field was
+    lost"), and ``BandResult.passed`` defaulted to ``None`` (reads as
+    "unevaluable" when the truth is the same). Both must now raise
+    ``KeyError``, not rehydrate.
+    """
+    band = BandResult(
+        f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
+        max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
+        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+    )
+    report = FlatSpecReport(
+        reference_db=-20.0, bands=(band,), overall_passed=False,
+        excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
+        smoothing_fraction=3,
+    )
+    raw = report.to_dict()
+    assert "excluded_intervals" in raw  # sanity: the field really is there to remove
+
+    corrupted = dict(raw)
+    del corrupted["excluded_intervals"]
+    with pytest.raises(KeyError, match="excluded_intervals"):
+        FlatSpecReport.from_dict(corrupted)
+
+    band_raw = dict(raw["bands"][0])
+    del band_raw["passed"]
+    with pytest.raises(KeyError, match="passed"):
+        BandResult.from_dict(band_raw)
+
+
 # --------------------------------------------------------------------------- #
 # degenerate inputs -> ValueError, never a silent pass
 # --------------------------------------------------------------------------- #
