@@ -246,12 +246,16 @@ def test_undeclared_tweeter_style_keeps_conservative_floor_when_hardware_ceiling
 
 
 def test_shipped_jts3_preset_numbers_derive_the_operative_ceiling() -> None:
-    """The shipped preset's own numbers, hand-computed, with no hedge left.
+    """JTS3's own commissioned numbers, hand-computed, with no hedge left.
 
-    ``bc_de250_dayton_e150he44_v1`` as commissioned on JTS3: the woofer's
+    ``bc_de250_dayton_e150he44_v1`` as commissioned on JTS3. The woofer's
     admitted cap is 0.0 dBFS (its declared peak, clamped by the low-frequency
-    class default ``MAX_TEST_LEVEL_DBFS``), and the declared sensitivities are
-    108.5 dB (B&C DE250) against 83.3 dB (Dayton Epique E150HE-44).
+    class default ``MAX_TEST_LEVEL_DBFS``). The sensitivities are 108.5 dB
+    (B&C DE250) against 83.3 dB (Dayton Epique E150HE-44) — note where each
+    comes from, because it is NOT one artifact: 83.3 is in the shipped preset
+    JSON, while the preset declares no tweeter ``sensitivity_db`` at all and
+    108.5 rides JTS3's persisted design draft ``manual_settings``, which is the
+    one owner of declared sensitivity (``declared_driver_sensitivities``).
 
         108.5 - 83.3 = 25.2 dB delta
         0.0 - 25.2   = -25.2 dBFS
