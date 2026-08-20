@@ -2021,9 +2021,9 @@ tournament's "dominance decides" rule was actually judged on (issue #2769).
 nothing to `git rm` — this tool is the one copy going forward.
 
 Every subcommand reads a *banked round directory*, the tree
-`scripts/bank-crossover-round.sh <dest-dir>` produces (see "Crossover-v2 round
-banking" once that tool lands, and PR #2778): a `bundle/<session>/` evidence
-bundle, optional `state.json` / `design-draft.json`, and optional
+`scripts/bank-crossover-round.sh <dest-dir>` produces (see
+["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
+`bundle/<session>/` evidence bundle, optional `state.json` / `design-draft.json`, and optional
 `dumps/wav/` + `dumps/sidecar/` dump-ring captures. No file is globbed or
 re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
@@ -2059,26 +2059,42 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
 jasper-round-views agreement <round-dir>
 ```
 
-**No numeric microphone angle anywhere.** `evidence_packet.py` already made
-and documented that call: a round's bundle carries a position's `role`
-(`onax`/`offax`), never a degree. The campaign's `frozen_reference.py` carried
-a hardcoded `index -> degrees` table for exactly this reason; it is not
-ported. Every view here keys a position by its own stable `position_id`
-(`f"{phase}_{index:02d}"`, assigned once by the walk driver and stable across
-rounds that walk the same shape) instead.
+**No numeric microphone angle for a CLOUD position.** `evidence_packet.py`
+only ever reads the cloud positions block (`spatial.cloud_position_record`
+rows), which carries a coarse `role` (`onax`/`offax`) and no angle at all — a
+LATERAL walk pose (`spatial.lateral_pose_record`) does stamp a signed
+`position_deg`, but this module never reads those records. The campaign's
+`frozen_reference.py` carried a hardcoded `index -> degrees` table for
+exactly this reason; it is not ported. Every view here keys a position by
+its own stable `position_id` (`f"{phase}_{index:02d}"`, assigned once by the
+walk driver and stable across rounds that walk the same shape) instead.
+
+**Agreement's sign-agreement rule is the campaign's own literal threshold**
+(`testify >= 3` and `dissent <= 1`), not scaled to the seat count — below 3
+seats the verdict is `common_mode: null` in the JSON, a named not-evaluable
+state, never a fabricated pass or fail. `--lo` defaults to the round's own
+`trusted_floor_hz` when not given explicitly.
 
 Each subcommand writes its JSON result into the round directory by default
 (`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
 round's own dir; `repeatability.json` under the first round dir for `repeat`)
 — `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
-success, `1` when a round directory could not be read into a comparable view.
+success, `1` when a round directory could not be read into a comparable view
+(an unreadable evidence document, a truncated dump-ring WAV, or any of the
+round's other documented failure shapes).
 
-Hardware-free coverage, including a golden fixture whose `spec` block is a
+Hardware-free coverage — including a golden fixture whose `spec` block is a
 REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite
-rather than going unnoticed) and an end-to-end synthetic wired capture through
-the real `deconvolve`/`gate_impulse_response`/`magnitude_response` chain, lives
-in
+rather than going unnoticed), an end-to-end synthetic wired capture through
+the real `deconvolve`/`gate_impulse_response`/`magnitude_response` chain, and
+a verified mutation kill for each of the agreement thresholds, the
+sample-variance (`ddof=1`) spread, the median seat normalisation, and the
+gate/smoothing steps — lives in
 [`tests/test_active_speaker_crossover_v2_round_views.py`](../tests/test_active_speaker_crossover_v2_round_views.py).
+`FlatSpecReport.from_dict`/`BandResult.from_dict` (the shared rehydration
+this module and `scripts/render-metric-views.py` both use) are pinned by a
+round-trip test in
+[`tests/test_flat_spec.py`](../tests/test_flat_spec.py).
 
 ---
 
