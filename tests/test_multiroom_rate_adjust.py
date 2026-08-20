@@ -508,7 +508,10 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
     assert "channel=left" in r.detail
 
 
-def test_channel_pick_check_active_endpoint_uses_loopback(monkeypatch, tmp_path):
+def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
+    monkeypatch, tmp_path,
+):
+    from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
@@ -526,7 +529,8 @@ def test_channel_pick_check_active_endpoint_uses_loopback(monkeypatch, tmp_path)
         active_box=True,
     )
     assert r.status == "ok"
-    assert "loopback" in r.detail
+    # Must not drift from the PCM the reconciler actually hands snapclient.
+    assert GROUPING_RING_PCM in r.detail
 
 
 def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(

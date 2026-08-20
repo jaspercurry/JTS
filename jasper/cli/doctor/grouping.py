@@ -484,8 +484,8 @@ def check_grouping_channel_pick() -> CheckResult:
         if active_endpoint:
             return CheckResult(
                 label, "ok",
-                "active endpoint uses the snapclient/CamillaDSP loopback path "
-                "(no outputd channel-pick lane)",
+                "active endpoint uses the snapclient/CamillaDSP grouping ring "
+                "(jts_ring_grouping; no outputd channel-pick lane)",
             )
         return CheckResult(
             label, "warn",
@@ -507,12 +507,12 @@ def check_grouping_channel_pick() -> CheckResult:
                 label, "warn",
                 f"active endpoint should have outputd channel-pick lane cleared "
                 f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
-                "active speakers receive the round-trip through the "
-                "snapclient/CamillaDSP loopback path; run jasper-grouping-reconcile",
+                "active speakers receive the round-trip through the grouping "
+                "ring jts_ring_grouping; run jasper-grouping-reconcile",
             )
         return CheckResult(
             label, "ok",
-            "active endpoint uses snapclient/CamillaDSP loopback channel pick",
+            "active endpoint picks its channel off jts_ring_grouping",
         )
     if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
         return CheckResult(

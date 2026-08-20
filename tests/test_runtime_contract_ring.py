@@ -6,8 +6,7 @@
 
 Two P2 contracts:
   1. topology_supports_shm_ring — ring is stereo-only (not roleful, not
-     composite; requires an explicit passive stereo layout). This is what the
-     multiroom bond prechecks + reconciler consult.
+     composite; requires an explicit passive stereo layout).
   2. safe_graph_for_current_topology(coupling="shm_ring") re-seeds the RING flat
      config on a ring-armed box, not the loopback flat config — audit finding 5's
      built-in-revert dies here.

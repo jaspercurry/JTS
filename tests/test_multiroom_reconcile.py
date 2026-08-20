@@ -410,7 +410,7 @@ def test_snapclient_argv_adds_file_player_when_fifo_set():
     assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
 
 
-# ---------- snapclient_argv(): ACTIVE follower loopback (Slice 3) ----------
+# ---------- snapclient_argv(): ACTIVE endpoint ring player (Slice 3) --------
 
 
 def test_snapclient_argv_active_endpoint_uses_alsa_ring_player():
@@ -1768,8 +1768,8 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     monkeypatch,
 ):
     """An active follower: the readiness GATE runs BEFORE the units (fail-safe),
-    snapclient writes the loopback (not the FIFO), and the CamillaDSP swap runs
-    AFTER the unit plan (so the loopback has its writer)."""
+    snapclient writes the grouping ring (not the FIFO), and the CamillaDSP swap
+    runs AFTER the unit plan (so the ring has its writer)."""
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
@@ -2079,8 +2079,8 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     """An active leader: the readiness GATE runs BEFORE the units (fail-safe);
     after the units, camilla#1 bakes the wire, the crossover statefile is
     RE-SEEDED, then camilla#2 is armed (enable --now). snapclient writes the
-    loopback (its own receiver), the leader hosts the stream, and the endpoint
-    status persists active_leader=true."""
+    grouping ring (its own receiver), the leader hosts the stream, and the
+    endpoint status persists active_leader=true."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)

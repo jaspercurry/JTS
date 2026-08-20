@@ -2172,9 +2172,9 @@ def main(argv: list[str] | None = None) -> int:
     if not env_ok:
         rc = 1
     # The member content FIFO feeds the DUMB follower's dac_content lane. An
-    # active ENDPOINT (follower or active leader) uses the snd-aloop round-trip
-    # loopback instead (a fixed snd-aloop subdevice — always present, no mkfifo
-    # equivalent), so skip it.
+    # active ENDPOINT (follower or active leader) takes the grouping ring
+    # instead — the ioplug creates its file at open and the install leaves it
+    # alone on purpose (deploy/lib/install/ring-platform.sh) — so skip it.
     if (
         active
         and not active_endpoint

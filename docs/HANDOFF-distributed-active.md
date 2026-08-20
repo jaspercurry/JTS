@@ -639,7 +639,7 @@ slices land safest-first; each is independently mergeable.
 | Slice | v1? | Scope | HW? |
 |---|---|---|---|
 | **0** | — | This design-of-record + README atlas + doc-map wiring | no |
-| **S0-sync** | ✅ | **De-risk gate** — bench the snapclient→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
+| **S0-sync** | ✅ | **De-risk gate** (snd-aloop seam — see its dating note) — bench the snapclient→loopback→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h `snd-aloop` xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
 | **1** | ✅ | Role/capture: thread `capture_device`; pure-data `OutputTopology` pairing field. Golden byte-identical solo | no |
 | **2** | ✅ | Driver-domain-only active emit variant + `classify_camilla_graph` arm + keystone round-trip test | no |
 | **3** | ✅ | Reconciler wires the active **follower** (capture→the grouping ring, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / no-SIGHUP-during-playback | **yes** (2 Pis) |
@@ -782,16 +782,23 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
 ## Multi-Pi validation (Slice 3+)
 
-**S0-sync de-risk gate — run BEFORE Slice 3.** The snapclient→CamillaDSP
-re-entry seam is the single hardest part: Snapcast/CamillaDSP builders
-report failing to sync exactly this shape. Before investing in the
-Slice-3 reconciler, bench it with two throwaway "active followers"
-(snapclient → loopback → a crossover-only CamillaDSP → DAC), two-mic acoustic
-capture. **Acceptance: p99 inter-speaker offset < 5 ms over a 2-hour run, no
-audible resync**, plus a ≥24 h `snd-aloop` xrun soak. **If this gate fails, an
-active wireless *follower* is not viable** — fall back to active-stays-solo-or-
-leader (the leader runs its own crossover locally on the round-trip; followers
-stay dumb/passive). Do not build Slice 3 until S0-sync passes.
+**S0-sync de-risk gate (2026-06-20, benched on snd-aloop) — run BEFORE Slice
+3.** The snapclient→loopback→downstream-CamillaDSP seam is the single hardest
+part: Snapcast/CamillaDSP builders report failing to sync exactly this shape.
+Before investing in the Slice-3 reconciler, bench it with two throwaway "active
+followers" (snapclient → loopback → a crossover-only CamillaDSP → DAC), two-mic
+acoustic capture. **Acceptance: p99 inter-speaker offset < 5 ms over a 2-hour
+run, no audible resync**, plus a ≥24 h `snd-aloop` xrun soak. **If this gate
+fails, an active wireless *follower* is not viable** — fall back to
+active-stays-solo-or-leader (the leader runs its own crossover locally on the
+round-trip; followers stay dumb/passive). Do not build Slice 3 until S0-sync
+passes.
+
+**Dated: this gate and its results below characterise the snd-aloop seam Slice
+3 shipped on.** PR-3 moved the bonded ingress to the grouping ring, which
+exposes no `PCM Rate Shift` (see "One hard clock crossing, one rate loop"), so
+neither the bench nor its clock-lock evidence transfers; a ring-seam de-risk is
+owed.
 
 Two Pis: leader = `jts3.local`, a second as follower (commissioned active
 2-way). Deploy with `PI_HOST=jts3.local bash scripts/deploy-to-pi.sh`.
@@ -1307,17 +1314,17 @@ over Option 2:
 - **outputd stays dumb** ("swap the engine, not the topology" / "no DSP in
   outputd" honored).
 - **Cost.** +85–125 ms TTS latency (acceptable per the budget above) + a TTS mix
-  point on the loopback feeding camilla#2 + the content-duck must follow that
+  point on camilla#2's own input + the content-duck must follow that
   same point (so the reference still carries the ducked program, inv-A).
 
 **5. Follower fail-closed cue — into the follower's camilla input (through Layer
-A), follower-local.** The base safe state is **silence** (a starved loopback →
+A), follower-local.** The base safe state is **silence** (a starved ingress →
 CamillaDSP emits silence *through* the crossover = silence = safe) — already the
 Slice 3 reality (see "Fail-closed cue — v1 reality" above: the reconciler
 oneshot can't play a cue, and the hard no-full-range guarantee holds via the
 re-proven driver-domain baseline). This item resolves the **audible** cue Slice 3
-deferred: inject it at the **same point as Option 3** — the camilla#2 input
-loopback, upstream of Layer A — so it is band-limited (tweeter-safe) and
+deferred: inject it at the **same point as Option 3** — camilla#2's own
+input, upstream of Layer A — so it is band-limited (tweeter-safe) and
 **follower-local (no round-trip)**. It must **not** be mixed at outputd
 post-camilla (full-range to the tweeter; the 2-ch outputd mixer also assumes
 L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
@@ -1326,10 +1333,10 @@ L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
 per-member liveness loop — writes the cue WAV into the camilla input; never
 `jasper-voice`, never the reconciler oneshot, never a post-camilla mix. (The
 supervisor's `dac_content` starvation watch is **skipped on active endpoints**
-as of the 2026-06-23 fix — it watches the dumb-member round-trip, not the
-active follower's camilla#2 loopback. Detecting the active follower's *own*
-starvation, the loopback going silent, is the deferred prerequisite for
-*triggering* this cue.)
+as of the 2026-06-23 fix — it watches the dumb-member round-trip, not the active
+endpoint's own ingress. Detecting THAT starvation is the deferred prerequisite
+for *triggering* this cue; `GroupingSupervisor._starvation_tick` owns why, and
+which instrument the grouping ring would give it.)
 
 ## Open questions
 

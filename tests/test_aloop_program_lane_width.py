@@ -235,9 +235,8 @@ def test_a_snd_aloop_substream_is_not_inherently_narrow():
     above and design around a limit that is not there.
 
     Asserted on the named post-DSP content PCMs, deliberately — NOT on
-    "hw:Loopback,0/1,6 is wide", which is false: the bonded active-follower
-    role opens that same raw pair at S16_LE. One role being wide is the whole
-    counter-example, and it is the honest form of it.
+    "hw:Loopback,0/1,6 is wide"; the module docstring's "the counter-example is
+    a ROLE, not a device" owns why.
     """
     rc = _non_comment(ASOUNDRC.read_text())
     for name in ("outputd_content_playback", "outputd_content_capture"):
