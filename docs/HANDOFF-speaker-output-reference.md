@@ -1336,11 +1336,18 @@ rejected — see the "Stage 2a landed" callout above.)
 
 - **Composite child loss:** the fail-closed action is a **bail**, never a mute
   — no mute-all-children path exists in the tree. A child that actually
-  *disappears* is caught on the write path (the recovery ladder in the next
-  bullet) and converges out-of-band: udev → `jasper-audio-hardware-reconcile`
-  rewrites `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC and restarts
-  outputd — see
-  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md) step 5.
+  *disappears* is caught on the write path, but **not** by the next bullet's
+  recovery ladder: that ladder is the xrun path and `write_dac_fail_closed`
+  enters it only on `EPIPE`/`ESTRPIPE`, so a vanished device's
+  `ENODEV`/`ENXIO` takes the bare propagate beneath it and never emits an
+  `event=outputd.xrun` line — do not go looking for one after a removal.
+  Recovery is out-of-band: udev → `jasper-audio-hardware-reconcile` rewrites
+  `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC, clearing
+  `JASPER_OUTPUTD_DUAL_DAC_A_PCM`/`_B_PCM`, and restarts outputd. The
+  reconciler half of that is shipped code; the end-to-end convergence is still
+  **awaiting its on-Pi pass** — it is item 5 of
+  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md)'s "Needs a
+  real plug/unplug hardware pass" list, so read it as intent, not as a result.
   The in-loop PCM-state check is narrower than it looks, and is **not** the
   primary child-loss detector: it lives in
   `PairedCompositeSink::check_delay_delta`
@@ -2203,8 +2210,8 @@ re-touched since carries forward from its most recent entry below.
   `event=outputd.dual_apple.delay_diverged` beside it. Split the trailing
   gating claim, which was half true — `dual_apple_runtime_mapping` does require
   two child PCMs, but the unit's single `ExecCondition` checks only the one
-  resolved `JASPER_AUDIO_DAC_CARD`. **Two corrections from this PR's
-  adversarial review, recorded because both were the same defect class the pass
+  resolved `JASPER_AUDIO_DAC_CARD`. **Three corrections from this PR's
+  adversarial review, recorded because each was the same defect class the pass
   set out to remove.** First, only `sink.health()` and `child_lost` are dead:
   a per-child array under a width-agnostic `composite` `/state` block is **live
   owed work** (prescribed in Observability below, deferred by
@@ -2214,9 +2221,14 @@ re-touched since carries forward from its most recent entry below.
   "nothing in the tree asks for these" rather than on an unrecorded #2255
   supersession (#2255's scope is the bail-on-first-xrun fix alone). Second, the
   neighbouring unified-xrun bullet claimed the composite "bails on exactly two
-  things", which `write_dual_period`'s own docstring falsifies — it enumerates
-  five recovery-ladder rungs plus the divergence guard — so that sentence was
-  corrected in place. **Nothing else in this pass:** the remaining Resilience
+  things", which `write_dual_period`'s own docstring falsifies — it names a
+  four-rung ladder (recover → re-prime → group start → re-latch) and five bail
+  conditions across it, plus the divergence guard — so that sentence was
+  corrected in place. Third, this pass's own first draft routed a *departed*
+  child through that recovery ladder; `write_dac_fail_closed` enters the ladder
+  only on `EPIPE`/`ESTRPIPE`, so an `ENODEV`/`ENXIO` removal takes the bare
+  propagate and emits no `event=outputd.xrun` — the bullet now says so, since
+  the wrong journal signature is what a debugger would have grepped for. **Nothing else in this pass:** the remaining Resilience
   bullets, the change set, and Observability stand as last verified, which is
   why the footer below still reads 2026-08-15.
 
