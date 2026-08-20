@@ -367,7 +367,7 @@ def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
 
 
 def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
-    """Each role's own declared band — the bound a per-driver cut sits inside.
+    """Each role's own declared band — the bound a per-driver filter sits inside.
 
     Read from the design draft's confirmed ``driver_safety_profile``, which is
     where a speaker's per-driver declarations already live and are already
@@ -421,9 +421,9 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
             **absent,
             "note": (
                 "no feature classification was banked for this round, so no "
-                "per-driver cut can be shown to be aimed at a minimum-phase "
-                "driver defect rather than at an interference null or a room "
-                "arrival"
+                "per-driver filter of EITHER sign can be shown to be aimed at "
+                "a minimum-phase driver defect rather than at an interference "
+                "null or a room arrival"
             ),
         }
     verdicts = read_feature_verdicts(raw)
@@ -495,8 +495,9 @@ def _not_evaluated(
                 "no feature classification is banked for this round, and the "
                 "excess-phase instrument that would produce one per bin is "
                 "not built in the product. The positional bar in the response "
-                "format is the deterministic stand-in for the boost class; "
-                "the cut class refuses rather than standing in"
+                "format is the deterministic stand-in for the BLEND boost "
+                "class; the per-driver class refuses, either sign, rather "
+                "than standing in"
             ),
         })
     if not drivers_available:

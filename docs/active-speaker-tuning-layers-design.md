@@ -1354,8 +1354,8 @@ decisions — the fitting engine, the safety clamps and their bounds, the pooled
 grading views, the predict-apply-remeasure-rollback protocol, and both
 prescribers, all of which have run on hardware. What does not ship is the part
 that decides: taking **"is there code in the tree that makes this rule's
-decision?"** as the test, **three of the six rules below fail it outright and
-two more pass only on the prescribed path** (rule 6 is a review discipline
+decision?"** as the test, **two of the six rules below fail it outright and
+three more pass only on the prescribed path** (rule 6 is a review discipline
 rather than code at all), and the stage's *scope* is narrower than this ruling
 requires. The per-rule table at the end of this stage makes that count
 reconstructable. Read "partially" strictly.
@@ -1479,21 +1479,24 @@ this stage reads as more finished than it is.
 
 | rule | the decision it has to make | ships? | what ships beside it |
 |---|---|---|---|
-| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver cut class — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** that would produce a verdict still does not ship, so the evidence is a banked lab result rather than something a round derives. `positional_support` remains the cross-position half for the blend boost class |
+| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver class, both signs — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable`, a boost with no `defect-boostable` one `driver_feature_not_boostable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** that would produce a verdict still does not ship, so the evidence is a banked lab result rather than something a round derives. `positional_support` remains the cross-position half for the blend boost class |
 | 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
 | 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
-| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no** | Layer 1a's boost bounds do ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`; the blend stage's own five-condition bar has never been exercised. The per-driver *prescribed* boost is refused outright rather than barred (`driver_boost_route_unavailable`), which is a parked decision, not a bar |
+| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **partial** | ships for the **per-driver prescribed** class since [PR #2754](https://github.com/jaspercurry/JTS/pull/2754): a boost is admitted only against a nearest banked `defect-boostable` verdict that is not `vertical_blind` and reports its own `depth_db`, no deeper than that depth, and inside a per-role composed budget that bounds the maximum-SPL spend at 5.0 dB ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)). Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised, and the per-driver bar is a gate on a proposal rather than a stage that derives one |
 | 5 frozen reference | a frozen-reference comparator | **no** | `flat_spec` / `flat_spec_views`, which self-reference |
 | 6 audibility floors | — | n/a | a review discipline, not code either way |
 
-So **three of six still fail the test outright** (2, 4, 5), and **two more ship
-only on the prescribed path** (1, 3) — a gate that refuses a bad proposal,
-never a stage that derives the right one. For rules 2, 4 and 5 the campaign
+So **two of six still fail the test outright** (2, 5), and **three more ship
+only on the prescribed path** (1, 3, 4) — a gate that refuses a bad proposal,
+never a stage that derives the right one. For rules 2 and 5 the campaign
 produced its verdicts with laptop-side analysis and none of that analysis has
-been promoted into the product.
+been promoted into the product. Rule 4's evidence is promoted only as far as a
+banked artifact a gate can READ — the classifier that would produce a
+`depth_db` per feature is still the lab's, so a round carries one only when
+somebody banked it, and a boost against a depthless verdict refuses by name.
 
 **What "partial" is buying, said plainly**, because the distinction is the
-whole of what rules 1 and 3 are worth: a bar that refuses cannot make a round
+whole of what rules 1, 3 and 4 are worth: a bar that refuses cannot make a round
 better, it can only stop one specific way of making it worse. Rule 1's bar
 turns "a reader believes this is a driver defect" into "a classifier said so
 and the verdict is on the receipt"; it does not classify anything, and a
@@ -1801,7 +1804,7 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, three times
+**The `Last verified:` footer below was deliberately NOT bumped**, four times
 now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
@@ -1810,7 +1813,9 @@ stage's own STATUS count, and recorded the two rulings that change forced —
 because that change is what made them stale or newly needed. The pass that
 gave the angle walk a session to take (#2732) recorded the (a)-ruling in
 Stage P2 and trued up that stage's STATUS line, its lead-in, its fourth bullet
-and the per-pose-replay parenthesis below — every one of them a claim that
-change falsified. None verified anything else here.
+and the per-pose-replay parenthesis below. The pass that opened the per-driver
+class's BOOST route trued up rules 1 and 4, the Stage P3 synopsis above them,
+and the failing-rule count below. Every one of those was a claim the change in
+hand falsified; none verified anything else here.
 
 Last verified: 2026-08-18

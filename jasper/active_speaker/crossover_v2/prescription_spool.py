@@ -49,8 +49,12 @@ has not been measured yet (that is why decision 10 banks an instruction at all).
 So the take re-runs the same gate against the region the staging step banked
 beside the document.  What that re-run genuinely catches: a corrupt or truncated
 file, a document edited to deepen a cut, widen a Q, move a filter outside the
-region it was checked against, add a third filter, add a prohibited key, or turn
-a cut into a boost — every one of which is refused by name.  What it cannot do
+region it was checked against, add a third filter, or add a prohibited key —
+every one of which is refused by name.  A tampered SIGN is judged by the same
+bar the staging gate applied, not by the sign itself: on the blend class a boost
+still has no route, and on the per-driver class a boost edited onto a feature
+that cannot vouch for it refuses by name, while one that clears every bar is
+correctly TAKEN.  What it cannot do
 is re-derive the packet, so the banked region and fingerprint are anchors it
 takes on trust from the step that had the evidence.  The document itself is not
 taken on trust: it is stored VERBATIM and re-hashed, so
@@ -67,13 +71,14 @@ advances whenever a round completes, a document left behind by a round that
 already ran can never be picked up by the next one — the belt to consumption's
 braces, and the half that still works if a process died between them.
 
-**Cuts only.**  The route has not changed: a boost still has no seam to land in
-and :func:`~.blend_prescription.prescription_route` still refuses one.  This
-module opens no route; it carries the class the seam already accepts.
+**This module opens no route.**  It carries whatever class the seam already
+accepts, and the two seams differ: :func:`~.blend_prescription.prescription_route`
+still refuses every boost, while :mod:`.driver_prescription` admits one against
+a banked ``defect-boostable`` verdict.  Neither answer is decided here.
 
 **Two prescription classes, ONE door.**  Since the per-driver class
 (:mod:`.driver_prescription`) there are two shapes an operator may stage — a
-blend-region correction and one driver's own full-band cuts — and they share
+blend-region correction and one driver's own full-band shape — and they share
 this slot rather than each getting one.  A round takes AN instruction, and two
 slots would be two things to keep consistent, two things Undo has to remember,
 and an ordering question ("which wins?") nothing in this design answers.  The
@@ -115,6 +120,7 @@ from .blend_prescription import (
 )
 from .driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
+    MAX_SPL_SPEND_BOUND_DB,
     DriverPrescription,
     check_driver_document_size,
     read_driver_prescription,
@@ -429,7 +435,7 @@ def _anchors(
 
     The property this buys is not "refuses more"; it is EQUALITY, **and it is
     equality on the classification bar alone.** Same function, same verdicts,
-    so the take's answer to "may this filter be cut here" is the answer the
+    so the take's answer to "may this filter be aimed here" is the answer the
     staging gate gave it — and the subset was wrong in both directions rather
     than merely lenient: it hid the dips (a false accept, the hole above) and
     it also hid every cuttable feature no filter happened to aim at, so a
@@ -513,6 +519,7 @@ def stage_prescription(
     document or the other, never a splice.
     """
     replaced = prescription_spool_path().is_file()
+    driver = prescription if isinstance(prescription, DriverPrescription) else None
     payload = {
         "artifact_schema_version": SPOOL_SCHEMA_VERSION,
         "kind": SPOOL_KIND,
@@ -546,6 +553,19 @@ def stage_prescription(
         # watching a spool creep towards `spool_too_large` can see it grow
         # without opening the file.
         classifications=len(payload.get("classifications") or ()),
+        # What this document costs, on the line that records it being banked:
+        # the class, how many filters spend maximum SPL, the evaluated
+        # worst-role boost that decided, and the ceiling it was measured
+        # against. The last two are `None` on the blend class, which has no
+        # per-driver seam to spend — an absent number rather than a zero,
+        # because "not applicable" and "measured nothing" are different facts.
+        prescription_class=prescription.prescription_class,
+        boost_filters=sum(
+            1 for entry in prescription.filters if float(entry["gain"]) > 0.0
+        ),
+        composed_boost_db=driver.composed_boost_db if driver else None,
+        composed_boost_role=driver.composed_boost_role if driver else None,
+        max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB if driver else None,
         replaced=replaced,
     )
     return path

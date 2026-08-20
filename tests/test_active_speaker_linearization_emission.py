@@ -39,6 +39,11 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_taper_name,
     linearization_headroom_db,
 )
+from jasper.active_speaker.crossover_v2.driver_prescription import (
+    DRIVER_MAX_COMPOSED_BOOST_DB,
+    DRIVER_MAX_FILTER_BOOST_DB,
+    MAX_SPL_SPEND_BOUND_DB,
+)
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     PER_FILTER_BOOST_CAP_DB,
@@ -464,6 +469,132 @@ def test_linearization_headroom_is_zero_for_a_cut_only_correction():
         {"woofer": [_peak(gain=-4.0)]}, branch_context={},
     ) == 0.0
     assert _headroom_gain_db(cut_only) == pytest.approx(_headroom_gain_db(flat))
+
+
+# --------------------------------------------------------------------------- #
+# what a PRESCRIBED per-driver boost costs (PR-A)
+#
+# The gate in `crossover_v2.driver_prescription` bounds what an outside reader
+# may propose; these pin what that bound COSTS once it reaches the emitter, on
+# the same LR4-at-1600 two-way preset the rest of this module uses. The claim
+# under review is that the whole cost is maximum SPL — the graph attenuates
+# before the split, so a boosted graph is never louder at any frequency than an
+# unboosted one at full scale.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_prescribable_boost_is_charged_its_realized_chain_peak():
+    """The deepest ONE admissible prescribed boost, priced.
+
+    +3.0 dB at Q 8 on 6245 Hz is exactly ``DRIVER_MAX_FILTER_BOOST_DB`` on a
+    feature the 2026-08-19 record classifies boostable. It sits in the
+    tweeter's own passband, 0.0301 dB down its 1600 Hz LR4 high-pass — so the
+    realized chain peak is 2.9699 dB, not the 3.0 the filter asks for, and the
+    charge is that plus ``branch_chain.HEADROOM_MARGIN_DB``.
+    """
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    boosted = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6245.0, DRIVER_MAX_FILTER_BOOST_DB, q=8.0)]},
+    )
+
+    assert DRIVER_MAX_FILTER_BOOST_DB == 3.0, "the fixture is the ceiling itself"
+    assert _headroom_gain_db(flat) == 0.0
+    assert _headroom_gain_db(boosted) == pytest.approx(-3.9699, abs=1e-3)
+    assert _headroom_gain_db(boosted) > -MAX_SPL_SPEND_BOUND_DB
+
+
+def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
+    """The load-bearing arithmetic: the gate's 4.0 dB composed cap IS the 5.0.
+
+    Two +3.0 dB Q-8 boosts 0.12 octaves apart compose to 3.993 dB on the gate's
+    own evaluation — just inside ``DRIVER_MAX_COMPOSED_BOOST_DB`` — and the
+    emitter charges 4.964 dB for them. Move them 0.005 octaves closer and the
+    gate REFUSES at 4.062 dB composed, which would have charged 5.040 dB. So
+    the published bound is not a slogan beside the cap; it is the cap.
+    """
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    def charged(separation_octaves: float) -> float:
+        text = emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [
+                _peak(6245.0, 3.0, q=8.0),
+                _peak(6245.0 * 2 ** separation_octaves, 3.0, q=8.0),
+            ]},
+        )
+        return _headroom_gain_db(flat) - _headroom_gain_db(text)
+
+    assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + 1.0
+    assert charged(0.12) == pytest.approx(4.9642, abs=1e-3)
+    assert charged(0.12) < MAX_SPL_SPEND_BOUND_DB
+    # The first arrangement past the gate's cap, and it is past the bound too.
+    assert charged(0.115) == pytest.approx(5.0401, abs=1e-3)
+    assert charged(0.115) > MAX_SPL_SPEND_BOUND_DB
+
+
+@pytest.mark.parametrize(("freq", "gain", "expected_charge"), [
+    # The shallowest admissible boost in the branch's own passband: the charge
+    # is a STEP, because the margin is paid in full the moment a chain crosses
+    # unity at all. This is what "the first dB costs about 1.5" means.
+    (6245.0, 0.5, 1.4699),
+    (6245.0, 1.5, 2.4699),
+    (6245.0, 3.0, 3.9699),
+    # Buried in the tweeter's own crossover stopband (58.3 dB down at 300 Hz):
+    # the chain never exceeds unity, so nothing is charged and the household
+    # gives up no maximum SPL at all.
+    (300.0, 3.0, 0.0),
+])
+def test_the_boost_charge_is_a_step_function_not_a_proportional_one(
+    freq, gain, expected_charge,
+):
+    preset = _preset()
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(freq, gain, q=8.0)]},
+    )
+
+    assert _headroom_gain_db(flat) - _headroom_gain_db(text) == pytest.approx(
+        expected_charge, abs=1e-3
+    )
+
+
+def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
+    """The runtime contract re-derives the chain peak off the graph TEXT.
+
+    Nothing about the prescription reaches this proof — it reads the emitted
+    filters, the emitted crossover and the emitted headroom gain — so an
+    admitted boost has to survive a re-derivation that never saw the gate.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM,
+        linearization={"tweeter": [_peak(6245.0, 3.0, q=8.0)]},
+    )
+
+    graph = classify_camilla_graph(topology=topology, text=text)
+
+    assert graph.allowed is True, graph.issues
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+def test_the_emitter_still_refuses_a_boost_past_its_own_rail():
+    """The gate's 3.0 dB ceiling is the FIRST of two, never the only one.
+
+    PR-A opens a narrower permission inside a rail that already existed and is
+    unchanged: the emitter raises rather than clamps at 12 dB, whatever any
+    intake accepted.
+    """
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_baseline_config(
+            _preset(), playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [
+                _peak(6245.0, MAX_LINEARIZATION_BOOST_DB + 0.1, q=8.0),
+            ]},
+        )
 
 
 def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
