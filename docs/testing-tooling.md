@@ -1946,6 +1946,15 @@ jasper-classify-features <bundle-dir> --dumps <ring> --walk-log logs/walk-1.json
 jasper-classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
 ```
 
+It composes directly with
+[`scripts/bank-crossover-round.sh`](../scripts/bank-crossover-round.sh), whose
+`<dest>` holds exactly the two inputs this wants:
+
+```sh
+bash scripts/bank-crossover-round.sh <dest>
+jasper-classify-features <dest>/bundle/<session> --dumps <dest>/dumps
+```
+
 `<bundle-dir>` is a commissioning bundle; the round directory inside it is
 found by the same rule the packet reader uses, so the artifact cannot land
 where the reader does not look. `--dumps` is the banked capture ring, scoped to
