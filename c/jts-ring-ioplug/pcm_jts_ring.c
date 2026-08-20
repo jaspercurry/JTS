@@ -118,15 +118,16 @@
 //    jump to a zero delta (Q1b) — the same clamp keeps hw_ptr non-decreasing.
 //    The host test compiles against that shared function, so a regression in it
 //    fails `make test` rather than only showing up on hardware.
-// 8. Productization delta: the timerfd poll (period/4) becomes a FUTEX_WAIT on
+// 8. Productization delta: the timerfd poll becomes a FUTEX_WAIT on
 //    the reserved header futex_word; the lab drop-in becomes a reconciler-owned
 //    device. No SHM header change. The reconciler must size n_slots from the
 //    active camilla config's target_level (Q3), not a fixed ping-pong 2.
 //
 // Poll model: cross-process SHM means the reader cannot arm an eventfd in this
 // process, so we cannot signal "space became available" the way an in-process
-// plugin would. The honest prototype uses a timerfd firing every ~period/4;
-// poll_revents reports POLLOUT iff the ring currently has space. ALSA's
+// plugin would. The honest prototype uses a timerfd whose interval
+// jts_ring_timer_cadence_ns owns (~period/4, or the whole period on a governed
+// playback PCM); poll_revents reports POLLOUT iff the ring currently has space. ALSA's
 // mmap/rw loop tolerates this (it re-polls); it is a poll, not a precise
 // wakeup. The productization is the futex wait noted above.
 //
@@ -188,9 +189,7 @@ typedef struct {
     // like the wire above; jts_ring_pace_apply owns what it means and ptr_state
     // holds the bucket.
     int pace_nominal;
-    uint64_t pace_prev_throttled; // edge-logging state; see pace_log_edges
-    uint64_t pace_log_ns;
-    int pace_bound;
+    jts_ring_pace_log_state_t pace_log; // edge detection; jts_ring_pace_log_step
     int opened; // writer/reader attached
     // --- PLAYBACK staging (writer) ---
     // Camilla may writei() fewer than a whole slot at a time; we accumulate into
@@ -300,22 +299,18 @@ static void disarm_timer(jts_ring_pcm_t *p) {
     timerfd_settime(p->timer_fd, 0, &its, NULL);
 }
 
-// Announce the governor's bind/release EDGES, one pair per window. The storm used
-// to announce a stalled reader by itself; the governor silences that signature, so
-// without this a wedged reader looks like healthy playback. Edges only — a bound
-// governor is the steady state under a dead reader. A suppressed bind leaves
-// `pace_bound` clear so its release is suppressed too and the pairs stay balanced.
+// Print what jts_ring_pace_log_step decided. The decision is the header's; this
+// owns only the wording and the one-per-window interval.
 #define JTS_RING_PACE_LOG_INTERVAL_NS 60000000000ull
 static void pace_log_edges(jts_ring_pcm_t *p, uint64_t now_ns) {
-    uint64_t throttled = p->ptr_state.pace_throttled_frames;
-    int bound_now = throttled > p->pace_prev_throttled;
-    p->pace_prev_throttled = throttled;
-    if (bound_now == p->pace_bound) return;
-    if (bound_now && now_ns - p->pace_log_ns < JTS_RING_PACE_LOG_INTERVAL_NS) return;
-    p->pace_bound = bound_now;
-    if (bound_now) p->pace_log_ns = now_ns;
-    SNDERR("jts_ring: pace %s path=%s throttled_frames=%llu",
-           bound_now ? "bind" : "release", p->path, (unsigned long long)throttled);
+    uint64_t bound_ns = p->ptr_state.pace_bound_ns;
+    jts_ring_pace_log_event_t ev = jts_ring_pace_log_step(&p->pace_log, bound_ns, now_ns,
+                                                          JTS_RING_PACE_LOG_INTERVAL_NS);
+    if (ev == JTS_RING_PACE_LOG_NONE) return;
+    SNDERR("jts_ring: pace %s path=%s bound_s=%llu.%03llu",
+           ev == JTS_RING_PACE_LOG_BIND ? "bind" : "release", p->path,
+           (unsigned long long)(bound_ns / 1000000000ull),
+           (unsigned long long)((bound_ns / 1000000ull) % 1000ull));
 }
 
 // ---- ioplug callbacks ----
@@ -355,8 +350,11 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
 static int jts_ring_start(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
     // Anchor at start, not prepare: a prepare-to-start gap would otherwise refill
-    // the bucket for time the app could not have used.
-    jts_ring_pace_start(&p->ptr_state, jts_ring_monotonic_raw_ns());
+    // the bucket for time the app could not have used. Shared by both directions;
+    // the governed-playback gate is inside jts_ring_pace_start.
+    jts_ring_pace_start(&p->ptr_state, p->pace_nominal,
+                        io->stream == SND_PCM_STREAM_PLAYBACK,
+                        jts_ring_monotonic_raw_ns());
     arm_timer(p);
     return 0;
 }
@@ -1173,8 +1171,9 @@ SND_PCM_PLUGIN_DEFINE_FUNC(jts_ring) {
     if (!p) return -ENOMEM;
     p->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (p->timer_fd < 0) {
-        // Ungoverned: not fatal, alsa-lib falls back to its own timeout. Governed
-        // playback: fatal. The bucket closes `avail` on purpose so the app must
+        // Ungoverned: not fatal — this has always been a warning, and what
+        // alsa-lib does with zero poll descriptors is not something this tree has
+        // tested. Governed playback: fatal. The bucket closes `avail` so the app must
         // WAIT, and with no fd to wait on (count still claims 1, descriptors supply
         // none) that is a spin. Fail the open — a source that will not start is
         // loud; one that pins a core is not.

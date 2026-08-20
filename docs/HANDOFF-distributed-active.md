@@ -365,10 +365,12 @@ therefore has **exactly one** rate loop. Two configurations follow from this:
   bakes the wire. The grouping ring's **playback** side carries a token-bucket
   rate floor (`pace_nominal` in
   [`62-jts-ring-grouping.conf`](../deploy/alsa/conf.d/62-jts-ring-grouping.conf)) —
-  a storm guard for a stalled or dead reader, inert against any live DAC-paced
-  reader, and **not** a second loop; the capture side camilla#2 reads is
-  ungoverned. Contract and constants: `jts_ring_pace_apply` in
-  [`jts_ring_shm.h`](../c/jts-ring-ioplug/jts_ring_shm.h).
+  a storm guard for a stalled or dead reader, inert against a DAC-paced reader,
+  and **not** a second loop; the capture side camilla#2 reads is ungoverned.
+  Contract and constants: `jts_ring_pace_apply` in
+  [`jts_ring_shm.h`](../c/jts-ring-ioplug/jts_ring_shm.h). **The inertness is
+  proven at the core by host tests, not yet on metal** — the governed build has
+  had no snapclient + camilla + DAC pass, and that pass gates the wave.
 - **With leader TTS:** TTS must be summed **pre-crossover** (camilla#2 has a
   single capture and cannot mix a second source), so a summing stage moves in
   front of camilla#2 and **becomes the sole loop**; camilla#2 then runs
@@ -1391,7 +1393,10 @@ moved off snd-aloop pair 6 onto the grouping ring, so the role/capture contract,
 the active-follower branch, the engine-decision clock cells, the shm_ring
 coupling note and the follower_config passage were re-read against
 `jasper/multiroom/{reconcile,follower_config,grouping_ring}.py`; the `--latency`
-knob was re-read against `jasper.multiroom.config`. Nothing else in this file
+knob was re-read against `jasper.multiroom.config`. The one-rate-loop block's
+`pace_nominal` sentence was written against
+`c/jts-ring-ioplug/jts_ring_shm.h` and is core-verified only — its hardware pass
+is owed. Nothing else in this file
 was re-read, and the dated entries below remain a historical record.
 Prior 2026-08-15: active-leader positive handle barrier — the release
 signal is a NON-BLOCKING exclusive `flock` on the ACTIVE ring's writer lock,

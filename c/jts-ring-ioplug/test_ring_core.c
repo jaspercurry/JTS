@@ -3315,7 +3315,7 @@ static uint64_t pace_report(jts_ring_pointer_state_t *st, uint64_t honest,
 static jts_ring_pointer_state_t pace_state_started(void) {
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1);
+    jts_ring_pace_start(&st, 1, 1, 1);
     return st;
 }
 
@@ -3437,7 +3437,7 @@ static void test_pace_bucket_binds_when_the_app_outruns_the_clock(void) {
           "a greedy app is held to the refill rate, not its demand");
     CHECK(reported + PACE_BUFFER + PACE_PERIOD >= pace_expected_frames(1),
           "a greedy app still gets the whole refill (the bucket is not a brake)");
-    CHECK(st.pace_throttled_frames > 0, "throttling is counted while the bucket binds");
+    CHECK(st.pace_bound_ns > 0, "bound time accrues while the bucket binds");
     CHECK(st.pace_tokens <= PACE_BUFFER * 1024ull, "the bucket never holds more than one buffer");
 }
 
@@ -3460,7 +3460,7 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
         CHECK(got == honest, "a device-paced app is reported honestly");
     }
     CHECK(gov.last_reported == ref.last_reported, "carried position matches too");
-    CHECK(gov.pace_throttled_frames == 0, "an inert governor throttles nothing");
+    CHECK(gov.pace_bound_ns == 0, "an inert governor accrues no bound time");
 
     // ...and it must still be inert against a device running as far off nominal as
     // this fleet's own hardware does. The dongle measures ~667 ppm
@@ -3478,9 +3478,106 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
         fast_honest += (fast_honest * 667ull) / 1000000ull;
         pace_report(&fast, fast_honest, PACE_BUFFER, PACE_PERIOD, 1, fast_now);
     }
-    CHECK(fast.pace_throttled_frames == 0,
+    CHECK(fast.pace_bound_ns == 0,
           "a 667 ppm fast device — this fleet's measured drift — never binds");
     CHECK(fast.last_reported == fast_honest, "and is reported honestly throughout");
+}
+
+static void test_pace_bound_ns_measures_time_not_call_rate(void) {
+    // The operator-facing number. It must be O(truth), not O(how often ALSA asked:
+    // `want` is a STANDING backlog re-presented on every call, so a frames-withheld
+    // sum counts one shortfall once per pointer call and inflates without bound as
+    // the consumer polls harder. Same 10 simulated seconds of solid binding, driven
+    // at two call rates two orders apart; both must read ~10 s and agree.
+    const uint64_t window_s = 10;
+    const uint64_t rates[] = {375, 50000}; // calls/s: the poll cadence, and a spinner
+    uint64_t measured[2];
+    for (size_t i = 0; i < 2; i++) {
+        jts_ring_pointer_state_t st = pace_state_started();
+        uint64_t calls = window_s * rates[i];
+        uint64_t step_ns = PACE_NS_PER_S / rates[i];
+        for (uint64_t c = 1; c <= calls; c++) {
+            pace_report(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1,
+                        1 + c * step_ns);
+        }
+        measured[i] = st.pace_bound_ns;
+        // Within one call interval of the true window at either rate.
+        CHECK(measured[i] + step_ns >= window_s * PACE_NS_PER_S &&
+                  measured[i] <= window_s * PACE_NS_PER_S,
+              "bound time reads the wall-clock window it was bound for");
+    }
+    uint64_t hi = measured[0] > measured[1] ? measured[0] : measured[1];
+    uint64_t lo = measured[0] > measured[1] ? measured[1] : measured[0];
+    CHECK(hi - lo < PACE_NS_PER_S / 100,
+          "and the two call rates agree — the number is not O(call rate)");
+}
+
+static void test_pace_start_only_anchors_a_governed_playback_pcm(void) {
+    // `start` is shared by both directions and by every ungoverned PCM, so the
+    // gate lives inside jts_ring_pace_start. Without it the bucket is anchored on
+    // rings that must never be governed, which is both a false claim in the
+    // header and a live governor one conf.d edit away.
+    const struct { int governed, playback, anchors; } cases[] = {
+        {1, 1, 1}, // the grouping ring's playback direction: the only anchored case
+        {1, 0, 0}, // same PCM, capture direction
+        {0, 1, 0}, // every other ring's playback
+        {0, 0, 0}, // every other ring's capture
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        jts_ring_pointer_state_t st;
+        memset(&st, 0, sizeof(st));
+        jts_ring_pace_start(&st, cases[i].governed, cases[i].playback, 7 * PACE_NS_PER_S);
+        if (cases[i].anchors) {
+            CHECK(st.pace_last_ns == 7 * PACE_NS_PER_S, "governed playback anchors");
+        } else {
+            CHECK(st.pace_last_ns == 0,
+                  "an ungoverned or capture stream leaves the bucket untouched");
+        }
+    }
+}
+
+static void test_pace_log_step_edges_and_rate_limit(void) {
+    // Edge detection, the rate limit, and the boot-window sentinel. The plugin
+    // only prints what this decides, so the decision is checkable here.
+    const uint64_t interval = 60 * PACE_NS_PER_S;
+    jts_ring_pace_log_state_t ls;
+    memset(&ls, 0, sizeof(ls));
+
+    // Healthy: bound_ns never advances, so nothing is ever said.
+    for (int i = 0; i < 10; i++) {
+        CHECK(jts_ring_pace_log_step(&ls, 0, (uint64_t)i * PACE_NS_PER_S, interval) ==
+                  JTS_RING_PACE_LOG_NONE,
+              "a governor that never binds says nothing");
+    }
+
+    // BOOT WINDOW: `now` is CLOCK_MONOTONIC_RAW, so a PCM opened seconds after boot
+    // sits well inside `interval` of zero. The first bind must still be announced —
+    // last_log_ns == 0 is a sentinel, not a timestamp to subtract from.
+    CHECK(jts_ring_pace_log_step(&ls, 100, 5 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_BIND,
+          "the first bind is announced even seconds after boot");
+    // Still bound: no repeat.
+    CHECK(jts_ring_pace_log_step(&ls, 200, 6 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_NONE,
+          "a standing bind is not re-announced per call");
+    // Release closes the pair, and is never rate-limited.
+    CHECK(jts_ring_pace_log_step(&ls, 200, 7 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_RELEASE,
+          "the release is announced when binding stops");
+
+    // A re-bind inside the window is SUPPRESSED — and because it is, its release
+    // must be suppressed too, or the journal shows an unmatched release.
+    CHECK(jts_ring_pace_log_step(&ls, 300, 8 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_NONE,
+          "a re-bind inside the window is suppressed");
+    CHECK(jts_ring_pace_log_step(&ls, 300, 9 * PACE_NS_PER_S, interval) ==
+              JTS_RING_PACE_LOG_NONE,
+          "and its release is suppressed with it — pairs stay balanced");
+
+    // Past the window, the next bind speaks again.
+    CHECK(jts_ring_pace_log_step(&ls, 400, 5 * PACE_NS_PER_S + interval + 1, interval) ==
+              JTS_RING_PACE_LOG_BIND,
+          "the next window's bind is announced");
 }
 
 static void test_pace_burst_is_capped_at_one_buffer_however_long_the_idle(void) {
@@ -3579,7 +3676,7 @@ static void test_pace_quantizes_only_when_it_binds(void) {
     uint64_t now = 1 + PACE_NS_PER_S; // a full second of refill: the bucket is capped
     uint64_t got = pace_report(&inert, 7, PACE_BUFFER, PACE_PERIOD, 1, now);
     CHECK(got == 7, "an unbound grant is exact, not period-floored");
-    CHECK(inert.pace_throttled_frames == 0, "and nothing is counted as throttled");
+    CHECK(inert.pace_bound_ns == 0, "and no bound time is accrued");
 }
 
 static void test_pace_report_is_monotonic_across_mode_changes(void) {
@@ -3623,11 +3720,11 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
         uint64_t want = legacy_clamp(&ref, 1000000000000ull, PACE_BUFFER, PACE_PERIOD);
         CHECK(got == want, "an unstarted stream is ungoverned (start never ran)");
     }
-    CHECK(st.pace_throttled_frames == 0, "an unstarted governor throttles nothing");
+    CHECK(st.pace_bound_ns == 0, "an unstarted governor accrues no bound time");
 
     // START anchors it; the governor now binds a greedy app.
     jts_ring_pointer_state_reset(&st);
-    jts_ring_pace_start(&st, 5 * PACE_NS_PER_S);
+    jts_ring_pace_start(&st, 1, 1, 5 * PACE_NS_PER_S);
     CHECK(st.pace_last_ns == 5 * PACE_NS_PER_S, "start anchors the bucket at now");
     CHECK(st.pace_tokens == 0, "start leaves the bucket EMPTY (ALSA owns the prefill)");
     // 100 ms of refill: enough to grant several whole periods, so the report moves
@@ -3637,12 +3734,12 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
                                5 * PACE_NS_PER_S + 100000000ull);
     CHECK(got < 1000000000000ull, "a started governor binds a greedy app");
     CHECK(got > 0, "and still grants the periods the refill paid for");
-    CHECK(st.pace_throttled_frames > 0, "and counts what it withheld");
+    CHECK(st.pace_bound_ns > 0, "and accrues bound time");
 
     // PREPARE clears everything the run above dirtied — asserted HERE, with a
     // genuinely dirty bucket, not before one existed. Leaving tokens or a throttle
     // count behind would let a restarted stream inherit credit it never earned.
-    CHECK(st.pace_last_ns != 0 && st.pace_throttled_frames != 0 && st.last_reported != 0,
+    CHECK(st.pace_last_ns != 0 && st.pace_bound_ns != 0 && st.last_reported != 0,
           "the state really is dirty before the reset (the assertion below is live)");
     // Give it a surplus too, so a reset that skipped `pace_tokens` alone is caught.
     pace_report(&st, st.last_reported, PACE_BUFFER, PACE_PERIOD, 1,
@@ -3650,13 +3747,13 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
     CHECK(st.pace_tokens != 0, "...including a nonzero bucket");
     jts_ring_pointer_state_reset(&st);
     CHECK(st.last_reported == 0 && st.pace_last_ns == 0 && st.pace_tokens == 0 &&
-              st.pace_throttled_frames == 0,
+              st.pace_bound_ns == 0,
           "prepare clears the reported position and the whole bucket");
 
     // A zero clock sample at start still anchors (0 is the not-started sentinel).
     jts_ring_pointer_state_t zero_st;
     memset(&zero_st, 0, sizeof(zero_st));
-    jts_ring_pace_start(&zero_st, 0);
+    jts_ring_pace_start(&zero_st, 1, 1, 0);
     CHECK(zero_st.pace_last_ns != 0, "start forces a nonzero anchor");
 }
 
@@ -3715,7 +3812,7 @@ static void test_pace_off_is_byte_identical_to_the_pre_governor_core(void) {
                 CHECK(got_st.last_reported == want_st.last_reported,
                       "pace_nominal 0 leaves the carried state identical too");
             }
-            CHECK(got_st.pace_tokens == 0 && got_st.pace_throttled_frames == 0,
+            CHECK(got_st.pace_tokens == 0 && got_st.pace_bound_ns == 0,
                   "an ungoverned call never touches the bucket");
         }
     }
@@ -3755,7 +3852,7 @@ static void test_pace_capture_core_is_ungoverned(void) {
             CHECK(got == want, "the capture core is byte-identical to its pre-wave self");
         }
         CHECK(got_st.pace_tokens == 0 && got_st.pace_last_ns == 0 &&
-                  got_st.pace_throttled_frames == 0,
+                  got_st.pace_bound_ns == 0,
               "the capture core never touches the governor's bucket");
     }
 }
@@ -3781,7 +3878,7 @@ static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
     ioplug_model_t m = ioplug_model_new(&g);
     m.pace_nominal = 1;
     m.now_ns = 1;
-    jts_ring_pace_start(&m.ptr, m.now_ns);
+    jts_ring_pace_start(&m.ptr, 1, 1, m.now_ns);
     const uint64_t buffer = m.buffer_size;
     uint64_t accepted = 0, accepted_at_half = 0;
     const uint64_t window_ms = 200;
@@ -3821,7 +3918,7 @@ static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
     // (or near) zero, which is the failure the governor must not create.
     CHECK(accepted >= half_nominal,
           "the gate reopened on every clock advance (paced, never wedged)");
-    CHECK(m.ptr.pace_throttled_frames > 0,
+    CHECK(m.ptr.pace_bound_ns > 0,
           "the throttle counter records the storm the log line announces");
 
     free(s);
@@ -3906,6 +4003,9 @@ int main(void) {
     test_pace_refill_overflow_bound();
     test_pace_bucket_binds_when_the_app_outruns_the_clock();
     test_pace_is_inert_when_the_device_binds_first();
+    test_pace_bound_ns_measures_time_not_call_rate();
+    test_pace_start_only_anchors_a_governed_playback_pcm();
+    test_pace_log_step_edges_and_rate_limit();
     test_pace_burst_is_capped_at_one_buffer_however_long_the_idle();
     test_pace_short_stall_catches_up_in_one_call();
     test_pace_sustained_rate_stays_within_nominal_plus_headroom();

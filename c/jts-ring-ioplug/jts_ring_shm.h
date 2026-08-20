@@ -522,7 +522,8 @@ _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 10
 
 // Sub-frame tokens, because the refill is per CALL: at frame resolution every
 // call's remainder is discarded — ~0.78% loss against 0.25% headroom, which
-// throttles a healthy stream. 1/1024 frame makes it ~8 ppm.
+// throttles a healthy stream. Both figures scale with CALL RATE, quoted at the
+// ~375/s the governed poll cadence enforces; 1/1024 frame puts the loss at ~8 ppm.
 #define JTS_RING_PACE_TOKENS_PER_FRAME 1024ull
 
 // Tokens a device at `rate` clocks in `elapsed_ns`, plus the headroom.
@@ -602,9 +603,10 @@ static inline uint64_t jts_ring_timer_cadence_ns(int pace_nominal, int stream_is
 //      call. We track the last reported (pre-modulo) position in
 //      `last_reported` and clamp each call's forward step to at most
 //      buffer_size - period_frames. A true jump of a full buffer then completes
-//      over successive ~period/4 ticks (each tick reveals one more period of
-//      drain), so ALSA sees a sequence of visible sub-buffer deltas instead of
-//      one aliased-to-zero lap. The clamp ALSO subsumes round-3's monotonic
+//      over successive poll ticks (each reveals one more period of drain), so
+//      ALSA sees a sequence of visible sub-buffer deltas instead of one
+//      aliased-to-zero lap. Tick length is jts_ring_timer_cadence_ns's to decide.
+//      The clamp ALSO subsumes round-3's monotonic
 //      floor: because we only ever move `last_reported` FORWARD (by a bounded
 //      amount) and never below it, the reported position is non-decreasing by
 //      construction — one unified state, not two clamps.
@@ -620,22 +622,28 @@ typedef struct {
     uint64_t last_reported; // last raw hw_ptr handed to ALSA (pre-modulo)
     // Governor bucket; all three stay zero on an ungoverned PCM. pace_last_ns is
     // also the started flag — 0 means `start` has not run and the governor is inert.
-    uint64_t pace_last_ns;          // clock sample at the previous governed call
-    uint64_t pace_tokens;           // credit, in 1/1024-frame tokens
-    uint64_t pace_throttled_frames; // cumulative frames withheld (observability)
+    uint64_t pace_last_ns; // clock sample at the previous governed call
+    uint64_t pace_tokens;  // credit, in 1/1024-frame tokens
+    // Cumulative wall time spent binding. NOT frames: `want` is a standing backlog
+    // re-presented every call, so summing `want - grant` reads O(call rate).
+    uint64_t pace_bound_ns;
 } jts_ring_pointer_state_t;
 
 static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
     st->last_reported = 0;
     st->pace_last_ns = 0;
     st->pace_tokens = 0;
-    st->pace_throttled_frames = 0;
+    st->pace_bound_ns = 0;
 }
 
 // Stream start: anchor the bucket, EMPTY — ALSA's buffer already lets the app
 // prefill, so credit here would stack a second buffer onto the first wake. Forced
-// nonzero: 0 is the not-started sentinel.
-static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, uint64_t now_ns) {
+// nonzero: 0 is the not-started sentinel. The gate lives HERE because `start` is
+// shared by both directions and every ungoverned PCM — which is what keeps the
+// "all three stay zero on an ungoverned PCM" claim above true of the plugin.
+static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, int pace_nominal,
+                                       int stream_is_playback, uint64_t now_ns) {
+    if (!pace_nominal || !stream_is_playback) return;
     st->pace_last_ns = (now_ns == 0) ? 1 : now_ns;
     st->pace_tokens = 0;
 }
@@ -651,9 +659,12 @@ static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, uint64_t no
 // headroom, caps at `buffer_size`, and grants at most what it holds. Returns
 // `honest` unchanged when the bucket covers the whole advance (a device-paced app
 // reads bit-for-bit as it would with no governor), else `last_reported + granted`.
-// `pace_nominal == 0`, or an unanchored bucket, returns `honest` untouched. It only
-// ever lowers a value; the caller's forward-only clamp owns monotonicity, which is
-// why this runs BEFORE it.
+// `pace_nominal == 0`, or an unanchored bucket, returns `honest` untouched.
+//
+// IT RUNS BEFORE THE CLAMP so it sees the app's REAL demand: token spend and bound
+// accounting are both functions of `want`, which the clamp has already truncated to
+// buffer - period. Not for monotonicity — this anchors on `last_reported` and only
+// lowers, so it is monotone on its own.
 //
 // Per-call anchoring is what keeps it from being an INTEGRATOR: an absolute anchor
 // accumulates a persistent clock difference without bound — a deficit that binds a
@@ -684,8 +695,44 @@ static inline uint64_t jts_ring_pace_apply(jts_ring_pointer_state_t *st, uint64_
     uint64_t grant = affordable;
     if (period_frames > 0) grant -= grant % (uint64_t)period_frames;
     st->pace_tokens -= grant * JTS_RING_PACE_TOKENS_PER_FRAME;
-    st->pace_throttled_frames += want - grant;
+    st->pace_bound_ns += dt; // this call's interval was spent binding
     return st->last_reported + grant;
+}
+
+// Bind/release edge detection (pure; the plugin only prints the result). Needed
+// because a governed PCM is QUIET where the storm above was self-announcing.
+typedef enum {
+    JTS_RING_PACE_LOG_NONE = 0,
+    JTS_RING_PACE_LOG_BIND = 1,
+    JTS_RING_PACE_LOG_RELEASE = 2,
+} jts_ring_pace_log_event_t;
+
+typedef struct {
+    uint64_t prev_bound_ns; // pace_bound_ns at the previous call
+    uint64_t last_log_ns;   // when the standing bind was announced; 0 = never
+    int bound;              // last announced state
+} jts_ring_pace_log_state_t;
+
+// EDGES only (a bound governor is the steady state under a dead reader), one BIND
+// per `interval_ns`, and a suppressed bind leaves `bound` clear so its release is
+// suppressed with it. `last_log_ns == 0` is a SENTINEL, never a timestamp to
+// subtract from: `now_ns` is CLOCK_MONOTONIC_RAW, so a PCM opened inside the first
+// interval after boot would otherwise lose its very first bind.
+static inline jts_ring_pace_log_event_t
+jts_ring_pace_log_step(jts_ring_pace_log_state_t *ls, uint64_t bound_ns, uint64_t now_ns,
+                       uint64_t interval_ns) {
+    int bound_now = bound_ns > ls->prev_bound_ns;
+    ls->prev_bound_ns = bound_ns;
+    if (bound_now == ls->bound) return JTS_RING_PACE_LOG_NONE;
+    if (bound_now && ls->last_log_ns != 0 && now_ns - ls->last_log_ns < interval_ns) {
+        return JTS_RING_PACE_LOG_NONE;
+    }
+    ls->bound = bound_now;
+    if (bound_now) {
+        ls->last_log_ns = now_ns;
+        return JTS_RING_PACE_LOG_BIND;
+    }
+    return JTS_RING_PACE_LOG_RELEASE;
 }
 
 // Inputs the pointer core needs, gathered by the caller (which owns the ALSA
