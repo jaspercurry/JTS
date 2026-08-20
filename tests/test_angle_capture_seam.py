@@ -596,7 +596,7 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
 def test_the_capacity_gate_admits_exactly_what_the_relay_accepts(
     plans_cloud_group: bool,
 ) -> None:
-    """The gate's verdict IS the relay's, at the boundary, both ways.
+    """The gate's verdict IS the relay's, at every stop count, on both shapes.
 
     Stated as agreement with ``_validate_capture_plan`` rather than as its own
     arithmetic, because the first version of this gate had its own and was
@@ -605,10 +605,14 @@ def test_the_capacity_gate_admits_exactly_what_the_relay_accepts(
     cloud group is planned, so it refused the two largest LEGAL walks (23 and
     24 stops on the shipped cloud-less shape — the relay accepts both).
 
-    Building the plan the session would emit and asking the relay is the whole
-    method here. A gate that agrees with the thing it is guarding cannot drift
-    from it, which is why ``stage1_plan_max_attempts`` is now one producer with
-    two readers.
+    **What this catches is DRIFT between the producer and its two readers**, and
+    that is the whole of what it claims. Both sides here reach
+    ``stage1_plan_max_attempts``, so a producer that became wrong in a way BOTH
+    inherit would move them together and this would stay green. That case is
+    carried by the two siblings below, which pin absolute numbers rather than
+    agreement: ``…is_never_refused_for_capacity`` (24 stops fit at base 3) and
+    ``…is_where_the_capacity_gate_bites`` (base 11, and 19 stops do not). Read
+    the three together — this one says they agree, those two say about what.
     """
     from jasper.capture_relay.spec import CaptureSpecError, _validate_capture_plan
 
@@ -706,6 +710,12 @@ def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
     With the pre-apply cloud on, the base entries alone take 11 of the relay's
     32 indexes and the plan budgets geometry retakes too, so the walk that fits
     is far shorter than anything the spool would refuse to bank.
+
+    Pinned from BOTH sides at the exact boundary (14 fits, 15 does not) rather
+    than as "some long walk refuses". A one-directional refusal assertion is
+    satisfied by ANY budget at least this tight, including a wrong one: a
+    mutation that doubled the retake allowance left the one-sided version green,
+    which is how this test came to have a lower edge.
     """
     shape = flow.resolve_plan_shape(flow.TIER_FULL)
     base_entries = len(flow.build_v2_cloud_index_phase_map(
@@ -713,9 +723,19 @@ def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     ))
     assert base_entries == 11
+
+    # 11 entries + 14 stops + 2 geometry retakes + 5 spare = 32, the ceiling.
+    fits = ac.session_lateral_walk(
+        ac.per_driver_at(list(range(1, 15))),
+        externally_positioned=False,
+        base_entries=base_entries,
+        plans_cloud_group=True,
+    )
+    assert len(fits) == 14
+
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.session_lateral_walk(
-            ac.per_driver_at(list(range(1, 20))),
+            ac.per_driver_at(list(range(1, 16))),
             externally_positioned=False,
             base_entries=base_entries,
             plans_cloud_group=True,

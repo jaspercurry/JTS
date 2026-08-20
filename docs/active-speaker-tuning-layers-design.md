@@ -1801,13 +1801,16 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, twice now
-and for one reason: the footer is a whole-document claim, and neither pass
+**The `Last verified:` footer below was deliberately NOT bumped**, three times
+now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
 per-driver prescription class trued up the P3 table's rules 1, 2 and 3, the
 stage's own STATUS count, and recorded the two rulings that change forced —
-because that change is what made them stale or newly needed. It did not verify
-anything else here.
+because that change is what made them stale or newly needed. The pass that
+gave the angle walk a session to take (#2732) recorded the (a)-ruling in
+Stage P2 and trued up that stage's STATUS line, its lead-in, its fourth bullet
+and the per-pose-replay parenthesis below — every one of them a claim that
+change falsified. None verified anything else here.
 
 Last verified: 2026-08-18

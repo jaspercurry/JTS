@@ -2209,7 +2209,8 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # on the speaker is the one it authorized". Neither question EXISTS when no
     # candidate sweep ran: the sweep fires only for a lateral walk whose
     # consumer adjudicates, so ``fc_selection`` is absent on every shipped
-    # session — with the pause, and with an operator's staged walk too. Reading that absence as an unfinished comparison made
+    # session — with the pause, and with an operator's staged walk too.
+    # Reading that absence as an unfinished comparison made
     # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
     # a successful commission told the household "not enough complete evidence
     # to grade… this report changed nothing automatically" over a tune that IS

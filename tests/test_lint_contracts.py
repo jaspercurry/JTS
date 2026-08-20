@@ -1002,7 +1002,7 @@ MAX_LINES_BY_PATH = {
     # exactly the fact a session host owns — and this file learned no new fact
     # about angles, poses or programs.
     #
-    # ...and 8,984 -> 9,021 (#2753 gate round 1), +37, all of it inside
+    # ...and 8,984 -> 9,022 (#2753 gate rounds 1-2), +38, all of it inside
     # `_take_staged_angle_walk` and its contract:
     #    19  the take was not fail-closed. `take_staged_angle_request` re-raises
     #        the seam's bare `CrossoverV2FlowError` for a banked stop it can no
@@ -1016,7 +1016,10 @@ MAX_LINES_BY_PATH = {
     #        mistake cannot destroy the evidence of itself. It is read back now.
     #     6  `plans_cloud_group` threaded through, so the capacity gate asks the
     #        budget this session will actually emit.
-    "jasper/web/correction_crossover_v2.py": 9_021,
+    #     1  gate round 2, nit A: one 125-char comment line wrapped to the
+    #        block's convention. No words changed, and E501 is not in the ruff
+    #        set, so the wrap is the whole of it.
+    "jasper/web/correction_crossover_v2.py": 9_022,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

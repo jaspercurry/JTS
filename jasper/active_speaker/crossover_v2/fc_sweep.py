@@ -26,10 +26,11 @@ Both ways a round commits its configured Fc and ``fc_selection`` stays
 
 The owner ruled the walk paused on 2026-08-18; the flip lands as PR #2717.
 Read that as a scheduled change, not as this module's state: consult the flag
-and the group's consumer for which world you are in.  Either way nothing here changed and nothing here
-is dead — the flag's value is the only input, and the module is kept intact for
-the redesigned lateral statistic the pause is waiting on.  Read every "runs at"
-and "at the walk's close" below as "when an ADJUDICATING walk is in the plan".
+and the group's consumer for which world you are in.  Either way nothing here
+changed and nothing here is dead — what decides whether this module runs sits
+entirely outside it, in those two facts, and it is kept intact for the
+redesigned lateral statistic the pause is waiting on.  Read every "runs at" and
+"at the walk's close" below as "when an ADJUDICATING walk is in the plan".
 
 **Why it could not move until now.**  ``evaluate_candidate`` consumes a build
 product, and through it the linearization state and the cloud terms — which is
