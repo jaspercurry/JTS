@@ -80,9 +80,11 @@ the prompt says. Source: AGENTS.md, "The standing multi-agent method".
 
 ## Spikes — run in this order; S0 gates everything after it
 
-- **S5** — demoted: opportunistic pre-deploy baseline only, gates nothing. What
-  to record (design §10.2 S5): **snapclient's hard-sync frequency on the current
-  build** — the baseline any ring-ingress change must beat.
+- **S5** — demoted: opportunistic pre-deploy baseline only, gates nothing. Two
+  things to record (design §10.2 S5): **snapclient's hard-sync frequency on the
+  current build** — the baseline any ring-ingress change must beat — and, once
+  step 0.2 has applied a baseline and a bond exists, the leader crossover
+  config's `enable_rate_adjust` / `chunksize`.
 - **S0** — does snapclient negotiate against the ioplug at all (the
   snapcast#1154 −77 shape is the known failure signature). Fallback geometry
   if falsified: 256×16 (§3.2) — with the L-05 truth in mind: that geometry
@@ -191,13 +193,26 @@ Write the evidence file at `captures/8.7-EVIDENCE-grouping-ring-<date>.md` (the
 path design §10.3 step 7 names), at §8.7 grade — mirror
 captures/8.7-EVIDENCE-jts-local-2026-08-17.md's structure, print-what-you-assert,
 every number with the command that produced it, and §10.3's four scope
-statements verbatim. Then close **#2581**, then **#2508**, then **#2481 with
-the OD-4 narrow-close comment**: grouping is on the ring; pair 6 has one
-consumer left
+statements verbatim — EXCEPT that the acoustic p99's tracking home is **issue
+#2768**, not the #889 that §10.3 still names (#889 is a merged PR; the sealed
+design is not edited for this).
+
+**The evidence file must outlive `captures/`.** It is written into the very
+directory the merge drops, so before that drop, post its full content as a
+comment on **PR #2766** — the merge it gates — the same survival pattern the
+wave-seal dispositions on that PR already use.
+
+Then close **#2581**, then **#2508**, then **#2481 with the OD-4 narrow-close
+comment**: grouping is on the ring; pair 6 has one consumer left
 (outputd's passive content lane); the snd-aloop module still loads for axes
 2/3; the zero-aloop successor is decided when Phase 2 completes; the only
 live aloop use on the fleet is jts4 fan-in's usbsink idle-read fallback
-(hardware-absent, errno=19).
+(hardware-absent, errno=19). (Sequencing caveat: PR #2766's body says
+"Closes #2581", so GitHub auto-closes **#2581** at merge — verified against the
+PR's own `closingIssuesReferences`, which lists #2581 and nothing else. The
+manual close of #2581 therefore only matters pre-merge. #2508 and #2481 have
+**no** auto-close backstop, and neither does the OD-4 narrow-close comment on
+#2481 — do not lose it.)
 
 ## Deploy target — FINALIZED
 
@@ -254,8 +269,9 @@ the shipped ring seam. Two independent reasons it does not transfer:
    evidence for a mechanism the shipped active-follower no longer has.
 
 The section is now explicitly DATED rather than neutralised, and both of its
-open forward-looking gates (the un-run ≥24 h soak; the clock-topology gate)
-fall inside that dating note. **A ring-seam de-risk is OWED and is not what
+open forward-looking gates (the bench's OWN un-run ≥24 h soak — not §10.2 S3's;
+the clock-topology gate) fall inside that dating note. **A ring-seam de-risk is
+OWED and is not what
 this bench provides** — tracked in **issue #2768**. Do not let a green S0-sync
 bench stand in for S0's actual question (does snapclient negotiate against the
 ioplug at all).
