@@ -40,7 +40,9 @@ Each one is a test in ``tests/test_arm_walk.py``:
   an out-of-envelope target is named by this loop rather than discovered as a
   subprocess failure.
 * **The arm parks at 0 deg and is verified on EVERY exit path** -- a clean
-  finish, an exception, or SIGTERM. The verification is a MAGNITUDE: the
+  finish, an exception, or any of :data:`PARK_ON_SIGNALS` (SIGTERM and SIGINT
+  locally; SIGHUP, which is how an ssh session's own end reaches a remote
+  walk). The verification is a MAGNITUDE: the
   adapter's ``offset`` readback carries a sign this loop does not consume,
   because the command sign is the truth and only the readback's is negated
   upstream. ``abs(offset) < PARK_TOLERANCE_DEG`` is the whole check.
@@ -66,6 +68,7 @@ import http.cookiejar
 import json
 import logging
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -161,6 +164,23 @@ EXIT_RELEASE_REJECTED = 13
 #: :data:`DEFAULT_UNREADABLE_CEILING_S`. Usually the wrong ``--hostname``.
 EXIT_STATUS_UNREACHABLE = 14
 
+#: The signals that stop a walk THROUGH its park rather than around it, and
+#: the shell's own base for "ended by this signal". SIGHUP is the remote
+#: spelling: an ssh session whose transport goes away hangs up this process
+#: group, and Python's default for that is death without unwinding.
+#: :func:`jasper.cli.arm_walk._install_park_on_signals` installs them and exits
+#: ``SIGNAL_EXIT_BASE + signum``.
+PARK_ON_SIGNALS: tuple[signal.Signals, ...] = (
+    signal.SIGHUP, signal.SIGINT, signal.SIGTERM,
+)
+SIGNAL_EXIT_BASE = 128
+#: Ended by a signal, with the park RUN on the way out -- the walk stopping at
+#: someone's request, not failing. Derived rather than spelled 129/130/143, so
+#: these and the handler's own ``sys.exit`` can never disagree.
+EXIT_HANGUP_PARKED = SIGNAL_EXIT_BASE + int(signal.SIGHUP)
+EXIT_INTERRUPTED_PARKED = SIGNAL_EXIT_BASE + int(signal.SIGINT)
+EXIT_TERMINATED_PARKED = SIGNAL_EXIT_BASE + int(signal.SIGTERM)
+
 EXIT_NAMES: Mapping[int, str] = {
     EXIT_OK: "ok",
     EXIT_POWER_VOID: "power_void",
@@ -175,6 +195,9 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_REFUSED: "refused",
     EXIT_RELEASE_REJECTED: "release_rejected",
     EXIT_STATUS_UNREACHABLE: "status_unreachable",
+    EXIT_HANGUP_PARKED: "hangup_parked",
+    EXIT_INTERRUPTED_PARKED: "interrupted_parked",
+    EXIT_TERMINATED_PARKED: "terminated_parked",
 }
 
 
@@ -373,17 +396,27 @@ COMPLETE_PATH = "/correction/crossover/v2/complete"
 _CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
 
 
-class LoopbackSession:
-    """The correction wizard, reached over loopback with the speaker's own Host.
+class WizardClient:
+    """The correction wizard over HTTP: the speaker's Host, and CSRF handled.
 
-    Loopback plus an explicit ``Host:`` header is the shape the deploy's
-    management-surface probe and ``jasper-doctor``'s ``check_management_surface``
-    already use, and it is required rather than stylistic: the wizard's
-    management-host guard rejects a request whose Host is ``127.0.0.1``.
+    The transport every caller of that wizard needs and none of them should own
+    a second copy of. Two rules live here:
 
-    The mutating POSTs carry the double-submit CSRF pair -- the cookie from the
-    jar and the token from the page's ``<meta name="jts-csrf">`` -- exactly as a
-    browser's ``fetch()`` does.
+    * **An explicit** ``Host:`` **header**, the shape the deploy's
+      management-surface probe and ``jasper-doctor``'s
+      ``check_management_surface`` already use. It is required rather than
+      stylistic: the management-host guard rejects a request whose Host is
+      ``127.0.0.1``, and it equally rejects one carrying a DIFFERENT speaker's
+      name -- so this header is the caller's claim about which speaker it
+      believes it is talking to.
+    * **The double-submit CSRF pair** on every mutating POST -- the cookie from
+      the jar and the token from the page's ``<meta name="jts-csrf">`` --
+      exactly as a browser's ``fetch()`` does.
+
+    Bodies come back as TEXT, not parsed: the two consumers want different
+    things from them (this module's ``poll`` builds a typed Poll, the laptop
+    round runner wants JSON), and a client that guessed would make one of them
+    unwrap the guess.
     """
 
     def __init__(
@@ -407,8 +440,8 @@ class LoopbackSession:
 
     # -- transport ---------------------------------------------------------- #
 
-    def _open(self, path: str, *, data: bytes | None = None,
-              headers: Mapping[str, str] | None = None) -> tuple[int, str]:
+    def open(self, path: str, *, data: bytes | None = None,
+             headers: Mapping[str, str] | None = None) -> tuple[int, str]:
         request = urllib.request.Request(
             self._base + path,
             data=data,
@@ -434,13 +467,14 @@ class LoopbackSession:
         """
         if self._csrf:
             return self._csrf
-        _, body = self._open(CSRF_PAGE_PATH)
+        _, body = self.open(CSRF_PAGE_PATH)
         match = _CSRF_META_RE.search(body)
         self._csrf = match.group(1) if match else None
         return self._csrf or ""
 
-    def _post(self, path: str, payload: Mapping[str, Any]) -> tuple[int, str]:
-        return self._open(
+    def post(self, path: str, payload: Mapping[str, Any]) -> tuple[int, str]:
+        """One JSON POST, carrying the double-submit pair."""
+        return self.open(
             path,
             data=json.dumps(dict(payload)).encode("utf-8"),
             headers={
@@ -449,10 +483,19 @@ class LoopbackSession:
             },
         )
 
-    # -- the Session protocol ----------------------------------------------- #
+
+class LoopbackSession(WizardClient):
+    """The position gate's three verbs, over the wizard reached on loopback.
+
+    A :class:`WizardClient` pointed at ``127.0.0.1`` plus the
+    :class:`Session` protocol the walk drives. The split is what lets the
+    laptop round runner (``scripts/run-crossover-round.py``) reach the SAME
+    wizard across the LAN through the same transport, rather than keeping a
+    second copy of the Host-header and CSRF rules that would drift from these.
+    """
 
     def poll(self) -> Poll:
-        status, body = self._open(STATUS_PATH)
+        status, body = self.open(STATUS_PATH)
         if status != 200:
             logger.warning("status read returned %s", status)
             return poll_from_status(None)
@@ -464,10 +507,10 @@ class LoopbackSession:
         return poll_from_status(payload if isinstance(payload, Mapping) else None)
 
     def release(self, index: int) -> tuple[int, str]:
-        return self._post(POSITION_READY_PATH, {"index": int(index)})
+        return self.post(POSITION_READY_PATH, {"index": int(index)})
 
     def complete(self) -> tuple[int, str]:
-        return self._post(COMPLETE_PATH, {})
+        return self.post(COMPLETE_PATH, {})
 
 
 # --------------------------------------------------------------------------- #
@@ -962,7 +1005,9 @@ __all__: Sequence[str] = (
     "DEFAULT_STUCK_ALARM_S",
     "DEFAULT_TOOL_PATH",
     "EXIT_COMPLETE_FAILED",
+    "EXIT_HANGUP_PARKED",
     "EXIT_IDLE_CEILING",
+    "EXIT_INTERRUPTED_PARKED",
     "EXIT_MOVE_FAILED",
     "EXIT_NAMES",
     "EXIT_OK",
@@ -971,11 +1016,14 @@ __all__: Sequence[str] = (
     "EXIT_SESSION_FAILED",
     "EXIT_SETTLE_FLOOR",
     "EXIT_STUCK",
+    "EXIT_TERMINATED_PARKED",
     "EXIT_WALK_NOT_STAGED",
     "EXIT_WALK_NOT_TAKEN",
+    "PARK_ON_SIGNALS",
     "PARK_SETTLE_S",
     "PARK_TOLERANCE_DEG",
     "SETTLE_FLOOR_S",
+    "SIGNAL_EXIT_BASE",
     "Mover",
     "Pending",
     "Poll",
@@ -983,6 +1031,7 @@ __all__: Sequence[str] = (
     "Session",
     "Trail",
     "TurntableMover",
+    "WizardClient",
     "WalkConfig",
     "parse_power",
     "pending_from_relay",

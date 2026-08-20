@@ -2252,7 +2252,7 @@ a checkout), never as an import.
 |---|---|
 | power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `rc 3`. Stricter than the adapter's own gate, which is right for a human at the rig and not for an unattended walk. The PARK's own move is not re-checked, deliberately: the walk is often parking *because* of a power sign, and refusing to go home would strand the arm at the last measured angle. That move still passes the adapter's own preflight, so a park during a live brownout is refused there and reported `ok=false` |
 | ±45° clamp | belt-and-braces over the adapter's own refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
-| park and verify on every exit | clean finish, exception, or SIGTERM. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
+| park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
 | `set-zero` is unreachable | `power`, `position` and `offset` are the complete set of verbs this tool can emit |
 | the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED, so the trail states what was taken, not what was intended |
 
@@ -2293,8 +2293,15 @@ fine. Stating the walk's non-zero angles turns that into `rc 10`. The envelope
 cannot be asked "did you take a walk", so the pre-motion half of the check is
 narrower: with no session yet in flight, a walk must still be staged (`rc 9`).
 
-**A signal stops the walk once.** SIGTERM/SIGINT becomes the `SystemExit` whose
-unwind IS the park — and the handler disarms itself on that first fire, because
+**A signal stops the walk once — and SIGHUP is one of them.** A remote walk is
+stopped by its ssh transport going away: sshd closes the PTY and the kernel
+hangs up this process group. Python's *default* for SIGHUP is death with no
+unwinding, so until `PARK_ON_SIGNALS` gained it, every dropped link — an
+operator's laptop sleeping, a driver terminating its own ssh client — left the
+arm wherever it stood, with the walk's log ending mid-sentence. Signal endings
+exit `128 + signum` (`129` hangup, `130` interrupt, `143` terminate, all named
+`*_parked` in `EXIT_NAMES`) so a trail can tell them from a failure.
+SIGTERM/SIGINT/SIGHUP becomes the `SystemExit` whose unwind IS the park — and the handler disarms itself on that first fire, because
 a second signal arriving mid-park would abandon the arm at an unknown angle with
 no verification, which is the state one signal was meant to avoid. Later signals
 are ignored until the arm is home; `SIGKILL` remains the escape hatch.
@@ -2361,11 +2368,29 @@ second validator here would be a second answer. A walk staged by a round that
 then aborted stays staged, single-use and last-wins: the next session takes it,
 or `jasper-angle-capture withdraw` removes it.
 
+**Stopping a walk is a transport drop, and the park happens elsewhere.** An
+aborted round terminates its ssh client; that drops the PTY, which hangs up the
+remote walk, which parks in its own unwind — on the speaker, after the local
+client is already gone. The runner therefore reports the hangup, never the arm
+as parked: the one thing it can see is its own client exiting.
+[`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
+drives a real two-process double (a client, and a remote running the harness's
+own signal handlers) and asserts the PARK MARKER, so removing SIGHUP from
+`PARK_ON_SIGNALS` or dropping `-tt` each fail it.
+
+**Three configurations are refused before anything runs**: an `--apply` with an
+empty fingerprint (an absent live candidate also reads as empty, so comparing
+would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
+will serve, which otherwise costs ten minutes and ends as a misnamed idle
+ceiling), and an unreadable `--alignment-prescription`.
+
 **Completion is polled, not slept.** The runner waits for the session id to
 move off the one that was there before the open, *and* for the phase to leave
-the flow's own capture/closing set. Both conditions matter: a previous round's
-terminal phase would otherwise read as this round's completion the moment the
-poll started.
+the running set — every capture phase plus `closing` and `applying`, the two
+control-page phases that are a session mid-flight. Both conditions matter: a
+previous round's terminal phase would otherwise read as this round's completion
+the moment the poll started, and treating `closing`/`applying` as terminal
+banks a round while its fit is still running.
 
 **No verdict is re-mapped.** `jasper-arm-walk`'s exit code rides through under
 its own name (`arm_walk_exit=6 arm_walk_exit_name=stuck`), and
@@ -2384,7 +2409,16 @@ refused/blocked/failed, `11` the named fingerprint is not the live candidate
 (nothing was sent). Each carries its deciding value on the phase line and in
 the `--trail` JSONL.
 
-**Which speaker**: an exported `PI_HOST`/`PI_USER` wins over `.env.local`,
+**Which speaker — and both halves of the answer.** The ssh target and the
+speaker's *name* resolve independently, so exporting only `PI_HOST` takes the
+first from you and the second from `.env.local`: a round can then ssh to one
+speaker carrying another's `Host:` header, which the management-host guard
+403s. The runner discloses the pair and where each half came from (the
+`identity` trail row), and a 403 on the open names the mismatch as a possible
+cause with both values — it does not guess which one you meant. `--hostname`
+sets the name explicitly.
+
+An exported `PI_HOST`/`PI_USER` wins over `.env.local`,
 which wins over the `jts.local` default — `scripts/_lib.sh`'s own resolution
 with the caller's exports re-applied over it (the
 [#2689](https://github.com/jaspercurry/JTS/issues/2689) shape). The resolved

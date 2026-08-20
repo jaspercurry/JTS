@@ -80,16 +80,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
-from http.cookiejar import CookieJar
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -98,8 +94,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from jasper.active_speaker.arm_walk import (
-    CSRF_PAGE_PATH,
     STATUS_PATH,
+    WizardClient,
 )
 from jasper.active_speaker.arm_walk import EXIT_NAMES as ARM_WALK_EXIT_NAMES
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
@@ -107,6 +103,7 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
 )
 from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
+    PHASE_APPLYING,
     PHASE_CLOSING,
 )
 from jasper.active_speaker.crossover_v2_flow import TIERS
@@ -127,21 +124,34 @@ SESSION_PATH = "/correction/crossover/v2/session"
 VERIFY_PATH = "/correction/crossover/v2/verify"
 APPLY_PATH = "/correction/crossover/v2/apply"
 
-#: The phases a stage is still WORKING in. Derived from the flow's own tuple, so
-#: a phase added to the journey counts as running here without an edit — the
-#: alternative, a hand-listed terminal set, would silently call a new capture
-#: phase "finished" and bank a round mid-measurement.
-RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING}
+#: The phases a stage is still WORKING in — every capture phase, plus the two
+#: control-page phases that are a session mid-flight rather than a stopping
+#: point.
+#:
+#: ``CAPTURE_PHASES`` alone is NOT the whole set and cannot be: ``journey.py``
+#: says a control-page phase is *deliberately* excluded from it (no excitation
+#: plays, no evidence binds), and two of those — ``closing``, the measuring
+#: session's own tail while the fit runs, and ``applying``, the machine-paced
+#: window between MEASURE-accepted and apply-observed — are exactly the moments
+#: a poller must keep waiting through. Treating either as terminal banks a
+#: round mid-flight. So this is stated, and the complement is pinned: what is
+#: left over must be exactly ``{review, done}``, the two phases where a
+#: household is being asked something and nothing is running.
+RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING, PHASE_APPLYING}
 
 #: Where ``install.sh`` puts the runtime the two Pi-side CLIs live in.
 PI_VENV_BIN = "/opt/jasper/.venv/bin"
 
-#: How long a terminated walk is given to park the arm before it is killed.
-#: The park is a move plus ``arm_walk.PARK_SETTLE_S`` plus a readback, all
-#: bounded by the adapter's own subprocess timeout; this is that with room.
-WALK_PARK_GRACE_S = 90.0
+#: How long the LOCAL ssh client is given to go away after a terminate.
+#:
+#: Deliberately not called a park grace, because this process cannot observe a
+#: park. Terminating the client drops the transport; sshd then hangs up the
+#: remote walk, which parks on its way out (``arm_walk.PARK_ON_SIGNALS``) —
+#: entirely after the client has exited, on the speaker, into the walk's own
+#: log and journal. What this bounds is only the wait for a client that will
+#: not die, so it is generous rather than tuned.
+WALK_CLIENT_EXIT_GRACE_S = 90.0
 
-_CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
 
 # --------------------------------------------------------------------------- #
 # exit codes — part of the contract, because the caller of this tool is a script
@@ -265,7 +275,8 @@ _LIB_QUERY = (
 )
 
 
-def resolve_target(hostname_override: str | None = None) -> Target:
+def resolve_target(hostname_override: str | None = None,
+                   trail: Trail | None = None) -> Target:
     """The speaker, with the caller's own exports winning.
 
     ``_lib.sh`` sources ``.env.local`` with ``set -a``, which overwrites an
@@ -279,20 +290,60 @@ def resolve_target(hostname_override: str | None = None) -> Target:
     caller_user = os.environ.get("PI_USER") or ""
     caller_hostname = os.environ.get("JASPER_HOSTNAME") or ""
     lib_host = lib_user = lib_hostname = ""
-    proc = subprocess.run(
-        ["bash", "-c", _LIB_QUERY, str(REPO_ROOT / "scripts" / "_lib.sh")],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if proc.returncode == 0:
-        lines = proc.stdout.splitlines()
-        lib_host, lib_user, lib_hostname = (lines + ["", "", ""])[:3]
-    host = caller_host or lib_host or "jts.local"
-    user = caller_user or lib_user or "pi"
-    hostname = (
-        hostname_override or caller_hostname or lib_hostname or host
-    )
+    # A resolution that did not happen is REPORTED, never absorbed: the
+    # fallbacks below are `jts.local`/`pi`, and silently measuring the default
+    # speaker because a `bash` was missing or `_lib.sh` blew up is the quiet
+    # wrong-Pi ending this whole file is trying to make impossible.
+    detail = ""
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", _LIB_QUERY, str(REPO_ROOT / "scripts" / "_lib.sh")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+    else:
+        if proc.returncode == 0:
+            lines = proc.stdout.splitlines()
+            lib_host, lib_user, lib_hostname = (lines + ["", "", ""])[:3]
+        else:
+            detail = (
+                f"scripts/_lib.sh exited {proc.returncode}: "
+                f"{(proc.stderr or '').strip()[-200:]}"
+            )
+    if detail and trail is not None:
+        trail.emit(
+            "resolve_target", ok=False, detail=detail,
+            using=("the caller's own exports" if caller_host
+                   else "the built-in jts.local default"),
+        )
+
+    def _pick(override: str, caller: str, lib: str, default: str) -> tuple[str, str]:
+        for value, source in ((override, "--hostname"), (caller, "your export"),
+                              (lib, ".env.local"), (default, "the default")):
+            if value:
+                return value, source
+        return default, "the default"
+
+    host, host_source = _pick("", caller_host, lib_host, "jts.local")
+    user, user_source = _pick("", caller_user, lib_user, "pi")
+    hostname, hostname_source = _pick(
+        hostname_override or "", caller_hostname, lib_hostname, host)
+    if trail is not None:
+        # WHERE each half came from, because they are resolved independently
+        # and a split answer is legal: exporting only PI_HOST takes the ssh
+        # target from you and the speaker's NAME from .env.local, so a round
+        # can ssh to one speaker carrying another's Host header. Nothing here
+        # guesses which of the two is the one you meant — that is the
+        # operator's to know — but it must not be invisible.
+        trail.emit(
+            "identity", host=host, host_from=host_source,
+            user=user, user_from=user_source,
+            hostname=hostname, hostname_from=hostname_source,
+            split=host_source != hostname_source,
+        )
     return Target(host, user, hostname)
 
 
@@ -301,83 +352,27 @@ def resolve_target(hostname_override: str | None = None) -> Target:
 # --------------------------------------------------------------------------- #
 
 
-class Wizard:
-    """The correction wizard, reached from the laptop with the speaker's Host.
+class Wizard(WizardClient):
+    """The wizard as a ROUND reads it: the shared transport, JSON on top.
 
-    The transport ``jasper-arm-walk``'s ``LoopbackSession`` holds, moved off
-    the speaker: the management-host guard keys on ``Host:``, and the mutating
-    POSTs carry the double-submit CSRF pair — the cookie from the jar and the
-    token from the page's ``<meta name="jts-csrf">`` — exactly as a browser's
-    ``fetch()`` does. ``LoopbackSession``'s own public surface is the position
-    gate's three verbs, so this states the two generic ones a round needs
-    (``v2_block`` is built on them) rather than reaching into a Pi-side
-    module's private methods.
+    The Host header, the cookie jar and the double-submit CSRF pair are
+    ``arm_walk.WizardClient``'s — one implementation, used from the speaker by
+    the walk and from the laptop by this. What is added here is only what a
+    round needs and a position gate does not: JSON parsing, and the one
+    envelope read every phase makes.
+
+    Reached across the LAN rather than over loopback, so ``base_url`` is the
+    Pi's address while ``host_header`` stays the speaker's own name — the two
+    are separate facts (AGENTS.md's PI_HOST vs JASPER_HOSTNAME split) and the
+    management-host guard reads the second.
     """
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        host_header: str,
-        timeout_s: float = 120.0,
-        opener: Any | None = None,
-    ) -> None:
-        self._base = base_url.rstrip("/")
-        self._host = host_header
-        self._timeout = timeout_s
-        self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(CookieJar())
-        )
-        self._csrf: str | None = None
-
-    def _open(
-        self,
-        path: str,
-        *,
-        data: bytes | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> tuple[int, str]:
-        request = urllib.request.Request(
-            self._base + path,
-            data=data,
-            headers={"Host": self._host, **(headers or {})},
-            method="POST" if data is not None else "GET",
-        )
-        try:
-            with self._opener.open(request, timeout=self._timeout) as response:
-                return int(response.status), response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            return int(exc.code), exc.read().decode("utf-8", "replace")
-        except (OSError, ValueError) as exc:
-            return 0, f"{type(exc).__name__}: {exc}"
-
-    def _csrf_token(self) -> str:
-        """Minted once and reused — but only once actually MINTED.
-
-        Caching a failed mint would 403 every later POST in the run with
-        nothing saying why; ``arm_walk`` hit exactly that and this holds its
-        fix.
-        """
-        if self._csrf:
-            return self._csrf
-        _, body = self._open(CSRF_PAGE_PATH)
-        match = _CSRF_META_RE.search(body)
-        self._csrf = match.group(1) if match else None
-        return self._csrf or ""
-
     def get_json(self, path: str) -> tuple[int, Any]:
-        status, body = self._open(path)
+        status, body = self.open(path)
         return status, _as_json(body)
 
     def post_json(self, path: str, payload: Mapping[str, Any]) -> tuple[int, Any]:
-        status, body = self._open(
-            path,
-            data=json.dumps(dict(payload)).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-CSRF-Token": self._csrf_token(),
-            },
-        )
+        status, body = self.post(path, payload)
         return status, _as_json(body)
 
     def v2_block(self) -> dict[str, Any]:
@@ -459,12 +454,24 @@ def launch_walk(
 ) -> subprocess.Popen[bytes]:
     """``jasper-arm-walk`` on the Pi, in the background, output to ``log_path``.
 
-    ``-tt`` so a terminate reaches the walk itself rather than only the local
-    ssh client: the walk's SIGTERM handler IS its park, and an abandoned arm at
-    an unknown angle is the one state the rig must never be left in. Local
-    stdin is ``DEVNULL`` so forcing a remote tty cannot put the operator's own
-    terminal into raw mode.
+    ``-tt`` forces a remote PTY, and that PTY is the whole mechanism by which
+    stopping the LOCAL client stops the REMOTE walk: killing an ssh client only
+    ever kills the client, but dropping the transport makes sshd close the PTY,
+    which hangs up the walk's process group. SIGHUP is therefore the signal the
+    walk actually receives here — never the SIGTERM this process sends — and it
+    parks only because SIGHUP is in ``arm_walk.PARK_ON_SIGNALS``. Without the
+    PTY there is no signal at all: the orphaned walk keeps serving position
+    holds until its own idle ceiling, into a session that has moved on.
+
+    Local stdin is ``DEVNULL`` so forcing a remote tty cannot put the
+    operator's own terminal into raw mode.
     """
+    # ``pi``, not ``target.user``: the walk drives the turntable adapter, which
+    # opens a serial port, so the identity is the one holding ``dialout`` --
+    # ``User=pi`` in the shipped jasper-turntable-autostop@.service, which
+    # jasper-arm-walk's own docstring names as load-bearing. An operator who
+    # ssh's in as somebody else still needs the walk to run as pi. Do not
+    # "fix" this to follow the ssh user.
     argv = [
         f"sudo -u pi {PI_VENV_BIN}/jasper-arm-walk",
         "--attest-rig-clear",
@@ -477,11 +484,17 @@ def launch_walk(
     if settle_s is not None:
         argv.append(f"--settle-s {settle_s}")
     remote = " ".join(argv)
+    # The child keeps its own dup of the fd, so this process closes its copy as
+    # soon as the spawn is decided either way -- a raised Popen would otherwise
+    # leak it for the life of the run.
     handle = open(log_path, "ab", buffering=0)
-    proc = subprocess.Popen(
-        [*SSH_OPTS, "-tt", target.ssh_target, remote],
-        stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
-    )
+    try:
+        proc = subprocess.Popen(
+            [*SSH_OPTS, "-tt", target.ssh_target, remote],
+            stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
+        )
+    finally:
+        handle.close()
     trail.emit(
         "walk_launched", host=target.ssh_target, expect_angles=expect_angles or "(none)",
         complete_after=complete_after, log=str(log_path),
@@ -490,19 +503,50 @@ def launch_walk(
 
 
 def stop_walk(proc: subprocess.Popen[bytes], trail: Trail) -> None:
-    """Terminate a walk this round can no longer use, and let it park."""
+    """Drop the transport so the remote walk hangs up, and say only that.
+
+    What this observes is the local ssh client exiting. The park happens
+    afterwards and elsewhere — on the speaker, in the walk's own unwind — so
+    this reports the signal as SENT, never the arm as parked. Claiming the
+    latter would put a reassurance in the trail that nothing here can see.
+    """
     if proc.poll() is not None:
         return
     proc.terminate()
     try:
-        proc.wait(timeout=WALK_PARK_GRACE_S)
+        proc.wait(timeout=WALK_CLIENT_EXIT_GRACE_S)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-        trail.emit("walk_stopped", ok=False,
-                   detail=f"the walk did not park inside {WALK_PARK_GRACE_S:.0f}s")
+        trail.emit(
+            "walk_stopped", ok=False,
+            detail=(
+                f"the local ssh client outlived {WALK_CLIENT_EXIT_GRACE_S:.0f}s "
+                "and was killed; whether the remote walk was hung up, and "
+                "whether it parked, is unknown from here -- check the walk log"
+            ),
+        )
         return
-    trail.emit("walk_stopped", detail="terminated; the arm parks on its way out")
+    trail.emit(
+        "walk_stopped",
+        detail=(
+            "the ssh transport is down, which hangs up the remote walk; it "
+            "parks in its own unwind -- the walk log is where that is confirmed"
+        ),
+    )
+
+
+#: ssh's own "the transport failed" code. It is not a walk verdict and the
+#: harness cannot produce it — its codes are 0-14 plus 128+signum — so naming
+#: it ``walk_failed`` would blame the arm for a dropped link.
+SSH_TRANSPORT_EXIT = 255
+
+
+def _walk_exit_name(code: int) -> str:
+    """The walk's own name for its rc, or ssh's for the one ssh owns."""
+    if code == SSH_TRANSPORT_EXIT:
+        return "ssh_transport_failed"
+    return ARM_WALK_EXIT_NAMES.get(code, str(code))
 
 
 def await_stage(
@@ -634,8 +678,13 @@ def apply_candidate(wizard: Wizard, fingerprint: str, trail: Trail) -> int:
     status, payload = wizard.post_json(
         APPLY_PATH, {"expected_candidate_fingerprint": fingerprint}
     )
-    # ``apply_failed`` comes back 200 and ``blocked`` comes back 409, so the
-    # body's own status is the verdict — the HTTP code alone is not.
+    # The BODY is the verdict, because the HTTP code alone is not: the host
+    # treats ``blocked`` and ``apply_failed`` as one family and can answer
+    # either with 200 or 409 depending on how it got there, and an
+    # ``apply_failed`` that is merely "the DSP was already inactive" comes back
+    # 200 with the graph unchanged. Only ``applied`` means the candidate is on
+    # the speaker; anything else — including a status this runner has never
+    # seen — is a failure here rather than an assumption.
     outcome = (
         str(payload.get("status") or "")
         if isinstance(payload, Mapping) else ""
@@ -660,7 +709,13 @@ def apply_candidate(wizard: Wizard, fingerprint: str, trail: Trail) -> int:
 
 
 def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
-    """The path, the body, and the exit code that names a failure to open it."""
+    """The path, the body, and the exit code that names a failure to open it.
+
+    The verify body carries no tier, and ``--tier`` is ignored for it: stage 2
+    reads the instrument the MEASURING session recorded in durable state, so
+    the household's one choice at the tier chooser governs both stages. A tier
+    posted here would be a second, later answer to a question already settled.
+    """
     if args.stage == "verify":
         return VERIFY_PATH, {VERIFY_STAGE_KEY: VERIFY_STAGE_POST_APPLY}, EXIT_VERIFY
     body: dict[str, Any] = {"tier": args.tier}
@@ -672,10 +727,34 @@ def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
     return SESSION_PATH, body, EXIT_OPEN
 
 
+def _open_failure_detail(status: int, payload: Any, target: Target) -> str:
+    """The wizard's own words, plus the one cause its words cannot name.
+
+    A 403 from the management-host guard says the Host header was not a name
+    this speaker answers to — but not which name was sent or where it came
+    from, and the pair is resolved from two independent sources (see
+    ``resolve_target``). So a 403 gets both values appended. It is a
+    possibility named for the reader, not a verdict: the guard also refuses for
+    reasons that have nothing to do with a split identity.
+    """
+    detail = _error_of(payload)
+    if status == 403:
+        detail += (
+            f" [403 is what the management-host guard returns for a Host it "
+            f"does not answer to: this round ssh'd to {target.host} and sent "
+            f"Host: {target.hostname} — if those are two different speakers, "
+            f"that is the cause; --hostname sets the second]"
+        )
+    return detail
+
+
 def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
               trail: Trail) -> int:
     dest = args.campaign / args.label
-    since = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # UTC with the suffix spelled out: journalctl reads a naive timestamp in
+    # the PI's timezone, so a laptop in a westward zone hands it a FUTURE
+    # window and the bank pulls zero journal lines at exit 0.
+    since = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     prior_session_id = str(wizard.v2_block().get("session_id") or "")
     trail.emit("target", host=target.ssh_target, hostname=target.hostname,
                base_url=target.base_url, stage=args.stage, dest=str(dest),
@@ -703,7 +782,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
         status, payload = wizard.post_json(path, body)
         if status != 200:
             trail.emit("open", ok=False, path=path, http=status,
-                       detail=_error_of(payload))
+                       detail=_open_failure_detail(status, payload, target))
             return open_exit
         trail.emit("open", path=path, http=status, body=body,
                    relay=_render(payload.get("relay") if isinstance(payload, Mapping)
@@ -714,10 +793,10 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             walk_ok = walk_rc == 0
             trail.emit(
                 "walk", ok=walk_ok, arm_walk_exit=walk_rc,
-                arm_walk_exit_name=ARM_WALK_EXIT_NAMES.get(walk_rc, str(walk_rc)),
+                arm_walk_exit_name=_walk_exit_name(walk_rc),
             )
             if not walk_ok:
-                _say_bank_by_hand(dest, since)
+                _say_bank_by_hand(dest, since, target)
                 return EXIT_WALK
 
         rc = await_stage(
@@ -725,14 +804,15 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             timeout_s=args.stage_timeout_s, poll_s=args.poll_s, trail=trail,
         )
         if rc != EXIT_OK:
-            _say_bank_by_hand(dest, since)
+            _say_bank_by_hand(dest, since, target)
             return rc
     finally:
         # A walk this round is no longer driving must not outlive it: the
         # session it would serve next is a DIFFERENT one, and an arm still
         # moving for a finished round is the shape that banks angles nobody
-        # asked for. A no-op once the walk has exited on its own, which is
-        # every ordinary path through here.
+        # asked for. The stop is a transport drop, and the park it triggers
+        # happens on the speaker — see ``stop_walk``. A no-op once the walk has
+        # exited on its own, which is every ordinary path through here.
         if walk is not None:
             stop_walk(walk, trail)
 
@@ -744,7 +824,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
     return EXIT_OK
 
 
-def _say_bank_by_hand(dest: Path, since: str) -> None:
+def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
     """A stopped round banks nothing; say how to keep the evidence anyway.
 
     The walk's rc, or the stage's failure to finish, IS the round's verdict,
@@ -752,10 +832,19 @@ def _say_bank_by_hand(dest: Path, since: str) -> None:
     evidence is still on the Pi until the next round overwrites the dump ring,
     so the operator gets the one command that keeps it rather than a decision
     made for them.
+
+    **It carries the host this round actually used.** Without it the pasted
+    command re-resolves through ``.env.local``, which routinely names a
+    different speaker than the one an exported ``PI_HOST`` just measured — so
+    the one line printed on the one path where a human is asked to bank by hand
+    would be the line that banks the wrong Pi. Absolute repo path for the same
+    reason: this prints wherever the operator happened to be standing.
     """
+    script = REPO_ROOT / "scripts" / "bank-crossover-round.sh"
     print(
         f"\nround: nothing was banked. The evidence is still on the Pi:\n"
-        f"  SINCE={shlex.quote(since)} bash scripts/bank-crossover-round.sh "
+        f"  PI_HOST={shlex.quote(target.host)} PI_USER={shlex.quote(target.user)} "
+        f"SINCE={shlex.quote(since)} bash {shlex.quote(str(script))} "
         f"{shlex.quote(str(dest))}\n",
         file=sys.stderr,
     )
@@ -884,18 +973,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.apply is not None:
+        # An EMPTY fingerprint is refused here rather than compared. A live
+        # candidate that is absent also reads as "", so `"" == ""` would sail
+        # through the gate and POST — the one thing this tool promises never to
+        # do on a fingerprint the operator did not actually name.
+        if not args.apply.strip():
+            parser.error("--apply needs the fingerprint you mean to put on the speaker")
         for flag, value in (("--campaign", args.campaign), ("--label", args.label),
                             ("--angles", args.angles or None)):
             if value:
                 parser.error(f"--apply runs no measurement, so {flag} means nothing")
     elif not args.campaign or not args.label:
         parser.error("--campaign and --label are required to measure a round")
+    elif args.angles and not args.attest_rig_clear:
+        # A staged walk is an ARM walk, and without the attestation no arm walk
+        # is launched — so the session would open, hold at its first position
+        # for the gate's full 600 s, and end as a misnamed idle-ceiling exit ten
+        # minutes later. Nothing downstream can rescue that configuration, so it
+        # is refused before it costs the ten minutes.
+        parser.error(
+            "--angles stages a walk for the arm, which only runs with "
+            "--attest-rig-clear; add it, or drop --angles"
+        )
 
-    target = resolve_target(args.hostname)
+    # The trail opens FIRST: resolving which speaker this is can itself fail,
+    # and that failure is the first thing worth a row.
+    trail = Trail(args.trail)
+    target = resolve_target(args.hostname, trail)
     wizard = Wizard(
         base_url=args.base_url or target.base_url, host_header=target.hostname
     )
-    trail = Trail(args.trail)
     try:
         if args.apply is not None:
             trail.emit("target", host=target.ssh_target, hostname=target.hostname,
