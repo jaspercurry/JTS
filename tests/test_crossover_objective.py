@@ -14,6 +14,7 @@ assertion passes.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
@@ -23,8 +24,9 @@ from jasper.active_speaker.crossover_v2.attempt_grading import (
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
 )
 from jasper.active_speaker.crossover_v2.objective import (
-    CHUNK_FRACTION, CHUNK_REGRESSION_BAR_DB, DI_COVERAGE_HORIZONTAL_ONLY,
-    GradingFrame, directivity_continuity, dominates, flatness_profile,
+    ADVISORY_WEIGHTS, CHUNK_FRACTION, CHUNK_REGRESSION_BAR_DB,
+    DI_COVERAGE_HORIZONTAL_ONLY, ChunkDeviation, FlatnessProfile, GradingFrame,
+    ObjectiveWeights, directivity_continuity, dominates, flatness_profile,
     score_prediction, spec_graded_curve,
 )
 from jasper.active_speaker.flat_spec import (
@@ -71,6 +73,52 @@ def _bump(freqs: np.ndarray, curve_db: np.ndarray, band_hz, amount_db: float):
     inside = (freqs >= band_hz[0]) & (freqs < band_hz[1])
     moved[inside] += float(amount_db)
     return moved
+
+
+def _chunk(
+    f_lo_hz: float, f_hi_hz: float, *,
+    level_db: float, worst_db: float, rms_db: float,
+) -> ChunkDeviation:
+    """One chunk stated directly, so a discriminating pair can be EXACT.
+
+    ``dominates`` is a pure function of two profiles, and the pair that
+    separates its three candidate regression metrics has to hold a chunk whose
+    mean and worst bin move in opposite directions by chosen amounts. Planting
+    that in a curve and pushing it through the 1/3-octave smoother would leave
+    the deciding numbers to whatever the smoother happened to do, and smear the
+    trap into its neighbours besides. Stated here instead; the route from a
+    curve to these fields is ``flatness_profile``'s, and has its own tests.
+    """
+    center_hz = math.sqrt(f_lo_hz * f_hi_hz)
+    return ChunkDeviation(
+        f_lo_hz=f_lo_hz,
+        f_hi_hz=f_hi_hz,
+        center_hz=center_hz,
+        n_bins=12,
+        level_db=level_db,
+        worst_db=worst_db,
+        worst_hz=center_hz,
+        rms_db=rms_db,
+    )
+
+
+def _profile_of(chunks: tuple[ChunkDeviation, ...]) -> FlatnessProfile:
+    """A profile carrying exactly ``chunks``, headline numbers derived from them."""
+    worst = max(chunks, key=lambda chunk: abs(chunk.worst_db))
+    return FlatnessProfile(
+        view="probe",
+        reference_db=-20.0,
+        reference_policy="self",
+        band_hz=(chunks[0].f_lo_hz, chunks[-1].f_hi_hz),
+        chunks=chunks,
+        worst_chunk_db=worst.worst_db,
+        worst_chunk_hz=worst.worst_hz,
+        tilt_db_per_octave=0.0,
+        tilt_span_db=0.0,
+        rms_db=float(np.sqrt(np.mean([chunk.rms_db ** 2 for chunk in chunks]))),
+        n_bins=sum(chunk.n_bins for chunk in chunks),
+        evaluable=True,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -206,16 +254,67 @@ def test_a_local_notch_diverges_the_max_norm_from_the_rms() -> None:
     assert profile.rms_db < profile.worst_chunk_abs_db / 3.0
 
 
-def test_a_curve_with_no_surviving_bin_is_unevaluable_never_zero() -> None:
+def test_a_floor_above_the_whole_spec_raises_out_of_the_evaluator() -> None:
+    """The EVALUATOR's refusal, surfaced rather than swallowed.
+
+    Named for what it asserts. A floor above the whole spec never reaches this
+    module's own no-surviving-chunk branch, because ``evaluate_flat_spec``
+    refuses an empty reference band first; what this pins is that the objective
+    lets that ``ValueError`` out instead of turning it into a flat report. The
+    module's own branch has its own test below.
+    """
     freqs = _grid()
     profile = _profile(freqs, _flat(freqs), floor_hz=None)
     assert profile.evaluable
 
-    # A floor above the whole spec leaves nothing to grade. The evaluator itself
-    # refuses an empty reference band, so this asserts the objective surfaces
-    # that as a refusal rather than as a flat report.
     with pytest.raises(ValueError):
         _profile(freqs, _flat(freqs), floor_hz=19_000.0)
+
+
+def test_a_curve_with_no_surviving_chunk_is_unevaluable_never_zero() -> None:
+    """``flatness_profile``'s honesty branch, reached rather than described.
+
+    The docstring promises that a curve with no surviving chunk is
+    ``evaluable=False`` with a reason — "never a zero, which would read as
+    perfect". A zero worst chunk and a zero RMS are what a defensive
+    implementation would most naturally return here, and they are the two
+    numbers every consumer of this profile reads, so the promise is worth a
+    test of its own.
+
+    Reached the one way a real evaluation reaches it: a published exclusion mask
+    covering the whole graded span. Masking is the honesty screen's own output,
+    so this is the shape the branch exists for, not a contrived one.
+    """
+    freqs = _grid()
+    graded = _graded(freqs, _flat(freqs))
+    masked = dataclasses.replace(
+        graded, excluded=np.ones(np.asarray(graded.freqs_hz).shape, dtype=bool),
+    )
+
+    # Non-vacuity: the SAME evaluation with nothing masked grades fine, so the
+    # refusal below is the mask's doing rather than a broken fixture.
+    assert flatness_profile(
+        graded,
+        frame=GradingFrame.self_referenced(trusted_floor_hz=FLOOR_HZ),
+        view="probe",
+    ).evaluable
+
+    profile = flatness_profile(
+        masked,
+        frame=GradingFrame.self_referenced(trusted_floor_hz=FLOOR_HZ),
+        view="probe",
+    )
+
+    assert profile.evaluable is False
+    assert "no bin survived" in profile.not_evaluated_reason
+    # NEVER A ZERO — every headline number is absent, not flat.
+    assert profile.worst_chunk_db is None
+    assert profile.worst_chunk_abs_db is None
+    assert profile.worst_chunk_hz is None
+    assert profile.rms_db is None
+    assert profile.tilt_db_per_octave is None
+    assert profile.chunks == ()
+    assert profile.n_bins == 0
 
 
 # --------------------------------------------------------------------------
@@ -566,6 +665,92 @@ def test_a_candidate_that_trades_a_region_does_not_dominate() -> None:
     assert 4500.0 <= verdict.worst_regression_hz <= 6500.0
 
 
+def test_regression_is_measured_on_the_worst_bin_not_on_the_chunks_average() -> None:
+    """A chunk that develops a NOTCH has regressed, however its mean moves.
+
+    ``dominates``' own docstring makes exactly this claim — "a chunk that
+    develops a notch has regressed even if its mean and its RMS barely move,
+    and the notch is what a listener finds" — and until this test nothing
+    checked it. This is round-1's seat-axis finding one axis over: the same
+    never-let-an-average-hide-structure rule, applied to the BINS inside one
+    chunk rather than to the SEATS inside one role.
+
+    The pair below is the discriminator. The chunk at 1000-1260 Hz starts
+    uniformly +2.0 dB hot. The candidate flattens its MEAN to -0.9 dB — a
+    1.1 dB improvement on that axis — and buys it by cutting a -2.8 dB notch
+    into the same third-octave. On the mean the candidate looks like a win
+    everywhere; on the worst bin it has traded a region away, which is the one
+    thing acceptance may not be sold.
+
+    Verified by mutation (2026-08-19): taking the metric on ``level_db`` makes
+    the worst regression anywhere read -0.05 dB and ACCEPTS this candidate;
+    on ``rms_db`` it reads -0.07 dB and ACCEPTS it; on ``worst_db`` it reads
+    +0.80 dB and refuses. Under either mutant this test is the only one in the
+    file — and in ``test_crossover_search.py`` — that fails.
+    """
+    step = 2.0 ** (1.0 / CHUNK_FRACTION)
+    trap_hz = (1000.0, 1000.0 * step)
+    calm_hz = (1000.0 * step, 1000.0 * step * step)
+
+    incumbent_chunks = (
+        _chunk(*trap_hz, level_db=+2.00, worst_db=+2.00, rms_db=2.00),
+        _chunk(*calm_hz, level_db=+0.10, worst_db=+0.20, rms_db=0.15),
+    )
+    candidate_chunks = (
+        _chunk(*trap_hz, level_db=-0.90, worst_db=-2.80, rms_db=1.50),
+        _chunk(*calm_hz, level_db=+0.05, worst_db=+0.10, rms_db=0.08),
+    )
+
+    def worst_regression_on(field: str) -> float:
+        """What the metric would report if it were taken on ``field``."""
+        return max(
+            abs(getattr(after, field)) - abs(getattr(before, field))
+            for after, before in zip(candidate_chunks, incumbent_chunks)
+        )
+
+    # ``dominates`` matches chunks by their EDGES; the counterfactual above
+    # matches by position. Identical edge lists is what makes the two the same
+    # pairing, so the numbers below really are the ones the rule would see.
+    assert [(c.f_lo_hz, c.f_hi_hz) for c in candidate_chunks] == [
+        (c.f_lo_hz, c.f_hi_hz) for c in incumbent_chunks
+    ]
+
+    # NON-VACUITY, as numbers rather than as a claim: on the two axes the
+    # docstring says are blind to a notch, this candidate improves EVERYWHERE
+    # and clears the bar comfortably. If either of these ever went positive the
+    # pair would have stopped discriminating and the pin below would be empty.
+    assert worst_regression_on("level_db") == pytest.approx(-0.05)
+    assert worst_regression_on("rms_db") == pytest.approx(-0.07)
+    assert worst_regression_on("level_db") < CHUNK_REGRESSION_BAR_DB
+    assert worst_regression_on("rms_db") < CHUNK_REGRESSION_BAR_DB
+    # ...and in the trap chunk itself the two axes disagree in SIGN, not merely
+    # in size: the mean improves by 1.1 dB while the worst bin regresses by 0.8.
+    assert abs(candidate_chunks[0].level_db) - abs(
+        incumbent_chunks[0].level_db
+    ) == pytest.approx(-1.10)
+    assert worst_regression_on("worst_db") == pytest.approx(+0.80)
+    assert worst_regression_on("worst_db") > CHUNK_REGRESSION_BAR_DB
+
+    verdict = dominates(
+        _profile_of(candidate_chunks),
+        _profile_of(incumbent_chunks),
+        candidate_residual_db=0.80,
+        incumbent_residual_db=2.00,
+    )
+
+    # The primary residual really does improve past its own bar, so the refusal
+    # below is the CHUNK rule biting and not the primary rule standing in for it.
+    assert verdict.primary_delta_db == pytest.approx(-1.20)
+    assert verdict.primary_delta_db < -PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+
+    # THE PIN: measured on the worst bin, refused, and localized to the chunk
+    # that grew the notch rather than to the calm one.
+    assert verdict.dominates is False
+    assert verdict.refusal == "chunk_regressed_past_the_bar"
+    assert verdict.worst_regression_db == pytest.approx(+0.80)
+    assert verdict.worst_regression_hz == pytest.approx(candidate_chunks[0].worst_hz)
+
+
 def test_a_candidate_that_helps_everywhere_dominates() -> None:
     """The positive control for the rule above."""
     freqs = _grid()
@@ -690,6 +875,53 @@ def test_no_on_axis_reference_is_unevaluable_never_flat() -> None:
     assert result.evaluable is False
     assert result.kink_db is None
     assert "on-axis" in result.not_evaluated_reason
+
+
+# --------------------------------------------------------------------------
+# The advisory stamp — what the weighted total is allowed to claim
+# --------------------------------------------------------------------------
+
+
+def test_the_weights_stamp_themselves_uncalibrated_on_every_score() -> None:
+    """``calibrated`` is ``False``, and it rides the score a consumer reads.
+
+    :class:`ObjectiveWeights` owns what the stamp means — that while it reads
+    ``False`` the weighted total is "a SORT KEY and nothing else", and what
+    would have to happen for it to read otherwise. Not restated here; this pins
+    what it READS, which is the half a test can hold. It is an honesty stamp
+    with the same job as the shortlist's ``may_rank``, and ``may_rank`` is
+    pinned, so this one is too: a flag nothing asserts is a flag an edit can
+    flip without ever meaning to claim calibration.
+
+    Both halves matter — that it reads ``False``, and that it RIDES every scored
+    result. The second is what makes it unmissable: a consumer reads ``total``
+    off the score and finds the qualifier in the same place. A change that
+    genuinely calibrates these weights comes through this test, not past it.
+    """
+    assert ObjectiveWeights().calibrated is False
+    assert ADVISORY_WEIGHTS.calibrated is False
+    assert ADVISORY_WEIGHTS.to_dict()["calibrated"] is False
+
+    freqs = _grid()
+    scored = score_prediction(
+        {0.0: _flat(freqs), 20.0: _bump(freqs, _flat(freqs), (4000.0, 5040.0), -6.0)},
+        freqs,
+        role_by_angle={0.0: "onax", 20.0: "offax"},
+        primary_role="onax",
+        on_axis_deg=0.0,
+        frame_by_angle={
+            angle: GradingFrame.self_referenced(trusted_floor_hz=FLOOR_HZ)
+            for angle in (0.0, 20.0)
+        },
+        crossover_region_hz=(1000.0, 4000.0),
+    )
+
+    # There IS a total here — the stamp is qualifying a real number, not
+    # standing beside a ``None`` that nobody could have ranked on anyway.
+    assert scored.total is not None
+    assert scored.weights is ADVISORY_WEIGHTS
+    assert scored.weights.calibrated is False
+    assert scored.to_dict()["weights"]["calibrated"] is False
 
 
 # --------------------------------------------------------------------------

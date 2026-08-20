@@ -112,7 +112,17 @@ from ..flat_spec import (
     BEST_EFFORT_ABOVE_HZ, GATED_SPEC_LOWER_EDGE_HZ, FlatSpecReport, GradedSpec,
     evaluate_flat_spec, spec_convergence_residual,
 )
+# The ONE owner of the published-intervals-to-mask construction, reached for
+# across the boundary — and deliberately UNLIKE ``_pool_rms`` below, which keeps
+# its identity local. The two are different kinds of thing: a weighted RMS is an
+# identity this module can re-derive and a contract test can pin bit-for-bit,
+# while this is one mechanical construction with one owner and no identity to
+# re-derive. The second copy that used to live here had already drifted its
+# return contract away from the owner's before anything noticed, which is the
+# failure mode a copy invites and an import cannot have.
+from ..flat_spec_views import _exclusion_mask
 from .attempt_grading import PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+from .verification import FLOOR_COMPARABILITY_RTOL
 
 __all__ = [
     "ADVISORY_WEIGHTS",
@@ -587,30 +597,25 @@ def spec_graded_curve(
         np.asarray(magnitude_db, dtype=np.float64),
     )
     smoothed = smooth_fractional_octave(grid, curve_db, fraction=DEFAULT_SPEC_FRACTION)
-    excluded = _exclusion_mask(grid, excluded_intervals)
+    excluded = _exclusion_mask(grid, tuple(excluded_intervals))
     report = evaluate_flat_spec(
         grid, smoothed, excluded,
         smoothing_fraction=DEFAULT_SPEC_FRACTION,
         trusted_floor_hz=trusted_floor_hz,
     )
-    return GradedSpec(freqs_hz=grid, curve_db=smoothed, excluded=excluded, report=report)
-
-
-def _exclusion_mask(
-    freqs_hz: np.ndarray, intervals: Sequence[tuple[float, float]],
-) -> np.ndarray:
-    """Published exclusion intervals as a per-bin mask.
-
-    The same construction ``flat_spec_views._evaluate_position`` applies to a
-    position curve, and for the same reason: the honesty screen is a CROSS-SEAT
-    mean-vs-median disagreement that a single curve has no version of, so the
-    intervals the session published are re-applied rather than re-derived.
-    """
-    freqs = np.asarray(freqs_hz, dtype=np.float64)
-    mask = np.zeros(freqs.size, dtype=bool)
-    for lo_hz, hi_hz in intervals:
-        mask |= (freqs >= float(lo_hz)) & (freqs <= float(hi_hz))
-    return mask
+    return GradedSpec(
+        freqs_hz=grid,
+        curve_db=smoothed,
+        # ``None`` from the owner means "nothing is excluded" — exactly what
+        # ``evaluate_flat_spec`` wants, and exactly what ``GradedSpec.excluded``
+        # (typed ``np.ndarray``) does not take. It is the ORDINARY case, not an
+        # edge one: a session that published no intervals reaches here on every
+        # call, so it is resolved rather than assumed away. The evaluator
+        # resolves that same ``None`` to precisely this array, so the report and
+        # the mask handed back beside it describe the one evaluation.
+        excluded=np.zeros(grid.size, dtype=bool) if excluded is None else excluded,
+        report=report,
+    )
 
 
 def _graded_band_hz(trusted_floor_hz: float | None) -> tuple[float, float]:
@@ -637,18 +642,19 @@ def _floors_disagree(frame_hz: float | None, graded_hz: float | None) -> bool:
 
     ``None`` on either side is "not stated" and cannot disagree with anything.
     Two stated floors are compared with a relative tolerance because a floor is
-    a derived ``2.5/T`` and travels through JSON — the same posture, and the
-    same reason, as ``verification``'s own floor-comparability check.
+    a derived ``2.5/T`` and travels through JSON — the same posture, the same
+    reason, and now the same NUMBER as ``verification``'s own
+    floor-comparability check:
+    :data:`~jasper.active_speaker.crossover_v2.verification.FLOOR_COMPARABILITY_RTOL`
+    is imported from its one owner rather than re-typed here, so the two
+    questions "may these two rounds be differenced?" and "was this curve graded
+    at this frame's floor?" cannot answer to two different tolerances.
     """
     if frame_hz is None or graded_hz is None:
         return False
     return not math.isclose(
-        float(frame_hz), float(graded_hz), rel_tol=_FLOOR_COMPARABILITY_RTOL,
+        float(frame_hz), float(graded_hz), rel_tol=FLOOR_COMPARABILITY_RTOL,
     )
-
-
-#: How far two stated trusted floors may differ and still be the same floor.
-_FLOOR_COMPARABILITY_RTOL = 1e-3
 
 
 def _chunk_edges(band_hz: tuple[float, float], fraction: int) -> list[tuple[float, float]]:
