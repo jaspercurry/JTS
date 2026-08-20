@@ -56,6 +56,11 @@ research = [
   # measurement productization design; the synthesized decisions live in
   # docs/crossover-measurement-productization-design.md (a subsystem scan target).
   "docs/crossover-measurement-deep-research-2026-07-18.md",
+  # Owner-supplied deep-research report on first-principles active-DSP
+  # crossover design and optimization, landed 2026-08-19 as a primary-source
+  # archive. No synthesized design doc cites it yet — a future
+  # crossover-agent documentation pack will.
+  "docs/crossover-design-guide-deep-research-2026-08-19.md",
 ]
 
 [[subsystem]]
