@@ -349,9 +349,19 @@ def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -
     # search. The one permitted difference is the declaration itself, and the
     # artifact publishes both maps precisely so a reader can see which of
     # ``below_declared_floor``'s two causes a walk met.
+    #
+    # Both maps are asserted BY CONTENT rather than through the ``!=`` below:
+    # the floors map differs between these two walks on its own, so an
+    # inequality alone stays green with either key dropped from the artifact —
+    # which is the shape of coverage that is not coverage.
     admitted_doc = prediction_document(admitted)
     control_doc = prediction_document(_search())
-    assert admitted_doc.pop("bounds") != control_doc.pop("bounds")
+    admitted_bounds = admitted_doc.pop("bounds")
+    assert admitted_bounds["standing_highpass_hz_by_role"] == {"woofer": 80.0}
+    assert admitted_bounds["declared_floor_hz_by_role"] == {
+        "tweeter": 1500.0, "woofer": 60.0,
+    }
+    assert admitted_bounds != control_doc.pop("bounds")
     assert json.dumps(admitted_doc, sort_keys=True) == (
         json.dumps(control_doc, sort_keys=True)
     )

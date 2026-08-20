@@ -140,14 +140,17 @@ each role's own confirmed ``required_protection_filters`` (through
 None of those is a crossover section: no candidate proposes them and no
 candidate can remove them.
 
-Not one of them is unconditional, and they do not stack: the confirmed
-protection sections belong to the measurement graph while bass management
+Not one of them is unconditional, and they do not stack. The confirmed
+protection sections belong to the MEASUREMENT graph while bass management
 belongs to the applied baseline, and ``camilla_yaml._bass_management_active``
-emits even that one only when the preset carries a local subwoofer. So this
-module may not assume a standing high-pass exists any more than it may assume
-one does not, and it is the APPLIED graph's corner that a caller owes —
-:attr:`CandidateBounds.standing_highpass_hz_by_role` says which of the three
-that is in practice. The caller declares what its chain actually carries on
+emits even that one only when the preset carries a local subwoofer; the sealed
+subsonic filter sits far below any floor it would be asked to satisfy. So the
+corner a caller owes is the APPLIED graph's, which in practice means the
+bass-management high-pass — the only one of the three both routinely present
+and high enough to answer a real floor.
+
+This module may not assume that corner exists any more than it may assume it
+does not. The caller declares what its chain actually carries on
 :attr:`CandidateBounds.standing_highpass_hz_by_role`; absent means absent, and
 a driver left genuinely open below its declared floor is refused by the same
 slug as before.
@@ -411,14 +414,10 @@ class CandidateBounds:
     must mean absent rather than "probably fine".
 
     **The graph that counts is the one the candidate will be APPLIED to**, not
-    whichever graph is playing while the search runs. A shortlist measured on
-    the crossover-v2 program graph is applied as a baseline, so the standing
-    corner to declare is the baseline's — in practice the bass-management
-    high-pass, which is the only one of the sources that is both routinely
-    present and high enough to satisfy a real floor. The confirmed per-role
-    protection sections belong to the measurement graph rather than the applied
-    one, and a sealed bass-extension subsonic filter sits far below any floor it
-    would be asked to satisfy; neither is a corner to declare here.
+    whichever graph is playing while the search runs: a shortlist measured on
+    the crossover-v2 program graph is applied as a baseline. Which of the
+    graph's standing filters that leaves you declaring, and why the other two
+    are not it, is the module docstring's to say.
 
     Declare it for the role the chain high-passes OUTSIDE the split — in a
     two-way that is the woofer, whose branch the emitter high-passes ahead of
