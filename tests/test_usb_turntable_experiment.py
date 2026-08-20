@@ -1453,7 +1453,7 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
 
 
 def test_turntable_product_surface_is_the_stop_hook_and_the_opt_in_walk() -> None:
-    """The turntable reaches product code at exactly these four places.
+    """The turntable reaches product code at exactly these seven places.
 
     Four of them are the hot-plug stop hook (a udev rule, its unit, and the
     install steps that ship both). The rest are the opt-in lab harness

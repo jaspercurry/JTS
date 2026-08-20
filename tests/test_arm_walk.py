@@ -451,7 +451,16 @@ def test_the_park_runs_once():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_adapter_is_a_subprocess_and_never_an_import():
+@pytest.mark.parametrize("module", [
+    "jasper/active_speaker/arm_walk.py",
+    # The CLI is checked HERE and only here. It is allowlisted in the turntable
+    # product-surface guard (it cites the stop unit for the `User=pi` identity),
+    # so that guard can no longer notice a leak in it -- and ``ast.walk`` reaches
+    # a function-body import, which is exactly the shape a lazy import would
+    # take.
+    "jasper/cli/arm_walk.py",
+])
+def test_the_adapter_is_a_subprocess_and_never_an_import(module):
     """``experiments/`` is not a package product code may depend on.
 
     A subprocess is also what gives each command a clean serial session and the
@@ -459,7 +468,7 @@ def test_the_adapter_is_a_subprocess_and_never_an_import():
     """
     import ast
 
-    tree = ast.parse((ROOT / "jasper/active_speaker/arm_walk.py").read_text())
+    tree = ast.parse((ROOT / module).read_text())
     imported = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
