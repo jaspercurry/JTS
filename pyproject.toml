@@ -203,6 +203,7 @@ jasper-active-speaker-attempts-replay = "jasper.cli.active_speaker_attempts_repl
 jasper-crossover-prescriber = "jasper.cli.crossover_prescriber:main"
 jasper-angle-capture = "jasper.cli.angle_capture:main"
 jasper-active-speaker-emit-bench = "jasper.cli.active_speaker_emit_bench:main"
+jasper-seat-level = "jasper.cli.seat_level:main"
 jasper-bass-extension-bench = "jasper.cli.bass_extension_bench:main"
 jasper-output-topology-reset = "jasper.cli.output_topology_reset:main"
 jasper-cues = "jasper.cues.cli:main"

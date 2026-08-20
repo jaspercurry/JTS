@@ -417,14 +417,19 @@ once on session close/abandon.
 
 **The session volume's source:** derived so the **least-sensitive
 (highest-cap) driver** reaches the measurement reference level with digital
-headroom — `min(MEASUREMENT_REFERENCE_VOLUME_DB = −20 dB, max(caps))`,
-refused with a typed error when the result is at or below the −60 dB
-emergency floor; more-sensitive drivers are digitally **attenuated down** to
-their own caps (always satisfiable downward). The 2026-07-18 W2 adversarial
-gate caught the min-cap misreading of this section's earlier text: a
-min-cap-derived volume pins the least-sensitive driver ~40 dB under its own
-ceiling and collapses its SNR below the trim floor. The reference constant
-is provisional pending W6 bench validation. It is an input to program
+headroom — `min(reference, max(caps))`, refused with a typed error when the
+result is at or below the −60 dB emergency floor; more-sensitive drivers are
+digitally **attenuated down** to their own caps (always satisfiable
+downward). The 2026-07-18 W2 adversarial gate caught the min-cap misreading
+of this section's earlier text: a min-cap-derived volume pins the
+least-sensitive driver ~40 dB under its own ceiling and collapses its SNR
+below the trim floor. The reference half defaults to the codified
+`MEASUREMENT_REFERENCE_VOLUME_DB = −20 dB` and is replaced by a MEASURED
+value once an operator runs the calibrated seat-SPL leveling step
+(`jasper-seat-level`, `jasper/active_speaker/seat_level_ramp.py`): it ramps
+the volume against a calibrated mic at the seat until the room reads the
+requested dB SPL band, then banks that volume. The caps half is unaffected —
+`min` keeps every driver's ceiling binding either way. It is an input to program
 admission (one definition path), and it is **never adjusted after CHECK**:
 the gain solve operates strictly within [SNR floor, 0 dBFS − 6 dB guard]; if
 infeasible at max gain, the session fails with a named reason ("move the

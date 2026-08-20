@@ -338,6 +338,103 @@ def parse_calibration_text(
     )
 
 
+# The acoustic calibrator level the vendor's ``Sens Factor`` is quoted against:
+# 1 Pa == 94 dB SPL, the standard pistonphone/calibrator reference. Fixed
+# physics, not a tunable.
+CALIBRATOR_REFERENCE_DB_SPL = 94.0
+
+_SENS_FACTOR_RE = re.compile(
+    r"Sens\s*Factor\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*dB", re.IGNORECASE
+)
+_ANALOG_GAIN_RE = re.compile(
+    r"AGain\s*=\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*dB", re.IGNORECASE
+)
+_SERNO_RE = re.compile(r"SERNO\s*:\s*([A-Za-z0-9._-]+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class MicSensitivity:
+    """A measurement mic's ABSOLUTE level reference, read from its cal file.
+
+    The curve this module's other half parses is *relative* — it says nothing
+    about how loud a dBFS reading is. This is the missing scalar: the one fact
+    that turns a capture dBFS into a room dB SPL.
+
+    ``sens_factor_db`` is the vendor's ``Sens Factor``: the dBFS the mic reports
+    when driven by a 94 dB SPL calibrator, so
+
+        dB SPL = dBFS - sens_factor_db + 94
+
+    **Precondition (the reason this is not a free conversion).** REW's own cal
+    file documentation: "this calibration will only be valid when using the same
+    mic interface gain and input volume that were used when it was measured" —
+    the sens factor is quoted with the capture input volume at MAXIMUM. Capture
+    gain below that reads LOW, which would push a closed-loop level ramp LOUDER
+    than the operator asked for, so any consumer that drives a speaker from this
+    number must carry its own level-domain ceiling rather than trusting the SPL
+    alone. ``analog_gain_db`` (the UMIK-2's ``AGain``, absent on a UMIK-1) is
+    carried verbatim for that disclosure, never folded into the arithmetic — it
+    is already inside the vendor's measured ``sens_factor_db``.
+    """
+
+    sens_factor_db: float
+    analog_gain_db: float | None = None
+    serial: str | None = None
+
+    def db_spl_from_dbfs(self, dbfs: float) -> float:
+        """Convert one capture dBFS reading to dB SPL at the microphone."""
+        return float(dbfs) - self.sens_factor_db + CALIBRATOR_REFERENCE_DB_SPL
+
+    def dbfs_from_db_spl(self, db_spl: float) -> float:
+        """Convert a dB SPL target to the capture dBFS that realizes it."""
+        return float(db_spl) + self.sens_factor_db - CALIBRATOR_REFERENCE_DB_SPL
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sens_factor_db": self.sens_factor_db,
+            "analog_gain_db": self.analog_gain_db,
+            "serial": self.serial,
+            "calibrator_reference_db_spl": CALIBRATOR_REFERENCE_DB_SPL,
+        }
+
+
+def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
+    """Read the absolute-level header of a REW/miniDSP calibration file.
+
+    The header is the file's first line and is the ONE line
+    :func:`parse_calibration_text` deliberately skips (it does not start with a
+    number), so the two parsers read the same file for two different facts
+    without either owning the other's. Verbatim shapes::
+
+        "Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"   # UMIK-2
+        "Sens Factor =-.9099dB, SERNO: 7031234"                # UMIK-1, no AGain
+
+    Returns ``None`` when no parseable ``Sens Factor`` is present — a mic whose
+    file carries only a response curve has no absolute reference, and guessing
+    one would be a silent hazard. Callers must refuse, never default.
+    """
+    match = _SENS_FACTOR_RE.search(text)
+    if match is None:
+        return None
+    try:
+        sens_factor_db = float(match.group(1))
+    except ValueError:  # pragma: no cover - the regex admits only floats
+        return None
+    if not np.isfinite(sens_factor_db):
+        return None
+    gain_match = _ANALOG_GAIN_RE.search(text)
+    analog_gain_db: float | None = None
+    if gain_match is not None:
+        candidate = float(gain_match.group(1))
+        analog_gain_db = candidate if np.isfinite(candidate) else None
+    serno_match = _SERNO_RE.search(text)
+    return MicSensitivity(
+        sens_factor_db=sens_factor_db,
+        analog_gain_db=analog_gain_db,
+        serial=serno_match.group(1) if serno_match else None,
+    )
+
+
 def apply_calibration_curve(
     freqs_hz: np.ndarray,
     magnitude_db: np.ndarray,
