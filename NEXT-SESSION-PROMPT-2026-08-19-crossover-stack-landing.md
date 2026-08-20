@@ -1,8 +1,16 @@
-# Next-session prompt — crossover-optimization stack: finish landing, then the hardware sweeps
+# Next-session prompt — crossover-optimization stack LANDED; one retroactive review owed, then the hardware sweeps
 
-**Written 2026-08-19 (late), by the conductor session that built the stack.**
-You are a fresh session with no context. This file + the pointers in it are
-everything. Read it fully before any action.
+**Written 2026-08-19 (late), updated same night at session end (weekly token
+budget ~99% spent — owner directive: "LAND NOW"). You are a fresh session
+with no context. This file + the pointers in it are everything. Read it
+fully before any action.**
+
+**Headline: everything up to the walk-take boundary is on `main`.** The
+entire in-flight set from the original §3 (below, kept for history) merged
+tonight. Two of those merges (#2740, #2739) skipped their delta re-review
+under the token-exhaustion directive — that is the one owed item, and it is
+a retroactive review only (AGENTS.md: it can produce follow-ups, it cannot
+gate what already landed). See the new §3.
 
 ## 0. The standing method (binding — the handoff rule requires restating it)
 
@@ -60,7 +68,7 @@ graveyard** (jts3's instance = `PACK-DRAFT-crossover-agent-graveyard-2026-08-19.
 on branch `claude/night-driver` — hypotheses measurement already executed;
 READ IT before proposing anything acoustic).
 
-## 2. What landed today (all 0/0-gated, dispositions on each PR)
+## 2. What landed today (all 0/0-gated except where flagged; dispositions on each PR)
 
 #2726 prescription wiring · #2728 prescriber-CLI logging (A10) · #2729
 pipeline design doc · #2730 cuts-only Q ceiling 8.0 · #2731 silent-slip
@@ -68,50 +76,70 @@ guard (floor 4→2 samples) · #2732 per-driver captures at any angle (both
 mover modes) · #2733 giveback band fix (three-lens panel; the brightness
 root cause) · #2736 Fc apply-time protection floor gate · #2735 candidate
 space + forward model (parity 3.55e-15 dB vs shipped physics on banked
-arms) · plus #2737 (another session: mark-VERIFY badge cap). Main is green
-(portaudio apt hangs recur — issue #2727 tally; remedy: `gh run rerun
---failed`, verify the step-level cause first).
+arms) · **#2741** per-driver capture-trigger CLI (delta 0/0, gated) ·
+**#2743** apply-path (fc_selection re-point + Undo + #2736 floor bind;
+delta 0/0, gated; one reason-clause overclaim caught by the reviewer and
+fixed in the PR body pre-merge) · **#2740** per-driver full-band cuts-only
+prescription route (fix round closed all findings incl. the implementer's
+own size-cap self-catch — **delta re-review SKIPPED, see flag below**) ·
+**#2739** objective + search, incl. the worst-seat pooling-cancellation pin
+(fix round closed the finding — **delta re-review SKIPPED, see flag
+below**) · plus externally-landed #2737 (mark-VERIFY badge cap), #2742,
+#2745, #2746 (the `constraints-pi` venv-artifact fix this review family
+diagnosed across four PRs). Main tip: `fb5df53d3` (#2739's merge). Main is
+green (portaudio apt hangs recur — issue #2727 tally; remedy: `gh run
+rerun --failed`, verify the step-level cause first).
 
-## 3. In flight at handoff (finish these first)
+**⚠ Flag — retroactive delta review owed on #2740 and #2739.** Both fix
+rounds closed every round-1 finding with implementer-run verification
+(mutation tests, CLI end-to-end checks, caps recounts — see each PR's
+comment thread for the full claim set) and green CI, but the independent
+same-reviewer delta pass that would normally re-derive those claims before
+merge was skipped on explicit owner instruction ("LAND NOW, we're at 99%")
+because the assigned reviewer was mid-setup on a five-commit-diverged merge
+tree and completing it would have cost a full review cycle the budget did
+not have. This is a deliberate, disclosed exception to the standing
+adversarial-gate rule, not a silent skip — both PRs carry a comment saying
+exactly this. **First task for the next session with budget:** run a
+same-shape delta review of both PRs' final diffs (`ad4d0944a..fb5df53d3`
+range for #2739's route, and #2740's merge commit `5c7547c5e`) against
+their round-1 finding sets, which are the earlier comments on each thread.
+It can only produce follow-up fixes now, not gate the merge.
 
-- **#2739 objective + search** (stacked on merged #2735; builder was
-  rebasing onto main + retargeting base; then needs its GATE — brief the
-  reviewer with: the flatness-profile ruling, the pooling-cancellation
-  finding (see §4), the armrun rung pinning ρ=−1.000 with ranking authority
-  `bracket_only` stamped in every prediction doc, chunk width imported from
-  the spec fraction, and the floor-completeness contract from #2735's delta
-  ("the search must emit candidates complete w.r.t. floor-declared roles").
-  After merge: DELETE the retained #2735 branch
-  (`claude/crossover-candidate-forward-model`).
-- **#2741 capture-trigger CLI** (`jasper-angle-capture`): in fix round —
-  stat-first spool cap + the #2728-style subprocess logging pin + two nits.
-  Reviewer's worktrees kept at /private/tmp/jts-gate-2741*. Then delta →
-  merge.
-- **#2740 per-driver full-band cuts-only prescription route**: gate was
-  mid-review (fresh Opus). Then fix round(s) → merge. Note its deliberate
-  boundary: round CONSUMPTION of the driver class is fail-closed unwired
-  pending the compose-vs-replace ruling (architect's to make, owner
-  informed).
-- **apply-path PR** (branch `claude/fc-apply-path`, existed unpushed-PR at
-  handoff; builder was closing out): re-points the dormant
-  `fc_selection` route + slope on the same writer + Undo coverage + binds
-  the #2736 floor gate. Hearing-safety-aware gate when it opens.
-- **THE BOUNDARY: the walk-take PR is NOT started** (owner's explicit
-  order: land everything up to it, stop there). Its founding documents:
-  #2741's blocker framing (verified accurate by its gate) + the P2 doc
-  section. The problem: per-driver pose captures are reachable only under
-  PHASE_LATERAL whose last index runs `_close_lateral_walk` →
-  `_adjudicate_fc()` (barred by #2711); both exits edit the two AT-CAP
-  files (crossover_v2_flow.py 13,055; web/correction_crossover_v2.py
-  8,804). The ruling direction already recorded (#2732): per-driver capture
-  for the forward model is a DIFFERENT CONSUMER than the barred statistic —
-  suppress the close for a non-stage-1 walk; never silently un-pause the
-  statistic.
+## 3. Landing complete — the boundary is now the live edge
+
+The #2735 base branch (`claude/crossover-candidate-forward-model`) was
+deleted after #2739 merged, per the standing rule. The #2740 note in the
+original handoff — "round CONSUMPTION of the driver class is fail-closed
+unwired pending the compose-vs-replace ruling" — is resolved: the fix round
+implemented **merge-by-role** (`fitted` is now a required, undefaulted
+keyword; named roles replace their own filters, unnamed roles keep the
+fit's; the old unconditional splat is deleted and documented as forbidden).
+That IS the compose-vs-replace ruling. Whether the round loop actually
+invokes this route end-to-end was not independently re-verified before
+merge (see the delta-review flag in §2) — check that specifically.
+
+- **THE BOUNDARY: the walk-take PR is STILL NOT STARTED** (owner's explicit
+  order: land everything up to it, stop there — that instruction has not
+  been superseded). Its founding documents: #2741's blocker framing
+  (verified accurate by its gate) + the P2 doc section. The problem:
+  per-driver pose captures are reachable only under PHASE_LATERAL whose
+  last index runs `_close_lateral_walk` → `_adjudicate_fc()` (barred by
+  #2711); both exits edit the two AT-CAP files (crossover_v2_flow.py
+  13,055; web/correction_crossover_v2.py 8,889 — recount on your tree, it
+  moved twice tonight). The ruling direction already recorded (#2732):
+  per-driver capture for the forward model is a DIFFERENT CONSUMER than the
+  barred statistic — suppress the close for a non-stage-1 walk; never
+  silently un-pause the statistic. **Do not build this unless the owner has
+  explicitly cleared crossing the boundary in this session.**
 - **#2738** (done-screen badge precedence): ANOTHER agent's task, pending
   the OWNER's (a)/(b)/(c) ruling on the issue. Verified brief at
   `BRIEF-issue-2738-fix-agent.md` (checkout root). Not yours unless asked.
-- Two chips in separate sessions: .gitignore venv-symlink; constraints-test
-  skip-without-venv (kills the 2-failure lane artifact every agent re-diagnoses).
+- Two hygiene chips spun off in separate sessions: constraints-test
+  skip-without-venv **landed as #2746** (confirmed — the reviewer used it
+  live and it worked). The `.gitignore` venv-symlink chip's session ended
+  during this session's final stretch; outcome not independently confirmed
+  — check `git log --oneline -- .gitignore` / open PRs before redoing it.
 
 ## 4. Findings a fresh prescriber MUST hold (full detail: the graveyard file)
 
@@ -142,7 +170,7 @@ arms) · plus #2737 (another session: mark-VERIFY badge cap). Main is green
 - In-window features (5/5 seats, natural Q): −1.56@1037 (6.6), +0.81@1406
   (5.1), +0.67@2057 (3.9). Out-of-window bank: +0.83@4149 · −1.46@4582 ·
   +1.13@5396 · −0.70@6245 · −2.00@8530 · +1.01@9509 — now addressable via
-  #2740's route once merged+consumed. ≥3.6 kHz size-split class = beaming,
+  #2740's route, merged and on main (delta review still owed, §2). ≥3.6 kHz size-split class = beaming,
   barred. All nine MINIMUM-PHASE (controls-verified).
 - Fc-move hypothesis for this horn (modeled, external): 1.6→2.5–2.8 kHz,
   claimed nonmonotonicity at 2.0; woofer breakup = unmeasured ceiling. A
@@ -199,7 +227,14 @@ control). Agents stopping to "wait" for untracked background lanes stall
 forever — nudge with SendMessage. Spawn isolation is unreliable: agents
 launched "fresh" sometimes land in the shared session worktree — verify
 `git rev-parse --show-toplevel` FIRST; the session worktree holds the
-owner's untracked METHODOLOGY/BRIEF/PACK files — never delete them.
+owner's untracked METHODOLOGY/BRIEF/PACK files — never delete them. A
+mass-kill of running tasks (owner or accidental) can leave a resumed
+reviewer's OWN transcript missing messages that were genuinely delivered
+(SendMessage confirms queueing/delivery independent of what the receiver
+later "remembers"); if a resumed agent reports it "fabricated" an
+instruction, check the PR/issue threads and the tool's own delivery
+confirmation before believing the self-audit — a resumed agent's transcript
+view is not the ground truth for what it was told.
 
 ## 7. Artifact index
 
@@ -220,18 +255,22 @@ owner's untracked METHODOLOGY/BRIEF/PACK files — never delete them.
 
 ## 8. Immediate next actions for you, in order
 
-1. `gh pr list` + read each open PR's disposition comments — finish the
-   in-flight reviews/fix-rounds per §3, merge each on 0/0 + live-green.
-2. Delete the #2735 base branch after #2739 lands.
-3. Build the walk-take PR (per §3's boundary paragraph) — ONLY if the owner
-   has cleared crossing the boundary; at handoff the standing order was
-   "land everything UP TO it".
+1. **Retroactive delta review of #2740 and #2739** (§2 flag) — dispatch an
+   adversarial-gate agent, report-only, findings become follow-up PRs (it
+   cannot un-merge what's on main). Do this before anything else builds on
+   top of either route.
+2. Confirm the `.gitignore` venv-symlink chip's actual outcome (§3, last
+   bullet) before redoing that work.
+3. Build the walk-take PR (§3's boundary paragraph) — ONLY if the owner has
+   explicitly cleared crossing the boundary in your session; absent that,
+   the standing order remains "land everything up to it, stop there."
 4. Then §5 when the owner opens the studio.
 5. Queued next-wave builds (owner-approved, not started): round-type
    registry (the always-run protocol as code); knowledge-pack
    productization (docs/crossover-agent/ + per-speaker memory mechanism +
-   packet pack-version stamp); the compose-vs-replace ruling for #2740's
-   consumption; the boost-route headroom design brief (owner decision).
+   packet pack-version stamp); the boost-route headroom design brief (owner
+   decision — the cuts-only ceiling landed in #2730/#2740, boosts remain
+   parked).
 
 Land PRs before tokens run out. Post dispositions when reviews return.
 Leave every artifact where the next session can find it. The measurement
