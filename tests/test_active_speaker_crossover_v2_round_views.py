@@ -824,3 +824,30 @@ def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     rc = main(["per-seat", str(tmp_path / "nope")])
     assert rc == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_cli_reports_exit_1_not_a_traceback_on_a_header_truncated_wav(tmp_path, capsys):
+    """SF-2: a dump-ring WAV truncated inside its RIFF/fmt header raises
+    ``struct.error`` from ``scipy.io.wavfile.read`` — NOT ``ValueError`` —
+    which the CLI's exception tuple did not originally cover, so this shape
+    reached the operator as an unhandled traceback instead of the
+    documented exit 1. Verified by hand that a real WAV cut at 30 bytes
+    raises exactly ``struct.error`` (10 bytes raises ``ValueError``
+    instead, already covered; 44+ bytes is a DATA truncation that raises
+    nothing at all, out of this tool's scope).
+    """
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+    _write_wired_capture(round_dir, banked.session_dir, n_takes=1)
+    wav_path = next((round_dir / "dumps" / "wav").glob("*.wav"))
+    data = wav_path.read_bytes()
+    assert len(data) > 30
+    wav_path.write_bytes(data[:30])  # header-truncated: struct.error on read
+
+    rc = main(["per-seat", str(round_dir)])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err

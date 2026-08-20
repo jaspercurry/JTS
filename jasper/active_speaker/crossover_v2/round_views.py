@@ -670,6 +670,13 @@ def repeatability_spread(
     (per-bin) pool, because ``_pool`` is the one weighted-mean identity both
     poolings share and only the caller's choice of weights (bin count vs
     octave span) tells them apart.
+
+    ``primary_role`` exists here only because ``role_split_flatness``'s
+    signature requires one — this function immediately recombines its
+    ``primary``/``others`` split back into one flat role list (below) and
+    reports every role the same way, so which role is named "primary"
+    changes nothing about this function's own output. It is a seam
+    requirement, not a repeatability policy.
     """
     role_pooled: dict[str, dict[str, float]] = {}
     log_role_pooled: dict[str, dict[str, float]] = {}

@@ -317,23 +317,43 @@ class BandResult:
     def from_dict(cls, raw: Mapping[str, Any]) -> "BandResult":
         """The exact inverse of :meth:`to_dict` -- a rehydration, never a
         re-derivation. No band edge, floor, or tolerance is recomputed;
-        every field is read back verbatim. The five fields defaulted on the
-        dataclass itself (``level_deviation_db`` through
-        ``max_at_graded_edge``) are read with :meth:`dict.get` so a report
-        persisted before that split existed rehydrates with the same
-        ``None`` the dataclass default would give a hand-built one.
+        every field is read back verbatim.
+
+        Two vintages, two read rules, and conflating them is a silent-wrong
+        trap. ``f_lo_hz`` through ``passed`` (ten fields, including
+        ``max_deviation_db``/``max_deviation_hz``/``rms_deviation_db``) have
+        been in :meth:`to_dict` since #1741 -- there has never been a
+        persisted document that could lack one, so they are read with hard
+        indexing (``raw["..."]``): a document missing one is CORRUPT and
+        must raise ``KeyError``, not silently rehydrate a
+        plausible-looking ``None``. (Several of these fields are themselves
+        legitimately ``None`` on an unevaluable band -- ``raw["..."]``
+        preserves that; the hardening is against the KEY being absent, not
+        against the value being ``None``.) Only the five fields defaulted
+        on the dataclass itself (``level_deviation_db`` through
+        ``max_at_graded_edge`` -- the #1857/#2551 additions) are read with
+        :meth:`dict.get`, so a report persisted before that split existed
+        rehydrates with the same ``None`` the dataclass default would give
+        a hand-built one. An earlier version of this method read
+        ``max_deviation_db``/``max_deviation_hz``/``rms_deviation_db``/
+        ``passed`` the same lenient way as the five truly-optional fields
+        below; a mutation dropping ``passed`` (paired with dropping
+        :class:`FlatSpecReport`'s own ``excluded_intervals``) from a real
+        document then rehydrated silently instead of raising, and the
+        round-views grader built on top of it produced a WRONG number
+        (+2.40 dB off) at exit 0 rather than failing loudly.
         """
         return cls(
             f_lo_hz=float(raw["f_lo_hz"]),
             f_hi_hz=float(raw["f_hi_hz"]),
             tolerance_db=float(raw["tolerance_db"]),
-            max_deviation_db=raw.get("max_deviation_db"),
-            max_deviation_hz=raw.get("max_deviation_hz"),
-            rms_deviation_db=raw.get("rms_deviation_db"),
+            max_deviation_db=raw["max_deviation_db"],
+            max_deviation_hz=raw["max_deviation_hz"],
+            rms_deviation_db=raw["rms_deviation_db"],
             n_bins=int(raw["n_bins"]),
             n_excluded=int(raw["n_excluded"]),
             evaluable=bool(raw["evaluable"]),
-            passed=raw.get("passed"),
+            passed=raw["passed"],
             level_deviation_db=raw.get("level_deviation_db"),
             max_ripple_db=raw.get("max_ripple_db"),
             max_ripple_hz=raw.get("max_ripple_hz"),
@@ -411,10 +431,17 @@ class FlatSpecReport:
         """The exact inverse of :meth:`to_dict` -- a rehydration, never a
         re-derivation. No band edge, floor, or reference is recomputed;
         every field is read back verbatim through :meth:`BandResult.from_dict`
-        and this report's own optional fields. ``reference_band_hz`` is read
-        with :meth:`dict.get` so a report persisted before that field
-        existed rehydrates with the dataclass's own default
-        (:data:`REFERENCE_BAND_HZ`) rather than raising.
+        and this report's own fields, under the same two-vintage read rule
+        :meth:`BandResult.from_dict` documents: ``excluded_intervals`` has
+        been in :meth:`to_dict` since #1741 and is read with hard indexing
+        (``raw["excluded_intervals"]``) -- a document missing it is corrupt
+        and must raise, not silently rehydrate an empty tuple that reads as
+        "nothing was excluded" when the truth is "the field was lost."
+        ``trusted_floor_hz`` (#2551) and ``reference_band_hz`` (#2551) are
+        genuinely later additions and are read with :meth:`dict.get`, so a
+        report persisted before either existed rehydrates with the
+        dataclass's own default (``None``, :data:`REFERENCE_BAND_HZ``)
+        rather than raising.
         """
         kwargs: dict[str, Any] = {}
         reference_band = raw.get("reference_band_hz")
@@ -425,7 +452,7 @@ class FlatSpecReport:
             bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
             overall_passed=bool(raw["overall_passed"]),
             excluded_intervals=tuple(
-                (float(lo), float(hi)) for lo, hi in raw.get("excluded_intervals", ())
+                (float(lo), float(hi)) for lo, hi in raw["excluded_intervals"]
             ),
             best_effort_above_hz=float(raw["best_effort_above_hz"]),
             smoothing_fraction=int(raw["smoothing_fraction"]),

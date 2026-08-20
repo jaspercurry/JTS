@@ -561,6 +561,40 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     assert FlatSpecReport.from_dict(bare_report.to_dict()) == bare_report
 
 
+def test_from_dict_raises_on_a_document_missing_an_original_vintage_field():
+    """The mutation this guards against: an earlier version of ``from_dict``
+    read every field with ``.get()``, so a document missing an
+    original-vintage (#1741) field silently rehydrated a plausible-looking
+    default instead of raising -- ``excluded_intervals`` defaulted to ``()``
+    (reads as "nothing was excluded" when the truth is "the field was
+    lost"), and ``BandResult.passed`` defaulted to ``None`` (reads as
+    "unevaluable" when the truth is the same). Both must now raise
+    ``KeyError``, not rehydrate.
+    """
+    band = BandResult(
+        f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
+        max_deviation_db=-2.0, max_deviation_hz=150.0, rms_deviation_db=1.0,
+        n_bins=10, n_excluded=1, evaluable=True, passed=False,
+    )
+    report = FlatSpecReport(
+        reference_db=-20.0, bands=(band,), overall_passed=False,
+        excluded_intervals=((300.0, 310.0),), best_effort_above_hz=16000.0,
+        smoothing_fraction=3,
+    )
+    raw = report.to_dict()
+    assert "excluded_intervals" in raw  # sanity: the field really is there to remove
+
+    corrupted = dict(raw)
+    del corrupted["excluded_intervals"]
+    with pytest.raises(KeyError, match="excluded_intervals"):
+        FlatSpecReport.from_dict(corrupted)
+
+    band_raw = dict(raw["bands"][0])
+    del band_raw["passed"]
+    with pytest.raises(KeyError, match="passed"):
+        BandResult.from_dict(band_raw)
+
+
 # --------------------------------------------------------------------------- #
 # degenerate inputs -> ValueError, never a silent pass
 # --------------------------------------------------------------------------- #

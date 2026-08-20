@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -59,17 +60,27 @@ EXIT_ERROR = 1
 
 #: A banked round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
-#: the product module's own typed :class:`RoundViewsError`: a truncated
-#: dump-ring WAV is the ring's NORMAL failure shape (``read_wav_mono`` /
-#: ``scipy.io.wavfile.read`` raise ``ValueError`` or ``EOFError`` on one), a
-#: malformed evidence document can be missing a key (``KeyError``) or hold
-#: the wrong type at one (``TypeError``), and any of the files this tool
-#: reads can simply not exist or not be readable (``OSError``). Every one of
-#: these is "the round is unreadable", exactly what exit 1 already means —
-#: this tuple is what makes that the ACTUAL behaviour instead of an
-#: unhandled traceback the first time a real, imperfect round hits it.
+#: the product module's own typed :class:`RoundViewsError`: a HEADER-
+#: truncated dump-ring WAV (cut inside the RIFF/fmt chunk) raises
+#: ``struct.error`` from ``scipy.io.wavfile.read``'s chunk unpacking — NOT
+#: ``ValueError`` — while a WAV truncated only early enough to fail the
+#: "is this a RIFF file at all" check raises ``ValueError`` (verified by
+#: hand: cutting a real WAV at 20/30/40 bytes raises ``struct.error``, at
+#: 10 bytes raises ``ValueError``). A DATA-truncated WAV (a complete header,
+#: fewer sample bytes than declared) raises NOTHING — ``wavfile.read``
+#: returns the short array with a ``WavFileWarning``, so that silent
+#: shape is real but is not this tuple's job: catching an exception that
+#: was never raised is not how it is caught, and a truncated-but-parseable
+#: capture's byte-accounting is the wired capture chain's own
+#: ``capture_integrity``/``frame_ledger`` fields to catch, not this CLI's.
+#: A malformed evidence document can be missing a key (``KeyError``) or
+#: hold the wrong type at one (``TypeError``), and any of the files this
+#: tool reads can simply not exist or not be readable (``OSError``). Every
+#: one of these is "the round is unreadable", exactly what exit 1 already
+#: means — this tuple is what makes that the ACTUAL behaviour instead of
+#: an unhandled traceback the first time a real, imperfect round hits it.
 _ROUND_READ_ERRORS: tuple[type[Exception], ...] = (
-    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError,
+    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError, struct.error,
 )
 
 
