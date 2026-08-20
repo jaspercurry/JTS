@@ -577,7 +577,7 @@ Both paths reuse the LR4 primitive (`emit_linkwitz_riley`); they differ in
   stream, silence, or garbage — can produce a full-range driver feed.
   This is the active-crossover analogue of inv-1 and is strictly safer
   than the dumb-follower path.
-- **Stream stall → silence, not full-range.** Loopback underrun →
+- **Stream stall → silence, not full-range.** A capture underrun →
   CamillaDSP emits silence through Layer A (silence through a crossover is
   silence). Surface a cue ([cues/registry.py](../jasper/cues/registry.py))
   + a `/state` flag + dashboard card (AGENTS.md "no silent failure").
@@ -907,7 +907,7 @@ speakers, one as leader:
   assumed**). Capture real `htop`/temp under load on `jts3`.
 - **Leader TTS (Option 3, ratified — Q2 spike):** "Hey Jarvis" replies on the
   leader reach the tweeter **band-limited via camilla#2's Layer A** — TTS is
-  summed into the crossover instance's input loopback (post-snapclient, so it
+  summed into the crossover instance's input (post-snapclient, so it
   never traverses the round-trip), the content-duck follows the same point, and
   the outputd 2-ch TTS mixer is **not** armed on the active leader. Confirm no
   full-range speech to the tweeter and TTS-to-glass ≈ the solo-active baseline
@@ -919,7 +919,7 @@ speakers, one as leader:
 - **Leader clock-lock soak — pre-registered signatures (fixed BEFORE the run,
   not rationalised after).** The single-loop realization (see "Stage B — the
   ratified active-leader realization") must produce the *stationary* signature
-  over a ≥24 h `snd-aloop` soak once `outputd-summer` + camilla#2 `rate_adjust`
+  over a ≥24 h soak once `outputd-summer` + camilla#2 `rate_adjust`
   OFF are in the path. Log the **resampler ratio**, the **fill of every buffer**
   at the crossing, and an **end-to-end latency probe** for the whole run. Three
   signatures, fixed now so there is nothing to rationalise against later:
@@ -1203,7 +1203,7 @@ path for the chosen option.**
 |---|---|---|---|---|---|
 | 1 | upstream at fan-in (before the bake) | ✅ | ✗ round-trip | ✅ | laggy; also streams TTS to the follower (inv-A forbids) |
 | 2 | at outputd, add per-driver protection to the TTS lane | ✅ | ✅ | ✅ | safety-critical DSP in the reboot-on-fail Rust daemon; "minimal" = either skip-tweeter (muffled voice) or reimplement the crossover (the thing Option-B avoided) |
-| 3 | into camilla#2's input (post-round-trip, pre-crossover) | ✅ | ✅ | ✅ | reuses the **verified** crossover + `classify_camilla_graph` re-proof, outputd stays dumb; cost = a new TTS mix point on the loopback + the content-duck must follow + the crossover chunk latency |
+| 3 | into camilla#2's input (post-round-trip, pre-crossover) | ✅ | ✅ | ✅ | reuses the **verified** crossover + `classify_camilla_graph` re-proof, outputd stays dumb; cost = a new TTS mix point on that input + the content-duck must follow + the crossover chunk latency |
 | 4 | **leader-only voice** (product decision) | — | — | — | see below |
 
 **Option 4 — leader-only voice (likely yes).** TTS is **already** leader-local
@@ -1273,7 +1273,7 @@ through snapcast.**
 |---|---|---|---|
 | (a) outputd mix [today; **unsafe** on active] | outputd `OutputCore`, post-crossover | 0 — reference (TTS-to-glass ≈ DAC playout **63.7 ms**) | ✗ |
 | (c) Option 2 — protective filter on the TTS lane at outputd | outputd, + one biquad | **< 1 ms** (biquad group delay; no added buffering) | ✓ but muffled, or re-impl crossover |
-| (b) Option 3 — TTS into the crossover instance's input | camilla#2 input loopback (post-snapclient) | **+85–125 ms** (camilla chunk 21 ms + playback buffer 43 ms + content-bridge handoff ~63 ms; = the solo-active path) | ✓ |
+| (b) Option 3 — TTS into the crossover instance's input | camilla#2's input (post-snapclient) | **+85–125 ms** (camilla chunk 21 ms + playback buffer 43 ms + content-bridge handoff ~63 ms; = the solo-active path) | ✓ |
 | Option 1 — upstream of the bake [**rejected**] | fanin, pre-stream | **+~400 ms** (snapcast `buffer_ms` round-trip) | ✓ but laggy + streams TTS to follower (inv-A) |
 
 Measured anchors (live `/state`, solo active, current buffering):
@@ -1297,7 +1297,7 @@ the leader already buffers its own *music* at the round-trip depth and a solo
 active speaker already accepts the camilla path for its *voice*, **Option 3
 introduces no new latency class.**
 
-**4. Leader mechanism — Option 3 (TTS into camilla#2's input loopback).** Chosen
+**4. Leader mechanism — Option 3 (TTS into camilla#2's own input).** Chosen
 over Option 2:
 - **Safety / engine.** Reuses the **shipped, verified** per-driver crossover +
   the `classify_camilla_graph` re-proof; adds **no** safety-critical DSP to the
