@@ -190,6 +190,7 @@ typedef struct {
     // holds the bucket.
     int pace_nominal;
     jts_ring_pace_log_state_t pace_log; // edge detection; jts_ring_pace_log_step
+    uint64_t pace_bind_bound_ns;        // pace_bound_ns when the standing bind began
     int opened; // writer/reader attached
     // --- PLAYBACK staging (writer) ---
     // Camilla may writei() fewer than a whole slot at a time; we accumulate into
@@ -307,10 +308,17 @@ static void pace_log_edges(jts_ring_pcm_t *p, uint64_t now_ns) {
     jts_ring_pace_log_event_t ev = jts_ring_pace_log_step(&p->pace_log, bound_ns, now_ns,
                                                           JTS_RING_PACE_LOG_INTERVAL_NS);
     if (ev == JTS_RING_PACE_LOG_NONE) return;
-    SNDERR("jts_ring: pace %s path=%s bound_s=%llu.%03llu",
+    // Print THIS bind's length beside the cumulative ledger. Without it, a bind
+    // whose predecessor was window-suppressed can only be sized by differencing
+    // two lines that may be an hour apart.
+    if (ev == JTS_RING_PACE_LOG_BIND) p->pace_bind_bound_ns = bound_ns;
+    uint64_t delta_ns = bound_ns - p->pace_bind_bound_ns;
+    SNDERR("jts_ring: pace %s path=%s bound_s=%llu.%03llu (+%llu.%03llu this bind)",
            ev == JTS_RING_PACE_LOG_BIND ? "bind" : "release", p->path,
            (unsigned long long)(bound_ns / 1000000000ull),
-           (unsigned long long)((bound_ns / 1000000ull) % 1000ull));
+           (unsigned long long)((bound_ns / 1000000ull) % 1000ull),
+           (unsigned long long)(delta_ns / 1000000000ull),
+           (unsigned long long)((delta_ns / 1000000ull) % 1000ull));
 }
 
 // ---- ioplug callbacks ----
@@ -340,21 +348,18 @@ static int jts_ring_prepare(snd_pcm_ioplug_t *io) {
         }
         p->opened = 1;
     }
-    // Reset the staging + pointer (bucket included) on (re)prepare.
+    // Reset the staging + pointer and ARM the governor here, not at `start`: a PCM
+    // can transfer while still PREPARED, and an unarmed bucket does not pace it.
     p->stage_frames = 0;
     p->appl_frames = 0;
-    jts_ring_pointer_state_reset(&p->ptr_state);
+    jts_ring_pointer_prepare(&p->ptr_state, p->pace_nominal,
+                             io->stream == SND_PCM_STREAM_PLAYBACK,
+                             jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
     return 0;
 }
 
 static int jts_ring_start(snd_pcm_ioplug_t *io) {
     jts_ring_pcm_t *p = io->private_data;
-    // Anchor at start, not prepare: a prepare-to-start gap would otherwise refill
-    // the bucket for time the app could not have used. Shared by both directions;
-    // the governed-playback gate is inside jts_ring_pace_start.
-    jts_ring_pace_start(&p->ptr_state, p->pace_nominal,
-                        io->stream == SND_PCM_STREAM_PLAYBACK,
-                        jts_ring_monotonic_raw_ns(), (uint64_t)io->buffer_size);
     arm_timer(p);
     return 0;
 }

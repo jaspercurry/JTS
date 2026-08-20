@@ -527,11 +527,17 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 // At the grouping ring's 128-frame period that is 2589 ppm over 60 s, and the
 // 2026-08-20 hardware's 2667 ppm sits inside it once that instrument's own 533 ppm
 // is counted (2589 + 533 = 3122).
-// THAT FORM ASSUMES A WINDOW WITH NO STREAM START AND NO REATTACH IN IT. A window
-// containing either carries one more term, one-time rather than rate:
-//     + 1e6*(2*buffer_size)/(rate*T)
-// the seed plus the app's standing one-buffer lead — 1422 ppm over 60 s here, so a
-// from-start window is bounded by 2589 + 1422 = 4011 ppm.
+// THAT FORM IS THE INTERIOR ONE: it assumes a window with no stream start, no
+// reattach, and no STARVATION EXIT in or immediately before it. Each of those
+// releases a one-time quantity, not rate:
+//   - start or reattach: + 1e6*(2*buffer_size)/(rate*T) — the seed plus the app's
+//     standing one-buffer lead. 1422 ppm over 60 s here, so a from-start window is
+//     bounded by 2589 + 1422 = 4011 ppm.
+//   - starvation exit: + 1e6*(buffer_size - period_frames)/(rate*T) — the alias
+//     clamp's single catch-up step across the boundary, 667 ppm over 60 s. The
+//     CLAMP carries this, not the bucket. It is why the 2026-08-20 graded
+//     interior-stalled window read +3111 ppm: it straddles a starvation exit, and
+//     3111 - 667 = 2444 is inside the 2589 interior bound.
 #define JTS_RING_PACE_HEADROOM_PPM 2500ull
 #define JTS_RING_PACE_HEADROOM_DIVISOR (1000000ull / JTS_RING_PACE_HEADROOM_PPM)
 _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 1000000ull,
@@ -655,21 +661,35 @@ static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
     st->pace_prev_reader_live = 0;
 }
 
-// Stream start: anchor the bucket and seed it FULL — a real device absorbs its
-// prefill at once, and an empty bucket paces that prefill at the ceiling instead
-// (the 57 s startup bind in the measurements jts_ring_pace_apply cites). One
-// buffer, once, so it costs no rate. `prev_reader_live` starts at 1 so an
-// already-live reader is not read as a dead->live edge and re-seeded on top.
-// Forced-nonzero clock: 0 is the not-started sentinel. The gate lives HERE because
-// `start` is shared by both directions and every ungoverned PCM — which is what
-// keeps the "all stay zero on an ungoverned PCM" claim above true of the plugin.
-static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, int pace_nominal,
-                                       int stream_is_playback, uint64_t now_ns,
-                                       uint64_t buffer_size) {
+// Arm the bucket and seed it FULL — a real device absorbs its prefill at once, and
+// an empty bucket paces that prefill at the ceiling instead (the 57 s startup bind
+// in the measurements jts_ring_pace_apply cites). One buffer, once, so it costs no
+// rate. `prev_reader_live` starts at 1 so an already-live reader is not read as a
+// dead->live edge and re-seeded on top. Forced-nonzero clock: 0 is the not-armed
+// sentinel. The gate lives HERE because the caller is shared by both directions and
+// every ungoverned PCM — which is what keeps the "all stay zero on an ungoverned
+// PCM" claim above true of the plugin.
+static inline void jts_ring_pace_arm(jts_ring_pointer_state_t *st, int pace_nominal,
+                                     int stream_is_playback, uint64_t now_ns,
+                                     uint64_t buffer_size) {
     if (!pace_nominal || !stream_is_playback) return;
     st->pace_last_ns = (now_ns == 0) ? 1 : now_ns;
     st->pace_tokens = buffer_size * JTS_RING_PACE_TOKENS_PER_FRAME;
     st->pace_prev_reader_live = 1;
+}
+
+// The (re)prepare transition as ONE step: clear the report, then arm. ARMING
+// BELONGS AT PREPARE, NOT AT START — an unarmed bucket makes jts_ring_pace_apply
+// early-return, and a PCM can transfer indefinitely while still PREPARED (with
+// start_threshold > period and a dead reader, ALSA's start condition never trips
+// against the dead-reader discount). Armed at start, that window was ungoverned
+// free-run. Moving it costs one buffer: a long prepare->start gap refills the
+// bucket, capped at the burst the seed already grants.
+static inline void jts_ring_pointer_prepare(jts_ring_pointer_state_t *st, int pace_nominal,
+                                            int stream_is_playback, uint64_t now_ns,
+                                            uint64_t buffer_size) {
+    jts_ring_pointer_state_reset(st);
+    jts_ring_pace_arm(st, pace_nominal, stream_is_playback, now_ns, buffer_size);
 }
 
 // THE PACING GOVERNOR — one owner, PLAYBACK only. A floor under the failure a
@@ -705,6 +725,13 @@ static inline void jts_ring_pace_start(jts_ring_pointer_state_t *st, int pace_no
 // (JTS_RING_WRITER_LIVENESS_TIMEOUT_NS, 2 s) before it can come live, so flapping
 // caps at one buffer per 2 s = 1024 f/s against 48000, ~2.1% — and only for a
 // reader dying and returning twice a second forever, its own loud failure.
+//
+// A RESTARTED reader is not a resumed one: a fresh process starts with empty
+// buffers that only the headroom surplus refills, so re-lock takes at least
+// downstream_buffer/headroom — 42.67 ms / 2500 ppm = ~17 s at today's constants
+// (~44 s observed 2026-08-20). The ~1 s expectation belongs to SIGCONT, same
+// process, buffers intact. Sizing the re-seed to the consumer's buffer would
+// shorten it and is deliberately NOT done: the plugin cannot know foreign buffers.
 static inline uint64_t jts_ring_pace_apply(jts_ring_pointer_state_t *st, uint64_t honest,
                                            int pace_nominal, uint64_t now_ns, uint32_t rate,
                                            uint64_t buffer_size, uint32_t period_frames,

@@ -329,6 +329,37 @@ def test_the_grouping_ring_is_the_only_pcm_that_asks_to_be_paced():
     )
 
 
+def test_the_governor_is_armed_from_prepare_and_not_from_start():
+    """The pace bucket is armed in the PREPARE callback, never in START.
+
+    A PCM can transfer while still PREPARED — with ``start_threshold > period``
+    and a dead reader, ALSA's start condition never trips against the ioplug's
+    dead-reader avail discount, so the stream may never leave PREPARED at all.
+    ``jts_ring_pace_apply`` early-returns on an unarmed bucket, so arming at
+    ``start`` left that whole window ungoverned free-run. The header seam
+    (``jts_ring_pointer_prepare``) has its own host test; this pins the half a
+    host test cannot see, which is which callback the plugin wires it into.
+    """
+    c = _read(_IOPLUG_C)
+
+    def _body(fn: str) -> str:
+        m = re.search(rf"^static int {re.escape(fn)}\(.*?^}}", c, re.MULTILINE | re.DOTALL)
+        assert m is not None, f"could not find {fn} in {_IOPLUG_C.name}"
+        return m.group(0)
+
+    prepare = _body("jts_ring_prepare")
+    start = _body("jts_ring_start")
+    assert "jts_ring_pointer_prepare(" in prepare, (
+        "the playback prepare callback must arm the governor via "
+        "jts_ring_pointer_prepare; without it a PREPARED writer free-runs"
+    )
+    for fn in ("jts_ring_pace_arm(", "jts_ring_pointer_prepare("):
+        assert fn not in start, (
+            f"{fn} must not be called from jts_ring_start — arming there is the "
+            "defect this pin exists to catch (a PREPARED stream never reaches it)"
+        )
+
+
 def test_the_grouping_ring_slot_is_one_camilladsp_chunk():
     """One slot per chunk — the relationship every other ring in the tree ships.
 

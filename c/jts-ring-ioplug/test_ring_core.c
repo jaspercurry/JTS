@@ -3310,12 +3310,12 @@ static uint64_t pace_report(jts_ring_pointer_state_t *st, uint64_t honest,
     return jts_ring_pointer_report(st, &in);
 }
 
-// A governed state anchored at t=1 ns (jts_ring_pace_start's own forced-nonzero
+// A governed state anchored at t=1 ns (jts_ring_pace_arm's own forced-nonzero
 // floor), so a test's first call has a well-defined dt.
 static jts_ring_pointer_state_t pace_state_started(void) {
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
     return st;
 }
 
@@ -3502,6 +3502,34 @@ static void test_pace_is_inert_when_the_device_binds_first(void) {
     CHECK(fast.last_reported == fast_honest, "and is reported honestly throughout");
 }
 
+static void test_pace_prepared_writer_is_paced_before_start(void) {
+    // THE HOLE prepare-arming closes. A PCM can transfer while still PREPARED —
+    // with start_threshold > period and a dead reader, ALSA's start condition never
+    // trips against the dead-reader discount, so the stream may never leave
+    // PREPARED at all. Armed at `start`, that window was ungoverned free-run:
+    // pace_apply early-returns on an unarmed bucket. So the transition function has
+    // to arm, and this drives it exactly as the plugin's prepare callback does —
+    // with NO start step at all after it.
+    jts_ring_pointer_state_t st;
+    memset(&st, 0, sizeof(st));
+    jts_ring_pointer_prepare(&st, 1, 1, 1, PACE_BUFFER);
+
+    // A maximally greedy writer, dead reader, one simulated second, never started.
+    uint64_t reported = 0;
+    for (uint64_t ms = 1; ms <= 1000; ms++) {
+        uint64_t now = 1 + ms * 1000000ull;
+        for (int spin = 0; spin < 4; spin++) {
+            reported = pace_report_rl(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD,
+                                      1, now, 0);
+        }
+    }
+    // Paced: one second of refill plus the one-time seed, not the ~4000 calls the
+    // loop made. Ungoverned this would be 4000 * (buffer - period) frames.
+    CHECK(reported <= pace_expected_frames(1) + PACE_BUFFER + PACE_PERIOD,
+          "a PREPARED writer is paced, not free-running");
+    CHECK(st.pace_bound_ns > 0, "and the governor is demonstrably engaged there");
+}
+
 static void test_pace_start_grants_the_prefill_without_binding(void) {
     // A clean start must absorb its prefill the way a real device does — instantly,
     // with no bind edge. Starting empty paced legitimate prefill at the ceiling: on
@@ -3509,7 +3537,7 @@ static void test_pace_start_grants_the_prefill_without_binding(void) {
     // back-pressure in ~5 s.
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
     jts_ring_pace_log_state_t ls;
     memset(&ls, 0, sizeof(ls));
 
@@ -3532,7 +3560,7 @@ static void test_pace_reader_reattach_reseeds_the_prefill(void) {
     // after SIGCONT.
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
     uint64_t now = 1;
     // Reader stalls; a greedy app drains the seeded bucket over 200 ms.
     for (uint64_t ms = 1; ms <= 200; ms++) {
@@ -3556,7 +3584,7 @@ static void test_pace_reattach_flapping_stays_bounded(void) {
     // against N buffers plus the honest refill, not against a rate.
     jts_ring_pointer_state_t st;
     memset(&st, 0, sizeof(st));
-    jts_ring_pace_start(&st, 1, 1, 1, PACE_BUFFER);
+    jts_ring_pace_arm(&st, 1, 1, 1, PACE_BUFFER);
     const uint64_t transitions = 30;
     const uint64_t dead_calls = 100, live_calls = 50;
     const uint64_t cycle_ns = 2 * PACE_NS_PER_S; // the liveness floor
@@ -3616,7 +3644,7 @@ static void test_pace_bound_ns_measures_time_not_call_rate(void) {
 
 static void test_pace_start_only_anchors_a_governed_playback_pcm(void) {
     // `start` is shared by both directions and by every ungoverned PCM, so the
-    // gate lives inside jts_ring_pace_start. Without it the bucket is anchored on
+    // gate lives inside jts_ring_pace_arm. Without it the bucket is anchored on
     // rings that must never be governed, which is both a false claim in the
     // header and a live governor one conf.d edit away.
     const struct { int governed, playback, anchors; } cases[] = {
@@ -3628,7 +3656,7 @@ static void test_pace_start_only_anchors_a_governed_playback_pcm(void) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         jts_ring_pointer_state_t st;
         memset(&st, 0, sizeof(st));
-        jts_ring_pace_start(&st, cases[i].governed, cases[i].playback, 7 * PACE_NS_PER_S, PACE_BUFFER);
+        jts_ring_pace_arm(&st, cases[i].governed, cases[i].playback, 7 * PACE_NS_PER_S, PACE_BUFFER);
         if (cases[i].anchors) {
             CHECK(st.pace_last_ns == 7 * PACE_NS_PER_S, "governed playback anchors");
         } else {
@@ -3831,22 +3859,22 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
         uint64_t now = (uint64_t)(tick + 1) * PACE_NS_PER_S;
         uint64_t got = pace_report(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1, now);
         uint64_t want = legacy_clamp(&ref, 1000000000000ull, PACE_BUFFER, PACE_PERIOD);
-        CHECK(got == want, "an unstarted stream is ungoverned (start never ran)");
+        CHECK(got == want, "an UNARMED stream is ungoverned — the hole prepare-arming closes");
     }
-    CHECK(st.pace_bound_ns == 0, "an unstarted governor accrues no bound time");
+    CHECK(st.pace_bound_ns == 0, "an unarmed governor accrues no bound time");
 
-    // START anchors it; the governor now binds a greedy app.
+    // PREPARE arms it; the governor now binds a greedy app.
     jts_ring_pointer_state_reset(&st);
-    jts_ring_pace_start(&st, 1, 1, 5 * PACE_NS_PER_S, PACE_BUFFER);
-    CHECK(st.pace_last_ns == 5 * PACE_NS_PER_S, "start anchors the bucket at now");
+    jts_ring_pace_arm(&st, 1, 1, 5 * PACE_NS_PER_S, PACE_BUFFER);
+    CHECK(st.pace_last_ns == 5 * PACE_NS_PER_S, "arming anchors the bucket at now");
     CHECK(st.pace_tokens == PACE_BUFFER * 1024ull,
-          "start seeds the bucket FULL — one buffer of device prefill");
+          "arming seeds the bucket FULL — one buffer of device prefill");
     // 100 ms of refill: enough to grant several whole periods, so the report moves
     // and the state below is genuinely dirty. (One millisecond buys 48 frames —
     // under a period — and would grant nothing at all.)
     uint64_t got = pace_report(&st, 1000000000000ull, PACE_BUFFER, PACE_PERIOD, 1,
                                5 * PACE_NS_PER_S + 100000000ull);
-    CHECK(got < 1000000000000ull, "a started governor binds a greedy app");
+    CHECK(got < 1000000000000ull, "an armed governor binds a greedy app");
     CHECK(got > 0, "and still grants the periods the refill paid for");
     CHECK(st.pace_bound_ns > 0, "and accrues bound time");
 
@@ -3864,11 +3892,11 @@ static void test_pace_lifecycle_prepare_start_pointer(void) {
               st.pace_bound_ns == 0,
           "prepare clears the reported position and the whole bucket");
 
-    // A zero clock sample at start still anchors (0 is the not-started sentinel).
+    // A zero clock sample still anchors (0 is the not-armed sentinel).
     jts_ring_pointer_state_t zero_st;
     memset(&zero_st, 0, sizeof(zero_st));
-    jts_ring_pace_start(&zero_st, 1, 1, 0, PACE_BUFFER);
-    CHECK(zero_st.pace_last_ns != 0, "start forces a nonzero anchor");
+    jts_ring_pace_arm(&zero_st, 1, 1, 0, PACE_BUFFER);
+    CHECK(zero_st.pace_last_ns != 0, "arming forces a nonzero anchor");
 }
 
 static void test_pace_timer_cadence(void) {
@@ -3995,7 +4023,7 @@ static void test_pace_readerless_writer_is_clock_paced_not_free_running(void) {
     ioplug_model_t m = ioplug_model_new(&g);
     m.pace_nominal = 1;
     m.now_ns = 1;
-    jts_ring_pace_start(&m.ptr, 1, 1, m.now_ns, m.buffer_size);
+    jts_ring_pace_arm(&m.ptr, 1, 1, m.now_ns, m.buffer_size);
     const uint64_t buffer = m.buffer_size;
     uint64_t accepted = 0, accepted_at_half = 0;
     const uint64_t window_ms = 200;
@@ -4120,6 +4148,7 @@ int main(void) {
     test_pace_refill_overflow_bound();
     test_pace_bucket_binds_when_the_app_outruns_the_clock();
     test_pace_is_inert_when_the_device_binds_first();
+    test_pace_prepared_writer_is_paced_before_start();
     test_pace_start_grants_the_prefill_without_binding();
     test_pace_reader_reattach_reseeds_the_prefill();
     test_pace_reattach_flapping_stays_bounded();
