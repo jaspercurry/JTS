@@ -4089,7 +4089,7 @@ _ALOOP_CARD_ID = "Loopback"
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
 
 #: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_grouping_remnant.py so a future
+#: against that file by tests/test_doctor_aloop_remnant.py so a future
 #: reduction cannot leave this walker scanning a range the module no longer
 #: has, and cannot leave the owning constants naming a pair that no longer
 #: exists.

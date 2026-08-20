@@ -175,7 +175,7 @@ async def precheck_active_leader(
         classify_output_contract,
         topology_allows_flat_dac_graph,
     )
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
+    from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
     from jasper.output_topology import (
         OutputTopologyError,
         load_output_topology_strict,
@@ -353,41 +353,22 @@ async def precheck_active_leader(
     profile = load_profile()
     settings = load_sound_settings()
     # THE BAKE'S CAPTURE FOLLOWS THE LIVE COUPLING. Without this the emitter's
-    # own default binds `capture_device=DEFAULT_CAPTURE_DEVICE`
-    # ("plug:jasper_capture", the snd-aloop fan-in tap) — and under `shm_ring`
-    # fan-in writes Ring A and stops feeding that tap, so camilla#1 would capture
-    # a device nobody writes. camilla#1 is the producer of the WHOLE BOND's audio,
-    # so that is a silent group on every member with every daemon healthy and no
-    # cue: the quiet trap `active_emit_devices` names for the solo graph, on the
-    # one instance where it is loudest. The resolver reads the coupling token
-    # file-fresh, and returns {} under `loopback` — byte-identical to today.
-    #
-    # CAPTURE HALF ONLY, and the filter lives here rather than in a second
-    # resolver: `coupling_capture_kwargs_from_env` returns the FULL end-to-end
-    # ring topology, whose `playback_device` is Ring B. This bake's sink is a
-    # `File` at SNAPFIFO — redirecting it to Ring B is exactly the
-    # strand-the-leader failure the coupling gate was written to prevent — and
-    # `emit_active_speaker_program_bake_config` accepts no playback parameter at
-    # all, so splatting the dict is a TypeError rather than a silent redirect.
-    # If a second File-sink emitter ever needs this, promote the filter into
-    # `fanin_coupling.py` beside its parent instead of copying it.
-    coupling_kwargs = coupling_capture_kwargs_from_env()
-    bake_capture_kwargs: dict[str, str] = {
-        key: str(value)
-        for key, value in coupling_kwargs.items()
-        if key in ("capture_device", "capture_format")
-    }
+    # default binds `plug:jasper_capture`, the snd-aloop tap that fan-in stops
+    # feeding under `shm_ring` — and camilla#1 is the producer of the WHOLE
+    # BOND's audio, so that is a silent group with every daemon healthy and no
+    # cue. The resolver reads the token file-fresh and returns {} under
+    # `loopback` — byte-identical to today. CAPTURE HALF ONLY, through the shared
+    # `capture_half` owner: this sink is a `File` at SNAPFIFO, and the emitter
+    # declares no playback parameter at all, so an unfiltered splat is a
+    # TypeError rather than a silent redirect (T-8b).
+    bake_capture_kwargs = capture_half(coupling_capture_kwargs_from_env())
     emit_active_speaker_program_bake_config(
         profile,
         room_peqs=[],
         output_trim_db=output_trim_db(profile, settings),
         out_path=LEADER_BAKE_CONFIG_PATH,
         profile_id=f"grouping-{cfg.bond_id or 'bond'}",
-        # ``**`` of a str-keyed dict cannot be narrowed to the two keyword
-        # parameters it actually carries, so mypy sees it against every one of
-        # the emitter's params (including the int/float ones). The filter above
-        # is what makes it safe, and T-8b pins that an unfiltered splat is a
-        # TypeError rather than a silent redirect.
+        # mypy cannot narrow a ``**`` splat to the two keys it carries.
         **bake_capture_kwargs,  # type: ignore[arg-type]
     )
     # Program-bake graphs cannot carry the optional baseline bass block, so

@@ -808,24 +808,16 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
       Those values are coupled to the 2-slot Ring A default; chunk 256 would span
       the entire 2-slot buffer.
 
-    **These are the STEREO ring's devices, and the ACTIVE ring is deliberately
-    not represented here.** The kwargs feed ``emit_sound_config`` — the FLAT
-    full-range program lane — and are merged LAST by
-    :func:`~jasper.audio_runtime_plan.apply_capture_precedence`, so anything they
-    name overwrites what the caller resolved. That would be a real stomp if this
-    function could ever be asked about a roleful box: it would hand the flat
-    emitter the full-range stereo ring on a box whose ring carries per-driver
-    channels.
-
-    It cannot, and the reason is structural rather than careful ordering: the
-    flat program lane is REFUSED outright on a roleful topology
-    (``flat_program_graph_blocked_reason`` → ``CarrierCannotHostEq``), because a
-    full-range graph on a crossover box would send full-range audio to a
-    protected tweeter. A box with an active ring is a roleful box by definition,
-    so the emit these kwargs serve never runs there. That is also why this
-    function takes no topology — every box it can legitimately answer for has the
-    same stereo answer. An active graph's device is resolved by
-    ``resolve_output_layout`` instead, on the path that emits per-driver graphs.
+    **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
+    exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
+    ``sample_format`` is the box's own declaration (:func:`resolve_ring_wire`,
+    not a per-topology axis) and its width is :data:`RING_A_CHANNELS` — so it is
+    safe to thread anywhere, and it is the half that MUST move: an armed ring is
+    fan-in no longer feeding ``plug:jasper_capture``. PLAYBACK must never cross
+    into an emit whose sink is already owned: ``jts_ring_playback`` is the STEREO
+    Ring B, and pointing a ``File``/SNAPFIFO pipe (the bonded leader's bake) or a
+    roleful box's ACTIVE ring at it strands the bond or sends a full-range
+    program to a per-driver ring. ``resolve_output_layout`` owns that device.
     """
     resolved = resolve_coupling(raw)
     if resolved == COUPLING_SHM_RING:
@@ -841,6 +833,21 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
             "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
         }
     return {}
+
+
+#: The CAPTURE half of :func:`capture_kwargs_for_coupling`'s result — see its
+#: docstring for why only this half may cross into an emit that owns its sink.
+CAPTURE_HALF_KEYS = ("capture_device", "capture_format")
+
+
+def capture_half(kwargs: Mapping[str, object]) -> dict[str, object]:
+    """Keep only :data:`CAPTURE_HALF_KEYS` — ONE owner of which keys those are.
+
+    For the three emits against a sink they already own (the leader's program
+    bake and both carrier paths); see :func:`capture_kwargs_for_coupling` for why
+    only this half may cross.
+    """
+    return {key: value for key, value in kwargs.items() if key in CAPTURE_HALF_KEYS}
 
 
 def content_lane_format_for_coupling(raw: str | None) -> str:

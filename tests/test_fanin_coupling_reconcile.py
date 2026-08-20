@@ -3769,10 +3769,17 @@ def test_the_default_voice_restart_wiring_issues_try_restart(
 
     assert result.ok, result.detail
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert broker_calls == [("jasper-voice.service", "try-restart")], (
+    voice_calls = [c for c in broker_calls if c[0] == "jasper-voice.service"]
+    assert voice_calls == [("jasper-voice.service", "try-restart")], (
         "the default wiring must reach the broker exactly once, as a "
         f"try-restart of jasper-voice; got {broker_calls}"
     )
+    # A successful coupling change also re-bakes a bonded ACTIVE leader's
+    # camilla#1, whose capture device was baked at BOND time: nothing else
+    # re-derives it on a flip and the two units are unordered, so without this
+    # an arm leaves camilla#1 on the tap the ring just took fan-in off — a
+    # silent bond with every daemon healthy. No-op on a solo box.
+    assert ("jasper-grouping-reconcile.service", "start") in broker_calls
 
 
 def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
@@ -3813,6 +3820,7 @@ def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
     )
 
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert broker_calls == [], (
+    voice_calls = [c for c in broker_calls if c[0] == "jasper-voice.service"]
+    assert voice_calls == [], (
         f"a narrow box's assistant width never moved; got {broker_calls}"
     )

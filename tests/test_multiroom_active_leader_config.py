@@ -272,8 +272,14 @@ def test_leader_bake_capture_follows_coupling(monkeypatch, tmp_path) -> None:
 
 
 def test_leader_bake_under_loopback_is_unchanged(monkeypatch, tmp_path) -> None:
-    """The other half of the resolver's contract: `{}` under `loopback`, so the
-    emitter's own defaults bind and the emitted YAML is today's bytes."""
+    """The other half of the resolver's contract: `{}` under `loopback`.
+
+    Byte-identity is proved at its SOURCE rather than by comparing three fields:
+    the filtered kwargs are EMPTY, and an empty ``**`` splat cannot change a byte
+    of the emitted YAML — the emitter's own DEFAULT_CAPTURE_* bindings apply
+    exactly as they did before this call site existed.
+    """
+    from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
     from jasper.camilla_config_contract import (
         DEFAULT_CAPTURE_DEVICE,
         DEFAULT_CAPTURE_FORMAT,
@@ -286,6 +292,8 @@ def test_leader_bake_under_loopback_is_unchanged(monkeypatch, tmp_path) -> None:
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     _persist_coupling(monkeypatch, "loopback")
+
+    assert capture_half(coupling_capture_kwargs_from_env()) == {}
 
     asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
 

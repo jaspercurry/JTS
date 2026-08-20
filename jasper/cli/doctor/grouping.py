@@ -344,10 +344,12 @@ def check_grouping_rate_adjust() -> CheckResult:
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    # "In the bonded chain" for the instance this check reads (camilla#1): a
-    # LEADER of either kind bakes the program to the snapfifo, and an
-    # ACTIVE-speaker FOLLOWER captures the grouping ring and runs Layer A. A dumb
-    # follower's camilla#1 is neither. `is_active_speaker_box` is total and
+    # "In the bonded chain" for the instance this check reads (the ACTIVE
+    # statefile's config — camilla#1 on a passive leader and on an active
+    # follower, camilla#2 on an active leader): a LEADER of either kind bakes the
+    # program to the snapfifo, and an ACTIVE-speaker FOLLOWER captures the
+    # grouping ring and runs Layer A. A dumb follower is neither.
+    # `is_active_speaker_box` is total and
     # fail-soft to False, so an unreadable topology narrows the scope rather than
     # inventing a warn.
     in_bonded_chain = is_active_member(cfg) and (

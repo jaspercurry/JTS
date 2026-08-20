@@ -2154,7 +2154,10 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
         return OutputTopology.from_mapping(raw)
     except FileNotFoundError:
         return new_topology_draft()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is NOT an OSError, and read_text() raises it before
+        # the JSON limb below can see it; SD-card bit rot produces exactly that,
+        # and uncaught it escapes every caller's fail-closed handling.
         raise OutputTopologyError(
             f"could not read output topology {target}: {exc}"
         ) from exc

@@ -54,6 +54,7 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
+    capture_half,
     capture_kwargs_for_coupling,
     coupling_capture_kwargs_from_env,
     member_kwargs_are_pipe_sink,
@@ -268,12 +269,18 @@ _VALID_AUDIO_ROUTE_PROFILES = {
 # The route modes that mean "grouping is enabled" (leader/follower = enabled +
 # valid + role; invalid_grouping = enabled + config error). Being one of these is
 # NECESSARY but no longer SUFFICIENT to block ``shm_ring``: the block also needs
-# ``dac_content_lane_armed``, because outputd's dac_content lane is the one
-# bonded consumer that reads the snd-aloop content path fan-in stops feeding
-# once the ring is armed. A DUMB member plays through that lane, so arming the
-# ring there would leave it with no writer; an ACTIVE endpoint's lane is cleared
-# by the same writer (CamillaDSP owns its channel-pick and split), so the ring
-# strands nothing. This is the SYMMETRIC half of jasper.multiroom.reconcile's
+# ``dac_content_lane_armed``. Arming that lane PINS
+# JASPER_OUTPUTD_CONTENT_BRIDGE=direct (outputd bails on a FIFO beside a
+# non-direct bridge), and under `direct` outputd reads the snd-aloop content PCM
+# that an armed ring moves CamillaDSP off — killing the box's own content and
+# the lane's inv-B starvation fallback. An ACTIVE endpoint's lane is cleared by
+# the same writer (CamillaDSP owns its channel-pick and split), so the ring
+# strands nothing; a PASSIVE leader, whose lane IS armed, stays blocked — and is
+# doubly safe by an identity neither function states:
+# `topology_supports_shm_ring(t)` implies `topology_allows_flat_dac_graph(
+# classify_output_contract(t))`, so the ring can never already be live on a
+# bonded box the narrowing admits (pinned in tests/test_runtime_contract_ring).
+# This is the SYMMETRIC half of jasper.multiroom.reconcile's
 # "ring-armed box cannot bond" gate (which blocks the OTHER direction — forming a
 # bond while already ring-armed); both now ask the same predicate, so they cannot
 # encode different rules. ``solo`` / ``unknown`` are NOT blocked: solo = grouping
@@ -285,10 +292,10 @@ _GROUPING_ENABLED_ROUTE_MODES = frozenset(
 _GROUPED_SHM_RING_REASON = "fanin_shm_ring_unsupported_with_dac_content_lane"
 _GROUPED_SHM_RING_DETAIL = (
     "JASPER_FANIN_CAMILLA_COUPLING=shm_ring is not supported while this box "
-    "plays a bond through outputd's dac_content lane: that lane reads the "
-    "snd-aloop content path (JASPER_OUTPUTD_DAC_CONTENT_FIFO), and an armed "
-    "ring moves fan-in off it, so the lane would have no writer. Disarm the "
-    "ring (jasper-fanin-coupling-reconcile loopback) or ungroup this speaker; "
+    "plays a bond through outputd's dac_content lane: that lane pins "
+    "JASPER_OUTPUTD_CONTENT_BRIDGE=direct, and under `direct` outputd reads the "
+    "snd-aloop content PCM an armed ring moves CamillaDSP off. Disarm the ring "
+    "(jasper-fanin-coupling-reconcile loopback) or ungroup this speaker; "
     "keeping the coupling on loopback."
 )
 
@@ -825,28 +832,22 @@ def coupling_supported_for_route(
 ) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
-    One blocked combination, and it has TWO conditions because only one bonded
-    shape actually conflicts with the ring:
-
-    - ``shm_ring`` + a grouping-enabled mode (leader/follower/invalid) **and**
-      ``dac_content_lane_armed`` — outputd's dac_content lane reads the
-      snd-aloop content path, and an armed ring moves fan-in off it, so the
-      lane would have no writer. This is the symmetric half of the multiroom
-      reconciler's "ring-armed box cannot bond" gate.
+    One blocked combination, with TWO conditions because only one bonded shape
+    conflicts with the ring: ``shm_ring`` + a grouping-enabled mode
+    (leader/follower/invalid) **and** ``dac_content_lane_armed``. See the module
+    comment above for the mechanism. Symmetric half of the multiroom reconciler's
+    "ring-armed box cannot bond" gate.
 
     ``dac_content_lane_armed`` is
     :func:`jasper.multiroom.reconcile.dac_content_lane_armed` — derived from the
-    function that WRITES the lane, so this gate and that writer cannot encode
-    different rules. It arrives as a plain ``bool`` because importing the
-    predicate here would invert this module's lazy-only dependency on
-    ``jasper.multiroom`` into a cycle; it and ``route_mode`` are two halves of
-    one fact and must be sourced together. It is keyword-ONLY and has NO
-    default: neither answer is safe to assume — ``True`` would silently keep
-    blocking a shape this narrowing exists to admit, ``False`` would silently
-    admit the one shape that breaks.
+    function that WRITES the lane, so gate and writer cannot encode different
+    rules. It arrives as a plain ``bool`` because importing the predicate here
+    would invert this module's lazy-only ``jasper.multiroom`` dependency into a
+    cycle; it and ``route_mode`` are two halves of one fact and must be sourced
+    together. Keyword-ONLY with NO default: ``True`` would silently keep blocking
+    a shape this narrowing exists to admit, ``False`` would silently admit the
+    one shape that breaks.
 
-    Keeping this in a route-policy function makes grouped coupling support a
-    deliberate support-matrix change instead of another scattered conditional.
     ``solo`` / ``unknown`` never block: solo = grouping off, unknown = a transient
     indeterminate read that must not refuse a legitimate solo arm.
     """
@@ -2416,25 +2417,22 @@ def apply_capture_precedence(
 ) -> EmitSoundConfigKwargs:
     """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
 
-    The shared fan-in transport coupling applies only when no more-specific
-    topology already owns this emit:
-
-    - a grouped/member pipe sink wins because its Snapcast playback pipe is
-      mutually exclusive with the local Camilla -> outputd playback pipe;
-    - otherwise the fan-in coupling kwargs overwrite the local Camilla capture
-      and playback transport keys together.
-
-    Empty coupling kwargs keep the input kwargs unchanged apart from returning a
-    detached ``dict`` for callers to mutate safely.
+    The coupling is END-TO-END, but only its PLAYBACK half is ever owned by a
+    more-specific topology: a grouped/member pipe sink owns the sink, so it takes
+    :func:`~jasper.fanin_coupling.capture_half` only. It must still take THAT —
+    dropping the capture half too re-emits a bonded leader's LIVE camilla#1 onto
+    the tap an armed ring took fan-in off, silencing the whole bond. Everything
+    else takes both halves. Empty coupling kwargs return the input unchanged
+    (detached, for callers to mutate).
     """
 
-    if (
-        not fanin_coupling_capture_kwargs
-        or member_kwargs_are_pipe_sink(dict(member_kwargs or {}))
-    ):
+    if not fanin_coupling_capture_kwargs:
         return cast(EmitSoundConfigKwargs, dict(emit_kwargs))
     merged = dict(emit_kwargs)
-    merged.update(fanin_coupling_capture_kwargs)
+    if member_kwargs_are_pipe_sink(dict(member_kwargs or {})):
+        merged.update(capture_half(fanin_coupling_capture_kwargs))
+    else:
+        merged.update(fanin_coupling_capture_kwargs)
     return cast(EmitSoundConfigKwargs, merged)
 
 

@@ -123,6 +123,8 @@ VOICE_UNIT = "jasper-voice.service"
 # actions (incl. the outputd content-buffer floor) into outputd.env. The disarm
 # path kicks it when leaving a live shm_ring bridge — see _disarm.
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
+# Re-bakes a bonded ACTIVE leader's camilla#1 after a coupling flip.
+GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
 # Fallback ``event=`` result token for a route-unsupported coupling block (the
 # route policy's own ``support.reason`` normally wins). Today the only blocked
 # combination is shm_ring on a grouped box whose outputd dac_content lane is
@@ -810,6 +812,17 @@ def reconcile_coupling(
         # Staging/migration writes the env but runs no daemon ops; restarting
         # voice here would be the one daemon op an apply=False pass performed.
         return result
+    if result.changed and result.ok:
+        # A bonded ACTIVE leader's camilla#1 carries the coupling's capture device,
+        # baked at BOND time; nothing else re-derives it on a flip and the two
+        # units are unordered, so an arm would leave camilla#1 on the tap the ring
+        # just took fan-in off — a silent bond with healthy daemons. Best-effort:
+        # `_restart_unit` reports failure, never raises, so it cannot change the
+        # coupling verdict. No-op on a solo box.
+        _restart_unit(
+            GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
+            timeout=_HARDWARE_RECONCILE_TIMEOUT_SEC,
+        )
     after = _assistant_width_token(env_path)
     if after == before:
         return result

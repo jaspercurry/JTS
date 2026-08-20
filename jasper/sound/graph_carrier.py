@@ -33,6 +33,7 @@ from typing import cast
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
+from jasper.fanin_coupling import capture_half
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
     emit_sound_config,
@@ -252,8 +253,9 @@ class _StereoHostCarrier:
         # devices: source-agnostic, and byte-identical when absent (loopback ->
         # {}). The carrier-preserved room PEQs, preference filters, trim, and
         # member policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK
-        # member (enable_rate_adjust=False + SnapFIFO playback) is mutually
-        # exclusive with the local coupling, so the coupling is a no-op there too.
+        # member owns the SINK, so it takes the CAPTURE half only — dropping that
+        # too would re-emit a bonded leader's live camilla#1 onto the tap an armed
+        # ring no longer feeds, silencing the bond from a /sound save.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
@@ -338,17 +340,17 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
-        # fanin_coupling_capture_kwargs is intentionally a NO-OP here: a program
-        # bake is a bonded pipe SINK on the synced chain (snapclient owns the
-        # rate, enable_rate_adjust=False), which is mutually exclusive with the
-        # local (shm_ring) coupling. The grouped transport topology is the
-        # Distributed-Active track's concern, not this solo hop; accept the keyword
-        # so every call site can pass it uniformly, but never apply it. (The plan's
-        # apply_capture_precedence helper makes the same grouped-sink choice for
-        # stereo-host carriers.)
-        del fanin_coupling_capture_kwargs
+        # CAPTURE HALF ONLY, the same rule and the same owner as
+        # apply_capture_precedence. The pipe SINK means Ring B never crosses; but
+        # this rewrites the LIVE camilla#1 of the box producing the whole bond's
+        # audio, so keeping the default `plug:jasper_capture` under an armed ring
+        # is every member silent with every daemon healthy.
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
+        member_kwargs = {
+            **member_kwargs,
+            **capture_half(fanin_coupling_capture_kwargs or {}),
+        }
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
         yaml = emit_sound_config(
             profile,

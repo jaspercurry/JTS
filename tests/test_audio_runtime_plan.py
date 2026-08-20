@@ -1176,12 +1176,22 @@ def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
     assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
 
 
-def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
-    # A shm_ring coupling names its own ring capture/playback devices; a grouped
-    # pipe sink must override them entirely (the local coupling is a no-op).
+def test_capture_precedence_grouped_sink_keeps_the_capture_half_only():
+    """A grouped pipe SINK owns playback — and ONLY playback.
+
+    Dropping the capture half too was a silent-bond hazard, not a no-op: this is
+    the path a bonded leader's /sound or /correction save re-emits camilla#1
+    through (graph_carrier -> apply_capture_precedence), and camilla#1 is the
+    producer of the WHOLE bond's audio. Under an armed ring, keeping the
+    emitter's `plug:jasper_capture` default there points the LIVE config at the
+    snd-aloop tap fan-in no longer writes — every member silent, every daemon
+    healthy, and the on-disk bake still reading correctly.
+    """
     coupling = {
         "capture_device": "jts_ring_capture",
+        "capture_format": "S32LE",
         "playback_device": "jts_ring_playback",
+        "playback_format": "S32LE",
         "enable_rate_adjust": False,
     }
     grouped = {"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False}
@@ -1191,10 +1201,31 @@ def test_capture_precedence_grouped_sink_blocks_fanin_coupling():
         coupling,
         member_kwargs=grouped,
     )
-    # A grouped/bonded pipe SINK owns playback; the local coupling is a no-op.
     assert grouped_result["playback_pipe_path"] == "/run/snapfifo"
-    assert "capture_device" not in grouped_result
+    assert grouped_result["capture_device"] == "jts_ring_capture"
+    assert grouped_result["capture_format"] == "S32LE"
+    # The PLAYBACK half must never cross: Ring B is a different sink from the
+    # SNAPFIFO pipe, and naming it here strands the bond.
     assert "playback_device" not in grouped_result
+    assert "playback_format" not in grouped_result
+
+
+def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
+    """`capture_half` is the single answer to "which keys are the capture half".
+
+    Two callers emit against a sink they already own — this precedence branch and
+    the active leader's program bake — and a second hand-rolled key list is
+    exactly how they would drift apart.
+    """
+    from jasper.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
+
+    full = fanin_coupling_capture_kwargs("shm_ring")
+    assert set(CAPTURE_HALF_KEYS) == {"capture_device", "capture_format"}
+    assert set(capture_half(full)) == set(CAPTURE_HALF_KEYS)
+    # No coercion: the resolver's values cross unchanged, so a future type change
+    # surfaces instead of being silently stringified.
+    assert capture_half(full) == {k: full[k] for k in CAPTURE_HALF_KEYS}
+    assert capture_half({}) == {}
 
 
 def test_fanin_coupling_is_transition_owned_not_lab_overrideable():

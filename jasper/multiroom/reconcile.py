@@ -709,23 +709,20 @@ def dac_content_lane_armed(
 ) -> bool:
     """Would :func:`outputd_grouping_env` arm the dac_content lane here? PURE.
 
-    ONE derivation, and it is the WRITER'S OWN: this asks
-    :func:`outputd_grouping_env` for the env it would write and reads the
-    lane's FIFO key out of it, rather than restating the three-input rule.
-    A restatement would be a second source of truth that drifts the first
-    time the writer gains a fourth input — which has already happened once
-    (``flat_output_allowed`` arrived with the output runtime contract).
+    ONE derivation, and it is the WRITER'S OWN: it asks
+    :func:`outputd_grouping_env` for the env it would write and reads the lane's
+    FIFO key out of it rather than restating the rule — a restatement drifts the
+    first time the writer gains an input, which has already happened once
+    (``flat_output_allowed``, with the output runtime contract).
 
     Its consumer is the coupling support matrix
     (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
-    blocks ``shm_ring`` only where this lane is armed: a DUMB member reads
-    ``MEMBER_CONTENT_FIFO`` through outputd's own ChannelPick, so a box whose
-    fan-in has moved to the ring would leave that lane with no writer. Every
-    other bonded shape — an active endpoint, or a member whose saved topology
-    forbids a flat DAC graph — gets the cleared lane above and has nothing for
-    the ring to strand.
+    blocks ``shm_ring`` only where this lane is armed: arming it pins
+    ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` above, and under ``direct`` outputd
+    reads the snd-aloop content PCM an armed ring moves CamillaDSP off. Every
+    other bonded shape has the cleared lane and nothing for the ring to strand.
 
-    The value crosses module boundaries as a plain ``bool`` ON PURPOSE:
+    It crosses module boundaries as a plain ``bool`` ON PURPOSE:
     ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
     imported at module level BY ``multiroom.active_leader_config``), so
     importing this predicate there would invert that direction into a cycle.
@@ -853,6 +850,8 @@ def _output_topology_state() -> tuple[bool | None, bool]:
             classify_output_contract(topology)
         )
         return active, flat_allowed
+    except ImportError:
+        return None, False  # ORDER IS LOAD-BEARING: binds OutputTopologyError.
     except OutputTopologyError as e:
         log_event(
             logger,
@@ -883,29 +882,29 @@ def is_active_speaker_box() -> bool:
 def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
     """This box's live :func:`dac_content_lane_armed` verdict for ``cfg``.
 
-    The coupling gates run in daemons that hold a route mode and nothing else
-    (``jasper-fanin-coupling-reconcile``, the audio runtime plan), and a route
-    mode genuinely cannot answer this: ``route_mode_from_grouping_config``
-    classifies on ``cfg.role`` alone, so a DUMB member and an ACTIVE follower
-    are both ``active_follower``. This reads the two topology-derived inputs
-    the writer's own caller reads — through the same
-    :func:`_output_topology_state` — and hands them to the writer's rule.
+    For the coupling gates that hold a route mode and nothing else: a route mode
+    cannot answer this, because ``route_mode_from_grouping_config`` classifies on
+    ``cfg.role`` alone, so a DUMB member and an ACTIVE follower are both
+    ``active_follower``. This reads the same two topology-derived inputs the
+    writer's own caller reads and hands them to the writer's rule.
 
-    UNCERTAINTY FAILS CLOSED, and it does so as WORST-CASE INPUTS rather than
-    as a bypass: an unreadable topology cannot separate a dumb member (lane
-    armed) from an active endpoint (lane cleared), so the rule is asked with
-    the shape that arms the lane. A solo or invalid config still answers
-    ``False`` there, because that is what the writer's off-path returns — the
-    guess is confined to the axis that was actually unreadable.
+    The writer's OFF path is answered FIRST, before any topology read: a solo box
+    has no lane whatever the topology says, and ``_output_topology_state`` logs a
+    WARN per call on an unreadable one — journal spam from the 60 s route sampler
+    and every /state build, on a box that is not even bonded.
+
+    UNCERTAINTY FAILS CLOSED, as worst-case INPUTS rather than a bypass: an
+    unreadable topology cannot separate a dumb member (lane armed) from an active
+    endpoint (lane cleared), so the rule is asked with the shape that arms it.
     """
+    if not is_active_member(cfg):
+        return False
     active_box_state, flat_output_allowed = _output_topology_state()
     if active_box_state is None:
-        return dac_content_lane_armed(
-            cfg, active_endpoint=False, flat_output_allowed=True
-        )
+        return dac_content_lane_armed(cfg, flat_output_allowed=True)
     return dac_content_lane_armed(
         cfg,
-        active_endpoint=is_active_member(cfg) and active_box_state,
+        active_endpoint=active_box_state,
         flat_output_allowed=flat_output_allowed,
     )
 
@@ -1940,21 +1939,17 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE to form a bond whose local playback would read a lane
-    # the armed ring leaves with no writer (audio-graph consolidation P2, audit
-    # finding 3). This is the SYMMETRIC half of the coupling support matrix, and it
-    # now asks that matrix instead of hand-rolling its own rule: the two encoded
-    # DIFFERENT rules and coincided only because this one was stricter. The subject
-    # is outputd's dac_content lane — a DUMB member plays the round-tripped stream
-    # through it, and the armed ring moves fan-in off the snd-aloop content path it
-    # reads. An ACTIVE endpoint's lane is cleared by the same writer (its own
-    # CamillaDSP does the channel-pick and split), so a ring-armed active endpoint
-    # may bond. Fail-SAFE to solo — the box keeps playing its own content
-    # (self-recovery, AGENTS.md resilience) rather than half-parking silent — and
-    # surface the matrix's own operator reason. Placed BEFORE the snapcast
-    # provision / any bond wiring so nothing bond-forming runs. The bond request
-    # stays in the wizard config; the operator disarms the ring and the next
-    # reconcile forms the bond.
+    # Ring-armed box: REFUSE a bond whose local playback would read a lane the
+    # armed ring leaves without its CamillaDSP writer (P2, audit finding 3). The
+    # SYMMETRIC half of the coupling support matrix, and it asks that matrix now
+    # instead of hand-rolling its own rule — the two encoded DIFFERENT rules and
+    # coincided only because this one was stricter. Subject: outputd's dac_content
+    # lane, which pins CONTENT_BRIDGE=direct, under which outputd reads the
+    # snd-aloop content PCM an armed ring moves CamillaDSP off. An ACTIVE
+    # endpoint's lane is cleared by the same writer, so it may bond. Fail-SAFE to
+    # solo (the box keeps playing its own content) and surface the matrix's
+    # reason. Placed BEFORE snapcast provision / any bond wiring. The request
+    # stays in the wizard config; disarm the ring and the next reconcile bonds.
     if active:
         from jasper.audio_runtime_plan import (
             coupling_supported_for_route,
@@ -1972,20 +1967,16 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         if not coupling_support.supported:
-            # The matrix's token, with no local fallback — one vocabulary, one
-            # owner, exactly as the active-leader precheck consumes it. Its
-            # blocked branch always sets a reason, and the support-matrix tests
-            # pin that.
+            # The matrix's TOKEN (one vocabulary, no local fallback — its blocked
+            # branch always sets one) but this side's DETAIL: the matrix's own
+            # ends in "keeping the coupling on loopback", which is the coupling
+            # reconciler's action. Here the coupling is untouched and the BOND is
+            # refused.
             endpoint_block_reason = coupling_support.reason
             log_event(
                 logger,
                 "multiroom.reconcile.ring_armed_bond_blocked",
                 reason=args.reason,
-                # The REASON token is the matrix's (one vocabulary for one rule);
-                # the detail is this side's, because the matrix's own detail ends
-                # in "keeping the coupling on loopback" — that is the coupling
-                # reconciler's action, not this one's. Here the coupling is
-                # untouched and the BOND is what gets refused.
                 detail=(
                     "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — this bond would "
                     "play through outputd's dac_content lane, which an armed "
