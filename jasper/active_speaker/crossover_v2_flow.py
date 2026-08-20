@@ -233,7 +233,6 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
-    KIND_SWEEP,
     STIMULUS_KINDS,
     VERIFY_PILOT_ROLE,
     ExcitationProgram,
@@ -3349,118 +3348,22 @@ class _CloudPosition:
     signal_band_hz: tuple[float, float] | None = None
 
 
-# --- R16 lateral evidence (plan §4.4) --------------------------------------- #
-#
-# One fixed log-spaced basis for every retained pose curve. Fixed rather than
-# per-role so both branches land on the SAME frequencies and a consumer can sum
-# them without resampling either; log-spaced because a crossover argument is a
-# per-octave one. 1/12 octave is ~118 Hz at 2 kHz, which resolves a handoff
-# region the plan itself calls a COARSE gate ("lateral samples remain a coarse
-# gate", #1968) — this is not a polar measurement and must not be read as one.
-LATERAL_EVIDENCE_BAND_HZ = (20.0, 20_000.0)
-LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
-
-
-@dataclass(frozen=True)
-class LateralPoseCurve:
-    """One driver's NEUTRAL response at one pose, on the shared log basis.
-
-    ``complex_tf`` holds ``M = plant * P`` — polarity-free, with NO
-    configured-crossover composition applied (see
-    ``CrossoverV2Session._lateral_priors``). §4.2's
-    ``S_c = sign_c * M * C_c / P`` is the consumer's step, once per candidate.
-
-    Values are SAMPLED at the nearest native bin, never interpolated or
-    averaged: an interpolated complex value is a number no microphone produced,
-    and a phase interpolated across a wrap is simply wrong. The frequencies
-    actually sampled ride along for the same reason. ``band_hz`` is the role's
-    driven sweep band — outside it there was no stimulus, so the samples are
-    noise and a consumer must bound itself with this.
-    """
-
-    role: str
-    freqs_hz: np.ndarray
-    complex_tf: np.ndarray
-    band_hz: tuple[float, float]
-
-
-@dataclass(frozen=True)
-class LateralPose:
-    """One accepted pose in the lateral walk.
-
-    Carries NO trim, delay, polarity or fit. That absence is the §4.4 contract
-    ("re-solve trim or delay independently at every pose" is forbidden), and it
-    is structural rather than a convention: there is no field here for a second
-    solution to be written to.
-    """
-
-    pose_id: str
-    index: int
-    attempt: int
-    prompt: str
-    role: str
-    offset_cm: float
-    at_mark: bool
-    curves: tuple[LateralPoseCurve, ...]
-
-    def curve(self, role: str) -> LateralPoseCurve | None:
-        for curve in self.curves:
-            if curve.role == role:
-                return curve
-        return None
-
-
-def _primary_sweep_bands(program: Any) -> dict[str, tuple[float, float]]:
-    """Each role's PRIMARY sweep band, read off the program that played.
-
-    ``kind == KIND_SWEEP`` matters because a v2 MEASURE program OPENS with a
-    leading pilot pair, and a pilot carries a role and a band too — so a
-    role-only match would take the pilot's, not the sweep's. Today those two
-    bands are EQUAL (both derive from the same intersected ``RoleBand``), so
-    this is not a live bug; it names which segment the retained curve's band
-    describes, so the answer stays right if that coupling ever moves. Pinned by
-    ``test_the_retained_band_reads_the_sweep_segment_not_a_pilot``.
-    """
-    bands: dict[str, tuple[float, float]] = {}
-    for segment in program.segments:
-        if segment.kind != KIND_SWEEP or segment.role is None:
-            continue
-        if segment.f1_hz is None or segment.f2_hz is None:
-            continue
-        bands.setdefault(segment.role, (float(segment.f1_hz), float(segment.f2_hz)))
-    return bands
-
-
-def lateral_evidence_grid_hz() -> np.ndarray:
-    """The shared log basis every retained pose curve is sampled onto."""
-    lo, hi = LATERAL_EVIDENCE_BAND_HZ
-    octaves = math.log2(hi / lo)
-    return np.geomspace(
-        lo, hi, num=int(round(octaves * LATERAL_EVIDENCE_POINTS_PER_OCTAVE)) + 1,
-    )
-
-
-def lateral_pose_curve(
-    response: Any, band_hz: tuple[float, float],
-) -> LateralPoseCurve:
-    """Sample one analyzed driver response onto the shared basis."""
-    freqs = np.asarray(response.freqs_hz, dtype=np.float64)
-    tf = np.asarray(response.complex_tf, dtype=np.complex128)
-    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
-    # monotonically increasing rfft grid, without materialising an N x M
-    # distance matrix (the analysis grid is hundreds of thousands of bins).
-    grid = lateral_evidence_grid_hz()
-    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
-    left = right - 1
-    take = np.where(
-        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
-    )
-    return LateralPoseCurve(
-        role=str(response.role),
-        freqs_hz=freqs[take],
-        complex_tf=tf[take],
-        band_hz=(float(band_hz[0]), float(band_hz[1])),
-    )
+# R16's lateral evidence types and their shared log basis (plan §4.4).
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.spatial`, which owns
+# them beside the screens that admit a pose and the records a retained take
+# writes — the same "what does this take record" charter, and the module that
+# already documents ``lateral_pose_curve`` in its own prose. Kept importable
+# from the flow because that is where the R16/R17 suites name them —
+# ``_primary_sweep_bands`` included, underscore and all: it moved verbatim, and
+# renaming it to dodge the private access here would break the suite that reads
+# it off this module without making it any less internal.
+LATERAL_EVIDENCE_BAND_HZ = _spatial.LATERAL_EVIDENCE_BAND_HZ
+LATERAL_EVIDENCE_POINTS_PER_OCTAVE = _spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
+LateralPoseCurve = _spatial.LateralPoseCurve
+LateralPose = _spatial.LateralPose
+lateral_evidence_grid_hz = _spatial.lateral_evidence_grid_hz
+lateral_pose_curve = _spatial.lateral_pose_curve
+_primary_sweep_bands = _spatial._primary_sweep_bands
 
 
 def cloud_position_capture(position: _CloudPosition) -> Any:
