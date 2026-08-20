@@ -517,13 +517,22 @@ uint64_t jts_ring_monotonic_raw_ns(void);
 // reciprocal of 1e6, so the refill below is integer.
 //
 // BARS BELONG AGAINST THE DERIVED BOUND, not against this number flat.
-// Asymptotically the rate IS the headroom — the refill's /400, the token division
-// and the period floor all truncate DOWN and carry — so what a finite measurement
-// adds is granularity, one period of grant quantization at each end of a window:
+// Asymptotically the rate IS the headroom. Every truncation in the path rounds
+// DOWN, two of them carrying and two discarding: the token division and the period
+// floor leave their remainder in the bucket, while the refill's (rem_ns*scaled)/1e9
+// and its /400 are dropped each call — either way none adds rate. So what a finite
+// measurement adds is granularity, one period of grant quantization at each end of
+// a window:
 //     observed_ppm <= HEADROOM_PPM + 1e6*(2*period_frames)/(rate*T) + instrument
-// At the grouping ring's 128-frame period that is 2589 ppm over 60 s. The
-// 2026-08-20 hardware's 2667 ppm sits inside it, and inside that instrument's own
-// 533 ppm resolution.
+// At the grouping ring's 128-frame period that is 2589 ppm over 60 s, and the
+// 2026-08-20 hardware's 2667 ppm sits inside it once that instrument's own 533 ppm
+// is counted (2589 + 533 = 3122).
+// THAT FORM ASSUMES A WINDOW WITH NO STREAM START AND NO REATTACH IN IT. A window
+// containing either carries one more term, one-time rather than rate:
+//     + 1e6*(2*buffer_size)/(rate*T)
+// the seed plus the app's standing one-buffer lead — 1422 ppm over 60 s here, so a
+// from-start window is bounded by 2589 + 1422 = 4011 ppm. Measured from-start
+// windows ran +3511..+3822 ppm, inside it.
 #define JTS_RING_PACE_HEADROOM_PPM 2500ull
 #define JTS_RING_PACE_HEADROOM_DIVISOR (1000000ull / JTS_RING_PACE_HEADROOM_PPM)
 _Static_assert(JTS_RING_PACE_HEADROOM_DIVISOR * JTS_RING_PACE_HEADROOM_PPM == 1000000ull,
