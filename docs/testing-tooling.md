@@ -41,6 +41,7 @@
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
+| Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
@@ -1857,9 +1858,9 @@ jasper-crossover-prescriber propose <bundle-dir> \
   alongside `round_receipt.json` and `cloud_verify.json`. There is no flag for
   it and no way to point it elsewhere. Absent → `driver_feature_not_classified`.
 
-Nothing in the product **produces** a classification today — stage P3's
-instrument is not built — so that file is an operator's banked lab result
-dropped into the round directory. A `defect-*` verdict says EQ is not
+That file is written by `jasper-classify-features` (below), or is an
+operator's own banked lab result dropped into the round directory under the
+same name. A `defect-*` verdict says EQ is not
 structurally barred at that feature, never that EQ will help; and
 `defect-boostable` is a minimum-phase **dip**, which is still refused, because
 cutting a dip deepens it. The **nearest** banked verdict to a filter's centre is
@@ -1921,6 +1922,88 @@ a golden against a real banked round when `captures/` is present, lives in
 [`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py)
 and
 [`tests/test_crossover_v2_driver_prescription.py`](../tests/test_crossover_v2_driver_prescription.py).
+
+---
+
+## Feature-classification instrument
+
+`jasper-classify-features`
+([`jasper/cli/classify_features.py`](../jasper/cli/classify_features.py) over
+[`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py))
+answers the question a magnitude curve cannot: is that bump a **minimum-phase
+driver defect** (a filter is at least the right kind of tool), a
+**non-minimum-phase cancellation** (it is structurally the wrong one — a filter
+lowers the direct sound and its delayed copy together), or the **room**? It
+runs offline over captures a round already banked — no Pi, no re-measuring —
+and files `feature_classification.json` into that round's own artifact
+directory, where the evidence packet reads it.
+
+```sh
+jasper-classify-features <bundle-dir> --dumps <capture-ring> [--json]
+# a lab round with a turntable trail, so the timing test has repeated angles:
+jasper-classify-features <bundle-dir> --dumps <ring> --walk-log logs/walk-1.jsonl
+# classify exactly these frequencies instead of detecting them:
+jasper-classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
+```
+
+It composes directly with
+[`scripts/bank-crossover-round.sh`](../scripts/bank-crossover-round.sh), whose
+`<dest>` holds exactly the two inputs this wants:
+
+```sh
+bash scripts/bank-crossover-round.sh <dest>
+jasper-classify-features <dest>/bundle/<session> --dumps <dest>/dumps
+```
+
+`<bundle-dir>` is a commissioning bundle; the round directory inside it is
+found by the same rule the packet reader uses, so the artifact cannot land
+where the reader does not look. `--dumps` is the banked capture ring, scoped to
+this round by the bundle's own `session_id` (a sidecar stamps it into
+`jts_session_identity`) — a ring holding several rounds needs no flag to be
+split correctly.
+
+**It refuses more often than it reports, and each refusal has a name.**
+
+- `classification_controls_failed` — known answers are pushed through the
+  identical pipeline on the round's own IR before anything is reported: a
+  minimum-phase peaking filter that must read flat, an all-pass that must
+  recover its own group delay, a quiet delayed copy that must ALSO read flat
+  (`|g| < 1` puts every zero inside the unit circle, so it is minimum phase),
+  and a loud one that must not. Fail any of them and no verdict is written at
+  all — a reading from an instrument that just failed its own check is a
+  number, not evidence.
+- `classification_lateral_capture_shape` — a `lateral` capture replays the
+  per-driver MEASURE program one driver at a time, so it carries no
+  summed-system response for a feature verdict to be about. A hard refusal
+  rather than a silent skip: a caller who pointed this at a per-driver round
+  should be told what is wrong with the round.
+- `classification_no_admissible_captures` / `classification_program_missing` /
+  `classification_no_features_detected`.
+
+**Every verdict it emits is `vertical_blind`, and that is not a placeholder.**
+Every capture shape it reads is horizontal — a turntable swings at fixed height
+and radius, a position cloud is a floor plan, a single anchor sees the vertical
+plane no better — so a floor or ceiling bounce is invariant to every position
+it saw. `driver_prescription` refuses a boost on that alone
+(`driver_boost_vertically_blind`), because a boost aimed at a vertical null
+feeds it. Cuts are unaffected. The 2026-08-19 lab artifacts carry a field of
+the same name computed as "fewer than two gates resolved"; that is a fact about
+the GATE test, and this instrument reports it as `resolved_gates`.
+
+**Exit codes are the contract**: `0` classified and filed, `1` the round could
+not be read, `2` refused, `3` the verdict could not be written. `--json` prints
+the named `reason` and the evidence behind it.
+
+The 2026-08-19 lab harness this was promoted from
+(`captures/*/tools/classify_*.py`) also fitted a single-delay null ladder
+through the dips with a 4000-trial randomisation, and read each dip's depth
+through the shipped two-path reflection law. Both were reported and neither
+entered a verdict — the run log's own conclusion was that four dips with free
+rung integers pin nothing — so neither was promoted. Hardware-free coverage,
+built on synthetic speakers whose answers are known before the instrument runs
+(an RBJ resonance is minimum-phase by construction; a delayed copy inside the
+window is the room), lives in
+[`tests/test_crossover_v2_feature_classifier.py`](../tests/test_crossover_v2_feature_classifier.py).
 
 ---
 

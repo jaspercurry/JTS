@@ -12,23 +12,22 @@ per sign — **is this feature one a cut (or a boost) may be aimed at?**
 
 **Why a register and not the instrument.**
 ``docs/active-speaker-tuning-layers-design.md``'s stage P3 rule 1 asks that
-every feature be typed before it is corrected, and records the instrument's
-status as *missing from the product*.  It still is.  What the lab built
-(``captures/wired-night-2026-08-19/tools/classify_*.py``) is a measurement
-program with controls, synthetic positive/negative injections and a
-matched-Q null model; promoting that wholesale would be promoting a research
-harness.  What a **gate** needs is far smaller: the ability to say "this
-frequency was classified, and the verdict was one that admits a cut."  So the
-vocabulary is promoted and the pipeline is not, and the honest consequence is
-that a round carries verdicts only when somebody banked them.
+every feature be typed before it is corrected.  What a **gate** needs to
+honour that is far smaller than a measurement program: the ability to say
+"this frequency was classified, and the verdict was one that admits a cut."
+So this module is the verdict format alone — it runs no test and computes no
+number — and :mod:`.feature_classifier` is the instrument that produces one,
+offline over a round's banked captures.  Either that instrument's output or an
+operator's own banked lab result reaches a gate through the same reader, which
+is the point of keeping the two apart: a round carries verdicts when somebody
+classified it, whichever of the two did.
 
 **The reserved name was already here.**  The evidence packet's
 ``not_evaluated`` block has been publishing the field
-``per_bin_minimum_phase_class`` — "the excess-phase instrument that would
-separate a minimum-phase dip from an interference null per bin is not built" —
-since the packet shipped.  This module is what that field names when it is
-present, so the packet reports one fact under one name whether it has it or
-not.
+``per_bin_minimum_phase_class`` since the packet shipped, and now names it
+only for a round nobody classified.  This module is what that field names when
+it IS present, so the packet reports one fact under one name whether it has it
+or not.
 
 **The verdict strings are the lab's, character for character.**  They are not
 re-spelled, re-cased, or normalized into a tidier enum, because a banked
@@ -225,6 +224,16 @@ class FeatureVerdict:
     #: cannot see vertical-plane interference at all. A verdict carrying it is
     #: not wrong; it is bounded, and a reader that hid the bound would be
     #: reporting more certainty than the instrument had.
+    #:
+    #: **A banked LAB artifact's ``false`` here is not a vertical-plane
+    #: sighting.** The 2026-08-19 records compute the field as "fewer than two
+    #: gates resolved", which is a fact about the gate test and not about the
+    #: plane, so most of their rows read ``false`` off a horizontal walk.
+    #: :mod:`.feature_classifier` emits ``true`` unconditionally for exactly
+    #: this reason — but the boost bar honours whatever the artifact says, so a
+    #: legacy record can still clear a bar this field exists to hold. Tracked
+    #: as issue #2783; do not read a ``false`` from an artifact this product
+    #: did not write as evidence.
     vertical_blind: bool
 
     @property
