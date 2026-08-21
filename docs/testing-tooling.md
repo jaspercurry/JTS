@@ -2358,12 +2358,29 @@ zero-validity state machine.
 **Exit codes are the contract** — `0` walk complete, and a distinct code per
 failure class: `3` power void, `4` move refused/failed, `5` the wired
 completion signal was not accepted, `6` stuck (a rejected capture is awaiting a
-human — [#2506](https://github.com/jaspercurry/JTS/issues/2506)), `7` the
+human — [#2506](https://github.com/jaspercurry/JTS/issues/2506) — or a session
+went quiet without publishing a terminal status), `7` the
 session itself failed (its own error is on the line), `8` nothing ever asked
 the arm to move, `9` `--expect-angles` given with no walk staged and no session
 open, `10` a stated angle never arrived, `11` the measured settle broke the
 floor, `12` refused before anything moved, `13` a `position-ready` the session
-did not accept, `14` the status endpoint never answered. `EXIT_NAMES` maps them.
+did not accept, `14` the status endpoint never answered, `15` the session was
+STOPPED (it measured fewer positions than it planned, so a caller that banked on
+a zero would bank a partial round). `EXIT_NAMES` maps them.
+
+**A walk ends when its session does.** The same poll carries the session's own
+`relay.status`, and its three terminal values — `complete`, `stopped`, `failed`
+(`arm_walk.SESSION_ENDED_STATUSES`) — are the walk's cue to stop: `rc 0`,
+`rc 15`, `rc 7`. Reading only the PRESENCE of the relay block is what a
+2026-08-21 jts3 stage-1 round hit — every planned capture accepted, the session
+closed itself cleanly, and the walk then called that "in flight with nothing
+pending" and fired the stuck alarm 300 s later. `rc 6` on a round that had
+measured everything, and the round runner skipped banking a good round. A
+terminal status is only this walk's verdict once it has read its session LIVE:
+the wizard keeps ONE relay slot and keeps the FINISHED session's block in it
+(that block is what the status page renders the outcome from), and a walk is
+launched BEFORE its session opens — so round N+1's first polls read round N's
+terminal block.
 
 **A release is a request, and `13` is the session saying no.** A `409` (the gate
 is waiting on a different capture), a `403` (wrong CSRF pair), a `400`, or a POST
@@ -2400,7 +2417,8 @@ are ignored until the arm is home; `SIGKILL` remains the escape hatch.
 
 **Observability**: `event=arm_walk.*` in the journal (`pending`, `moved`,
 `released`, `release_rejected`, `power_void`, `stuck`, `status_unreachable`,
-`parked`, `walk_not_taken`, …) — failures at `ERROR`, progress at `INFO` — each
+`session_ended`, `session_failed`, `parked`, `walk_not_taken`, …) — failures at
+`ERROR`, progress at `INFO` — each
 line carrying the deciding numbers, and the same fields as JSONL rows under
 `--trail`: one call site, so the two can never disagree.
 

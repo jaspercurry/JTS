@@ -308,9 +308,16 @@ auto-fires it: `auto_advance` governs the transition after an *accepted*
 capture only. A remote session with
 nobody at the device therefore stops there and eventually dies on the runner's
 inactivity budget. **The driver should detect the stall from the envelope
-rather than wait it out** — a `relay` block that stays in flight while
-`position_pending` is absent and no new capture is accepted is the signature —
-and report it for a human. The gap #2506 describes is still open
+rather than wait it out** — a `relay` block whose own `status` is still one of
+the in-flight ones while `position_pending` is absent and no new capture is
+accepted is the signature — and report it for a human. **That status is
+load-bearing, not decoration:** the finished session's block STAYS in the slot
+(it is what the status page renders the outcome from), so a driver that read
+the block's mere presence as "in flight" would call a completed round a stall.
+`jasper-arm-walk` did exactly that until 2026-08-21 and reported a fully
+measured jts3 round as `rc 6` — see
+[`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness) "A walk ends
+when its session does". The gap #2506 describes is still open
 ([issue #2506](https://github.com/jaspercurry/JTS/issues/2506)), and it is
 about a CLASS, not a run count: a genuinely transient rejection — the
 `silent_auto_retry` vocabulary, `clipped` and `drift_baselines_disagree` — is
