@@ -1307,6 +1307,49 @@ def test_root_fallback_uses_same_narrow_timeout_exception(tmp_path, monkeypatch)
     ]
 
 
+def test_camilla_start_exemption_mirrors_its_callers_derived_bound():
+    """The broker must not silently truncate the bound its caller derived.
+
+    jasper-camilla.service Requires= a Type=oneshot hardware reconciler whose
+    RemainAfterExit is unset, so a camilla start re-queues it in full — measured
+    25.5-26.0 s of a 28.7-30.3 s restart on jts4. Clamping the caller's derived
+    bound back to the ordinary 120 s ceiling would re-create the same false
+    timeout that bound removes.
+    """
+    from jasper.fanin.coupling_reconcile import _CAMILLA_START_TIMEOUT_SEC
+
+    assert (
+        restart_broker._CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
+        == _CAMILLA_START_TIMEOUT_SEC
+    )
+    assert _CAMILLA_START_TIMEOUT_SEC > restart_broker._EXEC_TIMEOUT_CEILING_SEC
+
+
+def test_extended_exec_ceilings_are_per_unit_and_per_verb():
+    """Each exemption is exactly one (unit, verb); nothing else is widened."""
+    assert set(restart_broker._EXTENDED_EXEC_TIMEOUT_CEILING_SEC) == {
+        (restart_broker._SOURCE_INTENT_RECONCILE_UNIT, "start"),
+        (restart_broker._CAMILLA_UNIT, "start"),
+    }
+
+    def clamp(unit, verb, *, no_block=False, units=None):
+        return restart_broker._clamp_exec_timeout(
+            9999, verb=verb, units=units or [unit], no_block=no_block
+        )
+
+    ordinary = restart_broker._EXEC_TIMEOUT_CEILING_SEC
+    camilla = restart_broker._CAMILLA_UNIT
+    # The exempt shape passes through; every neighbouring shape does not.
+    assert clamp(camilla, "start") == (
+        restart_broker._CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
+    )
+    assert clamp(camilla, "restart") == ordinary
+    assert clamp(camilla, "stop") == ordinary
+    assert clamp(camilla, "start", no_block=True) == ordinary
+    assert clamp(camilla, "start", units=[camilla, "jasper-fanin.service"]) == ordinary
+    assert clamp("jasper-fanin.service", "start") == ordinary
+
+
 def test_manage_units_no_fallback_when_non_root(tmp_path, monkeypatch):
     """Broker unreachable + non-root -> error dict, never a direct systemctl.
     This is the post-user-drop behaviour: the broker is the only path."""

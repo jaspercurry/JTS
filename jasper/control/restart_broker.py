@@ -214,8 +214,8 @@ ALLOWED_VERBS = frozenset(_VERB_ARGV)
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Ordinary broker actions retain the original hard ceiling.  The sole extended
 # shape is a blocking start of exactly the source-intent coordinator: its finite
-# 1433-second systemd bound covers all four sources, bounded owner barriers,
-# failed-unit resets, and fail-closed cleanup; its caller allows 1443 seconds for
+# 2693-second systemd bound covers all four sources, bounded owner barriers,
+# failed-unit resets, and fail-closed cleanup; its caller allows 2703 seconds for
 # PID 1 to return. That pair is jasper.source_intent's
 # RECONCILE_SYSTEMD_TIMEOUT_SECONDS / RECONCILE_BROKER_TIMEOUT_SECONDS, mirrored
 # here rather than imported so this root boundary keeps its lean import surface;
@@ -225,7 +225,26 @@ _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # server; a client-supplied number alone never grants a longer broker thread.
 _EXEC_TIMEOUT_CEILING_SEC = 120.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 1443.0
+_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2703.0
+_CAMILLA_UNIT = "jasper-camilla.service"
+# jasper-camilla.service Requires= (and is After=) a Type=oneshot hardware
+# reconciler whose RemainAfterExit is unset, so every camilla START re-queues
+# that oneshot in full. Measured on jts4 (Pi Zero 2 W, 2026-08-21): the
+# reconciler took 25.5-26.0 s inside camilla restarts of 30.307 / 28.675 /
+# 28.723 s. Its caller derives its bound from the reconciler's declared 50 s
+# ceiling plus camilla's own 90 s plus a margin; clamping that back to the
+# ordinary 120 s here would re-create exactly the false timeout the derived
+# bound exists to remove. Mirrors
+# jasper.fanin.coupling_reconcile._CAMILLA_START_TIMEOUT_SEC and is pinned to it
+# by tests/test_restart_broker.py.
+_CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 236.0
+# Blocking single-unit requests whose target can legally outrun the ordinary
+# ceiling, keyed per (unit, verb) so the 120 s backstop still governs every other
+# request — including every other verb against these same units.
+_EXTENDED_EXEC_TIMEOUT_CEILING_SEC: dict[tuple[str, str], float] = {
+    (_SOURCE_INTENT_RECONCILE_UNIT, "start"): _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+    (_CAMILLA_UNIT, "start"): _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC,
+}
 _CLIENT_SOCKET_MARGIN_SEC = 5.0    # client waits this much past the exec bound
 _MAX_REQUEST_BYTES = 4096
 
@@ -237,16 +256,11 @@ def _clamp_exec_timeout(
     units: list[str],
     no_block: bool,
 ) -> float:
-    extended_source_start = (
-        verb == "start"
-        and not no_block
-        and units == [_SOURCE_INTENT_RECONCILE_UNIT]
-    )
-    ceiling = (
-        _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC
-        if extended_source_start
-        else _EXEC_TIMEOUT_CEILING_SEC
-    )
+    ceiling = _EXEC_TIMEOUT_CEILING_SEC
+    if not no_block and len(units) == 1:
+        # An exemption is per (unit, verb) and only for a blocking single-unit
+        # request; a batch or a --no-block kick keeps the ordinary ceiling.
+        ceiling = _EXTENDED_EXEC_TIMEOUT_CEILING_SEC.get((units[0], verb), ceiling)
     try:
         value = float(raw)
     except (TypeError, ValueError):
@@ -590,8 +604,8 @@ def request_restart(
             # return at once, whereas a send that TIMED OUT would buy a
             # second full socket deadline on top of the first — settimeout is
             # per-operation — and the source-intent budget has no room for
-            # it: 1443 s + a 5 s margin, doubled, is 2896 s against nginx's
-            # derived proxy_read_timeout of 3000s.
+            # it: 2703 s + a 5 s margin, doubled, is 5416 s against nginx's
+            # derived proxy_read_timeout of 5600s.
             #
             # The honest cost of narrowing: a send failing ENOBUFS under
             # memory pressure could in principle have an answer waiting and

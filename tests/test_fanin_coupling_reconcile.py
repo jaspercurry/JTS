@@ -2881,6 +2881,248 @@ def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypa
     assert seen["timeout"] == 15.0
 
 
+_UNIT_DIR = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+# jts4 (Pi Zero 2 W), 2026-08-21, three sequential camilla restarts, anchored
+# Stopping -> Started.
+_MEASURED_CAMILLA_RESTART_SEC = (30.245, 28.621, 28.664)
+
+
+def _unit_directives(name: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for line in (_UNIT_DIR / name).read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith(("#", "[")) or "=" not in text:
+            continue
+        key, _, value = text.partition("=")
+        pairs.append((key, value))
+    return pairs
+
+
+def test_camilla_start_requeues_the_hardware_reconciler_by_construction():
+    """The dependency that dominates the start bound is structural, not a fluke.
+
+    jasper-camilla Requires= AND is After= the hardware reconciler, and that
+    reconciler is a Type=oneshot whose RemainAfterExit is unset — so it is
+    inactive between runs and every camilla start re-queues it in full.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    camilla = _unit_directives("jasper-camilla.service")
+    requires = {
+        unit for key, value in camilla if key == "Requires" for unit in value.split()
+    }
+    after = {unit for key, value in camilla if key == "After" for unit in value.split()}
+    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in requires
+    assert cr.AUDIO_HARDWARE_RECONCILE_UNIT in after
+
+    reconciler = dict(_unit_directives(cr.AUDIO_HARDWARE_RECONCILE_UNIT))
+    assert reconciler["Type"] == "oneshot"
+    assert reconciler.get("RemainAfterExit", "no") == "no"
+    assert reconciler["TimeoutStartSec"] == (
+        f"{int(cr._CAMILLA_REQUEUED_RECONCILE_START_SEC)}s"
+    )
+
+    # jasper-camilla declares no start override, so its own ceiling is the
+    # manager default the constant mirrors.
+    assert not [key for key, _ in camilla if key == "TimeoutStartSec"]
+
+
+def test_camilla_start_bound_matches_its_enumerated_terms():
+    """The bound is its terms, not a picked number — and it covers the metal."""
+    import jasper.fanin.coupling_reconcile as cr
+
+    assert cr._CAMILLA_START_TIMEOUT_SEC == (
+        cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
+        + cr._CAMILLA_OWN_START_SEC
+        + cr._DAEMON_OP_CLIENT_MARGIN_SEC
+    )
+    # The 8 s bound this shipped with was under every sample measured on jts4;
+    # the derived bound clears all of them.
+    assert max(_MEASURED_CAMILLA_RESTART_SEC) > 8.0
+    assert cr._CAMILLA_START_TIMEOUT_SEC > max(_MEASURED_CAMILLA_RESTART_SEC)
+
+
+def test_camilla_dependency_path_follows_the_shipped_ordering_edges():
+    """The dependency term is the critical path, and the edges decide it.
+
+    All three units camilla pulls are terms — an earlier revision excluded fan-in
+    and outputd on a premise that is false three ways in this file. They are not
+    simply max()'d either: jasper-audio-hardware-reconcile declares
+    ``Before=jasper-outputd.service``, so those two run in series while fan-in
+    runs alongside. Read the edges from the shipped units so an added ordering
+    edge that lengthens the path fails here instead of under-bounding the call.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    camilla = _unit_directives("jasper-camilla.service")
+    pulled = {
+        unit
+        for key, value in camilla
+        if key in {"Requires", "Wants"}
+        for unit in value.split()
+        if unit.endswith(".service")
+    }
+    after = {unit for key, value in camilla if key == "After" for unit in value.split()}
+    deps = pulled & after
+    assert deps == {
+        cr.AUDIO_HARDWARE_RECONCILE_UNIT,
+        cr.FANIN_UNIT,
+        cr.OUTPUTD_UNIT,
+    }
+
+    def before_of(unit: str) -> set[str]:
+        return {
+            u
+            for key, value in _unit_directives(unit)
+            if key == "Before"
+            for u in value.split()
+        }
+
+    # The serialising edge the critical path rests on.
+    assert cr.OUTPUTD_UNIT in before_of(cr.AUDIO_HARDWARE_RECONCILE_UNIT)
+    # Fan-in orders nothing against the other two, so it runs in parallel.
+    assert not before_of(cr.FANIN_UNIT) & {
+        cr.AUDIO_HARDWARE_RECONCILE_UNIT,
+        cr.OUTPUTD_UNIT,
+    }
+    assert cr.FANIN_UNIT not in before_of(cr.OUTPUTD_UNIT)
+
+    serial = (
+        cr._CAMILLA_REQUEUED_RECONCILE_START_SEC + cr._CAMILLA_NOTIFY_DEP_START_SEC
+    )
+    assert cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC == max(
+        serial, cr._CAMILLA_NOTIFY_DEP_START_SEC
+    )
+    # Neither notify dependency declares a start override, so both take the
+    # manager default plus their restart backoff.
+    for unit in (cr.FANIN_UNIT, cr.OUTPUTD_UNIT):
+        directives = dict(_unit_directives(unit))
+        assert "TimeoutStartSec" not in directives, unit
+        assert directives["RestartSec"] == str(int(cr._NOTIFY_DEP_RESTART_BACKOFF_SEC))
+
+
+def test_camilla_start_uses_the_derived_bound_through_the_broker(monkeypatch):
+    """Pin the broker contract for the resume that was timing out."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    seen: dict[str, object] = {}
+
+    def fake_manage_units(*units, verb, reason, no_block, timeout):
+        seen.update(units=units, verb=verb, no_block=no_block, timeout=timeout)
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+
+    ok, detail = cr._start_camilla(reason="t")
+
+    assert ok is True and detail == ""
+    assert seen["units"] == (cr.CAMILLA_UNIT,)
+    assert seen["verb"] == "start"
+    assert seen["no_block"] is False
+    assert seen["timeout"] == cr._CAMILLA_START_TIMEOUT_SEC
+
+
+def test_camilla_stop_keeps_its_bound_because_a_stop_pulls_nothing(monkeypatch):
+    """A stop cannot re-queue Requires=, so the start's dominant term is absent."""
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    seen: dict[str, object] = {}
+
+    def fake_manage_units(*units, verb, reason, no_block, timeout):
+        seen.update(units=units, verb=verb, timeout=timeout)
+        return {"ok": True}
+
+    monkeypatch.setattr(restart_broker, "manage_units", fake_manage_units)
+    cr._stop_camilla(reason="t")
+
+    assert seen["verb"] == "stop"
+    assert seen["timeout"] == 8.0
+    assert seen["timeout"] < cr._CAMILLA_START_TIMEOUT_SEC
+
+
+def test_coupling_auto_unit_ceiling_matches_the_derived_enumeration():
+    """The shipped ceiling is the enumeration plus its stated headroom.
+
+    The unit carried a hand-kept tally that drifted twice (#1252, #2175, #2285
+    P7); it now cites this derivation instead, so this test is what keeps the
+    two in step.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC == (
+        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC + cr._COUPLING_AUTO_CEILING_HEADROOM_SEC
+    )
+    assert cr._COUPLING_AUTO_CEILING_HEADROOM_SEC > 0
+
+    shipped = dict(_unit_directives("jasper-fanin-coupling-auto.service"))
+    assert shipped["TimeoutStartSec"] == str(int(cr.COUPLING_AUTO_TIMEOUT_START_SEC))
+
+
+def test_coupling_auto_enumeration_carries_the_camilla_resume():
+    """The enumerated pass contains the derived resume, not the old 8 s bound."""
+    import jasper.fanin.coupling_reconcile as cr
+
+    assert cr.COUPLING_AUTO_ENUMERATED_WORST_SEC > cr._CAMILLA_START_TIMEOUT_SEC
+    # Re-deriving the pass with the old bound must land materially lower, which
+    # is what makes the resume a load-bearing term rather than noise.
+    saved = cr._CAMILLA_START_TIMEOUT_SEC
+    try:
+        cr._CAMILLA_START_TIMEOUT_SEC = 8.0
+        with_old_bound = cr._coupling_auto_pass_ceiling_sec(broker_dead=False)
+    finally:
+        cr._CAMILLA_START_TIMEOUT_SEC = saved
+    assert cr.COUPLING_AUTO_ENUMERATED_WORST_SEC - with_old_bound == (
+        saved - 8.0
+    )
+
+
+def test_coupling_auto_ceiling_is_sized_for_a_live_broker():
+    """The broker-dead figure is disclosed, never an input to the ceiling.
+
+    A client bound shorter than a succeeding operation lies (the #2790 class);
+    a ceiling that kills an already-degraded, unusually slow pass tells the
+    truth. So the ceiling covers the broker-ALIVE legal worst and the
+    broker-dead worst stays a disclosed residual.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    assert cr.COUPLING_AUTO_BROKER_DEAD_WORST_SEC > (
+        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC
+    )
+    # Deliberately NOT covered — the gap is the disclosure, and it is real.
+    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC < (
+        cr.COUPLING_AUTO_BROKER_DEAD_WORST_SEC
+    )
+    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC > (
+        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC
+    )
+
+
+def test_daemon_op_ceiling_counts_the_preamble_and_names_the_retry():
+    """The preamble is in the arithmetic; the root retry is the disclosed half.
+
+    restart_broker converts a socket timeout to BrokerUnavailable and, as root
+    (which this unit is), retries the same call through direct systemctl. That
+    doubling is modelled so it can be disclosed, not so it can be budgeted.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    from jasper.control import restart_broker
+
+    assert cr._BROKER_SOCKET_MARGIN_SEC == restart_broker._CLIENT_SOCKET_MARGIN_SEC
+    # Broker alive: one attempt, plus the socket margin, plus any preamble.
+    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=False) == 15.0
+    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=True) == 25.0
+    # Broker dead: the same call again through direct systemctl.
+    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=False, broker_dead=True) == 25.0
+    assert cr._daemon_op_ceiling_sec(10.0, reset_failed=True, broker_dead=True) == 40.0
+    # A start verb on a crash-budget unit is what earns the preamble.
+    assert cr.CAMILLA_UNIT in cr._CRASH_BUDGET_UNITS
+    assert "start" in cr._START_BUDGET_VERBS
+    assert "stop" not in cr._START_BUDGET_VERBS
+
+
 def test_audio_hardware_reconcile_unit_is_broker_start_permitted():
     """Guard the allowlist lockstep (the jts 2026-06-27 fan-in class): the unit
     the disarm kick starts must stay ``start``-permitted in the broker."""
