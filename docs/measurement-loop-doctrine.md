@@ -35,19 +35,40 @@ household's judgment call, made on data.
 
 ## 3. The hard-stop enumeration (closed list)
 
-The only refusals a scientist accepts from the bench, because each guards a
-real component against damage:
+This is the ruling the tree converges to, not a snapshot of its current
+refusal surface — known deviations at this doc's date are tracked below,
+never silently treated as more hard stops. The only refusals a scientist
+accepts from the bench, because each guards a real component against
+damage:
 
 - the excitation ledger and the excitation safety plan
+  (`jasper/active_speaker/excitation_safety_plan.py`)
 - the output limiters and the volume / `HARD_CEILING_DBFS` rail
-- declared per-driver excitation bands and their level-duration limits
-- the commissioning level stop
-- firmware brick hazards (e.g. the XVF `SAVE_CONFIGURATION` ban)
+  (`jasper/audio_measurement/ramp.py`)
+- declared per-driver excitation bands and level-duration limits —
+  `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`
+- the commissioning level stop — `max_commissioning_level_db_spl`
+  (`jasper/active_speaker/profile.py`)
+- firmware brick hazards, e.g. the XVF `SAVE_CONFIGURATION` ban
+  (`jasper/cli/aec_tune.py`)
 
 Everything else — geometry blindness, beaming priors, confidence
 heuristics, prediction-engine rankings — is **provenance**, not a gate: it
 rides with the data into the evidence packet for the prescriber (human or
 LLM) to weigh. It must never refuse an experiment on its own.
+
+### Known deviations at 2026-08-21
+
+Five live, tested refusals sit outside the list above, none naming a
+component-damage mechanism:
+
+| # | refusal | file | status |
+|---|---|---|---|
+| a | `BOOST_VERTICALLY_BLIND` | `jasper/active_speaker/crossover_v2/driver_prescription.py` | removal in flight |
+| b | `FC_REJECT_BEAMING` clamps the Fc grid; `candidate_space.py` calls the same prior "guidance, never refuses" (#1675) — self-contradictory | `jasper/active_speaker/crossover_v2/fc_sweep.py` | tracked |
+| c | `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — refuses on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | tracked |
+| d | `_strategy_gates` score floors; `measurement_evidence_failure`'s fail-severity apply blocker | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | tracked |
+| e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | tracked, most defensible |
 
 ## 4. The nanny test
 
