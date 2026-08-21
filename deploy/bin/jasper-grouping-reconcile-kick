@@ -7,7 +7,7 @@
 set -euo pipefail
 
 unit="jasper-grouping-reconcile.service"
-drain_timeout="5756s"
+drain_timeout="6356s"
 
 # Never interrupt the ordered grouping/source transaction. The blocking start
 # either runs or joins the current pass; the second start then guarantees one

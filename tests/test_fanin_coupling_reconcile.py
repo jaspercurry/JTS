@@ -2882,8 +2882,9 @@ def test_default_kick_targets_audio_hardware_reconcile_via_broker_start(monkeypa
 
 
 _UNIT_DIR = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-# jts4 (Pi Zero 2 W), 2026-08-21, three sequential camilla restarts.
-_MEASURED_CAMILLA_RESTART_SEC = (30.307, 28.675, 28.723)
+# jts4 (Pi Zero 2 W), 2026-08-21, three sequential camilla restarts, anchored
+# Stopping -> Started.
+_MEASURED_CAMILLA_RESTART_SEC = (30.245, 28.621, 28.664)
 
 
 def _unit_directives(name: str) -> list[tuple[str, str]]:
@@ -2931,7 +2932,7 @@ def test_camilla_start_bound_matches_its_enumerated_terms():
     import jasper.fanin.coupling_reconcile as cr
 
     assert cr._CAMILLA_START_TIMEOUT_SEC == (
-        cr._CAMILLA_REQUEUED_RECONCILE_START_SEC
+        cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
         + cr._CAMILLA_OWN_START_SEC
         + cr._DAEMON_OP_CLIENT_MARGIN_SEC
     )
@@ -2939,6 +2940,65 @@ def test_camilla_start_bound_matches_its_enumerated_terms():
     # the derived bound clears all of them.
     assert max(_MEASURED_CAMILLA_RESTART_SEC) > 8.0
     assert cr._CAMILLA_START_TIMEOUT_SEC > max(_MEASURED_CAMILLA_RESTART_SEC)
+
+
+def test_camilla_dependency_path_follows_the_shipped_ordering_edges():
+    """The dependency term is the critical path, and the edges decide it.
+
+    All three units camilla pulls are terms — an earlier revision excluded fan-in
+    and outputd on a premise that is false three ways in this file. They are not
+    simply max()'d either: jasper-audio-hardware-reconcile declares
+    ``Before=jasper-outputd.service``, so those two run in series while fan-in
+    runs alongside. Read the edges from the shipped units so an added ordering
+    edge that lengthens the path fails here instead of under-bounding the call.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+
+    camilla = _unit_directives("jasper-camilla.service")
+    pulled = {
+        unit
+        for key, value in camilla
+        if key in {"Requires", "Wants"}
+        for unit in value.split()
+        if unit.endswith(".service")
+    }
+    after = {unit for key, value in camilla if key == "After" for unit in value.split()}
+    deps = pulled & after
+    assert deps == {
+        cr.AUDIO_HARDWARE_RECONCILE_UNIT,
+        cr.FANIN_UNIT,
+        cr.OUTPUTD_UNIT,
+    }
+
+    def before_of(unit: str) -> set[str]:
+        return {
+            u
+            for key, value in _unit_directives(unit)
+            if key == "Before"
+            for u in value.split()
+        }
+
+    # The serialising edge the critical path rests on.
+    assert cr.OUTPUTD_UNIT in before_of(cr.AUDIO_HARDWARE_RECONCILE_UNIT)
+    # Fan-in orders nothing against the other two, so it runs in parallel.
+    assert not before_of(cr.FANIN_UNIT) & {
+        cr.AUDIO_HARDWARE_RECONCILE_UNIT,
+        cr.OUTPUTD_UNIT,
+    }
+    assert cr.FANIN_UNIT not in before_of(cr.OUTPUTD_UNIT)
+
+    serial = (
+        cr._CAMILLA_REQUEUED_RECONCILE_START_SEC + cr._CAMILLA_NOTIFY_DEP_START_SEC
+    )
+    assert cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC == max(
+        serial, cr._CAMILLA_NOTIFY_DEP_START_SEC
+    )
+    # Neither notify dependency declares a start override, so both take the
+    # manager default plus their restart backoff.
+    for unit in (cr.FANIN_UNIT, cr.OUTPUTD_UNIT):
+        directives = dict(_unit_directives(unit))
+        assert "TimeoutStartSec" not in directives, unit
+        assert directives["RestartSec"] == str(int(cr._NOTIFY_DEP_RESTART_BACKOFF_SEC))
 
 
 def test_camilla_start_uses_the_derived_bound_through_the_broker(monkeypatch):

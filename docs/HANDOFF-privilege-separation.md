@@ -234,8 +234,8 @@ together; a wedged or unreachable broker still fails soft as described below.
 
 Broker calls retain a hard 120-second execution ceiling except for one exact
 request shape: blocking `start` of only
-`jasper-source-intent-reconcile.service` may use 2403 seconds. That fixed
-start-only coordinator has a finite 2393-second systemd limit because one pass
+`jasper-source-intent-reconcile.service` may use 2703 seconds. That fixed
+start-only coordinator has a finite 2693-second systemd limit because one pass
 visits all four sources and may wait through bounded source actions and
 failed-unit resets, two accessory barriers, the fan-in coupling owner, and
 fail-closed USB cleanup. The

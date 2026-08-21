@@ -125,16 +125,16 @@ target outcome. If that start joined an older activation, the stale
 acknowledgement triggers one fresh pass. An aggregate sibling failure does not
 poison a target that explicitly succeeded; missing, malformed, stale, or
 mismatched status fails loudly. Each exact blocking `start` of this singleton
-helper may wait up to 2403 seconds, just beyond the
-coordinator's finite 2393-second systemd ceiling. Every other broker unit/verb
+helper may wait up to 2703 seconds, just beyond the
+coordinator's finite 2693-second systemd ceiling. Every other broker unit/verb
 and every `--no-block` shape retains the 120-second hard ceiling; the broker
 derives this exception from the validated request rather than trusting the
-client's requested number alone. The coordinator's 2393-second ceiling has an
+client's requested number alone. The coordinator's 2693-second ceiling has an
 explicit complete budget for enablement/activity probes and actions, bounded
 failed-state probes and `reset-failed` actions before desired-On starts and
 after desired-Off stops,
 BlueZ/RF-kill work, USB direct-lane settling and failed-On cleanup,
-Bluetooth's two 65-second accessory barriers, USB's 605-second coupling
+Bluetooth's two 65-second accessory barriers, USB's 755-second coupling
 barrier, and a final process margin. Every source-owned unit declares finite
 `TimeoutStartSec` and `TimeoutStopSec`; its blocking client waits one second
 longer than every ceiling PID 1 may legally consume for that action — the
@@ -157,7 +157,7 @@ command rather than one per phase, because all 13 of its starts on JTS4 since
 the 2026-08-17 boot ran past the declared five seconds without PID 1
 terminating any of them.
 Owner starts retain their larger
-65/605-second clients, deliberately beyond the target oneshots' 60/600-second
+65/755-second clients, deliberately beyond the target oneshots' 60/750-second
 bounds. The reconciler itself has a separate advisory lock so boot, deploy,
 systemd, and direct invocations cannot apply different snapshots concurrently.
 Install heals the intent file and all three shared locks to `root:jasper 0660`;
@@ -165,11 +165,11 @@ the lock primitive does not follow symlinks and does not require a
 group writer to chmod an already-correct root-owned lock.
 
 The HTTP envelope matches the same synchronous contract. Both `/sources/` and
-`/bluetooth/` use `proxy_read_timeout 5000s` in the full and streambox nginx
-configs: the stale-join case can require two broker calls at 2403 seconds plus
+`/bluetooth/` use `proxy_read_timeout 5600s` in the full and streambox nginx
+configs: the stale-join case can require two broker calls at 2703 seconds plus
 the broker client's five-second response margin, with bounded handler/readback
 slack. The generous path timeout does not make any child
-unbounded; the 2393-second coordinator and 60/600-second owner limits remain the
+unbounded; the 2693-second coordinator and 60/750-second owner limits remain the
 enforcement points.
 
 There is deliberately no resident lifecycle daemon and no plugin API. The
@@ -373,7 +373,7 @@ grouped-playback order and UI contract remain in
 - **Boot:** `jasper-source-intent-reconcile.service` is enabled for both install
   profiles, wanted by `multi-user.target`, ordered after
   `systemd-rfkill.service` and `hciuart.service`, and bounded by
-  `TimeoutStartSec=2393`. It deliberately has no automatic `Restart=` loop;
+  `TimeoutStartSec=2693`. It deliberately has no automatic `Restart=` loop;
   deploy, boot, role changes, and the next user toggle are explicit bounded
   replay points. It has no ordering pull on
   `bluetooth.service`; the Bluetooth applier starts the control plane when On
@@ -381,9 +381,9 @@ grouped-playback order and UI contract remain in
 - **Deploy:** both profile installers refresh only renderers that were already
   active, then invoke the same coordinator directly as root with `--reason
   install --invalidate-status-before`. Install removes the prior completion
-  fact before waiting, drains the canonical reconcile lock for at most 2398
+  fact before waiting, drains the canonical reconcile lock for at most 2698
   seconds, and removes the fact again under that lock before applying. The
-  outer 2403-second process ceiling deliberately leaves little room for a fresh
+  outer 2703-second process ceiling deliberately leaves little room for a fresh
   pass after a worst-case older pass: timeout warns and leaves no acceptable
   acknowledgement, so deploy health fails closed rather than certifying stale
   state. Install never starts or enables an Off source as a temporary baseline.

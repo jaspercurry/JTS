@@ -214,8 +214,8 @@ ALLOWED_VERBS = frozenset(_VERB_ARGV)
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Ordinary broker actions retain the original hard ceiling.  The sole extended
 # shape is a blocking start of exactly the source-intent coordinator: its finite
-# 2393-second systemd bound covers all four sources, bounded owner barriers,
-# failed-unit resets, and fail-closed cleanup; its caller allows 2403 seconds for
+# 2693-second systemd bound covers all four sources, bounded owner barriers,
+# failed-unit resets, and fail-closed cleanup; its caller allows 2703 seconds for
 # PID 1 to return. That pair is jasper.source_intent's
 # RECONCILE_SYSTEMD_TIMEOUT_SECONDS / RECONCILE_BROKER_TIMEOUT_SECONDS, mirrored
 # here rather than imported so this root boundary keeps its lean import surface;
@@ -225,7 +225,7 @@ _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # server; a client-supplied number alone never grants a longer broker thread.
 _EXEC_TIMEOUT_CEILING_SEC = 120.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2403.0
+_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2703.0
 _CAMILLA_UNIT = "jasper-camilla.service"
 # jasper-camilla.service Requires= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
@@ -237,7 +237,7 @@ _CAMILLA_UNIT = "jasper-camilla.service"
 # bound exists to remove. Mirrors
 # jasper.fanin.coupling_reconcile._CAMILLA_START_TIMEOUT_SEC and is pinned to it
 # by tests/test_restart_broker.py.
-_CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 141.0
+_CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 236.0
 # Blocking single-unit requests whose target can legally outrun the ordinary
 # ceiling, keyed per (unit, verb) so the 120 s backstop still governs every other
 # request — including every other verb against these same units.
@@ -604,8 +604,8 @@ def request_restart(
             # return at once, whereas a send that TIMED OUT would buy a
             # second full socket deadline on top of the first — settimeout is
             # per-operation — and the source-intent budget has no room for
-            # it: 2403 s + a 5 s margin, doubled, is 4816 s against nginx's
-            # derived proxy_read_timeout of 5000s.
+            # it: 2703 s + a 5 s margin, doubled, is 5416 s against nginx's
+            # derived proxy_read_timeout of 5600s.
             #
             # The honest cost of narrowing: a send failing ENOBUFS under
             # memory pressure could in principle have an answer waiting and

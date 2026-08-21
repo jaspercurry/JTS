@@ -46,10 +46,13 @@ Type=oneshot
 # and are what the derivation replaces.
 #
 # What the old tallies omitted, and the reason this ceiling moved: every daemon
-# op costs a blocking reset-failed preamble on a crash-budget unit, and the combo
-# half and the coupling-flip half are ADDITIVE (reconcile_auto runs the
-# coordinated restart, then delegates the flip at "Step 4") where the old tally
-# treated them as alternatives. Fan-in is restarted three times on that path.
+# op costs a blocking reset-failed preamble on a crash-budget unit, and the
+# coupling-flip half and the combo half are ADDITIVE in that order (reconcile_auto
+# delegates the flip at "Step 4", then runs the coordinated restart when the combo
+# changed and the flip did not already bounce fan-in) where the old tally treated
+# them as alternatives. Fan-in is restarted three times across that path, and the
+# camilla resume inside it carries the critical path through everything camilla
+# pulls — including the hw-reconcile -> outputd serialisation.
 #
 # THIS CEILING IS SIZED FOR A LIVE BROKER — a decision, not an oversight. A dead
 # broker makes each op retry through direct systemctl, which would push the pass
@@ -69,12 +72,12 @@ Type=oneshot
 #     because the mode already demands operator attention;
 #   * a pass can run _reconcile_camilla up to twice, and that calls
 #     asyncio.run(reconcile_current_dsp()) with no timeout of its own, so no
-#     finite ceiling covers it. Bounding that call is tracked separately.
+#     finite ceiling covers it. Bounding that call is tracked on issue #2802.
 #
 # Erring LONG stays the safe direction within the live-broker envelope: a systemd
 # kill between camilla-stop and camilla-start leaves CamillaDSP cleanly stopped,
 # which OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed).
-TimeoutStartSec=600
+TimeoutStartSec=750
 # The CLI hydrates the trusted base and reconciler-owned fanin env internally.
 # Do not inject the group-writable fanin.env into this root Python process:
 # values such as PYTHONPATH/LD_PRELOAD must never cross the privilege boundary.
