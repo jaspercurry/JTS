@@ -922,16 +922,63 @@ _pilot_snr_linear_min = (10.0 / math.log(10.0)) * (_pilot_snr_k - 1.0) / (
 )
 PILOT_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min)
 
-# Channel-map discriminator (Fix 1, W6.4 — see `_channel_map_ok`). PROVISIONAL
-# pending more W6 hardware runs. Derived from the run-5 hardware table
-# (2026-07-18/19, jts3): woofer pilots showed +22-30 dB TARGET rise / +<=2 dB
-# CROSS rise, tweeter pilots +27 dB TARGET rise / +1.9 dB CROSS rise — both
-# comfortably clear of these thresholds even though concurrent room LF rumble
-# had put the tweeter pilot's TOTAL in-band energy fraction (the pre-fix test)
-# at a coin flip (-51.8 dBFS in-band vs -51.1 dBFS of simultaneous woofer-band
-# room noise, against a -78.9 dBFS ambient floor — 27 dB of real, ignored SNR).
+# Channel-map discriminator (Fix 1, W6.4 — see `_channel_map_ok`). The TARGET
+# rise keeps its own ABSOLUTE floor, and that is right: a driver whose declared
+# band never rose over the room did not play, at any measurement level.
+# Derived from the run-5 hardware table (2026-07-18/19, jts3): woofer pilots
+# showed +22-30 dB TARGET rise, tweeter pilots +27 dB — comfortably clear of
+# this floor even though concurrent room LF rumble had put the tweeter pilot's
+# TOTAL in-band energy fraction (the pre-fix test) at a coin flip (-51.8 dBFS
+# in-band vs -51.1 dBFS of simultaneous woofer-band room noise, against a
+# -78.9 dBFS ambient floor — 27 dB of real, ignored SNR).
 CHANNEL_MAP_TARGET_RISE_DB = 12.0
-CHANNEL_MAP_CROSS_RISE_DB = 6.0
+
+# The CROSS test is a RATIO, not an additive bound (2026-08-21, jts3).
+#
+# It was `cross_rise >= CHANNEL_MAP_CROSS_RISE_DB` with that constant at a flat
+# 6.0 dB — tuned against the OLD measurement frame's room floor, which MASKED
+# the cross-band content an honest capture always carries. Raise the session
+# level and the mask lifts, so the same healthy speaker starts failing a hard
+# stop that tells its household to rewire it. One speaker, one basin-2 config,
+# byte-identical graph, three session levels (all from
+# `event=correction.crossover_v2_check_diag`):
+#
+#   session ref   seat SPL   woofer target/cross   tweeter target/cross  verdict
+#   -27.5 (old)     68.1 dB    53.4 / -0.79          (healthy)            pass
+#    -9.77          73.3 dB    48.5 /  4.13          71.7 / 10.81         FAIL
+#    -6.80          78.6 dB    51.4 /  7.27          73.1 / 15.23         FAIL
+#
+# What that cross energy IS was established by a two-level discriminator run
+# through the BASELINE graph: cross-band rise stayed <=3 dB at BOTH the -16.8
+# and -6.8 faders while own-band rises tracked the fader exactly — so the chain
+# is linear and there is no electrical crosstalk. Through the per-driver
+# ROUTING graph (which strips no crossover filters) the CHECK instead sees
+# program-segment SKIRT content plus modest driver nonlinearity: content at a
+# roughly FIXED RELATIVE level, which an additive bound cannot describe and a
+# ratio can. The isolation ratio `target_rise - cross_rise` on those same rows
+# is 44.4 / 60.9 dB (73.3 dB SPL), 44.1 / 57.9 dB (78.6 dB SPL) and 54.2 dB
+# (old frame) — flat across a 10.5 dB span of session level. A true channel
+# swap, or a driver fed both bands, lands near 0.
+#
+# Why 12.0 and not higher. Isolation can never EXCEED this pilot's own target
+# rise, because cross rise is >=0 whenever the other band merely sits at its
+# ambient. A bound above `CHANNEL_MAP_TARGET_RISE_DB` would therefore make that
+# floor unreachable — the CROSS test would silently become a STRICTER TARGET
+# test, and a genuinely quiet-but-correct pilot would refuse as a rewire
+# instruction instead of the honest `snr_floor`. Measured, not argued: at a
+# 20 dB bound two of this suite's own honest fixtures flip to
+# `channel_map_mismatch` —
+# `test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail` at
+# 17.20 dB isolation and
+# `test_measure_backed_off_into_a_noisy_room_reports_insufficient` at 19.49 dB
+# — which is exactly the #2052/#2644 class (a hard stop telling a household to
+# open its speaker, decided on evidence that was never there). 12.0 is the
+# largest bound that keeps the TARGET floor live while still refusing a swap
+# (~0 dB) and a heavy-bleed shape (10 dB), and it clears every honest row on
+# record: >=32 dB of margin under tonight's hardware, 5.2 dB under the
+# quietest synthetic fixture in the suite. PROVISIONAL, like its neighbours,
+# pending broader hardware runs.
+CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 
 # VERIFY tracking-error smoothing: 1/6-octave, the constant design §5.2 names
 # for the pass/fail comparison (previously 1/24-oct, a display-grade
@@ -1616,12 +1663,17 @@ class PilotObservation:
     `_channel_map_ok`.
 
     ``channel_map_target_rise_db``/``channel_map_cross_rise_db`` are the two
-    rise numbers `_channel_map_ok` computed on the way to ``channel_map_ok``
-    (this driver's own band above ambient, and the worst/failing other
-    band's rise above ITS ambient) — diagnostic only, ``None`` on the
+    RAW rise numbers `_channel_map_ok` computed on the way to
+    ``channel_map_ok`` (this driver's own band above ambient, and the
+    worst/failing other band's rise above ITS ambient) — ``None`` on the
     fallback total-energy-fraction path (which has no rise concept, and is
     what v2 MEASURE/VERIFY take — see `_pilot_observations`) or, for the
-    cross figure, when there are no other roles to compare against.
+    cross figure, when there are no other roles to compare against. The pair
+    is published raw rather than pre-collapsed because the ISOLATION RATIO
+    that DECIDES the verdict (`channel_map_isolation_db`) is derivable from
+    them, while the reverse is not: only the raw pair says which half moved,
+    and only the raw pair keeps a history of diag lines comparable across the
+    2026-08-21 switch from an additive cross bound to that ratio.
 
     ``programmed_hi_gain_db`` is the HI segment's own declared ``gain_db``
     (the digital gain the program composer scheduled it at) — published
@@ -5402,10 +5454,15 @@ def _channel_map_ok(
     1. TARGET: did THIS driver's own declared band rise
        ``CHANNEL_MAP_TARGET_RISE_DB`` above that band's ambient level? (the
        driver actually played, above the room's floor in its own band.)
-    2. CROSS: did every OTHER driver's band stay BELOW
-       ``CHANNEL_MAP_CROSS_RISE_DB`` above ITS ambient level during this same
-       pilot window? (energy did not land in the wrong driver's band — the
-       actual map-swap discriminator.)
+    2. CROSS: did every OTHER driver's band stay at least
+       ``CHANNEL_MAP_MIN_ISOLATION_DB`` BELOW this driver's own rise — i.e. is
+       the ISOLATION RATIO ``target_rise - cross_rise`` clear of that bound?
+       (energy did not land in the wrong driver's band — the actual map-swap
+       discriminator.) A ratio rather than a fixed additive cross-rise bound
+       because the cross energy an honest capture carries is skirt content at
+       a roughly fixed RELATIVE level, so an additive bound is level-dependent
+       and refuses healthy speakers at honest SNR — see the derivation, with
+       the hardware table it rests on, above ``CHANNEL_MAP_MIN_ISOLATION_DB``.
 
     Without an ambient window, falls back to the original test: energy inside
     the declared band must exceed half of the pilot window's TOTAL spectral
@@ -5425,13 +5482,16 @@ def _channel_map_ok(
     measured it — `test_channel_map_fallback_never_passes_a_driver_that_never_played`
     and `test_degraded_miswire_still_names_the_wiring_not_the_room`.
 
-    Returns ``(ok, target_rise_db, cross_rise_db)`` — the two rise numbers are
-    ADDITIVE diagnostic evidence for operator logging (surfaced on
-    ``PilotObservation``); the RISE path's pass/fail decision below is
-    byte-identical to before this return shape grew (the fallback's is the
-    one #2052 changed). ``cross_rise_db`` is the rise that failed
-    the CROSS test when ``ok`` is False, or the worst (highest) rise observed
-    across every other band when ``ok`` is True. Both rises are ``None`` in
+    Returns ``(ok, target_rise_db, cross_rise_db)`` — the two RAW rise numbers,
+    kept as the published pair (surfaced on ``PilotObservation``) rather than
+    collapsed into the ratio, so a history of diag lines stays comparable
+    across this change and an operator can still see WHICH half moved. The
+    ratio itself is derived from them by `channel_map_isolation_db`, the one
+    definition both this decision and every reporting surface read.
+    ``cross_rise_db`` is the rise that failed the CROSS test when ``ok`` is
+    False, or the worst (highest) rise observed across every other band when
+    ``ok`` is True — and because ``target_rise_db`` is fixed across the loop,
+    that worst rise IS the worst (lowest) isolation. Both rises are ``None`` in
     the no-ambient-window fallback path (no rise concept there);
     ``cross_rise_db`` is also ``None`` when ``other_bands`` is empty or the
     TARGET test alone already failed.
@@ -5467,9 +5527,34 @@ def _channel_map_ok(
         )
         if worst_cross_rise is None or cross_rise > worst_cross_rise:
             worst_cross_rise = cross_rise
-        if cross_rise >= CHANNEL_MAP_CROSS_RISE_DB:
+        isolation = channel_map_isolation_db(target_rise, cross_rise)
+        # Both rises are real numbers on this path, so the ratio is always
+        # defined; the ``None`` arm is fail-closed rather than dead — an
+        # unjudgeable ratio must never read as a PASS on the rung that can
+        # tell a household to rewire its speaker.
+        if isolation is None or isolation < CHANNEL_MAP_MIN_ISOLATION_DB:
             return False, target_rise, cross_rise
     return True, target_rise, worst_cross_rise
+
+
+def channel_map_isolation_db(
+    target_rise_db: float | None, cross_rise_db: float | None
+) -> float | None:
+    """The channel-map ISOLATION RATIO: this driver's rise minus the cross rise.
+
+    ONE definition, read by both `_channel_map_ok`'s pass/fail decision and
+    every surface that reports the number (the CHECK diag event, the forensic
+    analysis dump), so the ratio an operator reads beside a refusal is the
+    same ratio that caused it rather than a second construction of it.
+
+    ``None`` whenever either rise is absent, and a caller must treat that as
+    "no evidence" rather than as a pass: the no-ambient-window fallback path
+    computes neither rise, and a pilot with no OTHER band to compare against
+    has no cross rise at all.
+    """
+    if target_rise_db is None or cross_rise_db is None:
+        return None
+    return target_rise_db - cross_rise_db
 
 
 def _bands_overlap(
@@ -7273,6 +7358,12 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out[f"{role}_programmed_delta_db"] = round(float(pilot.programmed_delta_db), 3)
         out[f"{role}_channel_map_target_rise_db"] = pilot.channel_map_target_rise_db
         out[f"{role}_channel_map_cross_rise_db"] = pilot.channel_map_cross_rise_db
+        # Both raws AND the ratio: the raws keep a pre-2026-08-21 dump
+        # comparable, the ratio is what the CROSS verdict was actually decided
+        # on (`CHANNEL_MAP_MIN_ISOLATION_DB`).
+        out[f"{role}_channel_map_isolation_db"] = channel_map_isolation_db(
+            pilot.channel_map_target_rise_db, pilot.channel_map_cross_rise_db
+        )
 
     gain_plan = getattr(analysis, "gain_plan", None)
     if gain_plan is not None:

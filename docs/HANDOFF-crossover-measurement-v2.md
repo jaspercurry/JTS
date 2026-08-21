@@ -4339,9 +4339,18 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
 ```
 
 - `correction.crossover_v2_check_diag` — `accepted`, `code`,
-  `pilot_snr_ok`, plus per-role (`woofer_`/`tweeter_`) `snr_db`,
-  `captured_delta_db`, `programmed_delta_db`,
-  `channel_map_target_rise_db`, `channel_map_cross_rise_db`.
+  `pilot_snr_ok`, `channel_map_min_isolation_db`, plus per-role
+  (`woofer_`/`tweeter_`) `snr_db`, `captured_delta_db`,
+  `programmed_delta_db`, `channel_map_target_rise_db`,
+  `channel_map_cross_rise_db`, `channel_map_isolation_db`.
+  **`channel_map_isolation_db` (`target_rise - cross_rise`) is the number the
+  CROSS half of `channel_map_mismatch` is decided on** since 2026-08-21, and
+  `channel_map_min_isolation_db` is the bound it was graded against — printed
+  on the same line so a journal of old lines cannot be silently reinterpreted
+  when that constant moves. The two raw rises stay published beside it: only
+  they say WHICH half moved, and they keep a sweep comparable across the
+  metric switch. Household-facing copy stays number-free, so this line is the
+  operator's record of a refusal.
 - `correction.crossover_v2_measure_diag` — `session_id`, `accepted`, `code`,
   `alignment_confidence`, `alignment_confidence_source`,
   `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
@@ -4778,7 +4787,7 @@ Attributed as campaign measurements, not code guarantees:
 
 Analysis tuning constants live at the top of `program_analysis.py`
 (linearity `LINEARITY_TOLERANCE_DB`, repeat `REPEAT_LEVEL_TOLERANCE_DB`,
-channel-map `CHANNEL_MAP_TARGET_RISE_DB`/`CHANNEL_MAP_CROSS_RISE_DB`,
+channel-map `CHANNEL_MAP_TARGET_RISE_DB`/`CHANNEL_MAP_MIN_ISOLATION_DB`,
 alignment `DEFAULT_ALIGN_SEARCH_MS`/`GCC_UPSAMPLE`, VERIFY
 `VERIFY_NOTCH_EXCLUSION_DB`) and `crossover_v2_flow.py`
 (`VERIFY_TOLERANCE_DB`, `MEASUREMENT_DISTANCE_M`). All are **PROVISIONAL**
@@ -5149,9 +5158,11 @@ no retries-as-bodge). Treat these as regression fences.
    `pipeline_reference_closure_errors` (`graph_safety.py`) is now a build
    gate that reports *every* dangling reference before apply.
 6. **Channel-map is band-relative, not total-energy** (#1594). LF room
-   rumble vetoed a total-energy discriminator; identification now needs
-   target-band rise ≥12 dB over that channel's own ambient and cross-band
-   rise <6 dB.
+   rumble vetoed a total-energy discriminator; identification needs
+   target-band rise ≥12 dB over that channel's own ambient, plus a CROSS
+   test. That cross-band half shipped here as a flat `<6 dB` rise and was
+   **superseded by an isolation ratio on 2026-08-21** — see gotcha #25, which
+   is why the additive form had to go. The target-band floor is unchanged.
 7. **The −65 dB tweeter cap is a relic** (#1595). The HF measurement
    ceiling is derived from sensitivity (invariant 1/2 above); the old
    seed read near-inaudible (27 dB in-band SNR) on the DE250.
@@ -5641,6 +5652,51 @@ no retries-as-bodge). Treat these as regression fences.
     that background work can be in flight (`_idle_exit_restore_capture_entry`,
     the abandoned-capture production restore, is correct again precisely
     because the exit now only fires when nothing is running).
+25. **A threshold tuned against a masked noise floor is level-dependent —
+    say the RATIO, not the difference** (2026-08-21, jts3). Gotcha #6's
+    CROSS half shipped as a fixed additive bound,
+    `CHANNEL_MAP_CROSS_RISE_DB = 6.0` — "the other driver's band must not rise
+    6 dB over ITS ambient." That constant was calibrated in the OLD, quieter
+    measurement frame, whose room floor MASKED the cross-band content every
+    honest capture carries. Raise the session level, the mask lifts, and the
+    SAME healthy speaker fails `channel_map_mismatch` — a **hard stop with a
+    zero retry budget** that told the household to rewire a correctly-wired
+    speaker and blocked every measurement round in the louder frame. One
+    speaker, one basin-2 config, byte-identical graph, three levels (read off
+    `event=correction.crossover_v2_check_diag`):
+
+    | session ref | seat SPL | woofer target/cross | tweeter target/cross | verdict |
+    |---|---|---|---|---|
+    | −27.5 (old frame) | 68.1 dB | 53.4 / −0.79 | (healthy) | pass |
+    | −9.77 | 73.3 dB | 48.5 / 4.13 | 71.7 / 10.81 | FAIL |
+    | −6.80 | 78.6 dB | 51.4 / 7.27 | 73.1 / 15.23 | FAIL |
+
+    The cross energy is NOT electrical crosstalk, and that was established
+    before the fix rather than assumed: a two-level discriminator through the
+    **BASELINE** graph held cross-band rise at ≤3 dB across both the −16.8 and
+    −6.8 faders while own-band rises tracked the fader exactly, so the chain
+    is linear. Through the per-driver **ROUTING** graph — which strips no
+    crossover filters — CHECK instead sees program-segment SKIRT content plus
+    modest driver nonlinearity: content at a roughly fixed RELATIVE level.
+    That is what an additive bound cannot describe and a ratio can, so the
+    CROSS test is now the ISOLATION RATIO `target_rise − cross_rise` against
+    `CHANNEL_MAP_MIN_ISOLATION_DB`. On the rows above it reads 54.2 / 44.4 /
+    60.9 / 44.1 / 57.9 dB — flat across a 10.5 dB span of session level. A
+    true swap, or a driver fed both bands, lands near 0.
+    **The second half of this gotcha is the bound, and it is the part that
+    bites.** Isolation can never EXCEED a pilot's own target rise, because the
+    cross rise is ≥0 whenever the other band merely sits at its ambient. So a
+    bound above `CHANNEL_MAP_TARGET_RISE_DB` makes that floor unreachable: the
+    CROSS test silently becomes a STRICTER TARGET test, and a genuinely
+    quiet-but-correct pilot refuses as a rewire instruction instead of the
+    honest, retriable `snr_floor` — the #2052/#2644 class, reintroduced one
+    rung up. Measured, not argued: an initially-proposed 20 dB bound flipped
+    two of the suite's own honest fixtures (17.20 dB and 19.49 dB of
+    isolation) into `channel_map_mismatch`. The shipped 12.0 is the largest
+    bound that keeps the target floor live while still refusing a swap (~0 dB)
+    and a heavy bleed (10 dB), with ≥32 dB of margin under the hardware table
+    above. `test_channel_map_isolation_bound_cannot_supersede_the_target_floor`
+    pins the ceiling so a later widening cannot kill the floor in silence.
 
 ### Future work — the post-W6 follow-ups issue
 
@@ -5955,6 +6011,18 @@ the tweeter's declared protection floor is refused at the apply boundary,
 before anything is written. The Undo paragraph gained the geometry the record
 now carries. **The date below is deliberately NOT bumped**: nothing outside
 that section was re-verified.
+
+Addendum 2026-08-21 (CHECK channel map — the CROSS test is a ratio): the
+fixed additive cross-rise bound `CHANNEL_MAP_CROSS_RISE_DB` (6.0 dB) is
+retired and replaced by `CHANNEL_MAP_MIN_ISOLATION_DB` (12.0 dB) applied to
+`target_rise − cross_rise`. Three sections were re-verified against the code
+in the same diff and edited: the `crossover_v2_check_diag` field list (it now
+publishes `channel_map_isolation_db` per role plus the bound, beside the two
+raw rises), the analysis-constants paragraph, and gotcha #6 — whose "cross-band
+rise <6 dB" sentence had become false. New gotcha #25 carries the hardware
+table, the baseline-graph discriminator that ruled out crosstalk, and the
+derivation of the bound. **The date below is deliberately NOT bumped**:
+nothing outside those sections was re-verified.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock

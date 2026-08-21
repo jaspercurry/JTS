@@ -5381,6 +5381,231 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
 
 
 # --------------------------------------------------------------------------- #
+# CHECK channel map — the CROSS test is an ISOLATION RATIO, not an additive
+# cross-rise bound (2026-08-21, jts3).
+#
+# The retired bound refused a cross rise at or above a flat 6.0 dB. That
+# constant was tuned against the OLD measurement frame's room floor, which
+# masked the cross-band content an honest capture always carries — so raising
+# the session level lifted the mask and made a healthy speaker fail a
+# `channel_map_mismatch` hard stop, `condition_not_retriable`, blocking every
+# round in the louder frame. The rows below are that measurement, and they are
+# the reason the metric is now `target_rise - cross_rise`.
+# --------------------------------------------------------------------------- #
+
+
+#: Centre of `_band_impulse`'s default 4096-tap buffer — see `_isolation_pilot`.
+_MASK_DELAY = 2048
+
+
+def _isolation_pilot(
+    seg,
+    other_band: tuple[float, float],
+    ambient: np.ndarray,
+    *,
+    target_rise_db: float,
+    cross_rise_db: float,
+    seed: int,
+) -> np.ndarray:
+    """A pilot window built to a COMMANDED pair of rises over ``ambient``.
+
+    Deliberately a two-band synthesis rather than a room simulation: this
+    block pins where the CROSS decision BOUNDARY sits, so the two rises have
+    to be dialled in exactly — including a NEGATIVE cross rise, which tonight's
+    quietest row carries (the room's cross band during that pilot sat below the
+    level the separate ambient window measured) and which no additive room
+    model can produce. End-to-end realism against a real room's continuous
+    noise already has its own fixtures — `test_channel_map_survives_concurrent_
+    room_rumble` and the miswire pair — and this does not replace them.
+
+    ``_deep_plant``'s doubled ~-88 dB stopband rather than a single mask, so
+    the own-band content's leak into the other band cannot move the commanded
+    cross rise; every caller re-reads both achieved rises out of the production
+    code and asserts them against the command, so a fixture that stopped being
+    honest fails loudly instead of quietly grading the wrong number.
+
+    ``_MASK_DELAY`` centres each mask in its own 4096-tap buffer. At delay 0
+    the brick-wall mask's symmetric sinc wraps to the END of the buffer and the
+    caller's ``[:n]`` truncation throws it away, which collapses the stopband
+    to about -8 dB — measured: a 73.1 dB target rise then produced a 64.6 dB
+    "cross" rise made entirely of its own leak. Every other fixture in this
+    file passes a non-zero delay for the same reason.
+    """
+    own_band = (float(seg.f1_hz), float(seg.f2_hz))
+    rng = np.random.default_rng(seed)
+    out = np.zeros(seg.n_samples)
+    commands = (
+        (own_band, target_rise_db),
+        (other_band, cross_rise_db),
+    )
+    for band, rise_db in commands:
+        want = program_analysis._band_rms_dbfs(ambient, SR, *band) + rise_db
+        content = fftconvolve(
+            rng.normal(0.0, 1.0, seg.n_samples),
+            _deep_plant(_MASK_DELAY, band[0], band[1], 1.0),
+        )[: seg.n_samples]
+        have = program_analysis._band_rms_dbfs(content, SR, *band)
+        out = out + content * 10.0 ** ((want - have) / 20.0)
+    return out
+
+
+def _isolation_case(role: str, target_rise_db: float, cross_rise_db: float, seed: int):
+    """Run `_channel_map_ok` on one commanded rise pair. Returns its 3-tuple."""
+    roles = _check_roles()
+    chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
+    seg = chk.segment(f"pilot_{role}_hi")
+    bands = {r.role: (r.band.lower_hz, r.band.upper_hz) for r in roles}
+    other_band = bands["tweeter" if role == "woofer" else "woofer"]
+    ambient = np.random.default_rng(seed).normal(0.0, 3e-4, SR)
+    pilot = _isolation_pilot(
+        seg, other_band, ambient,
+        target_rise_db=target_rise_db, cross_rise_db=cross_rise_db, seed=seed + 1,
+    )
+    return program_analysis._channel_map_ok(
+        pilot, SR, seg, ambient_samples=ambient, other_bands=(other_band,),
+    )
+
+
+#: The 2026-08-21 jts3 table, read off `event=correction.crossover_v2_check_diag`
+#: — ONE healthy speaker, one basin-2 config, byte-identical graph, three
+#: session levels. `(label, role, target_rise_db, cross_rise_db)`.
+#:
+#: The two louder sessions are the ones the retired additive bound refused. The
+#: cross energy is NOT electrical crosstalk: a two-level discriminator through
+#: the BASELINE graph held cross-band rise at <=3 dB across both the -16.8 and
+#: -6.8 faders while own-band rises tracked the fader exactly, so the chain is
+#: linear. Through the per-driver ROUTING graph (which strips no crossover
+#: filters) the CHECK sees program-segment skirt content plus modest driver
+#: nonlinearity — content at a roughly FIXED RELATIVE level, which is exactly
+#: what an additive bound cannot describe and a ratio can.
+_MEASURED_HEALTHY_ROWS = (
+    ("ref -27.5, seat 68.1 dB SPL", "woofer", 53.4, -0.79),
+    ("ref -9.77, seat 73.3 dB SPL", "woofer", 48.5, 4.13),
+    ("ref -9.77, seat 73.3 dB SPL", "tweeter", 71.7, 10.81),
+    ("ref -6.80, seat 78.6 dB SPL", "woofer", 51.4, 7.27),
+    ("ref -6.80, seat 78.6 dB SPL", "tweeter", 73.1, 15.23),
+)
+
+
+@pytest.mark.parametrize(
+    "label,role,target_rise_db,cross_rise_db",
+    _MEASURED_HEALTHY_ROWS,
+    ids=[f"{row[0]}-{row[1]}" for row in _MEASURED_HEALTHY_ROWS],
+)
+def test_channel_map_accepts_every_measured_session_level(
+    label, role, target_rise_db, cross_rise_db,
+):
+    """Every row of the hardware table passes — including the two the retired
+    additive bound refused.
+
+    This is the regression, stated as the speaker experienced it: the SAME
+    healthy speaker measured at three session levels, whose cross rise walks
+    -0.79 -> 4.13 -> 7.27 dB (woofer) and 10.81 -> 15.23 dB (tweeter) purely
+    because the room floor stopped masking it. The isolation ratio barely
+    moves across the same span (44.1-60.9 dB), which is the whole claim: the
+    ratio is level-independent where the additive rise is not.
+    """
+    ok, target_rise, cross_rise = _isolation_case(
+        role, target_rise_db, cross_rise_db, seed=821,
+    )
+    # The fixture is honest — the production code read back what was commanded.
+    assert target_rise == pytest.approx(target_rise_db, abs=0.5), label
+    assert cross_rise == pytest.approx(cross_rise_db, abs=0.5), label
+
+    isolation = program_analysis.channel_map_isolation_db(target_rise, cross_rise)
+    assert isolation == pytest.approx(target_rise_db - cross_rise_db, abs=1.0), label
+    assert isolation > program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB, label
+    assert ok is True, (
+        f"{label}: {role} isolation {isolation:.1f} dB refused — a healthy "
+        "speaker measured at an honest level is being told to rewire itself"
+    )
+
+
+def test_channel_map_refuses_a_swap_and_a_heavy_bleed():
+    """The two shapes the CROSS test exists to catch, at any level.
+
+    A true channel swap (or a driver fed both bands) puts the SAME energy in
+    both bands, so its isolation collapses to ~0 while the TARGET floor is
+    still comfortably cleared — the target test alone cannot see it, which is
+    why the cross test exists. A heavy bleed at 10 dB of isolation is refused
+    too: it sits an order of magnitude below every honest row on record.
+    """
+    swap_ok, swap_target, swap_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
+    assert program_analysis.channel_map_isolation_db(
+        swap_target, swap_cross,
+    ) == pytest.approx(0.0, abs=1.0)
+    assert swap_target > program_analysis.CHANNEL_MAP_TARGET_RISE_DB, (
+        "the swap shape must clear the TARGET floor, or this proves nothing "
+        "about the CROSS test"
+    )
+    assert swap_ok is False
+
+    bleed_ok, bleed_target, bleed_cross = _isolation_case("woofer", 50.0, 40.0, seed=902)
+    assert program_analysis.channel_map_isolation_db(
+        bleed_target, bleed_cross,
+    ) == pytest.approx(10.0, abs=1.0)
+    assert bleed_target > program_analysis.CHANNEL_MAP_TARGET_RISE_DB
+    assert bleed_ok is False
+
+
+def test_channel_map_isolation_bound_cannot_supersede_the_target_floor():
+    """The ceiling on `CHANNEL_MAP_MIN_ISOLATION_DB`, pinned as a contract.
+
+    Isolation can never EXCEED a pilot's own target rise, because the cross
+    rise is >=0 whenever the other band merely sits at its ambient. So a bound
+    above `CHANNEL_MAP_TARGET_RISE_DB` would make that floor unreachable: the
+    CROSS test would silently become a STRICTER TARGET test, and a genuinely
+    quiet-but-correct pilot would refuse as `channel_map_mismatch` — a hard
+    stop telling a household to open its speaker — instead of the honest,
+    retriable `snr_floor`. That is the #2052/#2644 class, and it is what a
+    20 dB bound would have reintroduced: two of this suite's own honest
+    fixtures sit at 17.20 dB and 19.49 dB of isolation
+    (`test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail`
+    and `test_measure_backed_off_into_a_noisy_room_reports_insufficient`).
+
+    Pinned two ways. The arithmetic contract is exact and fixture-free: a
+    pilot sitting ON the target floor whose cross band sits AT its own ambient
+    (a 0 dB cross rise) must clear the isolation bound, which is precisely the
+    statement that the bound does not supersede the floor. The live run then
+    demonstrates it end-to-end on a floor-adjacent pilot, graded on the rises
+    the production code actually read back.
+    """
+    floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
+    bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
+    assert bound <= floor, (
+        "an isolation bound above the target floor makes that floor "
+        "unreachable and converts every low-SNR capture into a rewire "
+        "instruction — see the constant's derivation"
+    )
+    assert program_analysis.channel_map_isolation_db(floor, 0.0) >= bound
+
+    floor_ok, floor_target, floor_cross = _isolation_case("woofer", floor + 1.0, 0.0, seed=903)
+    assert floor_target == pytest.approx(floor + 1.0, abs=0.5)
+    assert floor_cross == pytest.approx(0.0, abs=0.5)
+    assert floor_ok is True, (
+        "a pilot barely over the documented target floor with a silent cross "
+        "band is about the quietest honest capture the ladder admits; "
+        "refusing it here is the CROSS test eating the TARGET test"
+    )
+
+
+def test_channel_map_isolation_is_one_definition_not_two():
+    """`channel_map_isolation_db` is the SSOT for the metric, and it is
+    ``None``-safe in the fail-closed direction.
+
+    Both the verdict and every reporting surface (the CHECK diag event, the
+    forensic analysis dump) read this one function, so the ratio an operator
+    sees beside a refusal is the ratio that caused it. A missing rise is "no
+    evidence" — `None`, never a number a caller could mistake for a pass.
+    """
+    assert program_analysis.channel_map_isolation_db(48.5, 4.13) == pytest.approx(44.37)
+    assert program_analysis.channel_map_isolation_db(53.4, -0.79) == pytest.approx(54.19)
+    assert program_analysis.channel_map_isolation_db(None, 1.0) is None
+    assert program_analysis.channel_map_isolation_db(20.0, None) is None
+    assert program_analysis.channel_map_isolation_db(None, None) is None
+
+
+# --------------------------------------------------------------------------- #
 # CHECK channel map — honest-unknown on the no-ambient fallback (issue #2052)
 #
 # The fallback runs whenever the ambient window is absent or unusable. Three

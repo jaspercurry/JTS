@@ -253,6 +253,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
     AppliedAlignment,
     CaptureIntegrity,
@@ -11359,11 +11360,19 @@ class CrossoverV2Session:
             woofer_programmed_delta_db=woofer["programmed_delta_db"],
             woofer_channel_map_target_rise_db=woofer["channel_map_target_rise_db"],
             woofer_channel_map_cross_rise_db=woofer["channel_map_cross_rise_db"],
+            woofer_channel_map_isolation_db=woofer["channel_map_isolation_db"],
             tweeter_snr_db=tweeter["snr_db"],
             tweeter_captured_delta_db=tweeter["captured_delta_db"],
             tweeter_programmed_delta_db=tweeter["programmed_delta_db"],
             tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
             tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
+            tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
+            # The bound the two isolation figures above are GRADED against, on
+            # the same line as the numbers: a `channel_map_mismatch` refusal is
+            # only readable if the line says what the ratio had to clear, and a
+            # future retune of the constant must not silently reinterpret a
+            # journal of old lines.
+            channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
         )
         self._log_measure_level_solve(analysis)
 
