@@ -161,12 +161,15 @@ class VolumeRoutes(ControlHandlerMixin):
         # AUTHORITATIVE writes (no `source`: management UI, HID accessory,
         # voice "louder") stay allowed on purpose: those are a human at the
         # speaker, and this is not a nanny.
-        if source_name and measurement_hold.held():
+        # ONE locked read answers both "is it held?" and "by whom?", so the
+        # log line cannot name an owner that lapsed between two reads.
+        hold_owner = measurement_hold.owner() if source_name else None
+        if hold_owner is not None:
             _server.log_event(
                 _server.logger,
                 "volume.observation_declined",
                 source=str(source_name),
-                owner=measurement_hold.owner() or "",
+                owner=hold_owner,
                 requested_pct=target_pct,
                 client=self.address_string(),
             )

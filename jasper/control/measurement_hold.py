@@ -257,19 +257,21 @@ class MeasurementHold:
         )
         return state
 
-    def held(self) -> bool:
-        """True while an unexpired hold is live. The volume-decline predicate."""
-        with self._lock:
-            now = self._clock()
-            self._expire_locked(now)
-            return self._owner is not None
-
     def owner(self) -> str | None:
-        """The incumbent's name, or None. Used to name the decline in a log."""
+        """The incumbent's name, or ``None`` when nothing is held.
+
+        Both the predicate and the name in one locked read: the volume decline
+        needs both, and asking twice could name an owner that lapsed in
+        between. :meth:`held` is the readable alias, not a second reader.
+        """
         with self._lock:
             now = self._clock()
             self._expire_locked(now)
             return self._owner
+
+    def held(self) -> bool:
+        """True while an unexpired hold is live."""
+        return self.owner() is not None
 
     def snapshot(self) -> dict[str, Any]:
         """The ``/state.measurement`` projection."""
