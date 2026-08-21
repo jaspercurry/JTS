@@ -89,9 +89,34 @@ RestartSec=2
 # systemd-journal group. `jasper-intsecrets` grants fresh HA reads + Spotify
 # token-cache writes. (The full jasper-doctor runs as ROOT via the
 # jasper-doctor-json.service oneshot, so it does NOT depend on systemd-journal.)
+#
+# `jts-ring` (issue #2786): /state's grouping `ring` block reads the first 128
+# bytes of /dev/shm/jts-ring/grouping.ring — the shared header that says whether
+# the bonded endpoint's CamillaDSP is still draining what snapclient writes.
+# Those files are group `jts-ring` (the setgid directory) with a mode that
+# follows the creating unit's umask — 0660 from snapclient's UMask=0007, 0640
+# from a unit without one; both grant the group READ, which is all this needs.
+# Without the group the block reports "not readable by this process" on every
+# poll and the surface is inert. An external reader is unavoidable here: the two
+# ends of that ring are snapclient and CamillaDSP, and unlike Ring A/B — whose
+# fan-in and outputd owners publish what they read on their own STATUS surfaces
+# — neither publishes anything to aggregate.
+#
+# THE GRANT IS WIDER THAN THE NEED, and that is a cost/complexity choice, not an
+# impossibility. The group exists to grant ring WRITE, and a file's group is its
+# only handle, so joining it for a read takes the write bit along. A read-only
+# default POSIX ACL on /dev/shm/jts-ring (a tmpfiles `A+` line in
+# deploy/tmpfiles/jts-ring.conf, which already owns that directory) WOULD be
+# narrower in capability; it was not taken because there is no ACL prior art in
+# this repo, tmpfs ACL behaviour is unverified on the Pi, and it would make a
+# second writer of permission state for one observability read. What keeps the
+# grant read-only in practice is the code: jasper-control opens the ring
+# O_RDONLY only (jasper.ring_assets.read_ring_header), pinned by
+# tests/test_grouping_ring_observability.py. See deploy/tmpfiles/jts-ring.conf
+# for why the group exists and exactly what it grants.
 User=jasper-control
 Group=jasper
-SupplementaryGroups=systemd-journal jasper-intsecrets
+SupplementaryGroups=systemd-journal jasper-intsecrets jts-ring
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 # UMask=0007 — speaker_volume.json (written by jasper-control AND jasper-voice)

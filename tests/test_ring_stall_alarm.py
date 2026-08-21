@@ -48,8 +48,8 @@ def _ring_file(
     struct.pack_into("<I", head, ring_assets._RING_OFF_SAMPLE_FORMAT, 2)
     struct.pack_into("<I", head, ring_assets._RING_OFF_PERIOD_FRAMES, 128)
     struct.pack_into("<I", head, ring_assets._RING_OFF_N_SLOTS, 2)
-    struct.pack_into("<Q", head, 40, write_seq)  # OFF_WRITE_SEQ
-    struct.pack_into("<Q", head, 48, read_seq)  # OFF_READ_SEQ
+    struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITE_SEQ, write_seq)
+    struct.pack_into("<Q", head, ring_assets._RING_OFF_READ_SEQ, read_seq)
     struct.pack_into("<Q", head, ring_assets._RING_OFF_WRITER_HEARTBEAT_NS, writer_hb)
     struct.pack_into("<Q", head, ring_assets._RING_OFF_READER_HEARTBEAT_NS, reader_hb)
     path = tmp_path / "active-content.ring"

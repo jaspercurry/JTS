@@ -100,12 +100,17 @@ create_jasper_service_users() {
     # (0.0.0.0:8780), opens a localhost WebSocket to CamillaDSP, and writes
     # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
     # privileged restarts/reboots are granted by polkit
-    # (deploy/polkit/49-jasper-control.rules), not a group. The one supplementary
-    # group is `systemd-journal`: the airplay_health and wifi_guardian
-    # last-action /state cards read the journal. The unit's
-    # User=jasper-control matches this exact name (the polkit rule keys on it).
+    # (deploy/polkit/49-jasper-control.rules), not a group. Its three
+    # supplementary groups are `systemd-journal` (the airplay_health and
+    # wifi_guardian last-action /state cards read the journal),
+    # `jasper-intsecrets` (fresh HA reads + Spotify token-cache writes), and
+    # `jts-ring` (#2786: /state's grouping `ring` block reads the grouping
+    # ring's shared header — read-only, see the unit file). `jts-ring` is safe
+    # to hard-list here because THIS function creates that group above, the
+    # same guarantee the other hard-listed ring-group member relies on. The
+    # unit's User=jasper-control matches this exact name (polkit keys on it).
     if ! getent passwd jasper-control >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets jasper-control
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets,jts-ring jasper-control
     fi
     # Ensure the systemd-journal membership on UPGRADE too — the useradd above is
     # skipped when the user already exists (e.g. a Pi from an earlier 3b-2 build
@@ -200,6 +205,15 @@ create_jasper_service_users() {
         # ring FILE mode comes from the shared spawn helper's umask, not a
         # group.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
+        # #2786 — jasper-control READS one ring header: /state's grouping
+        # `ring` block opens /dev/shm/jts-ring/grouping.ring O_RDONLY for its
+        # first 128 bytes. Unlike every other member here it never writes a
+        # ring. Same shape as the jasper-web line above: the RUNTIME grant is
+        # the unit's SupplementaryGroups=, and this passwd record serves the
+        # non-systemd consumers plus this file's convention that the -G lists
+        # match each unit. Takes effect on the daemon's next start, which the
+        # deploy performs.
+        usermod -aG jts-ring jasper-control 2>/dev/null || true
         # U3/P6d — shairport-sync writes the airplay lane's ring as its own
         # non-root user. Fresh boxes get the group at useradd time
         # (renderers.sh hard-lists it, which is safe because THIS function
@@ -211,7 +225,7 @@ create_jasper_service_users() {
             usermod -aG jts-ring shairport-sync 2>/dev/null || true
         fi
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync; bluealsa-aplay and the root correction-lane identities write rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the root correction-lane identities write rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

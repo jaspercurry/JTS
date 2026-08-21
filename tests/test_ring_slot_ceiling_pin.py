@@ -241,6 +241,72 @@ def test_ring_open_transaction_lock_contract_agrees_between_c_and_rust():
     assert c_attempts == rust_attempts
 
 
+def test_ring_header_offsets_agree_between_c_and_python():
+    """Python is a THIRD speller of the v1 header layout, and nothing pinned it.
+
+    The C and Rust halves are already tied bit-for-bit — the ``_Static_assert``
+    block in the C header and the Rust golden-layout test assert the same
+    numbers. :mod:`jasper.ring_assets` then re-declares those offsets a third
+    time, in a language neither of them can import, to read the same bytes for
+    the stall alarm and (since #2786) the grouping ring's ``/state`` block. A
+    drift there is silent in the worst possible way: the parser keeps returning a
+    coherent-looking header with fields read out of the wrong words, so a live
+    ring reads as idle or an idle one as stalled.
+
+    Asserted field by field against the C header's own asserts rather than
+    against literals, so moving a field deliberately (in the same commit as its
+    siblings) keeps this passing.
+    """
+    from jasper import ring_assets
+
+    c = _read(_C_HEADER)
+    c_offsets = {
+        field: int(offset)
+        for field, offset in re.findall(
+            r"_Static_assert\(offsetof\(jts_ring_header_t,\s*(\w+)\)\s*==\s*(\d+)",
+            c,
+        )
+    }
+    assert c_offsets, "could not read the golden-layout offsets from the C header"
+
+    python_offsets = {
+        "magic": ring_assets._RING_OFF_MAGIC,
+        "version": ring_assets._RING_OFF_VERSION,
+        "rate": ring_assets._RING_OFF_RATE,
+        "channels": ring_assets._RING_OFF_CHANNELS,
+        "sample_format": ring_assets._RING_OFF_SAMPLE_FORMAT,
+        "period_frames": ring_assets._RING_OFF_PERIOD_FRAMES,
+        "n_slots": ring_assets._RING_OFF_N_SLOTS,
+        "writer_epoch": ring_assets._RING_OFF_WRITER_EPOCH,
+        "write_seq": ring_assets._RING_OFF_WRITE_SEQ,
+        "read_seq": ring_assets._RING_OFF_READ_SEQ,
+        "writer_pid": ring_assets._RING_OFF_WRITER_PID,
+        "writer_heartbeat_ns": ring_assets._RING_OFF_WRITER_HEARTBEAT_NS,
+        "reader_pid": ring_assets._RING_OFF_READER_PID,
+        "reader_heartbeat_ns": ring_assets._RING_OFF_READER_HEARTBEAT_NS,
+    }
+    for field, offset in python_offsets.items():
+        assert field in c_offsets, (
+            f"jasper.ring_assets reads a header field {field!r} the C header "
+            "does not declare"
+        )
+        assert offset == c_offsets[field], (
+            f"header offset drift on {field}: Python reads it at {offset}, the C "
+            f"header pins it at {c_offsets[field]}"
+        )
+
+    # The header SIZE and the magic/version gate ride the same contract.
+    assert ring_assets._RING_HEADER_BYTES == _extract(
+        r"#define\s+JTS_RING_HEADER_BYTES\s+(\d+)u", c, "JTS_RING_HEADER_BYTES"
+    )
+    assert ring_assets._RING_HEADER_VERSION == _extract(
+        r"#define\s+JTS_RING_VERSION\s+(\d+)u", c, "JTS_RING_VERSION"
+    )
+    c_magic = re.search(r"#define\s+JTS_RING_MAGIC\s+0x([0-9A-Fa-f]+)u", c)
+    assert c_magic is not None, "could not find JTS_RING_MAGIC"
+    assert ring_assets._RING_MAGIC == int(c_magic.group(1), 16)
+
+
 def test_ring_writer_lock_suffix_agrees_between_c_and_python():
     """Python became a READER of the C writer lock (audio-graph consolidation
     #2285, P9-C): the grouping reconciler's active-content release barrier

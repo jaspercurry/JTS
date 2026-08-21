@@ -10,11 +10,13 @@ for the package overview and ``_registry.py`` for how order is
 preserved. No check logic changed in the split."""
 from __future__ import annotations
 
+import errno
 import json
 import re
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 from ...env_load import parse_env_text
@@ -203,6 +205,145 @@ def check_grouping_pair_lock() -> CheckResult:
     if status == "unknown":
         return CheckResult(label, "warn", detail)
     return CheckResult(label, "ok", detail)
+
+
+# The PCM-resolution probe, run in a CHILD interpreter.
+#
+# WHAT IT DELIBERATELY DOES NOT DO: play, record, or reach `prepare`. The ioplug
+# attaches the SHM ring in its `prepare` callback
+# (`jts_ring_prepare` / `jts_ring_capture_prepare` in
+# `c/jts-ring-ioplug/pcm_jts_ring.c`); its plugin-open function only parses the
+# conf.d block, allocates, and calls `snd_pcm_ioplug_create`, touching `path`
+# only as a string. So open-then-close resolves the name AND dlopen()s the
+# ioplug — the whole of the failure this check exists to predict — while
+# touching no ring file, taking no writer flock, and stamping no pid. That is
+# what makes it safe to run against a LIVE bond, which the sibling
+# `_jts_ring_pcm_resolves` probe in the audio_runtime domain is not: that one
+# runs `aplay`/`arecord` for a second, which does reach `prepare` and would
+# create-or-attach the ring, so it is gated on the ring being UNARMED. There is
+# no equivalent "unarmed" state to gate on here — a bonded endpoint's grouping
+# ring is live whenever snapclient holds it — so the probe itself has to be the
+# thing that cannot perturb. `tests/test_grouping_ring_observability.py` pins
+# the attach-site claim against the C source.
+#
+# A CHILD INTERPRETER rather than an in-process ctypes call, matching the
+# audio_runtime probe's isolation posture: `snd_pcm_open` dlopens third-party
+# plugin code, and jasper-doctor runs dozens of other checks whose results must
+# not be lost to a fault inside one of them.
+_GROUPING_PCM_PROBE = """\
+import ctypes, sys
+lib = ctypes.CDLL("libasound.so.2")
+lib.snd_pcm_open.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p,
+                             ctypes.c_int, ctypes.c_int]
+lib.snd_pcm_open.restype = ctypes.c_int
+lib.snd_pcm_close.argtypes = [ctypes.c_void_p]
+lib.snd_pcm_close.restype = ctypes.c_int
+handle = ctypes.c_void_p()
+# stream 0 = SND_PCM_STREAM_PLAYBACK, mode 1 = SND_PCM_NONBLOCK.
+rc = lib.snd_pcm_open(ctypes.byref(handle), sys.argv[1].encode(), 0, 1)
+if rc == 0:
+    lib.snd_pcm_close(handle)
+print(rc)
+"""
+
+#: Budget for the probe child. Generous against a cold interpreter start on a
+#: Pi; the probe itself does no I/O beyond parsing /etc/alsa/conf.d and one
+#: dlopen, so exhausting this means something is wedged, not slow.
+_GROUPING_PCM_PROBE_TIMEOUT_SEC = 15.0
+
+
+def _probe_grouping_pcm(pcm: str) -> tuple[int | None, str]:
+    """Open-and-close ``pcm`` in a child interpreter.
+
+    Returns ``(rc, "")`` with alsa-lib's own return code, or ``(None, reason)``
+    when the probe could not be run at all (no interpreter, no libasound, an
+    unparseable answer) — which is a warn, not a verdict about the PCM.
+    """
+    try:
+        proc = _run(
+            [sys.executable, "-c", _GROUPING_PCM_PROBE, pcm],
+            timeout=_GROUPING_PCM_PROBE_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"could not run the PCM probe: {exc}"
+    answer = (proc.stdout or "").strip().splitlines()
+    try:
+        return int(answer[-1]), ""
+    except (IndexError, ValueError):
+        stderr = " ".join((proc.stderr or "").split())[-200:]
+        return None, f"PCM probe returned no result{f': {stderr}' if stderr else ''}"
+
+
+@doctor_check(order=71.3, group="grouping")
+def check_grouping_ring_device() -> CheckResult:
+    """Does ``pcm.jts_ring_grouping`` actually open on this box?
+
+    THE GAP THIS CLOSES. The grouping ring's conf.d block installs
+    unconditionally on every box, but the ioplug ``.so`` it names is BUILT — and
+    when that build fails transiently the installer degrades to ``return 0``
+    rather than aborting the deploy. The two halves then disagree silently: a
+    name is declared that nothing can resolve, and the first thing to notice is
+    snapclient taking ``-EINVAL`` at open on the day the household bonds a pair.
+    Nothing predicted it, because presence of the conf.d proves nothing about
+    the plugin and no check opened the name. This one does.
+
+    SAFE AGAINST A LIVE BOND, which is the constraint that shapes it — see the
+    note above :data:`_GROUPING_PCM_PROBE`. It opens and immediately closes; the
+    ring is attached at ``prepare``, which this never reaches, so a bonded
+    endpoint carrying audio is not touched.
+
+    SEVERITY IS WEIGHED BY WHAT A BROKEN NAME COSTS *THIS* BOX, the same way
+    ``check_ring_platform_assets`` weighs its own missing assets: on a BONDED box
+    the name is load-bearing right now, so a failure to resolve is ``fail``; on a
+    solo box nothing opens it yet, so the same defect is a ``warn`` that gets
+    fixed by the next deploy before it can cost anyone a bond.
+
+    NO BUSY CASE, and that follows from the safety property rather than being a
+    separate policy. Every ``-EBUSY`` the ring can produce comes from
+    ``jts_ring_writer_open`` / ``jts_ring_reader_open`` — the single-writer and
+    single-reader guards — and both are reached only from the ``prepare``
+    callbacks this probe never enters. A ring busy with live bonded audio is
+    therefore indistinguishable here from an idle one: both simply resolve. The
+    outcomes are name-resolves, name-does-not-resolve, and probe-could-not-run.
+
+    Statuses:
+      - ok   — the name resolved and the ioplug loaded.
+      - warn — the probe could not be run (no libasound on this host), or the
+               name did not resolve on a box that is not bonded.
+      - fail — the conf.d block is missing, or the name did not resolve on a
+               bonded box.
+    """
+    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.grouping_ring import GROUPING_RING_CONF_D, GROUPING_RING_PCM
+    from ...ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
+
+    label = "grouping ring device"
+    if not Path(GROUPING_RING_CONF_D).is_file():
+        return CheckResult(
+            label,
+            "fail",
+            f"{GROUPING_RING_CONF_D} is not installed — pcm.{GROUPING_RING_PCM} "
+            "cannot resolve; redeploy (bash scripts/deploy-to-pi.sh)",
+        )
+    rc, reason = _probe_grouping_pcm(GROUPING_RING_PCM)
+    if rc is None:
+        return CheckResult(label, "warn", reason)
+    if rc == 0:
+        return CheckResult(
+            label, "ok", f"pcm.{GROUPING_RING_PCM} resolves and the ioplug loads"
+        )
+    named = errno.errorcode.get(-rc, "") if rc < 0 else ""
+    bonded = _load_grouping_config().enabled
+    return CheckResult(
+        label,
+        "fail" if bonded else "warn",
+        f"pcm.{GROUPING_RING_PCM} did not open: rc={rc}"
+        + (f" ({named})" if named else "")
+        + " — the conf.d block is installed but alsa-lib could not resolve it; "
+        f"check that {RING_IOPLUG_SO} is present in {RING_ALSA_PLUGIN_DIR} and "
+        "redeploy to rebuild it"
+        + ("" if bonded else " (this box is not bonded, so nothing opens it yet)"),
+    )
 
 
 @doctor_check(order=71.5, group="grouping")

@@ -1116,6 +1116,25 @@ _RING_OFF_N_SLOTS = 24  # u32
 # reader below already pulls all 128 header bytes.
 _RING_OFF_WRITER_HEARTBEAT_NS = 64  # u64
 _RING_OFF_READER_HEARTBEAT_NS = 80  # u64
+# The remaining RUNTIME fields, all little-endian u64. Same zero extra I/O: they
+# are inside the 128 bytes already read. What each one buys an observer that the
+# two heartbeats above do not:
+#   - the two SEQUENCE cursors are the only cross-process trace of DROPS. When
+#     the writer demotes an absent reader it advances ``read_seq`` on that
+#     reader's behalf, one slot per dropped publish, so while nothing live is
+#     stamping ``reader_heartbeat_ns`` a rising ``read_seq`` IS the drop cursor.
+#     Their DIFFERENCE is the ring's occupancy.
+#   - ``reader_pid`` separates "no reader has ever attached" (0 with a zero
+#     heartbeat — a cold ring still priming) from "a reader attached and stopped
+#     beating" (a pid with a stale heartbeat). Both leave the reader not-live;
+#     only the second is a fault. ``ring_flow_state`` is what uses the split.
+#   - ``writer_epoch`` counts writer REATTACHES, so a flapping writer is legible
+#     without differencing journal lines.
+_RING_OFF_WRITER_EPOCH = 32  # u64
+_RING_OFF_WRITE_SEQ = 40  # u64
+_RING_OFF_READ_SEQ = 48  # u64
+_RING_OFF_WRITER_PID = 56  # u64
+_RING_OFF_READER_PID = 72  # u64
 
 # The staleness window a heartbeat may fall behind before its stamper counts as
 # gone. NOT a number chosen here: it is the C ioplug's own
@@ -1175,6 +1194,15 @@ class RingHeader:
     # single-sample read and needs no sampling window.
     writer_heartbeat_ns: int = 0
     reader_heartbeat_ns: int = 0
+    # RUNTIME, not geometry (see the offset block above for what each buys).
+    # ``write_seq``/``read_seq`` are monotonic slot cursors; ``writer_pid`` /
+    # ``reader_pid`` are 0 when that end is not attached; ``writer_epoch``
+    # increments on every writer reattach. All 0 on a never-used ring.
+    writer_epoch: int = 0
+    write_seq: int = 0
+    read_seq: int = 0
+    writer_pid: int = 0
+    reader_pid: int = 0
 
     @property
     def sample_format_name(self) -> str:
@@ -1228,6 +1256,11 @@ def read_ring_header(path: str) -> RingHeader:
         reader_heartbeat_ns=struct.unpack_from(
             "<Q", head, _RING_OFF_READER_HEARTBEAT_NS
         )[0],
+        writer_epoch=struct.unpack_from("<Q", head, _RING_OFF_WRITER_EPOCH)[0],
+        write_seq=struct.unpack_from("<Q", head, _RING_OFF_WRITE_SEQ)[0],
+        read_seq=struct.unpack_from("<Q", head, _RING_OFF_READ_SEQ)[0],
+        writer_pid=struct.unpack_from("<Q", head, _RING_OFF_WRITER_PID)[0],
+        reader_pid=struct.unpack_from("<Q", head, _RING_OFF_READER_PID)[0],
     )
 
 
@@ -1285,6 +1318,40 @@ class RingStallVerdict:
     detail: str = ""
 
 
+def _heartbeat_age_ns(stamp: int, now_ns: int) -> int | None:
+    """Saturating age of one heartbeat stamp, or None when never stamped.
+
+    Saturating because a heartbeat stamped AFTER the observer sampled ``now_ns``
+    would make the subtraction underflow and read as enormously stale — an alarm
+    on a perfectly live ring. Shared by both judges below: the ARITHMETIC is one
+    rule even where the PREDICATES around it differ.
+    """
+    if stamp == 0:
+        return None
+    return now_ns - stamp if now_ns > stamp else 0
+
+
+def _end_is_live(pid: int, heartbeat_ns: int, now_ns: int, timeout_ns: int) -> bool:
+    """Is one end of a ring live, by the C ioplug's OWN predicate?
+
+    ``reader_is_live`` / ``writer_is_live`` (``c/jts-ring-ioplug/jts_ring_shm.c``)
+    both require **all three**: a non-zero pid, a non-zero heartbeat, and an age
+    inside the liveness window. The pid clause is the one an observer is tempted
+    to drop, and must not: ``jts_ring_reader_close`` clears ``reader_pid`` but
+    leaves the last heartbeat standing, so a cleanly-closed end stays
+    heartbeat-fresh for a full window after the writer has already begun
+    free-running and dropping. Judging on the heartbeat alone reports a ring as
+    healthy for those two seconds while audio is being lost.
+
+    Mirroring the writer's own predicate is what makes an observer's verdict and
+    the mechanism it reports agree by construction rather than by coincidence.
+    """
+    if pid == 0 or heartbeat_ns == 0:
+        return False
+    age = _heartbeat_age_ns(heartbeat_ns, now_ns)
+    return age is not None and age < timeout_ns
+
+
 def ring_stall_verdict(
     path: str,
     *,
@@ -1320,10 +1387,19 @@ def ring_stall_verdict(
         now_ns = time.monotonic_ns()
 
     def _age(stamp: int) -> int | None:
-        if stamp == 0:
-            return None
-        return now_ns - stamp if now_ns > stamp else 0
+        return _heartbeat_age_ns(stamp, now_ns)
 
+    # NOTE (#2786): this judge is HEARTBEAT-ONLY on purpose. The C's own
+    # `reader_is_live` also requires a non-zero pid, so a cleanly-closed reader
+    # is dead to the writer instantly while its last heartbeat stays fresh for
+    # one liveness window — during which this verdict still reads "both ends
+    # live". :func:`ring_flow_state` applies the full pid-and-heartbeat
+    # predicate; this alarm was deliberately NOT re-scoped, because it judges
+    # four rings and the divergence costs it at most one window of late
+    # alarming on a ring whose reader left cleanly. If that ever matters, change
+    # it here for all four rings at once rather than letting the two drift
+    # silently — `test_the_two_judges_diverge_only_on_a_cleanly_closed_end`
+    # pins exactly where they disagree.
     writer_age = _age(header.writer_heartbeat_ns)
     reader_age = _age(header.reader_heartbeat_ns)
     if writer_age is None:
@@ -1370,6 +1446,237 @@ def ring_stall_verdict(
             "lost. Check the reader daemon (jasper-outputd for the content "
             "rings) and its journal"
         ),
+    )
+
+
+# The states :func:`ring_flow_state` classifies a ring into. Named constants
+# rather than bare literals because two daemons compare against them (the /state
+# projection in ``jasper.multiroom.state`` and jasper-doctor), and a misspelled
+# literal compares false silently.
+RING_FLOW_ABSENT = "absent"
+RING_FLOW_UNREADABLE = "unreadable"
+RING_FLOW_IDLE = "idle"
+RING_FLOW_PRIMING = "priming"
+RING_FLOW_READER_STALLED = "reader_stalled"
+RING_FLOW_FLOWING = "flowing"
+
+
+@dataclass(frozen=True)
+class RingFlowState:
+    """What is happening on one ring right now, in one word plus its evidence.
+
+    :func:`ring_stall_verdict` answers one narrow question — is this ring being
+    written but not read — and answers it for the doctor's four-ring alarm. This
+    is the OPERATOR-FACING classification over the same 128 bytes, and it differs
+    from that alarm in two deliberate ways.
+
+    **It judges liveness by the writer's own rule.** Both ends are tested with
+    :func:`_end_is_live`, i.e. pid AND heartbeat AND window — the same
+    conjunction ``reader_is_live`` / ``writer_is_live`` apply in
+    ``c/jts-ring-ioplug/jts_ring_shm.c``. The stall alarm tests the heartbeat
+    only, which is correct enough for a wedge but reports a cleanly-closed end as
+    live for one window after the writer has already started dropping. An
+    operator surface cannot afford that gap, so this one closes it; the alarm was
+    left alone because it judges four rings.
+
+    **The startup split.** A ring whose writer is live and whose reader has never
+    stamped a heartbeat is the SAME instantaneous shape at second one of a cold
+    start and at hour three of a wedged reader. Before the S0 pacing governor
+    those two were told apart by sheer magnitude — the storm a stalled reader
+    provoked was orders of magnitude past anything a clean start produced
+    (``jts_ring_pace_apply`` in ``c/jts-ring-ioplug/jts_ring_shm.h`` records the
+    measured ratio it was built to bound). The governor holds the stalled case to
+    roughly nominal, which is the point of it and also the end of that signal, so
+    the classifier has to do the separating. It uses ``write_seq`` as the ring's
+    own age: below one liveness window's worth of slots the ring is still
+    :data:`RING_FLOW_PRIMING`, above it the reader is genuinely late and the
+    state is :data:`RING_FLOW_READER_STALLED`. The budget is DERIVED from the
+    header's own ``rate``/``period_frames`` and the ioplug's own demotion window,
+    so no threshold is invented here. Note this splits only the NEVER-ATTACHED
+    case: a ring that had a reader and lost it is never priming, however young.
+
+    **The drop cursor.** There is still no drop COUNT in the shared header (the
+    writer's ``drop_no_reader`` is a process-local ``jts_ring_writer_t`` field —
+    see :class:`RingStallVerdict`), and this module does not invent one: a
+    counter accumulated across polls would depend on who polled and how often,
+    which is a fact nobody owns. What it publishes instead is the pair the count
+    is derived FROM. While no reader is live the writer advances ``read_seq``
+    itself, one slot per dropped publish, so two reads of ``read_seq`` while
+    ``state`` is :data:`RING_FLOW_READER_STALLED` bound the drops between them
+    exactly — and ``reader_age_ns`` already says how long that has been true
+    without differencing anything.
+
+    ``writer_age_ns`` / ``reader_age_ns`` are None when that end has never
+    stamped a heartbeat. The sequence/epoch fields are None whenever the header
+    could not be read at all.
+    """
+
+    state: str
+    detail: str = ""
+    writer_age_ns: int | None = None
+    reader_age_ns: int | None = None
+    write_seq: int | None = None
+    read_seq: int | None = None
+    occupancy_slots: int | None = None
+    writer_epoch: int | None = None
+
+
+def _priming_slot_budget(header: RingHeader, timeout_ns: int) -> int:
+    """Slots a nominal writer publishes in one liveness window.
+
+    The startup grace, in the ring's OWN units: ``rate``/``period_frames`` come
+    off the header and ``timeout_ns`` is the ioplug's own demotion window, so a
+    ring with a different period or a different window gets a budget that tracks
+    it. :func:`read_ring_header` gates on magic and version but NOT on the
+    geometry's range, so a zero in either field is reachable — on a torn read, or
+    on a foreign file that happens to carry the magic. That answers 0: no grace,
+    because a grace nobody can size must not be granted, and the cost of the
+    strict direction is one startup transient reported as a stall.
+    """
+    if header.rate <= 0 or header.period_frames <= 0:
+        return 0
+    return (timeout_ns * header.rate) // (header.period_frames * 1_000_000_000)
+
+
+def ring_flow_state(
+    path: str,
+    *,
+    now_ns: int | None = None,
+    timeout_ns: int = RING_LIVENESS_TIMEOUT_NS,
+) -> RingFlowState:
+    """Classify one ring file into a single operator-facing state.
+
+    ONE read of the first 128 header bytes, read-only, no mmap, no ALSA, no lock
+    — so it can be called against a ring carrying live audio without perturbing
+    it. Bounded and non-blocking by construction: the ring lives on tmpfs and the
+    read is a fixed 128 bytes.
+
+    Total: every failure resolves to a state, never an exception.
+    :data:`RING_FLOW_ABSENT` when no file is there (the fleet's normal state — a
+    ring file exists only once something opens the PCM), and
+    :data:`RING_FLOW_UNREADABLE` when a file IS there but this process cannot
+    read it or it carries no coherent v1 ``JRIN`` header. Those two are kept
+    apart deliberately: "nothing has opened this device" and "I am not allowed to
+    look" are different answers, and collapsing them would let a permission
+    problem read as an idle speaker.
+    """
+    import os
+    import time
+
+    header = read_ring_header(path)
+    if not header.valid:
+        if not os.path.exists(path):
+            return RingFlowState(
+                state=RING_FLOW_ABSENT,
+                detail="no ring file — nothing has opened this PCM",
+            )
+        if not os.access(path, os.R_OK):
+            # The requirement, not a mode: ring files are group `jts-ring` by the
+            # setgid directory, but their MODE is the creating unit's umask
+            # (0660 under UMask=0007, 0640 under systemd's default — see
+            # deploy/tmpfiles/jts-ring.conf). Both grant the group read, which is
+            # all an observer needs, so naming a specific mode here would be a
+            # claim that is false on half the boxes.
+            return RingFlowState(
+                state=RING_FLOW_UNREADABLE,
+                detail=(
+                    f"{path} exists but is not readable by this process — ring "
+                    "files are group-readable by `jts-ring`; this process is not "
+                    "in that group"
+                ),
+            )
+        return RingFlowState(
+            state=RING_FLOW_UNREADABLE,
+            detail="ring file carries no coherent v1 JRIN header",
+        )
+
+    if now_ns is None:
+        now_ns = time.monotonic_ns()
+    writer_age = _heartbeat_age_ns(header.writer_heartbeat_ns, now_ns)
+    reader_age = _heartbeat_age_ns(header.reader_heartbeat_ns, now_ns)
+    # Occupancy is only meaningful when the cursor pair is coherent. Over-range
+    # (the writer lapped a wedged reader, or a torn read) and inverted are both
+    # published as None rather than as a number: the C resolves an out-of-range
+    # W - R by resyncing to the tip, so the raw difference is not an occupancy
+    # anybody would act on, and printing it as fact is how a dashboard ends up
+    # showing 900000 slots in a 16-slot ring. The raw cursors stay published, so
+    # nothing is hidden.
+    raw_occupancy = header.write_seq - header.read_seq
+    occupancy: int | None = (
+        raw_occupancy if 0 <= raw_occupancy <= header.n_slots else None
+    )
+    evidence = {
+        "writer_age_ns": writer_age,
+        "reader_age_ns": reader_age,
+        "write_seq": header.write_seq,
+        "read_seq": header.read_seq,
+        "occupancy_slots": occupancy,
+        "writer_epoch": header.writer_epoch,
+    }
+
+    writer_live = _end_is_live(
+        header.writer_pid, header.writer_heartbeat_ns, now_ns, timeout_ns
+    )
+    reader_live = _end_is_live(
+        header.reader_pid, header.reader_heartbeat_ns, now_ns, timeout_ns
+    )
+
+    if not writer_live:
+        if header.writer_heartbeat_ns == 0:
+            why = "ring has never been written (no writer heartbeat)"
+        elif header.writer_pid == 0:
+            why = "the writer has closed the ring (writer pid cleared)"
+        else:
+            why = (
+                f"writer heartbeat is itself stale ({(writer_age or 0) / 1e6:.0f} ms)"
+            )
+        return RingFlowState(
+            state=RING_FLOW_IDLE,
+            detail=f"{why} — an idle or stopped ring, not a stall",
+            **evidence,
+        )
+    if reader_live:
+        return RingFlowState(
+            state=RING_FLOW_FLOWING,
+            detail=(
+                f"both ends live (writer {(writer_age or 0) / 1e6:.0f} ms, reader "
+                f"{(reader_age or 0) / 1e6:.0f} ms behind)"
+            ),
+            **evidence,
+        )
+
+    # The writer is live and no reader is. Startup transient or a real stall?
+    never_attached = header.reader_pid == 0 and header.reader_heartbeat_ns == 0
+    budget = _priming_slot_budget(header, timeout_ns)
+    if never_attached and header.write_seq <= budget:
+        return RingFlowState(
+            state=RING_FLOW_PRIMING,
+            detail=(
+                f"writer live, no reader attached yet — {header.write_seq} slot(s) "
+                f"published, inside the {budget}-slot startup window"
+            ),
+            **evidence,
+        )
+    if never_attached:
+        why = f"no reader has ever attached ({header.write_seq} slots published)"
+    elif header.reader_pid == 0:
+        # Reached the instant a reader closes cleanly, not only after it wedges:
+        # the writer stops honouring a pid-less reader immediately, so the drops
+        # start immediately too. Worded to say what happened, not to imply a hang.
+        why = "the reader closed the ring and has not come back"
+    else:
+        why = (
+            f"reader pid {header.reader_pid} stopped stamping its heartbeat "
+            f"({(reader_age or 0) / 1e6:.0f} ms behind)"
+        )
+    return RingFlowState(
+        state=RING_FLOW_READER_STALLED,
+        detail=(
+            f"{why} while the writer is live — the ioplug has demoted the reader "
+            "and is free-running, dropping the oldest slot per publish. read_seq "
+            "is being advanced by the WRITER, so its rise is the drop cursor"
+        ),
+        **evidence,
     )
 
 
