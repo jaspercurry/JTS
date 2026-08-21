@@ -255,11 +255,35 @@ def checkout(tmp_path: Path):
         "JASPER_HOSTNAME=checkout.invalid\n",
         encoding="utf-8",
     )
+    # The real script untars the speaker's evidence bundle into <dest>/bundle/,
+    # and the pose index is DERIVED from the per-take records inside it — so a
+    # double that only made the directory would make every happy-path round look
+    # like a round whose walk was refused. ``FAKE_BANK_TAKES`` is how many
+    # accepted lateral takes the bundle carries (0 = a bundle with none).
     _executable(scripts / "bank-crossover-round.sh", """\
         #!/usr/bin/env bash
         printf '%s\\t%s\\t%s\\t%s\\n' "$1" "${PI_HOST:-}" "${PI_USER:-}" "${SINCE:-}" \\
             >> "$FAKE_BANK_LOG"
         mkdir -p "$1"
+        positions="$1/bundle/sess-1/crossover_v2/relay-1/positions"
+        mkdir -p "$positions"
+        # A counting `while`, never `for i in $(seq 1 "$takes")`: BSD seq counts
+        # DOWN when last < first, so `seq 1 0` emits `1 0` and "zero takes"
+        # quietly became two of them.
+        takes="${FAKE_BANK_TAKES:-3}"
+        i=1
+        while [ "$i" -le "$takes" ]; do
+            printf -v n '%02d' "$i"
+            printf '%s' "{\\"schema_version\\":1,
+                \\"kind\\":\\"jts_crossover_v2_position_evidence\\",
+                \\"relay_session_id\\":\\"relay-1\\",\\"phase\\":\\"lateral\\",
+                \\"pose_id\\":\\"lateral_$n\\",\\"index\\":$i,\\"attempt\\":1,
+                \\"take_id\\":\\"lateral_${n}_a01\\",\\"role\\":\\"onax\\",
+                \\"position_deg\\":0,\\"regime\\":\\"per_driver\\",
+                \\"wav_sha256\\":\\"sha-$i\\"}" \\
+                > "$positions/lateral_${n}_a01.json"
+            i=$((i+1))
+        done
         exit "${FAKE_BANK_EXIT:-0}"
         """)
 
@@ -478,55 +502,102 @@ def test_the_walk_gets_the_expectations_the_operator_wrote_not_the_expansion(
     assert "--complete-after 9" in walk_cmd
 
 
-def test_the_banked_manifest_says_which_stop_measured_which_pose_and_take(
+def test_the_index_is_derived_from_the_bundle_the_bank_pulled(
     checkout, wizard, tmp_path
 ):
-    """The one fact a banked round otherwise loses.
+    """Speaker-written facts only — the runner's staged angles never enter it.
 
-    A bank records ``position_id`` and a coarse onax/offax role; the staged
-    angles live in a single-use spool on the speaker that nothing pulls.
+    The pose IS banked (``lateral_pose_record`` -> ``positions/{take_id}.json``
+    inside the evidence bundle); nothing SURFACES it, because the views read the
+    cloud block. The index closes that gap by projecting those records.
     """
+    trail = tmp_path / "trail.jsonl"
     proc, _, _ = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
-         "--angles", "0,7", "--per-position", "3",
+         "--angles", "0,7", "--per-position", "3", "--trail", str(trail),
          "--attest-rig-clear", "--complete-after", "6"],
+        FAKE_BANK_TAKES="6",
     )
 
     assert proc.returncode == 0, proc.stderr
     document = _cycle(tmp_path)
-    assert document["per_position"] == 3
-    assert document["angles"] == "0,7"
-    assert document["staged_angles"] == "0,0,0,7,7,7"
-    assert [(s["stop"], s["angle"], s["take"]) for s in document["stops"]] == [
-        (1, "0", 1), (2, "0", 2), (3, "0", 3),
-        (4, "7", 1), (5, "7", 2), (6, "7", 3),
+    assert [t["take_id"] for t in document["takes"]] == [
+        f"lateral_0{i}_a01" for i in range(1, 7)
     ]
+    assert document["sources"] == ["bundle/sess-1/crossover_v2/relay-1/positions"]
+    # Nothing the runner INTENDED is in the document — no angles, no
+    # per_position, no staged list.
+    assert set(document) == {"kind", "schema_version", "derived_at", "sources",
+                             "takes"}
     # It reads back through its own strict reader, not just as JSON.
     assert read_position_cycle(
         tmp_path / "camp" / "r1" / "position_cycle.json") == document
+    # The staged count is REPORTED beside the derived one, never folded in.
+    row = next(r for r in _trail(trail) if r["step"] == "position_cycle")
+    assert row["staged"] == 6 and row["takes"] == 6
 
 
-def test_an_ordinary_staged_round_banks_the_manifest_too(
+def test_a_shortfall_between_staged_and_derived_is_visible_not_filled_in(
     checkout, wizard, tmp_path
 ):
-    """Not a cycling feature: the pose is lost for EVERY staged round, not
-    only a cycled one, so every staged round gets the manifest."""
+    """Six stops staged, four takes accepted: the index carries the four the
+    speaker recorded, and the trail names both numbers."""
+    trail = tmp_path / "trail.jsonl"
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+         "--angles", "0,7", "--per-position", "3", "--trail", str(trail),
+         "--attest-rig-clear", "--complete-after", "6"],
+        FAKE_BANK_TAKES="4",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(_cycle(tmp_path)["takes"]) == 4
+    row = next(r for r in _trail(trail) if r["step"] == "position_cycle")
+    assert row["staged"] == 6 and row["takes"] == 4
+
+
+def test_an_ordinary_staged_round_indexes_its_poses_too(
+    checkout, wizard, tmp_path
+):
+    """Not a cycling feature: no view surfaces a lateral bearing for ANY staged
+    round, so every staged round gets the index."""
     proc, _, _ = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
     )
 
     assert proc.returncode == 0, proc.stderr
-    document = _cycle(tmp_path)
-    assert document["per_position"] == 1
-    assert document["staged_angles"] == "0,7,-7"
-    assert [s["take"] for s in document["stops"]] == [1, 1, 1]
+    assert len(_cycle(tmp_path)["takes"]) == 3
 
 
-def test_a_round_that_staged_no_walk_banks_no_manifest(checkout, wizard, tmp_path):
-    """Nothing was staged, so there is no walk to describe — and an empty
-    mapping would read as a walk that measured nothing."""
+def test_a_bundle_with_no_lateral_takes_is_named_never_filled_in_from_intent(
+    checkout, wizard, tmp_path
+):
+    """The walk was refused at take time, or its poses were never accepted.
+
+    The runner had every staged angle in hand and still writes nothing: a
+    document assembled from them would be the intent-shaped record this design
+    exists to avoid, and it would look exactly like evidence.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        FAKE_BANK_TAKES="0",
+    )
+
+    assert proc.returncode == 0, proc.stderr  # the round still measured
+    assert not (tmp_path / "camp" / "r1" / "position_cycle.json").exists()
+    row = next(r for r in _trail(trail) if r["step"] == "position_cycle")
+    assert row["ok"] is False and row["staged"] == 3
+    assert "no lateral take records" in row["detail"]
+
+
+def test_a_round_that_staged_no_walk_writes_no_index(checkout, wizard, tmp_path):
+    """Nothing was staged, so there is no walk to index."""
     proc, _, _ = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
@@ -536,9 +607,9 @@ def test_a_round_that_staged_no_walk_banks_no_manifest(checkout, wizard, tmp_pat
     assert not (tmp_path / "camp" / "r1" / "position_cycle.json").exists()
 
 
-def test_a_refused_bank_banks_no_manifest(checkout, wizard, tmp_path):
-    """The bank's rc is the round's verdict; a manifest written on top of a
-    refusal would describe a round whose evidence was never pulled."""
+def test_a_refused_bank_writes_no_index(checkout, wizard, tmp_path):
+    """The bank's rc is the round's verdict, and its bundle is the index's
+    input — indexing on top of a refused bank would read a tree nobody trusts."""
     proc, _, _ = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
@@ -582,13 +653,51 @@ def test_fewer_than_one_take_per_position_is_refused(
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
 
 
-def test_a_complete_after_below_the_staged_stop_count_is_refused(
+def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
+    checkout, wizard, tmp_path
+):
+    """``jasper-angle-capture`` composes stops as ``angle x
+    _REGIME_STOPS[regime]``, so ``both`` is TWO stops per token — and the
+    ``--complete-after`` floor, which counts tokens, would then be exactly half
+    the real stop count. Refused rather than multiplied: a multiplier here would
+    be this file's second opinion about another tool's composition rule."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,7", "--per-position", "3", "--attest-rig-clear",
+         "--regime", "both", "--complete-after", "12"],
+    )
+
+    assert proc.returncode == 2
+    assert "--regime both" in proc.stderr and "per_driver" in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_takes_are_refused_on_the_verify_stage_which_serves_its_own_poses(
+    checkout, wizard, tmp_path
+):
+    """``_take_staged_angle_walk`` is reached only from the MEASURING open;
+    stage 2's positions and count come from ``plan_shape.verify_capture_target``.
+    A walk staged for it is taken by nobody, so the takes never happen."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "v1",
+         "--stage", "verify", "--angles", "0,7", "--per-position", "3",
+         "--attest-rig-clear", "--complete-after", "6"],
+    )
+
+    assert proc.returncode == 2
+    assert "--stage verify" in proc.stderr and "tier's own poses" in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_a_complete_after_below_the_staged_stop_count_is_refused_with_the_remedy(
     checkout, wizard, tmp_path
 ):
     """``--complete-after`` counts RELEASES, so a walk told to complete on
     fewer of them than it has stops posts its all-spots-measured signal partway
     through and exits ``ok`` — a round that measured a walk nobody asked for,
-    with no failing code to say so."""
+    with no failing code to say so. The refusal carries the number to pass."""
     proc, ssh_lines, bank_lines = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1",
@@ -598,6 +707,7 @@ def test_a_complete_after_below_the_staged_stop_count_is_refused(
 
     assert proc.returncode == 2
     assert "9 stops" in proc.stderr and "3 per position" in proc.stderr
+    assert "pass 9 or higher, or omit it" in proc.stderr
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
 
 
@@ -614,27 +724,34 @@ def test_the_stop_count_floor_does_not_refuse_an_ordinary_round(
     assert len(bank_lines) == 1
 
 
-def test_a_malformed_angle_list_is_refused_by_argparse_not_a_traceback(
+def test_an_empty_angle_field_is_DROPPED_exactly_as_the_seam_drops_it(
     checkout, wizard, tmp_path
 ):
-    """A typed comma is not a stop, and the seam would read it as an angle."""
-    proc, ssh_lines, bank_lines = _run(
+    """``jasper.cli.angle_capture._parse_angles`` keeps only ``field.strip()``
+    fields — a trailing comma is tolerated there by design — so refusing one
+    here would make the runner a second, stricter reader of the same field."""
+    proc, ssh_lines, _ = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1",
-         "--angles", "0,,7", "--attest-rig-clear", "--per-position", "2"],
+         "--angles", "0,,7,", "--attest-rig-clear", "--per-position", "2",
+         "--complete-after", "4"],
     )
 
-    assert proc.returncode == 2
-    assert "empty angle" in proc.stderr
-    assert "Traceback" not in proc.stderr
-    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--angles 0,0,7,7" in stage_cmd
 
 
-def test_apply_refuses_takes_per_position_because_it_measures_nothing(
-    checkout, wizard
+@pytest.mark.parametrize("per_position", ["3", "1", "0"])
+def test_apply_refuses_takes_per_position_at_any_value(
+    checkout, wizard, per_position
 ):
+    """WAS IT PASSED, not IS IT TRUTHY. ``--per-position 0`` is a value the
+    operator typed, and a truthiness test would let it reach a path that
+    measures nothing and silently ignore it — ``1`` likewise, since it happens
+    to equal the default."""
     proc, ssh_lines, bank_lines = _run(
-        checkout, wizard, ["--apply", FINGERPRINT, "--per-position", "3"],
+        checkout, wizard, ["--apply", FINGERPRINT, "--per-position", per_position],
     )
 
     assert proc.returncode == 2
