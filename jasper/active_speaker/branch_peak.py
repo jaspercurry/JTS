@@ -10,9 +10,11 @@ has always had to assume every driver sees the whole stimulus peak, because it
 had no way to know what a crossed-over branch really gets. On a two-way that is
 wrong by the crossover: a full-band program reaches the tweeter through a
 high-pass, the woofer through a low-pass, and neither through the input split
-mixer at unity. The gap is not small — on JTS3 the binding branch sits 10.7 dB
-under the full-band peak — and it is paid as a speaker that refuses to reach a
-75-80 dB SPL seat target it is physically able to reach.
+mixer at unity. The gap is not small — measured on JTS3's basin-2 graph against
+its session check program (2026-08-19), the binding branch sat 10.7 dB under the
+full-band peak — and it was paid as a speaker refusing to reach a 75-80 dB SPL
+seat target it is physically able to reach. The magnitude is a property of one
+stimulus through one graph, never a constant.
 
 This module closes it by RENDERING: take the actual stimulus WAV, push it
 through the actual applied CamillaDSP graph, and report each output channel's
@@ -354,12 +356,14 @@ def _mixer_mapping(
 ) -> tuple[int, list[tuple[int, list[tuple[int, complex]]]]]:
     """``(out_width, [(dest, [(source, complex gain), ...]), ...])``."""
     channels = _mapping(mixer.get("channels"), f"mixer {name!r} channels")
-    channels_in = channels.get("in")
-    channels_out = channels.get("out")
-    for value, what in ((channels_in, "in"), (channels_out, "out")):
+    counts: dict[str, int] = {}
+    for what in ("in", "out"):
+        value = channels.get(what)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise BranchPeakError(f"mixer {name!r} has channels.{what} {value!r}")
-    if int(channels_in) != width:
+        counts[what] = int(value)
+    channels_in, channels_out = counts["in"], counts["out"]
+    if channels_in != width:
         raise BranchPeakError(
             f"mixer {name!r} takes {channels_in} channels where the pipeline "
             f"carries {width}"
@@ -375,7 +379,7 @@ def _mixer_mapping(
         dest = entry.get("dest")
         if isinstance(dest, bool) or not isinstance(dest, int):
             raise BranchPeakError(f"mixer {name!r} has dest {dest!r}")
-        if not 0 <= int(dest) < int(channels_out):
+        if not 0 <= int(dest) < channels_out:
             raise BranchPeakError(f"mixer {name!r} maps to dest {dest} out of range")
         sources_raw = entry.get("sources")
         if not isinstance(sources_raw, list):
@@ -404,7 +408,7 @@ def _mixer_mapping(
                 linear = -linear
             sources.append((int(channel), complex(linear)))
         mapping.append((int(dest), sources))
-    return int(channels_out), mapping
+    return channels_out, mapping
 
 
 def _capture_channels(config: Mapping[str, Any], wav_channels: int) -> int:
