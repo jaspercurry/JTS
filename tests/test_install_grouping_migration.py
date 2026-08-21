@@ -232,8 +232,9 @@ def test_migrates_bare_enable_flag_yields_invalid_config(tmp_path: Path) -> None
     This test pins exactly that config-level outcome and stops there. It
     deliberately does NOT reach into jasper.audio_runtime_plan (whose
     route_mode_from_grouping_config maps an errored config to
-    route_mode="invalid_grouping", which coupling_supported_for_route then
-    blocks for shm_ring, resolving the ring to loopback) or
+    route_mode="invalid_grouping", which coupling_supported_for_route no longer
+    blocks for shm_ring: an errored config forms no bond, so its dac_content
+    lane is never armed and the box is definitively solo) or
     jasper.cli.doctor.grouping (whose check_grouping_snapcast_installed
     gates only on `enabled`, so it FAILs on this shape too) — those chains
     belong to their own subsystems' test suites, and dragging them into a

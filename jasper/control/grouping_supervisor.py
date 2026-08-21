@@ -309,10 +309,11 @@ class GroupingSupervisor:
             # CORRECT absence as starvation kicked the reconciler every
             # window on a healthy active leader/follower (the 2026-06-23
             # jts3 self-kick churn). The `dac_content` watch does not apply;
-            # round-trip starvation of the active lane (the camilla#2
-            # loopback going silent) is a separate signal outputd does not
-            # yet surface — deferred until observed. Reset like the
-            # not-watching gate so a later passive re-bond starts clean.
+            # starvation of camilla#2's own ingress is a separate signal, and
+            # the grouping ring is where its instrument would come from (a free
+            # GROUPING_RING_WRITER_LOCK = no snapclient mapped). Unbuilt until
+            # starvation is observed. Reset like the not-watching gate so a
+            # later passive re-bond starts clean.
             self.last_poll_starved = None
             self.consecutive_starved = 0
             self._streak_warned = False

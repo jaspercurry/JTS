@@ -156,6 +156,8 @@ def _fanin_expected_inputs(
 
 _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
 
+_OUTPUTD_CONTENT_ALOOP_PCM = "hw:Loopback,0,6"
+
 _OUTPUTD_EXPECTED_CONTENT_PCM = "outputd_content_capture"
 
 _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM = "outputd_active_content_capture"
@@ -409,8 +411,9 @@ def check_fanin_asound_wiring() -> CheckResult:
     `deploy/alsa/asoundrc.jasper`, which is why they hold on a
     ring-coupled box too — there the shipped definitions survive with
     no writer and no reader. (The pair-5 definitions are already gone:
-    P9-C deleted them. What survives is the pair-0..4/6/7 set, which
-    P9-E reduces to the grouping pair.) The one assertion
+    P9-C deleted them. What survives is the pair-0..4/6/7 set, whose
+    pair 6 is outputd's passive content lane — grouping left snd-aloop
+    for its own SHM ring and names no pair here.) The one assertion
     that is not about the graph is the trailing `audio_topology.env`
     probe, which warns about a leftover from the retired dmix/fanin
     switcher.
@@ -507,7 +510,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     # `pcm.jasper_ref` has had NO reader since U4/P7-3 retired the last one
     # (the AEC bridge's ALSA fallback went first, in P7-1). The definition is
     # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it, and
-    # P9-E is what reduces the remaining aloop PCMs to the grouping pair — so
+    # P9-E is what reduces the remaining aloop PCMs — so
     # what these two branches report is deployed-asoundrc drift from the
     # shipped file, not a broken consumer.
     ref = _asound_pcm_block(active, "jasper_ref")
@@ -3980,3 +3983,342 @@ def check_outputd_content_lane_park() -> CheckResult:
         f"remains ({state.get('age_sec')}s old, outside the streak window); "
         "it is cleared on the next clean stop",
     )
+
+
+# ---------------------------------------------------------------------------
+# The aloop-remnant guard (audio-graph consolidation #2285, P9-C).
+#
+# WHY THIS EXISTS. P9-C moved every solo box's content lane onto SHM rings and
+# deleted snd-aloop pair 5's PCM definitions, leaving the bounded remnant this
+# check measures: the pairs `_derive_registered_pairs` reads out of their owning
+# constants below. (The bonded grouping ingress used to ride pair 6 raw; it is
+# on `jasper.multiroom.grouping_ring`'s SHM ring now and declares no aloop pair
+# at all.) A bounded remnant is only bounded if
+# something measures it, and the design names the failure mode directly
+# (risk 5.1): "the remnant becomes permanent by silence." This check is the
+# measurement, and it names in its own text who owns what is left, so an
+# operator who reads it learns where the remnant is scheduled to die.
+#
+# #2508 retired the GROUPING half — the bonded ingress that used to ride pair 6
+# raw. What survives is outputd's PASSIVE CONTENT lane (AXIS-1), plus fan-in's
+# own input/output lanes; retiring those is AXIS-1's work and has no issue
+# filed yet. So the check's text points at the lane, not at a number that this
+# campaign closes.
+#
+# WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
+# the registered set is DERIVED — never restated — from the three places that
+# already own the pair allocation:
+#
+#   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
+#   pair  7    `_FANIN_EXPECTED_OUTPUT_PCM`     (same)
+#   pair  6    `_OUTPUTD_CONTENT_ALOOP_PCM`     (same)
+#
+# Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
+# stops being registered the moment its owning constant stops naming it, with
+# no edit here and no phase label to remember. A hand-maintained table would
+# be a fifth restatement of the allocation (after the modprobe conf prose,
+# asoundrc.jasper, and the two constants above) and would silently keep
+# permitting a lane after its owner dropped it — risk 5.1's "permanent by
+# silence" transplanted onto the very instrument built to measure it.
+#
+# The input roster is read in its ALOOP form deliberately, not through
+# `_fanin_expected_inputs()`: a ring-armed renderer lane still RESERVES its
+# aloop pair (nothing else may take it), so the registered set must not flap
+# with arming state.
+#
+# Pair 5 is absent because no owner names it any more: P9-C deleted its PCM
+# definitions. So an open pair 5 is a box that resurrected a deleted lane (a
+# rolled-back binary, a stale asoundrc, a hand-started process) and is exactly
+# the regression P9-C can produce. That is the FAIL.
+#
+# NOT ASSERTABLE, AND NOW PERMANENTLY SO — the first half of design :497. That
+# bullet opened "snd-aloop present ⟹ grouping-capable box" (restated at :441 as
+# "the module loads only on a grouping-capable box"). It was carried forward on
+# the premise that the remnant would become grouping-only. It did the opposite:
+# grouping LEFT pair 6 for the SHM ring, and every pair the set still registers
+# belongs to fan-in or outputd on every box. `check_loopback`
+# (jasper/cli/doctor/audio.py) asserts the module must be present fleet-wide,
+# which is now simply the end state rather than a temporary disagreement. The
+# clause is recorded as retired, not carried.
+#
+# WHY NOT THE LITERAL "anything but pair 6 is a FAIL". Pair 6 is not the last
+# survivor and never became one — fan-in's input lanes and summed output are
+# registered on every box — so the literal would red-doctor healthy hardware.
+# Live
+# evidence, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
+# `state: RUNNING`, owner cgroup `jasper-fanin.service` — the usbsink lane's
+# idle-read fallback that deploy/modprobe.d/snd-aloop.conf documents ("fan-in
+# still OPENS hw:Loopback,1,3 as the usbsink lane's idle read fallback when USB
+# Audio Input is off"). jts3 and jts.local held nothing. A guard that fails on
+# a documented, healthy holder is a false positive, and a doctor that cries
+# wolf is worse than no doctor. So the registered set tracks its owners, and
+# the guard tightens toward the design's end state as those owners drop pairs.
+#
+# BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
+# small procfs files), plus one `comm`/`cgroup` read per offender, capped at
+# `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
+#
+# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a
+# FAIL: the guard must not convert "I could not look" into "something is
+# wrong".
+#
+# SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
+# `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
+# `aplay` as its probe. Today the false positive is UNREACHABLE: every PCM that
+# probe opens maps to a pair this check still registers (0/1/2 renderer lanes,
+# 4 correction), so an observed temporary open reads as `ok` either way. The
+# serialization is kept because it becomes load-bearing the moment a pair
+# retires — an unregistered pair briefly held open by a co-tenant probe would
+# then read as an offender — and its cost is near zero.
+# ---------------------------------------------------------------------------
+
+#: procfs ALSA root. Overridable for tests, matching the established
+#: `JASPER_ASOUND_ROOT` hook already used by deploy/bin/jasper-camilla-recover
+#: and jasper/cli/xvf_profile.py, so this check tests the same way the rest of
+#: the tree already does.
+_ALOOP_PROC_ROOT_ENV = "JASPER_ASOUND_ROOT"
+_ALOOP_PROC_ROOT_DEFAULT = "/proc/asound"
+
+#: The snd-aloop card id, pinned by deploy/modprobe.d/snd-aloop.conf
+#: (`id=Loopback`).
+_ALOOP_CARD_ID = "Loopback"
+
+#: snd-aloop exposes two PCM devices, each with a playback and a capture side.
+#: Verified on jts3 (2026-08-14): /proc/asound/Loopback contains exactly
+#: pcm0c, pcm0p, pcm1c, pcm1p, each with sub0..sub7.
+_ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
+
+#: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
+#: against that file by tests/test_doctor_aloop_remnant.py so a future
+#: reduction cannot leave this walker scanning a range the module no longer
+#: has, and cannot leave the owning constants naming a pair that no longer
+#: exists.
+_ALOOP_SUBSTREAMS = 8
+
+#: Cap on how many offenders are spelled out in the FAIL detail, so a
+#: pathological box cannot produce an unbounded doctor line.
+_ALOOP_OFFENDER_DETAIL_CAP = 4
+
+
+def _aloop_proc_root() -> Path:
+    return Path(
+        os.environ.get(_ALOOP_PROC_ROOT_ENV, _ALOOP_PROC_ROOT_DEFAULT)
+    )
+
+
+def _pair_from_loopback_pcm(pcm: str) -> int | None:
+    """Substream index from an ``hw:Loopback,<device>,<sub>`` name.
+
+    Returns None for anything that is not an snd-aloop hw triple — a ring path,
+    a plug wrapper, a renamed card. Callers treat None as "cannot derive" and
+    degrade to `warn`; they must never treat it as "this pair is not
+    registered", because that would SHRINK the registered set and turn a
+    healthy box red.
+    """
+    m = re.fullmatch(r"hw:([^,]+),\d+,(\d+)", pcm.strip())
+    if not m or m.group(1) != _ALOOP_CARD_ID:
+        return None
+    return int(m.group(2))
+
+
+def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
+    """``({pair: provenance}, content_pair)`` derived from the owning facts.
+
+    The registered set is never written down here — it is read out of the
+    constants that already own the allocation (see the header comment). A pair
+    leaves the set exactly when its owner stops naming it.
+
+    Returns None if ANY source constant is unparseable. That is deliberately
+    all-or-nothing: a partial derivation would silently shrink the registered
+    set, and a shrunk set turns legitimate holders into doctor FAILs. Better to
+    say "I could not derive this" than to red-doctor a healthy speaker.
+    """
+    registered: dict[int, str] = {}
+
+    for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS:
+        pair = _pair_from_loopback_pcm(pcm)
+        if pair is None:
+            return None
+        registered[pair] = f"fan-in input lane {label!r}"
+
+    output_pair = _pair_from_loopback_pcm(_FANIN_EXPECTED_OUTPUT_PCM)
+    if output_pair is None:
+        return None
+    registered[output_pair] = "fan-in summed music output"
+
+    content_pair = _pair_from_loopback_pcm(_OUTPUTD_CONTENT_ALOOP_PCM)
+    if content_pair is None:
+        return None
+    # Last on purpose: this row wins the provenance string if pair 6 is ever
+    # shared with another owner. It has none today — the bonded grouping
+    # ingress that used to share it raw now rides
+    # jasper.multiroom.grouping_ring's SHM ring, so this lane is pair 6's sole
+    # opener.
+    registered[content_pair] = "outputd passive content lane"
+
+    return registered, content_pair
+
+
+def _aloop_substream_owner(status_text: str) -> str:
+    """Best-effort ``pid=N comm=… cgroup=…`` for an open substream.
+
+    Returns ``""`` when nothing is readable. Naming the offender is the point
+    of the FAIL, but a procfs race (the owner exits between the status read
+    and the comm read) must never turn into a crash or a different verdict —
+    every step here degrades to LESS DETAIL, never to a changed status.
+    """
+    m = re.search(r"owner_pid\s*:\s*(\d+)", status_text)
+    if not m:
+        return ""
+    pid = m.group(1)
+    parts = [f"pid={pid}"]
+    for name, path in (
+        ("comm", Path(f"/proc/{pid}/comm")),
+        ("cgroup", Path(f"/proc/{pid}/cgroup")),
+    ):
+        try:
+            value = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if not value:
+            continue
+        if name == "cgroup":
+            # Keep only the leaf unit — the full cgroup path is long and the
+            # unit name is the actionable half.
+            value = value.splitlines()[-1].rsplit("/", 1)[-1]
+        parts.append(f"{name}={value}")
+    return " ".join(parts)
+
+
+@doctor_check(
+    order=75.96,
+    group="audio",
+    exclusive_group="audio-probe",
+)
+def check_aloop_registered_substreams() -> CheckResult:
+    """snd-aloop is loaded only for the bounded aloop remnant this check
+    measures — nothing else holds it.
+
+    Audio-graph consolidation #2285, P9-C. See the header comment above for
+    the full rationale; the operator-facing summary:
+
+    - snd-aloop absent            -> ok (no remnant on this box)
+    - registered set underivable  -> warn (never a shrunken set)
+    - /proc unreadable            -> warn (fail-soft; never a FAIL)
+    - every open pair registered  -> ok, reporting the remnant's current size
+    - an UNREGISTERED pair open   -> fail, naming the offender
+
+    The registered set is DERIVED from the constants that own the pair
+    allocation, so it shrinks on its own as pairs retire. The unregistered
+    case is pair 5 today: P9-C deleted its PCM definitions, so anything
+    holding it has resurrected a deleted lane.
+
+    EOL for the remnant itself: AXIS-1, whose passive content lane is pair 6's
+    sole remaining owner. #2508 retired the grouping half.
+    """
+    label = "aloop remnant"
+
+    card_dir = _aloop_proc_root() / _ALOOP_CARD_ID
+    if not card_dir.is_dir():
+        return CheckResult(
+            label,
+            "ok",
+            f"snd-aloop not loaded ({card_dir} absent) — no aloop remnant "
+            "on this box",
+        )
+
+    derived = _derive_registered_pairs()
+    if derived is None:
+        return CheckResult(
+            label,
+            "warn",
+            "could not derive the registered substream set from its owning "
+            "constants (_FANIN_EXPECTED_ALOOP_INPUTS / "
+            "_FANIN_EXPECTED_OUTPUT_PCM / _OUTPUTD_CONTENT_ALOOP_PCM in "
+            "this module) — each must be an "
+            "'hw:Loopback,<device>,<sub>' triple. The remnant's scope cannot "
+            "be verified.",
+        )
+    registered_pairs, content_pair = derived
+    # There is deliberately NO "content pair missing from the registry"
+    # branch: the pair is derived from _OUTPUTD_CONTENT_ALOOP_PCM and inserted
+    # by the same function, so it is in the set by construction. The earlier
+    # hand-maintained table could drift from its source constant; a derived
+    # set cannot, so the branch that caught that drift is now unreachable code.
+    # `test_content_pair_is_always_registered` pins the invariant instead.
+
+    offenders: list[str] = []
+    registered_open: set[int] = set()
+    unreadable = 0
+    scanned = 0
+
+    for pcm_dir in _ALOOP_PCM_DIRS:
+        for pair in range(_ALOOP_SUBSTREAMS):
+            status_path = card_dir / pcm_dir / f"sub{pair}" / "status"
+            try:
+                text = status_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except FileNotFoundError:
+                # A substream this kernel does not expose is not evidence of
+                # anything — absence is a narrower module, not a fault.
+                continue
+            except OSError:
+                unreadable += 1
+                continue
+            scanned += 1
+            stripped = text.strip()
+            first = stripped.splitlines()[0].strip() if stripped else ""
+            if not first or first == "closed":
+                continue
+            if pair in registered_pairs:
+                registered_open.add(pair)
+                continue
+            owner = _aloop_substream_owner(text)
+            offenders.append(
+                f"{pcm_dir}/sub{pair} ({first})"
+                + (f" {owner}" if owner else " owner unreadable")
+            )
+
+    if scanned == 0:
+        return CheckResult(
+            label,
+            "warn",
+            f"snd-aloop card present at {card_dir} but no substream status "
+            f"was readable ({unreadable} read error(s)) — the remnant's scope "
+            "could not be verified",
+        )
+
+    if offenders:
+        shown = offenders[:_ALOOP_OFFENDER_DETAIL_CAP]
+        more = len(offenders) - len(shown)
+        suffix = f" (+{more} more)" if more > 0 else ""
+        return CheckResult(
+            label,
+            "fail",
+            "snd-aloop substream(s) open with no registered purpose in this "
+            f"phase: {'; '.join(shown)}{suffix}. Pair {content_pair} is "
+            "outputd's passive content lane (AXIS-1); "
+            "pair 5's PCM definitions were DELETED by #2285 P9-C, so a holder "
+            "there means a rolled-back binary or a stale /etc/asound.conf "
+            "resurrected a deleted lane. Identify the process above, stop it, "
+            "and re-run `bash scripts/deploy-to-pi.sh` to restore the shipped "
+            "ALSA config.",
+        )
+
+    other_pairs = sorted(registered_open - {content_pair})
+    detail = (
+        f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
+        f"still registered, aloop remnant on pair {content_pair} "
+        "(outputd's passive content lane, AXIS-1)"
+    )
+    if other_pairs:
+        detail += (
+            "; other open pairs held by registered owners: "
+            f"{other_pairs}"
+        )
+    else:
+        detail += "; no other pair currently open"
+    if unreadable:
+        detail += f"; {unreadable} substream status file(s) unreadable"
+    return CheckResult(label, "ok", detail)

@@ -76,7 +76,13 @@ from pathlib import Path
 from typing import IO, Any
 
 from jasper.atomic_io import atomic_write_text
-from jasper.audio_runtime_plan import RouteMode, RuntimeEnvAction, fanin_coupling_action
+from jasper.audio_runtime_plan import (
+    GROUPED_SHM_RING_MECHANISM,
+    RouteMode,
+    RuntimeEnvAction,
+    fanin_coupling_action,
+)
+from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
     AutoCouplingDecision,
@@ -125,7 +131,8 @@ VOICE_UNIT = "jasper-voice.service"
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 # Fallback ``event=`` result token for a route-unsupported coupling block (the
 # route policy's own ``support.reason`` normally wins). Today the only blocked
-# combination is shm_ring on a grouped box.
+# combination is shm_ring on a grouped box whose outputd dac_content lane is
+# armed.
 UNSUPPORTED_COUPLING_BLOCK_REASON = "coupling_unsupported_for_route"
 
 # Legacy env key of the REMOVED ``transport_pipe`` coupling (the Camilla -> outputd
@@ -231,26 +238,24 @@ _RESET_FAILED_TIMEOUT_SEC = 5.0
 
 
 def _restart_unit(
-    unit: str, *, verb: str = "restart", reason: str, timeout: float
+    unit: str, *, verb: str = "restart", reason: str, timeout: float,
+    no_block: bool = False,
 ) -> tuple[bool, str]:
     """Drive a systemd unit through the broker with a closed verb. (ok, detail).
 
     ``verb`` is one of the broker's fixed vocabulary (``restart`` / ``stop`` /
-    ``start`` / ...); ``no_block=False`` so the call returns only after systemd
-    reports the transition complete — for a ``Type=notify`` unit like jasper-fanin
-    that means the daemon has re-signalled ``READY=1`` (its ring/pipe writer is
-    re-attached), which is the "wait for fan-in up" step the camilla coordination
-    below relies on.
+    ``start`` / ...); ``no_block`` defaults False so the call returns only after
+    systemd reports the transition complete — for a ``Type=notify`` unit like
+    jasper-fanin that means ``READY=1`` (its ring/pipe writer re-attached), the
+    "wait for fan-in up" step the camilla coordination below relies on. Pass True
+    for a kick whose completion the caller does not wait on.
 
-    A start-consuming verb on one of the crash-budget daemons is preceded by a
-    best-effort ``reset-failed`` so this deliberate apply cannot walk the target
-    into StartLimitAction=reboot (see the block comment above). The reset never
-    gates the action it precedes: a denied or failed reset is logged and the
-    restart still runs.
-
-    Guarded lazy import: a missing/broken control package degrades to a
-    reported failure, never an exception out of the reconcile that would
-    defeat the fail-safe ladder.
+    A start-consuming verb on a crash-budget daemon is preceded by a best-effort
+    ``reset-failed`` so this deliberate apply cannot walk the target into
+    StartLimitAction=reboot (see the block comment above); the reset never gates
+    the action it precedes. Guarded lazy import: a missing/broken control package
+    degrades to a reported failure, never an exception out of the reconcile that
+    would defeat the fail-safe ladder.
     """
     try:
         from jasper.control import restart_broker
@@ -278,7 +283,7 @@ def _restart_unit(
         unit,
         verb=verb,
         reason=reason,
-        no_block=False,
+        no_block=no_block,
         timeout=timeout,
     )
     if resp.get("ok"):
@@ -420,6 +425,7 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 # ordinary first arm time out on the slowest board, which is the failure this
 # constant exists to prevent.
 _HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
+_KICK_ACCEPT_TIMEOUT_SEC = 5.0  # `--no-block` returns in ms; bounds the accept.
 _ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 
 
@@ -809,6 +815,26 @@ def reconcile_coupling(
         # Staging/migration writes the env but runs no daemon ops; restarting
         # voice here would be the one daemon op an apply=False pass performed.
         return result
+    if result.changed and result.ok:
+        # A bonded ACTIVE leader's camilla#1 carries the coupling's capture
+        # device, baked at BOND time; nothing else re-derives it on a flip and the
+        # two units are unordered, so an arm would leave camilla#1 on the tap the
+        # ring just took fan-in off — a silent bond with healthy daemons. No-op on
+        # a solo box. FIRE-AND-FORGET: the re-bake routinely outruns any wait this
+        # side could justify (TimeoutStartSec=2526) and killing the client would
+        # not cancel the queued job, so waiting could only manufacture a WARN for
+        # work that succeeded. `ok` is "systemd ACCEPTED the job" — logged because
+        # a drifted unit name would otherwise make this fix a SILENT no-op.
+        kicked, kick_detail = _restart_unit(
+            GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
+            no_block=True, timeout=_KICK_ACCEPT_TIMEOUT_SEC,
+        )
+        log_event(
+            logger, "fanin.coupling_reconcile", unit=GROUPING_RECONCILE_UNIT,
+            result="grouping_rebake_kicked" if kicked else "grouping_rebake_kick_failed",
+            reason=reason, detail=kick_detail or None,
+            level=logging.INFO if kicked else logging.WARNING,
+        )
     after = _assistant_width_token(env_path)
     if after == before:
         return result
@@ -908,8 +934,10 @@ def _reconcile_coupling_inner(
     outputd_snapshot = _read_snapshot(outputd_env_path)
     current = resolve_coupling(read_value(fanin_snapshot.text, COUPLING_ENV_VAR))
 
-    route_mode = _route_mode_for_reconcile(active_leader_check)
-    action, support = fanin_coupling_action(desired_raw, route_mode)
+    route_mode, dac_content_lane_armed = _route_mode_for_reconcile(active_leader_check)
+    action, support = fanin_coupling_action(
+        desired_raw, route_mode, dac_content_lane_armed=dac_content_lane_armed
+    )
     desired = support.coupling
     if not support.supported:
         return _block_unsupported_coupling(
@@ -1426,16 +1454,21 @@ def reconcile_auto(
         # migration when an operator choice is frozen.
         fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
 
-        # Route shape for the ring ROUTE-support gate (defect-F3). Computed once
-        # here and reused; reconcile_coupling recomputes its own from the same
-        # active_leader_check so both agree.
-        route_mode = _route_mode_for_reconcile(active_leader_check)
+        # Route shape + dac_content lane verdict for the ring ROUTE-support gate
+        # (defect-F3). Computed once here and reused; reconcile_coupling
+        # recomputes its own from the same active_leader_check so both agree.
+        route_mode, route_lane_armed = _route_mode_for_reconcile(active_leader_check)
 
         # The full ordered ring preflight set: assets + fail-closed topology
         # (from default_ring_gates), then route-support, then the two geometry
         # gates that need the outputd/fanin env text (bound here as closures).
         ring_gates = default_ring_gates() + (
-            ("ring_route", lambda: ring_route_ready(route_mode)),
+            (
+                "ring_route",
+                lambda: ring_route_ready(
+                    route_mode, dac_content_lane_armed=route_lane_armed
+                ),
+            ),
             ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
             (
                 "ring_slot_geometry",
@@ -1616,11 +1649,20 @@ def reconcile_auto(
     )
 
 
-def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
-    """Return the route shape for the coupling support matrix."""
+def _route_mode_for_reconcile(
+    check: "Callable[[], bool] | None",
+) -> tuple[RouteMode, bool]:
+    """Return the route shape AND the dac_content lane verdict for the support
+    matrix.
+
+    The two travel together because the matrix needs both and neither can be
+    derived from the other: ``route_mode`` classifies on ``cfg.role`` alone, so
+    a DUMB member and an ACTIVE follower are the same mode with opposite lane
+    states. Both come off ONE config read on the live path.
+    """
     if check is not None:
         try:
-            return "active_leader" if bool(check()) else "solo"
+            leader = bool(check())
         except (OSError, RuntimeError, TypeError, ValueError) as e:
             log_event(
                 logger,
@@ -1629,12 +1671,19 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
                 detail=e,
                 level=logging.WARNING,
             )
-            return "unknown"
+            return "unknown", True
+        # The injected seam reports leader-vs-solo only, which cannot separate
+        # an ACTIVE-speaker leader (whose dac_content lane the writer clears)
+        # from a PASSIVE one (whose lane it arms), so the lane verdict fails
+        # CLOSED here — the pre-narrowing answer. ``solo`` never consults it.
+        return ("active_leader", True) if leader else ("solo", False)
     try:
         from jasper.audio_runtime_plan import route_mode_from_grouping_config
         from jasper.multiroom.config import load_config
+        from jasper.multiroom.reconcile import box_dac_content_lane_armed
 
-        return route_mode_from_grouping_config(load_config())
+        cfg = load_config()
+        return route_mode_from_grouping_config(cfg), box_dac_content_lane_armed(cfg)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError) as e:
         log_event(
             logger,
@@ -1643,7 +1692,7 @@ def _route_mode_for_reconcile(check: "Callable[[], bool] | None") -> RouteMode:
             detail=e,
             level=logging.DEBUG,
         )
-        return "unknown"
+        return "unknown", True
 
 
 def _block_unsupported_coupling(
@@ -1664,7 +1713,8 @@ def _block_unsupported_coupling(
     """Refuse an unsupported coupling for this route and fail-closed to loopback.
 
     Covers the blocked combination from ``coupling_supported_for_route``:
-    ``shm_ring`` on any grouping-enabled box. Forces fan-in loopback + clears every
+    ``shm_ring`` on a grouping-enabled box whose outputd dac_content lane is
+    armed. Forces fan-in loopback + clears every
     reconciler-owned outputd content-source key (Ring B, plus a sweep of the legacy
     transport_pipe key), so a previously-armed shm_ring box recovers rather than
     stranding one transport end. A force-disarm off a LIVE shm_ring bridge leaves
@@ -3393,31 +3443,34 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     ) + _SHARED_RING_PREFLIGHTS
 
 
-def ring_route_ready(route_mode: RouteMode) -> tuple[bool, str]:
+def ring_route_ready(
+    route_mode: RouteMode, *, dac_content_lane_armed: bool
+) -> tuple[bool, str]:
     """The shm_ring PREFLIGHT gate for ROUTE support (defect-F3).
 
-    ``shm_ring`` is a solo-stereo-only coupling until ring v2 (P8): a grouped box
-    (active leader/follower, or an invalid grouping config) has no solo content path
-    for the ring to drive, so ``coupling_supported_for_route`` blocks it. The auto
-    default MUST resolve loopback on such a box — otherwise ``resolve_auto_decision``
-    would resolve ``shm_ring`` (the topology/geometry gates pass on the box's stereo
-    output shape), the delegated ``reconcile_coupling`` would then route-block it
-    (``direction=blocked``, ``ok=False``), and the boot/deploy oneshot unit would
-    FAIL on every boot of a perfectly healthy grouped box. Gating on route support
-    UP FRONT resolves loopback (the correct default there) and the reconcile
-    succeeds. Solo / unknown never block (unknown = a transient indeterminate
-    grouping read that must not refuse a legitimate solo arm — same fail-open as the
-    support matrix itself).
+    ``coupling_supported_for_route`` blocks a box whose dac_content lane is
+    armed (mechanism:
+    :func:`jasper.multiroom.reconcile.dac_content_lane_armed`), and the auto
+    default MUST resolve loopback there — otherwise
+    ``resolve_auto_decision`` resolves ``shm_ring`` (the topology/geometry gates
+    pass on the box's stereo shape), ``reconcile_coupling`` route-blocks it, and
+    the boot/deploy oneshot FAILs on every boot of a healthy grouped box. Solo /
+    unknown never block (unknown = a transient indeterminate read that must not
+    refuse a legitimate solo arm), and neither does a bonded box whose lane is
+    CLEARED: an ACTIVE endpoint's CamillaDSP owns its channel-pick and split.
     """
     from jasper.audio_runtime_plan import coupling_supported_for_route
 
-    support = coupling_supported_for_route(COUPLING_SHM_RING, route_mode)
+    support = coupling_supported_for_route(
+        COUPLING_SHM_RING,
+        route_mode,
+        dac_content_lane_armed=dac_content_lane_armed,
+    )
     if support.supported:
         return True, f"route supports shm_ring (route_mode={route_mode})"
     return False, (
-        f"shm_ring is not supported for this route ({support.reason}); a grouped "
-        "box has no solo content path for the ring until ring v2 (P8) — the default "
-        "resolves loopback"
+        f"route blocked ({support.reason}): {GROUPED_SHM_RING_MECHANISM} "
+        "The auto default resolves loopback."
     )
 
 

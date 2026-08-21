@@ -221,35 +221,46 @@ def test_both_emitters_share_correction_safety_gate(
             )
 
 
-def test_chunksize_floored_to_loopback_minimum() -> None:
-    # S1: the follower captures the leader's stream from an snd-aloop loopback
-    # that EPIPEs below ~1024 frames, so the G7 chunksize knob is floored here
-    # even though the direct-DAC paths may tune it lower.
-    from jasper.active_speaker.camilla_yaml import FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+def test_emits_the_ring_chunk_it_is_given() -> None:
+    """The chunk the caller resolves is the chunk the emitter writes.
 
-    # A sub-floor explicit value is clamped up to the loopback minimum.
-    assert (
-        _doc(chunksize=256)["devices"]["chunksize"]
-        == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+    A floor used to sit here, sized to the snd-aloop round trip's EPIPE
+    behaviour, and it silently raised anything below 1024. The bonded endpoint
+    captures the grouping ring now, and the ring path's chunk is
+    ``RING_CAMILLA_CHUNKSIZE`` — one slot, 128 frames — so a surviving floor
+    would not "protect" the graph, it would emit a chunk FOUR TIMES its
+    playback ring's whole 2-slot buffer (128 x 2 = 256 frames; eight times one
+    slot). The floor is gone; a resurrected one fails here.
+    """
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAMILLA_CHUNKSIZE,
     )
-    # A value at/above the floor passes through unchanged.
+
+    doc = yaml.safe_load(
+        emit_active_speaker_driver_domain_config(
+            _preset("mono", 2),
+            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+            program_channel="left",
+            chunksize=RING_CAMILLA_CHUNKSIZE,
+        )
+    )
+    assert doc["devices"]["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    # Every other value the caller resolves also passes through untouched.
+    assert _doc(chunksize=256)["devices"]["chunksize"] == 256
     assert _doc(chunksize=4096)["devices"]["chunksize"] == 4096
-    # The shipped default (unset) is exactly the floor — byte-identical, no clamp.
-    assert _doc()["devices"]["chunksize"] == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
 
 
-def test_chunksize_env_override_is_floored(monkeypatch) -> None:
-    # The runtime path leaves chunksize=None so resolve_camilla_chunksize() reads
-    # the env; a too-low operator override must not reach the loopback emitter
-    # unclamped (the EPIPE landmine S1 guards against).
-    from jasper.active_speaker.camilla_yaml import FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
-
+def test_chunksize_env_override_reaches_the_emitter(monkeypatch) -> None:
+    # The non-ring path leaves chunksize=None so resolve_camilla_chunksize()
+    # reads the env. The operator's value arrives as asked — the G7 knob is
+    # tunable low on this emitter exactly as it is on the direct-DAC paths.
     monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
-    assert _doc()["devices"]["chunksize"] == FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
+    assert _doc()["devices"]["chunksize"] == 256
 
 
 def test_threads_capture_device() -> None:
-    # The gap-1 seam: the reconciler will pass the round-trip loopback here.
+    # The gap-1 seam: the reconciler passes the grouping ring here.
     doc = _doc(channel="left", capture_device="loop:0,1")
     assert doc["devices"]["capture"]["device"] == "loop:0,1"
     # Default keeps the fan-in tap (unchanged from the solo baseline capture).

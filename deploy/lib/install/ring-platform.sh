@@ -218,6 +218,9 @@ _jts_ring_ioplug_caps() {
     if LC_ALL=C grep -aqF 'channels out of range 2..=8' "${so}"; then
         caps+=("wire_channels")
     fi
+    if LC_ALL=C grep -aqF 'pace_nominal must be 0 or 1' "${so}"; then
+        caps+=("pace_nominal")
+    fi
     local IFS=,
     # `${caps[*]-}`, not `${caps[*]}`: under `set -u` bash 3.2 (the macOS system
     # bash the test lane runs on) treats an EMPTY array expansion as an unbound
@@ -316,11 +319,12 @@ install_jts_ring_conf_assets() {
 
     # 1c. Grouping-ingress ring PCM (#2508). Same shape and same reason as the
     #     two blocks above: system-wide 0644 so any user can resolve the name.
-    #     The device ships ahead of its consumers — no `--soundcard` and no
-    #     CamillaDSP capture device names pcm.jts_ring_grouping, and a PCM
-    #     definition is not an open. What it costs to place it is one file
-    #     alsa-lib parses; what it buys is that the geometry can be proven on
-    #     metal before any transport moves onto it.
+    #     It has three consumers now — snapclient's `--soundcard` and both
+    #     active-endpoint prechecks' CamillaDSP capture device, all naming
+    #     pcm.jts_ring_grouping (jasper/multiroom/grouping_ring.py) — but a PCM
+    #     definition is still not an open, and only a BONDED active endpoint
+    #     opens it. On every solo box in the fleet this file costs one block
+    #     alsa-lib parses and nothing else.
     local grouping_src="${REPO_DIR}/deploy/alsa/conf.d/62-jts-ring-grouping.conf"
     if [[ -f "${grouping_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
@@ -403,10 +407,10 @@ install_jts_ring_platform() {
     #     (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
     #     Unlinking those three is MANDATORY: not unlinking them costs a
     #     reboot loop.
-    #   - jasper-snapclient.service carries StartLimitBurst=4 and NO
+    #   - jasper-snapclient.service carries StartLimitBurst=6 and NO
     #     StartLimitAction, by explicit design — its own unit comment says
     #     "follower degrades, visible; never reboots the household." A stale
-    #     grouping.ring therefore costs four retries and one `failed` unit,
+    #     grouping.ring therefore costs six retries and one `failed` unit,
     #     surfaced on /state and by jasper-doctor. Unlinking buys nothing
     #     against an outcome that is already bounded and already visible.
     #
@@ -417,8 +421,7 @@ install_jts_ring_platform() {
     # (park_low_memory_build_units, gated on a low-memory box) that runs before
     # this step, so no statement about who is parked here holds on every box.
     # The escalation asymmetry holds in every ordering, which is why it is the
-    # reason recorded. Design §3.4:
-    # captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md.
+    # reason recorded. Grouping-ring design §3.4.
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring

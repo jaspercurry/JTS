@@ -4,6 +4,9 @@
 
 """Unit tests for the jasper-doctor grouping domain."""
 
+import subprocess
+from types import SimpleNamespace
+
 from jasper.cli import doctor
 
 
@@ -76,6 +79,141 @@ def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
     assert r.status == "fail"
     assert "snapserver" in r.detail and "snapclient" in r.detail
     assert "apt install" in r.detail
+
+
+# --- snapclient version drift — a live probe (bounded), never a record;
+# mirrors check_grouping_snapcast_installed's grouping-off skip.
+
+
+def test_check_snapcast_version_registered():
+    assert "check_grouping_snapcast_version" in _registered_check_names()
+
+
+def test_check_snapcast_version_off_skips(monkeypatch):
+    """Mirrors check_grouping_snapcast_installed's grouping-off skip — a
+    warn about a disabled subsystem's version is not actionable."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "grouping off" in r.detail
+
+
+def test_check_snapcast_version_not_installed_skips(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "not installed" in r.detail
+
+
+def test_check_snapcast_version_probe_raises_skips(monkeypatch):
+    """The except limb: a probe that cannot even run (timeout, vanished
+    binary) skips (ok) rather than manufacturing a verdict."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def _raise(argv, **kw):
+        raise subprocess.TimeoutExpired(cmd="snapclient", timeout=5)
+
+    monkeypatch.setattr(doctor.grouping, "_run", _raise)
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "could not determine" in r.detail
+
+
+def test_check_snapcast_version_nonzero_exit_skips_with_useful_detail(monkeypatch):
+    """DSF-1: a non-zero exit (e.g. a partial-upgrade linker error) must
+    never reach the regex parse, even though the error text itself contains
+    a version-shaped token (a linked library's version, not snapclient's
+    own) — the mutation-killer for a future guard-drop. The linker error
+    lands in the doctor line, since that IS the useful fact here."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=127,
+            stdout="",
+            stderr=(
+                "snapclient: error while loading shared libraries: "
+                "libboost_program_options.so.1.83.0: cannot open shared "
+                "object file: No such file or directory"
+            ),
+        ),
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "127" in r.detail
+    assert "libboost" in r.detail
+    # Never fabricates a version comparison from the linker error's own
+    # version-shaped substring.
+    assert "differs from" not in r.detail
+
+
+def test_check_snapcast_version_unparseable_skips(monkeypatch):
+    """Output with no version-shaped token skips (ok) — never manufacture a
+    warning from a fact the probe could not determine."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(returncode=0, stdout="not a version\n", stderr=""),
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "could not determine" in r.detail
+
+
+def test_check_snapcast_version_match_is_ok(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=0, stdout="snapclient v0.31.0\n", stderr="",
+        ),
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "0.31.0" in r.detail
+
+
+def test_check_snapcast_version_stdout_wins_over_stderr(monkeypatch):
+    """The concatenation order is load-bearing: snapclient's real version
+    rides stdout, but ALSA-lib (or any other library snapclient links) can
+    print an unrelated runtime warning containing its OWN version-shaped
+    substring to stderr. stdout must win the parse."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=0,
+            stdout="snapclient v0.31.0\n",
+            stderr="ALSA lib pcm.c:1234:(some_fn) something 9.9.9\n",
+        ),
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "ok"
+    assert "0.31.0" in r.detail
+    assert "9.9.9" not in r.detail
+
+
+def test_check_snapcast_version_mismatch_warns(monkeypatch):
+    """The drift case: an installed version that differs from
+    VALIDATED_SNAPCAST_VERSION warns (visibility), it does not fail — no
+    apt pin exists to enforce it."""
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.grouping, "_run",
+        lambda argv, **kw: SimpleNamespace(
+            returncode=0, stdout="snapclient v0.32.1\n", stderr="",
+        ),
+    )
+    r = doctor.check_grouping_snapcast_version()
+    assert r.status == "warn"
+    assert "0.32.1" in r.detail and "0.31.0" in r.detail
 
 
 def test_check_household_credential_solo_is_ok(monkeypatch):

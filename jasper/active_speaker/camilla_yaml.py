@@ -159,8 +159,19 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 #   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
 #   latency with no benefit; and
 #   enable_rate_adjust false — a blocking slot handshake gives the rate
-#   controller nothing to adjust TO, and rate_adjust over an snd-aloop-class
-#   transport is a documented oscillation shape in this repo.
+#   controller nothing to adjust TO, and on a ring capture the request cannot be
+#   actuated in any case: a ring PCM is an ioplug, alsa-lib reports card -1 for
+#   every ioplug, so CamillaDSP builds no HCtl, finds neither the Loopback nor
+#   the UAC2-gadget mixer element, and takes the arm that does nothing. `false`
+#   is therefore what IS, stated rather than requested-and-ignored — and
+#   `capture_status.rate_adjust` echoes the REQUEST, so `true` would read
+#   plausible on the websocket while nothing moved.
+#     (The repo's snd-aloop rate-adjust OSCILLATION record is NOT the reason,
+#     though this comment used to cite it: that predicate fires only on an
+#     aloop capture carrying an ASYNC RESAMPLER — `snd_aloop_rate_adjust_
+#     oscillation_reason` returns None without one — and JTS emits no resampler
+#     on this path at all. The record neither argues for this setting nor
+#     against it.)
 #
 # The DEFAULTS are exactly the literals they replaced, so every non-ring emit is
 # byte-identical. The SIXTH emitter — the PARKED one — is excluded deliberately
@@ -196,15 +207,6 @@ ACTIVE_PROGRAM_BAKE_SOURCE = (
 # is passthrough (not a single-box pick) and ``sub`` is the wireless-sub member
 # (gap 5) — both are out of scope for the follower driver-domain emit.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
-
-# S1 (G7 chunksize-knob safety): the follower driver-domain graph captures the
-# leader's stream from an snd-aloop loopback whose period underruns (EPIPE)
-# below ~1024 frames. The JASPER_CAMILLA_CHUNKSIZE knob is deliberately tunable
-# low for the direct-DAC output paths, but this loopback CAPTURE is floored so a
-# latency-tuned box cannot underrun its follower capture. Equals DEFAULT_CHUNKSIZE
-# today, but it is the loopback's own minimum — not the shipped default — so it
-# is named separately and lives next to the only emitter that needs it.
-FOLLOWER_LOOPBACK_MIN_CHUNKSIZE = 1024
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 _PROGRAM_PROTECTION_RE = re.compile(r"^as_(woofer|tweeter)_program_protection_([0-9]+)$")
@@ -3932,7 +3934,7 @@ def emit_active_speaker_driver_domain_config(
     soft-clip limiters, and non-positive per-driver correction gain, and it
     refuses the existing stereo outputd lane as a playback device. It does NOT
     load or reload CamillaDSP — the reconciler (gap 3, a later slice) owns
-    pointing the capture at the round-trip loopback and the apply. ``corrections``
+    pointing the capture at the grouping ring and the apply. ``corrections``
     carries the same commissioned per-driver delay/gain/polarity as the solo
     baseline (hardware truth, role-independent — gap 1), so the relocated Layer A
     is the same protective chain the speaker runs solo.
@@ -3971,11 +3973,6 @@ def emit_active_speaker_driver_domain_config(
         target_level = resolve_camilla_target_level()
     chunksize = _positive_int(chunksize, "chunksize")
     target_level = _positive_int(target_level, "target_level")
-    # S1: floor the loopback capture chunksize (see FOLLOWER_LOOPBACK_MIN_CHUNKSIZE).
-    # Clamp rather than raise — mirrors the knob's malformed->default leniency —
-    # and unset env resolves to 1024, so this is a no-op on the default path.
-    if chunksize < FOLLOWER_LOOPBACK_MIN_CHUNKSIZE:
-        chunksize = FOLLOWER_LOOPBACK_MIN_CHUNKSIZE
     volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     limiter_clip_limit_db = _finite_float(
         limiter_clip_limit_db,

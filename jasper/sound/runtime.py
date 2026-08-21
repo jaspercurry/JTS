@@ -350,8 +350,8 @@ async def load_profile_config(
     # SHARED fan-in→Camilla coupling: resolve the capture/playback-device kwargs
     # ONCE (explicit override from the coupling reconciler, else the live env).
     # Default loopback -> {} -> byte-identical emit. Stereo carriers apply the
-    # shm-ring devices; active baselines and grouped pipe sinks keep their own
-    # topology-specific paths.
+    # shm-ring devices; active baselines keep their own topology-specific paths;
+    # grouped pipe sinks keep their own PLAYBACK (capture still follows).
     coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
 
     async def _prepare_config() -> dict[str, Any]:

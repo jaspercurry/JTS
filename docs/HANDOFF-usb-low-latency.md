@@ -55,7 +55,7 @@ others:
 | Ring A `jts_ring_capture` | 2 slots × 128 frames | ≈5.3 ms at 48 kHz |
 | Old Ring A placeholder | 8 slots × 128 frames | ≈21.3 ms, always paid under the blocking-writer handshake |
 | CamillaDSP ring emit | chunk 128 / target 128 / queue 1 | chunk is one slot; target is one chunk |
-| CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; the rate-adjust-on Ring A+B lesson packed queues |
+| CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; the rate-adjust-on Ring A+B lesson packed queues and measured ≈194 ms |
 | Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal; unchanged |
 
 The outputd content-buffer env has no place in this ring-coupled set: under

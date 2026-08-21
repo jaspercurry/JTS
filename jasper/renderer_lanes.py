@@ -64,12 +64,12 @@ It would be natural to key this on ``JASPER_FANIN_CAMILLA_COUPLING`` — a
 ring-coupled box gets ring renderers. That is wrong on both correctness and
 safety grounds:
 
-* **They are independent transports.** A renderer ring carries
-  renderer → fan-in; the coupling describes fan-in → CamillaDSP. A
-  loopback-coupled box can ring-ingress a renderer and a ring-coupled box can
-  keep aloop renderers; neither combination is incoherent. The only real
-  precondition is the ring PLATFORM (the ioplug ``.so`` and
-  ``/dev/shm/jts-ring``), which ships on every box, and which
+* **They are independent transports, so "armed" names two independent facts
+  about a box.** A renderer ring carries renderer → fan-in; the coupling
+  describes fan-in → CamillaDSP. A loopback-coupled box can ring-ingress a
+  renderer and a ring-coupled box can keep aloop renderers; neither combination
+  is incoherent. The only real precondition is the ring PLATFORM (the ioplug
+  ``.so`` and ``/dev/shm/jts-ring``), which ships on every box, and which
   :func:`arm_refusal_reason` checks at arm time.
 * **Keying on the coupling would arm the fleet by deploy.** Every
   ring-coupled box would flip its renderer the moment this code landed,

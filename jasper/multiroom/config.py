@@ -76,7 +76,10 @@ BUFFER_MS_HI = 1500
 # Snapcast client/output-path latency (ms). Distinct from the stream
 # buffer above: buffer_ms is the group/network playout budget; client
 # latency compensates a fixed PCM/DAC/backend path offset for one
-# snapclient.
+# snapclient. The shipped default COMPENSATES NOTHING: no measurement has
+# produced an offset that generalises across DACs, so a household that
+# hears its pair drift sets its own value rather than inheriting a wrong
+# one. Raising the default needs that measurement first.
 DEFAULT_CLIENT_LATENCY_MS = 0
 CLIENT_LATENCY_MS_LO = 0
 CLIENT_LATENCY_MS_HI = 1500
@@ -193,8 +196,6 @@ class GroupingConfig:
     # wide existing constructor surface (tests, fan-out payload builds)
     # stays source-compatible — load_config always sets it explicitly.
     trim_db: float = 0.0
-    # Fixed snapclient PCM/DAC/backend latency compensation for this
-    # member. This is not the group buffer budget.
     client_latency_ms: int = DEFAULT_CLIENT_LATENCY_MS
     # Leader-owned rendered-channel acoustic delays for this room/pair.
     # Followers persist but do not execute these; the leader's render

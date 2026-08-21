@@ -2911,13 +2911,22 @@ def test_shm_ring_cli_choices_accept_ring(tmp_path, monkeypatch, _ring_assets_pr
     assert captured["coupling"] == "shm_ring"
 
 
-# --- Blocker 2: shm_ring refused while the box is bonded/grouping-enabled ------
+# --- Blocker 2: shm_ring refused while the bond reads the dac_content lane -----
 
 
 def test_arm_shm_ring_refused_for_active_leader_keeps_loopback(tmp_path):
-    # BLOCKER 2: arming shm_ring on a bonded box must be REFUSED before any daemon
-    # op (the ring is solo-stereo-only until ring v2 / P8). Never touch the rings;
-    # keep loopback. Reports the real desired coupling, not a hardcoded one.
+    # BLOCKER 2: arming shm_ring on a box whose bond plays through outputd's
+    # dac_content lane must be REFUSED before any daemon op — that lane pins
+    # CONTENT_BRIDGE=direct, under which outputd reads the snd-aloop content PCM
+    # an armed ring moves CamillaDSP off. Never touch the rings; keep loopback.
+    # Reports the real desired coupling, not a hardcoded one.
+    #
+    # `active_leader_check` is the INJECTED route seam, which reports
+    # leader-vs-solo only and cannot separate an active-speaker leader (lane
+    # cleared) from a passive one (lane armed) — so it fails CLOSED, which is
+    # what this test exercises. The narrowing is reached through the real
+    # grouping-config reader instead; see
+    # `test_arm_shm_ring_admitted_for_an_active_endpoint`.
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
@@ -2941,22 +2950,40 @@ def test_arm_shm_ring_refused_for_active_leader_keeps_loopback(tmp_path):
     assert read_value(outputd_env.read_text(), OUTPUTD_CONTENT_BRIDGE_ENV_VAR) is None
 
 
-def test_arm_shm_ring_refused_for_active_follower(tmp_path, monkeypatch):
-    # The block covers a FOLLOWER too (not just leader) — grouping-enabled is the
-    # gate. Drive the route mode through the real grouping-config reader.
-    import jasper.audio_runtime_plan as arp
+def _bonded_follower_cfg():
+    from jasper.multiroom.config import GroupingConfig
 
-    class _Cfg:
-        enabled = True
-        error = None
-        role = "follower"
+    return GroupingConfig(
+        enabled=True, role="follower", channel="right", bond_id="b",
+        leader_addr="jts.local", buffer_ms=400, codec="flac", error=None,
+    )
+
+
+def _drive_grouping_shape(monkeypatch, *, box_is_active: bool, flat_allowed: bool):
+    """Drive the reconciler's route shape through the REAL readers.
+
+    The gate consults the dac_content-lane writer now, so a duck-typed config
+    stub no longer reaches it — a real GroupingConfig plus the topology state
+    the writer's own caller reads is what decides the verdict.
+    """
+    import jasper.multiroom.reconcile as mr
 
     monkeypatch.setattr(
-        arp, "route_mode_from_grouping_config", lambda cfg: "active_follower"
+        "jasper.multiroom.config.load_config",
+        lambda *a, **k: _bonded_follower_cfg(),
+        raising=False,
     )
     monkeypatch.setattr(
-        "jasper.multiroom.config.load_config", lambda *a, **k: _Cfg(), raising=False
+        mr, "_output_topology_state", lambda: (box_is_active, flat_allowed)
     )
+
+
+def test_arm_shm_ring_refused_for_a_dumb_member(tmp_path, monkeypatch):
+    # The block covers a FOLLOWER too (not just leader). Its subject is the
+    # dac_content lane: a PASSIVE box with a saved flat-capable layout plays the
+    # bond through that lane, which reads the snd-aloop content PCM an armed ring
+    # moves CamillaDSP off.
+    _drive_grouping_shape(monkeypatch, box_is_active=False, flat_allowed=True)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls, ro, rf, rc = _recorder()
@@ -2975,6 +3002,36 @@ def test_arm_shm_ring_refused_for_active_follower(tmp_path, monkeypatch):
     assert result.direction == "blocked"
     assert result.desired == COUPLING_SHM_RING
     assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
+
+
+def test_arm_shm_ring_admitted_for_an_active_endpoint(tmp_path, monkeypatch):
+    """The narrowing at the reconciler: an ACTIVE endpoint's dac_content lane is
+    cleared by the same writer, so the ring is no longer force-reverted here.
+
+    Without this the reconciler would disarm a bonded active leader's ring on
+    every boot and deploy, which is exactly the box the hardware pass needs
+    armed.
+    """
+    _drive_grouping_shape(monkeypatch, box_is_active=True, flat_allowed=False)
+    fanin_env = _write(tmp_path / "fanin.env", "")
+    outputd_env = _write(tmp_path / "outputd.env", "")
+    calls, ro, rf, rc = _recorder()
+
+    result = _reconcile(
+        COUPLING_SHM_RING,
+        fanin_env=fanin_env,
+        outputd_env=outputd_env,
+        restart_outputd=ro,
+        restart_fanin=rf,
+        reconcile_camilla=rc,
+    )
+
+    # The ROUTE gate let it through. (It still meets the ordinary arm
+    # preflights afterwards — this container has no ring platform installed —
+    # so the assertion is scoped to the gate under test, not to a successful
+    # arm.)
+    assert result.direction != "blocked", result.detail
+    assert "dac_content" not in (result.detail or "")
 
 
 def test_ring_armed_box_that_becomes_grouped_recovers_to_loopback(
@@ -3714,10 +3771,17 @@ def test_the_default_voice_restart_wiring_issues_try_restart(
 
     assert result.ok, result.detail
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert broker_calls == [("jasper-voice.service", "try-restart")], (
+    voice_calls = [c for c in broker_calls if c[0] == "jasper-voice.service"]
+    assert voice_calls == [("jasper-voice.service", "try-restart")], (
         "the default wiring must reach the broker exactly once, as a "
         f"try-restart of jasper-voice; got {broker_calls}"
     )
+    # A successful coupling change also re-bakes a bonded ACTIVE leader's
+    # camilla#1, whose capture device was baked at BOND time: nothing else
+    # re-derives it on a flip and the two units are unordered, so without this
+    # an arm leaves camilla#1 on the tap the ring just took fan-in off — a
+    # silent bond with every daemon healthy. No-op on a solo box.
+    assert ("jasper-grouping-reconcile.service", "start") in broker_calls
 
 
 def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
@@ -3758,6 +3822,7 @@ def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
     )
 
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert broker_calls == [], (
+    voice_calls = [c for c in broker_calls if c[0] == "jasper-voice.service"]
+    assert voice_calls == [], (
         f"a narrow box's assistant width never moved; got {broker_calls}"
     )

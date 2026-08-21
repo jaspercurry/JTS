@@ -30,6 +30,11 @@ because the shipped ring PCMs are raw ``type jts_ring`` rather than
 **T-3 — the installer places it, and the deploy does not unlink its ring
 file.** The second half is the asymmetry with the coupling's three ring files
 and is deliberate; the reason is in that test's docstring.
+
+**T-6 — the writer's unit adopts the ring-writer contract.** Once snapclient
+writes this ring it inherits the platform's cadence rules: a restart slower
+than the writer-liveness window, a start limit a burst of refusals cannot
+reach, and the umask that leaves the ring file group-writable for its reader.
 """
 
 from __future__ import annotations
@@ -56,6 +61,7 @@ _GROUPING_CONF = _REPO / "deploy" / "alsa" / "conf.d" / "62-jts-ring-grouping.co
 _IOPLUG_C = _REPO / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 _IOPLUG_H = _REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
 _RING_PLATFORM_SH = _REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
+_SNAPCLIENT_UNIT = _REPO / "deploy" / "systemd" / "jasper-snapclient.service"
 
 
 def _read(path: Path) -> str:
@@ -291,6 +297,84 @@ def test_the_confd_block_and_the_python_constants_agree(key, constant):
     )
 
 
+def test_the_grouping_ring_is_the_only_pcm_that_asks_to_be_paced():
+    """``pace_nominal 1`` is here, and nowhere else in the conf.d tree.
+
+    The field opts this PCM's PLAYBACK direction into the ioplug's rate limiter
+    (``jts_ring_pace_apply``). It is scoped to this one block on purpose: every
+    other ring's writer already carries a clock, and the limiter's whole reason
+    to exist is the one writer that does not. Two ways that scoping breaks
+    silently — the field being dropped from this file (the storm comes back with
+    nothing to say so), and the field spreading to a ring that never needed it
+    (a rate bound on a path nobody measured) — so both directions are pinned.
+    """
+    conf = _read(_GROUPING_CONF)
+    body = conf[conf.index("{") + 1 : conf.rindex("}")]
+    assert re.search(r"^\s*pace_nominal\s+1\s*$", body, re.MULTILINE), (
+        f"{_GROUPING_CONF.name} must declare `pace_nominal 1` — without it the "
+        "grouping ring's writer is unpaced against a stalled or dead reader"
+    )
+
+    conf_dir = _GROUPING_CONF.parent
+    declaring = sorted(
+        path.name
+        for path in conf_dir.glob("*.conf")
+        if re.search(
+            r"^\s*pace_nominal\s+\S", _strip_conf_comments(_read(path)), re.MULTILINE
+        )
+    )
+    assert declaring == [_GROUPING_CONF.name], (
+        "pace_nominal is scoped to the grouping ring; these conf.d files also "
+        f"declare it: {declaring}"
+    )
+
+
+def test_the_governor_is_armed_from_prepare_and_not_from_start():
+    """The pace bucket is armed in the PREPARE callback, never in START.
+
+    A PCM can transfer while still PREPARED — with ``start_threshold > period``
+    and a dead reader, ALSA's start condition never trips against the ioplug's
+    dead-reader avail discount, so the stream may never leave PREPARED at all.
+    ``jts_ring_pace_apply`` early-returns on an unarmed bucket, so arming at
+    ``start`` left that whole window ungoverned free-run. The header seam
+    (``jts_ring_pointer_prepare``) has its own host test; this pins the half a
+    host test cannot see, which is which callback the plugin wires it into.
+    """
+    c = _read(_IOPLUG_C)
+
+    def _body(fn: str) -> str:
+        m = re.search(rf"^static int {re.escape(fn)}\(.*?^}}", c, re.MULTILINE | re.DOTALL)
+        assert m is not None, f"could not find {fn} in {_IOPLUG_C.name}"
+        return m.group(0)
+
+    prepare = _body("jts_ring_prepare")
+    start = _body("jts_ring_start")
+    assert "jts_ring_pointer_prepare(" in prepare, (
+        "the playback prepare callback must arm the governor via "
+        "jts_ring_pointer_prepare; without it a PREPARED writer free-runs"
+    )
+    for fn in ("jts_ring_pace_arm(", "jts_ring_pointer_prepare("):
+        assert fn not in start, (
+            f"{fn} must not be called from jts_ring_start — arming there is the "
+            "defect this pin exists to catch (a PREPARED stream never reaches it)"
+        )
+
+    # The bind/release ledger is DERIVED from pace_bound_ns, which the arming line
+    # above zeroes, so the log state has to be cleared in the same callback. A
+    # prepare while a bind is standing is ordinary XRUN recovery against a dead
+    # reader; leaving these behind makes the next call emit a release attributed to
+    # the previous incarnation, with a delta underflowed through zero. Both fields
+    # live in the .c, so this is the half the host suite cannot see.
+    assert re.search(r"memset\(&p->pace_log,\s*0,\s*sizeof\(p->pace_log\)\)", prepare), (
+        "jts_ring_prepare must clear p->pace_log — a stale ledger turns the "
+        "pace_bound_ns reset into a phantom release"
+    )
+    assert re.search(r"p->pace_bind_bound_ns\s*=\s*0", prepare), (
+        "jts_ring_prepare must clear p->pace_bind_bound_ns — a stale anchor makes "
+        "the next delta underflow"
+    )
+
+
 def test_the_grouping_ring_slot_is_one_camilladsp_chunk():
     """One slot per chunk — the relationship every other ring in the tree ships.
 
@@ -456,10 +540,10 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
       ``write_build_manifest``. That is the trap
       ``tests/test_install_ring_platform_sequencing.py`` documents, and it makes
       unlinking those three MANDATORY.
-    * ``jasper-snapclient.service`` carries ``StartLimitBurst=4`` and NO
+    * ``jasper-snapclient.service`` carries ``StartLimitBurst=6`` and NO
       ``StartLimitAction``, by explicit design — its own unit comment reads
       *"follower degrades, visible; never reboots the household."* A stale
-      ``grouping.ring`` costs four retries and one ``failed`` unit, surfaced on
+      ``grouping.ring`` costs six retries and one ``failed`` unit, surfaced on
       ``/state`` and by ``jasper-doctor``. Unlinking buys nothing against an
       outcome that is already bounded and already visible.
 
@@ -476,7 +560,7 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     ``install_jts_ring_platform``'s body, this one scans the whole file, so an
     ``rm -f`` added anywhere in ``ring-platform.sh`` is caught too.
 
-    Design §3.4, ``captures/DESIGN-PROPOSAL-grouping-ring-2026-08-17.md``.
+    Grouping-ring design §3.4.
     """
     from jasper.ring_assets import (
         RING_A_PROGRAM_FILE,
@@ -496,4 +580,84 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
     assert "grouping.ring" in platform, (
         "the rm -f block must name grouping.ring's deliberate absence, or the "
         "next reader adds it as an oversight"
+    )
+
+
+# --- T-6: the writer's unit adopts the ring-writer contract -----------------
+
+
+def test_snapclient_restarts_slower_than_the_ring_liveness_window():
+    """The grouping ring's WRITER must clear the ring's own liveness window.
+
+    A SIGKILLed writer's flock drops with its fd, but it leaves ``writer_pid``
+    stamped and its heartbeat frozen-fresh, so the secondary guard refuses a new
+    writer for up to that window. snapclient shipped at ``RestartSec=2s`` — ON
+    the boundary — which is a respawn racing its own predecessor into an
+    avoidable ``-EBUSY``.
+
+    The bound is READ FROM THE C CONSTANT that owns it, through the same parse
+    the renderer-lane pin uses. A bespoke "2 s" here would be a second owner of
+    a number the header decides, and the two would drift the first time it
+    moved.
+    """
+    from tests.test_renderer_ring_lanes import _ring_liveness_window_sec
+
+    text = _read(_SNAPCLIENT_UNIT)
+    m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)s?$", text, re.M)
+    assert m, "jasper-snapclient.service declares no RestartSec"
+    window = _ring_liveness_window_sec()
+    assert float(m.group(1)) > window, (
+        f"jasper-snapclient.service restarts in {m.group(1)}s but a killed ring "
+        f"writer stays refused for up to {window}s"
+    )
+
+
+def test_snapclient_tolerates_a_burst_of_ring_refusals():
+    """RestartSec alone does not save the unit: systemd's default limit (5 starts
+    in 10 s) is what turns a transient refusal loop into a PARKED unit, and a
+    parked snapclient is a bonded endpoint that stays silent until an operator
+    intervenes.
+
+    The same ``> 5`` bar every ring-writing renderer satisfies
+    (``test_every_ring_writing_renderer_tolerates_a_burst_of_refusals``). This
+    unit sat at 4 — below even systemd's own default — because it was written
+    before it wrote a ring. Raising it PRESERVES the unit's stated anti-storm
+    intent: still bounded, still ``StartLimitAction`` unset, so a follower whose
+    leader is powered off still degrades visibly instead of rebooting.
+    """
+    text = _read(_SNAPCLIENT_UNIT)
+    burst = re.search(r"^StartLimitBurst=(\d+)$", text, re.M)
+    interval = re.search(r"^StartLimitIntervalSec=(\d+)$", text, re.M)
+    assert burst and interval, "jasper-snapclient.service declares no start limit"
+    assert int(burst.group(1)) > 5, (
+        f"StartLimitBurst={burst.group(1)} is no better than systemd's default"
+    )
+    # A DIRECTIVE line, not a substring: the unit's own comment explains the
+    # default in prose, and a substring test would read that as a declaration.
+    assert re.search(r"^StartLimitAction=", text, re.M) is None, (
+        "a follower degrades, visible; it never reboots the household"
+    )
+
+
+def test_snapclient_creates_the_ring_group_writable():
+    """``UMask=0007``, because whichever end opens first CREATES the ring file.
+
+    ``ring_mapping_open`` creates at 0660, and the process umask masks it:
+    systemd's default 0022 lands 0640 — group-READABLE but not group-WRITABLE —
+    while BOTH ends of a ring write its header (the reader stamps ``read_seq``
+    and its heartbeat). The setgid directory fixes the file's GROUP; only the
+    umask fixes its MODE.
+
+    Scoped to the unit this transport adds. ``deploy/tmpfiles/jts-ring.conf``
+    states the rule for every ring writer and the rule is not currently exact —
+    ``jasper-camilla.service`` writes Ring B and carries no ``UMask`` anywhere
+    in its own file. That is a real gap in an AXIS-1 unit, recorded rather than
+    fixed here, and this test deliberately does not assert the fleet-wide claim.
+    The same unit is also THIS ring's READER end, and neither camilla unit
+    carries ``UMask`` either — latent only, because every participant on this
+    ring runs as root today, so no open takes EACCES on a 0640 file. Recorded
+    with the gap above; it moves with whoever fixes that one.
+    """
+    assert re.search(r"^UMask=0007$", _read(_SNAPCLIENT_UNIT), re.M), (
+        "jasper-snapclient.service writes a ring and must set UMask=0007"
     )

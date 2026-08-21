@@ -208,7 +208,14 @@ RING_IOPLUG_PROVENANCE = "/var/lib/jasper/ring-ioplug.provenance"
 # so the record names what is supported rather than when it was built.
 RING_CAP_WIRE_FORMAT = "wire_format"
 RING_CAP_WIRE_CHANNELS = "wire_channels"
-RING_IOPLUG_CAPS = (RING_CAP_WIRE_FORMAT, RING_CAP_WIRE_CHANNELS)
+#: ``pace_nominal`` — the grouping ring's playback rate limiter. Registered in the
+#: vocabulary for the same reason as the two above: a conf.d that declares the
+#: field against an older ``.so`` is refused at ``open()`` with ``-EINVAL``, so the
+#: record has to be able to name it. No ``RingWire`` implies it (the grouping ring
+#: is its own conf.d, not part of the ring_a/ring_b/ring_active wire), so
+#: :func:`ring_wire_capabilities` never asks for it — the record simply carries it.
+RING_CAP_PACE_NOMINAL = "pace_nominal"
+RING_IOPLUG_CAPS = (RING_CAP_WIRE_FORMAT, RING_CAP_WIRE_CHANNELS, RING_CAP_PACE_NOMINAL)
 
 # The provenance file's keys (a plain ``KEY=value`` text file, mode 0644, written
 # by ``record_ring_ioplug_provenance`` in ring-platform.sh).

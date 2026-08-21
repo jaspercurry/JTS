@@ -1790,8 +1790,8 @@ def build_baseline_profile_candidate(
     feeding, the half-moved graph. Every non-ring device answers the emitter's
     own defaults, so a candidate on a box that is not armed is byte-identical.
     An explicit value still wins for the one caller that owns its own capture
-    lane: the multiroom reconciler passes a round-trip loopback device for a
-    wireless follower (gap 1 of ``docs/HANDOFF-distributed-active.md``). The
+    lane: the multiroom reconciler passes the grouping ring for a wireless
+    follower (gap 1 of ``docs/HANDOFF-distributed-active.md``). The
     graph shape — crossover, per-driver limiters, tweeter high-pass, 0 dB
     ceiling — is unaffected; only the capture source line changes.
 
@@ -2990,7 +2990,7 @@ def recompose_baseline_yaml(
     leader's bake instance (``camilla#1``). A wireless follower (and a leader's
     own-driver instance, ``camilla#2``) is Layer-A-only and never recomposes
     preference EQ, so this seam always captures from the fan-in program tap. The
-    role-varying capture (the round-trip loopback) belongs to the driver-domain
+    role-varying capture (the grouping ring) belongs to the driver-domain
     emit on build/apply, where ``capture_device`` lives.
 
     The fan-in program tap is the ALSA snd-aloop capture. Layer A is rebuilt
@@ -3435,7 +3435,7 @@ async def _apply_baseline_profile_locked(
     """Apply the saved baseline candidate through the shared DSP transaction.
 
     ``capture_device`` is threaded to :func:`build_baseline_profile_candidate`
-    so the reconciler can apply a follower's round-trip-loopback baseline. It
+    so the reconciler can apply a follower's grouping-ring baseline. It
     stays ``None`` by default rather than materialising the tap here, so the
     apply path reaches that function's one device derivation instead of pinning
     the capture half against a sink it does not look at.

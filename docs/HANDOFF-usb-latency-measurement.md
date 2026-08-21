@@ -156,7 +156,7 @@ box converges to it on the next deploy. This section is the single reference for
 | Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_ring_config` |
 | Camilla ring-emit target_level | `128` | `RING_CAMILLA_TARGET_LEVEL` |
 | Camilla ring-emit queuelimit | `1` | `RING_CAMILLA_QUEUELIMIT` |
-| Camilla ring-emit `enable_rate_adjust` | `false` | one-clock ring: rate_adjust off (see the CI model in `tests/_ring_negotiation_model.py` + HANDOFF-usb-low-latency.md "conservation law") |
+| Camilla ring-emit `enable_rate_adjust` | `false` | `RING_CAMILLA_ENABLE_RATE_ADJUST` |
 
 The emitter↔ioplug geometry compatibility is pinned by the source-derived CI
 model in [`tests/_ring_negotiation_model.py`](../tests/_ring_negotiation_model.py)

@@ -60,6 +60,7 @@ from .config import (
     GroupingConfig,
     bond_has_subwoofer,
     is_active_leader,
+    is_active_member,
     load_config,
     local_sources_parked,
 )
@@ -70,6 +71,7 @@ from .effective_role import (
     read_current_boot_id,
     read_effective_role_status,
 )
+from .grouping_ring import GROUPING_RING_PCM
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
 
 logger = logging.getLogger(__name__)
@@ -181,48 +183,6 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # the reconciler-owned ARGS_DIR (tmpfs; the reconciler mkfifos it before
 # starting snapclient on every reconcile/boot).
 MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
-
-# ---------- the ACTIVE follower round-trip loopback (distributed-active Slice 3) ----------
-#
-# An ACTIVE (multi-driver) follower cannot use the dumb-follower
-# `dac_content` FIFO path — its CamillaDSP must run Layer A (the crossover)
-# in the bonded audio path. So instead of the FIFO, snapclient writes a
-# private snd-aloop substream and the follower's CamillaDSP captures the
-# paired side, rate-tracking it bit-perfectly (enable_rate_adjust, no
-# resampler — the proven S0-sync seam). This is DELIBERATELY snd-aloop here
-# (not the inv-2 FIFO): the active follower needs the loopback's clock for
-# CamillaDSP's `rate_adjust` to track, and the fixed CamillaDSP pipeline
-# latency is nulled by snapclient `--latency` (HANDOFF-distributed-active.md
-# "Clock domain"). An active follower runs TWO loopback hops that must NOT
-# collide: (1) snapclient -> camilla [this grouping round-trip], and (2) camilla
-# -> outputd's active-content lane, which is the ACTIVE RING. snd_aloop caps
-# `pcm_substreams` at 8 (pairs 0-7 — a 9th is silently clamped, verified on
-# jts3), so a dedicated extra pair is impossible without a second card (which
-# reintroduces the removed-LoopbackAEC wedge risk). The round-trip therefore
-# rides pair 6 — the PASSIVE stereo content lane (`outputd_content_*`). That is
-# safe to share by a hard hardware-mode invariant: an active follower's outputd
-# is ALWAYS Composite (active topology -> Composite sink -> it reads the ACTIVE
-# ring) and NEVER opens the passive content lane on pair 6; a passive box that
-# DOES use pair 6 is never an active follower. The full allocation: 0-4
-# renderers, 5 unallocated (the active-content lane's aloop pair, deleted with
-# its PCM definitions), 6 passive-content / active-follower round-trip, 7
-# fan-in. No reboot needed (pair 6 always exists). Both sides are
-# env-overridable for on-device tuning.
-#
-#   snapclient (writer)  --player alsa --soundcard <PLAYBACK>  -> hw:Loopback,0,6
-#   CamillaDSP (reader)  capture device              <CAPTURE>  <- hw:Loopback,1,6
-GROUPING_LOOPBACK_PLAYBACK = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_PLAYBACK",
-    "hw:Loopback,0,6",
-)
-GROUPING_LOOPBACK_CAPTURE = os.environ.get(
-    "JASPER_GROUPING_LOOPBACK_CAPTURE",
-    "hw:Loopback,1,6",
-)
-# snapclient decodes to the snapserver-pinned 48 kHz / S16 / stereo, so the
-# follower's CamillaDSP captures the loopback as S16_LE (the S0-sync bench
-# format) — raw hw:, no plug/resampler, so the bit-perfect rate-track holds.
-GROUPING_LOOPBACK_CAPTURE_FORMAT = "S16_LE"
 
 # The active-follower endpoint STATUS file — the reconciler's fresh truth for
 # /state + the dashboard (read by jasper.multiroom.state, never os.environ,
@@ -497,9 +457,7 @@ def snapclient_argv(
 
     PURE: a deterministic function of `cfg` (+ the optional `player_fifo`).
     The host is the loopback when this speaker is the leader (it runs its own
-    server), otherwise the leader's address. The ``--latency`` value is
-    the fixed client PCM/output-path latency compensation, not the group
-    stream buffer.
+    server), otherwise the leader's address.
 
     Channel selection (which of L/R/sub this client plays) is a later
     CamillaDSP concern and is intentionally NOT decided here.
@@ -514,15 +472,13 @@ def snapclient_argv(
     BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
     against snapclient 0.31.0 on jts3 (``--player file:?``).
 
-    ``player_alsa_device`` (distributed-active Slice 3 — the ACTIVE follower):
-    when set, snapclient writes to that ALSA device via its ``alsa`` player
-    (``--soundcard <dev> --player alsa``). An active follower's CamillaDSP runs
-    Layer A in the bonded path, so it captures the paired side of this snd-aloop
-    loopback and rate-tracks it (the ``snd_pcm_delay`` trap is avoided not by
-    dodging snd-aloop but by CamillaDSP owning the clock + ``--latency`` nulling
-    the fixed pipeline latency — HANDOFF-distributed-active.md "Clock domain").
-    Mutually exclusive with ``player_fifo`` (active vs dumb follower); the bench
-    proved ``--soundcard hw:Loopback,0,S --player alsa``.
+    ``player_alsa_device`` (distributed-active Slice 3 — the ACTIVE endpoint,
+    follower or leader): when set, snapclient writes to that ALSA device via its
+    ``alsa`` player (``--soundcard <dev> --player alsa``). An active endpoint's
+    CamillaDSP runs Layer A in the bonded path and captures the SAME device —
+    :data:`jasper.multiroom.grouping_ring.GROUPING_RING_PCM`, one name opened in
+    both directions. Mutually exclusive with ``player_fifo`` (active vs dumb
+    follower).
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
     # wizard now mints it as a STABLE mDNS .local handle (the leader's
@@ -580,12 +536,14 @@ def _assemble_args(
     # units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
     if active_endpoint:
-        # ACTIVE follower (Slice 3): snapclient writes the round-trip snd-aloop
-        # loopback; this box's CamillaDSP captures the paired side and runs
-        # Layer A (the crossover) IN the bonded path. The dac_content FIFO lane
-        # is NOT used — camilla owns the channel-pick + split.
+        # ACTIVE endpoint (Slice 3): snapclient writes the grouping ring; this
+        # box's CamillaDSP captures the same PCM and runs Layer A (the
+        # crossover) IN the bonded path. The dac_content FIFO lane is NOT used
+        # — camilla owns the channel-pick + split. The FIFO is right for a dumb
+        # follower, whose outputd owns the DAC, and wrong here, where CamillaDSP
+        # is in the bonded path and needs a capture device to open.
         client = _join_args(
-            snapclient_argv(cfg, player_alsa_device=GROUPING_LOOPBACK_PLAYBACK)
+            snapclient_argv(cfg, player_alsa_device=GROUPING_RING_PCM)
         )
     else:
         # DUMB member: snapclient writes the round-trip FIFO (the `file`
@@ -741,6 +699,41 @@ def outputd_grouping_env(
     }
 
 
+def dac_content_lane_armed(
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
+) -> bool:
+    """Would :func:`outputd_grouping_env` arm the dac_content lane here? PURE.
+
+    ONE derivation, and it is the WRITER'S OWN: it asks
+    :func:`outputd_grouping_env` for the env it would write and reads the lane's
+    FIFO key out of it rather than restating the rule — a restatement drifts the
+    first time the writer gains an input, which has already happened once
+    (``flat_output_allowed``, with the output runtime contract).
+
+    Its consumer is the coupling support matrix
+    (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
+    blocks ``shm_ring`` only where this lane is armed: arming it pins
+    ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` above, and under ``direct`` outputd
+    reads the snd-aloop content PCM an armed ring moves CamillaDSP off. Every
+    other bonded shape has the cleared lane and nothing for the ring to strand.
+
+    It crosses module boundaries as a plain ``bool`` ON PURPOSE:
+    ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
+    imported at module level BY ``multiroom.active_leader_config``), so
+    importing this predicate there would invert that direction into a cycle.
+    """
+    return bool(
+        outputd_grouping_env(
+            cfg,
+            active_endpoint=active_endpoint,
+            flat_output_allowed=flat_output_allowed,
+        )[OUTPUTD_DAC_CONTENT_FIFO_ENV]
+    )
+
+
 def voice_grouping_env(
     cfg: GroupingConfig,
     *,
@@ -855,6 +848,8 @@ def _output_topology_state() -> tuple[bool | None, bool]:
             classify_output_contract(topology)
         )
         return active, flat_allowed
+    except ImportError:
+        return None, False  # ORDER IS LOAD-BEARING: binds OutputTopologyError.
     except OutputTopologyError as e:
         log_event(
             logger,
@@ -880,6 +875,36 @@ def is_active_speaker_box() -> bool:
     the grouping reconciler reads :func:`_output_topology_state` directly
     and blocks graph transitions on unknown."""
     return _output_topology_state()[0] is True
+
+
+def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
+    """This box's live :func:`dac_content_lane_armed` verdict for ``cfg``.
+
+    For the coupling gates that hold a route mode and nothing else: a route mode
+    cannot answer this, because ``route_mode_from_grouping_config`` classifies on
+    ``cfg.role`` alone, so a DUMB member and an ACTIVE follower are both
+    ``active_follower``. This reads the same two topology-derived inputs the
+    writer's own caller reads and hands them to the writer's rule.
+
+    The writer's OFF path is answered FIRST, before any topology read: a solo box
+    has no lane whatever the topology says, and ``_output_topology_state`` logs a
+    WARN per call on an unreadable one — journal spam from the 60 s route sampler
+    and every /state build, on a box that is not even bonded.
+
+    UNCERTAINTY FAILS CLOSED, as worst-case INPUTS rather than a bypass: an
+    unreadable topology cannot separate a dumb member (lane armed) from an active
+    endpoint (lane cleared), so the rule is asked with the shape that arms it.
+    """
+    if not is_active_member(cfg):
+        return False
+    active_box_state, flat_output_allowed = _output_topology_state()
+    if active_box_state is None:
+        return dac_content_lane_armed(cfg, flat_output_allowed=True)
+    return dac_content_lane_armed(
+        cfg,
+        active_endpoint=active_box_state,
+        flat_output_allowed=flat_output_allowed,
+    )
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
@@ -1846,9 +1871,9 @@ def main(argv: list[str] | None = None) -> int:
     active_speaker_leader = active_leader and box_is_active
     passive_leader = active_leader and not box_is_active
     # Both active endpoints (the follower AND the active leader's own drivers)
-    # capture the round-trip loopback and run a camilla-owned channel-pick +
-    # split, so they SHARE the snapclient-writes-loopback + outputd-dac_content-
-    # disabled wiring (the active leader ALSO bakes the wire + hosts the stream).
+    # capture the grouping ring and run a camilla-owned channel-pick + split, so
+    # they SHARE the snapclient-writes-the-ring + outputd-dac_content-disabled
+    # wiring (the active leader ALSO bakes the wire + hosts the stream).
     active_endpoint = active_follower or active_speaker_leader
     log_event(
         logger,
@@ -1912,32 +1937,45 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE to form ANY bond (active or passive) while the fan-in
-    # coupling is shm_ring (audio-graph consolidation P2, audit finding 3). Ring is
-    # solo-stereo-only until P8's ring-v2 (N-channel + bonded round-trip): a bond
-    # formed on a ring box would split camilla#1's graph across topologies (the
-    # bonded leader-pipe/round-trip lanes assume the loopback/aloop content path,
-    # not the SHM ring). Fail-SAFE to solo — the box keeps playing its own content
-    # (self-recovery, AGENTS.md resilience) rather than half-parking silent — and
-    # surface a clear operator reason (disarm the ring to bond). Placed BEFORE the
-    # snapcast provision / any bond wiring so nothing bond-forming runs. The bond
-    # request stays in the wizard config; the operator disarms the ring (or waits
-    # for P8) and the next reconcile forms the bond.
+    # Ring-armed box: REFUSE a bond the armed ring would silence — subject and
+    # mechanism in `dac_content_lane_armed` above (P2, audit finding 3). The
+    # SYMMETRIC half of the coupling support matrix, and it asks that matrix now
+    # instead of hand-rolling its own rule — the two encoded DIFFERENT rules and
+    # coincided only because this one was stricter. Fail-SAFE to solo (the box
+    # keeps playing its own content) and surface the matrix's reason. Placed
+    # BEFORE snapcast provision / any bond wiring; the request stays in the wizard
+    # config, so disarming the ring lets the next reconcile bond.
     if active:
+        from jasper.audio_runtime_plan import (
+            GROUPED_SHM_RING_MECHANISM,
+            coupling_supported_for_route,
+            route_mode_from_grouping_config,
+        )
         from jasper.fanin.coupling_reconcile import read_persisted_coupling
-        from jasper.fanin_coupling import COUPLING_SHM_RING
 
-        if read_persisted_coupling() == COUPLING_SHM_RING:
-            endpoint_block_reason = "ring_armed_box_cannot_bond"
+        coupling_support = coupling_supported_for_route(
+            read_persisted_coupling(),
+            route_mode_from_grouping_config(cfg),
+            dac_content_lane_armed=dac_content_lane_armed(
+                cfg,
+                active_endpoint=active_endpoint,
+                flat_output_allowed=flat_output_allowed,
+            ),
+        )
+        if not coupling_support.supported:
+            # The matrix's token AND its mechanism string; only the ACTION is
+            # this side's, because the matrix's own detail ends in "keeping the
+            # coupling on loopback" — the coupling reconciler's action. Here the
+            # coupling is untouched and the BOND is refused.
+            endpoint_block_reason = coupling_support.reason
             log_event(
                 logger,
                 "multiroom.reconcile.ring_armed_bond_blocked",
                 reason=args.reason,
                 detail=(
-                    "JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a ring-armed box "
-                    "cannot join a bond until ring v2 (P8); disarm the ring "
-                    "(jasper-fanin-coupling-reconcile loopback) to group this "
-                    "speaker. Staying solo."
+                    GROUPED_SHM_RING_MECHANISM
+                    + " Disarm the ring (jasper-fanin-coupling-reconcile "
+                    "loopback) to group this speaker. Staying solo."
                 ),
                 level=logging.WARNING,
             )
@@ -2134,9 +2172,9 @@ def main(argv: list[str] | None = None) -> int:
     if not env_ok:
         rc = 1
     # The member content FIFO feeds the DUMB follower's dac_content lane. An
-    # active ENDPOINT (follower or active leader) uses the snd-aloop round-trip
-    # loopback instead (a fixed snd-aloop subdevice — always present, no mkfifo
-    # equivalent), so skip it.
+    # active ENDPOINT (follower or active leader) takes the grouping ring
+    # instead — the ioplug creates its file at open and the install leaves it
+    # alone on purpose (deploy/lib/install/ring-platform.sh) — so skip it.
     if (
         active
         and not active_endpoint
@@ -2327,7 +2365,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
 
     # 5. Bonded apply LAST (snapserver is up → the pipe has its reader; snapclient
-    #    is up → the round-trip loopback has its writer).
+    #    is up → the grouping ring has its writer).
     if passive_leader:
         try:
             from .leader_config import apply_bonded_leader_config_sync
@@ -2386,8 +2424,10 @@ def main(argv: list[str] | None = None) -> int:
             # flat statefile. camilla#2 is disabled before the bake and later
             # started from that statefile, so trim-only rewrites are picked up by
             # process start rather than relying on an idempotent systemd no-op.
-            # camilla#2 keeps enable_rate_adjust ON — the validated
-            # active-follower seam, no outputd-summer yet
+            # camilla#2 runs the active follower's clock seam unchanged — same
+            # capture (the grouping ring), same per-sink rate-adjust
+            # resolution — so the leader adds no clock topology the follower
+            # does not already have. No outputd-summer yet
             # (HANDOFF-distributed-active.md "Sequencing" 1).
             bake_ok = False
             if not _disable_crossover_unit():
@@ -2572,8 +2612,8 @@ def main(argv: list[str] | None = None) -> int:
         if not report["reachable"] or report["failed"]:
             rc = 1
 
-    # 5b. Active FOLLOWER CamillaDSP swap LAST (snapclient is up → the round-trip
-    #     loopback has its writer, so CamillaDSP locks immediately). The graph
+    # 5b. Active FOLLOWER CamillaDSP swap LAST (snapclient is up → the grouping
+    #     ring has its writer, so CamillaDSP locks immediately). The graph
     #     was already built + re-proven by the readiness gate above, so this is
     #     just the glitch-free swap. The graph is the re-proven driver-domain
     #     baseline, so no capture content (stream / silence / garbage) can ever

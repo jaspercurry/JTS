@@ -15,19 +15,20 @@ every start — invisible until a bond, and on an active leader it was the
 2026-06-23 reboot-loop trigger.
 
 This module IS that opt-in. The grouping reconciler calls
-:func:`ensure_snapcast_installed` whenever grouping is enabled and the binaries
-are missing, so the household's "set up multi-room" click installs Snapcast
+:func:`ensure_snapcast_installed` on every reconcile pass while grouping is
+active, so the household's "set up multi-room" click installs Snapcast
 automatically — ``apt-get`` from the distro repos (GPL-3.0 snapcast run as a
 separate process; never bundled into a JTS artifact, never linked, so no
 copyleft reaches JTS and no redistribution obligation attaches), with a status
 the ``/rooms`` wizard surfaces ("Installing Snapcast…").
 
-**Total + fail-soft + bounded.** A present install is a fast no-op, so the
-reconciler's gating (it calls this only when grouping is enabled AND snapcast is
-missing) makes this a ONE-TIME op per box, not a recurring network cost. The
-install refreshes a stale index + waits out the dpkg lock first (the two most
-common Pi apt failures); if it still fails — genuinely offline, a broken mirror
-— it is logged + recorded as a ``failed`` status (which
+**Total + fail-soft + bounded.** A present install is a fast no-op — this
+function, not its caller, is what gates on "snapcast is missing" (the
+``snapcast_present`` check below short-circuits before any apt call), so the
+one-time apt work happens once per box rather than on every reconcile pass.
+The install refreshes a stale index + waits out the dpkg lock first (the two
+most common Pi apt failures); if it still fails — genuinely offline, a broken
+mirror — it is logged + recorded as a ``failed`` status (which
 ``/state.grouping.provision`` and the doctor's
 ``check_grouping_snapcast_installed`` surface) and NEVER raises. The reconcile
 continues, the snap units simply fail to start, and the box stays solo-safe (the
@@ -50,8 +51,18 @@ logger = logging.getLogger(__name__)
 
 # The two binaries grouping needs: snapserver (the leader's timing master) and
 # snapclient (every member's player). Both are in Trixie's apt repos
-# (`snapserver` / `snapclient`, v0.31.0).
+# (`snapserver` / `snapclient`).
 SNAPCAST_BINARIES = ("snapserver", "snapclient")
+
+# The snapclient version this design was validated against (Trixie's apt repo
+# at authoring time). Deliberately NOT pinned into the apt install below — a
+# pin would turn a routine Trixie point release into a failed install (the
+# household loses grouping, and security updates get blocked for something
+# that is not a safety hazard). Instead,
+# `jasper.cli.doctor.grouping.check_grouping_snapcast_version` probes the
+# live binary directly and warns on drift from this constant — visibility,
+# not a gate.
+VALIDATED_SNAPCAST_VERSION = "0.31.0"
 
 # Live progress status for the /rooms wizard. /run (transient) — the durable
 # truth is the binaries themselves (the doctor reads those directly); this file

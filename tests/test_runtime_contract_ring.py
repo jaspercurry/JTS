@@ -5,9 +5,8 @@
 """Ring (shm_ring) topology-contract citizenship + statefile seeding (P2).
 
 Two P2 contracts:
-  1. topology_supports_shm_ring — ring is solo-stereo-only (not roleful, not
-     composite; requires an explicit passive stereo layout). This is what the
-     multiroom bond prechecks + reconciler consult.
+  1. topology_supports_shm_ring — ring is stereo-only (not roleful, not
+     composite; requires an explicit passive stereo layout).
   2. safe_graph_for_current_topology(coupling="shm_ring") re-seeds the RING flat
      config on a ring-armed box, not the loopback flat config — audit finding 5's
      built-in-revert dies here.
@@ -26,6 +25,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_output_contract,
     ring_channels_for_topology,
     safe_graph_for_current_topology,
+    topology_allows_flat_dac_graph,
     topology_supports_shm_ring,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
@@ -125,6 +125,41 @@ def test_active_topologies_do_not_support_ring():
 def test_composite_dual_apple_does_not_support_ring():
     # Composite (4-ch across two child DACs) is P8's ring-v2 problem, not P2.
     assert topology_supports_shm_ring(_dual_apple_stereo()) is False
+
+
+def test_stereo_ring_eligibility_implies_flat_dac_permission():
+    """The cross-module identity PR-5's narrowed shm_ring gate leans on.
+
+    `topology_supports_shm_ring(t)` => `topology_allows_flat_dac_graph(classify(t))`.
+
+    It is why the one bonded shape the narrowed gate still BLOCKS — a passive
+    leader, whose dac_content lane the writer arms — is safe by construction and
+    not merely by the gate: every topology the STEREO ring can be armed on at all
+    is one whose lane gets armed, so the ring can never already be live on a
+    bonded box the narrowing admits. Neither function states the implication and
+    no test held it, so widening either would have broken the argument silently.
+
+    Asserted over the SAME shape table the eligibility tests above use, so a new
+    topology kind joins both at once.
+    """
+    shapes = [
+        _topology([]),
+        _full_range_stereo(),
+        _full_range_mono(),
+        _subwoofer_topology(),
+        _dual_apple_stereo(),
+    ] + [
+        _active_topology(layout, mode)
+        for layout in ("mono", "stereo")
+        for mode in ("active_2_way", "active_3_way")
+    ]
+    for topology in shapes:
+        if topology_supports_shm_ring(topology):
+            assert topology_allows_flat_dac_graph(
+                classify_output_contract(topology)
+            ), topology.topology_id
+    # Not vacuous: at least one shape actually satisfies the antecedent.
+    assert any(topology_supports_shm_ring(t) for t in shapes)
 
 
 # --- ring_channels_for_topology: the WIDTH the boolean is derived from --------

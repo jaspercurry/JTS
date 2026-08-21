@@ -198,8 +198,7 @@ mixer, a second output device, or a new volume model.
    Bluetooth, `3` USB sink, `4` correction/test, `5` UNALLOCATED
    (formerly the outputd active-speaker content lane; its PCM defs
    were deleted at P9-C once the ACTIVE ring became the roleful
-   transport), `6` outputd post-DSP content (also the active-follower
-   grouping round-trip), `7` fan-in summed output. Do
+   transport), `6` outputd post-DSP content, `7` fan-in summed output. Do
    not put a source on substream `6` or `7`. If you need another
    production source lane, stop and redesign the topology rather than
    overloading snd-aloop.

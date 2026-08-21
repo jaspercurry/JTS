@@ -96,13 +96,13 @@ Running Layer A there needs one of two engines:
 | New code | 100% greenfield safety-critical DSP in a reboot-on-fail daemon (biquads, LR crossovers, limiters, delays, the `2→N` split) **plus** relaxing the dac_content lane's hard 2-in/2-out `SingleAlsa` constraint to N-channel | Reuses the **shipped** Layer-A emitter + `driver_protection` + the `0 dB` ceiling. New code ≈ a capture param + a driver-domain-only emit variant + reconciler wiring (Python, mostly parameterization) |
 | Re-proof | No verifier exists for a Rust graph; would re-implement the safety contract | `classify_camilla_graph` re-proves the emitted config **verbatim** — transfers with one new classification arm |
 | Follower RAM/CPU | +Rust DSP **+** N-channel lane rework | **~Neutral**: the follower already runs CamillaDSP (today the inv-B fallback lane); Option B repurposes that same instance — no new process |
-| Clock domain | outputd DAC clock + snapclient stuffing (2 domains) | 3 non-overlapping domains (multiroom decision 3): snapclient stuffs → loopback; camilla rate-tracks the loopback capture (bit-perfect, no resampler); outputd DAC paces. snapclient `--latency` nulls camilla's fixed latency |
+| Clock domain | outputd DAC clock + snapclient stuffing (2 domains) | 3 non-overlapping domains (multiroom decision 3): snapclient stuffs → the grouping ring; camilla rate-tracks that capture (bit-perfect, no resampler); outputd DAC paces. snapclient `--latency` nulls camilla's fixed latency |
 | Limiter / HP owner | Re-implement in Rust | The shipped CamillaDSP per-driver limiter + crossover-HP + `0 dB` ceiling, unchanged |
 | Fail-closed on stall | Build in Rust | Graph-resident protection (see below) |
 | "Swap the engine, not the topology" | Violates | Honors |
 
 **Decision: Option B**, matching the multiroom doc's pre-decided
-follower path: `snapclient → loopback → camilla [crossover/protection
+follower path: `snapclient → grouping ring → camilla [crossover/protection
 only] → outputd active sink`, with snapcast's per-client `--latency`
 compensating camilla's fixed latency
 ([HANDOFF-multiroom.md](HANDOFF-multiroom.md) §7.5). The one genuine cost
@@ -144,8 +144,8 @@ current role**:
 | Role | Capture | Layers emitted |
 |---|---|---|
 | Solo | `plug:jasper_capture` (fan-in) | B/C + A in one graph (today's `recompose_baseline_yaml` + baseline) |
-| Follower | round-trip loopback (snapclient-fed) | **A only** (+ channel-select prefix; no B/C — leader baked them) |
-| Leader (active) | camilla#1: fan-in → B/C → pipe; camilla#2: round-trip loopback → A | split across two instances (gap 3) |
+| Follower | the grouping ring (snapclient-fed) | **A only** (+ channel-select prefix; no B/C — leader baked them) |
+| Leader (active) | camilla#1: fan-in → B/C → pipe; camilla#2: the grouping ring → A | split across two instances (gap 3) |
 
 Two enabling facts make this cheap:
 
@@ -174,9 +174,9 @@ keeps the final runtime say (mirrors `member_camilla_kwargs`).
 
 The reconciler's follower branch:
 
-1. Points the follower's CamillaDSP **capture at the round-trip loopback**
-   (snapclient writes it; today snapclient feeds `MEMBER_CONTENT_FIFO` →
-   outputd's `dac_content` — [reconcile.py](../jasper/multiroom/reconcile.py)).
+1. Points the follower's CamillaDSP **capture at the grouping ring**
+   ([grouping_ring.py](../jasper/multiroom/grouping_ring.py)); a DUMB member
+   keeps the `MEMBER_CONTENT_FIFO` → outputd `dac_content` path instead.
 2. Emits a **driver-domain-only baseline**: `channel-select (2→2 pick
    L/R/mono) → split_active_<way>way (2→N) → per-driver [crossover, delay,
    gain, limiter] (+ tweeter HP)` — **no** program prefix, **no** EQ
@@ -301,9 +301,9 @@ sync is settled (the round-trip); the second instance is purely "the
 crossover runs after the corrected stream." This is exactly why **solo**
 needs one instance: no follower → no wire output and no clock to match → the
 crossover stays in the single low-latency graph. The added crossover latency is its chunk buffer (~a few–
-20 ms, tunable), is **fixed and nulled by snapcast's per-client `--latency`**
-(never desyncs the pair), and is the *same* latency a solo active speaker
-already carries.
+20 ms, tunable), is **fixed — which is what snapcast's per-client `--latency`
+exists to null** (so it never desyncs the pair), and is the *same* latency a
+solo active speaker already carries.
 
 The only way to collapse it to one is to put the crossover in outputd
 (Option A / Rust) — rejected, because it discards the proven crossover
@@ -353,12 +353,24 @@ crystal producing it at a fixed wrong rate, just buffered and consumed at the
 DAC's pace — so it is *not* a crossing and needs *no* loop. The combined stream
 therefore has **exactly one** rate loop. Two configurations follow from this:
 
-- **Music-only (no leader TTS):** camilla#2 *is* the loop — it reads the
-  snapclient round-trip loopback with `enable_rate_adjust` ON, exactly the
-  **already-validated active-follower seam** (`snapclient → loopback → camilla
-  [rate_adjust] → DAC`). No mixer, no new clock topology — the leader's own
+- **Music-only (no leader TTS):** snapclient *is* the loop — it tracks the
+  server clock and writes the grouping ring, which camilla#2 captures
+  (`snapclient → jts_ring_grouping → camilla#2 → DAC`), exactly the
+  **active-follower seam**. camilla#2 adds no second loop: its
+  `enable_rate_adjust` follows the SINK it plays into (false on the active
+  ring), and on a ring capture the request cannot be actuated at all — a ring
+  PCM is an ioplug, so CamillaDSP finds no mixer element to steer. No mixer, no
+  new clock topology — the leader's own
   drivers are driven by the follower endpoint config verbatim, while camilla#1
-  bakes the wire.
+  bakes the wire. The grouping ring's **playback** side carries a token-bucket
+  rate floor (`pace_nominal` in
+  [`62-jts-ring-grouping.conf`](../deploy/alsa/conf.d/62-jts-ring-grouping.conf)) —
+  a storm guard for a stalled or dead reader, inert against a DAC-paced reader,
+  and **not** a second loop; the capture side camilla#2 reads is ungoverned.
+  Contract and constants: `jts_ring_pace_apply` in
+  [`jts_ring_shm.h`](../c/jts-ring-ioplug/jts_ring_shm.h). **The inertness is
+  proven at the core by host tests, not yet on metal** — the governed build has
+  had no snapclient + camilla + DAC pass, and that pass gates the wave.
 - **With leader TTS:** TTS must be summed **pre-crossover** (camilla#2 has a
   single capture and cannot mix a second source), so a summing stage moves in
   front of camilla#2 and **becomes the sole loop**; camilla#2 then runs
@@ -445,8 +457,7 @@ the leader-pipe liveness check cannot disagree. The dangerous direction (a flat
 block still fires.
 
 > **Removed 2026-07-11.** The transport_pipe coupling (and its active-leader
-> block) was deleted; only loopback + shm_ring couplings remain, and shm_ring is
-> already blocked for grouped boxes.
+> block) was deleted; only loopback + shm_ring couplings remain.
 
 **Sequencing — isolate the new clock topology from the 2-instance bring-up.**
 Because the music-only path *is* the validated follower seam, the on-device gates
@@ -574,27 +585,28 @@ Both paths reuse the LR4 primitive (`emit_linkwitz_riley`); they differ in
   stream, silence, or garbage — can produce a full-range driver feed.
   This is the active-crossover analogue of inv-1 and is strictly safer
   than the dumb-follower path.
-- **Stream stall → silence, not full-range.** Loopback underrun →
+- **Stream stall → silence, not full-range.** A capture underrun →
   CamillaDSP emits silence through Layer A (silence through a crossover is
   silence). Surface a cue ([cues/registry.py](../jasper/cues/registry.py))
   + a `/state` flag + dashboard card (AGENTS.md "no silent failure").
 - **Self-recovery (AGENTS.md resilience).** Unplug / brief WiFi loss /
   power cycle: un-bond → follower returns to solo active and plays local
   content; no silent restart loop. The reconciler owns the transition.
-- **Clock domains + the bit-perfect config (pin these on the follower
-  crossover instance).** snapclient stuffs to the server clock; camilla
-  rate-tracks the loopback *capture* only (no resampler); outputd's DAC paces.
-  For the bit-perfect virtual-clock path the instance MUST set **real DAC =
-  playback (clock master), loopback = capture (slaved)** — invert it and you
-  lose bit-perfect and fall back to resampling. `enable_rate_adjust: true`,
-  **resampler null** (no AsyncSinc when capture rate == playback rate — the
-  documented `rate_adjust`+resampler oscillation, CamillaDSP #207), **chunksize
-  ≥ 1024** (512 → EPIPE underruns on a Pi) and a fixed `target_level`.
-  snapclient `--latency` nulls camilla's fixed pipeline latency so an active
-  follower stays sample-locked with a dumb follower — but only if that latency
-  is **truly constant**: **forbid SIGHUP config reloads during playback** on the
-  crossover instance, and validate the nulling **acoustically** (the S0-sync
-  gate below), never trust the nominal `--latency` number alone.
+- **Clock domains (pin these on the follower crossover instance).** snapclient
+  stuffs to the server clock; camilla rate-tracks its capture only; outputd's
+  DAC paces. What camilla#2's own knobs must be is settled under "One hard
+  clock crossing, one rate loop" above, and the ring's wire and slot geometry
+  are [grouping_ring.py](../jasper/multiroom/grouping_ring.py)'s — neither is
+  restated here.
+  snapclient `--latency` is the knob that nulls camilla's fixed pipeline latency
+  so an active follower stays sample-locked with a dumb follower. It ships
+  compensating **nothing** (`jasper.multiroom.config`
+  `DEFAULT_CLIENT_LATENCY_MS`) — no measurement has produced an offset that
+  generalises across DACs, so a bond is given the nulling, it does not inherit
+  it. And the knob only holds if that latency is **truly constant**: **forbid
+  SIGHUP config reloads during playback** on the crossover instance, and
+  validate the nulling **acoustically** (the S0-sync gate below), never trust
+  the nominal `--latency` number alone.
 
 ## Layering (preserve the one-way direction)
 
@@ -618,7 +630,7 @@ snapclient→loopback→downstream-CamillaDSP sync seam is the #1 risk and must 
 the **S0-sync de-risk gate** before Slice 3 (builders report failing exactly this
 shape); (2) the 1 GB-RAM question is really **CPU + thermal** (active cooling) —
 Q1 reframed. It also pinned the follower crossover config (clock-master direction,
-`chunksize ≥ 1024`, no SIGHUP during playback — folded into "Clock domain").
+`chunksize ≥ 1024`, no SIGHUP during playback — for the aloop seam it read).
 
 **Physical tweeter protection (hardware high-pass / amp mute-on-fault) is
 owner-handled offline and is OUT OF SCOPE for these slices** — do not add it as a
@@ -635,10 +647,10 @@ slices land safest-first; each is independently mergeable.
 | Slice | v1? | Scope | HW? |
 |---|---|---|---|
 | **0** | — | This design-of-record + README atlas + doc-map wiring | no |
-| **S0-sync** | ✅ | **De-risk gate** — bench the snapclient→loopback→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h `snd-aloop` xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
+| **S0-sync** | ✅ | **De-risk gate** (snd-aloop seam — see its dating note) — bench the snapclient→loopback→CamillaDSP sync seam with 2 throwaway active followers; acceptance = p99 < 5 ms over 2 h (two-mic acoustic), no audible resync, + ≥24 h `snd-aloop` xrun soak. **Gates Slice 3** | **yes** (2 Pis) |
 | **1** | ✅ | Role/capture: thread `capture_device`; pure-data `OutputTopology` pairing field. Golden byte-identical solo | no |
 | **2** | ✅ | Driver-domain-only active emit variant + `classify_camilla_graph` arm + keystone round-trip test | no |
-| **3** | ✅ | Reconciler wires the active **follower** (capture→loopback, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / chunksize≥1024 / no-SIGHUP-during-playback | **yes** (2 Pis) |
+| **3** | ✅ | Reconciler wires the active **follower** (capture→the grouping ring, disable outputd pick, fail-closed silence + **cue injected into camilla's input, pre-Layer-A, follower-local** — Q2 step 5); lift `non_single_alsa_sink`. **Gated by S0-sync.** Pin clock-master / no-SIGHUP-during-playback | **yes** (2 Pis) |
 | **4** | ✅ | Narrow follower-409 + render local driver UI on a follower's `/sound/`; make the delegation promise true | no |
 | **5** | ✅ | Active **leader** (2nd CamillaDSP; realization ratified 2026-06-21 — single rate loop = `outputd-summer`, camilla#2 `rate_adjust` **OFF**, the two `jasper-outputd` instances kept **separate** for inv-A, Option-3 TTS as a soft input, inv-B-through-Layer-A). Sequence: validated-seam music → swap-in-summer (soak gate) → arm TTS. **The v1 gate**; **CPU/thermal + summer-build pick** measured on `jts3` (active cooling). Details: "Stage B — the ratified active-leader realization" | yes |
 | **6a** | — | Local sub driver — **LANDED 2026-06-23**: sub lane (LR4 LP) + bass-management mains-HP in the active multi-output emitter (active + degenerate-1-way passive), matched re-proof, both guards lifted behind the safe path, `/sound/` Fc control + called-out PEQ band. On-device acoustic check owed (≥3-output DAC) | mixed |
@@ -694,16 +706,13 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
   ([follower_config.py](../jasper/multiroom/follower_config.py)) is the
   active-follower apply/restore arm (mirrors `leader_config`): it builds +
   **re-proves** (`classify_camilla_graph`) the driver-domain config, swaps
-  CamillaDSP glitch-free (snapclient → `hw:Loopback,0,6` → CamillaDSP captures
-  `hw:Loopback,1,6` — pair 6 is the passive content lane, free on an active
-  follower since its outputd is always Composite/active (reads the ACTIVE
-  ring, not snd-aloop) and never opens the passive lane; snd_aloop caps at 8
-  pairs so no dedicated extra pair exists — `enable_rate_adjust`, no
-  resampler, `chunksize` 1024,
-  `S16_LE`), stashes the prior solo-active config, and on un-bond restores the
+  CamillaDSP glitch-free (snapclient writes the grouping ring and this box's
+  CamillaDSP captures the same PCM — one name, one wire, owned by
+  [grouping_ring.py](../jasper/multiroom/grouping_ring.py)), stashes the prior
+  solo-active config, and on un-bond restores the
   **active** baseline (never a passive graph). The reconciler
   ([reconcile.py](../jasper/multiroom/reconcile.py)) detects an active box
-  (`is_active_speaker_box`), routes snapclient to the round-trip loopback (ALSA
+  (`is_active_speaker_box`), routes snapclient to the grouping ring (ALSA
   player, not the dumb FIFO), DISABLES outputd's `dac_content` ChannelPick on
   this box (camilla owns the pick + split), and runs a readiness GATE before
   tearing down the solo path — a follower that can't be made safe **fails safe
@@ -781,16 +790,23 @@ on-device begins; **5 is the v1 gate** (matched pair proven on hardware).
 
 ## Multi-Pi validation (Slice 3+)
 
-**S0-sync de-risk gate — run BEFORE Slice 3.** The snapclient→loopback→
-downstream-CamillaDSP seam is the single hardest part: Snapcast/CamillaDSP
-builders report failing to sync exactly this shape. Before investing in the
-Slice-3 reconciler, bench it with two throwaway "active followers"
-(snapclient → loopback → a crossover-only CamillaDSP → DAC), two-mic acoustic
-capture. **Acceptance: p99 inter-speaker offset < 5 ms over a 2-hour run, no
-audible resync**, plus a ≥24 h `snd-aloop` xrun soak. **If this gate fails, an
-active wireless *follower* is not viable** — fall back to active-stays-solo-or-
-leader (the leader runs its own crossover locally on the round-trip; followers
-stay dumb/passive). Do not build Slice 3 until S0-sync passes.
+**S0-sync de-risk gate (2026-06-20, benched on snd-aloop) — run BEFORE Slice
+3.** The snapclient→loopback→downstream-CamillaDSP seam is the single hardest
+part: Snapcast/CamillaDSP builders report failing to sync exactly this shape.
+Before investing in the Slice-3 reconciler, bench it with two throwaway "active
+followers" (snapclient → loopback → a crossover-only CamillaDSP → DAC), two-mic
+acoustic capture. **Acceptance: p99 inter-speaker offset < 5 ms over a 2-hour
+run, no audible resync**, plus a ≥24 h `snd-aloop` xrun soak. **If this gate
+fails, an active wireless *follower* is not viable** — fall back to
+active-stays-solo-or-leader (the leader runs its own crossover locally on the
+round-trip; followers stay dumb/passive). Do not build Slice 3 until S0-sync
+passes.
+
+**Dated: this gate and its results below characterise the snd-aloop seam Slice
+3 shipped on.** PR-3 moved the bonded ingress to the grouping ring, which
+exposes no `PCM Rate Shift` (see "One hard clock crossing, one rate loop"), so
+neither the bench nor its clock-lock evidence transfers; a ring-seam de-risk is
+owed.
 
 Two Pis: leader = `jts3.local`, a second as follower (commissioned active
 2-way). Deploy with `PI_HOST=jts3.local bash scripts/deploy-to-pi.sh`.
@@ -899,7 +915,7 @@ speakers, one as leader:
   assumed**). Capture real `htop`/temp under load on `jts3`.
 - **Leader TTS (Option 3, ratified — Q2 spike):** "Hey Jarvis" replies on the
   leader reach the tweeter **band-limited via camilla#2's Layer A** — TTS is
-  summed into the crossover instance's input loopback (post-snapclient, so it
+  summed into the crossover instance's input (post-snapclient, so it
   never traverses the round-trip), the content-duck follows the same point, and
   the outputd 2-ch TTS mixer is **not** armed on the active leader. Confirm no
   full-range speech to the tweeter and TTS-to-glass ≈ the solo-active baseline
@@ -911,7 +927,7 @@ speakers, one as leader:
 - **Leader clock-lock soak — pre-registered signatures (fixed BEFORE the run,
   not rationalised after).** The single-loop realization (see "Stage B — the
   ratified active-leader realization") must produce the *stationary* signature
-  over a ≥24 h `snd-aloop` soak once `outputd-summer` + camilla#2 `rate_adjust`
+  over a ≥24 h soak once `outputd-summer` + camilla#2 `rate_adjust`
   OFF are in the path. Log the **resampler ratio**, the **fill of every buffer**
   at the crossing, and an **end-to-end latency probe** for the whole run. Three
   signatures, fixed now so there is nothing to rationalise against later:
@@ -1180,8 +1196,8 @@ AEC reference — non-negotiable). Today's outputd mix = P2+P3, not P1; the fan-
 latency (the snapcast round-trip, ~hundreds of ms) is incurred **only** by
 sending TTS *upstream of the bake* (Option 1). The tweeter-safe options do
 **not** put TTS through snapcast: outputd is past the round-trip, and camilla#2
-(the crossover) is *fed by* the round-trip loopback but mixing TTS **into** that
-loopback enters **after** snapclient — so TTS traverses only the crossover DSP,
+(the crossover) is *fed by* the round-trip but mixing TTS **into** that stream
+enters **after** snapclient — so TTS traverses only the crossover DSP,
 not snapcast. The incremental latency of tweeter-safe leader TTS is therefore
 **DSP latency, not round-trip latency**: ~the crossover instance's chunk (tens
 of ms, tunable — the same a *solo* active speaker already pays) for the camilla
@@ -1195,7 +1211,7 @@ path for the chosen option.**
 |---|---|---|---|---|---|
 | 1 | upstream at fan-in (before the bake) | ✅ | ✗ round-trip | ✅ | laggy; also streams TTS to the follower (inv-A forbids) |
 | 2 | at outputd, add per-driver protection to the TTS lane | ✅ | ✅ | ✅ | safety-critical DSP in the reboot-on-fail Rust daemon; "minimal" = either skip-tweeter (muffled voice) or reimplement the crossover (the thing Option-B avoided) |
-| 3 | into camilla#2's input (post-round-trip, pre-crossover) | ✅ | ✅ | ✅ | reuses the **verified** crossover + `classify_camilla_graph` re-proof, outputd stays dumb; cost = a new TTS mix point on the loopback + the content-duck must follow + the crossover chunk latency |
+| 3 | into camilla#2's input (post-round-trip, pre-crossover) | ✅ | ✅ | ✅ | reuses the **verified** crossover + `classify_camilla_graph` re-proof, outputd stays dumb; cost = a new TTS mix point on that input + the content-duck must follow + the crossover chunk latency |
 | 4 | **leader-only voice** (product decision) | — | — | — | see below |
 
 **Option 4 — leader-only voice (likely yes).** TTS is **already** leader-local
@@ -1265,7 +1281,7 @@ through snapcast.**
 |---|---|---|---|
 | (a) outputd mix [today; **unsafe** on active] | outputd `OutputCore`, post-crossover | 0 — reference (TTS-to-glass ≈ DAC playout **63.7 ms**) | ✗ |
 | (c) Option 2 — protective filter on the TTS lane at outputd | outputd, + one biquad | **< 1 ms** (biquad group delay; no added buffering) | ✓ but muffled, or re-impl crossover |
-| (b) Option 3 — TTS into the crossover instance's input | camilla#2 input loopback (post-snapclient) | **+85–125 ms** (camilla chunk 21 ms + playback buffer 43 ms + content-bridge handoff ~63 ms; = the solo-active path) | ✓ |
+| (b) Option 3 — TTS into the crossover instance's input | camilla#2's input (post-snapclient) | **+85–125 ms** (camilla chunk 21 ms + playback buffer 43 ms + content-bridge handoff ~63 ms; = the solo-active path) | ✓ |
 | Option 1 — upstream of the bake [**rejected**] | fanin, pre-stream | **+~400 ms** (snapcast `buffer_ms` round-trip) | ✓ but laggy + streams TTS to follower (inv-A) |
 
 Measured anchors (live `/state`, solo active, current buffering):
@@ -1289,7 +1305,7 @@ the leader already buffers its own *music* at the round-trip depth and a solo
 active speaker already accepts the camilla path for its *voice*, **Option 3
 introduces no new latency class.**
 
-**4. Leader mechanism — Option 3 (TTS into camilla#2's input loopback).** Chosen
+**4. Leader mechanism — Option 3 (TTS into camilla#2's own input).** Chosen
 over Option 2:
 - **Safety / engine.** Reuses the **shipped, verified** per-driver crossover +
   the `classify_camilla_graph` re-proof; adds **no** safety-critical DSP to the
@@ -1306,17 +1322,17 @@ over Option 2:
 - **outputd stays dumb** ("swap the engine, not the topology" / "no DSP in
   outputd" honored).
 - **Cost.** +85–125 ms TTS latency (acceptable per the budget above) + a TTS mix
-  point on the loopback feeding camilla#2 + the content-duck must follow that
+  point on camilla#2's own input + the content-duck must follow that
   same point (so the reference still carries the ducked program, inv-A).
 
 **5. Follower fail-closed cue — into the follower's camilla input (through Layer
-A), follower-local.** The base safe state is **silence** (a starved loopback →
+A), follower-local.** The base safe state is **silence** (a starved ingress →
 CamillaDSP emits silence *through* the crossover = silence = safe) — already the
 Slice 3 reality (see "Fail-closed cue — v1 reality" above: the reconciler
 oneshot can't play a cue, and the hard no-full-range guarantee holds via the
 re-proven driver-domain baseline). This item resolves the **audible** cue Slice 3
-deferred: inject it at the **same point as Option 3** — the camilla#2 input
-loopback, upstream of Layer A — so it is band-limited (tweeter-safe) and
+deferred: inject it at the **same point as Option 3** — camilla#2's own
+input, upstream of Layer A — so it is band-limited (tweeter-safe) and
 **follower-local (no round-trip)**. It must **not** be mixed at outputd
 post-camilla (full-range to the tweeter; the 2-ch outputd mixer also assumes
 L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
@@ -1325,10 +1341,10 @@ L/R, not woofer/tweeter). Player ownership is a Slice 3/5 build detail:
 per-member liveness loop — writes the cue WAV into the camilla input; never
 `jasper-voice`, never the reconciler oneshot, never a post-camilla mix. (The
 supervisor's `dac_content` starvation watch is **skipped on active endpoints**
-as of the 2026-06-23 fix — it watches the dumb-member round-trip, not the
-active follower's camilla#2 loopback. Detecting the active follower's *own*
-starvation, the loopback going silent, is the deferred prerequisite for
-*triggering* this cue.)
+as of the 2026-06-23 fix — it watches the dumb-member round-trip, not the active
+endpoint's own ingress. Detecting THAT starvation is the deferred prerequisite
+for *triggering* this cue; `GroupingSupervisor._starvation_tick` owns why, and
+which instrument the grouping ring would give it.)
 
 ## Open questions
 
@@ -1372,7 +1388,17 @@ to the other places this file names it (the pair-budget diagram, the
 follower's `hw:Loopback,0,6` note, and two bracketed pointers) without
 re-reading the rest of the file.
 
-Last verified: 2026-08-15 (active-leader positive handle barrier: the release
+Last verified: 2026-08-20 (Phase-1 grouping-ring cutover: the bonded ingress
+moved off snd-aloop pair 6 onto the grouping ring, so the role/capture contract,
+the active-follower branch, the engine-decision clock cells, the shm_ring
+coupling note and the follower_config passage were re-read against
+`jasper/multiroom/{reconcile,follower_config,grouping_ring}.py`; the `--latency`
+knob was re-read against `jasper.multiroom.config`. The one-rate-loop block's
+`pace_nominal` sentence was written against
+`c/jts-ring-ioplug/jts_ring_shm.h` and is core-verified only — its hardware pass
+is owed. Nothing else in this file
+was re-read, and the dated entries below remain a historical record.
+Prior 2026-08-15: active-leader positive handle barrier — the release
 signal is a NON-BLOCKING exclusive `flock` on the ACTIVE ring's writer lock,
 `/dev/shm/jts-ring/active-content.ring.writer.lock` — free means released, a
 live writer means `busy`, and an absent / unopenable / otherwise unaskable lock

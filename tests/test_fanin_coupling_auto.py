@@ -414,7 +414,9 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     assets = ("ring_assets", lambda: (eligible, "assets"))
     topo = ("ring_topology", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (eligible, "route"))
+    monkeypatch.setattr(
+        cr, "ring_route_ready", lambda route_mode, **kw: (eligible, "route")
+    )
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (eligible, "geom"))
     monkeypatch.setattr(cr, "ring_slot_geometry_ready", lambda text: (eligible, "slots"))
     # The F6 slot self-heal runs before the gates; keep it a no-op in unit tests
@@ -1014,14 +1016,24 @@ def test_auto_grouped_leader_resolves_loopback_and_succeeds(tmp_path, monkeypatc
     assert r.coupling_result.direction != "blocked"
 
 
-def test_ring_route_ready_blocks_grouped_allows_solo():
-    ok_solo, _ = cr.ring_route_ready("solo")
+def test_ring_route_ready_blocks_an_armed_dac_content_lane_only():
+    ok_solo, _ = cr.ring_route_ready("solo", dac_content_lane_armed=False)
     assert ok_solo is True
-    ok_unknown, _ = cr.ring_route_ready("unknown")
+    ok_unknown, _ = cr.ring_route_ready("unknown", dac_content_lane_armed=False)
     assert ok_unknown is True  # indeterminate never blocks a legitimate solo arm
-    ok_leader, detail = cr.ring_route_ready("active_leader")
+    ok_leader, detail = cr.ring_route_ready(
+        "active_leader", dac_content_lane_armed=True
+    )
     assert ok_leader is False
     assert "loopback" in detail
+    assert "dac_content" in detail
+    # NARROWED: a bonded box whose lane is cleared (every ACTIVE endpoint) is no
+    # longer route-blocked, so the auto pass keeps its ring instead of reverting
+    # it to loopback on every boot/deploy.
+    ok_active_endpoint, detail = cr.ring_route_ready(
+        "active_leader", dac_content_lane_armed=False
+    )
+    assert ok_active_endpoint is True, detail
 
 
 # --------------------------------------------------------------------------
@@ -1102,7 +1114,9 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (True, "route"))
+    monkeypatch.setattr(
+        cr, "ring_route_ready", lambda route_mode, **kw: (True, "route")
+    )
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
@@ -1153,7 +1167,9 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_route_ready", lambda route_mode: (True, "route"))
+    monkeypatch.setattr(
+        cr, "ring_route_ready", lambda route_mode, **kw: (True, "route")
+    )
     monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))

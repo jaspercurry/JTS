@@ -1339,10 +1339,16 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     assert "enable_rate_adjust: false" in cfg
 
 
-def test_shm_ring_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
-    # PRECEDENCE: a grouped/bonded member writes a SnapFIFO playback pipe with
-    # enable_rate_adjust=False. That playback pipe already owns the pipe sink, so
-    # the local shm_ring coupling is a no-op there.
+def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_path):
+    """END-TO-END, on the path a bonded leader's /sound or /correction save takes.
+
+    PRECEDENCE: the SnapFIFO pipe owns the SINK, so the ring's playback half is
+    dropped — but the CAPTURE half must still cross. This reemit rewrites the
+    LIVE camilla#1 config of the box producing the whole bond's audio; leaving it
+    on `plug:jasper_capture` under an armed ring points it at the snd-aloop tap
+    fan-in no longer writes, and every member goes silent with every daemon
+    healthy while the on-disk bake still reads correctly.
+    """
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
@@ -1350,17 +1356,17 @@ def test_shm_ring_coupling_is_noop_for_grouped_pipe_sink(tmp_path):
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
-    # ALSA capture preserved (no ring coupling), pipe SINK still on playback.
-    assert 'device: "plug:jasper_capture"' in cfg
-    assert f'device: "{RING_CAPTURE_DEVICE}"' not in cfg
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
+    assert 'device: "plug:jasper_capture"' not in cfg
+    # The pipe SINK is untouched — Ring B never crosses.
     assert f'device: "{RING_PLAYBACK_DEVICE}"' not in cfg
     assert "/run/snapfifo" in cfg
 
 
-def test_program_bake_carrier_ignores_shm_ring_coupling(tmp_path):
-    # The program bake is a bonded pipe sink (rate_adjust=False); the coupling
-    # keyword is accepted for call-site uniformity but never applied. The emit
-    # keeps its ALSA capture; no ring device appears.
+def test_program_bake_carrier_follows_the_coupling_on_capture_only(tmp_path):
+    # The program bake is a bonded pipe sink (rate_adjust=False): its SINK is the
+    # snapfifo and the ring's playback half never crosses, but its capture must
+    # follow the coupling for the same reason the reemit above must.
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "sound_current.yml"
@@ -1373,15 +1379,17 @@ def test_program_bake_carrier_ignores_shm_ring_coupling(tmp_path):
         member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
-    assert 'device: "plug:jasper_capture"' in cfg
-    assert f'device: "{RING_CAPTURE_DEVICE}"' not in cfg
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
+    assert 'device: "plug:jasper_capture"' not in cfg
+    assert f'device: "{RING_PLAYBACK_DEVICE}"' not in cfg
 
 
 def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
-    # shm_ring is solo-stereo-only; the active baseline keeps its roleful ALSA
-    # capture/playback graph regardless of the coupling. The carrier accepts
-    # the keyword for call-site uniformity (every carrier's reemit() takes
-    # it) but never threads it into active recomposition.
+    # REDUNDANT, not forbidden by a stereo-only rule: an armed active-ring box
+    # already derives capture from its own recorded sink, and these are the
+    # STEREO ring's kwargs, which would stomp a per-driver box. The carrier
+    # accepts the keyword for call-site uniformity (every carrier's reemit()
+    # takes it) but never threads it into active recomposition.
     path = tmp_path / "active_speaker_baseline.yml"
     path.write_text(_active_baseline_yaml("mono", 2))
     with mock.patch(

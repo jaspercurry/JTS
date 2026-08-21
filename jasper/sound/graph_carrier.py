@@ -33,6 +33,7 @@ from typing import cast
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
+from jasper.fanin_coupling import capture_half
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
     emit_sound_config,
@@ -251,9 +252,8 @@ class _StereoHostCarrier:
         # names the shared fan-in -> Camilla -> outputd SHM-ring capture/playback
         # devices: source-agnostic, and byte-identical when absent (loopback ->
         # {}). The carrier-preserved room PEQs, preference filters, trim, and
-        # member policy all fold in unchanged. PRECEDENCE: a grouped pipe-SINK
-        # member (enable_rate_adjust=False + SnapFIFO playback) is mutually
-        # exclusive with the local coupling, so the coupling is a no-op there too.
+        # member policy all fold in unchanged. PRECEDENCE, and why a pipe sink
+        # still takes the capture half: apply_capture_precedence.
         emit_kwargs = apply_capture_precedence(
             emit_kwargs,
             fanin_coupling_capture_kwargs,
@@ -338,17 +338,15 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
-        # fanin_coupling_capture_kwargs is intentionally a NO-OP here: a program
-        # bake is a bonded pipe SINK on the synced chain (snapclient owns the
-        # rate, enable_rate_adjust=False), which is mutually exclusive with the
-        # local (shm_ring) coupling. The grouped transport topology is the
-        # Distributed-Active track's concern, not this solo hop; accept the keyword
-        # so every call site can pass it uniformly, but never apply it. (The plan's
-        # apply_capture_precedence helper makes the same grouped-sink choice for
-        # stereo-host carriers.)
-        del fanin_coupling_capture_kwargs
+        # CAPTURE HALF ONLY — same rule as apply_capture_precedence, which this
+        # carrier does not route through; see it for why the half is not
+        # optional. Ring B never crosses: the sink is the snapfifo.
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
+        member_kwargs = {
+            **member_kwargs,
+            **capture_half(fanin_coupling_capture_kwargs or {}),
+        }
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
         yaml = emit_sound_config(
             profile,
@@ -437,10 +435,11 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
-        # shm_ring is solo-stereo-only; the active baseline keeps its roleful
-        # ALSA capture/playback graph. Accept the shared carrier keyword for
-        # interface uniformity (every carrier's reemit() takes it), but never
-        # thread it into active recomposition.
+        # REDUNDANT here, not forbidden by a stereo-only rule: an armed
+        # active-ring box already derives capture from its own recorded sink
+        # (`active_emit_devices("jts_ring_active_playback")` -> `jts_ring_capture`)
+        # and these STEREO kwargs would stomp a per-driver box. Keyword accepted
+        # for uniformity only.
         del fanin_coupling_capture_kwargs
         room_peqs = (
             extract_room_peqs_from_config(self._current_path)

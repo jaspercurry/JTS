@@ -45,6 +45,7 @@ _IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 _CAP_MARKERS = {
     ring_assets.RING_CAP_WIRE_FORMAT: "format %s unsupported (S16_LE|S32_LE)",
     ring_assets.RING_CAP_WIRE_CHANNELS: "channels out of range 2..=8",
+    ring_assets.RING_CAP_PACE_NOMINAL: "pace_nominal must be 0 or 1",
 }
 
 

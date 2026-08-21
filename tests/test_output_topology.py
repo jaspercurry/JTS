@@ -1351,6 +1351,25 @@ def test_load_output_topology_strict_rejects_corrupt_state(
         load_output_topology_strict(path)
 
 
+def test_load_output_topology_strict_rejects_non_utf8_bytes(
+    tmp_path: Path,
+) -> None:
+    """SD-card bit rot fails CLOSED, like every other unreadable shape.
+
+    `read_text(encoding="utf-8")` raises UnicodeDecodeError BEFORE json.loads
+    runs, and UnicodeDecodeError is not an OSError — so without the loader's own
+    clause it escapes as a bare ValueError past every caller's fail-closed
+    handling. In the grouping reconciler that degrades route_mode to "unknown",
+    which never blocks: a bonded box with corrupted topology bytes would be
+    ADMITTED where an unreadable one is refused.
+    """
+    path = tmp_path / "output_topology.json"
+    path.write_bytes(b'{"kind": "\xff\xfe not utf-8"}')
+
+    with pytest.raises(OutputTopologyError, match="could not read"):
+        load_output_topology_strict(path)
+
+
 def test_load_output_topology_strict_allows_missing_as_unconfigured(
     tmp_path: Path,
 ) -> None:

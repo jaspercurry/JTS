@@ -11,7 +11,6 @@ preserved. No check logic changed in the split."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import socket
@@ -233,33 +232,133 @@ def check_grouping_snapcast_installed() -> CheckResult:
     return CheckResult(label, "ok", "snapserver + snapclient present")
 
 
+@doctor_check(order=71.6, group="grouping")
+def check_grouping_snapcast_version() -> CheckResult:
+    """Warn when the installed snapclient differs from the version this
+    design validated against
+    (:data:`jasper.multiroom.provision.VALIDATED_SNAPCAST_VERSION` — Trixie's
+    apt repo at authoring time). The apt package is deliberately UNPINNED in
+    ``jasper.multiroom.provision.ensure_snapcast_installed`` (a pin would turn
+    a routine Trixie point release into a failed install — the household
+    loses grouping, and it blocks security updates — for a mismatch that is
+    not a safety hazard). This check is the resulting visibility: it probes
+    the binary directly (bounded, mirroring this file's
+    ``_resolved_jasper_voice_env`` idiom), never pins anything, and is
+    warn-only — there is nothing here to enforce.
+
+    Skips (``ok``) when: grouping is off (mirrors
+    ``check_grouping_snapcast_installed`` — a warn about a disabled
+    subsystem's version is not actionable); snapclient is not installed; the
+    probe cannot even run (a timeout, a vanished binary); the probe exits
+    non-zero (e.g. a partial-upgrade linker error — the exit detail itself is
+    surfaced, since that IS the useful fact here); or its output has no
+    version-shaped token. The exit code is checked BEFORE the regex ever
+    runs — a non-zero exit's own error text can coincidentally contain a
+    version-shaped substring (a linked library's version, not snapclient's
+    own), and parsing it anyway would fabricate a comparison from a process
+    that determined nothing."""
+    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION
+
+    label = "grouping: snapcast version"
+    cfg = _load_grouping_config()
+    if not cfg.enabled:
+        return CheckResult(label, "ok", "grouping off (snapcast not required)")
+    if shutil.which("snapclient") is None:
+        return CheckResult(label, "ok", "snapclient not installed (n/a)")
+
+    try:
+        proc = _run(["snapclient", "--version"])
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        return CheckResult(
+            label, "ok",
+            f"could not determine the installed snapclient version: {e}",
+        )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return CheckResult(
+            label, "ok",
+            "could not determine the installed snapclient version: "
+            f"snapclient exited {proc.returncode}"
+            + (f": {detail}" if detail else ""),
+        )
+    match = re.search(r"\d+\.\d+\.\d+", (proc.stdout or "") + (proc.stderr or ""))
+    if match is None:
+        return CheckResult(
+            label, "ok",
+            "could not determine the installed snapclient version from "
+            "`snapclient --version` output",
+        )
+    installed = match.group(0)
+    if installed != VALIDATED_SNAPCAST_VERSION:
+        return CheckResult(
+            label, "warn",
+            f"installed snapclient {installed} differs from the "
+            f"{VALIDATED_SNAPCAST_VERSION} this design validated against — "
+            "not pinned by design (a pin would block security updates and "
+            "fail installs on routine Trixie point releases); this is "
+            "visibility only, not a fault",
+        )
+    return CheckResult(
+        label, "ok", f"installed snapclient matches validated {installed}",
+    )
+
+
 @doctor_check(order=74, group="grouping")
 def check_grouping_rate_adjust() -> CheckResult:
-    """inv-5 (docs/HANDOFF-multiroom.md §2): an ACTIVE bond LEADER's local
-    CamillaDSP must run ``enable_rate_adjust: false``.
+    """inv-5 (docs/HANDOFF-multiroom.md §2): no CamillaDSP **in a bonded chain**
+    runs ``enable_rate_adjust: true`` — on either role.
 
     snapclient's sample-stuffing is the single rate-tracker for the synced
     chain; a second rate-adjuster in the leader's CamillaDSP (the one
     daemon writing the shared stream) fights it and oscillates (the
     documented ``rate_adjust`` + ``AsyncSinc`` trap). The no-rate-adjust rule is
     SPECIFIC to the leader's pipe-writing CamillaDSP (a File/pipe sink has no
-    output clock, so snapclient is the sole tracker). A FOLLOWER is out of this
-    check's scope because it correctly runs ``rate_adjust: true``: a passive
-    follower's CamillaDSP sits outside the bonded path, and an ACTIVE follower's
-    CamillaDSP IS in the bonded path (distributed-active Slice 3 — it captures
-    the round-trip loopback and runs Layer A) but is itself the sole rate-tracker
-    of that loopback, so ``rate_adjust: true`` is REQUIRED there, not forbidden.
+    output clock, so snapclient is the sole tracker). An ACTIVE follower's
+    CamillaDSP IS in the bonded path
+    (distributed-active Slice 3 — it captures the grouping ring and runs
+    Layer A) but is not a tracker there either. snapclient is — in BOTH endpoint
+    roles, follower and active leader, each writing its own box's grouping ring.
+    CamillaDSP's ``enable_rate_adjust`` follows the SINK it plays into, and on a
+    ring CAPTURE the request cannot be actuated at all — a ring PCM is an
+    ioplug, so CamillaDSP builds no HCtl and finds no mixer element to steer.
+    A stray ``true`` on an active follower is therefore INERT, which is exactly
+    why this stays ``warn`` rather than ``fail``: it is an observability lie, not
+    a hazard, and the check's job is to catch a bond apply that did not land.
+
+    A DUMB (passive, single-DAC) follower is the one bonded shape still OUT of
+    scope, and deliberately so: it plays the round-tripped stream through
+    outputd's ``dac_content`` lane, and its own CamillaDSP stays on the solo
+    fallback feed — which :func:`jasper.multiroom.member_config.member_camilla_kwargs`
+    emits with ``enable_rate_adjust=True`` on purpose, into a sink that really
+    does have a clock. There is no bond apply on that box for this check to
+    catch, so including it would warn on a correctly-configured speaker.
+
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...multiroom.config import is_active_leader, load_config
+    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.reconcile import is_active_speaker_box
     from .correction import _active_camilla_config_path
 
     label = "grouping: rate_adjust"
     cfg = load_config()
-    if not is_active_leader(cfg):
-        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+    # "In the bonded chain" for the instance this check reads (the ACTIVE
+    # statefile's config — camilla#1 on a passive leader and on an active
+    # follower, camilla#2 on an active leader): a LEADER of either kind bakes the
+    # program to the snapfifo, and an ACTIVE-speaker FOLLOWER captures the
+    # grouping ring and runs Layer A. A dumb follower is neither.
+    # `is_active_speaker_box` is total and
+    # fail-soft to False, so an unreadable topology narrows the scope rather than
+    # inventing a warn.
+    in_bonded_chain = is_active_member(cfg) and (
+        cfg.role == "leader" or is_active_speaker_box()
+    )
+    if not in_bonded_chain:
+        return CheckResult(
+            label, "ok", "no local CamillaDSP in a bonded chain here (n/a)"
+        )
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
@@ -275,12 +374,23 @@ def check_grouping_rate_adjust() -> CheckResult:
     if rate_adjust is True:
         return CheckResult(
             label, "warn",
-            f"{config_path} has enable_rate_adjust:true but this is an active "
-            "bond LEADER — snapclient + local rate_adjust will oscillate; "
+            f"{config_path} has enable_rate_adjust:true but this box is a "
+            "bonded member — snapclient is the chain's only rate-tracker; "
             "the reconciler's bond apply did not land (check "
             "jasper-grouping-reconcile's journal, or re-save /sound)",
         )
-    return CheckResult(label, "ok", f"rate_adjust off for active leader ({config_path})")
+    if rate_adjust is None:
+        # ``_devices_rate_adjust_from_text`` returns None for ABSENT *or*
+        # unparseable, and neither supports the claim "rate_adjust off" — the
+        # old ``ok`` here reported a fact the file does not carry. The invariant
+        # is unconfirmed, so say so.
+        return CheckResult(
+            label, "warn",
+            f"could not confirm enable_rate_adjust in {config_path} — the "
+            "devices block has no readable enable_rate_adjust key, so this "
+            "bonded member's rate-tracking cannot be verified",
+        )
+    return CheckResult(label, "ok", f"rate_adjust off for bonded member ({config_path})")
 
 
 @doctor_check(order=75, group="grouping")
@@ -374,8 +484,8 @@ def check_grouping_channel_pick() -> CheckResult:
         if active_endpoint:
             return CheckResult(
                 label, "ok",
-                "active endpoint uses the snapclient/CamillaDSP loopback path "
-                "(no outputd channel-pick lane)",
+                "active endpoint uses the snapclient/CamillaDSP grouping ring "
+                "(jts_ring_grouping; no outputd channel-pick lane)",
             )
         return CheckResult(
             label, "warn",
@@ -397,12 +507,12 @@ def check_grouping_channel_pick() -> CheckResult:
                 label, "warn",
                 f"active endpoint should have outputd channel-pick lane cleared "
                 f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
-                "active speakers receive the round-trip through the "
-                "snapclient/CamillaDSP loopback path; run jasper-grouping-reconcile",
+                "active speakers receive the round-trip through the grouping "
+                "ring jts_ring_grouping; run jasper-grouping-reconcile",
             )
         return CheckResult(
             label, "ok",
-            "active endpoint uses snapclient/CamillaDSP loopback channel pick",
+            "active endpoint picks its channel off jts_ring_grouping",
         )
     if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
         return CheckResult(
@@ -922,349 +1032,3 @@ def check_crossover_unit_installed() -> CheckResult:
 # "leader streaming is not built yet — no music producer feeds the snapfifo".
 # See HANDOFF-multiroom.md §2 "Canonical signal flow" + "Stranded by this
 # design".
-
-
-# ---------------------------------------------------------------------------
-# The grouping-remnant guard (audio-graph consolidation #2285, P9-C).
-#
-# WHY THIS EXISTS. P9-C moved every solo box's content lane onto SHM rings and
-# deleted snd-aloop pair 5's PCM definitions. What snd-aloop is still loaded
-# FOR is the bonded round-trip on pair 6 (`GROUPING_LOOPBACK_PLAYBACK` /
-# `_CAPTURE` in jasper/multiroom/reconcile.py) — the design's "option A:
-# bounded aloop remnant, grouping-only". A bounded remnant is only bounded if
-# something measures it, and the design names the failure mode directly
-# (risk 5.1): "the remnant becomes permanent by silence." This check is the
-# measurement, and it carries the EOL issue in its own text so an operator who
-# reads it learns where the remnant is scheduled to die:
-#
-#     https://github.com/jaspercurry/JTS/issues/2508
-#
-# WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
-# the registered set is DERIVED — never restated — from the three places that
-# already own the pair allocation:
-#
-#   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (jasper/cli/doctor/audio_runtime.py)
-#   pair  7    `_FANIN_EXPECTED_OUTPUT_PCM`     (same file)
-#   pair  6    `GROUPING_LOOPBACK_PLAYBACK`     (jasper/multiroom/reconcile.py)
-#
-# Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
-# stops being registered the moment its owning constant stops naming it, with
-# no edit here and no phase label to remember. A hand-maintained table would
-# be a fifth restatement of the allocation (after the modprobe conf prose,
-# asoundrc.jasper, and the two constants above) and would silently keep
-# permitting a lane after its owner dropped it — risk 5.1's "permanent by
-# silence" transplanted onto the very instrument built to measure it.
-#
-# The input roster is read in its ALOOP form deliberately, not through
-# `_fanin_expected_inputs()`: a ring-armed renderer lane still RESERVES its
-# aloop pair (nothing else may take it), so the registered set must not flap
-# with arming state.
-#
-# Pair 5 is absent because no owner names it any more: P9-C deleted its PCM
-# definitions. So an open pair 5 is a box that resurrected a deleted lane (a
-# rolled-back binary, a stale asoundrc, a hand-started process) and is exactly
-# the regression P9-C can produce. That is the FAIL.
-#
-# NOT IMPLEMENTED, DELIBERATELY — the first half of design :497. That bullet
-# opens "snd-aloop present ⟹ grouping-capable box" (restated at :441 as "the
-# module loads only on a grouping-capable box"). This check does NOT assert it,
-# and must not: snd-aloop is still required fleet-wide today, and
-# `check_loopback` (jasper/cli/doctor/audio.py) asserts the OPPOSITE — the
-# module must be present on every box. That clause only becomes assertable once
-# the remnant is grouping-only, so it is carried to #2508 rather than dropped.
-#
-# WHY NOT THE LITERAL "anything but pair 6 is a FAIL". That is the END state
-# (once the reduce lands and asoundrc.jasper carries only the grouping pair),
-# NOT the state this PR ships into, and shipping it today would red-doctor
-# healthy hardware. Live
-# evidence, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
-# `state: RUNNING`, owner cgroup `jasper-fanin.service` — the usbsink lane's
-# idle-read fallback that deploy/modprobe.d/snd-aloop.conf documents ("fan-in
-# still OPENS hw:Loopback,1,3 as the usbsink lane's idle read fallback when USB
-# Audio Input is off"). jts3 and jts.local held nothing. A guard that fails on
-# a documented, healthy holder is a false positive, and a doctor that cries
-# wolf is worse than no doctor. So the registered set tracks its owners, and
-# the guard tightens toward the design's end state as those owners drop pairs.
-#
-# BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
-# small procfs files), plus one `comm`/`cgroup` read per offender, capped at
-# `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
-#
-# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a
-# FAIL: the guard must not convert "I could not look" into "something is
-# wrong".
-#
-# SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
-# `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
-# `aplay` as its probe. Today the false positive is UNREACHABLE: every PCM that
-# probe opens maps to a pair this check still registers (0/1/2 renderer lanes,
-# 4 correction), so an observed temporary open reads as `ok` either way. The
-# serialization is kept because it becomes load-bearing the moment a pair
-# retires — an unregistered pair briefly held open by a co-tenant probe would
-# then read as an offender — and its cost is near zero.
-# ---------------------------------------------------------------------------
-
-#: procfs ALSA root. Overridable for tests, matching the established
-#: `JASPER_ASOUND_ROOT` hook already used by deploy/bin/jasper-camilla-recover
-#: and jasper/cli/xvf_profile.py, so this check tests the same way the rest of
-#: the tree already does.
-_ALOOP_PROC_ROOT_ENV = "JASPER_ASOUND_ROOT"
-_ALOOP_PROC_ROOT_DEFAULT = "/proc/asound"
-
-#: The snd-aloop card id, pinned by deploy/modprobe.d/snd-aloop.conf
-#: (`id=Loopback`).
-_ALOOP_CARD_ID = "Loopback"
-
-#: snd-aloop exposes two PCM devices, each with a playback and a capture side.
-#: Verified on jts3 (2026-08-14): /proc/asound/Loopback contains exactly
-#: pcm0c, pcm0p, pcm1c, pcm1p, each with sub0..sub7.
-_ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
-
-#: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_grouping_remnant.py so a future
-#: reduction cannot leave this walker scanning a range the module no longer
-#: has, and cannot leave the grouping constants naming a pair that no longer
-#: exists.
-_ALOOP_SUBSTREAMS = 8
-
-#: Cap on how many offenders are spelled out in the FAIL detail, so a
-#: pathological box cannot produce an unbounded doctor line.
-_ALOOP_OFFENDER_DETAIL_CAP = 4
-
-
-def _aloop_proc_root() -> Path:
-    return Path(
-        os.environ.get(_ALOOP_PROC_ROOT_ENV, _ALOOP_PROC_ROOT_DEFAULT)
-    )
-
-
-def _pair_from_loopback_pcm(pcm: str) -> int | None:
-    """Substream index from an ``hw:Loopback,<device>,<sub>`` name.
-
-    Returns None for anything that is not an snd-aloop hw triple — a ring path,
-    a plug wrapper, a renamed card. Callers treat None as "cannot derive" and
-    degrade to `warn`; they must never treat it as "this pair is not
-    registered", because that would SHRINK the registered set and turn a
-    healthy box red.
-    """
-    m = re.fullmatch(r"hw:([^,]+),\d+,(\d+)", pcm.strip())
-    if not m or m.group(1) != _ALOOP_CARD_ID:
-        return None
-    return int(m.group(2))
-
-
-def _grouping_pair_index() -> int | None:
-    """The substream index the grouping round-trip is pinned to.
-
-    Read from `jasper.multiroom.reconcile`'s own constant rather than
-    hardcoded, so the remnant's identity has ONE owner. Returns None when the
-    constant is not a Loopback hw triple this can parse — the caller degrades
-    to `warn` rather than guessing an index.
-    """
-    from ...multiroom.reconcile import GROUPING_LOOPBACK_PLAYBACK
-
-    return _pair_from_loopback_pcm(GROUPING_LOOPBACK_PLAYBACK)
-
-
-def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
-    """``({pair: provenance}, grouping_pair)`` derived from the owning facts.
-
-    The registered set is never written down here — it is read out of the
-    constants that already own the allocation (see the header comment). A pair
-    leaves the set exactly when its owner stops naming it.
-
-    Returns None if ANY source constant is unparseable. That is deliberately
-    all-or-nothing: a partial derivation would silently shrink the registered
-    set, and a shrunk set turns legitimate holders into doctor FAILs. Better to
-    say "I could not derive this" than to red-doctor a healthy speaker.
-    """
-    from .audio_runtime import (
-        _FANIN_EXPECTED_ALOOP_INPUTS,
-        _FANIN_EXPECTED_OUTPUT_PCM,
-    )
-
-    registered: dict[int, str] = {}
-
-    for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS:
-        pair = _pair_from_loopback_pcm(pcm)
-        if pair is None:
-            return None
-        registered[pair] = f"fan-in input lane {label!r}"
-
-    output_pair = _pair_from_loopback_pcm(_FANIN_EXPECTED_OUTPUT_PCM)
-    if output_pair is None:
-        return None
-    registered[output_pair] = "fan-in summed music output"
-
-    grouping_pair = _grouping_pair_index()
-    if grouping_pair is None:
-        return None
-    # Last on purpose: the remnant's own row wins the provenance string if the
-    # grouping round-trip ever shares a pair with another owner (today it does
-    # not — pair 6's passive-content use is mutually exclusive by hardware
-    # mode, never concurrent).
-    registered[grouping_pair] = "THE REMNANT — bonded grouping round-trip (#2508)"
-
-    return registered, grouping_pair
-
-
-def _aloop_substream_owner(status_text: str) -> str:
-    """Best-effort ``pid=N comm=… cgroup=…`` for an open substream.
-
-    Returns ``""`` when nothing is readable. Naming the offender is the point
-    of the FAIL, but a procfs race (the owner exits between the status read
-    and the comm read) must never turn into a crash or a different verdict —
-    every step here degrades to LESS DETAIL, never to a changed status.
-    """
-    m = re.search(r"owner_pid\s*:\s*(\d+)", status_text)
-    if not m:
-        return ""
-    pid = m.group(1)
-    parts = [f"pid={pid}"]
-    for name, path in (
-        ("comm", Path(f"/proc/{pid}/comm")),
-        ("cgroup", Path(f"/proc/{pid}/cgroup")),
-    ):
-        try:
-            value = path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            continue
-        if not value:
-            continue
-        if name == "cgroup":
-            # Keep only the leaf unit — the full cgroup path is long and the
-            # unit name is the actionable half.
-            value = value.splitlines()[-1].rsplit("/", 1)[-1]
-        parts.append(f"{name}={value}")
-    return " ".join(parts)
-
-
-@doctor_check(
-    order=75.96,
-    group="grouping",
-    exclusive_group="audio-probe",
-)
-def check_grouping_aloop_remnant() -> CheckResult:
-    """snd-aloop is loaded only for the grouping remnant — nothing else holds it.
-
-    Audio-graph consolidation #2285, P9-C. See the header comment above for
-    the full rationale; the operator-facing summary:
-
-    - snd-aloop absent            -> ok (no remnant on this box)
-    - registered set underivable  -> warn (never a shrunken set)
-    - /proc unreadable            -> warn (fail-soft; never a FAIL)
-    - every open pair registered  -> ok, reporting the remnant's current size
-    - an UNREGISTERED pair open   -> fail, naming the offender
-
-    The registered set is DERIVED from the constants that own the pair
-    allocation, so it shrinks on its own as pairs retire. The unregistered
-    case is pair 5 today: P9-C deleted its PCM definitions, so anything
-    holding it has resurrected a deleted lane.
-
-    EOL for the remnant itself: issue #2508.
-    """
-    label = "grouping aloop remnant"
-
-    card_dir = _aloop_proc_root() / _ALOOP_CARD_ID
-    if not card_dir.is_dir():
-        return CheckResult(
-            label,
-            "ok",
-            f"snd-aloop not loaded ({card_dir} absent) — no aloop remnant "
-            "on this box",
-        )
-
-    derived = _derive_registered_pairs()
-    if derived is None:
-        return CheckResult(
-            label,
-            "warn",
-            "could not derive the registered substream set from its owning "
-            "constants (_FANIN_EXPECTED_ALOOP_INPUTS / "
-            "_FANIN_EXPECTED_OUTPUT_PCM in jasper/cli/doctor/audio_runtime.py, "
-            "GROUPING_LOOPBACK_PLAYBACK in jasper/multiroom/reconcile.py) — "
-            "each must be an 'hw:Loopback,<device>,<sub>' triple. The "
-            "remnant's scope cannot be verified.",
-        )
-    registered_pairs, grouping_pair = derived
-    # There is deliberately NO "grouping pair missing from the registry" branch:
-    # the grouping pair is derived from GROUPING_LOOPBACK_PLAYBACK and inserted
-    # by the same function, so it is in the set by construction. The earlier
-    # hand-maintained table could drift from that constant; a derived set
-    # cannot, so the branch that caught that drift is now unreachable code.
-    # `test_grouping_pair_is_always_registered` pins the invariant instead.
-
-    offenders: list[str] = []
-    registered_open: set[int] = set()
-    unreadable = 0
-    scanned = 0
-
-    for pcm_dir in _ALOOP_PCM_DIRS:
-        for pair in range(_ALOOP_SUBSTREAMS):
-            status_path = card_dir / pcm_dir / f"sub{pair}" / "status"
-            try:
-                text = status_path.read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            except FileNotFoundError:
-                # A substream this kernel does not expose is not evidence of
-                # anything — absence is a narrower module, not a fault.
-                continue
-            except OSError:
-                unreadable += 1
-                continue
-            scanned += 1
-            stripped = text.strip()
-            first = stripped.splitlines()[0].strip() if stripped else ""
-            if not first or first == "closed":
-                continue
-            if pair in registered_pairs:
-                registered_open.add(pair)
-                continue
-            owner = _aloop_substream_owner(text)
-            offenders.append(
-                f"{pcm_dir}/sub{pair} ({first})"
-                + (f" {owner}" if owner else " owner unreadable")
-            )
-
-    if scanned == 0:
-        return CheckResult(
-            label,
-            "warn",
-            f"snd-aloop card present at {card_dir} but no substream status "
-            f"was readable ({unreadable} read error(s)) — the remnant's scope "
-            "could not be verified",
-        )
-
-    if offenders:
-        shown = offenders[:_ALOOP_OFFENDER_DETAIL_CAP]
-        more = len(offenders) - len(shown)
-        suffix = f" (+{more} more)" if more > 0 else ""
-        return CheckResult(
-            label,
-            "fail",
-            "snd-aloop substream(s) open with no registered purpose in this "
-            f"phase: {'; '.join(shown)}{suffix}. snd-aloop is retained only "
-            f"for the grouping round-trip on pair {grouping_pair} (#2508); "
-            "pair 5's PCM definitions were DELETED by #2285 P9-C, so a holder "
-            "there means a rolled-back binary or a stale /etc/asound.conf "
-            "resurrected a deleted lane. Identify the process above, stop it, "
-            "and re-run `bash scripts/deploy-to-pi.sh` to restore the shipped "
-            "ALSA config.",
-        )
-
-    non_grouping = sorted(registered_open - {grouping_pair})
-    detail = (
-        f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
-        f"still registered, grouping remnant on pair {grouping_pair} (#2508)"
-    )
-    if non_grouping:
-        detail += (
-            "; open non-grouping pairs held by registered owners: "
-            f"{non_grouping}"
-        )
-    else:
-        detail += "; no non-grouping pair currently open"
-    if unreadable:
-        detail += f"; {unreadable} substream status file(s) unreadable"
-    return CheckResult(label, "ok", detail)

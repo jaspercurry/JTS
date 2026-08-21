@@ -20,6 +20,7 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import os
 
@@ -37,6 +38,7 @@ from jasper.multiroom.config import (
     GroupingConfig,
 )
 from jasper.multiroom import reconcile as reconcile_mod
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     SNAPCLIENT_UNIT,
@@ -408,15 +410,14 @@ def test_snapclient_argv_adds_file_player_when_fifo_set():
     assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
 
 
-# ---------- snapclient_argv(): ACTIVE follower loopback (Slice 3) ----------
+# ---------- snapclient_argv(): ACTIVE endpoint ring player (Slice 3) --------
 
 
-def test_snapclient_argv_active_endpoint_uses_alsa_loopback_player():
-    """An active follower writes the round-trip snd-aloop loopback via the ALSA
-    player (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO —
-    its CamillaDSP captures the paired side and runs Layer A in the bonded
-    path."""
-    dev = reconcile_mod.GROUPING_LOOPBACK_PLAYBACK
+def test_snapclient_argv_active_endpoint_uses_alsa_ring_player():
+    """An active endpoint writes the grouping ring via the ALSA player
+    (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO — its
+    CamillaDSP captures the SAME PCM and runs Layer A in the bonded path."""
+    dev = GROUPING_RING_PCM
     argv = snapclient_argv(_follower(), player_alsa_device=dev)
     assert argv[argv.index("--soundcard") + 1] == dev
     assert argv[argv.index("--player") + 1] == "alsa"
@@ -424,12 +425,12 @@ def test_snapclient_argv_active_endpoint_uses_alsa_loopback_player():
 
 
 def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
-    """If both are (defensively) passed, the ALSA loopback wins — the active
-    path never falls back to the FIFO."""
+    """If both are (defensively) passed, the ALSA ring wins — the active path
+    never falls back to the FIFO."""
     argv = snapclient_argv(
         _follower(),
         player_fifo="/x.fifo",
-        player_alsa_device="hw:Loopback,0,6",
+        player_alsa_device=GROUPING_RING_PCM,
     )
     assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
 
@@ -475,7 +476,7 @@ def test_assemble_args_leader_strips_binary_name_from_client():
     # the round-trip file player (Increment 5) and not an ALSA sink, which
     # on this path would fight outputd for the DAC. NOT "always": an
     # active-speaker endpoint gets `--player alsa` instead — pinned by
-    # test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
+    # test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
     assert d[CLIENT_KEY] == " ".join(
         snapclient_argv(_leader(), player_fifo=MEMBER_CONTENT_FIFO)[1:]
     )
@@ -502,7 +503,7 @@ def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
 
     Scoped to that path, not a universal. An active-speaker endpoint
     (active_endpoint=True) writes an ALSA sink instead — pinned by
-    test_assemble_args_active_endpoint_writes_loopback_not_fifo below.
+    test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
     This test's name describes the default path it covers."""
     from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
 
@@ -513,18 +514,15 @@ def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
     assert "alsa:device=default" not in d[CLIENT_KEY]
 
 
-def test_assemble_args_active_endpoint_writes_loopback_not_fifo():
-    """An ACTIVE follower (active_endpoint=True) writes the snd-aloop round-trip
-    loopback via the ALSA player; the dumb-follower FIFO is NOT used (camilla
-    owns the path). The default (active_endpoint=False) is unchanged."""
-    from jasper.multiroom.reconcile import (
-        GROUPING_LOOPBACK_PLAYBACK,
-        MEMBER_CONTENT_FIFO,
-    )
+def test_assemble_args_active_endpoint_writes_the_ring_not_fifo():
+    """An ACTIVE endpoint (active_endpoint=True) writes the grouping ring via
+    the ALSA player; the dumb-follower FIFO is NOT used (camilla owns the
+    path). The default (active_endpoint=False) is unchanged."""
+    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
 
     d = _assemble_args(_follower(), active_endpoint=True)
     assert d[SERVER_KEY] == ""  # a follower runs no server
-    assert f"--soundcard {GROUPING_LOOPBACK_PLAYBACK} --player alsa" in d[CLIENT_KEY]
+    assert f"--soundcard {GROUPING_RING_PCM} --player alsa" in d[CLIENT_KEY]
     assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
     # default path is the dumb FIFO (regression guard for the off-by-default).
     assert "--soundcard" not in _assemble_args(_follower())[CLIENT_KEY]
@@ -1770,8 +1768,8 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     monkeypatch,
 ):
     """An active follower: the readiness GATE runs BEFORE the units (fail-safe),
-    snapclient writes the loopback (not the FIFO), and the CamillaDSP swap runs
-    AFTER the unit plan (so the loopback has its writer)."""
+    snapclient writes the grouping ring (not the FIFO), and the CamillaDSP swap
+    runs AFTER the unit plan (so the ring has its writer)."""
     import jasper.multiroom.follower_config as fc_mod
 
     target, order = _patch_main_io(monkeypatch, tmp_path, _follower())
@@ -1793,9 +1791,9 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     # Gate before units; camilla swap after the unit plan.
     assert order.index("precheck") < order.index("apply")
     assert order.index("apply") < order.index("camilla_active_follower")
-    # snapclient targets the round-trip loopback, not the dumb FIFO.
+    # snapclient targets the grouping ring, not the dumb FIFO.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
     # endpoint status persisted as active_crossover.
     status = tmp_path / "grouping-follower-status.json"
@@ -2081,8 +2079,8 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     """An active leader: the readiness GATE runs BEFORE the units (fail-safe);
     after the units, camilla#1 bakes the wire, the crossover statefile is
     RE-SEEDED, then camilla#2 is armed (enable --now). snapclient writes the
-    loopback (its own receiver), the leader hosts the stream, and the endpoint
-    status persists active_leader=true."""
+    grouping ring (its own receiver), the leader hosts the stream, and the
+    endpoint status persists active_leader=true."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
@@ -2116,10 +2114,10 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     # the active-content lane.
     assert "outputd_restart" not in order
     assert "stream_binding" in order  # the leader hosts the stream
-    # snapclient targets the round-trip loopback (the leader is its own receiver),
+    # snapclient targets the grouping ring (the leader is its own receiver),
     # not the dumb FIFO; the leader still runs snapserver.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
     assert f"{SERVER_KEY}=" in body and SNAPFIFO in body
     # endpoint status persisted as an active LEADER.
@@ -2156,7 +2154,7 @@ def test_main_active_leader_already_armed_skips_release_probe(
     assert "probe" not in order
     assert "arm_camilla2" not in order
     assert "stream_binding" in order
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+    assert GROUPING_RING_PCM in target.read_text()
 
 
 def test_main_active_leader_precheck_failure_falls_back_to_solo(tmp_path, monkeypatch):
@@ -2537,7 +2535,7 @@ def test_main_active_leader_skips_arm_when_audio_hardware_reconcile_fails(
 ):
     """After the bake and inert camilla#2 statefile seed, outputd must
     re-converge to the active-content lane before camilla#2 can safely own the
-    round-trip loopback. If that handoff fails, leave camilla#2 unarmed."""
+    grouping ring. If that handoff fails, leave camilla#2 unarmed."""
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
     _patch_active_leader(monkeypatch, order)
@@ -2626,7 +2624,7 @@ def test_main_active_leader_skips_arm_and_restores_when_pcm_busy(
     # The first part of reconcile still writes the active endpoint snapclient
     # args; fail-closed here is the late camilla handoff, not a permanent unbond.
     body = target.read_text()
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in body
+    assert GROUPING_RING_PCM in body
     status = (tmp_path / "grouping-follower-status.json").read_text()
     assert '"blocked_reason": "active_content_pcm_busy"' in status
     assert '"active_leader": false' in status
@@ -2679,7 +2677,7 @@ def test_main_active_leader_fails_closed_when_writer_lock_absent(
     assert '"active_leader": false' in status
     # Still wrote the active endpoint snapclient args — fail-closed here is the
     # late camilla handoff, not a permanent unbond.
-    assert reconcile_mod.GROUPING_LOOPBACK_PLAYBACK in target.read_text()
+    assert GROUPING_RING_PCM in target.read_text()
 
 
 def test_main_active_leader_fails_closed_through_the_real_writer_lock_probe(
@@ -3521,6 +3519,13 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
 
 
 # --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
+#
+# NARROWED (T-5): the refusal's subject is outputd's dac_content lane, not
+# "grouping is on". `_patch_main_io` stubs `_output_topology_state` to
+# (False, True) — a PASSIVE box with a saved flat-capable layout, i.e. the DUMB
+# member that reads the lane — so the two refusal tests below keep their meaning
+# and only their reason token changes. The box that used to be refused for
+# nothing is covered by `test_ring_armed_active_endpoint_may_bond`.
 
 
 def _arm_ring_for_reconcile(monkeypatch):
@@ -3529,6 +3534,131 @@ def _arm_ring_for_reconcile(monkeypatch):
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
+
+
+def test_box_lane_verdict_reads_the_topology_the_writer_reads(monkeypatch):
+    """`box_dac_content_lane_armed` is the live twin of the pure predicate, for
+    the two gates that hold only a route mode. It must answer from the SAME
+    `_output_topology_state` the writer's own caller reads."""
+    cfg = _leader()
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, True))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is True  # DUMB member
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False  # ACTIVE endpoint
+    # A passive box whose layout was never saved: the writer clears the lane
+    # there too (no declared speaker to send a flat program to).
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, False))
+    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False
+
+
+def test_topology_state_survives_an_unimportable_dependency(monkeypatch):
+    """ORDER IS LOAD-BEARING: the ImportError limb must precede the
+    OutputTopologyError one.
+
+    `OutputTopologyError` is bound by an import INSIDE the try, so if any earlier
+    lazy import fails, evaluating the `except OutputTopologyError` clause raises
+    UnboundLocalError instead — which neither of this function's two new callers
+    catches, and in the audio_health sampler that kills a daemon thread silently.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jasper.active_speaker.playback_route", None)
+
+    assert reconcile_mod._output_topology_state() == (None, False)
+
+
+def test_box_lane_verdict_reads_no_topology_for_a_non_member(monkeypatch):
+    """The writer's OFF path is answered BEFORE any topology read.
+
+    `_output_topology_state` logs a WARN per call on an unreadable topology, and
+    this predicate is on the 60 s route sampler and every /state build — so a
+    SOLO box that has no lane at all must not pay either the I/O or the spam.
+    """
+    calls = []
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_output_topology_state",
+        lambda: calls.append(1) or (False, True),
+    )
+
+    solo = dataclasses.replace(_leader(), enabled=False)
+    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
+    invalid = dataclasses.replace(_leader(), error="JASPER_GROUPING_BOND_ID is empty")
+    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
+    assert calls == [], "a non-member must not read the topology at all"
+
+    # …and a real member still does.
+    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
+    assert calls == [1]
+
+
+def test_box_lane_verdict_fails_closed_on_an_unreadable_topology(monkeypatch):
+    """UNCERTAINTY FAILS CLOSED, and only on the axis that was unreadable.
+
+    `_output_topology_state` answers `(None, False)` when topology.json cannot
+    be read — the 2026-05-23 filesystem-loss class — and that cannot separate a
+    DUMB member (lane armed) from an ACTIVE endpoint (lane cleared). Answering
+    "not armed" there would let a box arm the ring while a stale
+    `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is still live in outputd's env, and
+    outputd fail-closes on FIFO + a non-`direct` bridge — the boot-loop shape
+    the T5.1 guard exists to contain. So the rule is asked with the worst-case
+    shape instead.
+
+    A solo or invalid config still answers False, because that is the writer's
+    OFF-path answer and no guess was needed on that axis.
+    """
+    import dataclasses
+
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (None, False))
+    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
+    assert reconcile_mod.box_dac_content_lane_armed(_follower()) is True
+
+    solo = dataclasses.replace(_leader(), enabled=False)
+    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
+    invalid = dataclasses.replace(
+        _leader(), error="JASPER_GROUPING_BOND_ID is empty"
+    )
+    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
+
+
+def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
+    """B1's subject, from the other direction: an ACTIVE-speaker box whose
+    dac_content lane the writer clears is NOT refused by the ring gate.
+
+    This is the cell the whole hazard PR exists to admit — a bonded, ring-armed
+    active leader — and before the narrowing it was unreachable, which is why
+    the coupling-blind program bake it exposes had to land in the same PR.
+
+    Asserted as "the ring gate did not fire", not as "the bond succeeded": the
+    reconcile runs on past it into the active-leader precheck, whose own gates
+    (snapcast present, graphs re-proved) are a different subject and are not
+    hermetic here. Under the pre-narrowing rule the gate fired FIRST and
+    `fall_back_to_solo` skipped that precheck entirely, so a blocked_reason from
+    any later gate is itself proof the ring gate let the box through.
+    """
+    _patch_main_io(monkeypatch, tmp_path, _leader())
+    # ACTIVE box: roleful topology, so no flat DAC graph is permitted and the
+    # dac_content lane is cleared by outputd_grouping_env.
+    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
+    _arm_ring_for_reconcile(monkeypatch)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        main([])
+
+    assert not any(
+        "event=multiroom.reconcile.ring_armed_bond_blocked" in record.message
+        for record in caplog.records
+    ), "the ring gate fired on a box whose dac_content lane is cleared"
+
+    import json
+
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status.get("blocked_reason") not in (
+        "ring_armed_box_cannot_bond",  # the pre-narrowing token
+        "fanin_shm_ring_unsupported_with_dac_content_lane",
+    ), status
 
 
 def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch):
@@ -3546,7 +3676,10 @@ def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch
     import json
 
     status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
-    assert status.get("blocked_reason") == "ring_armed_box_cannot_bond"
+    assert (
+        status.get("blocked_reason")
+        == "fanin_shm_ring_unsupported_with_dac_content_lane"
+    )
     assert status.get("local_sources_allowed") is True
 
 
@@ -3566,7 +3699,9 @@ def test_ring_armed_follower_status_allows_sources_after_solo_fallback(
     assert main([]) == 1
     status_path = tmp_path / "grouping-follower-status.json"
     status = read_effective_role_status(str(status_path))
-    assert status["blocked_reason"] == "ring_armed_box_cannot_bond"
+    assert (
+        status["blocked_reason"] == "fanin_shm_ring_unsupported_with_dac_content_lane"
+    )
     assert status["local_sources_allowed"] is True
     assert (
         effective_local_sources_park_reason(

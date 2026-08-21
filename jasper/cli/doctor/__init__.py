@@ -339,6 +339,7 @@ from .grouping import (
     check_grouping_pair_channels,
     check_grouping_pair_lock,
     check_grouping_snapcast_installed,
+    check_grouping_snapcast_version,
     check_grouping_tts_lane,
     check_grouping_rate_adjust,
 )
@@ -649,6 +650,7 @@ __all__ = [
     "check_grouping_pair_channels",
     "check_grouping_pair_lock",
     "check_grouping_snapcast_installed",
+    "check_grouping_snapcast_version",
     "check_grouping_tts_lane",
     "check_grouping_rate_adjust",
     "_PROBE_REF_PASS_THRESHOLD",
@@ -1051,7 +1053,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--probe-aec", action="store_true",
-        help="Active probe — play a brief sine into correction_substream "
+        help="Active probe — play a brief sine into the correction lane "
              "and verify the AEC bridge's `ref` rises in its rms log. "
              "Skips the standard checks and runs only this one test. "
              "Refuses if a renderer is currently playing.",
