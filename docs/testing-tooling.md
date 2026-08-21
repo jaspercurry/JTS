@@ -1768,6 +1768,13 @@ and `dumps/sidecar/`). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end
 regardless of outcome.
 
+Before comparing LEVELS across banked sidecars, read each one's
+`provenance` block — the live fader, the held session volume, and which DSP
+graph the capture actually went through. A CHECK/MEASURE capture and a summed
+one report the same `config_path` while their transfer functions differ by
++7…+15 dB per branch, so `graph.kind` is the field that tells them apart. See
+["`provenance` — the config label is not the graph"](HANDOFF-crossover-measurement-v2.md#provenance--the-config-label-is-not-the-graph).
+
 Three things can make the script refuse a run, and none of them ever
 deletes a file that was already pulled — the refusal is the exit code
 plus the printed findings, forensics stay on disk. Each has its own exit

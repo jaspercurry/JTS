@@ -301,7 +301,22 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # volume active. Cleanup-and-reraise only; never a silent path. The wired
 # runner is the relay runner's sibling, so it inherits the slot the relay's
 # arm already argued for, restated per-site as this ratchet requires.
-MAX_NOQA_MARKERS = 815
+#
+# 815 -> 816 (capture level/graph provenance, 2026-08-20): +1 BLE001 for
+# capture_provenance.record_capture_provenance -- the outer belt on the
+# forensic capture-provenance block. Its contract is not "handle the known
+# failures" (observe_capture_provenance already names, per read, the types a
+# CamillaDSP read can actually meet) but "recording what a capture was taken
+# through may never cost a household its measurement", and an exception type
+# nobody predicted is exactly what that promise exists for: this runs INSIDE
+# the writer lock, on the play path, immediately before the WAV handoff.
+# Blind-and-log only, never a silent path -- it emits result=failed with
+# exc_info -- and BaseException still passes, so a cancelled measurement stays
+# cancelled. One site, one owner: the belt lives in the module rather than at
+# each playback branch, so a second branch cannot forget it. Pinned by
+# tests/test_capture_provenance.py's
+# test_an_unforeseen_exception_type_still_cannot_reach_the_capture.
+MAX_NOQA_MARKERS = 816
 MAX_BLE001_MARKERS = 618
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
@@ -1119,7 +1134,34 @@ MAX_LINES_BY_PATH = {
     # owns. What did NOT land here is the merge — see the flow's entry above.
     # 2026-08-20 basin pin (gate fix round SF1): 9,079 -> 9,083. Argued in the
     # dated block at the end of this dict, with the two files it moves with.
-    "jasper/web/correction_crossover_v2.py": 9_083,
+    #
+    # 2026-08-20 (capture level/graph provenance): 9,083 -> 9,182. +99, and the
+    # extraction the ratchet asks for DID happen — every line of logic went to
+    # the new `jasper/active_speaker/capture_provenance.py` (the block's shape,
+    # the live reads, the per-field fail-soft, the never-raise outer belt, the
+    # one-capture recorder). What stayed here is the wiring that only this file
+    # can do, because only this file knows the facts:
+    #   11  `capture_dump_enabled`, so "is retention on" has ONE reader now that
+    #       the play seam asks it too — previously an inline `.exists()`.
+    #   ~23 three optional `provenance` parameters and their docstring
+    #       paragraphs, on `bind_production_play`, `bind_production_analyze`,
+    #       and `bind_v2_stage_seams`. Each says what the recorder is FOR at the
+    #       seam it reaches, because a bare `Any = None` parameter on three
+    #       seams is the shape most likely to be deleted as unused.
+    #   ~30 the two playback branches and the `play_wav` wrapper. This is the
+    #       load-bearing part and it cannot move: `_play_body` is the ONE place
+    #       that knows whether the transient routing graph was loaded, and the
+    #       wrapper is the only point inside the writer lock where the loaded
+    #       graph is still live. The comments say why the observation sits
+    #       outside the phase-ladder wrapper and inside `play_program`; get
+    #       either wrong and the recorded graph is the applied one.
+    #   ~20 the sidecar write, the recorder constructions at the two session
+    #       call sites, and the forwards.
+    #   ~15 imports and the `cam` hoist.
+    # Trimmed to this after a first pass measured +144: the incident narrative
+    # and the fail-soft contract now live once, in the new module, and this
+    # file points at them rather than restating them.
+    "jasper/web/correction_crossover_v2.py": 9_182,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

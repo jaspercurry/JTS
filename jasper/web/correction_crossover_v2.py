@@ -99,6 +99,10 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
 # adds no cycle and no import cost worth deferring — every other flow symbol in
 # this module stays lazily imported inside its own function, as before.
+from jasper.active_speaker.capture_provenance import (
+    CaptureProvenanceRecorder,
+    record_capture_provenance,
+)
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
@@ -216,6 +220,18 @@ XOVER_CAPTURE_DUMP_ENABLED_MARKER = "ENABLED"
 # is not counted), oldest-first deletion.
 XOVER_CAPTURE_DUMP_MAX_FILES = 90
 XOVER_CAPTURE_DUMP_MAX_BYTES = 300 * 1024 * 1024  # 300 MB
+
+
+def capture_dump_enabled() -> bool:
+    """Is operator capture retention switched on right now?
+
+    ONE reader of the marker, because two moments of a capture now depend on
+    the answer: the play seam decides whether to observe the graph, and
+    ``_maybe_retain_capture`` decides whether to write the clip. Read fresh
+    every call — the operator creates and deletes the marker on a live
+    speaker, with no restart.
+    """
+    return (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists()
 
 _state_lock = threading.RLock()
 _state_path_override: Path | None = None
@@ -4544,6 +4560,7 @@ def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
+    provenance: Any = None,
 ) -> "AnalyzeCapture":
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
@@ -4568,6 +4585,12 @@ def bind_production_analyze(
     retained sidecars, per the 2026-07-29 WO-0 retrospective). No default:
     see ``crossover_v2_flow.AnalyzeCapture``'s docstring for why a silent
     fallback to ``program.phase`` is exactly the defect class being fixed.
+
+    ``provenance`` (optional) is the session's
+    :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`
+    — the same object ``bind_production_play`` records into, and the only way a
+    retained capture can name the graph it went through. Omitted, retention
+    behaves exactly as before.
     """
 
     def _analyze(
@@ -4666,6 +4689,9 @@ def bind_production_analyze(
             # up as the corpus's only reliable join. ``meta`` is the evidence
             # ``refs`` dict, which already holds the bundle session id.
             bundle_session_id=str((meta or {}).get("bundle_session_id") or ""),
+            # THIS capture's stimulus, consumed once: a second analyze with no
+            # play between gets ``None``, never the last capture's context.
+            provenance=provenance.take() if provenance is not None else None,
         )
         return analysis
 
@@ -4719,6 +4745,7 @@ def _prune_capture_dump(
 def _maybe_retain_capture(
     *, phase: str, result: Any, wav: bytes, analysis: Any,
     bundle_session_id: str = "",
+    provenance: Any = None,
 ) -> None:
     """Operator-debug capture retention (Part 2 — off by default, bounded).
 
@@ -4732,6 +4759,12 @@ def _maybe_retain_capture(
     ``jasper.active_speaker.crossover_v2_flow``) so a retained clip is
     self-describing without replaying the analysis, then ring-buffer prunes
     the directory.
+
+    ``provenance`` is what the play seam observed while THIS capture's stimulus
+    was emitting (:mod:`jasper.active_speaker.capture_provenance`). Handed in,
+    never read here: by then the routing graph is restored and the fader may
+    have moved, so every one of those facts would be read after the fact.
+    ``None`` leaves the block absent rather than claiming an unmeasured context.
 
     ``phase`` is the caller's resolved label (the flow's own phase — see
     ``_analyze``'s docstring), not derived here. Before the #1855 fix this
@@ -4750,7 +4783,7 @@ def _maybe_retain_capture(
     which stubs ``analyze_program_capture`` to return a bare string) is
     caught and logged at WARN, never raised past this function.
     """
-    if not (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists():
+    if not capture_dump_enabled():
         return
     try:
         from jasper.audio_measurement import program_analysis as _pa
@@ -4785,6 +4818,11 @@ def _maybe_retain_capture(
             "setup_calibration_id": setup_calibration_id,
             "diagnostic": _pa.analysis_diagnostic_summary(analysis),
         }
+        # What the capture was taken THROUGH — fader, session volume, the graph
+        # actually loaded, the stimulus. Why a config path could not answer the
+        # graph half: ``capture_provenance``'s module docstring (2026-08-19).
+        if provenance is not None:
+            sidecar["provenance"] = provenance.to_dict()
         # The phone's own account of the recording conditions (issue #2151):
         # whether the capture page held the foreground, plus its render-graph
         # block counters. Written ONLY when reported, so an older page leaves
@@ -5441,6 +5479,7 @@ def bind_production_play(
     declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
     on_playback_started: Callable[[Any], None] | None = None,
+    provenance: Any = None,
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
@@ -5473,6 +5512,16 @@ def bind_production_play(
     the phone's pre-tone phase ladder (:func:`start_program_phase_ladder`);
     omitted, playback is unchanged and the caller keeps whatever progress
     reporting it had.
+
+    ``provenance`` (optional) is the session's
+    :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`.
+    **This function is the one owner of "which graph did the capture go
+    through"**: the branch below either loads the transient routing graph or
+    deliberately does not, and no downstream reader can recover that from a
+    file path — see that module for why. So the branch states it. The
+    observation is taken as late as the seam allows (for CHECK/MEASURE, inside
+    the writer lock, after the load, immediately before the WAV handoff) and
+    only while retention is on — :func:`capture_dump_enabled`.
 
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
@@ -5545,10 +5594,26 @@ def bind_production_play(
                     level=logging.WARNING, phase=phase, exc_info=True,
                 )
 
+        def _observe(cam: Any, graph_kind: str) -> Any:
+            """Awaitable: record what this stimulus plays THROUGH. Never raises."""
+            return record_capture_provenance(
+                provenance, cam=cam, graph_kind=graph_kind, program=program,
+                artifact=artifact, volume_plan=session_volume_plan(),
+            )
+
         async def _play_body() -> None:
+            from jasper.active_speaker.capture_provenance import (
+                GRAPH_KIND_APPLIED,
+                GRAPH_KIND_PROGRAM_ROUTING,
+            )
             from jasper.active_speaker.program_playback import (
                 verified_program_aplay,
             )
+
+            # Observing costs CamillaDSP round-trips, so it is bought only when
+            # an operator has switched retention on; with the marker absent
+            # this whole path is one ``Path.exists()``.
+            observing = provenance is not None and capture_dump_enabled()
 
             if phase in SUMMED_SWEEP_PHASES:
                 # The LIVE production graph IS the system under test — no graph
@@ -5559,6 +5624,11 @@ def bind_production_play(
                 # CLOUD_VERIFY. Level safety for all three is the compose-time
                 # min-cap clamp in ``crossover_v2.programs``'s
                 # ``SessionExcitation.verify_program``.
+                #
+                # No load means the standing graph IS what this capture goes
+                # through — stated by the branch that skipped the load.
+                if observing:
+                    await _observe(camilla_factory(), GRAPH_KIND_APPLIED)
                 if on_playback_started is not None:
                     on_playback_started(program)
                 await verified_program_aplay(
@@ -5603,8 +5673,11 @@ def bind_production_play(
                 queuelimit=devices.queuelimit,
                 enable_rate_adjust=devices.enable_rate_adjust,
             )
+            # Hoisted so the observation below rides the SAME controller the
+            # graph load went through, not a second one asking separately.
+            cam = camilla_factory()
             seams = bind_program_playback_seams(
-                camilla_factory(),
+                cam,
                 bundle_dir=str(bundle_dir),
                 artifact=artifact,
                 config_dir=resolved_config_dir,
@@ -5628,6 +5701,20 @@ def bind_production_play(
                     return await inner_play_wav()
 
                 seams["play_wav"] = _play_wav_signalling
+            if observing:
+                # OUTSIDE the signalling wrapper, so the phase-ladder anchor
+                # stays adjacent to the WAV handoff. INSIDE ``play_program``,
+                # because that is the only point at which the routing graph is
+                # loaded: read one step earlier and ``get_active_config_raw``
+                # still answers the applied graph — the exact misreading this
+                # block exists to prevent.
+                pre_provenance_play_wav = seams["play_wav"]
+
+                async def _play_wav_observed() -> Any:
+                    await _observe(cam, GRAPH_KIND_PROGRAM_ROUTING)
+                    return await pre_provenance_play_wav()
+
+                seams["play_wav"] = _play_wav_observed
             await play_program(
                 program,
                 program_graph_yaml=program_yaml,
@@ -6911,6 +6998,7 @@ def bind_v2_stage_seams(
     publish_candidate: Any,
     run_async: Any,
     camilla_factory: Any,
+    provenance: Any = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
 
@@ -6929,6 +7017,9 @@ def bind_v2_stage_seams(
     read, and ``V2FlowSeams`` requires the two apply gates outright. Binding a
     seam a plan never exercises costs nothing; omitting one a plan does
     exercise is a silently missing publication.
+
+    ``provenance`` is threaded here only to reach the analyze seam: the SAME
+    recorder the caller handed ``bind_production_play``, which is the pairing.
 
     The shortfall is :attr:`~...journey.StageOpening.missing`, derived where the
     declaration lives so the two cannot disagree. Logging it lives HERE rather
@@ -6959,7 +7050,7 @@ def bind_v2_stage_seams(
         )
     return V2FlowSeams(
         play=play,
-        analyze=bind_production_analyze(meta=refs),
+        analyze=bind_production_analyze(meta=refs, provenance=provenance),
         publish_check=publish_check,
         publish_candidate=publish_candidate,
         apply_complete=_applied_gate,
@@ -7407,6 +7498,8 @@ def prepare_v2_session(
         # One signal per session, shared by the play seam (which fires it) and
         # the runner (which installs the armed capture's phase ladder on it).
         playback_started = PlaybackStartSignal()
+        # Same shape, same reason: written by the play seam, read by analyze.
+        capture_provenance = CaptureProvenanceRecorder()
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -7422,6 +7515,7 @@ def prepare_v2_session(
             protection_sections_by_role=protection_sections,
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
+            provenance=capture_provenance,
         )
         # This stage's journey, resolved once (#2291 Phase 4). The index→phase
         # map is the one built above from the SAME resolved plan shape the
@@ -7466,6 +7560,7 @@ def prepare_v2_session(
                 publish_candidate=publish_candidate,
                 run_async=run_async,
                 camilla_factory=camilla_factory,
+                provenance=capture_provenance,
             ),
             tier=plan_shape.tier,
             index_phase_map=opening.plan.index_phase_map,
@@ -7802,6 +7897,8 @@ def prepare_v2_verify(
         # One signal per session, shared by the play seam (which fires it) and
         # the runner (which installs the armed capture's phase ladder on it).
         playback_started = PlaybackStartSignal()
+        # Same shape, same reason: written by the play seam, read by analyze.
+        capture_provenance = CaptureProvenanceRecorder()
         play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
@@ -7816,6 +7913,7 @@ def prepare_v2_verify(
             session_volume_db=context.session_volume_db,
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
+            provenance=capture_provenance,
         )
         # This stage's journey (#2291 Phase 4), the same contract stage 1 opens
         # and differing only in its arguments. ``available`` states facts about
@@ -7850,6 +7948,7 @@ def prepare_v2_verify(
                 publish_candidate=publish_candidate,
                 run_async=run_async,
                 camilla_factory=camilla_factory,
+                provenance=capture_provenance,
             ),
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
