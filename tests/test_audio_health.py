@@ -27,6 +27,7 @@ from jasper.control.audio_incidents import (
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.control.server import _make_handler
+from jasper.output_hardware import OutputHardwareState
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
@@ -645,6 +646,178 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
 
     assert health["signal_path"]["headline"] == (
         "Final audio output has stopped progressing"
+    )
+
+
+def _output_hardware(
+    *,
+    status: str = "ready",
+    profile_id: str = "dual_apple_usb_c_dac_4ch",
+    profile_label: str = "Dual Apple USB-C DAC 4-channel pair",
+    issues: tuple[dict, ...] = (),
+) -> OutputHardwareState:
+    return OutputHardwareState(
+        profile_id=profile_id,
+        profile_label=profile_label,
+        status=status,
+        physical_output_count=4,
+        apple_dac_count=2,
+        issues=issues,
+    )
+
+
+def test_undeclared_ready_hardware_surfaces_a_setup_hint() -> None:
+    """#2812: outputd's control socket never answering — an undeclared
+    composite parks the daemon before it ever starts — must not read as a
+    generic, unexplained failure once the reconciler has positively
+    identified ready hardware waiting on the household.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+    )
+
+    assert health["overall"]["status"] == "issue"
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+    detail = health["overall"]["detail"]
+    assert "Dual Apple USB-C DAC 4-channel pair" in detail
+    assert "/sound/setup/" in detail
+
+
+def test_undeclared_hardware_hint_covers_the_non_alsa_backend_park() -> None:
+    """The dual-Apple ``action=park_until_active_graph`` path keeps outputd's
+    socket alive on a ``fake`` backend rather than never starting it — the
+    other half of "outputd absent/parked" the hint must also cover, not just
+    the ``outputd is None`` case.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(backend="fake"),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+    )
+
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+
+
+def test_missing_output_hardware_record_leaves_the_generic_message() -> None:
+    """No record (reconciler never ran, or the artifact is unreadable) falls
+    back to the pre-existing generic wording rather than guessing at
+    hardware JTS cannot confirm.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=None,
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_unready_output_hardware_record_has_no_setup_hint() -> None:
+    """A degraded/ambiguous detection blocked from adoption must not tell the
+    household hardware is ready when it is not — this reuses the exact gate
+    ``/sound/setup/``'s "Use detected hardware" button already applies.
+    """
+    blocked = _output_hardware(
+        status="partial",
+        issues=(
+            {
+                "severity": "blocker",
+                "code": "dual_apple_usb_topology_mismatch",
+                "message": (
+                    "two Apple DACs are present but not on the same USB "
+                    "controller/bus"
+                ),
+            },
+        ),
+    )
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=blocked,
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_healthy_outputd_suppresses_the_setup_hint_even_with_a_ready_record() -> None:
+    """A ready record alone is not the trigger — only ``_signal_path``'s own
+    generic absent/non-ALSA wording is refined. Healthy outputd must play
+    normally without a stale hint about hardware that already works.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+    )
+
+    assert health["overall"]["headline"] != audio_health.UNDECLARED_HARDWARE_HEADLINE
+    assert health["overall"]["status"] != "issue"
+
+
+def test_setup_hint_yields_to_a_more_specific_live_output_issue() -> None:
+    """A concrete, differently-worded live failure keeps priority, the same
+    precedence ``_parked_signal`` and ``_stopped_dsp_signal`` hold: the hint
+    only refines ``_signal_path``'s own generic absent/non-ALSA wording,
+    never a distinct diagnosis such as a stalled watchdog.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(progress_age_ms=30_000),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+    )
+
+    assert health["overall"]["headline"] == (
+        "Final audio output has stopped progressing"
+    )
+
+
+def test_setup_hint_embeds_a_non_blocking_issue_message_from_the_record() -> None:
+    """A future non-blocking park reason the reconciler attaches to a ready
+    profile must surface without editing the detector (#2812's contract with
+    #2813): the reason is read from the record's own ``issues``, never a
+    literal string in this module.
+    """
+    with_reason = _output_hardware(
+        issues=(
+            {
+                "severity": "notice",
+                "code": "park_until_active_graph",
+                "message": "waiting for the active speaker layout to be armed",
+            },
+        ),
+    )
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=with_reason,
+    )
+
+    assert (
+        "waiting for the active speaker layout to be armed"
+        in health["overall"]["detail"]
     )
 
 
@@ -2634,6 +2807,56 @@ def test_confirmed_output_failure_outranks_mux_observability_gap() -> None:
         and issue["status"] == "ongoing"
         for issue in health["issues"]
     )
+
+
+def test_sampler_wires_the_output_hardware_probe_into_the_setup_hint() -> None:
+    """The sampler must actually call its output-hardware probe each tick and
+    thread the result into ``compose_audio_health``, not just accept the
+    constructor argument.
+    """
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        output_hardware_probe=lambda: OutputHardwareState(
+            profile_id="dual_apple_usb_c_dac_4ch",
+            profile_label="Dual Apple USB-C DAC 4-channel pair",
+            status="ready",
+            physical_output_count=4,
+            apple_dac_count=2,
+        ),
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+
+
+def test_output_hardware_probe_failure_is_fail_soft() -> None:
+    """An unreadable/raising output-hardware probe must not break a tick —
+    it degrades to "no record" like every other probe this sampler reads.
+    """
+    def _raise() -> None:
+        raise OSError("state file vanished mid-read")
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        output_hardware_probe=_raise,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    assert health["overall"]["headline"] == "Final output unavailable"
 
 
 def test_inactive_airplay_xrun_is_not_household_history() -> None:
