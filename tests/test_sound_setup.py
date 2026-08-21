@@ -3140,6 +3140,13 @@ def test_output_hardware_state_payload_is_json_serializable():
     payload = sound_setup._output_topology_payload()
     json.dumps(payload)
     assert set(payload["hardware_adoption"]) == {"allowed", "identity"}
+    # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
+    # it) is a pure proxy for this key now -- it does not recompute the rule
+    # itself. Deleting the key here would silently kill both with every test
+    # elsewhere still green (the JS harness fixture supplies its own value
+    # independent of this payload builder), so the key's presence is pinned
+    # at its one source.
+    assert "hardware_mismatch" in payload
 
 
 def test_active_speaker_design_draft_route_persists_saved_topology_research(

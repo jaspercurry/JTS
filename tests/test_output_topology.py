@@ -1725,13 +1725,11 @@ def test_declared_hardware_mismatch_is_none_when_declared_matches_observed(
     assert declared_hardware_mismatch(topology, observed) is None
 
 
-def test_declared_hardware_mismatch_flags_a_never_declared_box() -> None:
-    """A box that has never declared hardware reads as a mismatch.
-
-    ``topology.hardware`` has no ``None`` state (``new_topology_draft``
-    always seeds one), so "never declared" surfaces as the env fallback's
-    ``device_id="unknown"`` mismatching any real detected profile — the same
-    id check a genuine swap trips.
+def test_declared_hardware_mismatch_flags_an_unknown_declared_profile() -> None:
+    """A DECLARED (saved) topology naming an unrecognized profile mismatches
+    against a real detected one -- ordinary id-comparison behavior, distinct
+    from the "nothing has ever been saved" case (see the auto-seed test
+    below, and #2812 B2 for why those two are not interchangeable).
     """
     topology = _topology(
         groups=[],
@@ -1748,6 +1746,38 @@ def test_declared_hardware_mismatch_flags_a_never_declared_box() -> None:
     assert mismatch is not None
     assert "Saved topology expects" in mismatch["message"]
     assert "Dual Apple USB-C DAC 4-channel pair" in mismatch["message"]
+
+
+def test_declared_hardware_mismatch_cannot_see_new_topology_drafts_auto_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#2812 B2: a never-saved draft auto-seeds FROM ready observed hardware,
+    so this function alone reports NO mismatch for a genuinely undeclared
+    box -- the false model an earlier version of the test above encoded, by
+    hand-building a ``device_id="unknown"`` topology instead of calling the
+    real missing-file loader. That is not what
+    ``new_topology_draft``/``load_output_topology``/
+    ``load_output_topology_snapshot`` actually return once the observed
+    hardware is ready: they auto-seed ``hardware`` FROM it, so the "declared"
+    and "observed" sides match by construction and this function correctly,
+    but unhelpfully, reports no mismatch.
+
+    ``new_topology_draft`` is called for real here, against the SAME
+    sandboxed observed-hardware path ``_write_dual_apple_observation``
+    writes, so this cannot silently drift from what the real loaders
+    produce. Callers that need "was anything ever persisted?" must ask
+    ``load_output_topology_snapshot`` directly (``revision == "missing"``)
+    instead of inferring it from this function's verdict — see
+    ``jasper.control.audio_health._undeclared_hardware_signal``.
+    """
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    observed = _dual_apple_observation()
+
+    draft = new_topology_draft()
+
+    assert draft.hardware.device_id == DUAL_APPLE_ACTIVE_DEVICE_ID
+    assert declared_hardware_mismatch(draft, observed) is None
 
 
 def test_declared_hardware_mismatch_flags_an_output_count_change() -> None:

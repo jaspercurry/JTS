@@ -206,18 +206,27 @@ def _read_output_hardware() -> Any:
 
 
 def _read_output_topology() -> Any:
-    """Read the DECLARED output topology, fail-soft.
+    """Read the DECLARED output topology's SNAPSHOT (topology + revision),
+    fail-soft.
 
-    ``jasper.output_topology.load_output_topology`` is already fail-soft
-    internally (a missing or corrupt file resolves to a detected empty
-    draft, with its own rate-limited WARN) and is the SAME reader
-    ``jasper.control.audio_health``'s slow route/transport check already
-    calls. The extra guard here matches ``_read_output_hardware`` above.
+    Reads ``load_output_topology_snapshot`` -- the same reader
+    ``/sound/setup/`` uses (``jasper.web.sound_setup._output_topology_payload``)
+    -- rather than the bare ``load_output_topology``. This matters (#2812
+    B2): on a missing file, both readers fall back to ``new_topology_draft``,
+    which auto-seeds ``hardware`` FROM the observed record whenever it has
+    outputs. A caller that only sees the resulting ``OutputTopology`` cannot
+    tell "genuinely never declared" from "declared and already matches" --
+    the auto-seed makes them look identical whenever the observed hardware is
+    ready, which is exactly the state this module's setup hint needs to
+    recognize as UNdeclared. ``snapshot.revision == "missing"`` is the fact
+    that survives the auto-seed: it says a topology was never actually
+    persisted, independent of what the ephemeral draft's ``hardware`` field
+    happens to contain.
     """
     try:
-        from ..output_topology import load_output_topology
+        from ..output_topology import load_output_topology_snapshot
 
-        return load_output_topology()
+        return load_output_topology_snapshot()
     except _MONITOR_ERRORS:
         logger.debug("audio health output-topology probe failed", exc_info=True)
         return None
@@ -590,11 +599,14 @@ def _stopped_dsp_signal(
 
 
 # The one household-facing sentence for output hardware the reconciler has
-# positively identified and is ready to use, but that has not yet been
-# declared as the speaker's active output (#2812). A composite DAC can sit in
-# exactly this state for minutes after a hotplug — admitted, but held back
-# pending the active-graph handshake — and until this detector existed the
-# household saw only the generic "outputd is not reporting" line, which
+# positively identified and is ready to use, when the DECLARED topology does
+# not already claim it too (or nothing has ever been declared) -- being ready
+# alone is not enough to show this: an already-declared, already-armed box
+# hitting an ordinary outputd hiccup is also "positively identified and
+# ready" and must not see this sentence (#2812 B1/B2). A composite DAC can
+# sit in the genuine gap for minutes after a hotplug -- admitted, but held
+# back pending the active-graph handshake -- and until this detector existed
+# the household saw only the generic "outputd is not reporting" line, which
 # reads as a broken speaker rather than as a two-minute setup step. Written
 # once; the only writer of this wording.
 UNDECLARED_HARDWARE_HEADLINE = "Detected hardware is ready — finish setup"
@@ -616,7 +628,7 @@ _UNDECLARED_OUTPUTD_HEADLINES = frozenset({
 
 def _undeclared_hardware_signal(
     output_hardware: Any,
-    output_topology: Any,
+    output_topology_snapshot: Any,
 ) -> dict[str, Any] | None:
     """Return the "ready hardware is waiting to be declared" signal, or None.
 
@@ -624,9 +636,10 @@ def _undeclared_hardware_signal(
     :class:`~jasper.output_hardware.OutputHardwareState` (or ``None`` when
     unreadable) — the same record ``/state.audio.output_hardware`` publishes
     and ``/sound/setup/``'s "Use detected hardware" button already gates on.
-    ``output_topology`` is the DECLARED
-    :class:`~jasper.output_topology.OutputTopology` (or ``None`` before the
-    sampler's first read).
+    ``output_topology_snapshot`` is a
+    :class:`~jasper.output_topology.OutputTopologySnapshot` (or ``None``
+    before the sampler's first read) — the topology alone is not enough; see
+    below.
 
     Two conjuncts, mirroring the wizard's own "Use detected hardware"
     affordance exactly (#2812 B1):
@@ -638,26 +651,43 @@ def _undeclared_hardware_signal(
       declared and armed this exact hardware.
     * :func:`jasper.output_topology.declared_hardware_mismatch` — the OUTER
       conjunct — says the DECLARED topology does not already match what's
-      attached (or nothing has ever been declared). Skipping this let an
-      already-armed box hitting an ordinary outputd hiccup (a deploy's
-      audio-graph bounce, a crash) be told to "finish setup" for a setup
-      that already happened — proven live on a declared, serial-bound
-      speaker with an unrelated `outputd` fault.
+      attached. Skipping this let an already-armed box hitting an ordinary
+      outputd hiccup (a deploy's audio-graph bounce, a crash) be told to
+      "finish setup" for a setup that already happened — proven live on a
+      declared, serial-bound speaker with an unrelated `outputd` fault
+      (#2812 B1).
 
-    Both must hold. Neither conjunct is re-derived here: the gate mandate is
+    A never-declared box does NOT reach that second conjunct at all (#2812
+    B2). ``load_output_topology``'s (and thus a bare
+    ``OutputTopologySnapshot.topology``'s) missing-file fallback
+    (``new_topology_draft``) auto-seeds ``hardware`` FROM the observed
+    record whenever it has outputs — which the inner conjunct just proved is
+    true here. Calling ``declared_hardware_mismatch`` on that ephemeral,
+    never-persisted draft would always find a match, making the two
+    conjuncts mutually exclusive on a fresh box and hiding the exact speaker
+    #2812 exists for. ``snapshot.revision == "missing"`` is read directly
+    instead: it says nothing was ever persisted, independent of what the
+    auto-seeded draft's ``hardware`` field contains, and satisfies the outer
+    conjunct on its own without ever calling ``declared_hardware_mismatch``.
+
+    Neither conjunct is re-derived here: the gate mandate is
     single-source-of-truth, so this function calls the same two owners the
     browser's own mismatch card and adoption button read, rather than
     forking either rule into a third Python-only copy.
     """
-    if output_hardware is None or output_topology is None:
+    if output_hardware is None or output_topology_snapshot is None:
         return None
     from ..output_hardware import detected_hardware_adoption_precondition
-    from ..output_topology import declared_hardware_mismatch
 
     if not detected_hardware_adoption_precondition(output_hardware)["allowed"]:
         return None
-    if declared_hardware_mismatch(output_topology, output_hardware) is None:
-        return None
+    if output_topology_snapshot.revision != "missing":
+        from ..output_topology import declared_hardware_mismatch
+
+        if declared_hardware_mismatch(
+            output_topology_snapshot.topology, output_hardware
+        ) is None:
+            return None
     detail = (
         f"{output_hardware.profile_label} is connected and detected, but "
         "hasn't been set as the speaker's active output yet. Finish setup "
@@ -1762,17 +1792,18 @@ def compose_audio_health(
     session: Mapping[str, Any] | None = None,
     mux_status: Mapping[str, Any] | None = None,
     output_hardware: Any = None,
-    output_topology: Any = None,
+    output_topology_snapshot: Any = None,
 ) -> dict[str, Any]:
     """Compose the public, presentation-ready audio-health contract.
 
     ``output_hardware`` is an
     :class:`~jasper.output_hardware.OutputHardwareState` or ``None``, and
-    ``output_topology`` is the DECLARED
-    :class:`~jasper.output_topology.OutputTopology` or ``None`` (before the
-    sampler's first slow-cadence read); both typed loosely because this
-    module imports those layers lazily (same convention as ``topology`` in
-    :func:`_transport_state`).
+    ``output_topology_snapshot`` is a
+    :class:`~jasper.output_topology.OutputTopologySnapshot` or ``None``
+    (before the sampler's first slow-cadence read) — deliberately the
+    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`
+    for why. Both typed loosely because this module imports those layers
+    lazily (same convention as ``topology`` in :func:`_transport_state`).
     """
     ap = _mapping(airplay)
     route_state = _mapping(route)
@@ -1798,7 +1829,9 @@ def compose_audio_health(
         # persistent and fixed by changing the layout, while a stalled daemon
         # is happening now and has its own remedy.
         signal_path = parked
-    undeclared_hardware = _undeclared_hardware_signal(output_hardware, output_topology)
+    undeclared_hardware = _undeclared_hardware_signal(
+        output_hardware, output_topology_snapshot
+    )
     if (
         undeclared_hardware is not None
         and signal_path.get("headline") in _UNDECLARED_OUTPUTD_HEADLINES
@@ -2027,8 +2060,10 @@ class AudioHealthSampler:
         # new layout -- a rare event -- so it is refreshed on the same slow
         # `_route_interval` cadence as the route/transport check below, not
         # every fast tick, matching this module's "slow evidence stays on the
-        # slow cadence" discipline (see the module docstring).
-        self._output_topology: Any = None
+        # slow cadence" discipline (see the module docstring). A SNAPSHOT
+        # (topology + revision), not a bare topology -- see
+        # `_undeclared_hardware_signal`'s docstring for why revision matters.
+        self._output_topology_snapshot: Any = None
         self._service_states: dict[str, dict[str, Any]] = {}
         self._snapshot: dict[str, Any] | None = None
         self._last_route_sample_at = 0.0
@@ -2180,12 +2215,12 @@ class AudioHealthSampler:
                 route = {"status": "unavailable", "low_latency_claim": False}
             self._route = route if isinstance(route, dict) else None
             try:
-                self._output_topology = self._output_topology_probe()
+                self._output_topology_snapshot = self._output_topology_probe()
             except _MONITOR_ERRORS:
                 logger.debug("audio health output-topology probe failed", exc_info=True)
-                # Keep the previously cached topology: a transient read
+                # Keep the previously cached snapshot: a transient read
                 # failure on a box that already had a good read a moment ago
-                # should not blank the declared side of the B1 comparison.
+                # should not blank the declared side of the B1/B2 comparison.
             self._last_route_sample_at = now
 
         active_source = _active_source(airplay, mux_status)
@@ -2220,14 +2255,14 @@ class AudioHealthSampler:
             latency = _not_applicable_timing()
         # Computed once here and passed to both _state_issues (below) and
         # compose_audio_health (which recomputes it from the same
-        # output_hardware/output_topology inputs, mirroring how signal_path
-        # itself is deliberately computed raw here and independently inside
-        # compose_audio_health): the two surfaces read the same value, so
-        # they cannot present a different verdict for the same tick (#2812
-        # S3 — the raw path.outputd_unavailable incident must not contradict
-        # the overall headline when the setup hint wins).
+        # output_hardware/output_topology_snapshot inputs, mirroring how
+        # signal_path itself is deliberately computed raw here and
+        # independently inside compose_audio_health): the two surfaces read
+        # the same value, so they cannot present a different verdict for the
+        # same tick (#2812 S3 — the raw path.outputd_unavailable incident
+        # must not contradict the overall headline when the setup hint wins).
         undeclared_hardware = _undeclared_hardware_signal(
-            output_hardware, self._output_topology
+            output_hardware, self._output_topology_snapshot
         )
         state_issues = _state_issues(
             airplay,
@@ -2305,7 +2340,7 @@ class AudioHealthSampler:
                 session=self._session.snapshot(now),
                 mux_status=mux_status,
                 output_hardware=output_hardware,
-                output_topology=self._output_topology,
+                output_topology_snapshot=self._output_topology_snapshot,
             )
 
     def _record_point(

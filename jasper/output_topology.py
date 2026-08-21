@@ -2231,13 +2231,23 @@ def declared_hardware_mismatch(
     Returns ``None`` when there's nothing to flag: the hardware has not been
     observed and no clock-domain blocker is outstanding, or the declared id
     and output count already match what's attached and no clock blocker is
-    outstanding either. A box that never explicitly declared hardware reads
-    through the same id check as a genuine swap: ``new_topology_draft``
-    always seeds SOME ``OutputHardware`` (from the env default, or from
-    whatever was observed at draft time), so "never declared" surfaces as
-    ``device_id="unknown"`` mismatching any real detected profile — this
-    function's ``topology`` parameter has no ``None`` state for "undeclared"
-    to hide in.
+    outstanding either.
+
+    This function CANNOT by itself distinguish "genuinely never declared"
+    from "already matches" (#2812 B2). ``topology`` has no ``None`` state for
+    "undeclared" — a caller reading a missing topology file gets one back
+    from ``new_topology_draft`` regardless, and that draft's ``hardware`` is
+    auto-seeded FROM the observed record whenever it has outputs, not from a
+    fixed "unknown" placeholder. So on a truly fresh box whose detected
+    hardware is ready — precisely the case this function's callers care
+    about — the auto-seeded draft and the observed record match by
+    construction, and this function correctly, but unhelpfully, reports no
+    mismatch. Callers that need "was anything ever actually persisted?" must
+    ask ``jasper.output_topology.load_output_topology_snapshot`` for that
+    fact directly (``snapshot.revision == "missing"``) rather than infer it
+    from this function's verdict on the auto-seeded draft; see
+    ``jasper.control.audio_health._undeclared_hardware_signal`` for the
+    worked example.
     """
     clock_blockers = [
         issue
