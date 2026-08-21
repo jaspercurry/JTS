@@ -5561,7 +5561,16 @@ def test_channel_map_isolation_bound_cannot_supersede_the_target_floor():
     20 dB bound would have reintroduced: two of this suite's own honest
     fixtures sit at 17.20 dB and 19.49 dB of isolation
     (`test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail`
-    and `test_measure_backed_off_into_a_noisy_room_reports_insufficient`).
+    and `test_measure_backed_off_into_a_noisy_room_reports_insufficient`), and
+    at that bound BOTH have `channel_map_ok` flip to False — measured under a
+    mutation, not reasoned about.
+
+    **Those two tests stay green under that mutation**, because neither
+    asserts on the channel-map flag; only this test goes red. That is the
+    whole reason this one exists: the ceiling is a property of the two
+    constants, the harm lands on a real capture through
+    `capture_dispatch.check_screens`, and nothing else in the suite would have
+    noticed the bound eating the floor.
 
     Pinned two ways. The arithmetic contract is exact and fixture-free: a
     pilot sitting ON the target floor whose cross band sits AT its own ambient

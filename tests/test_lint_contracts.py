@@ -1398,7 +1398,7 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_457,
+    "jasper/audio_measurement/program_analysis.py": 7_461,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its
@@ -1453,19 +1453,21 @@ MAX_LINES_BY_PATH = {
     #    project is a key the browser cannot render.
     #
     # 2026-08-21 (channel-map CROSS test becomes an isolation ratio):
-    # `program_analysis` 7,374 -> 7,457, +83 counted (not estimated), of which
+    # `program_analysis` 7,374 -> 7,461, +87 counted (not estimated), of which
     # ~13 execute. The retired `CHANNEL_MAP_CROSS_RISE_DB` was a flat additive
     # bound tuned against a masked room floor, so a louder honest session made a
     # healthy speaker fail a zero-retry hard stop. Where the lines went:
-    #   37  the new constant's derivation — the three-level hardware table, the
+    #   41  the new constant's derivation — the three-level hardware table, the
     #       BASELINE-graph discriminator that ruled out crosstalk (the finding
     #       rests on that, and a reader who cannot see it will re-tune the
     #       number), and the ceiling argument: isolation can never exceed a
     #       pilot's own target rise, so a bound above the TARGET floor makes
     #       that floor unreachable and converts every low-SNR capture into a
-    #       rewire instruction. A 20 dB bound was proposed and MEASURED to flip
-    #       two of the suite's own honest fixtures; that measurement is the
-    #       reason 12.0 is not 20.0, and deleting it invites the revert.
+    #       rewire instruction. A 20 dB bound was proposed and MEASURED under a
+    #       mutation to flip two of the suite's own honest fixtures' flags —
+    #       while leaving both of those tests GREEN, which is the four lines
+    #       added after the fact and the sharpest thing the note says. That
+    #       measurement is why 12.0 is not 20.0; deleting it invites the revert.
     #   18  `channel_map_isolation_db`, the ONE definition of the metric — the
     #       verdict and both reporting surfaces read it, so the ratio an
     #       operator sees beside a refusal is the ratio that caused it. The

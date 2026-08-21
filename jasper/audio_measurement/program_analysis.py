@@ -964,8 +964,12 @@ CHANNEL_MAP_TARGET_RISE_DB = 12.0
 # TARGET test, and a quiet-but-correct pilot refuses as a rewire instruction
 # instead of the honest, retriable `snr_floor` — the #2052/#2644 class, one
 # rung up. Measured, not argued: at a 20 dB bound two of this suite's own
-# honest fixtures flip to `channel_map_mismatch`, at 17.20 dB and 19.49 dB of
-# isolation. 12.0 is the largest bound that keeps the floor live while still
+# honest fixtures — 17.20 dB and 19.49 dB of isolation — have `channel_map_ok`
+# flip to False, and `capture_dispatch.check_screens` maps an explicit False to
+# the hard stop ABOVE `snr_floor`. (Their own tests stay green either way,
+# because neither asserts on that flag; the damage is to the real capture, not
+# to the suite, which is exactly why the ceiling needs a test of its own.)
+# 12.0 is the largest bound that keeps the floor live while still
 # refusing a swap (~0 dB) and a heavy bleed (10 dB); margins are >=32 dB under
 # the table above and 5.2 dB under the quietest fixture in the suite.
 # `test_channel_map_isolation_bound_cannot_supersede_the_target_floor` pins the

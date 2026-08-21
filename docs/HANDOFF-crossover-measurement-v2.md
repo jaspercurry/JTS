@@ -5691,9 +5691,13 @@ no retries-as-bodge). Treat these as regression fences.
     CROSS test silently becomes a STRICTER TARGET test, and a genuinely
     quiet-but-correct pilot refuses as a rewire instruction instead of the
     honest, retriable `snr_floor` — the #2052/#2644 class, reintroduced one
-    rung up. Measured, not argued: an initially-proposed 20 dB bound flipped
-    two of the suite's own honest fixtures (17.20 dB and 19.49 dB of
-    isolation) into `channel_map_mismatch`. The shipped 12.0 is the largest
+    rung up. Measured, not argued: under an initially-proposed 20 dB bound two
+    of the suite's own honest fixtures — 17.20 dB and 19.49 dB of isolation —
+    have `channel_map_ok` flip to False, which `check_screens` maps to the hard
+    stop above `snr_floor`. Note what that mutation did NOT do: those two tests
+    stayed green, because neither asserts on the flag. The harm was to the real
+    capture, not to the suite — which is why the ceiling needed a test of its
+    own rather than being left to existing coverage. The shipped 12.0 is the largest
     bound that keeps the target floor live while still refusing a swap (~0 dB)
     and a heavy bleed (10 dB), with ≥32 dB of margin under the hardware table
     above. `test_channel_map_isolation_bound_cannot_supersede_the_target_floor`
