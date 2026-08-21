@@ -1503,9 +1503,15 @@ been promoted into the product. Rule 4's evidence now has a shipped producer —
 emits a `depth_db` per feature — but it runs OFFLINE over a banked round rather
 than inside one, so a round still carries a verdict only when somebody
 classified it, and a boost against a depthless verdict refuses by name. Every
-capture that producer reads is horizontal, disclosed once in the evidence
-packet's `not_evaluated` block rather than gated per verdict; the boost bar
-itself is classification and measured depth alone.
+capture that producer reads is horizontal, disclosed on the prescription path
+in the evidence packet's `not_evaluated` block rather than gated per verdict;
+the boost bar itself is classification and measured depth alone. So the shipped
+path to an admitted boost is now **reachable** — it was not while the geometry
+refused every one — and what answers whether a boost HELPS is where it has
+always been: the measured round that follows, on the owner's acceptance
+protocol for this route (bounded pre-registered probe boost → all-seats
+non-regression → near-field spot-check, recorded in
+[#2783](https://github.com/jaspercurry/JTS/issues/2783)).
 
 **What "partial" is buying, said plainly**, because the distinction is the
 whole of what rules 1, 3 and 4 are worth: a bar that refuses cannot make a round

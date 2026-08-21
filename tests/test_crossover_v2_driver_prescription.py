@@ -463,6 +463,13 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert "eligible_classification" not in bar
     assert fmt["boosts"]["eligible_classification"] == DEFECT_BOOSTABLE
     assert fmt["boosts"]["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
+    # ONE thing, and the matching-sign verdict is NOT it: a cut owes a
+    # `defect-cuttable` verdict identically, so the sign rule is stated once for
+    # both signs under `classification_bar`. Counting it as a boost's own debt
+    # told a prescriber a symmetric bar was asymmetric.
+    owed = fmt["boosts"]["a_boost_owes_one_thing_a_cut_does_not"]
+    assert "depth_db" in owed
+    assert "classification_bar" in owed
     assert set(fmt["refusal_reasons"]) == DRIVER_PRESCRIPTION_REFUSAL_REASONS
     # Every boost refusal the gate can raise is named in the block a prescriber
     # reads, so a bar it can walk into is a bar it was told about.

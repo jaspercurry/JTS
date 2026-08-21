@@ -1183,7 +1183,8 @@ def _check_classification(
     the frequency — an instruction to go and measure, not a verdict on the
     proposal — and with :data:`FEATURE_NOT_CUTTABLE` /
     :data:`FEATURE_NOT_BOOSTABLE` when something was and it does not admit that
-    sign. A boost pays three more bars, in :func:`_boost_basis`.
+    sign. A boost pays two more bars, both about the dip's measured depth, in
+    :func:`_boost_basis`.
 
     **What clearing this bar does and does not mean.** It means the feature is
     not one a cut is structurally the wrong tool for. It does NOT mean a cut
@@ -1911,10 +1912,13 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "the driver has a real dip, and only as deep as the dip"
             ),
             "eligible_classification": DEFECT_BOOSTABLE,
-            "a_boost_owes_two_things_a_cut_does_not": (
-                "the nearest banked verdict must be a minimum-phase DIP, and "
-                "that verdict must report a depth_db, which bounds the boost "
-                "more tightly than the ceiling does"
+            "a_boost_owes_one_thing_a_cut_does_not": (
+                "the vouching verdict must report a depth_db, and the boost "
+                "may not exceed it — the measured dip is what bounds a boost, "
+                "more tightly than the ceiling does. Needing a matching-sign "
+                "verdict is NOT that thing: a cut owes a defect-cuttable one "
+                "identically, so it is stated once for both signs under "
+                "classification_bar"
             ),
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
             "spend_is_a_step_function": (

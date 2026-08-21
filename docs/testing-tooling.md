@@ -1916,10 +1916,11 @@ re-ran an arm nobody asked for is the same class of dishonesty as clamping one.
 
 The per-driver class carries **both signs**, and every filter must be aimed at
 a feature a banked classification typed as a minimum-phase driver defect of the
-MATCHING sign — a **peak** for a cut, a **dip** for a boost. A boost owes two
-things a cut does not: the nearest banked verdict must be a minimum-phase dip
-(`defect-boostable`), and it must report a `depth_db` the boost does not
-exceed. Its cost is maximum SPL rather than safety (the graph attenuates
+MATCHING sign — a **peak** for a cut, a **dip** for a boost. A boost
+additionally owes **one** thing a cut does not: that verdict must report a
+`depth_db`, and the boost may not exceed it. The matching-sign requirement
+above is not that thing — a cut owes it identically.
+Its cost is maximum SPL rather than safety (the graph attenuates
 before the split), bounded at 5.0 dB by a per-role composed budget. It needs
 two pieces of evidence, and they arrive by **different routes** — one flag,
 one file:
@@ -2079,9 +2080,10 @@ saw. It no longer stamps that as a per-verdict flag, and `driver_prescription`
 no longer refuses a boost for it: the owner's 2026-08-21 ruling holds that a
 boost's off-plane risk is a QUALITY question (it may not generalise —
 reversible, measurable), not a component-safety one, so the boost bar is
-classification and measured depth alone (above). The geometry itself is
-disclosed exactly once, in the evidence packet's `not_evaluated` block as
-`vertical_plane_response`.
+classification and measured depth alone (above). On the prescription path the
+geometry is disclosed in one place, the evidence packet's `not_evaluated` block
+as `vertical_plane_response`; the remote tier and the unwired crossover-search
+modules carry their own disclosures about their own artifacts.
 
 **Exit codes are the contract**: `0` classified and filed, `1` the round could
 not be read, `2` refused, `3` the verdict could not be written. `--json` prints
