@@ -36,18 +36,20 @@ def _sound_event_calls() -> list[ast.Call]:
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
 
-    # 94 / 40. The topology transaction adds one INFO completion event under
-    # the existing sound.output_topology_reset name. The vocabulary therefore
-    # stays fixed while the completed reset becomes observable. The save path
-    # also keeps its failure-only sound.output_topology_save_reconcile WARNING;
-    # moving broker mechanics into output_topology_runtime must not silently
-    # delete the household-facing event contract.
+    # 96 / 41. The topology transaction contributes one INFO completion event
+    # under the existing sound.output_topology_reset name, and the same-shape
+    # composite re-pin (#2814) adds the 41st name, sound.output_topology_repin,
+    # emitted twice: an INFO completion and the dispatcher's ERROR branch, the
+    # same pair the reset already has. The save path keeps its failure-only
+    # sound.output_topology_save_reconcile WARNING; moving broker mechanics
+    # into output_topology_runtime must not silently delete the
+    # household-facing event contract.
     #
     # One additional event is delegated rather than emitted here: the shared
     # summed-test rollback owner receives sound.active_speaker_summed_test by
     # name. The separate assertion below keeps that handoff in this contract.
-    assert len(calls) == 94
-    assert len({call.args[1].value for call in calls}) == 40
+    assert len(calls) == 96
+    assert len({call.args[1].value for call in calls}) == 41
 
     # The delegated half of the vocabulary: an event this file no longer emits
     # itself but still NAMES, handed to the shared owner. Without this the
@@ -80,13 +82,14 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
         else:
             assert "exc_info" not in keywords
 
-    # The reset completion is the sole new INFO call. Warning and error counts
-    # stay fixed.
-    assert levels == {"INFO": 55, "WARNING": 11, "ERROR": 28}
+    # The reset and re-pin completions are the INFO calls of the topology
+    # transaction; each also owns one ERROR branch in the POST dispatcher.
+    # The warning count stays fixed.
+    assert levels == {"INFO": 56, "WARNING": 11, "ERROR": 29}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 117 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 121 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -106,14 +109,16 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
             assert not value.keywords
             wrapped_fields.append(f"{event}:{keyword.arg}")
 
-    # The transaction lifecycle adds nine required wrappers: three stopped
-    # audio-session statuses on save, plus hardware/cleanup/reconcile and three
-    # stopped-session statuses on reset. The digest catches a missed, swapped,
-    # or newly invented wrapper without checking in the full tuple.
+    # The transaction lifecycle adds thirteen required wrappers: three stopped
+    # audio-session statuses on save, hardware/cleanup/reconcile plus three
+    # stopped-session statuses on reset, and reconcile plus the same three
+    # stopped-session statuses on the composite re-pin (#2814). The digest
+    # catches a missed, swapped, or newly invented wrapper without checking in
+    # the full tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 117
+    assert len(wrapped_fields) == 121
     assert hashlib.sha256(signature).hexdigest() == (
-        "9042492d64c676ce14ee570dcbd751784d1951ace151280703f69e3fdde98166"
+        "4c4627433c393038da6bc08949645a0456539fe09e1cf975e0a69e347f93a94a"
     )
 
 

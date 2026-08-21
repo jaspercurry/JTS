@@ -435,6 +435,18 @@
     display: flex; align-items: flex-start; justify-content: space-between;
     gap: 12px; margin-bottom: 10px;
   }
+  .output-repin {
+    display: grid; gap: 6px; justify-items: start;
+    margin: 12px 0;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: color-mix(in oklab, var(--primary) 8%, var(--background));
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 28%, transparent);
+  }
+  .output-repin p { margin: 0; }
+  .output-repin__title {
+    font-size: 13px; font-weight: 700; color: var(--foreground);
+  }
   .output-card__title,
   .output-group__title {
     margin: 0;

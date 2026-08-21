@@ -198,6 +198,17 @@ The first product-facing slice is intentionally non-audible:
 - `clock_domain_report` and the active playback-route capability expose that
   constrained composite clock to topology checks, but neither grants playback
   authority; the protected commission ramp owns per-driver audible tests.
+- Replacing one dongle with another of the same kind in the same USB port is a
+  **re-pin**, not a re-declaration. `output_topology.composite_serial_repin_plan`
+  offers it from `/sound/setup/`'s hardware-mismatch card when the attached
+  hardware is the same shape and differs only in which units are plugged in;
+  `repin_composite_child_serials` then rewrites each child's observed identity,
+  keeps the speaker/role/crossover design (all of which is keyed to physical
+  output index, never to a serial), clears `identity_verified` for the replaced
+  unit's lanes, and drops the pair's drift evidence. Those two clears are what
+  make the household re-confirm by ear and re-measure; the re-pin adds no
+  verification of its own. A dongle moved to a DIFFERENT port is not offered a
+  re-pin — nothing then says which unit owns which lanes.
 - One DAC per speaker is disclosed, not enforced. When a saved speaker group's
   drivers land on two different child DACs, `evaluate_output_topology` reports a
   `speaker_group_spans_child_devices` warning naming the group and the children

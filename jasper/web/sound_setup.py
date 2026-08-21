@@ -49,6 +49,7 @@ URL surface (after nginx strips either public prefix):
   POST /active-speaker/channel-protection mark/clear tweeter protection evidence
   POST /output-topology save a complete speaker/DAC topology draft
   POST /output-topology/reset reset output topology + active setup evidence
+  POST /output-topology/repin re-pin a same-shape composite to swapped DACs
   POST /settings persist global sound settings
   POST /volume-floor/audition start/update a non-persistent 1% floor tone
   POST /volume-floor/stop stop the non-persistent 1% floor tone
@@ -108,14 +109,17 @@ from jasper.output_topology import (
     OutputTopology,
     channel_identity_report,
     clock_domain_report,
+    composite_serial_repin_plan,
     load_output_topology,
     load_output_topology_snapshot,
     new_topology_draft,
     output_topology_mutation,
+    repin_composite_child_serials,
     set_channel_identity_verified,
     set_channel_protection_status,
 )
 from jasper.output_hardware import (
+    OutputHardwareState,
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
     topology_hardware_from_state,
@@ -259,8 +263,13 @@ class OutputTopologyRevisionConflict(ValueError):
     """Raised when a browser posts a topology based on stale saved state."""
 
 
-class OutputTopologyResetConflict(ValueError):
-    """A reset request no longer names the saved topology or hardware."""
+class OutputHardwareRequestConflict(ValueError):
+    """A detected-hardware action no longer names the state it was offered for.
+
+    Raised by both hardware-mismatch actions — the full reset and the
+    same-shape re-pin — when the saved topology or the reconciler-owned
+    hardware observation moved between rendering the offer and clicking it.
+    """
 
     def __init__(self, code: str) -> None:
         self.code = code
@@ -448,6 +457,7 @@ def _output_topology_payload() -> dict[str, Any]:
     snapshot = load_output_topology_snapshot()
     topology = snapshot.topology
     observed_hardware = load_output_hardware_state()
+    repin = composite_serial_repin_plan(topology, observed_hardware)
 
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
@@ -458,6 +468,7 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_adoption": detected_hardware_adoption_precondition(
             observed_hardware
         ),
+        "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
         "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
@@ -585,14 +596,15 @@ def _save_output_topology_payload(
     }
 
 
-def _reset_request_hardware(
+def _verified_detected_hardware(
     raw: Mapping[str, Any], *, revision: str
-) -> OutputHardware | None:
+) -> OutputHardwareState | None:
     """Validate the browser's topology and detected-hardware snapshot.
 
     The topology transaction supplies ``revision``. The reconciler owns the
     observed hardware file, so callers re-run this check after parking before
-    they commit the destructive action.
+    they commit the action. Returns the reconciler's observation whatever its
+    adoption verdict; each action decides what it can do with it.
     """
 
     expected_revision = raw.get("topology_revision")
@@ -602,14 +614,24 @@ def _reset_request_hardware(
     if not isinstance(expected_identity, str) or not expected_identity:
         raise ValueError("detected_hardware_identity is required")
     if expected_revision != revision:
-        raise OutputTopologyResetConflict("topology_changed")
+        raise OutputHardwareRequestConflict("topology_changed")
     observed = load_output_hardware_state()
-    adoption = detected_hardware_adoption_precondition(observed)
-    if expected_identity != adoption["identity"]:
-        raise OutputTopologyResetConflict("detected_hardware_changed")
-    if adoption["allowed"]:
-        return OutputHardware.from_mapping(topology_hardware_from_state(observed))
-    return None
+    if expected_identity != detected_hardware_adoption_precondition(observed)["identity"]:
+        raise OutputHardwareRequestConflict("detected_hardware_changed")
+    return observed
+
+
+def _reset_request_hardware(
+    raw: Mapping[str, Any], *, revision: str
+) -> OutputHardware | None:
+    """Return the detected hardware a reset may adopt, or ``None``."""
+
+    observed = _verified_detected_hardware(raw, revision=revision)
+    if observed is None:
+        return None
+    if not detected_hardware_adoption_precondition(observed)["allowed"]:
+        return None
+    return OutputHardware.from_mapping(topology_hardware_from_state(observed))
 
 
 def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -699,6 +721,89 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             "setup cleanup; open Status before continuing."
             if needs_attention
             else "Speaker setup was reset. Audio is off until you choose a speaker layout."
+        ),
+    }
+    payload["saved"] = True
+    payload["runtime_convergence"] = runtime.convergence.to_dict()
+    payload["reconcile"] = reconcile
+    return payload
+
+
+def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-pin a same-shape composite onto the DAC units now attached.
+
+    The narrow counterpart to the reset above. A speaker group, its roles, its
+    physical-output assignment, and the crossover/commissioning design are all
+    keyed to physical output INDEX, never to a DAC serial, so a replacement
+    unit of the same kind in the same USB port does not invalidate any of them
+    — and the reset's wipe would throw all of it away. The two things a swap
+    genuinely does invalidate (per-lane identity for the replaced unit, and a
+    drift measurement of two crystals that never ran together) are cleared by
+    the topology owner, which re-arms the gates that already exist.
+    """
+
+    from jasper.active_speaker.runtime_convergence import park_and_commit_topology
+    from jasper.output_topology_runtime import trigger_reconcile
+
+    if not isinstance(raw, Mapping):
+        raise ValueError("re-pin request must be an object")
+
+    with output_topology_mutation() as mutation:
+        snapshot = mutation.snapshot()
+        observed = _verified_detected_hardware(raw, revision=snapshot.revision)
+        plan = composite_serial_repin_plan(snapshot.topology, observed)
+        if plan is None:
+            raise OutputHardwareRequestConflict("repin_unavailable")
+        summed_stop = _active_speaker_stop_summed_test_tone(
+            reason="output_topology_repin"
+        )
+        tone_stop = _active_speaker_stop_commission_tone(
+            reason="output_topology_repin"
+        )
+        safe_stop = _active_speaker_stop_payload()
+        saved_revision = ""
+
+        def commit_repin() -> OutputTopology:
+            # Re-read the reconciler's observation after parking: a dongle can
+            # leave between the offer and the commit, and its identity token is
+            # what proves this re-pin still names attached hardware.
+            nonlocal saved_revision
+            current = _verified_detected_hardware(raw, revision=snapshot.revision)
+            after = repin_composite_child_serials(snapshot.topology, current)
+            saved_revision = mutation.save(after)
+            return after
+
+        runtime = park_and_commit_topology(snapshot.topology, commit_repin)
+        reconcile = trigger_reconcile(reason="output_topology_repin")
+    needs_attention = not runtime.convergence.ok or not reconcile.get("ok")
+    log_event(
+        logger,
+        "sound.output_topology_repin",
+        result="needs_attention" if needs_attention else "repinned",
+        topology_revision=saved_revision,
+        device_id=snapshot.topology.hardware.device_id,
+        replaced_children=sum(1 for child in plan.children if child.replaced),
+        child_count=len(plan.children),
+        reverify_outputs=len(plan.reverify_output_indexes),
+        runtime_convergence_ok=runtime.convergence.ok,
+        reconcile_ok=str(bool(reconcile.get("ok"))),
+        summed_stop=str(summed_stop.get("status")),
+        tone_stop=str(tone_stop.get("status")),
+        safe_stop=str(safe_stop.get("status")),
+    )
+    payload = _output_topology_payload()
+    payload["repin"] = {
+        "status": "needs_attention" if needs_attention else "repinned",
+        "message": (
+            "The new DAC was pinned and your speaker setup was kept, but audio "
+            "remains off. Open Status before continuing."
+            if needs_attention
+            else (
+                "Pinned the new DAC and kept your speaker setup. Confirm these "
+                "outputs again: "
+                + ", ".join(plan.reverify_output_labels)
+                + ". Then re-run the drift measurement."
+            )
         ),
     }
     payload["saved"] = True
@@ -5250,6 +5355,7 @@ def _make_handler(
                 "/active-speaker/baseline-profile/save-and-apply",
                 "/output-topology",
                 "/output-topology/reset",
+                "/output-topology/repin",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -5620,7 +5726,7 @@ def _make_handler(
                 if path == "/output-topology/reset":
                     try:
                         self._send_json(_reset_output_topology_payload(raw))
-                    except OutputTopologyResetConflict as e:
+                    except OutputHardwareRequestConflict as e:
                         payload = _output_topology_payload()
                         payload["error"] = str(e)
                         payload["conflict"] = e.code
@@ -5646,6 +5752,40 @@ def _make_handler(
                             payload = {}
                         payload["error"] = message
                         payload["reset"] = {
+                            "status": "needs_attention",
+                            "message": message,
+                        }
+                        self._send_json(payload, status=502)
+                    return
+                if path == "/output-topology/repin":
+                    try:
+                        self._send_json(_repin_output_topology_payload(raw))
+                    except OutputHardwareRequestConflict as e:
+                        payload = _output_topology_payload()
+                        payload["error"] = str(e)
+                        payload["conflict"] = e.code
+                        self._send_json(payload, status=HTTPStatus.CONFLICT)
+                    except ValueError as e:
+                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                    except (OSError, RuntimeError) as e:
+                        log_event(
+                            logger,
+                            "sound.output_topology_repin",
+                            level=logging.ERROR,
+                            exc_info=True,
+                            result="error",
+                            error=type(e).__name__,
+                        )
+                        message = (
+                            "JTS could not confirm whether the new DAC was pinned. "
+                            "Review the current setup and try again."
+                        )
+                        try:
+                            payload = _output_topology_payload()
+                        except (OSError, RuntimeError, ValueError):
+                            payload = {}
+                        payload["error"] = message
+                        payload["repin"] = {
                             "status": "needs_attention",
                             "message": message,
                         }

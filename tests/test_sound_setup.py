@@ -4985,7 +4985,7 @@ def test_reset_rejects_stale_topology_before_parking_or_cleanup(
         lambda *_args, **_kwargs: pytest.fail("stale reset must not park or delete"),
     )
 
-    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
         sound_setup._reset_output_topology_payload({
             "topology_revision": request["topology_revision"],
             "detected_hardware_identity": request["hardware_adoption"]["identity"],
@@ -5023,7 +5023,7 @@ def test_reset_rejects_changed_detected_hardware_before_deleting(
         ),
     )
 
-    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
         sound_setup._reset_output_topology_payload({
             "topology_revision": request["topology_revision"],
             "detected_hardware_identity": request["hardware_adoption"]["identity"],
@@ -5081,7 +5081,7 @@ def test_reset_revalidates_hardware_after_parking_before_deleting(
         lambda: pytest.fail("second-check conflict must not clear setup evidence"),
     )
 
-    with pytest.raises(sound_setup.OutputTopologyResetConflict) as raised:
+    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
         sound_setup._reset_output_topology_payload({
             "topology_revision": request["topology_revision"],
             "detected_hardware_identity": request["hardware_adoption"]["identity"],
@@ -7567,3 +7567,295 @@ def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
     )
     assert rollback == {"status": "rolled_back"}
     assert issue is None
+
+
+# --- same-shape composite re-pin (#2814) -------------------------------------
+
+
+def _ported_dual_apple_topology_raw() -> dict:
+    """A commissioned dual-Apple save, each child pinned to a USB port."""
+
+    hardware = _dual_apple_hardware()
+    for child, card_id, port in zip(
+        hardware["child_devices"],
+        ("A", "A_1"),
+        ("usb1/1-2", "usb1/1-1"),
+    ):
+        child["card_id"] = card_id
+        child["usb_path"] = port
+        child["controller"] = "xhci-hcd.0"
+    # The lane labels a real save carries (``topology_hardware_from_state``),
+    # so the offer's disclosure is asserted against production wording.
+    hardware["outputs"] = [
+        {"index": 0, "human_label": "Apple DAC A left", "terminal_label": "A-L"},
+        {"index": 1, "human_label": "Apple DAC A right", "terminal_label": "A-R"},
+        {"index": 2, "human_label": "Apple DAC B left", "terminal_label": "B-L"},
+        {"index": 3, "human_label": "Apple DAC B right", "terminal_label": "B-R"},
+    ]
+
+    def group(group_id: str, kind: str, woofer: int, tweeter: int) -> dict:
+        return {
+            "id": group_id,
+            "label": group_id.title(),
+            "kind": kind,
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "driver_style": "sealed_cone",
+                    "physical_output_index": woofer,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": tweeter,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        }
+
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "hardware": hardware,
+        "speaker_groups": [group("left", "left", 0, 1), group("right", "right", 2, 3)],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    }
+
+
+def _write_repin_fixture(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    attached_serial_b: str,
+) -> None:
+    """Save the commissioned pair, then observe whichever units are attached."""
+
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    hardware_path = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
+    save_output_topology(
+        OutputTopology.from_mapping(_ported_dual_apple_topology_raw()),
+        path=topology_path,
+    )
+    write_output_hardware_state(
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="DWH53530FHL2FN3AC",
+                usb_path="usb1/1-2",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+            OutputCardFact(
+                card_id="A_1",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial=attached_serial_b,
+                usb_path="usb1/1-1",
+                busnum="1",
+                controller="xhci-hcd.0",
+                endpoint_sync="SYNC",
+            ),
+        ]),
+        path=hardware_path,
+    )
+
+
+def _stub_repin_runtime(monkeypatch) -> list[str]:
+    """Stand in for the audio-parking choreography a re-pin shares with save."""
+
+    stops: list[str] = []
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda _topology, commit, **_kwargs: _RuntimeMutation(commit()),
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda *, reason: stops.append(reason) or {"status": "stopped"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "idle", "reason": reason},
+    )
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"}
+    )
+    return stops
+
+
+def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The wizard renders the offer from the payload; the server decides."""
+
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    offered = sound_setup._output_topology_payload()["hardware_repin"]
+
+    assert offered["replaced_child_count"] == 1
+    assert offered["reverify_output_indexes"] == [2, 3]
+    assert offered["reverify_output_labels"] == [
+        "Apple DAC B left",
+        "Apple DAC B right",
+    ]
+    assert [child["replaced"] for child in offered["children"]] == [False, True]
+
+    _write_repin_fixture(
+        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
+    )
+    assert sound_setup._output_topology_payload()["hardware_repin"] is None
+
+
+def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The saved artifact is the contract, not the response body.
+
+    Everything a swapped unit cannot invalidate survives on disk; the swapped
+    child's lanes lose identity and the pair's drift evidence is dropped.
+    """
+
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    stops = _stub_repin_runtime(monkeypatch)
+    request = sound_setup._output_topology_payload()
+
+    payload = sound_setup._repin_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert payload["repin"]["status"] == "repinned"
+    assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
+    assert stops == ["output_topology_repin"]
+
+    saved = load_output_topology()
+    assert [child.serial for child in saved.hardware.child_devices] == [
+        "DWH53530FHL2FN3AC",
+        "NEW-DONGLE",
+    ]
+    assert saved.hardware.clock_domain_evidence is None
+    assert {
+        (group.id, channel.role): channel.identity_verified
+        for group in saved.speaker_groups
+        for channel in group.channels
+    } == {
+        ("left", "woofer"): True,
+        ("left", "tweeter"): True,
+        ("right", "woofer"): False,
+        ("right", "tweeter"): False,
+    }
+    # The design itself is untouched — this is the whole point of the flow.
+    before = OutputTopology.from_mapping(_ported_dual_apple_topology_raw())
+    assert saved.routing == before.routing
+    assert [
+        (group.id, group.kind, group.mode) for group in saved.speaker_groups
+    ] == [(group.id, group.kind, group.mode) for group in before.speaker_groups]
+    assert [
+        (channel.role, channel.driver_style, channel.physical_output_index,
+         channel.protection_status)
+        for group in saved.speaker_groups
+        for channel in group.channels
+    ] == [
+        (channel.role, channel.driver_style, channel.physical_output_index,
+         channel.protection_status)
+        for group in before.speaker_groups
+        for channel in group.channels
+    ]
+    # The offer is spent: the save now matches the attached hardware.
+    assert sound_setup._output_topology_payload()["hardware_repin"] is None
+
+
+def test_repin_rejects_a_stale_request_before_parking(monkeypatch, tmp_path: Path):
+    """A re-pin offered against older saved state never reaches the graph."""
+
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    request = sound_setup._output_topology_payload()
+    topology_path = tmp_path / "output_topology.json"
+    from jasper.output_topology import save_output_topology
+
+    renamed = _ported_dual_apple_topology_raw()
+    renamed["name"] = "Living room, renamed in another session"
+    save_output_topology(
+        OutputTopology.from_mapping(renamed), path=topology_path
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: pytest.fail("stale re-pin must not park"),
+    )
+    before = topology_path.read_bytes()
+
+    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
+        sound_setup._repin_output_topology_payload({
+            "topology_revision": request["topology_revision"],
+            "detected_hardware_identity": request["hardware_adoption"]["identity"],
+        })
+
+    assert raised.value.code == "topology_changed"
+    assert topology_path.read_bytes() == before
+
+
+def test_repin_refuses_when_the_attached_pair_is_already_pinned(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The endpoint is not a laxer door than the offer it is rendered from."""
+
+    _write_repin_fixture(
+        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
+    )
+    request = sound_setup._output_topology_payload()
+    assert request["hardware_repin"] is None
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: pytest.fail("unofferable re-pin must not park"),
+    )
+
+    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
+        sound_setup._repin_output_topology_payload({
+            "topology_revision": request["topology_revision"],
+            "detected_hardware_identity": request["hardware_adoption"]["identity"],
+        })
+
+    assert raised.value.code == "repin_unavailable"
+
+
+def test_sound_output_topology_repin_http_route_is_csrf_protected(
+    monkeypatch,
+    tmp_path: Path,
+):
+    calls = []
+    monkeypatch.setattr(
+        sound_setup,
+        "_repin_output_topology_payload",
+        lambda raw: calls.append(raw) or {"output_topology": {"status": "valid"}},
+    )
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        resp = json_post_with_csrf(base, "/output-topology/repin", {})
+        payload = json.loads(resp.read().decode("utf-8"))
+
+        assert calls == [{}]
+        assert payload["output_topology"]["status"] == "valid"
+    finally:
+        server.shutdown()
+        server.server_close()
