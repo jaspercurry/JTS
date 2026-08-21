@@ -221,8 +221,7 @@ existing owner.
 > ([`crossover_v2/driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py),
 > 2026-08-19). The second carries cuts and boosts, and requires a banked
 > minimum-phase classification of the MATCHING SIGN for every feature it aims
-> at — a boost additionally owing a vertical-plane sighting and the dip's own
-> measured depth
+> at — a boost additionally owing the dip's own measured depth
 > ([`crossover_v2/feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
 > is the verdict register;
 > [`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
@@ -250,11 +249,11 @@ existing owner.
 > per-driver class was opened by the owner on 2026-08-19 and is gated in
 > `driver_prescription.py`: the `linearization` seam already charges a boost
 > correctly, so what the gate adds is admission — a nearest banked
-> `defect-boostable` verdict that saw the vertical plane and reported its own
-> depth, no deeper than that depth, inside a per-role composed budget that
-> bounds the maximum-SPL spend at 5.0 dB. The cost is max SPL, not safety: the
-> graph attenuates before the split, so a boosted graph is never louder at any
-> frequency than an unboosted one at full scale.
+> `defect-boostable` verdict that reported its own depth, no deeper than that
+> depth, inside a per-role composed budget that bounds the maximum-SPL spend
+> at 5.0 dB. The cost is max SPL, not safety: the graph attenuates before the
+> split, so a boosted graph is never louder at any frequency than an
+> unboosted one at full scale.
 >
 > The two classes therefore answer a boost at **different points**, and the
 > difference is deliberate. The blend gate runs every shape and evidence bar
@@ -1553,13 +1552,16 @@ When implementation begins:
   design/privacy owners.
 
 **The `Last verified:` footer below was deliberately NOT bumped.** It is a
-whole-document claim and this document is mostly unbuilt plan; two passes have
-edited only §5.0's shipped-status callout. The first added the second
+whole-document claim and this document is mostly unbuilt plan; three passes
+have edited only §5.0's shipped-status callout. The first added the second
 prescription class, and corrected a boundary note that read the per-driver seam
 as needing per-branch sweeps (true of a boost, false of a cut) and a sentence
 that said both classes refuse a boost at the same point (they do not). The
 second opened that class's boost route on the owner's 2026-08-19 ruling, which
 falsified the callout's headline claim that no boost has a seam in either class
-— one now does. Nothing else here was re-read against the code.
+— one now does. The third removed the vertical-plane sighting bar the owner
+lifted on 2026-08-21, trueing up the boost-admission sentence and the
+per-driver-class description above it. Nothing else here was re-read against
+the code.
 
 Last verified: 2026-07-28

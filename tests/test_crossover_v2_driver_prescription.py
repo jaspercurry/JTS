@@ -15,8 +15,8 @@ Four things are pinned here and they fail in different ways:
   own sign for its target is refused, and the mutation that removes the check
   makes an accepted document out of a refused one;
 * **a boost is admitted only against measured evidence** — a nearest
-  ``defect-boostable`` verdict that saw the vertical plane and reported its own
-  depth, bounded by a composed budget; two independent gates, each proved while
+  ``defect-boostable`` verdict that reported its own depth, bounded by that
+  depth and by a composed budget; two independent gates, each proved while
   the other is inert;
 * **an accepted prescription reaches the emitted graph through the SAME
   per-branch seam the fit uses**, and survives the emitter's own independent
@@ -151,7 +151,6 @@ def _verdict(
         "gate_verdict": "STABLE",
         "confidence": "high",
         "measured_q": 5.1,
-        "vertical_blind": False,
         # A lab row carries thirty-odd more columns; the reader takes what it
         # needs and the rest ride along, which is what this pair proves.
         "z_local": 4.2,
@@ -470,7 +469,6 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
     assert set(fmt["boosts"]["refusals"]) == {
         dp.FEATURE_NOT_BOOSTABLE,
-        dp.BOOST_VERTICALLY_BLIND,
         dp.FEATURE_DEPTH_UNAVAILABLE,
         dp.BOOST_EXCEEDS_FEATURE_DEPTH,
         dp.BOOST_IN_CROSSOVER_OVERLAP,
@@ -906,39 +904,38 @@ def test_an_equidistant_tie_falls_closed():
         assert nearest.classification == DEFECT_BOOSTABLE
 
 
-#: The 2026-08-19 banked record, verbatim — nine classified features, four of
-#: them minimum-phase DIPS, and **two carrying the classifier's own
-#: vertical-blindness disclosure**. Reproduced as a literal rather than read
-#: from ``captures/`` (gitignored: a suite that needed it would run on one
-#: laptop).
+#: The 2026-08-19 banked record — nine classified features, four of them
+#: minimum-phase DIPS, and not one of them carrying a depth. Reproduced as a
+#: literal rather than read from ``captures/`` (gitignored: a suite that needed
+#: it would run on one laptop).
 #:
-#: The ``vertical_blind`` column was MISSING from an earlier version of this
-#: fixture while its comment still said "verbatim", and the omission was not
-#: inert: a re-derivation run against it concluded that 1037 Hz refuses for a
-#: missing depth, when on the real record it refuses
-#: :data:`~.driver_prescription.BOOST_VERTICALLY_BLIND` — blindness is checked
-#: BEFORE depth. An incomplete fixture that calls itself complete produces
-#: confident wrong answers about the real record, which is exactly what it did.
-#: Columns the reader ignores may be dropped; a column a BAR reads may not.
+#: **Every column a BAR reads is here, and that completeness is the point.** An
+#: earlier version of this fixture silently dropped one while its comment still
+#: said "verbatim", and the omission was not inert: a re-derivation run against
+#: it reported the wrong refusal for 1037 Hz, confidently. Columns the reader
+#: ignores may be dropped; a column a bar reads may not. The dropped column then
+#: was ``vertical_blind``, which no longer exists — the register stopped
+#: carrying it when the boost door opened (2026-08-21) — so the record is now
+#: complete in four columns rather than five, and the lesson outlives the field.
 _BANKED_RECORD = (
-    # hz, classification, confidence, measured_q, vertical_blind
-    (1037.0, DEFECT_BOOSTABLE, "med", 6.596, True),
-    (1406.0, DEFECT_CUTTABLE, "med", 5.132, True),
-    (2057.0, DEFECT_CUTTABLE, "med", 3.949, False),
-    (4149.0, DEFECT_CUTTABLE, "med", 12.066, False),
-    (4582.0, DEFECT_BOOSTABLE, "high", 12.066, False),
-    (5396.0, DEFECT_CUTTABLE, "high", 12.066, False),
-    (6245.0, DEFECT_BOOSTABLE, "high", 10.401, False),
-    (8530.0, DEFECT_BOOSTABLE, "high", 18.397, False),
-    (9509.0, DEFECT_CUTTABLE, "high", 18.397, False),
+    # hz, classification, confidence, measured_q
+    (1037.0, DEFECT_BOOSTABLE, "med", 6.596),
+    (1406.0, DEFECT_CUTTABLE, "med", 5.132),
+    (2057.0, DEFECT_CUTTABLE, "med", 3.949),
+    (4149.0, DEFECT_CUTTABLE, "med", 12.066),
+    (4582.0, DEFECT_BOOSTABLE, "high", 12.066),
+    (5396.0, DEFECT_CUTTABLE, "high", 12.066),
+    (6245.0, DEFECT_BOOSTABLE, "high", 10.401),
+    (8530.0, DEFECT_BOOSTABLE, "high", 18.397),
+    (9509.0, DEFECT_CUTTABLE, "high", 18.397),
 )
 
 
 def _banked_rows(**over: Any) -> list[dict[str, Any]]:
     """The real record's nine rows, every column the gate reads included."""
     return [
-        _verdict(hz, cls, confidence=conf, measured_q=q, vertical_blind=blind, **over)
-        for hz, cls, conf, q, blind in _BANKED_RECORD
+        _verdict(hz, cls, confidence=conf, measured_q=q, **over)
+        for hz, cls, conf, q in _BANKED_RECORD
     ]
 
 
@@ -1192,75 +1189,52 @@ def test_a_boost_at_an_unclassified_frequency_is_go_and_measure_not_no(tmp_path)
     assert "feeds" in excinfo.value.detail
 
 
-def test_a_vertically_blind_verdict_cannot_vouch_for_a_boost(tmp_path):
-    """1037 Hz's real row, with the classifier's own vertical disclosure set.
+def test_a_boost_is_admitted_on_the_horizontal_records_own_evidence(tmp_path):
+    """The open boost door. Owner ruling, 2026-08-21.
 
-    The one physics failure a boost has that a cut does not: a horizontal
-    turntable cannot see a vertical-plane null, so ``MIN-PHASE`` there is a
-    statement about one plane. Boosting into a null feeds it.
+    1037 Hz's real row, from a turntable walk — the capture geometry that used
+    to refuse every boost by name (``driver_boost_vertically_blind``). No
+    horizontal capture can vouch that a boost generalises off its plane, and
+    that is a QUALITY risk: reversible, and measured by the round that follows.
+    Component safety is somewhere else entirely and is untouched — the branch
+    chain charges this boost its realized peak before the split, and the
+    emitted graph is re-proved against that charge
+    (``tests/test_active_speaker_linearization_emission.py``).
+
+    So what a boost still owes is MEASUREMENT, and only measurement: a nearest
+    boostable dip, and a depth to be bounded by. Give the real row the depth
+    the record never carried and the door is open.
     """
+    hz, classification, confidence, measured_q = _BANKED_RECORD[0]
     packet = _speaker(tmp_path, classification=_classification([
-        _verdict(1037.0, DEFECT_BOOSTABLE, confidence="med", measured_q=6.596,
-                 depth_db=6.0, vertical_blind=True),
+        _verdict(hz, classification, confidence=confidence, measured_q=measured_q,
+                 depth_db=2.0),
     ]))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(role="woofer", freq=1037.0)], packet))
+    gated = _gate(
+        packet, _document([_boost(role="woofer", freq=hz, gain=2.0)], packet),
+    )
 
-    assert excinfo.value.reason == dp.BOOST_VERTICALLY_BLIND
-    assert excinfo.value.evidence["vertical_blind"] is True
+    assert gated.filters[0]["gain"] == 2.0
+    assert gated.classification_basis[0].verdict.freq_hz == hz
+    assert driver_prescription_route(gated) == LINEARIZATION_CANDIDATE_FIELD
 
 
-def test_on_the_real_record_1037_refuses_for_BLINDNESS_not_for_depth(tmp_path):
-    """The disposition that was reported wrong twice, pinned against the record.
+def test_the_row_that_refused_for_blindness_now_refuses_only_for_depth(tmp_path):
+    """The disposition that was reported wrong twice, re-derived at HEAD.
 
-    1037.0 Hz is a boostable dip that carries the classifier's vertical-blind
-    disclosure. Blindness is checked BEFORE depth, so it refuses
-    `driver_boost_vertically_blind` — not `driver_feature_depth_unavailable`,
-    which is what every OTHER row on that depthless record refuses. Both
-    answers are "no"; they send a prescriber to different instruments, which is
-    the whole reason they are separate slugs. A fixture missing the
-    `vertical_blind` column reports the second, confidently.
+    1037.0 Hz refused ``driver_boost_vertically_blind`` while every OTHER row
+    on that depthless record refused ``driver_feature_depth_unavailable`` —
+    blindness was checked BEFORE depth, and the two send a prescriber to
+    different instruments. With the door open the record answers with one
+    voice: the only thing between it and a boost is a measurement nobody
+    banked. Re-bank with a ``depth_db`` per row and propose again.
     """
     packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_boost(role="woofer", freq=1037.0)], packet))
-    assert excinfo.value.reason == dp.BOOST_VERTICALLY_BLIND
-
-    # The contrast, on the same record: a sighted dip with no depth.
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=4582.0)], packet))
     assert excinfo.value.reason == dp.FEATURE_DEPTH_UNAVAILABLE
-
-
-def test_the_real_record_carries_two_vertically_blind_rows(tmp_path):
-    """The fixture's own control: the column is present and is not all-False.
-
-    A fixture that silently lost this column still passed every test that did
-    not read it — which is how it went unnoticed. Naming the two rows keeps the
-    omission from recurring quietly.
-    """
-    blind = {hz for hz, _, _, _, is_blind in _BANKED_RECORD if is_blind}
-
-    assert blind == {1037.0, 1406.0}
-    verdicts = _banked_verdicts()
-    assert {v.freq_hz for v in verdicts if v.vertical_blind} == blind
-
-
-def test_the_vertical_blindness_bar_binds_only_the_boost(tmp_path):
-    """The control, and it is the whole argument for the rule being boost-only.
-
-    A cut at a vertically-blind feature is bounded by the same disclosure and
-    harmed by it less — it lowers a null it cannot see rather than feeding one.
-    If this test failed, the rule would be a general evidence bar wearing a
-    boost's name.
-    """
-    packet = _speaker(tmp_path, classification=_classification([
-        _verdict(TWEETER_FEATURE_HZ, DEFECT_CUTTABLE, vertical_blind=True),
-    ]))
-
-    assert _gate(packet, _document([_cut()], packet)).filters[0]["gain"] == -3.0
 
 
 def test_a_verdict_with_no_depth_refuses_rather_than_guessing_one(tmp_path):
@@ -1952,31 +1926,31 @@ def test_depth_rides_the_banked_rows_end_to_end_with_no_schema_bump(tmp_path):
     )
 
 
-@pytest.mark.parametrize("raw", ["true", 1, "yes", "false", 0, "no", object()])
-def test_only_a_literal_false_reads_as_vertically_SIGHTED(raw):
-    """SF-VERTICAL-BLIND-READER. The module's one fail-open read, closed.
+def test_no_bar_reads_a_vertical_blindness_flag_off_a_row(tmp_path):
+    """#2783, closed by deletion rather than by a stricter reader.
 
-    The rows are hand-authored, so `"true"` / `1` / `"yes"` are all realistic
-    spellings of the flag — and `entry.get(...) is True` admitted every one of
-    them as SIGHTED, which is the direction that lets a boost through. Anything
-    other than a literal `false` (or an absent key) now reads as BLIND. The
-    string `"false"` is included deliberately: it is TRUTHY in Python, so a
-    reader that "helpfully" coerced would get it backwards; blind is the safe
-    answer for a value nobody can interpret.
+    The defect was one field name with two producers behind it: this register
+    meant the PLANE, and the 2026-08-19 lab tool computed "fewer than two gates
+    resolved" — so a horizontal walk banked rows the honest semantic called
+    blind, and the boost bar honoured them. With the bar gone the field is gone
+    with it, and a row that still carries one is an ignored lab column like the
+    thirty others beside it. A boost's admission does not move when it flips.
     """
-    verdict = read_feature_verdicts([_verdict(1200.0, vertical_blind=raw)])[0]
+    sighted, blind = (
+        _speaker(
+            tmp_path / str(flag),
+            classification=_classification([_dip(vertical_blind=flag)]),
+        )
+        for flag in (False, True)
+    )
 
-    assert verdict.vertical_blind is True
-
-
-@pytest.mark.parametrize("raw", [False, None])
-def test_an_explicitly_sighted_or_absent_flag_reads_as_sighted(raw):
-    """The other direction, so the tightening is not simply "always blind"."""
-    assert read_feature_verdicts([_verdict(1200.0, vertical_blind=raw)])[0] \
-        .vertical_blind is False
-    assert read_feature_verdicts(
-        [{"hz": 1200.0, "classification": DEFECT_BOOSTABLE}]
-    )[0].vertical_blind is False
+    for packet in (sighted, blind):
+        gated = _gate(packet, _document([_boost()], packet))
+        assert gated.filters[0]["gain"] == DRIVER_MAX_FILTER_BOOST_DB
+    assert not any(
+        "vertical" in key
+        for key in read_feature_verdicts([_dip()])[0].to_dict()
+    )
 
 
 def test_an_older_reader_tolerates_the_new_field_and_a_row_without_it(tmp_path):
@@ -2066,6 +2040,75 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
         "biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ,
         "q": DRIVER_MAX_CUT_Q, "gain": -DRIVER_MAX_FILTER_CUT_DB,
     }]
+
+
+def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path):
+    """The open door does not reach past the level bound. It cannot.
+
+    Owner ruling, 2026-08-21: a boost is refused no longer for the capture
+    geometry it was measured on. That bar was about whether a correction
+    GENERALISES off the horizontal plane — quality, reversible, graded by the
+    round that follows. What bounds a driver is a different machine entirely,
+    and this walks it end to end on the same document the gate just admitted:
+
+      gate → ``driver_prescription_to_candidate_fields`` → the ``linearization``
+      candidate field → the emitter → ``active_baseline_headroom`` → the
+      runtime contract's re-derivation off the graph TEXT.
+
+    6245 Hz is one of the three real boosts #2783 named as admitted off the
+    banked 2026-08-19 rows. +3.0 dB at Q 8 realizes 2.9699 dB there (it sits
+    0.0301 dB down the tweeter's 1600 Hz LR4 high-pass), so the graph
+    attenuates the program by that plus ``HEADROOM_MARGIN_DB`` BEFORE the split
+    — the boosted graph is never louder at any frequency than the flat one at
+    full scale, it reaches full scale at a lower volume setting. The charge is
+    computed from the FILTERS, so it cannot be bypassed by how they arrived,
+    and the last reader never sees the prescription at all.
+
+    (The excitation ledger is a different subsystem again: it bounds the sweep
+    a MEASUREMENT plays, not the EQ an accepted round applies. Neither this
+    change nor this test touches it.)
+    """
+    from jasper.active_speaker import (
+        ActiveSpeakerPreset,
+        emit_active_speaker_baseline_config,
+    )
+
+    from tests.test_active_speaker_linearization_emission import (
+        ACTIVE_PCM,
+        GRAPH_APPROVED_ACTIVE_RUNTIME,
+        _active_topology,
+        _headroom_gain_db,
+        _two_way_preset,
+        classify_camilla_graph,
+    )
+
+    packet = _speaker(tmp_path, classification=_boostable())
+    prescription = _gate(packet, _document([_boost()], packet))
+    assert prescription.filters[0]["gain"] == DRIVER_MAX_FILTER_BOOST_DB
+
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    emitted = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization=linearization_filters_by_role(
+            driver_prescription_to_candidate_fields(prescription, fitted=None)[
+                LINEARIZATION_CANDIDATE_FIELD
+            ]
+        ),
+    )
+    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+
+    # The boost is PAID for, in maximum SPL, before the split.
+    assert _headroom_gain_db(flat) == 0.0
+    assert _headroom_gain_db(emitted) == pytest.approx(-3.9699, abs=1e-3)
+    # And what it may cost is still the published bound, not the open door.
+    assert -_headroom_gain_db(emitted) < MAX_SPL_SPEND_BOUND_DB
+
+    # The re-proof reads the emitted graph and nothing else.
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=emitted,
+    )
+    assert graph.allowed is True, graph.issues
+    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
 def test_a_one_role_document_leaves_the_other_roles_fitted_filters_alone(packet):

@@ -193,8 +193,8 @@ class FeatureVerdict:
     Those are how the verdict was reached and they belong in the artifact; a
     gate that read them would be re-deriving a decision the classifier already
     made, with none of its controls. What is kept is the verdict, the two
-    tests behind it, how confident the classifier was, and the two disclosures
-    that bound what it could see.
+    tests behind it, how confident the classifier was, and the two measurements
+    a prescriber's own bounds are taken from.
     """
 
     #: The feature's centre frequency.
@@ -220,21 +220,6 @@ class FeatureVerdict:
     #: by name rather than substituting a number (see
     #: :mod:`.driver_prescription`'s ``driver_feature_depth_unavailable``).
     depth_db: float | None
-    #: The classifier's own disclosure that a horizontal-turntable capture
-    #: cannot see vertical-plane interference at all. A verdict carrying it is
-    #: not wrong; it is bounded, and a reader that hid the bound would be
-    #: reporting more certainty than the instrument had.
-    #:
-    #: **A banked LAB artifact's ``false`` here is not a vertical-plane
-    #: sighting.** The 2026-08-19 records compute the field as "fewer than two
-    #: gates resolved", which is a fact about the gate test and not about the
-    #: plane, so most of their rows read ``false`` off a horizontal walk.
-    #: :mod:`.feature_classifier` emits ``true`` unconditionally for exactly
-    #: this reason — but the boost bar honours whatever the artifact says, so a
-    #: legacy record can still clear a bar this field exists to hold. Tracked
-    #: as issue #2783; do not read a ``false`` from an artifact this product
-    #: did not write as evidence.
-    vertical_blind: bool
 
     @property
     def is_defect_cuttable(self) -> bool:
@@ -249,8 +234,8 @@ class FeatureVerdict:
         """Is a boost at least the right KIND of instrument for this feature?
 
         The mirror of :attr:`is_defect_cuttable`, and just as insufficient: a
-        boost additionally owes a depth and a vertical-plane sighting, and
-        :mod:`.driver_prescription` is where those are required.
+        boost additionally owes a measured depth, and
+        :mod:`.driver_prescription` is where that is required.
         """
         return self.classification == DEFECT_BOOSTABLE
 
@@ -272,7 +257,6 @@ class FeatureVerdict:
             "confidence": self.confidence,
             "measured_q": self.measured_q,
             "depth_db": self.depth_db,
-            "vertical_blind": self.vertical_blind,
         }
 
 
@@ -315,7 +299,6 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
                 confidence=_text(entry.get("confidence")),
                 measured_q=_finite(entry.get("measured_q")),
                 depth_db=_finite(entry.get("depth_db")),
-                vertical_blind=_blind(entry.get("vertical_blind")),
             )
         )
     return tuple(out)
@@ -323,22 +306,6 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _blind(value: Any) -> bool:
-    """Vertical-blindness, fail-CLOSED: only a literal ``false`` — or nothing at
-    all — reads as SIGHTED.
-
-    By IDENTITY, not truthiness and not equality. The rows are hand-authored, so
-    ``"true"``, ``1`` and ``"yes"`` are realistic spellings of the flag, and the
-    previous ``is True`` test admitted every one of them as sighted — the one
-    direction that lets a boost through a bound the classifier had declared.
-    ``0`` is read as BLIND for the reason this module refuses coercion
-    everywhere else: ``0 == False`` in Python, so an equality test would quietly
-    accept an integer nobody said was a boolean. A verdict is bounded until it
-    says plainly that it is not.
-    """
-    return value is not False and value is not None
 
 
 def defect_cuttable_at(
@@ -405,8 +372,9 @@ def defect_boostable_at(
 
     ``vouching`` is necessary and NOT sufficient. A minimum-phase dip is the
     only feature a boost is structurally the right tool for, and it is still
-    the wrong tool when the classifier could not see the vertical plane or did
-    not report the dip's depth. :mod:`.driver_prescription` requires both.
+    the wrong tool when the classifier did not report the dip's depth — a boost
+    bounded by no measured depth is bounded by policy alone.
+    :mod:`.driver_prescription` requires it.
     """
     return _vouching_at(verdicts, freq_hz, tolerance_octaves, DEFECT_BOOSTABLE)
 

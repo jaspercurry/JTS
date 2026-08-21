@@ -513,7 +513,6 @@ def test_the_artifact_conforms_to_the_register(peak_artifact):
         assert verdict.confidence == row["confidence"]
         assert verdict.measured_q == row["measured_q"]
         assert verdict.depth_db == row["depth_db"]
-        assert verdict.vertical_blind == row["vertical_blind"]
         assert verdict.classification in CLASSIFICATIONS
         assert verdict.confidence in {"low", "med", "high"}
         # The register's own round-trip: what a packet publishes is readable
@@ -521,24 +520,29 @@ def test_the_artifact_conforms_to_the_register(peak_artifact):
         assert read_feature_verdicts([verdict.to_dict()])[0] == verdict
 
 
-def test_every_verdict_is_vertically_blind(peak_artifact, dip_artifact):
-    """A horizontal capture cannot see the vertical plane, and says so.
+def test_the_instrument_stamps_no_vertical_blindness_field(
+    peak_artifact, dip_artifact,
+):
+    """The capture geometry is disclosed ONCE, and not from here.
 
-    The consequence is deliberate: ``driver_prescription`` refuses a boost
-    whose vouching verdict is blind, because a boost aimed at a vertical null
-    feeds it. The 2026-08-19 lab artifacts carry a field of this name computed
-    as "fewer than two gates resolved", which is a fact about the GATE test;
-    this instrument reports that one as ``resolved_gates`` and never lets it
-    answer this question.
+    Every shape this instrument reads is still horizontal — that fact did not
+    change on 2026-08-21 and nothing here claims otherwise. What changed is
+    where it is said: the evidence packet's ``not_evaluated`` block states it
+    once, as ``vertical_plane_response``, for the whole corpus. A per-row flag
+    of that name is what #2783 was: two producers spelling one word two ways
+    (this instrument meant the PLANE, the 2026-08-19 lab tool meant "fewer than
+    two gates resolved"), with a boost bar honouring whichever it was handed.
+    The gate-resolution fact keeps its own honest name here.
     """
     for artifact in (peak_artifact, dip_artifact):
+        assert "vertical_blind" not in artifact["measurement"]
+        assert "vertical_blind_note" not in artifact["measurement"]
         for row in artifact["rows"]:
-            assert row["vertical_blind"] is True
+            assert "vertical_blind" not in row
             assert "resolved_gates" in row
     dip = read_feature_verdicts(dip_artifact)
     vouching, _ = defect_boostable_at(dip, dip[0].freq_hz)
     assert vouching is not None
-    assert vouching.vertical_blind is True
 
 
 def test_the_artifact_states_every_threshold_it_used(peak_artifact):

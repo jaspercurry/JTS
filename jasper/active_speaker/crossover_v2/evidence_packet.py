@@ -165,14 +165,6 @@ _IDENTITY_FIELDS = (
 #: operator's own banked lab result carrying this name is read identically.
 #: Its absence is an ordinary ``source_absent`` and is reported, never papered
 #: over.
-#:
-#: **A legacy lab artifact's ``vertical_blind: false`` is not a vertical-plane
-#: sighting**, and this reader copies it through verbatim. The 2026-08-19
-#: records compute that field as "fewer than two gates resolved" — a fact about
-#: the gate test — so a horizontal walk can bank ``false`` rows, and the boost
-#: bar that exists to refuse a bounded sighting will honour them. Issue #2783.
-#: :mod:`.feature_classifier` emits ``true`` unconditionally; this caveat is
-#: about records it did not write.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
@@ -544,6 +536,23 @@ def _not_evaluated(
             "reason": (
                 "H2/H3 are computable from banked captures but no round writes "
                 "them; there is no distortion record to carry"
+            ),
+        },
+        # The one place this geometry is stated. It is a property of the CORPUS
+        # — every shape a round banks is horizontal, whoever wrote the artifact
+        # — so it belongs here rather than as a per-row flag two producers spell
+        # differently (#2783). It DISCLOSES; it refuses nothing: the owner's
+        # 2026-08-21 ruling opened the boost door on exactly this risk, which is
+        # a correction that may not generalise off-axis vertically — reversible
+        # and measurable — and not a component-safety one.
+        {
+            "field": "vertical_plane_response",
+            "reason": (
+                "every capture shape a round banks is horizontal — a turntable "
+                "walk swings at fixed height and radius, a position cloud is a "
+                "floor-plan of seats — so no banked evidence sees a floor or "
+                "ceiling bounce, and what a filter of either sign does off the "
+                "horizontal plane is unmeasured rather than shown to be safe"
             ),
         },
     ]
