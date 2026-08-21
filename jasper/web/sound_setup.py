@@ -616,7 +616,8 @@ def _verified_detected_hardware(
     if expected_revision != revision:
         raise OutputHardwareRequestConflict("topology_changed")
     observed = load_output_hardware_state()
-    if expected_identity != detected_hardware_adoption_precondition(observed)["identity"]:
+    adoption = detected_hardware_adoption_precondition(observed)
+    if expected_identity != adoption["identity"]:
         raise OutputHardwareRequestConflict("detected_hardware_changed")
     return observed
 
@@ -739,7 +740,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     — and the reset's wipe would throw all of it away. The two things a swap
     genuinely does invalidate (per-lane identity for the replaced unit, and a
     drift measurement of two crystals that never ran together) are cleared by
-    the topology owner, which re-arms the gates that already exist.
+    the topology owner; see ``repin_composite_child_serials`` for which of those
+    two clears re-arms an enforced gate and which is an honesty repair.
     """
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
