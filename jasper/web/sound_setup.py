@@ -110,6 +110,7 @@ from jasper.output_topology import (
     channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
+    declared_hardware_mismatch,
     load_output_topology,
     load_output_topology_snapshot,
     new_topology_draft,
@@ -468,6 +469,7 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_adoption": detected_hardware_adoption_precondition(
             observed_hardware
         ),
+        "hardware_mismatch": declared_hardware_mismatch(topology, observed_hardware),
         "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
         "channel_identity": channel_identity_report(topology),
