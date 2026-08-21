@@ -175,6 +175,8 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
+    CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_FRAME_LEDGER,
     INTEGRITY_CHECK_RENDER_GAP,
@@ -7112,6 +7114,60 @@ def test_check_diag_logs_full_numbers_on_accept(caplog):
     assert "woofer_programmed_delta_db=10.0" in caplog.text
     assert "woofer_channel_map_target_rise_db=18.0" in caplog.text
     assert "tweeter_channel_map_cross_rise_db=2.0" in caplog.text
+    # Both RAW rises AND the ratio derived from them: the raws keep a sweep of
+    # these lines comparable across the 2026-08-21 metric switch, the ratio is
+    # what the CROSS verdict is now decided on.
+    assert "woofer_channel_map_isolation_db=17.0" in caplog.text
+    assert "tweeter_channel_map_isolation_db=20.0" in caplog.text
+
+
+def test_check_diag_names_the_isolation_ratio_and_its_bound_on_a_refusal(caplog):
+    """A `channel_map_mismatch` refusal has to be readable from the journal.
+
+    The household-facing copy stays number-free by design (the Language guide:
+    one reason, one action), so the diag line IS the operator's record of the
+    refusal. Since 2026-08-21 the CROSS verdict is decided on the ISOLATION
+    RATIO rather than an additive cross-rise bound, so the line has to carry
+    both the ratio and the bound it was graded against — without the bound, a
+    journal of old lines is silently reinterpreted the next time the constant
+    moves, and the operator cannot tell a refusal from a near miss.
+    """
+    caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
+    fakes = FakeSeams()
+    fakes.check = lambda program: ProgramAnalysis(
+        phase="check", program_id=program.program_id,
+        locations=(_loc("pilot_woofer_hi", "pilot"),),
+        ambient_report={"bands": [{"level_dbfs": -70.0}]},
+        pilots=(
+            # The swap shape: the driver played (target clears the floor) but
+            # the other band rose with it, so the isolation collapses.
+            _pilot_obs("woofer", target_rise_db=40.0, cross_rise_db=39.0,
+                       channel_map_ok=False),
+            _pilot_obs("tweeter", target_rise_db=22.0, cross_rise_db=2.0),
+        ),
+        linearity_ok=True, channel_map_ok=False, pilot_snr_ok=True,
+        gain_plan=GainPlan(
+            gain_db={"woofer": -11.0, "tweeter": -13.0},
+            predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+    )
+    c = _conductor(fakes)
+    verdict = _run_phase(c, 1, 1)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == "channel_map_mismatch"
+    assert "event=correction.crossover_v2_check_diag" in caplog.text
+    assert "woofer_channel_map_isolation_db=1.0" in caplog.text
+    assert f"channel_map_min_isolation_db={CHANNEL_MAP_MIN_ISOLATION_DB}" in caplog.text
+    # ...and the threshold, without which a sub-bound isolation figure on a
+    # QUIET capture would read as the cause of a refusal that never happened:
+    # below it the ratio is published but decides nothing.
+    assert (
+        f"channel_map_isolation_judged_above_db={CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB}"
+        in caplog.text
+    )
+    # The raws that produced the ratio are still there to attribute it with.
+    assert "woofer_channel_map_target_rise_db=40.0" in caplog.text
+    assert "woofer_channel_map_cross_rise_db=39.0" in caplog.text
 
 
 def test_check_priors_carry_fc_for_the_measure_level_solve():

@@ -810,10 +810,22 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
         # Fix 3 (W6.4): with Fix 1's band-relative discriminator this should
         # be rare and genuinely wiring, but the honest failure mode also
-        # includes a very quiet/noisy room (the discriminator needs both a
-        # driver's own band to rise over its ambient AND the other driver's
-        # band to stay quiet) — name both causes rather than blaming wiring
-        # unconditionally.
+        # includes a very quiet/noisy room, so this copy names both causes
+        # rather than blaming wiring unconditionally. Both causes are still
+        # live after the 2026-08-21 switch from an additive cross-rise bound to
+        # the ISOLATION RATIO (`program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB`,
+        # `target_rise - cross_rise`): a room loud enough to bury a driver
+        # fails the TARGET floor and arrives here, and room energy landing in
+        # the other driver's band still eats isolation. What changed is which
+        # of the two is likelier — an honest capture's cross energy is skirt
+        # content at a fixed RELATIVE level, so a louder session no longer
+        # manufactures this refusal, and a room that reaches it now does so by
+        # burying the driver rather than by out-shouting a flat 6 dB bound.
+        # The numbers behind a given refusal are on
+        # `event=correction.crossover_v2_check_diag`, which publishes each
+        # role's raw rises, its isolation ratio, and the bound that ratio was
+        # graded against; this household-facing copy stays number-free (the
+        # Language guide: one reason, one action).
         "The drivers didn't play in the expected order — check the speaker "
         "wiring, or if the room is noisy, quiet it and try again.",
     ),

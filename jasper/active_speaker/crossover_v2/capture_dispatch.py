@@ -70,7 +70,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.audio_measurement.program import KIND_SWEEP
-from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
+from jasper.audio_measurement.program_analysis import (
+    INTEGRITY_CHECK_SWEEP_HEARD,
+    channel_map_isolation_db,
+)
 
 from .spatial import (
     SCREEN_CAPTURE_GLITCH,
@@ -747,7 +750,16 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
 
 
 def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
-    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe."""
+    """One pilot's linearity/SNR/channel-map diagnostics, ``None``-safe.
+
+    Channel-map publishes BOTH raw rises AND the isolation ratio derived from
+    them. The ratio is what the CROSS verdict is decided on since 2026-08-21
+    (``CHANNEL_MAP_MIN_ISOLATION_DB``), so a refusal has to name it; the raws
+    stay so a sweep of these lines is still comparable against every diag
+    logged before that switch, and so an operator can see which half of the
+    ratio moved. The ratio is read from `channel_map_isolation_db` — the same
+    function the verdict used — never recomputed here.
+    """
     if pilot is None:
         return {
             "snr_db": None,
@@ -755,10 +767,12 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
             "programmed_delta_db": None,
             "channel_map_target_rise_db": None,
             "channel_map_cross_rise_db": None,
+            "channel_map_isolation_db": None,
         }
     snr_db = pilot.snr_db
     target_rise = pilot.channel_map_target_rise_db
     cross_rise = pilot.channel_map_cross_rise_db
+    isolation = channel_map_isolation_db(target_rise, cross_rise)
     return {
         "snr_db": round(snr_db, 2) if math.isfinite(snr_db) else None,
         "captured_delta_db": round(float(pilot.captured_delta_db), 3),
@@ -768,5 +782,8 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
         ),
         "channel_map_cross_rise_db": (
             round(cross_rise, 3) if cross_rise is not None else None
+        ),
+        "channel_map_isolation_db": (
+            round(isolation, 3) if isolation is not None else None
         ),
     }

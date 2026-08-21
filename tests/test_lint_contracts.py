@@ -802,7 +802,25 @@ MAX_LINES_BY_PATH = {
     # end of this dict, beside the `program_analysis` bump it moves with.
     # 2026-08-21 topology pin: 13,232 -> 13,282. Argued in the dated block at
     # the end of this dict, with the two files it moves with.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_282,
+    #
+    # 2026-08-21 (channel-map CROSS test becomes an isolation ratio):
+    # 13,282 -> 13,299, stacked on the topology pin above rather than counted
+    # on paper against the pre-pin number. +17 physical, split MECHANICALLY
+    # (not estimated) into 8 code + 9 comment: two imports and six emit lines,
+    # so `_log_check_diag` carries each role's `channel_map_isolation_db` plus
+    # BOTH constants those ratios are read against — the bound, and the target
+    # rise above which the ratio was judged at all. The 9 comment lines are why
+    # both have to be on the line: household copy for this refusal is
+    # number-free by design, so the diag IS the operator's record of it; and
+    # below the threshold an isolation figure is published having decided
+    # NOTHING, so the bound alone would let a sub-bound number read as the
+    # cause of a refusal that never happened. Printing them rather than
+    # implying them also stops a future retune silently re-reading old lines.
+    # (The gate's fix round added the threshold and corrected this note's own
+    # split, which claimed 3 + 6 for the pre-round +9 when it was 4 + 5.) The
+    # metric itself is `program_analysis`'s, at the end of this dict; this file
+    # only reports it.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_299,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1386,7 +1404,7 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_374,
+    "jasper/audio_measurement/program_analysis.py": 7_511,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its
@@ -1439,6 +1457,46 @@ MAX_LINES_BY_PATH = {
     #    "(pinned for this round)" and never as something the round measured.
     #    This file is a pure `status -> envelope` renderer, so a key it does not
     #    project is a key the browser cannot render.
+    #
+    # 2026-08-21 (channel-map CROSS test becomes an isolation ratio):
+    # `program_analysis` 7,374 -> 7,511. +137 net (162 added, 25 removed),
+    # counted MECHANICALLY off the diff rather than estimated. Of the 162
+    # added: 90 comment, 7 blank, 65 non-comment — and of those 65 only 18 are
+    # executable statements (net +16 after the 2 this change deletes); the
+    # other 47 are DOCSTRING prose. So about nine tenths of this bump is
+    # argument, which for a threshold ending in a non-retriable "open your
+    # speaker" hard stop is the right ratio. Where it went:
+    #   ~41  the bound's derivation — the three-level hardware table, and the
+    #        BASELINE-graph discriminator that ruled out crosstalk (the finding
+    #        RESTS on that; a reader who cannot see it will re-tune the number).
+    #   ~46  `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB` and its argument — the
+    #        gate's SF1, and the sharpest thing in this file's diff. The CROSS
+    #        test does not sit BESIDE the TARGET floor, it RAISES it to
+    #        max(FLOOR, BOUND + cross_rise), so an ungated ratio newly refused a
+    #        quiet-but-correct capture (target 13.50 / cross 1.72, isolation
+    #        11.78) as the NON-retriable channel_map_mismatch where main gave
+    #        the retriable snr_floor. An earlier draft argued a bound <= FLOOR
+    #        prevented that; it only holds at cross_rise <= 0. The comment
+    #        carries the mechanism, the measured case, what the guard buys (a
+    #        refusal now implies cross_rise >= FLOOR) and the named residual.
+    #   ~18  `channel_map_isolation_db`, the ONE definition of the metric — the
+    #        verdict and both reporting surfaces read it, so the ratio an
+    #        operator sees beside a refusal is the ratio that caused it. The
+    #        alternative was three subtractions, which is the second-source-of-
+    #        truth this file's neighbours keep warning about.
+    #   ~32  the docstrings the change falsified: `_channel_map_ok`'s CROSS
+    #        bullet (which called this rung the mis-wire discriminator — it is
+    #        not; seven wiring shapes moved cross rise by <=0.4 dB, so the
+    #        TARGET floor is the mis-wire catcher and this half guards abnormal
+    #        cross-band ENERGY), its return contract, and `PilotObservation`'s
+    #        note on why the two RAW rises stay published beside the ratio.
+    # No seam to cut: this is one threshold, one derived threshold, and their
+    # argument — and extracting a constant's reasons from the constant is how a
+    # threshold stops carrying them. The two behavioural additions went to the
+    # modules that own them: the diag field to
+    # `capture_dispatch._pilot_diag_fields`, the emit to the flow (+17, above).
+    # The topology pins above did not move this file, so this bump stacks on
+    # nothing: 7,374 is still the number it started from.
 }
 
 
