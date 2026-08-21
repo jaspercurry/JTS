@@ -640,7 +640,8 @@ the module, not a second copy here.
 | [`crossover_v2/priors.py`](../jasper/active_speaker/crossover_v2/priors.py) | What the analyzer is TOLD about each capture — every function a decision about what to withhold. |
 | [`crossover_v2/spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py) | What a capture-consuming phase decides about one take: the three screen ladders, the geometry-retake rule, the retained records. |
 | [`crossover_v2/candidates.py`](../jasper/active_speaker/crossover_v2/candidates.py) | What one candidate build produced, as values that travel without `self`. |
-| [`crossover_v2/fc_sweep.py`](../jasper/active_speaker/crossover_v2/fc_sweep.py) | Which crossover corners may be asked about, what each costs to score, and which one the evidence recommends. |
+| [`crossover_v2/fc_sweep.py`](../jasper/active_speaker/crossover_v2/fc_sweep.py) | Which crossover corners may be asked about, what each costs to score, and which one the evidence recommends. Also the single owner of re-cornering — `candidate_sections` and `recornered_preset`. |
+| [`crossover_v2/topology_prescription.py`](../jasper/active_speaker/crossover_v2/topology_prescription.py) | ONE crossover corner and order, pinned for ONE round: the request gate, its admissibility bounds, and the durable read-back. |
 | [`crossover_v2/planning.py`](../jasper/active_speaker/crossover_v2/planning.py) | One candidate assembled: the eligibility gate, the planner request, and the emitted candidate. |
 | [`crossover_v2/admission.py`](../jasper/active_speaker/crossover_v2/admission.py) | Who may start one more capture and what it costs — the bounded-retry meter, `MAX_EXTRA_ATTEMPTS_PER_POSITION`. |
 | [`crossover_v2/capture_dispatch.py`](../jasper/active_speaker/crossover_v2/capture_dispatch.py) | Which screens an anchor capture must clear, and in what order, for the three sit-still phases (CHECK, MEASURE, VERIFY). |
@@ -798,6 +799,26 @@ the module, not a second copy here.
     `branch_snr_band_hz`'s docstring in
     [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py),
     not a restatement here.
+15. **A prescribed round is opened AT what it was prescribed, and never
+    inherits one.** Four things can be prescribed — blend and driver stage
+    through `jasper-crossover-prescriber`; alignment and topology arrive as
+    request-body keys on session open and refuse the WHOLE session at the tap.
+    The four classes, the two entry surfaces and the severity split are
+    tabulated once, in
+    [`testing-tooling.md`](testing-tooling.md#the-other-two-prescriptions-do-not-come-through-this-door-2773)
+    (#2773); do not restate them here. Two consequences are this document's:
+    a **topology** pin replaces the session's own corner *and* preset at both
+    stages (via `fc_sweep.recornered_preset`), so the fit, the §4.2
+    de-embedding, the emitted graph and VERIFY's design target are that
+    topology's rather than the incumbent's — and stage 2 must rehydrate the pin
+    or it would grade an applied graph for not being the crossover it replaced.
+    And a pinned round **closes the Fc search and publishes no selector
+    verdict** (`fc_selection` is `None`; the journal says
+    `fc_adjudication=suppressed fc_statistic_paused=true`), because reporting a
+    verdict for a comparison that never ran is the same dishonesty as
+    `polarity_agrees_with_sum` reporting disagreement for one. None of the four
+    is inherited from a lapsed session's durable state the way `tier`
+    deliberately is (#2639).
 
 ## Debugging — where to look first
 

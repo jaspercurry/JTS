@@ -26,6 +26,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.accountability` — whether a built candidate may be proposed at all.
 * :mod:`.fc_sweep` — which crossover corners this speaker may be asked about,
   what each costs to score, and which one the evidence recommends.
+* :mod:`.topology_prescription` — ONE crossover corner and order, pinned for one
+  round: the request gate, its admissibility bounds, and the durable read-back.
 * :mod:`.planning` — one candidate assembled: the eligibility gate, the
   planner request its own sections imply, and the emitted candidate.
 * :mod:`.admission` — one position's attempt ledger, and whether the next

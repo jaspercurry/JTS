@@ -2057,6 +2057,56 @@ def test_the_browser_and_python_agree_on_the_pinned_polarity_key():
     assert payload[match.group(1)] is True
 
 
+def test_the_browser_and_python_agree_on_the_pinned_crossover_key():
+    """The crossover twin of the guard above.
+
+    A topology prescription pins a crossover CORNER + ORDER for one
+    measurement round — "the SAME rule one level up" from a pinned polarity,
+    per main.js's own comment above `crossoverPinned`. It is carried by a
+    SECOND, separate key
+    (``CrossoverV2Session._topology_prescription`` -> ``_candidate_summary``
+    -> ``_candidate_review_payload``) read by a second `=== true` check in
+    the same renderer, so the polarity guard above cannot see it: a rename
+    of this key is invisible to that assertion.
+
+    A key name is a cross-language contract exactly as a literal list is. A
+    browser module cannot import a Python constant, so if Python renames the
+    field, or the renderer reads a different one, the pinned wording
+    silently reverts to unworded "measured" prose — no exception, no failing
+    assertion anywhere else. The second half closes the sibling gap the
+    polarity guard doesn't have to worry about: the key names could agree
+    and the row could still render `undefined` if the corner beside the bit
+    (`review.crossover.fc_hz`) is not itself a key Python actually sends.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "deploy/assets/correction/js/crossover/main.js"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"const crossoverPinned = review\.([a-z0-9_]+) === true;", source,
+    )
+    assert match, "the renderer no longer reads a named pinned-crossover bit"
+
+    payload = build_crossover_envelope_v2(_status(
+        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(
+            crossover={"fc_hz": 2400.0, "order": 4, "slope_db_per_octave": 24.0},
+            crossover_pinned=True,
+        ),
+    ))["candidate_review"]
+    # The name the browser reads is a key Python actually sends, and it is
+    # True on a pinned round — the renderer's `=== true` accepts nothing
+    # weaker.
+    assert match.group(1) in payload
+    assert payload[match.group(1)] is True
+    # And the corner beside it survived the same round trip — the renderer
+    # reads `review.crossover.fc_hz` by name too, so the row cannot render a
+    # real pin marker beside an `undefined` number.
+    assert payload["crossover"]["fc_hz"] == 2400.0
+
+
 def test_done_candidate_review_omits_linearization_fields_when_absent():
     """A candidate with no linearization at all (ineligible / plain trims)
     renders an empty outcome string and no octave rows — never a phantom

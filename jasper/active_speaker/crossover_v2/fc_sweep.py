@@ -142,6 +142,7 @@ __all__ = [
     "fc_candidate_set",
     "fc_sweep_budget_s",
     "fc_sweep_result_wait_s",
+    "recornered_preset",
     "refusal",
     "resolve_fc_search_band",
     "sweep_candidates",
@@ -554,6 +555,7 @@ def candidate_set(
     lower_driver_hard_ceiling_hz: float,
     search_band_hz_by_role: Mapping[str, tuple[float, float] | None],
     lower_driver_diameter_mm: float | None,
+    topology_pinned: bool,
 ) -> FcCandidateSet:
     """This session's proposable Fc set, from DECLARATIONS only (R17).
 
@@ -576,6 +578,17 @@ def candidate_set(
     own declaration. Translated here to ``count=0``, so the refusal rides
     the ordinary machinery and the returned ``limits`` still explain the
     bounds rather than vanishing with the proposals.
+
+    **``topology_pinned`` proposes NOTHING, by the same ``count=0``.**  A
+    pinned round's corner IS its configured corner
+    (:mod:`.topology_prescription` — the request boundary opens the session at
+    the pinned topology), and the operator pinned it precisely so that one
+    corner is the only thing this round measures.  Proposing alternatives to it
+    would spend the capture's compute on a comparison nobody asked for and hand
+    the selector a recommendation to make about a decision already taken.
+    Required and undefaulted like the arguments beside it: a caller that forgot
+    it would silently re-open the search on a round whose whole point is that it
+    is closed.
     """
     search = resolve_fc_search_band(search_band_hz_by_role)
     return fc_candidate_set(
@@ -584,7 +597,10 @@ def candidate_set(
         lower_driver_hard_ceiling_hz=lower_driver_hard_ceiling_hz,
         search_band_hz=search.band_hz,
         lower_driver_diameter_mm=lower_driver_diameter_mm,
-        count=0 if search.band_hz is None else MAX_PROPOSED_FC_CANDIDATES,
+        count=(
+            0 if (topology_pinned or search.band_hz is None)
+            else MAX_PROPOSED_FC_CANDIDATES
+        ),
     )
 
 
@@ -594,18 +610,92 @@ def candidate_set(
 
 
 def candidate_sections(
-    crossover_regions: Sequence[Any], fc_hz: float,
+    crossover_regions: Sequence[Any],
+    fc_hz: float,
+    *,
+    order: int | None = None,
 ) -> dict[str, tuple[CrossoverSection, ...]]:
     """The configured branch sections, re-cornered at ``fc_hz``.
 
-    Order, direction and role assignment are the preset's — only the corner
-    moves, because R17 adjudicates WHERE to cross, never what shape to
-    cross with (topology search is deferred, #1894).
+    Direction and role assignment are always the preset's.  ``order`` is too
+    unless one is given: R17 adjudicates WHERE to cross and never what shape to
+    cross with (topology search is deferred, #1894), so every SWEPT corner
+    keeps the preset's own order and passes nothing here.
+
+    ``order`` is the door a PINNED topology walks through
+    (:mod:`.topology_prescription`), and it is the same door for the same
+    reason the corner is: a round that crosses at a prescribed order must
+    compose, fit, predict, emit and verify through that order, not wear it as a
+    label.  ``None`` is the automatic path and leaves this function byte-for-byte
+    what it was.
     """
+    moved = _recorner_fields(fc_hz, order)
     return {
-        role: tuple(replace(section, fc_hz=float(fc_hz)) for section in sections)
+        role: tuple(replace(section, **moved) for section in sections)
         for role, sections in sections_by_role(crossover_regions or ()).items()
     }
+
+
+def _recorner_fields(fc_hz: float, order: int | None) -> dict[str, Any]:
+    """The fields a re-cornering replaces — the corner always, the order only
+    when one is pinned.
+
+    Shared by :func:`candidate_sections` and :func:`recornered_preset` so the
+    sections and the preset they belong to can never move by different amounts,
+    and so ``order=None`` is one decision rather than two spellings of it.
+    """
+    fields: dict[str, Any] = {"fc_hz": float(fc_hz)}
+    if order is not None:
+        fields["order"] = int(order)
+    return fields
+
+
+def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) -> Any:
+    """``preset`` with every crossover region moved to ``fc_hz`` (and ``order``).
+
+    The preset half of :func:`candidate_sections`, and its single owner.  Two
+    callers need it and they need the SAME answer: :func:`evaluate_candidate`,
+    which builds each swept corner's candidate from a re-cornered preset, and
+    the request boundary, which hands a topology-pinned session a preset at the
+    pinned corner so the round it runs is that topology's round end to end.  A
+    second spelling would be a second answer to "what does this speaker look
+    like at another corner", and the two would drift in the region ``id`` if
+    nowhere else.
+
+    **Rewriting the ``id`` is required, and its spelling is a CONTRACT with a
+    module this one may not import.**  ``baseline_profile.build_baseline_profile``
+    admits a reviewed candidate only when its ``source_preset`` equals — by
+    whole-dataclass ``!=``, ``id`` included — the preset
+    ``staging.compile_preset_from_crossover_preview`` recompiles from the SAVED
+    declaration, which spells it
+    ``f"{lower_role}_{upper_role}_{int(round(frequency))}hz"``.  So a region left
+    named ``..._1649hz`` while crossing at 4000 Hz is not merely a label that
+    lies: it is refused ``measured_candidate_preset_mismatch`` forever.  The
+    corner is the ONLY thing in the name, and a pinned order deliberately does
+    not join it — an ``_lr2`` suffix would be a name that recompilation can
+    never produce, which is the same permanent refusal wearing a tidier hat.
+    Change this format only together with staging's.
+
+    **A pinned ORDER still has to be declared before it can be applied**, for
+    the same equality: the recompiled preset carries the declaration's slope, so
+    an order-2 candidate measured against an order-4 declaration is a candidate
+    that MEASURES and grades honestly and is refused at apply until the saved
+    crossover names that order — exactly as an alternative corner is, and by the
+    same guard. Measuring an arm and adopting it are two acts here; this
+    function serves the first.
+    """
+    moved = _recorner_fields(fc_hz, order)
+    return replace(preset, crossover_regions=tuple(
+        replace(
+            region,
+            id=(
+                f"{region.lower_driver}_{region.upper_driver}"
+                f"_{int(round(float(fc_hz)))}hz"
+            ),
+            **moved,
+        )
+        for region in preset.crossover_regions
+    ))
 
 
 def branch_operators(
@@ -723,11 +813,7 @@ def evaluate_candidate(
     # differently side by side and call the difference a crossover.
     if cand is None or ineligible_reason(analysis) is not None:
         return refusal(fc_hz, EVAL_REFUSED_UNFITTABLE)
-    candidate_preset = replace(preset, crossover_regions=tuple(
-        replace(region,
-                id=f"{region.lower_driver}_{region.upper_driver}_{round(fc_hz):.0f}hz",
-                fc_hz=float(fc_hz))
-        for region in preset.crossover_regions))
+    candidate_preset = recornered_preset(preset, fc_hz=fc_hz)
     built = build(
         analysis, None, candidate_sections=sections, source_preset=candidate_preset,
     )
@@ -1019,9 +1105,13 @@ class Adjudication:
     pre-extraction failure ordering, where the selection is published BEFORE the
     line is said. A journal that raises then costs the household a log line
     rather than the recommendation it was about.
+
+    ``selection`` is ``None`` on a TOPOLOGY-PINNED round and only there: no
+    comparison ran, so there is no verdict, and the host publishes the absence.
+    See :func:`adjudicate`.
     """
 
-    selection: FcSelection
+    selection: FcSelection | None
     selected_evaluation: FcCandidateEvaluation | None
     record: GateRecord
 
@@ -1033,6 +1123,7 @@ def adjudicate(
     select: Callable[..., FcSelection],
     candidate_set_of: Callable[[], FcCandidateSet],
     configured_fc_hz: float,
+    topology_pinned: bool,
 ) -> Adjudication:
     """Turn the retained per-candidate evidence into ONE recommendation.
 
@@ -1043,9 +1134,40 @@ def adjudicate(
     selection is what the review screen renders, and the evidence behind it has
     done its job.
 
+    **A topology-pinned round adjudicates NOTHING, and says so.**  The selector
+    ranks corners against each other; a pinned round has one corner, pinned by
+    an operator, and :func:`candidate_set` proposed no alternative to it.  Any
+    verdict here would therefore be a statement about a comparison that never
+    ran — including the honest-sounding ``no_alternative_evaluated``, which on
+    an ordinary round means "the declarations left nothing to compare" and here
+    would silently mean "nobody was asked to".  So the selection is ``None``,
+    which is the ``polarity_agrees_with_sum`` rule applied to the corner:
+    reporting a verdict for a comparison that never ran is the same dishonesty
+    as reporting disagreement for one.  The line still goes out, carrying
+    ``fc_adjudication=suppressed`` and ``fc_statistic_paused=True`` — the same
+    two fields the paused lateral walk discloses — so a pinned round's journal
+    is distinguishable from a round where the selector simply never fired.
+
+    ``topology_pinned`` is required and undefaulted for
+    :func:`candidate_set`'s reason: a caller that forgot it would publish a
+    verdict about an operator's own decision.
+
     Says nothing itself — see :class:`Adjudication` for why this one disclosure
     travels back as data while the sweep's are handed to a port.
     """
+    if topology_pinned:
+        return Adjudication(
+            selection=None,
+            selected_evaluation=None,
+            record=GateRecord(event=EVENT_SELECTION, fields={
+                "fc_adjudication": "suppressed",
+                "fc_statistic_paused": True,
+                "reason": "topology_pinned",
+                "configured_hz": round(configured_fc_hz, 1),
+                "evaluated": len(evaluations),
+                "poses": len(pose_curves),
+            }),
+        )
     candidates = candidate_set_of()
     selection = select(
         evaluations,

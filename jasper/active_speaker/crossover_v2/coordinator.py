@@ -71,6 +71,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.alignment_prescription import (
         AlignmentPrescription,
     )
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TopologyPrescription,
+    )
     from jasper.active_speaker.flat_spec import FlatSpecReport, GradedSpec
 
 logger = logging.getLogger(__name__)
@@ -387,6 +390,13 @@ class RoundEvidence:
     #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
     #: estimator's seed while the round still carries the arm's name.
     alignment_objective: str = ""
+    #: The crossover corner + order this round was PINNED to, or ``None`` for a
+    #: round that ran the speaker's commissioned crossover. Banked verbatim and
+    #: never graded here, exactly like the delay prescription above: it is
+    #: provenance, and the adoption record's job is to say what topology an
+    #: adopted arm's numbers were measured at — without it, two arms of one
+    #: tournament are two receipts a reader cannot tell apart.
+    topology_prescription: "TopologyPrescription | None" = None
 
 
 @dataclass(frozen=True)
@@ -1077,6 +1087,22 @@ def _round_measurements(
                 else objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
             ),
         }
+    # The topology pin's provenance, banked verbatim beside the delay's and for
+    # the same reasons — it rides with the NUMBERS rather than on ``round_axes``
+    # (which is four ``Verdict``s), and it is deliberately absent from
+    # ``_round_identity`` so a receipt can never carry an arm forward into a
+    # round nobody asked for.
+    #
+    # No ``committed`` bit beside it, and that asymmetry is the honest one. A
+    # delay prescription is a REQUEST the fit may or may not reach, so its
+    # receipt needs the outcome to be worth anything. A topology pin is not
+    # requested of the fit at all: the request boundary opened the session at
+    # the pinned corner and order, so every number in this receipt was measured
+    # there by construction. A bit that could only ever read ``True`` would be
+    # ceremony, and one derived from something else would be a second answer.
+    topology = evidence.topology_prescription
+    if topology is not None:
+        measurements["topology_prescription"] = topology.to_dict()
     return measurements
 
 
