@@ -90,9 +90,16 @@ place only by naming the component-damage mechanism it guards against —
   [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 - Evidence packet — one document per round a reader (human or LLM) can
   answer from: `jasper/active_speaker/crossover_v2/evidence_packet.py`.
-- Multiple DSP configs measured per mic position, so one mic movement
-  answers more questions — lands on the round runner above
-  (`scripts/run-crossover-round.py`); in flight as of this doc's date.
+- More than one capture per mic position, so one mic movement answers more
+  questions (§1.4) — `--per-position N` on the round runner above, plus the
+  derived `position_cycle.json` that says which pose each take was measured
+  at. Multiple DSP *configs* per position has a door but no wiring:
+  `POST /crossover/v2/republish` makes a banked candidate the live one by its
+  own fingerprint, so republish-then-apply reaches a named prior config
+  between takes. The open part is sequencing — holding a pose's next capture
+  until the apply has landed — which is a design to write rather than a
+  refusal to remove. The `awaiting_apply` hold is explicitly not the seam for
+  it (its own vocabulary says "no new design may depend on it").
 
 ---
 

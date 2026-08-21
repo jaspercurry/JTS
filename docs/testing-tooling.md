@@ -48,6 +48,8 @@
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
 | Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
 | Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
+| Take more than one capture at each pose of one walk — so what differs between them is time and whatever you changed, never the pose | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --per-position` |
+| Read back which pose each take of a banked walk was measured at, when no view surfaces a lateral bearing | [Crossover round runner](#crossover-round-runner) — `position_cycle.json`, derived from the banked bundle |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -2442,6 +2444,12 @@ PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
     --angles 0,7,-7,22,-22 --regime per_driver \
     --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
 
+# the same five angles, three takes at each — one walk, fifteen stops
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r2 --tier remote \
+    --angles 0,7,-7,22,-22 --per-position 3 --regime per_driver \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 15
+
 # …read the candidate it printed, decide, THEN apply it BY NAME
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
 
@@ -2494,11 +2502,64 @@ MEASURING session recorded in durable state, so the household's one choice at
 the tier chooser governs both stages — passing a different tier to the verify
 invocation changes nothing, and is not a way to re-instrument a round.
 
-**Four configurations are refused before anything runs**: an `--apply` with an
-empty fingerprint (an absent live candidate also reads as empty, so comparing
-would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
-will serve, which otherwise costs ten minutes and ends as a misnamed idle
-ceiling), and an unreadable `--alignment-prescription` or `--topology-prescription`.
+**`--per-position N` takes N captures at each pose, in ONE walk.** It stages
+each angle N times adjacently, so the arm settles and releases N times without
+travelling: what varies between the takes is time and whatever you changed
+between them, never the pose. Adjacent and not interleaved is the whole point —
+`0,7,0,7,0,7` would walk the arm six times and measure the drift the takes exist
+to hold still. It is sugar over a list an operator could type (the stops are an
+ordered tuple with no uniqueness rule, and `angle_capture.both_at` already ships
+adjacent same-angle stops); what it adds over typing it is the arithmetic a
+hand-typed list gets wrong — `--complete-after` counts RELEASES, so it must
+scale with N, and a short one completes the walk partway through at `rc 0`. It
+governs a staged **measure** walk at any regime composing **one stop per angle**
+(`per_driver` and `summed`). Two cases are refused: stage 2 serves the tier's
+own poses, and `--regime both` composes *two* stops per token
+(`jasper-angle-capture` builds stops as `angle × _REGIME_STOPS[regime]`), so the
+floor — which counts tokens — would be half the real count there.
+
+**Every staged round banks `position_cycle.json`, cycled or not** — one sorted
+index of the poses the round actually measured, **derived** from the evidence
+bundle the bank just untarred, owned by
+[`jasper/active_speaker/crossover_v2/position_cycle.py`](../jasper/active_speaker/crossover_v2/position_cycle.py).
+Every value in it comes off a record the speaker wrote: `lateral_pose_record`
+stamps the signed `position_deg`, the `index`/`attempt`/`take_id` identity, the
+role, the regime and the `wav_sha256` on every accepted take, and the web host
+publishes it as `crossover_v2/{session}/positions/{take_id}.json` inside the
+bundle. Nothing is computed from what the round *meant* to stage — a mapping
+written from the staged angles would be a second writer of one fact, and the two
+disagree exactly on a refused or retaken pose. When the bundle cannot support
+the index, the runner names what was missing (an `ok=false` `position_cycle`
+trail row) and writes nothing.
+
+Why it earns its place, given the pose is already banked: **nothing surfaces
+it.** `jasper-round-views` and the evidence packet read the *cloud* positions
+block, so a lateral walk's bearings sit in per-take sidecars no view opens. The
+index is the convenience — one sorted file at the round root instead of a glob
+over a nested per-take tree that also holds the cloud group's positions. It does
+**not** name a config: what graph a capture played through is the speaker's to
+record, per capture, in the retained capture's `provenance.graph.fingerprint`
+(see
+[`jasper/active_speaker/capture_provenance.py`](../jasper/active_speaker/capture_provenance.py),
+whose own argument is *the config label is not the graph*).
+
+**Refused before anything runs** — eight configurations: (1) an `--apply` with
+an empty fingerprint (an absent live candidate also reads as empty, so comparing
+would POST); (2) `--apply` with `--per-position` at any value, including `1`
+(it measures nothing); (3) `--angles` without `--attest-rig-clear` (a staged arm
+walk nobody will serve, which otherwise costs ten minutes and ends as a misnamed
+idle ceiling); (4) an unreadable `--alignment-prescription`; (5) an unreadable
+`--topology-prescription`; (6) `--per-position` under 1; (7) `--per-position`
+without `--angles`, with `--stage verify`, or with a regime that does not compose
+exactly one stop per angle (`both`, and any regime this runner cannot read a
+count for); and (8) a `--complete-after` below the staged stop count, whose
+refusal names the number to pass. That last one is a FLOOR, not the honest
+number: the session's own non-walk captures are gated holds too, and how many
+there are is the tier's, decided on the speaker. An **empty angle field is not**
+refused — `--angles 0,,7,` stages `0,7`, because
+`jasper.cli.angle_capture._parse_angles` drops empty fields by design and a
+stricter laptop-side reader of the same field is exactly the second opinion this
+runner avoids everywhere else.
 
 **Completion is polled, not slept.** The runner waits for the session id to
 move off the one that was there before the open, *and* for the phase to leave
