@@ -860,6 +860,9 @@ def _active_speaker_channel_identity_save_payload(
     verified = raw.get("identity_verified")
     if not isinstance(verified, bool):
         raise ValueError("identity_verified must be a boolean")
+    from jasper.active_speaker.runtime_contract import roleful_identity_confirmed
+    from jasper.active_speaker.runtime_convergence import park_and_commit_topology
+
     with output_topology_mutation() as mutation:
         topology = mutation.snapshot().topology
         updated = set_channel_identity_verified(
@@ -868,7 +871,36 @@ def _active_speaker_channel_identity_save_payload(
             role=role,
             identity_verified=verified,
         )
-        mutation.save(updated)
+
+        def commit_identity() -> OutputTopology:
+            mutation.save(updated)
+            return updated
+
+        # Un-confirming an ASSIGNED lane of a ROLEFUL topology is a household
+        # member declaring doubt about which driver hangs where — the same
+        # hazard a DAC swap creates, self-declared. `roleful_identity_confirmed`
+        # already makes the graph selector refuse to re-select an approved graph
+        # for it, but that is the DURABLE half and would land at some later
+        # restart. Take the same immediate park the re-pin takes so the effect
+        # is at the click, not a mystery silence three deploys later. Gated on
+        # the confirmed -> unconfirmed EDGE: a box that is already unconfirmed is
+        # already parked, and confirming never parks at all.
+        parked = (
+            roleful_identity_confirmed(topology)
+            and not roleful_identity_confirmed(updated)
+        )
+        if parked:
+            park_and_commit_topology(
+                topology,
+                commit_identity,
+                stay_parked=True,
+                parked_reason=(
+                    "parked after an output was marked not confirmed; confirm it "
+                    "again before audio resumes"
+                ),
+            )
+        else:
+            commit_identity()
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
     log_event(
@@ -882,6 +914,7 @@ def _active_speaker_channel_identity_save_payload(
         verified="%d/%d"
         % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
         blockers=len(evaluation.get("blockers") or []),
+        parked=str(parked),
     )
     return _output_topology_payload()
 

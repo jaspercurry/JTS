@@ -6948,13 +6948,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
     var message = verified
       ? 'Confirm that "' + label + '" is wired to the driver shown here?'
-      : 'Mark "' + label + '" as not confirmed?';
+      // Un-confirming a driver lane silences the speaker at the click (the
+      // server parks it), so the dialog says so and reads as destructive.
+      : 'Mark "' + label + '" as not confirmed? The speaker goes silent until ' +
+        'you confirm it again.';
     if (commissionAutoRamp.running || commissionPendingStep()) {
       stopCommissionAutoRamp('');
       var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
       if (!abortResult || !abortResult.ok) return;
     }
-    if (!await jtsConfirm(message, {danger: false})) {
+    if (!await jtsConfirm(message, {danger: !verified})) {
       status('Stopped the test tone. Output confirmation was not changed.');
       return;
     }

@@ -89,7 +89,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 121 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 122 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -109,16 +109,18 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
             assert not value.keywords
             wrapped_fields.append(f"{event}:{keyword.arg}")
 
-    # The transaction lifecycle adds thirteen required wrappers: three stopped
+    # The transaction lifecycle adds fourteen required wrappers: three stopped
     # audio-session statuses on save, hardware/cleanup/reconcile plus three
-    # stopped-session statuses on reset, and reconcile plus the same three
-    # stopped-session statuses on the composite re-pin (#2814). The digest
-    # catches a missed, swapped, or newly invented wrapper without checking in
-    # the full tuple.
+    # stopped-session statuses on reset, reconcile plus the same three
+    # stopped-session statuses on the composite re-pin (#2814), and that same
+    # change's `parked` flag on the channel-identity write — the one event that
+    # says a household action silenced the speaker, so it must stay greppable.
+    # The digest catches a missed, swapped, or newly invented wrapper without
+    # checking in the full tuple.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 121
+    assert len(wrapped_fields) == 122
     assert hashlib.sha256(signature).hexdigest() == (
-        "4c4627433c393038da6bc08949645a0456539fe09e1cf975e0a69e347f93a94a"
+        "4b39ca670fa184d7511d592ace1dcf51ebe4bb4b60d9b69b8f9326b1696eeee3"
     )
 
 
