@@ -409,18 +409,25 @@ def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> N
     assert health["overall"]["headline"] != _PARKED_HEADLINE
 
 
-def test_armed_active_ring_still_reports_a_real_contradiction(
+def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
     monkeypatch, tmp_path
 ) -> None:
     """The armed-active fix routes to the right arm; it does not mute the detector.
 
-    Positive control for the test above. The crossed-ring-path error can ONLY be
-    raised inside the ``shm_ring_active`` arm, so seeing it proves the coherence
+    Positive control for the test above. The ring-path comparison can ONLY run
+    inside the ``shm_ring_active`` arm, so seeing its verdict proves the coherence
     report reached that arm — where the pre-fix code silently took the loopback
-    arm instead — and that a genuinely half-flipped armed box is still caught.
+    arm instead.
+
+    The verdict is a NOTE, and the headline is deliberately not PARKED. A ring
+    path lagging its marker is the first-arm waypoint: the path is the marker's
+    projection and the next pass of its single writer converges it, so telling a
+    household "audio cannot reach the drivers" would name a permanent fault where
+    there is a transient one. The window is not unobserved — the note rides this
+    same surface verbatim, and outputd refusing to attach is separately loud.
     """
-    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
     from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_PATH_ENV_VAR,
     )
@@ -431,14 +438,14 @@ def test_armed_active_ring_still_reports_a_real_contradiction(
         **{OUTPUTD_RING_PATH_ENV_VAR: DEFAULT_OUTPUTD_RING_PATH},
     )
 
-    assert len(state["coherence_errors"]) == 1
-    error = state["coherence_errors"][0]
-    assert f"transport plan is {TRANSPORT_SHM_RING_ACTIVE}" in error
-    assert DEFAULT_OUTPUTD_RING_PATH in error
-    # ...and it is the household-facing parked verdict, because this one really
-    # does mean audio cannot reach the drivers.
+    assert state["coherence_errors"] == []
+    assert len(state["coherence_notes"]) == 1
+    note = state["coherence_notes"][0]
+    assert "FIRST-ARM waypoint" in note
+    assert DEFAULT_OUTPUTD_RING_PATH in note
+    assert DEFAULT_OUTPUTD_ACTIVE_RING_PATH in note
     health = _compose(transport=state)
-    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert health["signal_path"]["headline"] != _PARKED_HEADLINE
 
 
 def test_audio_health_reads_the_coupling_doctor_reads(monkeypatch, tmp_path) -> None:

@@ -990,6 +990,39 @@ conf.d staging, or ring width — `outputd_active_lane_decision` in step 2 is
 the one arm authority, and a second derivation in the validator is the
 drift that produced the deadlock.
 
+**The FIRST-ARM waypoint is the second rung, and it is also a note.** The
+paragraph above is the rung a box on the `loopback` coupling walks. A box
+whose persisted coupling is already `shm_ring` — a previously-passive
+composite that ran the full-range stereo Ring B — resolves the
+`shm_ring_active` shape the instant step 2 arms the marker, while
+`JASPER_OUTPUTD_SHM_RING_PATH` still carries Ring B's file. Until
+2026-08-21 that crossed pair was an error, so step 2 refused the marker
+whose absence was the only reason the path had not moved: the path is
+DERIVED from the marker (`_outputd_ring_path_for`, the pair's single
+derivation) and the marker was gated on the path, and neither could move
+first. Observed on jts.local at `1c60638d7` (first arm of the dual-Apple
+composite): exit 78, `preserved=1`, detail `transport plan is
+shm_ring_active but JASPER_OUTPUTD_SHM_RING_PATH=…/content.ring`. Because
+`jasper-camilla` carries `Requires=jasper-audio-hardware-reconcile.service`
+the refusal took the DSP graph down, which also disabled the box's own
+rollback — rollback needs the websocket of the daemon the refusal had just
+killed. `transport_coherence_report` now reports the lag as a note naming
+the converging command; the marker lands, and step 3 (`jasper-fanin-
+coupling-reconcile shm_ring`, which the reconciler also kicks via
+`jasper-fanin-coupling-auto.service`) converges the path.
+
+Nothing is softened at the daemon: outputd's startup biconditional still
+refuses the crossed pair, so the window is silence and never wrong audio,
+and the device / bridge / format / channel comparisons in the same branch
+still return errors — a marker armed over a graph that is not on the active
+ring is still a refusal, which is what keeps the note from standing alone
+on a wrecked box. The pair's derivation is also TOTAL in both directions
+now: the unarmed branch no longer carries the active ring's path forward,
+so a marker CLEARED while the coupling stays `shm_ring` converges on the
+next pass instead of sticking. Either half can move first; one pass of the
+path's writer converges the other, and it logs
+`event=fanin.coupling_reconcile result=ring_path_converged`.
+
 **A refused reconcile leaves the box running exactly as before.** When
 `jasper-audio-hardware-reconcile` rejects a staged `outputd.env` it logs
 `outputd_env_invalid … preserved=1`, then
