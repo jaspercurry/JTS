@@ -135,13 +135,13 @@ def test_the_exculpatory_mark_figure_cannot_rescue_the_pooled_verdict() -> None:
     vectors — model-at-the-mark, measured-at-the-mark, measured-pooled — so
     they are entries of one 3x3 correlation matrix, which must be positive
     semi-definite. That confines the third given two, to
-    ``r12*r23 +/- sqrt((1-r12^2)(1-r23^2))``. Here the interval is about
-    [-1.00, +0.13], and its CEILING lies below
+    ``r12*r23 +/- sqrt((1-r12^2)(1-r23^2))``. Here the interval is
+    [-1.0000, +0.1364], and its CEILING lies below
     :data:`DELAY_RANKING_BAR_RHO`: no pooled rho consistent with the mark
     figure and with the two referees' own disagreement could have earned this
-    lever a ranking vote. The recorded -1.000 sits at the interval's lower
-    extreme — 7e-6 outside it, which is the rounding of two published
-    four- and two-digit inputs and not an inconsistency.
+    lever a ranking vote. The recorded -1.000 sits EXACTLY at the interval's
+    lower extreme, which is why the assertion below is an equality and not a
+    tolerance around one.
     """
     from jasper.active_speaker.crossover_v2.search import _authority_for
 
@@ -152,10 +152,12 @@ def test_the_exculpatory_mark_figure_cannot_rescue_the_pooled_verdict() -> None:
     lower, upper = center - radius, center + radius
 
     # The interval the audit derived, stated in both directions.
-    assert lower == pytest.approx(-1.0, abs=1e-4)
-    assert upper == pytest.approx(+0.1326, abs=1e-3)
-    # The recorded pooled rho sits at that lower extreme.
-    assert DELAY_RANKING_MEASURED_RHO == pytest.approx(lower, abs=1e-4)
+    assert lower == pytest.approx(-1.0, abs=1e-9)
+    assert upper == pytest.approx(+0.1364, abs=1e-4)
+    # The recorded pooled rho sits at that lower extreme — exactly, so this is
+    # an equality. A tolerance here would go on passing if the constants drifted
+    # back to a pair whose bound merely lands NEAR -1.
+    assert DELAY_RANKING_MEASURED_RHO == pytest.approx(lower, abs=1e-9)
     # THE PIN: the whole feasible interval is below the bar, so reading the
     # mark figure at face value still cannot flip the authority stamp.
     assert upper < DELAY_RANKING_BAR_RHO

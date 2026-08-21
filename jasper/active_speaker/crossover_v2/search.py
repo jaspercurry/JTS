@@ -162,12 +162,19 @@ DELAY_RANKING_MARK_RHO: float = 0.6571
 #: :data:`DELAY_RANKING_MARK_RHO`. Three correlations over one set of arms are
 #: not free of each other: a correlation matrix must stay positive
 #: semi-definite, which bounds the third given two. With the mark figure at
-#: +0.6571 and the referees at -0.66, the pooled rho is confined to roughly
-#: [-1.00, +0.13] — an interval lying ENTIRELY below the +0.6 bar. So the model
-#: cannot have ranking authority against the pooled referee no matter how the
-#: mark figure is read, and the recorded -1.000 sits at that interval's lower
-#: extreme rather than outside it. Pinned by a test rather than asserted here.
-MARK_VS_POOL_REFEREE_RHO: float = -0.66
+#: +0.6571 and the referees at -0.6571, the pooled rho is confined to
+#: [-1.0000, +0.1364] — an interval lying ENTIRELY below the +0.6 bar. So the
+#: model cannot have ranking authority against the pooled referee no matter how
+#: the mark figure is read, and the recorded -1.000 sits exactly at that
+#: interval's lower extreme. Pinned by a test rather than asserted here.
+#:
+#: That the lower bound lands on -1.0000 EXACTLY rather than near it follows
+#: from the two figures being equal in magnitude, which is a coincidence of
+#: this bank and not an identity: an untied Spearman over six arms can only
+#: take the values ``1 - sum(d^2)/35``, and these two are ``sum(d^2) = 12`` and
+#: ``58``, which happen to sit 23 either side of 35. Do not carry the equality
+#: forward to another bank.
+MARK_VS_POOL_REFEREE_RHO: float = -0.6571
 
 #: Where :data:`DELAY_RANKING_MEASURED_RHO` came from, so the number can be
 #: re-derived rather than believed. The same artifact carries
