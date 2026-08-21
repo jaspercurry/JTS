@@ -14,7 +14,10 @@ This module is wiring only. Every decision it makes belongs to someone else:
 
 * the ramp, its guards, and the refusal codes — :mod:`jasper.active_speaker.seat_level_ramp`
 * the volume ceiling — ``session_volume_plan.unsegmented_stimulus_ceiling_db``,
-  the excitation ledger solved for THIS stimulus's peak
+  the excitation ledger solved for what THIS stimulus's peak becomes in each
+  driver's own branch of the live graph
+* those branch peaks — :mod:`jasper.active_speaker.branch_peak`, which renders
+  the stimulus through the applied CamillaDSP graph
 * the SPL ceiling — the profile's ``max_commissioning_level_db_spl``
 * the absolute level reference — the mic's own calibration file
 * the mic feed — :class:`jasper.audio_measurement.wired_level_meter.WiredLevelMeter`
@@ -23,8 +26,12 @@ This module is wiring only. Every decision it makes belongs to someone else:
 **Why the stimulus is named, not designed here.** Choosing a safe excitation for
 a summed, seat-position measurement is the excitation-admission subsystem's job,
 not a CLI's. Point ``--stimulus-wav`` at the program this session will actually
-measure with; its true peak is read from the bytes and the ceiling is solved so
-that peak admits for EVERY driver at every commanded volume.
+measure with; its true peak is read from the bytes, each driver's branch peak is
+rendered from those same bytes through the graph that is actually applied, and
+the ceiling is solved so the stimulus admits for EVERY driver at every commanded
+volume. When that render cannot be exact — no applied graph, a filter type the
+renderer does not model — the ceiling falls back to bounding every driver by the
+full-band peak, which is the conservative answer this verb shipped with.
 
 **Precondition an operator must check.** The mic's ``Sens Factor`` is quoted at
 its maximum capture volume. Confirm ``amixer -c <card>`` shows the capture
@@ -44,12 +51,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import math
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
     SeatLevelRampError,
     SeatLevelResult,
@@ -67,6 +76,8 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlanError,
     unsegmented_stimulus_ceiling_db,
 )
+
+logger = logging.getLogger(__name__)
 
 REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
 REFUSE_MIC_ABSENT = "measurement_mic_absent"
@@ -136,11 +147,56 @@ def stimulus_peak_dbfs(path: Path) -> float:
     return 20.0 * math.log10(peak)
 
 
+def _applied_branch_peaks(
+    stimulus: Path, targets: list[dict[str, Any]]
+) -> dict[str, float] | None:
+    """Each driver's branch true peak for THIS stimulus through the LIVE graph.
+
+    ``None`` whenever the render cannot be exact, which the ceiling derivation
+    turns back into the conservative full-band bound — so every failure here
+    makes the speaker quieter, never louder. The reason is logged rather than
+    swallowed: a silent fallback looks identical to a genuinely tight graph and
+    sends an operator hunting the wrong number.
+
+    The applied graph is read through
+    :func:`jasper.active_speaker.environment.read_camilla_statefile_config_path`,
+    the same public statefile reader every other surface uses, so this adds no
+    second answer to "which config is live".
+    """
+    import yaml
+
+    from jasper.active_speaker.branch_peak import (
+        BranchPeakError,
+        branch_peaks_for_targets,
+    )
+    from jasper.active_speaker.environment import read_camilla_statefile_config_path
+
+    try:
+        config_path = read_camilla_statefile_config_path()
+        if not config_path:
+            raise BranchPeakError("no CamillaDSP statefile names an applied config")
+        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+        peaks = branch_peaks_for_targets(config, stimulus, targets)
+    except (BranchPeakError, OSError, ValueError, KeyError, yaml.YAMLError) as exc:
+        log_event(
+            logger,
+            "active_speaker.seat_level_branch_peaks_unavailable",
+            detail=str(exc),
+        )
+        return None
+    log_event(
+        logger,
+        "active_speaker.seat_level_branch_peaks",
+        peaks=" ".join(f"{key}={value:.2f}" for key, value in sorted(peaks.items())),
+    )
+    return peaks
+
+
 def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, float]:
     """``(volume ceiling for THIS stimulus, commissioning SPL ceiling)``."""
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.design_draft import (
-        declared_driver_sensitivities,
+        declared_effective_driver_sensitivities,
         load_design_draft,
     )
     from jasper.active_speaker.measurement import active_driver_targets
@@ -154,14 +210,22 @@ def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, flo
             "the design draft carries no driver_safety_profile; commission the "
             "drivers before leveling"
         )
-    fingerprints = [
-        str(target["target_fingerprint"]) for target in active_driver_targets(topology)
-    ]
+    targets = active_driver_targets(topology)
+    fingerprints = [str(target["target_fingerprint"]) for target in targets]
+    # The PAD-FOLDED sensitivities, not the naked datasheet ones. An L-pad'd
+    # tweeter's acoustic output is quieter than its bare rating by exactly the
+    # pad, and the derived HF ceiling is a sensitivity DELTA against the woofer
+    # — so reading the naked figure protects the driver as if it were the pad's
+    # worth more sensitive than it physically is. This is the reader
+    # ``declared_driver_sensitivities``' own docstring names for
+    # excitation-ceiling derivation and session-volume planning (#1665), and the
+    # one the /correction crossover-v2 flow already passes.
     ceiling_db = unsegmented_stimulus_ceiling_db(
         safety_profile,
         fingerprints,
         stimulus_peak_dbfs=stimulus_peak_dbfs(stimulus),
-        declared_sensitivities=declared_driver_sensitivities(draft),
+        declared_sensitivities=declared_effective_driver_sensitivities(draft),
+        branch_peaks_dbfs=_applied_branch_peaks(stimulus, targets),
     )
     # ``resolve_capture_preset`` is the sibling every capture-analysis surface
     # uses: it resolves the preview-compiled preset and only then falls back to

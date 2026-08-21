@@ -2462,13 +2462,38 @@ volume hold is the crossover session's own `SessionVolumePlan`. What this verb
 adds is the SPL domain: the band, the ceilings, and the ambient floor.
 
 **The ceiling is mic-independent, and that is deliberate.** The ramp's hard bound
-is `unsegmented_stimulus_ceiling_db` — `min(driver caps) − stimulus peak`, the
-excitation ledger solved for main volume against the ACTUAL stimulus bytes.
-`min`, not `max`: nothing attenuates a flat WAV down to the quieter drivers'
-ledgers the way a composed program's per-segment gains do. No measured level
-enters that number, so a mis-calibrated microphone cannot move it. The profile's
+is `unsegmented_stimulus_ceiling_db`, the excitation ledger solved for main
+volume against the ACTUAL stimulus bytes. No measured level enters that number,
+so a mis-calibrated microphone cannot move it. The profile's
 `max_commissioning_level_db_spl` is a second, measured stop — softer by
 construction, because it shares the calibration's fate.
+
+**That ceiling has two forms, and which one applies depends on what can be
+known about the graph.** Given only the stimulus, every driver has to be assumed
+to see the whole thing: `min(driver caps) − stimulus peak`, `min` not `max`,
+because nothing attenuates a flat WAV down to the quieter drivers' ledgers the
+way a composed program's per-segment gains do. Given the applied graph as well,
+[`branch_peak.py`](../jasper/active_speaker/branch_peak.py) RENDERS the stimulus
+through it — input split mixer, crossover passes, shelves and peaks, per-driver
+gain and delay — and the same per-driver caps bind against what each branch
+actually receives: `min(cap − that driver's branch peak)`. On a two-way that is
+worth double figures, because a crossed-over driver never receives the full-band
+peak. It is not a one-way loosening: a branch whose chain sits above unity
+reports a peak ABOVE the full-band figure and binds tighter. The claim is
+specific to one WAV through one graph and is never cached — a different stimulus,
+or the same one after the graph is re-applied, is re-rendered.
+
+The render **refuses rather than approximates**, and every refusal falls back to
+the full-band bound, so an unmodelled graph makes the speaker quieter and never
+louder. A filter type it does not model exactly, a bypassed pipeline step, a
+graph or stimulus at a rate other than 48 kHz (the shared RBJ evaluator's
+prewarp), a channel-count mismatch, or a branch peak missing for any one active
+driver all take that path. Which bound was used is in the journal —
+`event=active_speaker.unsegmented_ceiling_bound` names `bound=per_branch` or
+`bound=full_band` plus each driver's cap and branch peak, and
+`event=active_speaker.seat_level_branch_peaks_unavailable` carries the reason a
+render was not possible at all. Read those before concluding a speaker's graph is
+simply tight.
 
 **The room is measured once, before the tone, and three rules read it.** That one
 ambient number is the kernel's trust threshold, the runaway guard's "did anything
@@ -2532,8 +2557,11 @@ above ambient counts as evidence, default 6).
 Hardware-free coverage: the conversion, the guards, the ambient model and the
 banked artifact in
 [`tests/test_active_speaker_seat_level.py`](../tests/test_active_speaker_seat_level.py),
-the verb and its pre-audio refusals in
-[`tests/test_cli_seat_level.py`](../tests/test_cli_seat_level.py), the mic feed in
+the verb, its pre-audio refusals, and the end-to-end ceiling on a JTS3-shaped
+speaker in [`tests/test_cli_seat_level.py`](../tests/test_cli_seat_level.py), the
+branch render and its fail-conservative refusals in
+[`tests/test_active_speaker_branch_peak.py`](../tests/test_active_speaker_branch_peak.py),
+the mic feed in
 [`tests/test_wired_level_meter.py`](../tests/test_wired_level_meter.py), the
 derivation it feeds in
 [`tests/test_active_speaker_session_volume_plan.py`](../tests/test_active_speaker_session_volume_plan.py),
