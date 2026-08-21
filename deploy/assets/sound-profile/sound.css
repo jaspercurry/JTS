@@ -654,10 +654,10 @@
   }
   .driver-echo__source { min-width: 0; overflow-wrap: anywhere; }
   .driver-echo__source--empty { font-style: italic; }
-  /* Issue #1820: the hoisted "Confirm safety limits" callout. It reads as an
+  /* Issue #1820: the hoisted "Review the safety limits" callout. It reads as an
      attention panel (same shape as __notes) rather than another plain section,
-     because it is the one blocking action between the household and any
-     measurement, and it only renders while that block is real. */
+     because it names what is blocking every measurement, and it only renders
+     while that block is real. */
   .driver-research__confirm {
     gap: 10px;
     padding: 10px; border-radius: var(--radius-sm);

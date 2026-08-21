@@ -3381,7 +3381,7 @@ def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
         v2host.resolve_conductor_context = original
 
     action = status["crossover_v2"][v2host.STAGE2_PREFLIGHT_KEY]["next_action"]
-    assert action and action["id"] == "confirm_safety_limits"
+    assert action and action["id"] == "review_safety_limits"
 
 
 def test_an_unexpected_preflight_failure_fails_closed(caplog):

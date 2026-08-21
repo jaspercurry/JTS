@@ -115,8 +115,7 @@ def test_production_driver_captures_build_exact_complete_isolated_evidence(
             "crossover_candidates": [],
         },
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-15T12:00:00Z",
+        saved_at="2026-07-15T12:00:00Z",
     )
     preset_payload = _two_way_preset()
     preset_payload["crossover_regions"][0]["fc_hz"] = 5000

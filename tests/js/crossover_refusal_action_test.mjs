@@ -161,12 +161,12 @@ function refusal(message, body) {
 
 // The real copy + action the server sends for this refusal.
 const CONFIRM_COPY =
-  "This speaker's safety limits are not confirmed, so JTS did not play the " +
-  "measurement signal. Confirm the safety limits in speaker setup — changing " +
-  "a driver detail clears them — then measure again.";
+  "JTS could not use this speaker's saved safety limits, so it did not play " +
+  "the measurement signal. Review the limits in speaker setup and save them " +
+  "again, then measure.";
 const CONFIRM_ACTION = {
-  id: "confirm_safety_limits",
-  label: "Confirm safety limits",
+  id: "review_safety_limits",
+  label: "Review safety limits",
   href: "/sound/#confirm-safety-limits",
 };
 
@@ -186,7 +186,7 @@ await runAction(START_SESSION, element("btn"));
 
 assert.equal(statusEl.dataset.tone, "bad", "a refusal paints the bad tone");
 assert.ok(
-  statusText().includes("Confirm the safety limits in speaker setup"),
+  statusText().includes("Review the limits in speaker setup"),
   `the refusal copy must be shown, got: ${statusText()}`,
 );
 const link = statusLink();

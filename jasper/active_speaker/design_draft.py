@@ -1057,8 +1057,6 @@ def build_design_draft(
     driver_research: Any = None,
     manual_settings: Any = None,
     operator_inputs: Any = None,
-    prior_safety_profile: Mapping[str, Any] | None = None,
-    confirm_safety_profile: bool = False,
     created_at: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -1172,9 +1170,7 @@ def build_design_draft(
                 topology,
                 manual_settings=manual,
                 driver_research=research,
-                prior_profile=prior_safety_profile,
-                confirm=confirm_safety_profile,
-                confirmed_at=now if confirm_safety_profile else None,
+                saved_at=now,
             )
         except DriverSafetyProfileError as exc:
             raise ActiveSpeakerDesignDraftError(str(exc)) from exc
@@ -1201,7 +1197,6 @@ def build_design_draft(
             "may_explain": True,
             "may_recommend_research_or_measurement": True,
             "may_suggest_bounded_crossover_starting_points": True,
-            "may_confirm_visible_driver_safety_profile": True,
             "may_not_apply_filters": True,
             "may_not_load_camilla": True,
             "may_not_emit_audio": True,
@@ -1401,7 +1396,6 @@ def save_design_draft(
     driver_research: Any = None,
     manual_settings: Any = None,
     operator_inputs: Any = None,
-    confirm_safety_profile: bool = False,
     expected_revision: Any = _REVISION_UNSET,
     path: str | Path | None = None,
     created_at: str | None = None,
@@ -1441,12 +1435,6 @@ def save_design_draft(
             driver_research=driver_research,
             manual_settings=manual_settings,
             operator_inputs=operator_inputs,
-            prior_safety_profile=(
-                prior.get("driver_safety_profile")
-                if isinstance(prior.get("driver_safety_profile"), Mapping)
-                else None
-            ),
-            confirm_safety_profile=confirm_safety_profile,
             created_at=(
                 prior.get("created_at")
                 if prior.get("status") != "not_saved"
@@ -1456,10 +1444,17 @@ def save_design_draft(
         )
         draft["path"] = str(target)
         draft["revision"] = current_revision + 1
+        # group_from_parent: the crossover-accept seam writes this store from
+        # the ROOT jasper-correction-web process, while /sound/ reads it as
+        # jasper-web (group jasper). /var/lib/jasper is group jasper but not
+        # setgid, so a root write without this publishes root:root 0640 and the
+        # design page renders empty against a store it cannot open. Same
+        # contract as the sibling Layer-A stores.
         atomic_write_text(
             target,
             json.dumps(draft, indent=2, sort_keys=True) + "\n",
             mode=0o640,
+            group_from_parent=True,
             durable=durable,
         )
     return draft

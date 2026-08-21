@@ -5509,7 +5509,8 @@ def _handle_crossover_relay_level_match(
         )
         if driver_safety.get("confirmed_and_current") is not True:
             raise ValueError(
-                "confirm the driver safety details in speaker setup before measuring"
+                "review the driver safety details in speaker setup and save "
+                "them before measuring"
             )
     blocking = _crossover_blocking_phase()
     if blocking is not None:

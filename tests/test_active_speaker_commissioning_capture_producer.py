@@ -137,8 +137,7 @@ def _harness(tmp_path: Path, *, layout: str = "mono") -> _Harness:
         topology,
         manual_settings=manual,
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-14T12:00:00Z",
+        saved_at="2026-07-14T12:00:00Z",
     )
     safety = evaluate_driver_safety_profile(safety_profile, topology)
     assert safety.confirmed_and_current

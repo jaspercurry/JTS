@@ -2009,7 +2009,7 @@ async function testTweeterTypeChangeInvalidatesCopiedResearchBinding() {
       html,
     });
   }
-  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  harness.dispatchClick({ "data-act": "save-driver-design" });
   for (let i = 0; i < 4; i += 1) await harness.flush();
   if (designPosts.length !== 1 ||
       designPosts[0].driver_research_request !== null) {
@@ -3177,47 +3177,8 @@ async function testUnknownDriverStyleRendersWithoutGuessedFloor() {
   return { unknownDriverStyleRendersWithoutGuessedFloor: true };
 }
 
-// Nit from review: the safety-confirmation toast restates the confirmed
-// tweeter style + floor so the operator sees what they just confirmed.
-async function testConfirmSafetyToastRestatesTweeterStyleAndFloor() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.speaker_groups[0].channels[1].driver_style = "compression_driver";
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(topology)),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        return Promise.resolve(response({
-          status: "ready_for_review",
-          revision: 4,
-          summary: {},
-          operator_inputs: {},
-        }));
-      }
-      return Promise.resolve(response({ status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {} }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const text = harness.elements.get("status").textContent;
-  if (!text.includes("Safety limits confirmed") ||
-      !text.includes("Compression driver (horn-loaded), 2000 Hz default minimum crossover")) {
-    fail("confirm toast must restate the confirmed tweeter style and figure", { text });
-  }
-  if (!text.includes("does not authorize sound")) {
-    fail("confirm toast must keep the no-audio disclaimer", { text });
-  }
-  return { confirmSafetyToastRestatesTweeterStyleAndFloor: true };
-}
-
-// Punch #13 (MEDIUM): a save refusal (e.g. a stale-fingerprint confirmation)
-// must surface the server's real error, not a false "saved" toast. Verified
-// this already holds for both the plain working-setup save and the
-// confirm-safety-profile save (same handler, same status branch) — this pins
-// it as a regression guard.
+// Punch #13 (MEDIUM): a save refusal must surface the server's real error, not
+// a false "saved" toast.
 async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
   const posts = [];
   const fetchHandler = baseFetch({
@@ -3226,7 +3187,7 @@ async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
       if (options.method === "POST") {
         posts.push(JSON.parse(options.body || "{}"));
         return Promise.resolve(response(
-          { error: "driver safety profile confirmation did not validate as current" },
+          { error: "speaker design changed in another session" },
           false,
           400,
         ));
@@ -3237,16 +3198,15 @@ async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
 
-  harness.dispatchClick({ "data-act": "confirm-driver-safety" });
+  harness.dispatchClick({ "data-act": "save-driver-design" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
-  if (posts.length !== 1) fail("confirm action should POST once", { posts });
+  if (posts.length !== 1) fail("save action should POST once", { posts });
   const statusNode = harness.elements.get("status");
-  if (!statusNode.textContent.includes("driver safety profile confirmation did not validate as current")) {
+  if (!statusNode.textContent.includes("speaker design changed in another session")) {
     fail("a 400 refusal must surface the server's real error text", { text: statusNode.textContent });
   }
-  if (statusNode.textContent.toLowerCase().includes("saved") ||
-      statusNode.textContent.toLowerCase().includes("confirmed for the current")) {
+  if (statusNode.textContent.toLowerCase().includes("updated")) {
     fail("a 400 refusal must not show a success/saved toast", { text: statusNode.textContent });
   }
   if (!statusNode.className.includes("err")) {
@@ -4754,9 +4714,9 @@ function echoManualSettings(research) {
 function echoDraft({ research, policy } = {}) {
   const packet = research || echoResearchPacket();
   const draft = designDraftWithSafety({
-    status: "unconfirmed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_not_confirmed"],
+    status: "confirmed",
+    confirmed_and_current: true,
+    reasons: [],
   });
   draft.driver_research_request = {
     request_fingerprint: packet.request_fingerprint,
@@ -7270,8 +7230,8 @@ async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
       });
     }
   }
-  if (!initialHtml.includes("Safety profile: add the missing limits before confirmation.")) {
-    fail("Preview readiness must not imply per-target safety confirmation", { initialHtml });
+  if (!initialHtml.includes("Safety profile: add the missing limits.")) {
+    fail("Preview readiness must not imply a usable per-target declaration", { initialHtml });
   }
   if (/data-act="prepare-crossover-preview" disabled/.test(initialHtml)) {
     fail("A clean server-ready legacy draft must allow crossover preview", { initialHtml });
@@ -7288,7 +7248,7 @@ async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
     });
   }
   const previewHtml = harness.elements.get("view-body").innerHTML;
-  if (!previewHtml.includes("Safety profile: add the missing limits before confirmation.") ||
+  if (!previewHtml.includes("Safety profile: add the missing limits.") ||
       previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
     fail("Preparing a preview must not promote or copy legacy role-only safety values", {
       previewHtml,
@@ -7558,10 +7518,12 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
         error: "",
         operator_inputs: body.operator_inputs,
         manual_settings: body.manual_settings,
-        driver_safety_profile: { status: "unconfirmed", targets: [] },
+        // A save lands the declaration current in the same step -- there is no
+        // separate confirm any more.
+        driver_safety_profile: { status: "confirmed", targets: [] },
         driver_safety_profile_evaluation: {
-          status: "unconfirmed",
-          confirmed_and_current: false,
+          status: "confirmed",
+          confirmed_and_current: true,
         },
       }));
     },
@@ -7569,9 +7531,9 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
   const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes("confirmed for the current outputs") ||
+  if (!initialHtml.includes("declared for the current outputs") ||
       !initialHtml.includes("old saved evidence")) {
-    fail("A clean confirmed draft must show its current confirmation and provenance", {
+    fail("A clean current draft must show its declaration and provenance", {
       initialHtml,
     });
   }
@@ -7590,7 +7552,7 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
   for (const expected of [
     'data-manual-field="hard_excitation_min_hz" value="5500"',
     "Your unsaved edits were kept",
-    "needs confirmation after saving current edits",
+    "save your current edits to update it",
   ]) {
     if (!conflictHtml.includes(expected)) {
       fail("Conflict UI must retain and truthfully label unsaved safety edits", {
@@ -7600,7 +7562,7 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
     }
   }
   if (conflictHtml.includes("Fresh T2") || conflictHtml.includes("old saved evidence") ||
-      conflictHtml.includes("confirmed for the current outputs")) {
+      conflictHtml.includes("declared for the current outputs")) {
     fail("Conflict UI must not replace edits or show stale authority", { conflictHtml });
   }
 
@@ -7751,13 +7713,13 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
   return { subwooferWithSpareOutputHidesWirelessCta: true };
 }
 
-// Issue #1820 defect 3. An unconfirmed driver-safety profile refuses EVERY
-// crossover measurement, and "Confirm safety limits" is the only control that
-// clears it — but #1819 left that control inside the default-closed Advanced
-// disclosure while promoting the enclosure selector (whose edit rotates the
-// profile fingerprint and so clears the confirmation) into the always-visible
-// form. These render the real card and assert the hoisted callout is there,
-// ahead of the disclosure, and gone once the profile is confirmed.
+// Issue #1820 defect 3, as it stands after the confirm step was retired.
+// Saving the declaration IS declaring it, so an ordinary edit can no longer
+// leave the profile unusable — but 'incomplete', 'stale', and 'malformed' still
+// refuse EVERY crossover measurement, and each needs a different edit before a
+// save can succeed. These render the real card and assert the review callout is
+// hoisted ahead of the Advanced disclosure in exactly those states, names the
+// right remedy, and is gone once the declaration is usable.
 function designDraftWithSafety(evaluation) {
   return {
     status: "ready_for_review",
@@ -7765,9 +7727,9 @@ function designDraftWithSafety(evaluation) {
     summary: {},
     operator_inputs: {},
     driver_safety_profile: { status: evaluation.status === "confirmed"
-      ? "confirmed" : "needs_confirmation" },
+      ? "confirmed" : "incomplete" },
     driver_safety_profile_evaluation: evaluation,
-    permissions: { may_confirm_visible_driver_safety_profile: true },
+    permissions: {},
   };
 }
 
@@ -7782,35 +7744,11 @@ async function harnessWithSafetyEvaluation(evaluation, options = {}) {
   return harness;
 }
 
-async function testUnconfirmedSafetyProfileHoistsTheConfirmControl() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "unconfirmed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_not_confirmed"],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  const advancedAt = html.indexOf("data-driver-advanced");
-  if (calloutAt < 0) {
-    fail("an unconfirmed safety profile must hoist the confirm callout", { html });
-  }
-  if (!(calloutAt < advancedAt)) {
-    fail("the confirm callout must render before the Advanced disclosure", {
-      calloutAt, advancedAt, html,
-    });
-  }
-  const callout = html.slice(calloutAt, advancedAt);
-  if (!callout.includes('class="btn btn--primary" data-act="confirm-driver-safety"')) {
-    fail("the hoisted control must be the primary confirm action", { callout });
-  }
-  if (!callout.includes("will not play a measurement signal until you confirm")) {
-    fail("the callout must say why it blocks measurement", { callout });
-  }
-  return { unconfirmedSafetyProfileHoistsTheConfirmControl: true };
-}
-
-async function testConfirmedSafetyProfileRendersNoCallout() {
+// The nanny loop, pinned shut on the browser side: a declaration whose values
+// are usable renders NO callout and NO confirm control, whatever the operator
+// last edited. Before the ruling this state existed and blocked every
+// measurement behind a button.
+async function testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl() {
   const harness = await harnessWithSafetyEvaluation({
     status: "confirmed",
     confirmed_and_current: true,
@@ -7818,17 +7756,15 @@ async function testConfirmedSafetyProfileRendersNoCallout() {
   });
   const html = harness.elements.get("view-body").innerHTML;
   if (html.includes('id="confirm-safety-limits"')) {
-    fail("a confirmed profile must not nag with the hoisted callout", { html });
+    fail("a usable profile must not nag with the hoisted callout", { html });
   }
-  // The Advanced re-confirm button stays where it was — this hoists, it does
-  // not move.
-  if (!html.includes('data-act="confirm-driver-safety"')) {
-    fail("the Advanced confirm control must still exist", { html });
+  if (html.includes('data-act="confirm-driver-safety"')) {
+    fail("the confirm control was retired and must not render anywhere", { html });
   }
-  return { confirmedSafetyProfileRendersNoCallout: true };
+  return { usableSafetyProfileRendersNoCalloutAndNoConfirmControl: true };
 }
 
-async function testIncompleteSafetyProfileExplainsWithoutADeadButton() {
+async function testIncompleteSafetyProfileHoistsTheReviewCallout() {
   const harness = await harnessWithSafetyEvaluation({
     status: "incomplete",
     confirmed_and_current: false,
@@ -7836,29 +7772,33 @@ async function testIncompleteSafetyProfileExplainsWithoutADeadButton() {
   });
   const html = harness.elements.get("view-body").innerHTML;
   const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  const advancedAt = html.indexOf("data-driver-advanced");
   if (calloutAt < 0) {
     fail("an incomplete profile still needs the explanation", { html });
   }
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (!(calloutAt < advancedAt)) {
+    fail("the review callout must render before the Advanced disclosure", {
+      calloutAt, advancedAt, html,
+    });
+  }
+  const callout = html.slice(calloutAt, advancedAt);
   if (!callout.includes("Some safety limits are still missing")) {
     fail("an incomplete profile must name the add-the-values action", { callout });
   }
-  // build_driver_safety_profile REFUSES a confirm while values are missing, so
-  // offering the button here would only produce a 400.
   if (callout.includes('data-act="confirm-driver-safety"')) {
-    fail("an incomplete profile must not offer a confirm the server refuses", {
+    fail("the callout must explain, never offer a retired confirm action", {
       callout,
     });
   }
-  return { incompleteSafetyProfileExplainsWithoutADeadButton: true };
+  return { incompleteSafetyProfileHoistsTheReviewCallout: true };
 }
 
-// #2603. A profile confirmed before a driver's low limit had one declared
-// owner evaluates 'malformed', NOT 'incomplete', so the status test that keeps
-// the button off an unconfirmable profile did not cover it. jts3's own stored
-// artifact is this shape: the button was offered, and the operator's first
-// click came back a bare `search_band_below_hard_band` from the server.
-async function testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm() {
+// #2603. A profile written before a driver's low limit had one declared owner
+// evaluates 'malformed', NOT 'incomplete'. jts3's own stored artifact is this
+// shape, and the copy has to name both the cause and the ONE fix a save still
+// needs first — otherwise the operator saves, nothing changes, and the loop
+// stays shut with no explanation.
+async function testStaleLowLimitWithABlockerNamesTheCauseAndTheFix() {
   const harness = await harnessWithSafetyEvaluation({
     status: "malformed",
     confirmed_and_current: false,
@@ -7874,43 +7814,26 @@ async function testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm() {
   }
   const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
   if (!callout.includes("one declared minimum crossover per driver")) {
-    fail("the copy must name WHY the confirmation lapsed", { callout });
+    fail("the copy must name WHY the declaration went unusable", { callout });
   }
   if (!callout.includes(
     "the tweeter&#39;s crossover search band starts below its hard excitation band"
   )) {
-    fail("the copy must name the blocker that stops a re-confirm", { callout });
+    fail("the copy must name the blocker a save has to clear first", { callout });
   }
   if (!callout.includes("the datasheet")) {
     fail("the copy must name the remedy, not just the conflict", { callout });
   }
-  if (callout.includes('data-act="confirm-driver-safety"')) {
-    fail("a rebuild that would refuse must not be offered as a button", {
-      callout,
-    });
+  if (html.includes('data-act="confirm-driver-safety"')) {
+    fail("the confirm control was retired and must not render anywhere", { html });
   }
-  // There are TWO confirm buttons: the hoisted callout's and the Advanced
-  // editor's own save row. Gating only the first left the dead click one
-  // disclosure away — in the very panel the operator is in while fixing the
-  // values that make the rebuild refuse. The Advanced one stays rendered and
-  // goes `disabled`, so the row does not appear to lose an action.
-  const advancedButtonAt = html.lastIndexOf('data-act="confirm-driver-safety"');
-  if (advancedButtonAt < 0) {
-    fail("the Advanced editor should still render its confirm control", { html });
-  }
-  const advancedButton = html.slice(advancedButtonAt, advancedButtonAt + 160);
-  if (!advancedButton.includes("disabled")) {
-    fail("the Advanced confirm button must be disabled when a rebuild refuses", {
-      advancedButton,
-    });
-  }
-  return { staleLowLimitWithABlockerExplainsAndOffersNoConfirm: true };
+  return { staleLowLimitWithABlockerNamesTheCauseAndTheFix: true };
 }
 
-// The control. Without it the gate above reads as "malformed never confirms",
-// which would strand every box in the compat class instead of letting the
-// ordinary case re-confirm in one click.
-async function testStaleLowLimitWithoutABlockerStillOffersConfirm() {
+// The control. Without it the copy above reads as "malformed is always
+// blocked", which would strand every box in the compat class instead of
+// telling it that one ordinary save is the whole remedy.
+async function testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy() {
   const harness = await harnessWithSafetyEvaluation({
     status: "malformed",
     confirmed_and_current: false,
@@ -7920,14 +7843,14 @@ async function testStaleLowLimitWithoutABlockerStillOffersConfirm() {
   const calloutAt = html.indexOf('id="confirm-safety-limits"');
   const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
   if (!callout.includes("one declared minimum crossover per driver")) {
-    fail("the copy must still name why the confirmation lapsed", { callout });
+    fail("the copy must still name why the declaration went unusable", { callout });
   }
-  if (!callout.includes('data-act="confirm-driver-safety"')) {
-    fail("a stale profile that rebuilds cleanly must still offer Confirm", {
+  if (!callout.includes("save them again")) {
+    fail("a profile that rebuilds cleanly must name the save as the remedy", {
       callout,
     });
   }
-  return { staleLowLimitWithoutABlockerStillOffersConfirm: true };
+  return { staleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy: true };
 }
 
 async function testIncompleteFromABandRelationshipNamesTheRelationship() {
@@ -7956,15 +7879,9 @@ async function testIncompleteFromABandRelationshipNamesTheRelationship() {
   )) {
     fail("the copy must name which relationship does not line up", { callout });
   }
-  // Same refusal as any other issue: the server will not confirm, so no button.
-  if (callout.includes('data-act="confirm-driver-safety"')) {
-    fail("an incomplete profile must not offer a confirm the server refuses", {
-      callout,
-    });
-  }
   // The saved-summary line is the second place that read 'missing'.
   if (!html.includes(
-    "Safety profile: resolve the limits that do not line up before confirmation"
+    "Safety profile: resolve the limits that do not line up"
   )) {
     fail("the saved summary must not send the operator after a blank field", {
       html,
@@ -7991,18 +7908,18 @@ async function testIncompleteFromABandRelationshipNamesTheRelationship() {
   return { incompleteFromABandRelationshipNamesTheRelationship: true };
 }
 
-async function testConfirmSafetyDeepLinkOpensTheComponentStep() {
-  const unconfirmed = {
-    status: "unconfirmed",
+async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
+  const unusable = {
+    status: "stale",
     confirmed_and_current: false,
-    reasons: ["driver_safety_profile_not_confirmed"],
+    reasons: ["driver_safety_profile_target_mismatch"],
   };
   const harness = await harnessWithSafetyEvaluation(
-    unconfirmed, { hash: "#confirm-safety-limits" },
+    unusable, { hash: "#confirm-safety-limits" },
   );
   await harness.flush();
   const html = harness.elements.get("view-body").innerHTML;
-  // The component step's <details> is OPEN, so the deep-linked control is
+  // The component step's <details> is OPEN, so the deep-linked explanation is
   // actually on screen rather than behind a collapsed summary — the whole
   // point of not relying on bare fragment behaviour.
   const stepAt = html.indexOf('data-output-step="research"');
@@ -8013,23 +7930,23 @@ async function testConfirmSafetyDeepLinkOpensTheComponentStep() {
     });
   }
   if (html.indexOf('id="confirm-safety-limits"') < 0) {
-    fail("the deep-linked control must be rendered", { html });
+    fail("the deep-linked callout must be rendered", { html });
   }
 
-  // And a page opened at the same fragment with nothing to confirm must NOT be
+  // And a page opened at the same fragment with nothing to review must NOT be
   // yanked into the component step by a stale bookmark.
-  const confirmed = await harnessWithSafetyEvaluation(
+  const usable = await harnessWithSafetyEvaluation(
     { status: "confirmed", confirmed_and_current: true, reasons: [] },
     { hash: "#confirm-safety-limits" },
   );
-  await confirmed.flush();
-  const confirmedHtml = confirmed.elements.get("view-body").innerHTML;
-  const confirmedStepAt = confirmedHtml.indexOf('data-output-step="research"');
-  if (confirmedStepAt >= 0 &&
-      confirmedHtml.slice(confirmedStepAt, confirmedStepAt + 60).includes(" open>")) {
-    fail("a stale fragment must not open the component step", { confirmedHtml });
+  await usable.flush();
+  const usableHtml = usable.elements.get("view-body").innerHTML;
+  const usableStepAt = usableHtml.indexOf('data-output-step="research"');
+  if (usableStepAt >= 0 &&
+      usableHtml.slice(usableStepAt, usableStepAt + 60).includes(" open>")) {
+    fail("a stale fragment must not open the component step", { usableHtml });
   }
-  return { confirmSafetyDeepLinkOpensTheComponentStep: true };
+  return { safetyLimitsDeepLinkOpensTheComponentStep: true };
 }
 
 const liveTabResult = await testLiveTabReplay();
@@ -8061,7 +7978,6 @@ results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
-results.push(await testConfirmSafetyToastRestatesTweeterStyleAndFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
 results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
@@ -8121,13 +8037,12 @@ results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());
 results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
-results.push(await testUnconfirmedSafetyProfileHoistsTheConfirmControl());
-results.push(await testConfirmedSafetyProfileRendersNoCallout());
-results.push(await testIncompleteSafetyProfileExplainsWithoutADeadButton());
-results.push(await testStaleLowLimitWithABlockerExplainsAndOffersNoConfirm());
-results.push(await testStaleLowLimitWithoutABlockerStillOffersConfirm());
+results.push(await testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl());
+results.push(await testIncompleteSafetyProfileHoistsTheReviewCallout());
+results.push(await testStaleLowLimitWithABlockerNamesTheCauseAndTheFix());
+results.push(await testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy());
 results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
-results.push(await testConfirmSafetyDeepLinkOpensTheComponentStep());
+results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
 results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());

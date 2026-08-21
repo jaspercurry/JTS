@@ -2,19 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Issue #1820 defect 3 — the ``/sound/`` confirm control must not stay buried.
+"""Issue #1820 defect 3 — the ``/sound/`` safety-limits explanation must not
+stay buried.
 
-An unconfirmed driver-safety profile refuses EVERY crossover measurement, and
-"Confirm safety limits" is the only control that clears it. #1819 demoted that
-button from a top-level primary action into a default-closed ``<details>``
-Advanced disclosure, while promoting the enclosure selector — one of the fields
-whose edit rotates the profile fingerprint and so clears the confirmation —
-into the always-visible form. The invalidating input ended up more discoverable
-than its only remedy, which is how the 2026-07-28 JTS3 session dead-ended.
+The separate "Confirm safety limits" ceremony is gone: saving the declaration IS
+declaring it, so an ordinary edit can no longer leave a speaker unmeasurable
+waiting on a second human click. What survives is the set of states in which the
+declaration genuinely cannot be used — ``incomplete``, ``stale``, ``malformed``
+— each of which the measurement wizard hard-stops on and deep-links here. The
+callout that names WHICH one and what to edit still has to render at top level
+rather than behind the default-closed Advanced disclosure, for the same reason
+#1819 got this wrong: the invalidating input is in the always-visible form.
 
 These are static tripwires over the shipped ES module, in the same spirit as
 ``tests/test_web_wizard_conventions.py``: the browser behaviour itself needs a
-device pass, but the structural facts the fix depends on — the hoisted control
+device pass, but the structural facts the fix depends on — the hoisted callout
 exists OUTSIDE the Advanced disclosure, and its DOM id matches the href the
 measurement wizard deep-links to — are pinned here so neither half can move
 alone.
@@ -58,7 +60,7 @@ def test_the_deeplink_href_and_the_dom_id_agree():
     assert source.count("CONFIRM_SAFETY_ANCHOR_ID") >= 3
 
 
-def test_the_confirm_control_is_hoisted_out_of_the_advanced_disclosure():
+def test_the_review_callout_is_hoisted_out_of_the_advanced_disclosure():
     """The structural claim: the hoisted callout is emitted by the component
     card BEFORE the ``<details>`` Advanced editor opens, so it renders at top
     level rather than behind a closed disclosure."""
@@ -67,64 +69,58 @@ def test_the_confirm_control_is_hoisted_out_of_the_advanced_disclosure():
     card = source[source.index("function renderDriverResearchCard("):]
     card = card[: card.index("\n  function ", 1)]
 
-    hoisted = card.index("renderDriverSafetyConfirmCallout(topology)")
+    hoisted = card.index("renderDriverSafetyReviewCallout(topology)")
     advanced = card.index("driver-research__advanced-editor")
     assert hoisted < advanced, (
-        "the confirm callout must render before the Advanced disclosure"
+        "the review callout must render before the Advanced disclosure"
     )
 
-    # It is a primary action, not another ghost button inside a disclosure.
-    callout = source[source.index("function renderDriverSafetyConfirmCallout("):]
-    callout = callout[: callout.index("\n  // Deep link")]
-    assert "btn btn--primary" in callout
-    assert 'data-act="confirm-driver-safety"' in callout
 
-
-def test_the_hoisted_control_is_gated_on_the_servers_own_permission():
-    """The server already advertises
-    ``permissions.may_confirm_visible_driver_safety_profile``; the page must
-    read it rather than inventing its own rule about who may confirm."""
+def test_no_confirm_control_survives_anywhere_on_the_page():
+    """The nanny, pinned out. The confirm action, its request field, and the
+    permission the page used to gate it on are all retired — a stray survivor
+    would be a dead click that POSTs a field the server now rejects as unknown.
+    """
 
     source = _source()
-    state = source[source.index("function driverSafetyConfirmState("):]
-    state = state[: state.index("\n  function driverSafetyConfirmHint(")]
-    assert "may_confirm_visible_driver_safety_profile === true" in state
-    # And on the real evaluation, not the profile's own self-reported status
-    # alone (a stale profile reports "confirmed" until evaluated against the
-    # live topology).
+    assert "confirm-driver-safety" not in source
+    assert "confirmSafetyProfile" not in source
+    assert "confirm_safety_profile" not in source
+    assert "may_confirm_visible_driver_safety_profile" not in source
+
+
+def test_the_callout_reads_the_evaluation_not_the_profiles_self_report():
+    """A stale profile reports ``confirmed`` in its own stored status until it is
+    evaluated against the LIVE topology, so the page has to read the server's
+    verdict rather than the artifact's self-description."""
+
+    source = _source()
+    state = source[source.index("function driverSafetyReviewState("):]
+    state = state[: state.index("\n  function driverSafetyReviewHint(")]
     assert "driver_safety_profile_evaluation" in state
-    assert "confirmed_and_current === true" in state
-
-
-def test_the_callout_never_offers_a_confirm_that_the_server_would_refuse():
-    """``build_driver_safety_profile`` REFUSES a confirm while the profile has
-    derived issues (status ``incomplete``). Offering the button there would be
-    an error waiting to happen, so the callout drops it and names the
-    add-the-missing-values action instead."""
-
-    source = _source()
-    state = source[source.index("function driverSafetyConfirmState("):]
-    state = state[: state.index("\n  function driverSafetyConfirmHint(")]
-    assert "status !== 'incomplete'" in state
+    assert "confirmed_and_current !== true" in state
+    # 'missing' stays out: no active crossover pair means no declaration to
+    # review, and the callout would be noise.
+    assert "status !== 'missing'" in state
 
 
 def test_the_deeplink_opens_the_owning_step_before_scrolling():
-    """A bare fragment is not enough — the control lives inside a collapsible
+    """A bare fragment is not enough — the callout lives inside a collapsible
     step card that is only open when it is the current step."""
 
     source = _source()
-    fn = source[source.index("function applyConfirmSafetyDeepLink("):]
+    fn = source[source.index("function applySafetyLimitsDeepLink("):]
     fn = fn[: fn.index("\n  function renderDriverResearchCard(")]
     assert "outputStepOverride = 'research';" in fn
     assert "render();" in fn
     assert "scrollIntoView" in fn
-    # No-ops when there is nothing to confirm: a stale bookmark must not yank
-    # an unrelated page into the component step.
-    assert "needsConfirmation" in fn
+    # No-ops when there is nothing to review: a stale bookmark must not yank an
+    # unrelated page into the component step.
+    assert "needsReview" in fn
 
     # And it is actually wired into both boot paths.
     assert source.count(
-        "refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);"
+        "refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);"
     ) == 2
 
 

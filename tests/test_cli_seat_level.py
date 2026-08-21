@@ -584,8 +584,7 @@ def _jts3_safety_profile(topology):
             "crossover_candidates": [],
         },
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-13T12:00:00Z",
+        saved_at="2026-07-13T12:00:00Z",
     )
 
 

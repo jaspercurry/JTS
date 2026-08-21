@@ -565,23 +565,26 @@ provenance, and unknowns. All editable values and research evidence are rendered
 as labeled sections directly inside Advanced; it contains no second-level
 disclosures.
 
-**Confirming the safety limits is not an Advanced action.** The
-`Confirm safety limits` control also lives inside Advanced, and until the
-driver-safety profile is confirmed and current, every crossover measurement is
-refused — while the enclosure selector that clears the confirmation (any
-driver-detail edit rotates the profile fingerprint, by design) sits in the
-always-visible component card. So whenever
-`driver_safety_profile_evaluation.confirmed_and_current` is not `true` and the
-draft advertises `permissions.may_confirm_visible_driver_safety_profile`, the
-component card hoists a **Confirm the safety limits** callout to top level,
-above the component list, carrying the same `confirm-driver-safety` action
-(issue #1820). Its DOM id, `confirm-safety-limits`, is the deep-link target the
+**Saving the declaration is declaring it — there is no confirm step.** Every
+save of the driver details stamps the safety profile over the values it just
+wrote, so an ordinary edit can no longer leave the speaker unmeasurable waiting
+on a second human click. That ceremony was retired because the crossover-accept
+seam could not perform it: accepting a measured crossover writes the Sound
+declaration itself, which rotated the fingerprint, cleared the confirmation, and
+then refused the very measurement loop that produced the value.
+
+What still refuses every crossover measurement is a declaration JTS cannot use —
+`incomplete` (blocking issues in the declared values), `stale` (the outputs
+moved underneath it), or `malformed` — and each needs a different edit before a
+save can succeed. Whenever
+`driver_safety_profile_evaluation.confirmed_and_current` is not `true`, the
+component card hoists a **Review the safety limits** callout to top level, above
+the component list, naming which state it is in and what to change (issue
+#1820). It carries no action button: the remedy is an edit plus the card's
+ordinary Save. Its DOM id, `confirm-safety-limits`, is the deep-link target the
 measurement wizard's `program_profile_not_confirmed` hard stop points at
-(`/sound/setup/#confirm-safety-limits`); the page opens the owning setup step and
-scrolls the control into view rather than relying on fragment behaviour. A
-profile whose status is `incomplete` gets the callout without a button —
-`build_driver_safety_profile` refuses a confirm while values are missing, so
-the copy names the add-the-values action instead.
+(`/sound/setup/#confirm-safety-limits`); the page opens the owning setup step
+and scrolls the callout into view rather than relying on fragment behaviour.
 
 The research prompt treats operator-declared physical installation choices as
 authoritative. The browser import boundary also refuses to replace enclosure
@@ -604,9 +607,9 @@ whole-speaker Build notes field is capped at 1000 characters. Research-produced
 per-driver safety summaries remain capped at 2048 characters; full reports
 belong outside the draft.
 Nothing in this flow applies filters, reloads CamillaDSP, or authorizes sound.
-The operator can explicitly confirm the current safety profile; confirmation
-records the confirmation time, is invalidated by a visible safety edit or
-topology change, and still grants no playback authority. Saves use an
+Every save records the declaration time on the profile it just froze; a visible
+safety edit or topology change rotates the fingerprint and the next save
+re-freezes over it, and none of it grants playback authority. Saves use an
 optimistic revision. If another tab wins, the browser keeps local unsaved
 edits, adopts the fresh server revision, and asks the operator to review and
 save again instead of silently replacing their work.

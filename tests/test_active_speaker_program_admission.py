@@ -102,8 +102,7 @@ def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.
         topology,
         manual_settings=settings,
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-13T12:00:00Z",
+        saved_at="2026-07-13T12:00:00Z",
     )
     targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topology)}
     return topology, profile, targets

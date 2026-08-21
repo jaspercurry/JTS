@@ -284,7 +284,6 @@ def regenerate_crossover_preview_from_current_draft(
             driver_research=draft.get("driver_research"),
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
-            prior_safety_profile=draft.get("driver_safety_profile"),
             created_at=draft.get("created_at"),
         )
         draft["revision"] = saved_revision

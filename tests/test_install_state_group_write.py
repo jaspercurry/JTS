@@ -74,6 +74,14 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     vol = _mk(tmp_path / "speaker_volume.json", 0o644)
     audio_incidents = _mk(tmp_path / "audio_health_incidents.json", 0o644)
     topology = _mk(tmp_path / "output_topology.json", 0o640)
+    # The two Layer-A stores the ROOT crossover-accept seam writes and /sound/
+    # (jasper-web) reads. Boxes that accepted a measured crossover before the
+    # writers passed group_from_parent=True still carry root:root, which renders
+    # the design page empty; the heal repairs what is already on disk.
+    design_draft = _mk(tmp_path / "active_speaker_design_draft.json", 0o600)
+    crossover_preview = _mk(
+        tmp_path / "active_speaker_crossover_preview.json", 0o600,
+    )
     # Grouping config + its write-lock: a pre-UMask=0007 lock (0644, non-owner)
     # blocks /grouping/set and /rooms bonding (the 2026-06-23 sub bring-up).
     grouping = _mk(tmp_path / "grouping.env", 0o644)
@@ -94,6 +102,8 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     assert _mode(vol) == 0o660
     assert _mode(audio_incidents) == 0o660
     assert _mode(topology) == 0o640
+    assert _mode(design_draft) == 0o640
+    assert _mode(crossover_preview) == 0o640
     assert _mode(grouping) == 0o660
     assert _mode(grouping_lock) == 0o660  # the lock /grouping/set opens a+
     assert _mode(source_intent) == 0o660

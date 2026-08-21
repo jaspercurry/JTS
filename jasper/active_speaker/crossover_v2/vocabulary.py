@@ -154,32 +154,35 @@ REASON_PROTECTION_NOT_SEPARABLE = "protection_not_separable"
 # not involve `C`, so "change the crossover frequency" cannot clear it (#1820).
 REASON_PROTECTION_SWEEP_TOO_LOW = "protection_sweep_too_low"
 # Issue #1820 (2026-07-28): the ONE program refusal that is neither unexpected
-# nor about levels, split back out of ``program_unplayable``'s collapse. The
-# household changed a declared driver value (an enclosure kind, a sensitivity),
-# which rotates the safety profile's fingerprint and so CLEARS its confirmation
-# by design (``driver_safety.build_driver_safety_profile``) — a deterministic,
-# self-inflicted, one-control-away state, not a level ceiling the speaker could
-# not meet. Collapsed into ``program_unplayable`` it inherited that code's copy
+# nor about levels, split back out of ``program_unplayable``'s collapse. It is a
+# deterministic, one-edit-away state, not a level ceiling the speaker could not
+# meet. Collapsed into ``program_unplayable`` it inherited that code's copy
 # ("Re-check the driver details in speaker setup"), which is the one action that
-# makes it WORSE: every edit rotates the fingerprint again. Its own code exists
-# so the copy can name the actual exit and its ``next_action`` can point at it.
-# Terminal (hard-stop, budget 0) for the same reason it is deterministic — a
-# second identical measurement reproduces it exactly.
+# makes it WORSE. Its own code exists so the copy can name the actual exit and
+# its ``next_action`` can point at it. Terminal (hard-stop, budget 0) for the
+# same reason it is deterministic — a second identical measurement reproduces it
+# exactly.
+#
+# The states that reach it are ``stale`` and ``malformed``; the separate confirm
+# ceremony that used to add ``unconfirmed`` to that list is retired (saving the
+# declaration IS declaring it), which is why the copy names an ordinary save.
+# The SLUG keeps its wire name: it is a stable identifier that ships in
+# ``state["failure"]``, the phone envelope, and the journal, and "not confirmed"
+# still reads true of every state that reaches it.
 REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
-# Its two siblings, added in the same issue's review round. "Confirm the safety
-# limits" is only the honest action when there ARE visible limits to confirm and
-# a control that confirms them. Two profile states fail both halves, and the
+# Its two siblings, added in the same issue's review round. "Review the limits
+# and save them again" is only the honest action when there ARE visible limits
+# and a save would change the verdict. Two profile states fail that, and the
 # session-open pre-flight can tell them apart because it holds the full
 # ``DriverSafetyProfileEvaluation``:
 #
 #   * ``missing``    — no profile exists at all (never-saved / unreadable /
 #                      pre-crossover draft). ``/sound/`` deliberately renders NO
-#                      confirm control in this state, so telling the household
-#                      to confirm names a button that is not on the page.
-#   * ``incomplete`` — declared values are still missing.
-#                      ``build_driver_safety_profile`` REFUSES a confirm while
-#                      derived issues exist, so "Confirm" would 400 even if the
-#                      household found the control.
+#                      safety callout in this state, so telling the household to
+#                      review the limits names a panel that is not on the page.
+#   * ``incomplete`` — declared values are still missing or do not line up. A
+#                      save is allowed but rebuilds the same ``incomplete``
+#                      profile, so "save again" would be a circle.
 #
 # These have no ``ProgramAdmissionRefusal`` counterpart — the play-seam
 # vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for all three — so they
@@ -925,19 +928,24 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED, TEMPLATE_HARD_STOP, 0, "",
         # Issue #1820 defect 2: the copy this refusal used to inherit from
         # ``program_unplayable`` sent the household to "re-check the driver
-        # details" — and re-checking (editing) them rotates the profile
-        # fingerprint, which clears the confirmation again. That is a LOOP, not
-        # a fix. This copy names the actual exit, warns why edits do not help,
-        # and the ``next_action`` below lands ON the control rather than on the
-        # page that hides it behind a disclosure.
-        "This speaker's safety limits are not confirmed, so JTS did not play "
-        "the measurement signal. Confirm the safety limits in speaker setup — "
-        "changing a driver detail clears them — then measure again.",
+        # details", which was the one action that made it worse. This copy names
+        # the actual exit and the ``next_action`` below lands ON the explanation
+        # rather than on the page that hides it behind a disclosure.
+        #
+        # The states that reach here are ``stale`` (the outputs moved underneath
+        # the saved limits) and ``malformed`` (JTS cannot read them back). Both
+        # end the same way: open the limits and save them again. There is no
+        # separate confirm step any more — saving the declaration IS declaring
+        # it — so the copy no longer names one, and an ordinary edit no longer
+        # lands the household here at all.
+        "JTS could not use this speaker's saved safety limits, so it did not "
+        "play the measurement signal. Review the limits in speaker setup and "
+        "save them again, then measure.",
         next_action={
-            "id": "confirm_safety_limits",
-            "label": "Confirm safety limits",
-            # ``/sound/``'s Component setup card renders the hoisted confirm
-            # control under this exact id when the profile needs confirmation
+            "id": "review_safety_limits",
+            "label": "Review safety limits",
+            # ``/sound/``'s Component setup card renders the hoisted review
+            # callout under this exact id whenever the limits are unusable
             # (deploy/assets/sound-profile/js/main.js), and its boot path opens
             # the owning step for this fragment. Both halves are pinned by
             # tests/test_sound_profile_confirm_deeplink.py.
@@ -946,16 +954,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
         REASON_PROGRAM_PROFILE_MISSING, TEMPLATE_HARD_STOP, 0, "",
-        # NOT "confirm the safety limits": there is nothing to confirm and no
-        # control to confirm it with. This is the state the pre-gate's original
-        # copy was right about, kept for exactly this branch.
+        # NOT "review the safety limits": there are none to review and no
+        # callout naming them. This is the state the pre-gate's original copy
+        # was right about, kept for exactly this branch.
         "This speaker's driver details are not finished, so JTS has no safety "
         "limits to measure within. Finish the driver details in speaker setup, "
         "then measure again.",
         next_action={
             "id": "speaker_setup",
             "label": "Finish speaker setup",
-            # No fragment: ``/sound/`` renders no confirm callout in this state,
+            # No fragment: ``/sound/`` renders no review callout in this state,
             # so a deep link would land on nothing. The page opens on its own
             # first unfinished step, which IS the action.
             "href": "/sound/setup/",
@@ -964,16 +972,16 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
         REASON_PROGRAM_PROFILE_INCOMPLETE, TEMPLATE_HARD_STOP, 0, "",
         # Matches what ``/sound/``'s own callout says in this state — the two
-        # surfaces name one action, and it is not "Confirm", which the server
-        # would refuse while values are missing.
+        # surfaces name one action, and it is adding the values, not saving:
+        # a save with values missing rebuilds an ``incomplete`` profile again.
         "Some of this speaker's safety limits are still missing, so JTS did "
         "not play the measurement signal. Add them under Advanced in speaker "
-        "setup, then confirm the limits and measure again.",
+        "setup, then save and measure again.",
         next_action={
             "id": "add_safety_limits",
             "label": "Add the missing limits",
-            # The callout DOES render for this state (button-less, naming the
-            # add-the-values action), so the fragment lands on the explanation.
+            # The callout DOES render for this state, naming the
+            # add-the-values action, so the fragment lands on the explanation.
             "href": "/sound/setup/#confirm-safety-limits",
         },
     ),
