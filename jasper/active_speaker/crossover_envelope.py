@@ -2,18 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure screen envelope for sequential Layer-A acoustic commissioning.
+"""Level-solve refusal copy plus the logged screen-envelope entry point.
 
 ``/sound/`` owns topology, driver protection, output identity, and the safe
-starting profile.  This envelope owns the distinct microphone journey:
+starting profile.  The crossover screen envelope owns the distinct microphone
+journey:
 
     mic/calibration + per-driver level -> driver sweeps -> combined alignment
     -> atomic apply
 
-It reads the already-composed crossover status payload and returns one primary
-action plus any explicit alternatives. It performs no I/O and mutates no
-measurement state; the correction web host supplies relay/apply adapters for
-the returned action descriptors.
+The envelope itself is :mod:`jasper.active_speaker.crossover_envelope_v2` --
+the only flow since W5b retired the legacy per-driver flow and the
+``JASPER_CROSSOVER_FLOW`` selector. What is left here is the logged wrapper
+around it and the single code -> household-copy mapping for a level-solve
+refusal. Both perform no I/O and mutate no measurement state.
+
+A ``build_crossover_envelope`` compatibility dispatcher and an
+``_active_level_solve_refusal`` reader also lived here; the dispatcher's
+callers now import v2 directly, and nothing in production ever read the
+``solve_refusal`` field the reader projected, so both were deleted.
 """
 from __future__ import annotations
 
@@ -23,71 +30,6 @@ from typing import Any, Mapping
 from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
-def _active_level_solve_refusal(
-    status: Mapping[str, Any], target_id: str
-) -> Mapping[str, Any] | None:
-    """The closed-loop level solver's refusal (W2.1/W2.3) for ``target_id``.
-
-    Sourced from ``CrossoverLevelLease.level_match_snapshot()``'s
-    ``solve_refusal`` -- the most recent refusal from an actual PRE-FLIGHT
-    solve attempt, cleared by a fresh ramp lock (stale solver inputs) or an
-    explicit flow reset (a full level-match retune), never by set
-    completion (W2.3).
-
-    W2.3: a completed-but-insufficient finalization can itself exhaust the
-    bounded correction budget (``record_solve_correction``'s
-    ``"completed_insufficient"`` trigger) WITHOUT any fresh solve attempt
-    ever running -- the lease only solves again when the next sweep is
-    actually prepared. Without this, the exhausted target would keep
-    rendering the generic completed-insufficient terminal instead of the
-    placement-lever copy the household actually needs. So this also
-    synthesizes the SAME typed refusal straight from
-    ``level_match.solve_correction``'s ``exhausted`` flag the moment the
-    budget runs out, reusing ``describe_level_solve_refusal``'s single
-    code -> copy mapping (its ``measurement_window_unreachable`` branch
-    reads only ``code``, so the minimal synthesized mapping is sufficient).
-    The offered "Redo the quick level check" action is a genuine escape
-    hatch, not a dead end: the between-set restart clears a REFUSED
-    target's correction state for a fresh evaluation -- W2.4 (hardware run
-    20) widened this from "exhausted only" to "any pre-flight refusal
-    shown, at any write count," closing a dead loop where a
-    room_too_noisy refusal below the exhausted threshold survived the
-    restart and refused again identically with no audio played (see
-    ``CrossoverLevelLease.invalidate_comparison_context``'s
-    ``preserve_solve_corrections`` contract), so the refusal cannot latch
-    across the restart.
-
-    This function and the restart's own reader
-    (``CrossoverLevelLease._target_refusal_pending``) are SEPARATE code
-    paths over the same two stored facts: the lease stores
-    ``_solve_refusal`` and the bounded write count; this function reads
-    their snapshot projections (``solve_refusal`` /
-    ``solve_correction.exhausted``), the restart reads them directly. The
-    OR here must stay equivalent to that predicate -- their agreement
-    across the representative states is pinned by
-    ``test_refusal_pending_predicate_parity_with_envelope_rendering`` in
-    tests/test_correction_crossover_backend_level_solve.py; if you change
-    either side, that parity test is the contract to keep green.
-    """
-
-    refusal = _mapping(_mapping(status.get("level_match")).get("solve_refusal"))
-    if refusal and str(refusal.get("target_id") or "") == target_id:
-        return refusal
-    correction = _mapping(
-        _mapping(status.get("level_match")).get("solve_correction")
-    ).get(target_id)
-    if isinstance(correction, Mapping) and correction.get("exhausted") is True:
-        return {
-            "target_id": target_id,
-            "code": _LEVEL_SOLVE_REFUSAL_CODE_MEASUREMENT_WINDOW_UNREACHABLE,
-        }
-    return None
 
 
 # Closed-loop level solver (W2.1/W2.2) refusal copy. ONE mapping owns
@@ -159,22 +101,12 @@ def describe_level_solve_refusal(refusal: Mapping[str, Any]) -> str:
     )
 
 
-def build_crossover_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
-    """Serve the v2 session crossover envelope for ``status``.
+def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
+    """Serve the v2 session crossover envelope for ``status`` and log the serve."""
 
-    The legacy per-driver flow and the ``JASPER_CROSSOVER_FLOW`` selector
-    that chose between it and v2 were retired in W5b — v2 is the only flow
-    now. This thin dispatcher stays so callers that still import
-    ``build_crossover_envelope`` keep serving the current envelope; a stale
-    ``JASPER_CROSSOVER_FLOW=legacy`` on a machine no longer selects anything.
-    """
     from .crossover_envelope_v2 import build_crossover_envelope_v2
 
-    return build_crossover_envelope_v2(status)
-
-
-def build_crossover_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
-    envelope = build_crossover_envelope(status)
+    envelope = build_crossover_envelope_v2(status)
     log_event(
         logger,
         "correction.crossover_envelope_serve",

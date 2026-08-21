@@ -149,23 +149,36 @@ def test_the_integrity_counter_keys_are_the_ledgers_real_read_set():
     assert unrelated.render_gap_frames is None
 
 
-def test_the_host_republishes_the_providers_names():
+def test_the_host_republishes_the_names_it_actually_calls():
     """The host's published surface survives the extraction (#2662 slice 1).
 
-    ``correction_setup``, the preparers, and the whole existing test surface
-    address these names at the host module; the strangler keeps them there as
-    the SAME objects, so a patch or a call through either module is one
-    binding, not two.
+    ``correction_setup``, the preparers, and the existing test surface address
+    these names at the host module; the strangler keeps them there as the SAME
+    objects, so a patch or a call through either module is one binding, not two.
+
+    The list is now exactly the three the host itself invokes. Three more
+    (``TERMINAL_FAILURE_PURGE_GRACE_S``, ``program_phase_schedule``,
+    ``start_program_phase_ladder``) were re-published for external callers that
+    never arrived; they are reached at the provider module now.
     """
     for name in (
-        "TERMINAL_FAILURE_PURGE_GRACE_S",
         "PlaybackStartSignal",
         "build_v2_run_and_consume",
-        "program_phase_schedule",
         "relay_link_ttl_s",
-        "start_program_phase_ladder",
     ):
         assert getattr(v2host, name) is getattr(v2relay, name), name
+
+
+def test_the_host_no_longer_republishes_provider_only_names():
+    """The three withdrawn re-exports are gone from the host, not shadowed."""
+
+    for name in (
+        "TERMINAL_FAILURE_PURGE_GRACE_S",
+        "program_phase_schedule",
+        "start_program_phase_ladder",
+    ):
+        assert not hasattr(v2host, name), name
+        assert hasattr(v2relay, name), name
 
 
 def test_the_provider_reaches_the_host_only_at_call_time():

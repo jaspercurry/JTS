@@ -4,8 +4,11 @@
 
 """Bass-timing adapter for the shared timing-locked null walk.
 
-The adapter declares the bass-management lifecycle scope; the shared runner
-owns event names and rejects unknown scopes before DSP mutation.
+The adapter builds the spec and declares the bass-management scope. There is
+no shared runner: ``null_walk`` is decision content only, so any host that
+executes a walk owns its own DSP mutation, writer exclusion, exact restore, and
+lifecycle events. :mod:`jasper.audio_measurement.delay_graph` is what validates
+the declared scope today.
 """
 
 from __future__ import annotations

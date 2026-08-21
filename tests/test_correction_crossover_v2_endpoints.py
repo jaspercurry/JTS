@@ -692,7 +692,9 @@ def test_production_happy_path_is_local_check_measure_then_review():
 
     # The schema-8 envelope advanced through the phase screens end-to-end,
     # rendered purely from the host-persisted status blocks (S1b).
-    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
 
     assert [phase for _p, phase in phases_seen] == [PHASE_CHECK, PHASE_MEASURE]
     class _NoRecovery:
@@ -701,7 +703,7 @@ def test_production_happy_path_is_local_check_measure_then_review():
     v2host.set_volume_plan_for_tests(_NoRecovery())
 
     def _envelope_for(block_phase):
-        return build_crossover_envelope({
+        return build_crossover_envelope_v2({
             "active": True,
             "setup": {"active": True, "status": "ready"},
             "crossover_v2": {"phase": block_phase, "needs_recovery": False},
@@ -8335,7 +8337,7 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
     assert events[-1]["phase"] == "capture_result"
     assert events[-1]["code"] == "internal_error"
     # The grace ran, then the purge — in exactly that order, exactly once each.
-    assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
+    assert order == [f"sleep:{v2relay.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
     assert session.session_id not in backend.sessions
 
 
@@ -8450,7 +8452,7 @@ def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch)
 
     events = backend.host_events[session.session_id]
     assert events[-1]["phase"] == "capture_set_exhausted"
-    assert order == [f"sleep:{v2host.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
+    assert order == [f"sleep:{v2relay.TERMINAL_FAILURE_PURGE_GRACE_S}", "purge"]
     # …and it NAMES which clock ran out (work order D8, issue #1807). Without
     # this the phone renders a session-over event as renderPlanExhausted — "the
     # speaker reached its measurement attempt limit" — which is a third thing
@@ -11442,7 +11444,7 @@ def test_program_phase_schedule_reads_the_programs_own_segments():
     )
 
     roles = _ladder_roles()
-    check = v2host.program_phase_schedule(
+    check = v2relay.program_phase_schedule(
         build_check_program(roles, courtesy_prelude=True)
     )
     # CHECK opens on its 12 s session-ambient window and splices the beeps
@@ -11464,7 +11466,7 @@ def test_program_phase_schedule_reads_the_programs_own_segments():
     # The tone is announced only after the beeps AND their settle.
     assert offsets["sweep_started"] > offsets["prelude_started"]
 
-    measure = v2host.program_phase_schedule(build_measure_program(
+    measure = v2relay.program_phase_schedule(build_measure_program(
         {rb.role: 0.0 for rb in roles},
         roles,
         leading_pilot_gains_db=(-10.0, 0.0),
@@ -11516,7 +11518,7 @@ def test_the_quiet_request_survives_a_capture_that_plays_no_prelude():
             FC_HZ, leading_pilot_gains_db=(-10.0, 0.0), courtesy_prelude=False,
         ),
     ):
-        ladder = v2host.program_phase_schedule(program)
+        ladder = v2relay.program_phase_schedule(program)
         assert "prelude_started" not in [phase for _o, phase, _x in ladder]
         extras = {phase: extra for _o, phase, extra in ladder}
         assert extras["ambient_started"]["quiet_requested"] is True, program.phase
@@ -11524,7 +11526,7 @@ def test_the_quiet_request_survives_a_capture_that_plays_no_prelude():
     # …and CHECK still answers the other way, prelude or no prelude: its window
     # is the session's own room-noise measurement either way.
     for prelude in (True, False):
-        ladder = v2host.program_phase_schedule(
+        ladder = v2relay.program_phase_schedule(
             build_check_program(roles, courtesy_prelude=prelude)
         )
         extras = {phase: extra for _o, phase, extra in ladder}
@@ -11533,11 +11535,11 @@ def test_the_quiet_request_survives_a_capture_that_plays_no_prelude():
 
 def test_program_phase_schedule_is_empty_for_a_program_it_cannot_read():
     """No segments, no readable rate ⇒ no ladder, rather than a guess."""
-    assert v2host.program_phase_schedule(None) == ()
-    assert v2host.program_phase_schedule(
+    assert v2relay.program_phase_schedule(None) == ()
+    assert v2relay.program_phase_schedule(
         SimpleNamespace(sample_rate_hz=48000, segments=())
     ) == ()
-    assert v2host.program_phase_schedule(
+    assert v2relay.program_phase_schedule(
         SimpleNamespace(sample_rate_hz=0, segments=(object(),))
     ) == ()
 
@@ -11571,7 +11573,7 @@ def _ladder_program():
 
 def test_phase_ladder_posts_each_phase_when_it_becomes_audible():
     posted: list[tuple[str, dict]] = []
-    cancel = v2host.start_program_phase_ladder(
+    cancel = v2relay.start_program_phase_ladder(
         lambda phase, **extra: posted.append((phase, extra)),
         _ladder_program(),
         skew_s=0.0,
@@ -11596,7 +11598,7 @@ def test_phase_ladder_cancel_stops_further_posts():
     """A program that ends, fails or is stopped must not leave a timer behind
     that posts a phase for a capture which is already over."""
     posted: list[str] = []
-    cancel = v2host.start_program_phase_ladder(
+    cancel = v2relay.start_program_phase_ladder(
         lambda phase, **_extra: posted.append(phase),
         _ladder_program(),
         skew_s=0.5,
@@ -11675,7 +11677,7 @@ def test_phase_ladder_cancel_waits_for_a_post_already_in_flight():
         release.wait(5.0)
         posted.append(phase)
 
-    cancel = v2host.start_program_phase_ladder(
+    cancel = v2relay.start_program_phase_ladder(
         slow_post, _ladder_program(), skew_s=0.0
     )
     assert started.wait(5.0), "the ladder reached its first post"

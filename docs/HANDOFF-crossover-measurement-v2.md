@@ -42,8 +42,11 @@ the result is still getting flatter (#2602).
   `POST /correction/crossover/v2/session {"tier": "remote"}`. See
   "The remote tier" below.
 - **It is the only flow.** The legacy per-driver near-field procedure and its
-  `JASPER_CROSSOVER_FLOW` selector are gone; `build_crossover_envelope`
-  dispatches straight to `build_crossover_envelope_v2`.
+  `JASPER_CROSSOVER_FLOW` selector are gone, and so is the
+  `build_crossover_envelope` shim that used to forward to v2: callers reach
+  `build_crossover_envelope_v2` directly, or through
+  `crossover_envelope.build_crossover_envelope_logged` (that call plus a serve
+  log).
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
 

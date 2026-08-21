@@ -173,18 +173,20 @@ Verified against `origin/main` (2026-07-16):
 | Nearfield ≠ gated reference-axis handling | **TRUE** — `capture_geometry` is first-class; nearfield exempt from gating, reference-axis carries `f_valid_floor_hz` |
 | Relay requests clean mono, EC/NS/AGC off | **TRUE** — plus new empirical AGC-slope verification for browsers that won't attest |
 | Sync ESS places harmonics at separable offsets | **TRUE — and they are discarded today.** `deconv.direct_arrival_window`'s 5 ms pre-arrival window throws the harmonic IRs away; nothing anywhere computes THD |
-| Strict LF reconstruction authorizes nothing | **TRUE, strongly** — `reconstruction_capability.py` hardcodes every `authorizes_*` False, sealed-single-radiator only, always refuses (geometry artifact unshipped), and is **not wired into production** (test-only imports) |
+| Strict LF reconstruction authorizes nothing | **TRUE, strongly** — the `reconstruction_capability.py` this verdict was read from hardcoded every `authorizes_*` False, sealed-single-radiator only, always refused (geometry artifact unshipped), and was never wired into production. It has since been **deleted** as a dead island; the shipped answer to "can this cabinet's LF be reconstructed?" is the `lf_reconstruction_capability` string computed inline by `driver_safety.py` |
 | Bass Management is a display/read seam | **TRUE** — `resolve_bass_management()` is a pure read resolver; the page is deliberately control-free |
 | Low-latency path is near budget | **TRUE** — p95 cert budget 40 ms, measured p95 37.93 ms (~2 ms headroom). But minimum-phase IIR biquads add **zero buffer latency**, so this constrains *mechanism choice*, not feasibility |
 
 Corrections that changed the plan:
 
 - **Two prompt file references were stale-checkout artifacts** at
-  first read but exist on current main: `driver_safety.py` (landed
-  ~2026-07-14, 2 kloc) and `reconstruction_capability.py` (#1452).
-  ~35 kloc of commissioning machinery landed in the four days before
-  this plan was written — the reuse map (§3) is built on that new
-  code, and it is *far* more favorable than the prompt assumed.
+  first read but existed on main when this plan was written:
+  `driver_safety.py` (landed ~2026-07-14, 2 kloc) and
+  `reconstruction_capability.py` (#1452 — since deleted as dead code;
+  `driver_safety.py` remains). ~35 kloc of commissioning machinery
+  landed in the four days before this plan was written — the reuse map
+  (§3) is built on that new code, and it is *far* more favorable than
+  the prompt assumed.
 - **Enclosure vocabulary already exists.** `driver_safety.py`'s
   `cabinet` block models `enclosure_kind ∈ {sealed, vented,
   passive_radiator, open_baffle, transmission_line, unknown}`,
@@ -193,7 +195,9 @@ Corrections that changed the plan:
   parallel enclosure taxonomy.
 - **The strict reconstruction gate does not need to be relaxed —
   it needs to be *routed around*, legitimately.**
-  `reconstruction_capability.py` guards **absolute far-field truth
+  The `reconstruction_capability.py` this reasoning was written
+  against (since deleted as dead code, so there is no gate left to
+  relax) scoped itself to **absolute far-field truth
   claims** (nearfield→far-field splice with baffle-step correction).
   Bass extension only needs **relative, fixed-position claims**: the
   plant *shape* fitted from a nearfield capture, and level-to-level
@@ -295,8 +299,9 @@ orchestration + per-rung retention, (d) LT/subsonic graph emission,
 |---|---|---|
 | Apply/restore with durable intent + fresh-readback proof | `jasper/active_speaker/commissioning_apply.py` (predecessor snapshot → durable mutation intent → apply → readback verify graph+volume+protection → retained proof; cancellation/restart unwinds via proven restore) | Bass-extension profile apply/bypass, with one immutable local intent, shielded rollback, and conservative predecessor recovery owned by `jasper-correction-web` |
 | Excitation limits derivation | `jasper/active_speaker/excitation_safety_plan.py` | `bass_extension` limits derivation from the driver-safety profile's bass-owner target |
-| Typed fail-closed refusal vocabulary | `jasper/active_speaker/reconstruction_capability.py` | `BassExtensionRefusal` (§5.4) |
-| Bounded candidate search + repeat admission + fail-closed restore | `jasper/audio_measurement/null_walk.py`, `jasper/active_speaker/repeat_admission.py` | Ladder rung admission (3 repeats at anchor rungs, spread bound) |
+| Typed fail-closed refusal vocabulary | *(was `jasper/active_speaker/reconstruction_capability.py`; the mirroring is done and the source has since been deleted as dead code)* | `BassExtensionRefusal` (§5.4) — shipped in `jasper/bass_extension/profile.py` |
+| Bounded candidate search + repeat admission | `jasper/audio_measurement/null_walk.py`, `jasper/active_speaker/repeat_admission.py` | Ladder rung admission (3 repeats at anchor rungs, spread bound) |
+| Fail-closed apply/restore around a live graph | `jasper/bass_extension/bench/activation.py` (`snapshot_predecessor` / `_restore_predecessor`) — `null_walk` no longer carries a restore runner; it is decision content only | Ladder rung apply/restore |
 | Emit-gate re-proof of emitted YAML | `camilla_yaml.py` `_assert_tweeter_outputs_protected` + `graph_safety.py` | Prove subsonic HP present, boost bounded, limiter intact (§8.5) |
 | Single current-run slot store | `jasper/active_speaker/crossover_level_run.py` (`CrossoverLevelRunStore`) | Ladder session store (but multi-rung retention added) |
 
@@ -509,8 +514,8 @@ relative to the fixed nearfield position.
 
 ### 5.4 Refusal vocabulary
 
-`BassExtensionRefusal(StrEnum)`, same style as
-`ReconstructionRefusal`: `BASELINE_NOT_APPLIED`,
+`BassExtensionRefusal(StrEnum)`, the domain-prefixed snake_case
+house style: `BASELINE_NOT_APPLIED`,
 `TOPOLOGY_MISMATCH`, `BASS_OWNER_AMBIGUOUS`, `BONDED_BASS_OWNER_REMOTE`,
 `ENCLOSURE_UNKNOWN`, `ENCLOSURE_UNSUPPORTED` (open-baffle, TL,
 multi-radiator in v1), `TUNING_NOT_LOCATED` (ported/PR: no fb),

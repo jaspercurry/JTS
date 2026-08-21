@@ -851,18 +851,20 @@ The revised rule:
 
 Both surfaces read the same two stored facts — the lease's most recent
 pre-flight solve refusal (`_solve_refusal`) and the bounded-correction
-write count (`_correction_budget_exhausted`) — through separate readers:
-the between-set restart via `CrossoverLevelLease._target_refusal_pending`
-(direct reads), the envelope's refusal rendering via
+write count (`_correction_budget_exhausted`) — through **one** reader,
+`CrossoverLevelLease._target_refusal_pending`, which reads them directly.
+A second reader once re-derived the same verdict from
 `level_match_snapshot()`'s `solve_refusal` / `solve_correction.exhausted`
-projections of those same facts
-(`crossover_envelope._active_level_solve_refusal`). Because the readers
-are separate code paths, their agreement about "was a refusal shown for
-this target" is pinned by a parity regression
-(`test_refusal_pending_predicate_parity_with_envelope_rendering`) across
-the representative states (refusal pending below the bound, exhausted
-without a fresh solve refusal, neither) rather than assumed
-structurally.
+projections (`crossover_envelope._active_level_solve_refusal`), which is why
+this contract used to be stated as a *parity* between two code paths. That
+reader had no production caller — nothing rendered the projection it read —
+so it and its parity regression were deleted, and the divergence risk went
+with them. The surviving reader's verdict is still pinned across the
+representative states (refusal pending below the bound, exhausted without a
+fresh solve refusal, neither) by
+`test_refusal_pending_predicate_across_the_three_stored_states`.
+`level_match_snapshot()` still publishes `solve_refusal`; it is diagnostic
+output with no reader today.
 
 Beyond the refusal-pending restart case, a target's correction state
 clears only on: its repeat set finalizing with a *sufficient* aggregate

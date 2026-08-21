@@ -91,9 +91,12 @@ Two web surfaces, two different jobs, run in sequence:
    described at length in the appendix below, along with the
    `JASPER_CROSSOVER_FLOW` selector that used to choose between the
    two; a stale `JASPER_CROSSOVER_FLOW=legacy` carried on an old box
-   now selects nothing (`build_crossover_envelope` in
+   now selects nothing — no code reads that variable. (A
+   `build_crossover_envelope` shim in
    [`crossover_envelope.py`](../jasper/active_speaker/crossover_envelope.py)
-   dispatches straight to v2). Do not treat the appendix's "Consumer
+   used to forward to v2; it has been deleted, and callers reach
+   `build_crossover_envelope_v2` directly or through that module's
+   `build_crossover_envelope_logged`.) Do not treat the appendix's "Consumer
    Wizard Triad," "Delay, Phase, and Null Verification," or the Wave
    1-3 commissioning-receipt narrative as the current flow. Some of the
    machinery they describe outlived it — the `CrossoverLevelLease` and
@@ -405,18 +408,21 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 > and Stop substrate, but the browser no longer exposes a separate Arm step.
 > Active crossover commissioning arms through `commission-load` and uses the
 > protected active graph for every audible driver step. `jasper.active_speaker.playback`
-> now owns only no-audio artifacts and an explicit lab `aplay` hook for
-> experiments; it is not a product direct-DAC writer and does not touch live
-> volume.
-> Lab audible tests are explicit-only: lab builds must set
-> `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and
-> `JASPER_AUDIO_LAB_TEST_PCM` to a dedicated test PCM that is not a
-> daemon-owned CamillaDSP/outputd lane. `outputd_active_content_playback`,
+> now owns **only** no-audio artifacts; it is not a product direct-DAC writer
+> and does not touch live volume.
+> **There is no audio-lab `aplay` hook any more.** `enabled_audio_backend`, the
+> one function that turned `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` +
+> `JASPER_AUDIO_LAB_TEST_PCM` into a live backend, never had a caller and was
+> deleted; all four `start_tone_playback` call sites pass `backend=None`, which
+> always resolves to the WAV-artifact backend. Setting those two env vars now
+> produces a `tone_backend_not_wired` blocker from `tone_backend_status` rather
+> than the old `audio_enabled: true`, which claimed audio while the tone
+> rendered silently to a WAV. `AplayTonePlaybackBackend` itself remains as the
+> only audio-capable backend a test can construct, and still refuses
+> daemon-owned lanes: `outputd_active_content_playback`,
 > `outputd_content_capture`, `outputd_active_content_capture`, `outputd_dac`,
-> and `jasper_out` are forbidden as test writers. Even then, lab audible tests
-> are clamped, selected-topology-gated, driver-protection-gated, and
-> Stop/session-gated. Product audible commissioning never writes directly to a
-> physical DAC PCM.
+> and `jasper_out` are forbidden as test writers. Product audible commissioning
+> never writes directly to a physical DAC PCM.
 > The shared
 > `driver_protection_auto_level_v1` policy is recorded in driver-test signal
 > plans, commission evidence, playback results, and generated artifact metadata. Woofer, mid,
@@ -1450,9 +1456,11 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    `JASPER_OUTPUT_DAC_ROUTE` renderer path were removed together. Passive /
    full-range groups now state that there is no active driver test in the
    product UI; active 2/3-way groups use only the commission ramp through the
-   protected active graph. The remaining generic audio hook is explicit lab
-   `aplay`, guarded by `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and a
-   dedicated `JASPER_AUDIO_LAB_TEST_PCM`.
+   protected active graph. The generic audio hook this left behind — explicit
+   lab `aplay`, guarded by `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and a
+   dedicated `JASPER_AUDIO_LAB_TEST_PCM` — is **also gone now**: it never
+   acquired a caller either, so `enabled_audio_backend` was deleted and the
+   env selection reports a `tone_backend_not_wired` blocker.
 
 ### Staged, hardware-verified build sequence (each independently green; deletion last)
 
@@ -2339,15 +2347,19 @@ groups still fail closed before active startup staging or baseline compile.
 `jasper.active_speaker.topology_tone` owns only the still-live summed-crossover
 plan.
 
-`jasper.active_speaker.playback` is now the no-audio artifact / explicit-lab
-backend seam, not a product direct-DAC path. The default backend writes bounded
-WAV + JSON metadata under `/var/lib/jasper/active_speaker_tone_artifacts`
-(overridable in tests). `aplay` emission requires
-`JASPER_AUDIO_LAB_TONE_BACKEND=aplay` and `JASPER_AUDIO_LAB_TEST_PCM` pointing
-at a dedicated non-daemon test PCM. The daemon-owned outputd/CamillaDSP lanes
-are rejected as test writers because they are sinks/readers in the product
-route.
-This remains useful for lab experiments, target-selection tests, channel count,
+`jasper.active_speaker.playback` is now the no-audio artifact seam, not a
+product direct-DAC path and no longer an audio-lab one either. The default
+backend writes bounded WAV + JSON metadata under
+`/var/lib/jasper/active_speaker_tone_artifacts` (overridable in tests), and it
+is the only backend any production call site can reach — every
+`start_tone_playback` caller passes `backend=None`. `aplay` emission has **no
+production route**: `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` +
+`JASPER_AUDIO_LAB_TEST_PCM` are still parsed and validated, but report a
+`tone_backend_not_wired` blocker instead of enabling audio. The daemon-owned
+outputd/CamillaDSP lanes remain rejected as test writers because they are
+sinks/readers in the product route — `AplayTonePlaybackBackend` still enforces
+that in its constructor, and tests are its only builders.
+This remains useful for target-selection tests, channel count,
 level clamp, artifact schema, logging, retention, and Stop semantics; product
 driver commissioning uses the protected commission graph.
 
@@ -2500,8 +2512,9 @@ Updated execution plan:
    preset loading.
    Expanded with `jasper.active_speaker.playback`, an artifact-first backend
    seam that renders bounded logical-output WAV artifacts and, only with
-   explicit audio-lab env selection, can run the generated artifact through
-   `aplay` for woofer, mid, and subwoofer topology targets only.
+   explicit audio-lab env selection, could run the generated artifact through
+   `aplay` for woofer, mid, and subwoofer topology targets only. That audio-lab
+   route is gone — see "no audio-lab `aplay` hook any more" above.
    Historical, now superseded: expanded with `jasper.active_speaker.readiness`, a read-only
    playback-readiness gate that evaluates one requested output target across
    safe-session, output topology, channel identity, tweeter protection,

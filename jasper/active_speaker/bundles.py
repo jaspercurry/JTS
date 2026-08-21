@@ -91,9 +91,12 @@ LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION = 5
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/active_speaker/sessions")
 SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 
-# Mirrors jasper.active_speaker.web_measurement.MAX_CAPTURE_WAV_BYTES — the
-# browser capture store's own cap. A bundle copy is never larger than the
-# capture it was made from, so the same ceiling bounds the copy.
+# The owner of this ceiling is test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES,
+# aliased here (not mirrored). web_measurement's MAX_CAPTURE_WAV_BYTES is a
+# second alias of the SAME constant, so the two cannot drift apart — an earlier
+# comment named web_measurement as the thing being mirrored, which invited a
+# drift pin that could not fail. A bundle copy is never larger than the capture
+# it was made from, so one ceiling correctly bounds both.
 MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 # Retention ceiling for the commissioning-bundle store. Raised 256 MiB → 1 GiB

@@ -92,8 +92,8 @@ from ._common import DRIVER_CLASSES
 class ReasonCode(StrEnum):
     """Per-bin honesty-guard vocabulary — why a bin's allowed depth is what
     it is. Snake_case values, domain-prefixed, mirroring the
-    ``ReconstructionRefusal`` / ``BassExtensionRefusal`` house style so a
-    logged/persisted value is self-identifying without a lookup table.
+    :class:`jasper.bass_extension.profile.BassExtensionRefusal` house style
+    so a logged/persisted value is self-identifying without a lookup table.
 
     ``FITTED`` and ``LIMITED_BY_VERIFY_DIVERGENCE`` are part of the closed
     vocabulary but are not produced by any function in THIS module yet:

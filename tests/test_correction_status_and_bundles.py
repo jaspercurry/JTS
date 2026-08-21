@@ -1965,19 +1965,31 @@ def test_start_defaults_to_configured_relay_before_session_admission(
 
     def replace_session(**kwargs):
         captured.update(kwargs)
-        sess = SimpleNamespace(
-            browser_audio_report={
-                "failed": True,
-                "refusal_reasons": ["test stop after admission"],
-            },
-        )
+        sess = SimpleNamespace(browser_audio_report={"failed": False})
         captured["session"] = sess
         return sess
 
     monkeypatch.setattr(correction_setup, "_replace_session", replace_session)
     monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
 
-    with pytest.raises(ValueError, match="not safe for measurement"):
+    # Stop the handler at the next real step after session admission, so the
+    # assertions below are about what /start passed into _replace_session and
+    # nothing further. (This used to stop on a duplicate browser-audio refusal
+    # read back off the session; that block was unreachable in production --
+    # the same pure assessment on the same three inputs as the check above it
+    # -- and was deleted, so the test needs its own honest stop point.)
+    from jasper.sound.graph_carrier import CarrierCannotHostEq
+
+    def _refuse_baseline(*_args, **_kwargs):
+        raise CarrierCannotHostEq(
+            "test_stop_after_admission", "test stop after admission"
+        )
+
+    monkeypatch.setattr(
+        correction_setup, "_load_measurement_baseline", _refuse_baseline
+    )
+
+    with pytest.raises(CarrierCannotHostEq, match="test stop after admission"):
         correction_setup._handle_start(_DummyJsonHandler())
 
     assert captured["total_positions"] == 6
