@@ -95,15 +95,27 @@ def _bundle(
     phases: tuple[str, ...] = ("verify", "cloud_verify", "cloud_verify"),
     session_id: str = SESSION_ID,
     seed: int = 11,
+    bank_shape: bool = False,
 ) -> tuple[Path, Path]:
-    """A commissioning bundle plus a capture ring, of one synthetic speaker."""
+    """A commissioning bundle plus a capture ring, of one synthetic speaker.
+
+    ``bank_shape=True`` banks the program WAVs the way
+    ``scripts/bank-crossover-round.sh`` pulls a live Pi session bundle: in a
+    SIBLING ``crossover_v2/<relay>/`` directory next to — not inside —
+    ``evidence/``, rather than beside the JSON receipts. ``round_dir`` itself
+    still has to exist either way, empty or not, for
+    :func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`
+    to find it at all.
+    """
     rng = np.random.default_rng(seed)
     program = _sweep()
     bundle = root / "bundle"
     round_dir = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST"
+    programs_dir = (bundle / "crossover_v2/wired-TEST") if bank_shape else round_dir
     dumps = root / "dumps"
+    round_dir.mkdir(parents=True, exist_ok=True)
     for phase in set(phases) | {"verify", "cloud_verify"}:
-        _write_wav(round_dir / f"{phase}_program.wav", program)
+        _write_wav(programs_dir / f"{phase}_program.wav", program)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
 
@@ -645,6 +657,64 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
 
 
+def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):
+    """The exact composition docs/testing-tooling.md shows: a banked round.
+
+    ``bank-crossover-round.sh`` tars a live Pi session bundle verbatim, so its
+    program WAVs land in a sibling ``crossover_v2/<relay>/`` directory,
+    never inside the JSON receipts one. Before this fix, pointing the CLI at
+    exactly this shape refused ``classification_program_missing`` with
+    ``programs_present: []`` on a real banked round; this reproduces that
+    failure synthetically and asserts it is now classified instead.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
+    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    # Filed where the receipts shape always filed it -- the ONE location the
+    # evidence packet reads -- even though the programs it was computed from
+    # live in the sibling crossover_v2/ directory instead.
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+
+
+def test_bank_and_receipts_shapes_resolve_to_the_same_captures(tmp_path):
+    """Same synthetic speaker, banked two ways -- the classifier reads it alike.
+
+    Mutation check: break the sibling fallback in
+    ``jasper.cli.classify_features._resolve_programs_dir`` (for example, make
+    it always return ``round_dir``) and this test fails with
+    ``PROGRAM_MISSING`` while every receipts-shape test in this file keeps
+    passing -- the two resolution paths share no code path to break together.
+    """
+    ir = _resonant_ir(+3.0)
+    receipts_bundle, receipts_dumps = _bundle(tmp_path / "receipts", ir)
+    bank_bundle, bank_dumps = _bundle(tmp_path / "bank", ir, bank_shape=True)
+
+    receipts_round_dir, _ = round_artifact_dir(receipts_bundle)
+    bank_round_dir, _ = round_artifact_dir(bank_bundle)
+    assert receipts_round_dir is not None
+    assert bank_round_dir is not None
+
+    receipts_captures = fx.load_round_captures(
+        receipts_round_dir, receipts_dumps, session_id=SESSION_ID
+    )
+    bank_programs_dir = cli._resolve_programs_dir(bank_bundle, bank_round_dir)
+    assert bank_programs_dir != bank_round_dir, "must resolve to the sibling dir"
+    bank_captures = fx.load_round_captures(
+        bank_programs_dir, bank_dumps, session_id=SESSION_ID
+    )
+
+    assert [c.phase for c in bank_captures] == [c.phase for c in receipts_captures]
+    assert [c.program.name for c in bank_captures] == [
+        c.program.name for c in receipts_captures
+    ]
+    # Same synthetic speaker, same seed, on both sides: the verdicts must
+    # match exactly, not just the phase/program bookkeeping around them.
+    assert fx.classify_round(bank_captures) == fx.classify_round(receipts_captures)
+
+
 def test_a_refusal_exits_two_and_banks_nothing(tmp_path, monkeypatch, capsys):
     """A refusal must not leave a file a later reader would act on."""
     monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
@@ -663,3 +733,23 @@ def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path):
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
     assert cli.main([str(bundle), "--dumps", str(dumps)]) == cli.EXIT_ROUND_UNREADABLE
+
+
+def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys):
+    """Point the CLI at the WAV leaf itself -- the second real failure tonight.
+
+    Neither shape's ``evidence/v1/artifacts/crossover_v2/<relay>/`` exists
+    anywhere under this path, so the pre-existing "round could not be read"
+    refusal fires -- but its message must name BOTH accepted shapes, not
+    only the receipts one, so an operator who just banked a round with
+    bank-crossover-round.sh is pointed at the bundle directory instead of
+    guessing through a symlink shim, as tonight's real debugging session did.
+    """
+    bundle, dumps = _bundle(tmp_path, _flat_ir(), bank_shape=True)
+    programs_leaf = bundle / "crossover_v2/wired-TEST"
+    assert programs_leaf.is_dir()
+    code = cli.main([str(programs_leaf), "--dumps", str(dumps)])
+    assert code == cli.EXIT_ROUND_UNREADABLE
+    err = capsys.readouterr().err
+    assert "evidence/v1/artifacts/crossover_v2" in err
+    assert "bank-crossover-round.sh" in err
