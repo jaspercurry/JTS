@@ -109,6 +109,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CLOSING,
 )
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_PRESCRIPTION_KEY,
+)
 from jasper.active_speaker.crossover_v2_flow import TIERS
 from jasper.web.correction_crossover_v2 import (
     VERIFY_STAGE_KEY,
@@ -767,6 +770,12 @@ def _open_body(args: argparse.Namespace) -> tuple[str, dict[str, Any], int]:
         # session open's own (shape, declared window, half-period lobe at Fc);
         # checking it here would be a second, weaker one.
         body[ALIGNMENT_PRESCRIPTION_KEY] = args.alignment_prescription
+    if args.topology_prescription is not None:
+        # Same rule as the alignment prescription above: passed through as
+        # read, never judged here. TOPOLOGY_PRESCRIPTION_KEY is
+        # topology_prescription.py's own constant, imported rather than
+        # respelled, so the two names can never drift apart.
+        body[TOPOLOGY_PRESCRIPTION_KEY] = args.topology_prescription
     return SESSION_PATH, body, EXIT_OPEN
 
 
@@ -900,7 +909,8 @@ def _say_bank_by_hand(dest: Path, since: str, target: Target) -> None:
 
 
 def _json_document(raw: str) -> Any:
-    """One ``--alignment-prescription`` file, read and parsed at parse time.
+    """One prescription file — ``--alignment-prescription`` or
+    ``--topology-prescription`` — read and parsed at parse time.
 
     An unreadable path or malformed JSON is an argument the operator wrote
     wrongly, so it is argparse's refusal — a sentence and the usage — rather
@@ -959,6 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help=(
             "a JSON document posted verbatim as the session's alignment "
+            "prescription; the open's own gate judges it"
+        ),
+    )
+    parser.add_argument(
+        "--topology-prescription", type=_json_document, default=None,
+        metavar="FILE",
+        help=(
+            "a JSON document posted verbatim as the session's topology "
             "prescription; the open's own gate judges it"
         ),
     )
