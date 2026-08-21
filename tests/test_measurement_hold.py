@@ -406,12 +406,21 @@ def test_the_measurement_route_projects_the_hold(control_server):
 
 
 def test_state_carries_the_same_projection():
-    """One fact, one reader — /state must not mint a second answer."""
+    """One fact, one reader — /state must not mint a second answer.
+
+    A static wiring pin, matching the shape
+    ``test_state_resilience_wires_active_speaker_parked_snapshot`` uses in
+    tests/test_control_server.py: the point is that ``/state`` reads the
+    registrar rather than deriving a second answer, and that is a property of
+    the source line, not of one call's return value.
+    """
+    from pathlib import Path
+
     from jasper.control import state_aggregate
 
     mh.acquire("seat-level")
-    src = state_aggregate.__file__
-    assert '"measurement": measurement_hold.snapshot()' in open(src).read()
+    src = Path(state_aggregate.__file__).read_text()
+    assert '"measurement": measurement_hold.snapshot()' in src
     assert mh.snapshot()["owner"] == "seat-level"
 
 
