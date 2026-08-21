@@ -275,6 +275,69 @@ def test_a_stimulus_longer_than_one_render_block_is_still_exact(tmp_path):
     assert peaks["a"] == pytest.approx(_full_band_dbfs(wav), abs=0.01)
 
 
+def _tone_with_transient(path, position: int, *, frames: int):
+    """A quiet stationary tone with ONE loud sample at ``position``.
+
+    Stationary signals cannot detect a render that drops samples: a tone's peak
+    recurs every cycle, so skipping a stretch of it changes nothing. A single
+    transient is the opposite — it exists in exactly one place, and a loop that
+    steps over that place reports the tone's level instead.
+    """
+    rate = 48000
+    t = np.arange(frames) / rate
+    signal = 0.01 * np.sin(2.0 * np.pi * 300.0 * t)
+    signal[position] = 0.25
+    stereo = np.zeros((frames, 2))
+    stereo[:, 0] = signal
+    wavfile.write(str(path), rate, (stereo * 32767.0).astype(np.int16))
+    return path
+
+
+def _transient_positions() -> list[int]:
+    """Sample offsets a mis-stepped overlap-save loop would skip.
+
+    Derived from the module's own geometry so they cannot drift out of sync
+    with it. Block ``k`` keeps stimulus ``[k·hop, k·hop + hop)``; the seams
+    between those windows, the very first sample, and the very last one are
+    where an off-by-N in the hop, the discarded head, or the block count
+    actually shows.
+    """
+    hop = branch_peak._BLOCK_SAMPLES - branch_peak._OVERLAP_SAMPLES
+    frames = 3 * hop + 1000
+    return [0, hop - 1, hop, hop + 1, 2 * hop, frames - 1]
+
+
+@pytest.mark.parametrize("position", _transient_positions())
+def test_every_sample_reaches_the_render(tmp_path, position):
+    """Render COMPLETENESS: no sample may be stepped over.
+
+    The peak is a max over the rendered output, so a loop that silently skips a
+    stretch of the stimulus reports a LOWER peak — which raises the derived
+    ceiling. That is the unsafe direction, and no stationary-stimulus test can
+    see it: a tone, noise, or a regular click train all repeat their peak often
+    enough that dropping samples costs nothing measurable.
+
+    So this places one loud transient at each seam the overlap-save geometry
+    creates and asserts the peak still comes back at the transient's own level.
+    Mutation-verified against a hop that advances 64 samples too far and a loop
+    that stops one block early; both under-report by ~28 dB here.
+    """
+    hop = branch_peak._BLOCK_SAMPLES - branch_peak._OVERLAP_SAMPLES
+    frames = 3 * hop + 1000
+    wav = _tone_with_transient(tmp_path / "transient.wav", position, frames=frames)
+    config = {
+        "devices": _devices(),
+        "filters": {},
+        "mixers": _passthru_mixer(),
+        "pipeline": [{"type": "Mixer", "name": "passthru"}],
+    }
+    peaks = stimulus_branch_peaks_dbfs(config, wav, output_channels={"a": 0})
+    # An identity graph, so the rendered peak IS the stimulus peak — which is
+    # the transient, ~28 dB above the tone it sits in.
+    assert peaks["a"] == pytest.approx(_full_band_dbfs(wav), abs=0.01)
+    assert peaks["a"] > -20.0
+
+
 def test_camilladsp_readback_spellings_are_accepted(tmp_path):
     """CamillaDSP's own ``GetConfig`` dialect back-fills ``description``,
     ``bypassed``, ``scale``, ``subsample`` and per-source ``mute`` as ``null``

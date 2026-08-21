@@ -566,10 +566,14 @@ def stimulus_branch_peaks_dbfs(
 
     The render is exact linear filtering: every stage's complex response comes
     from the shared RBJ evaluator, the stimulus is pushed through the pipeline
-    in the frequency domain block by block (overlap-save, so the cost and the
-    memory are bounded by the block rather than by the stimulus length), and the
-    peak is the largest absolute output sample. The main volume fader is
-    deliberately absent — the ceiling formula this feeds adds it back.
+    in the frequency domain block by block (overlap-save), and the peak is the
+    largest absolute output sample. The main volume fader is deliberately absent
+    — the ceiling formula this feeds adds it back.
+
+    **Memory**: everything after the decode is per-BLOCK rather than
+    per-stimulus, but the decode itself is not — the decoded float64 stimulus is
+    held whole, and :data:`_MAX_STIMULUS_SAMPLES` is what bounds it (60 s, about
+    46 MB at 48 kHz stereo). Blocking bounds the working set, not the input.
 
     Raises :class:`BranchPeakError` for anything not modelled exactly.
     """
