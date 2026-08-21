@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import wave
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from jasper.active_speaker.crossover_v2 import feature_classifier as fx
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
     round_artifact_dir,
+    round_program_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     CLASSIFICATIONS,
@@ -95,15 +97,27 @@ def _bundle(
     phases: tuple[str, ...] = ("verify", "cloud_verify", "cloud_verify"),
     session_id: str = SESSION_ID,
     seed: int = 11,
+    bank_shape: bool = False,
 ) -> tuple[Path, Path]:
-    """A commissioning bundle plus a capture ring, of one synthetic speaker."""
+    """A commissioning bundle plus a capture ring, of one synthetic speaker.
+
+    ``bank_shape=True`` banks the program WAVs the way
+    ``scripts/bank-crossover-round.sh`` pulls a live Pi session bundle: in a
+    SIBLING ``crossover_v2/<relay>/`` directory next to — not inside —
+    ``evidence/``, rather than beside the JSON receipts. ``round_dir`` itself
+    still has to exist either way, empty or not, for
+    :func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`
+    to find it at all.
+    """
     rng = np.random.default_rng(seed)
     program = _sweep()
     bundle = root / "bundle"
     round_dir = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST"
+    programs_dir = (bundle / "crossover_v2/wired-TEST") if bank_shape else round_dir
     dumps = root / "dumps"
+    round_dir.mkdir(parents=True, exist_ok=True)
     for phase in set(phases) | {"verify", "cloud_verify"}:
-        _write_wav(round_dir / f"{phase}_program.wav", program)
+        _write_wav(programs_dir / f"{phase}_program.wav", program)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
 
@@ -645,6 +659,124 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
 
 
+def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):
+    """The exact composition docs/testing-tooling.md shows: a banked round.
+
+    ``bank-crossover-round.sh`` tars a live Pi session bundle verbatim, so its
+    program WAVs land in a sibling ``crossover_v2/<relay>/`` directory,
+    never inside the JSON receipts one. Before this fix, pointing the CLI at
+    exactly this shape refused ``classification_program_missing`` with
+    ``programs_present: []`` on a real banked round; this reproduces that
+    failure synthetically and asserts it is now classified instead.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
+    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    # Filed where the receipts shape always filed it -- the ONE location the
+    # evidence packet reads -- even though the programs it was computed from
+    # live in the sibling crossover_v2/ directory instead.
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert read_feature_verdicts(banked)[0].classification == DEFECT_CUTTABLE
+
+
+def test_bank_and_receipts_shapes_resolve_to_the_same_captures(tmp_path):
+    """Same synthetic speaker, banked two ways -- the classifier reads it alike.
+
+    Mutation check: break the sibling fallback in
+    ``evidence_packet.round_program_dir`` (for example, make it always
+    return ``round_dir``) and this test's OWN
+    ``bank_programs_dir != bank_round_dir`` guard fails first -- proving the
+    resolver stopped resolving to the sibling at all. That guard, not
+    ``PROGRAM_MISSING``, is the failure mode here:
+    ``test_the_cli_classifies_a_bank_shape_round`` is the one that then
+    fails downstream with ``PROGRAM_MISSING``, end to end through the CLI.
+    """
+    ir = _resonant_ir(+3.0)
+    receipts_bundle, receipts_dumps = _bundle(tmp_path / "receipts", ir)
+    bank_bundle, bank_dumps = _bundle(tmp_path / "bank", ir, bank_shape=True)
+
+    receipts_round_dir, _ = round_artifact_dir(receipts_bundle)
+    bank_round_dir, _ = round_artifact_dir(bank_bundle)
+    assert receipts_round_dir is not None
+    assert bank_round_dir is not None
+
+    receipts_captures = fx.load_round_captures(
+        receipts_round_dir, receipts_dumps, session_id=SESSION_ID
+    )
+    bank_programs_dir = round_program_dir(
+        bank_bundle, bank_round_dir, fx.ADMISSIBLE_PHASES
+    )
+    assert bank_programs_dir != bank_round_dir, "must resolve to the sibling dir"
+    bank_captures = fx.load_round_captures(
+        bank_programs_dir, bank_dumps, session_id=SESSION_ID
+    )
+
+    assert [c.phase for c in bank_captures] == [c.phase for c in receipts_captures]
+    assert [c.program.name for c in bank_captures] == [
+        c.program.name for c in receipts_captures
+    ]
+    # Same synthetic speaker, same seed, on both sides: the verdicts must
+    # match exactly, not just the phase/program bookkeeping around them.
+    assert fx.classify_round(bank_captures) == fx.classify_round(receipts_captures)
+
+
+def test_a_partially_banked_receipts_round_is_not_rescued_by_the_sibling(tmp_path):
+    """round_dir holds only verify's program -- a genuinely incomplete round.
+
+    Mutation pin for the any-vs-all precedence in
+    ``evidence_packet.round_program_dir`` (SF3, #2796 gate): its ``any(...)``
+    checks, mutated to ``all(...)``, let all 34 tests in this file pass
+    anyway -- none of them had a round_dir carrying SOME but not ALL of the
+    admissible phases. This one does: round_dir carries verify_program.wav
+    only, the sibling carries both, and the ring holds cloud_verify captures
+    too. A rescue from the sibling would silently paper over that gap, so
+    the resolver must still pick round_dir (it has "any") and
+    load_round_captures must still refuse PROGRAM_MISSING for the phase
+    round_dir is actually missing.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    sibling = bundle / "crossover_v2/wired-TEST"
+    shutil.copy(sibling / "verify_program.wav", round_dir / "verify_program.wav")
+
+    programs_dir = round_program_dir(bundle, round_dir, fx.ADMISSIBLE_PHASES)
+    assert programs_dir == round_dir, "any(...) must win over the sibling"
+
+    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+        fx.load_round_captures(programs_dir, dumps, session_id=SESSION_ID)
+    assert caught.value.reason == fx.PROGRAM_MISSING
+    assert caught.value.detail["phases"] == ["cloud_verify"]
+
+
+def test_a_program_missing_refusal_names_the_directory_it_actually_read(
+    tmp_path, capsys
+):
+    """SF2, #2796 gate: a doctored real bundle showed
+    ``programs_present: ['verify']`` about a directory holding zero WAVs --
+    because the message named ``round_dir`` while the count came from
+    whichever directory the resolver actually read (here, the sibling, not
+    round_dir). Both the stderr line and the --json payload must name that
+    directory, or this instrument's own refusal starts the very
+    wrong-directory hunt it exists to end.
+    """
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
+    (bundle / "crossover_v2/wired-TEST/cloud_verify_program.wav").unlink()
+    code = cli.main([str(bundle), "--dumps", str(dumps), "--json"])
+    assert code == cli.EXIT_REFUSED
+    captured = capsys.readouterr()
+    assert "crossover_v2/wired-TEST" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["reason"] == fx.PROGRAM_MISSING
+    # The exact shape the gate demonstrated on a real bundle: programs_present
+    # names only what the SIBLING carried, and the payload must now also say
+    # that the sibling -- not evidence/'s round_dir -- is what was read.
+    assert payload["detail"]["programs_present"] == ["verify"]
+    assert payload["programs_dir"] == "crossover_v2/wired-TEST"
+
+
 def test_a_refusal_exits_two_and_banks_nothing(tmp_path, monkeypatch, capsys):
     """A refusal must not leave a file a later reader would act on."""
     monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
@@ -659,7 +791,33 @@ def test_a_refusal_exits_two_and_banks_nothing(tmp_path, monkeypatch, capsys):
     assert payload["reason"] in fx.CLASSIFICATION_REFUSAL_REASONS
 
 
-def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path):
+def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):
     bundle, dumps = _bundle(tmp_path, _flat_ir())
     (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
     assert cli.main([str(bundle), "--dumps", str(dumps)]) == cli.EXIT_ROUND_UNREADABLE
+    err = capsys.readouterr().err
+    # Nit from the #2796 gate: the both-shapes guidance belongs on the
+    # "structure missing entirely" refusal, not here -- this bundle's
+    # structure is fine, the problem is which of two rounds to read, and
+    # "check for a second accepted shape" would be misleading advice.
+    assert "bank-crossover-round.sh" not in err
+
+
+def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys):
+    """Point the CLI at the WAV leaf itself -- the second real failure tonight.
+
+    Neither shape's ``evidence/v1/artifacts/crossover_v2/<relay>/`` exists
+    anywhere under this path, so the pre-existing "round could not be read"
+    refusal fires -- but its message must name BOTH accepted shapes, not
+    only the receipts one, so an operator who just banked a round with
+    bank-crossover-round.sh is pointed at the bundle directory instead of
+    guessing through a symlink shim, as tonight's real debugging session did.
+    """
+    bundle, dumps = _bundle(tmp_path, _flat_ir(), bank_shape=True)
+    programs_leaf = bundle / "crossover_v2/wired-TEST"
+    assert programs_leaf.is_dir()
+    code = cli.main([str(programs_leaf), "--dumps", str(dumps)])
+    assert code == cli.EXIT_ROUND_UNREADABLE
+    err = capsys.readouterr().err
+    assert "evidence/v1/artifacts/crossover_v2" in err
+    assert "bank-crossover-round.sh" in err

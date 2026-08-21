@@ -89,6 +89,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     _EVIDENCE_GLOB,
     build_crossover_evidence_packet,
+    round_program_dir,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.deconv import deconvolve, magnitude_response
@@ -481,8 +482,18 @@ def _dump_ring_captures(round_dir: Path, *, phase: str) -> list[tuple[Path, Path
 
 
 def _find_program_wav(session_dir: Path, *, phase: str) -> Path | None:
+    """The banked ``{phase}_program.wav``, wherever
+    :func:`~.evidence_packet.round_program_dir` resolves it for THIS relay —
+    beside the JSON receipts, or the sibling ``crossover_v2/<relay>/``
+    directory every real banked round actually uses. Sharing that one rule
+    with :mod:`jasper.cli.classify_features` is load-bearing: before it was
+    adopted here, this always checked the receipts location alone, which the
+    product has never once written a program WAV into (issue found reviewing
+    #2796) — every verify-pose and agreement view built on this returned
+    "no {phase}_program.wav banked" on every real bundle.
+    """
     for relay_dir in sorted(session_dir.glob(_EVIDENCE_GLOB)):
-        candidate = relay_dir / f"{phase}_program.wav"
+        candidate = round_program_dir(session_dir, relay_dir, (phase,)) / f"{phase}_program.wav"
         if candidate.is_file():
             return candidate
     return None

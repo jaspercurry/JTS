@@ -1973,6 +1973,13 @@ this round by the bundle's own `session_id` (a sidecar stamps it into
 `jts_session_identity`) — a ring holding several rounds needs no flag to be
 split correctly.
 
+The round directory's own `<phase>_program.wav` files are resolved from
+either shape automatically, by structure rather than a flag: this
+instrument's original campaign-receipts shape banks them beside the JSON
+receipts, and the shape the tar above actually produces banks them in a
+sibling `crossover_v2/<relay>/` directory instead — so the composition above
+just works.
+
 **It refuses more often than it reports, and each refusal has a name.**
 
 - `classification_controls_failed` — known answers are pushed through the
