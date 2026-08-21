@@ -709,3 +709,212 @@ def test_classify_more_than_two_apple_dacs_is_not_auto_promoted() -> None:
     assert state.profile_id == "unknown"
     assert state.status == "partial"
     assert "too_many_apple_dacs" in {issue["code"] for issue in state.issues}
+
+
+def _apple_child(card_id: str, serial: str, usb_path: str) -> OutputCardFact:
+    return OutputCardFact(
+        card_id=card_id,
+        device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        serial=serial,
+        usb_path=usb_path,
+        busnum="1",
+        controller="xhci-hcd.0",
+        endpoint_sync="SYNC",
+        pcm=f"hw:CARD={card_id},DEV=0",
+    )
+
+
+def _saved_topology(tmp_path: Path, hardware: dict) -> Path:
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps({
+            "artifact_schema_version": 1,
+            "kind": "jts_output_topology",
+            "topology_id": "saved",
+            "name": "Saved",
+            "status": "ready",
+            "hardware": hardware,
+            "speaker_groups": [],
+            "routing": {},
+            "safety": {},
+        }),
+        encoding="utf-8",
+    )
+    return topology_path
+
+
+def _saved_composite_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "outputs": [],
+        "child_devices": [
+            {
+                "child_id": "left",
+                "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "left",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right",
+                "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "right",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+    }
+
+
+def test_saved_composite_with_one_child_present_is_never_ready(
+    tmp_path: Path,
+) -> None:
+    """A declared composite missing a child must not read as a stereo DAC.
+
+    The surviving dongle classifies on its own as an ordinary full-range
+    two-output device, and ``ready`` is the one word every consumer reads as
+    "safe to drive this speaker with". Downstream layers do refuse a flat
+    full-range graph on a roleful topology, so today's outcome is quiet rather
+    than dangerous — but nothing states a reason. The record has to fail closed
+    and name the child that is gone.
+    """
+
+    topology_path = _saved_topology(tmp_path, _saved_composite_hardware())
+    observed = classify_output_cards([_apple_child("A", "left", "1-1")])
+    assert observed.status == "ready"
+    assert observed.profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        topology_path=topology_path,
+    )
+
+    assert state.status == "partial"
+    assert state.profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+    blockers = [
+        issue for issue in state.issues if issue["severity"] == "blocker"
+    ]
+    assert [issue["code"] for issue in blockers] == [
+        "saved_composite_partially_present"
+    ]
+    # The reason names the child that is gone, not just that something is.
+    assert "right" in blockers[0]["message"]
+    assert "left" not in blockers[0]["message"]
+    # `/state` and the wizard's adopt affordance both read this record.
+    assert output_hardware.detected_hardware_adoption_precondition(
+        state
+    )["allowed"] is False
+
+
+def test_saved_composite_with_both_children_present_is_untouched(
+    tmp_path: Path,
+) -> None:
+    topology_path = _saved_topology(tmp_path, _saved_composite_hardware())
+    observed = classify_output_cards([
+        _apple_child("A", "left", "1-1"),
+        _apple_child("A_1", "right", "1-2"),
+    ])
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert state.status == "ready"
+
+
+def test_saved_single_topology_keeps_full_range_stereo_ready(
+    tmp_path: Path,
+) -> None:
+    """Full-range stereo is a legal shape for a saved passive/solo speaker."""
+
+    topology_path = _saved_topology(tmp_path, {
+        "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+        "device_label": "Apple USB-C audio adapter",
+        "physical_output_count": 2,
+        "outputs": [],
+        "card_id": "A",
+    })
+    observed = classify_output_cards([_apple_child("A", "left", "1-1")])
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.status == "ready"
+
+
+def test_unsaved_topology_keeps_todays_classification(tmp_path: Path) -> None:
+    """A speaker with no saved topology yet still adopts what it sees."""
+
+    observed = classify_output_cards([_apple_child("A", "left", "1-1")])
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        topology_path=tmp_path / "output_topology.json",
+    )
+
+    assert state == observed
+    assert state.status == "ready"
+
+
+def test_saved_composite_with_no_output_hardware_keeps_missing_status(
+    tmp_path: Path,
+) -> None:
+    """Both children gone already parks; it gains the reason, not a new status.
+
+    ``missing`` is a truer word than ``partial`` for "no output hardware at
+    all", so the policy only downgrades a ``ready`` observation.
+    """
+
+    topology_path = _saved_topology(tmp_path, _saved_composite_hardware())
+    observed = classify_output_cards([])
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        topology_path=topology_path,
+    )
+
+    assert state.status == "missing"
+    codes = [issue["code"] for issue in state.issues]
+    assert codes == ["saved_composite_partially_present"]
+    assert "left" in state.issues[0]["message"]
+    assert "right" in state.issues[0]["message"]
+
+
+def test_published_record_carries_the_partial_composite_reason(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """`python -m jasper.output_hardware --write` is the record's one writer.
+
+    The reconciler and `/state` both read what this publishes, so the policy
+    has to be applied here rather than by each consumer.
+    """
+
+    topology_path = _saved_topology(tmp_path, _saved_composite_hardware())
+    state_file = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
+    monkeypatch.setattr(
+        output_hardware,
+        "probe_system_cards",
+        lambda **_kwargs: (_apple_child("A", "left", "1-1"),),
+    )
+
+    assert output_hardware.main(["--write"]) == 0
+
+    capsys.readouterr()
+    published = json.loads(state_file.read_text(encoding="utf-8"))
+    assert published["status"] == "partial"
+    assert published["profile_id"] == APPLE_USB_C_DONGLE_DEVICE_ID
+    assert [issue["code"] for issue in published["issues"]] == [
+        "saved_composite_partially_present"
+    ]

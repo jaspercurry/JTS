@@ -1185,23 +1185,15 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     ) in result.stderr
 
 
-def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
-    tmp_path: Path,
-):
-    sys_class, proc_asound = _fake_sys_output_card(
-        tmp_path,
-        card_index=1,
-        card_id="B",
-        usb_path="1-1",
-        serial="right",
-    )
-    _fake_sys_output_card(
-        tmp_path,
-        card_index=2,
-        card_id="A",
-        usb_path="1-2",
-        serial="left",
-    )
+def _dual_apple_active_topology(tmp_path: Path) -> Path:
+    """Save the ACTIVE roleful topology of a commissioned dual-Apple speaker.
+
+    Unlike ``_dual_apple_topology`` this one is a legal active-speaker topology
+    (roleful groups plus passed clock evidence), so the active-graph gate can
+    accept a staged graph against it and the composite arm can reach
+    ``recognized=1``. Both the child-order test and the partial-presence tests
+    need exactly this shape.
+    """
     topology_path = tmp_path / "output_topology.json"
     from tests.test_active_speaker_runtime_contract import _active_topology
 
@@ -1245,6 +1237,27 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
         json.dumps(topology),
         encoding="utf-8",
     )
+    return topology_path
+
+
+def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
+    tmp_path: Path,
+):
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="B",
+        usb_path="1-1",
+        serial="right",
+    )
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="A",
+        usb_path="1-2",
+        serial="left",
+    )
+    topology_path = _dual_apple_active_topology(tmp_path)
 
     result = _run_reconcile(
         tmp_path,
@@ -1297,6 +1310,177 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     assert "ctl.outputd_dac" not in template
     _assert_no_empty_alsa_card(template)
     assert "order_source=saved_topology" in result.stderr
+
+
+def _output_hardware_record(tmp_path: Path) -> dict:
+    return json.loads(
+        (tmp_path / "output_hardware.json").read_text(encoding="utf-8")
+    )
+
+
+def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
+    """A saved composite with one dongle gone parks instead of taking over.
+
+    Before #2813 the surviving dongle classified as an ordinary
+    ``apple_usb_c_dongle``, ``apply_observed_single_policy`` marked it
+    recognized, and the final output was rewired onto it as a plain stereo
+    DAC. The graph layer never followed — it reads only the saved topology —
+    so the box stayed quiet, but by nobody's decision and with nothing said.
+    This pins the decision: park, and name the child that is gone.
+    """
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="A",
+        usb_path="1-1",
+        serial="left",
+    )
+    _dual_apple_active_topology(tmp_path)
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SYS_CLASS_SOUND": str(sys_class),
+            "JASPER_PROC_ASOUND": str(proc_asound),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(tmp_path / "output_topology.json"),
+            **_active_graph_env(tmp_path, write_topology=False),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    record = _output_hardware_record(tmp_path)
+    assert record["status"] == "partial"
+    blockers = [
+        issue for issue in record["issues"] if issue["severity"] == "blocker"
+    ]
+    assert [issue["code"] for issue in blockers] == [
+        "saved_composite_partially_present"
+    ]
+    # The household-visible reason names the child that is gone.
+    assert "right" in blockers[0]["message"]
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    # The degraded state this issue is about: NOT recognized as a plain dongle.
+    assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" not in env_text
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    # The parked markers, not a live edge onto the surviving dongle.
+    assert "JASPER_OUTPUTD_BACKEND=fake" in outputd_env
+    assert "JASPER_OUTPUTD_BACKEND=alsa" not in outputd_env
+    assert "JASPER_OUTPUTD_DAC_FORMAT=''" in outputd_env
+    template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
+    _assert_parked_outputd_dac_template(template)
+    commands = _systemctl_log(tmp_path)
+    assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
+    assert "--no-block restart jasper-outputd.service" not in commands
+    assert (
+        "event=audio_hardware_reconcile.runtime_env reason=test mode=parked"
+    ) in result.stderr
+
+
+def test_reconcile_unparks_when_the_missing_composite_child_returns(
+    tmp_path: Path,
+):
+    """Recovery is the udev chain re-running this script — no operator step."""
+    sys_class, proc_asound = _fake_sys_output_card(
+        tmp_path,
+        card_index=1,
+        card_id="A",
+        usb_path="1-1",
+        serial="left",
+    )
+    _dual_apple_active_topology(tmp_path)
+    extra_env = {
+        "JASPER_SYS_CLASS_SOUND": str(sys_class),
+        "JASPER_PROC_ASOUND": str(proc_asound),
+        "JASPER_OUTPUT_TOPOLOGY_PATH": str(tmp_path / "output_topology.json"),
+        **_active_graph_env(tmp_path, write_topology=False),
+    }
+
+    parked = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "test", extra_env=extra_env,
+    )
+    assert parked.returncode == 0, parked.stderr
+    assert _output_hardware_record(tmp_path)["status"] == "partial"
+    commands_before = len(_systemctl_log(tmp_path))
+
+    # The missing dongle comes back; udev re-runs the reconciler.
+    _fake_sys_output_card(
+        tmp_path,
+        card_index=2,
+        card_id="B",
+        usb_path="1-2",
+        serial="right",
+    )
+    recovered = _run_reconcile(
+        tmp_path, DUAL_APPLE_LISTING, "--reason", "test", extra_env=extra_env,
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    record = _output_hardware_record(tmp_path)
+    assert record["status"] == "ready"
+    assert record["profile_id"] == "dual_apple_usb_c_dac_4ch"
+    assert record["issues"] == []
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch" in env_text
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
+    assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
+    commands = _systemctl_log(tmp_path)[commands_before:]
+    assert "--no-block restart jasper-outputd.service" in commands
+    assert "--no-block stop jasper-voice.service jasper-outputd.service" not in commands
+
+
+def test_reconcile_saved_passive_topology_still_takes_the_single_dongle(
+    tmp_path: Path,
+):
+    """A saved SINGLE topology keeps today's behaviour: stereo is legal there.
+
+    Same outcome as ``test_reconcile_apple_role_enables_apple_helpers_and_renders``
+    (which saves no topology at all); the record itself is asserted unchanged
+    by ``test_saved_single_topology_keeps_full_range_stereo_ready``.
+    """
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(
+        json.dumps({
+            "artifact_schema_version": 1,
+            "kind": "jts_output_topology",
+            "topology_id": "solo",
+            "name": "Solo",
+            "status": "ready",
+            "hardware": {
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple USB-C audio adapter",
+                "physical_output_count": 2,
+                "card_id": "A",
+                "outputs": [],
+            },
+            "speaker_groups": [],
+            "routing": {},
+            "safety": {},
+        }),
+        encoding="utf-8",
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _output_hardware_record(tmp_path)["status"] == "ready"
+    env_text = (tmp_path / "jasper.env").read_text(encoding="utf-8")
+    assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
+    assert "JASPER_AUDIO_DAC_CARD=A" in env_text
+    commands = _systemctl_log(tmp_path)
+    assert "enable jasper-dac-init.service jasper-headphone-monitor.service" in commands
+    assert "--no-block stop jasper-voice.service jasper-outputd.service" not in commands
 
 
 def _dual_apple_topology(tmp_path: Path) -> Path:

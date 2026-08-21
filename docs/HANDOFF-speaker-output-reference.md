@@ -1345,10 +1345,16 @@ rejected — see the "Stage 2a landed" callout above.)
   first as an `EPIPE` underrun, which logs the xrun before `try_recover` fails
   on the now-absent device, since that `eprintln!` precedes the recovery
   attempt.
-  Recovery is out-of-band: udev → `jasper-audio-hardware-reconcile` rewrites
-  `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC, clearing
-  `JASPER_OUTPUTD_DUAL_DAC_A_PCM`/`_B_PCM`, and restarts outputd. The
-  reconciler half of that is shipped code; the end-to-end convergence is still
+  Recovery is out-of-band: udev → `jasper-audio-hardware-reconcile` clears
+  `JASPER_OUTPUTD_DUAL_DAC_A_PCM`/`_B_PCM` and acts on outputd. Where it lands
+  is decided by the **saved** topology, not by what survived: a saved composite
+  **parks** the box (`JASPER_OUTPUTD_BACKEND=fake`) behind a named
+  `saved_composite_partially_present` blocker rather than running the survivor
+  as a stereo DAC — owner is
+  [`jasper/output_hardware.py`](../jasper/output_hardware.py)
+  `apply_saved_topology_policy`. Only a box with no saved composite rewrites
+  `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC and restarts outputd.
+  The reconciler half of that is shipped code; the end-to-end convergence is still
   **awaiting its on-Pi pass** — it is item 5 of
   [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md)'s "Needs a
   real plug/unplug hardware pass" list, so read it as intent, not as a result.

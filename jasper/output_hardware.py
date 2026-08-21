@@ -802,20 +802,40 @@ def _topology_path(path: str | Path | None = None) -> Path:
     )
 
 
-def _load_dual_apple_topology_children(
+def _read_topology_hardware(
     path: str | Path | None = None,
-) -> tuple[Mapping[str, Any], ...] | None:
+) -> tuple[bool, Mapping[str, Any] | None]:
+    """Read the saved speaker topology's ``hardware`` mapping.
+
+    Returns ``(exists, hardware)``. ``exists`` is False only when no topology
+    file is saved at all; ``hardware`` is None when a file is saved but carries
+    no readable ``hardware`` mapping. Keeping those apart is what lets one
+    caller treat corruption differently from "this speaker has no saved
+    topology yet", and it keeps a single reader of the file in this module.
+    """
+
     target = _topology_path(path)
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
+        return (False, None)
     except (OSError, json.JSONDecodeError):
-        return ()
+        return (True, None)
     if not isinstance(raw, Mapping):
-        return ()
+        return (True, None)
     hardware = raw.get("hardware")
     if not isinstance(hardware, Mapping):
+        return (True, None)
+    return (True, hardware)
+
+
+def _load_dual_apple_topology_children(
+    path: str | Path | None = None,
+) -> tuple[Mapping[str, Any], ...] | None:
+    exists, hardware = _read_topology_hardware(path)
+    if not exists:
+        return None
+    if hardware is None:
         return ()
     device_id = normalize_output_device_id(_text(hardware.get("device_id")))
     if device_id != DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
@@ -837,6 +857,101 @@ def _child_topology_order(child: Mapping[str, Any]) -> int:
             except (TypeError, ValueError):
                 pass
     return min(values) if values else 999
+
+
+def _missing_topology_child_labels(
+    hardware: Mapping[str, Any],
+    observed: Iterable[OutputCardFact],
+) -> tuple[str, ...]:
+    """Name the saved child devices that no observed card accounts for."""
+
+    observed_tokens: set[tuple[str, str]] = set()
+    for card in observed:
+        observed_tokens.update(_identity_tokens(card))
+    missing: list[str] = []
+    children = hardware.get("child_devices") or []
+    if not isinstance(children, list):
+        return ()
+    for child in children:
+        if not isinstance(child, Mapping):
+            continue
+        tokens = _identity_tokens(child)
+        if tokens and observed_tokens.intersection(tokens):
+            continue
+        missing.append(
+            _text(child.get("serial"))
+            or _text(child.get("child_id"))
+            or _text(child.get("card_id"))
+            or "unidentified child"
+        )
+    return tuple(missing)
+
+
+def apply_saved_topology_policy(
+    state: OutputHardwareState,
+    *,
+    topology_path: str | Path | None = None,
+) -> OutputHardwareState:
+    """Fail closed when a saved COMPOSITE topology is only partly present.
+
+    A saved composite topology is roleful: it pins which physical child owns
+    which driver. Unplug one child and the survivor still classifies on its own
+    as an ordinary full-range stereo DAC, and accepting that observation
+    rewires the final output to the survivor as a plain stereo DAC.
+
+    What that does NOT do today, stated precisely because the tempting
+    shorthand is wrong: it does not put a flat full-range graph on those
+    drivers. Graph selection reads the saved topology and nothing else
+    (``active_speaker.runtime_contract`` names no observed-hardware reader at
+    all), and a roleful topology structurally cannot select the flat graph —
+    ``_flat_graph_allowed`` raises
+    ``flat_full_range_graph_illegal_for_roleful_topology``. So the box already
+    goes quiet rather than playing full range into a protected driver.
+
+    It goes quiet SILENTLY, though, and only because several independent layers
+    each refuse for their own reasons — no layer decides it, so no layer can
+    say it. AGENTS.md's composite doctrine asks for a fail-closed partial state
+    instead: one named decision, taken here where the single/composite policy
+    is decided, ahead of the refusals that currently cover for it. Reconnecting
+    the child re-runs the reconciler through the existing udev chain and
+    un-parks with no operator step.
+
+    A saved SINGLE/passive topology is returned untouched: full-range stereo is
+    a legal shape there, and this policy must not change it.
+    """
+
+    exists, hardware = _read_topology_hardware(topology_path)
+    if not exists or hardware is None:
+        return state
+    declared_id = normalize_output_device_id(_text(hardware.get("device_id")))
+    declared = _dac_profile_by_id(declared_id)
+    if declared is None or declared.kind != "composite":
+        return state
+    if state.profile_id == declared_id:
+        return state
+
+    missing = _missing_topology_child_labels(hardware, state.child_devices)
+    detail = (
+        f"missing child devices: {', '.join(missing)}"
+        if missing
+        else "no saved child device could be matched to an observed card"
+    )
+    return replace(
+        state,
+        # An already-partial/missing observation keeps its own status; only a
+        # "ready" one is downgraded, because "ready" is the single word every
+        # consumer reads as "safe to drive this speaker with".
+        status="partial" if state.status == "ready" else state.status,
+        issues=state.issues + (
+            _issue(
+                "blocker",
+                "saved_composite_partially_present",
+                f"saved topology declares the composite {declared.label} "
+                f"({declared.physical_output_count} outputs) but observed output "
+                f"hardware is {state.profile_id}; {detail}",
+            ),
+        ),
+    )
 
 
 def dual_apple_runtime_mapping(
@@ -972,7 +1087,7 @@ def main(argv: list[str] | None = None) -> int:
     if not cards:
         listing = probe_aplay_listing(os.environ.get("JASPER_APLAY", "aplay"))
         cards = parse_aplay_listing(listing)
-    state = classify_output_cards(cards)
+    state = apply_saved_topology_policy(classify_output_cards(cards))
     state = replace(
         state,
         usb_data_role=resolve_system_usb_port_role(
