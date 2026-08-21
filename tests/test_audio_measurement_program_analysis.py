@@ -5521,81 +5521,156 @@ def test_channel_map_accepts_every_measured_session_level(
     )
 
 
-def test_channel_map_refuses_a_swap_and_a_heavy_bleed():
+def test_channel_map_refuses_abnormal_cross_band_energy():
     """The two shapes the CROSS test exists to catch, at any level.
 
-    A true channel swap (or a driver fed both bands) puts the SAME energy in
-    both bands, so its isolation collapses to ~0 while the TARGET floor is
-    still comfortably cleared — the target test alone cannot see it, which is
-    why the cross test exists. A heavy bleed at 10 dB of isolation is refused
-    too: it sits an order of magnitude below every honest row on record.
+    **This is not the mis-wire test, and an earlier version of this docstring
+    said it was.** Seven wiring shapes were run through this validator and the
+    cross rise stayed within ±0.4 dB on every one, because a wiring fault
+    changes which DRIVER radiates, not which BAND carries the energy — so
+    `_channel_map_ok`'s TARGET floor is what fires on a mis-wire, and the
+    realistically-rolled-off swap that clears the whole channel map is a
+    PRE-EXISTING gap (issue #2800), on `main` and on this branch alike. What
+    the CROSS half guards is abnormal cross-band ENERGY, and both fixtures
+    below are that:
+
+    * the degenerate case — one signal reaching BOTH bands at once, isolation
+      ~0. Kept because it is the fail-closed floor of this rung: whatever
+      produces it, energy in two bands at equal strength is not a driver
+      playing its own band, and the rung must refuse it.
+    * a heavy bleed at 10 dB of isolation, an order of magnitude below every
+      honest row on record.
+
+    Both are commanded well above `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`, so
+    the ratio is actually judged, and both clear the TARGET floor first — or
+    the refusal would prove nothing about the CROSS half.
     """
-    swap_ok, swap_target, swap_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
+    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+
+    both_bands_ok, both_target, both_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
     assert program_analysis.channel_map_isolation_db(
-        swap_target, swap_cross,
+        both_target, both_cross,
     ) == pytest.approx(0.0, abs=1.0)
-    assert swap_target > program_analysis.CHANNEL_MAP_TARGET_RISE_DB, (
-        "the swap shape must clear the TARGET floor, or this proves nothing "
-        "about the CROSS test"
+    assert both_target > judged_above, (
+        "the fixture must clear the judged threshold, or the CROSS half never "
+        "looked and this proves nothing"
     )
-    assert swap_ok is False
+    assert both_bands_ok is False
 
     bleed_ok, bleed_target, bleed_cross = _isolation_case("woofer", 50.0, 40.0, seed=902)
     assert program_analysis.channel_map_isolation_db(
         bleed_target, bleed_cross,
     ) == pytest.approx(10.0, abs=1.0)
-    assert bleed_target > program_analysis.CHANNEL_MAP_TARGET_RISE_DB
+    assert bleed_target > judged_above
     assert bleed_ok is False
 
 
-def test_channel_map_isolation_bound_cannot_supersede_the_target_floor():
-    """The ceiling on `CHANNEL_MAP_MIN_ISOLATION_DB`, pinned as a contract.
+def test_channel_map_cross_test_never_eats_the_target_floor():
+    """The CROSS half must not convert a quiet-but-correct capture into a
+    rewire hard stop. Pinned because it DID, and shipping it would have been
+    the very bug this metric was written to remove.
 
-    Isolation can never EXCEED a pilot's own target rise, because the cross
-    rise is >=0 whenever the other band merely sits at its ambient. So a bound
-    above `CHANNEL_MAP_TARGET_RISE_DB` would make that floor unreachable: the
-    CROSS test would silently become a STRICTER TARGET test, and a genuinely
-    quiet-but-correct pilot would refuse as `channel_map_mismatch` — a hard
-    stop telling a household to open its speaker — instead of the honest,
-    retriable `snr_floor`. That is the #2052/#2644 class, and it is what a
-    20 dB bound would have reintroduced: two of this suite's own honest
-    fixtures sit at 17.20 dB and 19.49 dB of isolation
-    (`test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail`
-    and `test_measure_backed_off_into_a_noisy_room_reports_insufficient`), and
-    at that bound BOTH have `channel_map_ok` flip to False — measured under a
-    mutation, not reasoned about.
+    The mechanism, stated exactly: the CROSS test refuses when
+    ``target_rise - cross_rise < BOUND``, i.e. when
+    ``target_rise < BOUND + cross_rise``. So it does not merely sit beside the
+    TARGET floor — it RAISES the effective floor to
+    ``max(FLOOR, BOUND + cross_rise)``, eating the floor by ``cross_rise`` dB.
+    An earlier draft argued a bound at or below `CHANNEL_MAP_TARGET_RISE_DB`
+    was enough to prevent this; that argument only holds at ``cross_rise <= 0``
+    and is false in general.
 
-    **Those two tests stay green under that mutation**, because neither
-    asserts on the channel-map flag; only this test goes red. That is the
-    whole reason this one exists: the ceiling is a property of the two
-    constants, the harm lands on a real capture through
-    `capture_dispatch.check_screens`, and nothing else in the suite would have
-    noticed the bound eating the floor.
+    The measured case, end to end: target 13.50 / cross 1.72 — both values
+    taken from this suite's own noisy-room fixture — gives isolation 11.78,
+    which under an ungated ratio refused as the NON-retriable
+    ``channel_map_mismatch`` where `main` refused it as the retriable
+    ``snr_floor``. A hard stop telling a household to open its speaker, on a
+    capture whose only real problem was that it was quiet (#2052/#2644).
 
-    Pinned two ways. The arithmetic contract is exact and fixture-free: a
-    pilot sitting ON the target floor whose cross band sits AT its own ambient
-    (a 0 dB cross rise) must clear the isolation bound, which is precisely the
-    statement that the bound does not supersede the floor. The live run then
-    demonstrates it end-to-end on a floor-adjacent pilot, graded on the rises
-    the production code actually read back.
+    The guard is `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`: below it the TARGET
+    floor governs alone. What that buys, and what this test really pins, is
+    that a CROSS refusal is self-justifying — above the threshold, refusing
+    requires ``cross_rise >= CHANNEL_MAP_TARGET_RISE_DB``, so the WRONG band
+    cleared the very bar we demand of a driver that played. Nothing merely
+    quiet can manufacture that.
     """
     floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
     bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
-    assert bound <= floor, (
-        "an isolation bound above the target floor makes that floor "
-        "unreachable and converts every low-SNR capture into a rewire "
-        "instruction — see the constant's derivation"
+    judged_above = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+    assert judged_above == pytest.approx(floor + bound), (
+        "the threshold IS floor+bound; any other value breaks the "
+        "cross_rise >= floor implication this rung's honesty rests on"
     )
-    assert program_analysis.channel_map_isolation_db(floor, 0.0) >= bound
 
-    floor_ok, floor_target, floor_cross = _isolation_case("woofer", floor + 1.0, 0.0, seed=903)
-    assert floor_target == pytest.approx(floor + 1.0, abs=0.5)
-    assert floor_cross == pytest.approx(0.0, abs=0.5)
-    assert floor_ok is True, (
-        "a pilot barely over the documented target floor with a silent cross "
-        "band is about the quietest honest capture the ladder admits; "
-        "refusing it here is the CROSS test eating the TARGET test"
+    # The regression itself, on the real validator.
+    ok, target_rise, cross_rise = _isolation_case("woofer", 13.50, 1.72, seed=904)
+    assert target_rise == pytest.approx(13.50, abs=0.5)
+    assert cross_rise == pytest.approx(1.72, abs=0.5)
+    isolation = program_analysis.channel_map_isolation_db(target_rise, cross_rise)
+    assert isolation < bound, (
+        "premise: this capture's ratio IS under the bound — if it were not, "
+        "the guard below would be untested"
     )
+    assert target_rise >= floor, "premise: it cleared the TARGET floor"
+    assert ok is True, (
+        "a quiet-but-correct capture must not be refused by the CROSS half; "
+        "the honest, retriable finding is snr_floor"
+    )
+    # The household-visible half of the claim — that such a capture lands on
+    # `snr_floor` rather than `channel_map_mismatch` — is the composition of
+    # this `ok` with a rung already pinned where it belongs, in
+    # `tests/test_crossover_v2_capture_dispatch.py`
+    # (`test_check_rungs_report_their_own_finding`'s `pilot_snr_ok=False` row,
+    # plus `test_check_never_refuses_on_an_unestablished_fact`). Re-asserting
+    # the ladder here would import the flow package into an audio-measurement
+    # test to restate a fact that file already owns. Verified end-to-end by
+    # hand against the real `check_screens` in the fix round for this rung.
+
+
+def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
+    """Isolation exactly AT the bound passes; one thousandth under it fails.
+
+    A DIRECT call with scripted band levels rather than a synthesized capture:
+    the boundary direction is a one-`<`-versus-`<=` decision, and a fixture
+    whose achieved rises carry ±0.5 dB of tolerance cannot pin it at all.
+
+    Inclusive-pass is deliberate and is the SAFE direction here: this rung
+    ends in a non-retriable hard stop that tells a household to open its
+    speaker, so a capture sitting exactly on the bar is given the bar.
+    """
+    seg = build_check_program(
+        _check_roles(), ambient_s=1.0, pilot_duration_s=0.5,
+    ).segment("pilot_woofer_hi")
+    own = (float(seg.f1_hz), float(seg.f2_hz))
+    other = (2500.0, 20000.0)
+    # Sentinel-valued arrays so the stub can tell pilot from ambient by value
+    # rather than by identity (`np.asarray` may or may not copy).
+    ambient = np.full(64, 1.0)
+    pilot = np.full(64, 2.0)
+    bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
+    # Comfortably above the judged threshold, so the ratio is actually judged.
+    target_rise = program_analysis.CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB + 30.0
+
+    def _script(cross_rise: float):
+        def _rms(samples, sample_rate, f1, f2):
+            if float(np.asarray(samples).flat[0]) == 1.0:
+                return -80.0
+            return -80.0 + (target_rise if (f1, f2) == own else cross_rise)
+        return _rms
+
+    def _run(cross_rise: float):
+        monkeypatch.setattr(program_analysis, "_band_rms_dbfs", _script(cross_rise))
+        return program_analysis._channel_map_ok(
+            pilot, SR, seg, ambient_samples=ambient, other_bands=(other,),
+        )
+
+    at_bound = _run(target_rise - bound)          # isolation == bound exactly
+    assert at_bound[0] is True
+    assert program_analysis.channel_map_isolation_db(
+        at_bound[1], at_bound[2],
+    ) == pytest.approx(bound)
+
+    under = _run(target_rise - bound + 0.001)     # isolation == bound - 0.001
+    assert under[0] is False
 
 
 def test_channel_map_isolation_is_one_definition_not_two():

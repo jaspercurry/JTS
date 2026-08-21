@@ -175,6 +175,7 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
+    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_CLIPPED_RUN,
     INTEGRITY_CHECK_FRAME_LEDGER,
@@ -7157,6 +7158,13 @@ def test_check_diag_names_the_isolation_ratio_and_its_bound_on_a_refusal(caplog)
     assert "event=correction.crossover_v2_check_diag" in caplog.text
     assert "woofer_channel_map_isolation_db=1.0" in caplog.text
     assert f"channel_map_min_isolation_db={CHANNEL_MAP_MIN_ISOLATION_DB}" in caplog.text
+    # ...and the threshold, without which a sub-bound isolation figure on a
+    # QUIET capture would read as the cause of a refusal that never happened:
+    # below it the ratio is published but decides nothing.
+    assert (
+        f"channel_map_isolation_judged_above_db={CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB}"
+        in caplog.text
+    )
     # The raws that produced the ratio are still there to attribute it with.
     assert "woofer_channel_map_target_rise_db=40.0" in caplog.text
     assert "woofer_channel_map_cross_rise_db=39.0" in caplog.text

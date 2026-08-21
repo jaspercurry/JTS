@@ -955,26 +955,59 @@ CHANNEL_MAP_TARGET_RISE_DB = 12.0
 # modest driver nonlinearity — content at a roughly FIXED RELATIVE level, which
 # an additive bound cannot describe and a ratio can. `target_rise - cross_rise`
 # on those rows reads 54.2 / 44.4 / 60.9 / 44.1 / 57.9 dB: flat across a 10.5 dB
-# span of level. A swap, or a driver fed both bands, lands near 0.
+# span of level.
 #
-# Why 12.0 and not higher — the part that bites. Isolation can never EXCEED a
-# pilot's own target rise, because cross rise is >=0 whenever the other band
-# merely sits at its ambient. So a bound above `CHANNEL_MAP_TARGET_RISE_DB`
-# makes that floor UNREACHABLE: the CROSS test silently becomes a stricter
-# TARGET test, and a quiet-but-correct pilot refuses as a rewire instruction
-# instead of the honest, retriable `snr_floor` — the #2052/#2644 class, one
-# rung up. Measured, not argued: at a 20 dB bound two of this suite's own
-# honest fixtures — 17.20 dB and 19.49 dB of isolation — have `channel_map_ok`
-# flip to False, and `capture_dispatch.check_screens` maps an explicit False to
-# the hard stop ABOVE `snr_floor`. (Their own tests stay green either way,
-# because neither asserts on that flag; the damage is to the real capture, not
-# to the suite, which is exactly why the ceiling needs a test of its own.)
-# 12.0 is the largest bound that keeps the floor live while still
-# refusing a swap (~0 dB) and a heavy bleed (10 dB); margins are >=32 dB under
-# the table above and 5.2 dB under the quietest fixture in the suite.
-# `test_channel_map_isolation_bound_cannot_supersede_the_target_floor` pins the
-# ceiling. PROVISIONAL, like its neighbours, pending broader hardware runs.
+# WHAT THIS HALF ACTUALLY CATCHES, measured rather than assumed. It is NOT the
+# mis-wire detector: seven wiring shapes were run through this validator and the
+# cross rise stayed within +/-0.4 dB on every one of them, because a wiring
+# fault changes which DRIVER radiates, not which BAND carries the energy. The
+# `TARGET` floor above is the mis-wire catcher, and it is untouched. What the
+# CROSS half guards is ABNORMAL CROSS-BAND ENERGY — bleed, skirt and
+# nonlinearity classes, and the degenerate case of one signal reaching both
+# bands at once — and it fails closed on any of them. (Realistically-rolled-off
+# swaps clear the whole channel map on this branch and on `main` alike; that is
+# a pre-existing gap, tracked as issue #2800, not something this metric
+# regressed.)
+#
+# Why 12.0. Margins first: >=32 dB under the hardware table above, and the
+# quietest capture the ratio is judged on still clears it. It refuses the
+# degenerate both-bands case (~0 dB) and a heavy bleed (10 dB). And a LARGER
+# bound is not free — it raises the judged threshold below, shrinking the
+# region where the cross half looks at all, so 12.0 also buys the widest
+# honest coverage. PROVISIONAL, like its neighbours, pending broader runs.
 CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
+
+# The ratio is only JUDGED once the target cleared its own floor by at least the
+# isolation the ratio demands. Below that it is not a meaningful quantity, and
+# judging it there re-creates the exact bug this metric was written to remove.
+#
+# Why: the CROSS test refuses when `target_rise - cross_rise < BOUND`, i.e. when
+# `target_rise < BOUND + cross_rise`. So it does not merely coexist with the
+# TARGET floor — it RAISES it, to `max(FLOOR, BOUND + cross_rise)`, eating the
+# floor by `cross_rise` dB. Any positive cross rise therefore pushes some band
+# of quiet-but-correct captures into a rewire hard stop, and a bound at or below
+# `CHANNEL_MAP_TARGET_RISE_DB` does NOT prevent that — an earlier draft of this
+# comment claimed it did, on an argument that only holds at cross_rise <= 0.
+# Measured end-to-end: a capture at target 13.50 / cross 1.72 (both taken from
+# this suite's own noisy-room fixture) yields isolation 11.78, which refused as
+# the NON-retriable `channel_map_mismatch` where `main` refused it as the
+# retriable `snr_floor` — a hard stop telling a household to open its speaker,
+# on a capture whose only real problem was that it was quiet. That is the
+# #2052/#2644 class, one rung up.
+#
+# The guard makes the refusal self-justifying: above this threshold, a CROSS
+# refusal implies `cross_rise >= CHANNEL_MAP_TARGET_RISE_DB` — the WRONG band
+# cleared the very bar we demand of a driver that played. Nothing quiet can
+# manufacture that.
+#
+# The residual, named rather than hidden: for `target_rise` in
+# [FLOOR, FLOOR + BOUND) the cross half is not judged at all, so abnormal
+# cross-band energy on a quiet capture goes unremarked. That is the deliberate
+# trade — the alternative is the proven false accusation above, and a capture
+# that quiet has `snr_floor` and the TARGET floor still in front of it.
+CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB = (
+    CHANNEL_MAP_TARGET_RISE_DB + CHANNEL_MAP_MIN_ISOLATION_DB
+)
 
 # VERIFY tracking-error smoothing: 1/6-octave, the constant design §5.2 names
 # for the pass/fail comparison (previously 1/24-oct, a display-grade
@@ -5453,12 +5486,22 @@ def _channel_map_ok(
     2. CROSS: did every OTHER driver's band stay at least
        ``CHANNEL_MAP_MIN_ISOLATION_DB`` BELOW this driver's own rise — i.e. is
        the ISOLATION RATIO ``target_rise - cross_rise`` clear of that bound?
-       (energy did not land in the wrong driver's band — the actual map-swap
-       discriminator.) A ratio rather than a fixed additive cross-rise bound
+       This guards ABNORMAL CROSS-BAND ENERGY (bleed, skirt and nonlinearity
+       classes, and one signal reaching both bands at once) and fails closed on
+       it. It is **not** the mis-wire discriminator — a wiring fault changes
+       which DRIVER radiates, not which BAND carries the energy, so rung 1 is
+       what fires on one. A ratio rather than a fixed additive cross-rise bound
        because the cross energy an honest capture carries is skirt content at
        a roughly fixed RELATIVE level, so an additive bound is level-dependent
        and refuses healthy speakers at honest SNR — see the derivation, with
        the hardware table it rests on, above ``CHANNEL_MAP_MIN_ISOLATION_DB``.
+
+       Rung 2 is only JUDGED above ``CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB``.
+       The cross rises are measured and published either way, but below that
+       threshold the TARGET floor governs alone, because the CROSS test RAISES
+       the effective floor to ``max(FLOOR, BOUND + cross_rise)`` and judging it
+       on a quiet capture turns a retriable ``snr_floor`` into a rewire hard
+       stop. That constant's comment carries the measured case.
 
     Without an ambient window, falls back to the original test: energy inside
     the declared band must exceed half of the pilot window's TOTAL spectral
@@ -5515,6 +5558,11 @@ def _channel_map_ok(
     )
     if target_rise < CHANNEL_MAP_TARGET_RISE_DB:
         return False, target_rise, None
+    # The cross rises are always MEASURED (the diag publishes them either way);
+    # they are only JUDGED once the target cleared its floor by the isolation
+    # the ratio demands — see `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`, which
+    # carries why judging them below that is the false-accusation bug.
+    judge_cross = target_rise >= CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
     worst_cross_rise: float | None = None
     for other_f1, other_f2 in other_bands:
         cross_rise = (
@@ -5523,6 +5571,8 @@ def _channel_map_ok(
         )
         if worst_cross_rise is None or cross_rise > worst_cross_rise:
             worst_cross_rise = cross_rise
+        if not judge_cross:
+            continue
         isolation = channel_map_isolation_db(target_rise, cross_rise)
         # Both rises are real numbers on this path, so the ratio is always
         # defined; the ``None`` arm is fail-closed rather than dead — an

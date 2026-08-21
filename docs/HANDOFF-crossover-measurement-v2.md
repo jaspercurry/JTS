@@ -4339,18 +4339,23 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
 ```
 
 - `correction.crossover_v2_check_diag` — `accepted`, `code`,
-  `pilot_snr_ok`, `channel_map_min_isolation_db`, plus per-role
+  `pilot_snr_ok`, `channel_map_min_isolation_db`,
+  `channel_map_isolation_judged_above_db`, plus per-role
   (`woofer_`/`tweeter_`) `snr_db`, `captured_delta_db`,
   `programmed_delta_db`, `channel_map_target_rise_db`,
   `channel_map_cross_rise_db`, `channel_map_isolation_db`.
   **`channel_map_isolation_db` (`target_rise - cross_rise`) is the number the
-  CROSS half of `channel_map_mismatch` is decided on** since 2026-08-21, and
-  `channel_map_min_isolation_db` is the bound it was graded against — printed
-  on the same line so a journal of old lines cannot be silently reinterpreted
-  when that constant moves. The two raw rises stay published beside it: only
-  they say WHICH half moved, and they keep a sweep comparable across the
-  metric switch. Household-facing copy stays number-free, so this line is the
-  operator's record of a refusal.
+  CROSS half of `channel_map_mismatch` is decided on** since 2026-08-21 —
+  but only when that role's `channel_map_target_rise_db` is at or above
+  `channel_map_isolation_judged_above_db`. **Read those two together or you
+  will misread the line:** below the threshold an isolation figure is still
+  published and still decided nothing, so a sub-bound number there is not the
+  cause of a refusal. `channel_map_min_isolation_db` is the bound it was graded
+  against. Both constants are printed rather than implied so a journal of old
+  lines cannot be silently reinterpreted when either moves. The two raw rises
+  stay published beside the ratio: only they say WHICH half moved, and they
+  keep a sweep comparable across the metric switch. Household-facing copy stays
+  number-free, so this line is the operator's record of a refusal.
 - `correction.crossover_v2_measure_diag` — `session_id`, `accepted`, `code`,
   `alignment_confidence`, `alignment_confidence_source`,
   `alignment_seed_delay_us`, `alignment_refinement_delta_us`,
@@ -4787,7 +4792,8 @@ Attributed as campaign measurements, not code guarantees:
 
 Analysis tuning constants live at the top of `program_analysis.py`
 (linearity `LINEARITY_TOLERANCE_DB`, repeat `REPEAT_LEVEL_TOLERANCE_DB`,
-channel-map `CHANNEL_MAP_TARGET_RISE_DB`/`CHANNEL_MAP_MIN_ISOLATION_DB`,
+channel-map `CHANNEL_MAP_TARGET_RISE_DB`/`CHANNEL_MAP_MIN_ISOLATION_DB`
+(with the derived `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB`),
 alignment `DEFAULT_ALIGN_SEARCH_MS`/`GCC_UPSAMPLE`, VERIFY
 `VERIFY_NOTCH_EXCLUSION_DB`) and `crossover_v2_flow.py`
 (`VERIFY_TOLERANCE_DB`, `MEASUREMENT_DISTANCE_M`). All are **PROVISIONAL**
@@ -5682,26 +5688,54 @@ no retries-as-bodge). Treat these as regression fences.
     That is what an additive bound cannot describe and a ratio can, so the
     CROSS test is now the ISOLATION RATIO `target_rise − cross_rise` against
     `CHANNEL_MAP_MIN_ISOLATION_DB`. On the rows above it reads 54.2 / 44.4 /
-    60.9 / 44.1 / 57.9 dB — flat across a 10.5 dB span of session level. A
-    true swap, or a driver fed both bands, lands near 0.
-    **The second half of this gotcha is the bound, and it is the part that
-    bites.** Isolation can never EXCEED a pilot's own target rise, because the
-    cross rise is ≥0 whenever the other band merely sits at its ambient. So a
-    bound above `CHANNEL_MAP_TARGET_RISE_DB` makes that floor unreachable: the
-    CROSS test silently becomes a STRICTER TARGET test, and a genuinely
-    quiet-but-correct pilot refuses as a rewire instruction instead of the
-    honest, retriable `snr_floor` — the #2052/#2644 class, reintroduced one
-    rung up. Measured, not argued: under an initially-proposed 20 dB bound two
-    of the suite's own honest fixtures — 17.20 dB and 19.49 dB of isolation —
-    have `channel_map_ok` flip to False, which `check_screens` maps to the hard
-    stop above `snr_floor`. Note what that mutation did NOT do: those two tests
-    stayed green, because neither asserts on the flag. The harm was to the real
-    capture, not to the suite — which is why the ceiling needed a test of its
-    own rather than being left to existing coverage. The shipped 12.0 is the largest
-    bound that keeps the target floor live while still refusing a swap (~0 dB)
-    and a heavy bleed (10 dB), with ≥32 dB of margin under the hardware table
-    above. `test_channel_map_isolation_bound_cannot_supersede_the_target_floor`
-    pins the ceiling so a later widening cannot kill the floor in silence.
+    60.9 / 44.1 / 57.9 dB — flat across a 10.5 dB span of session level.
+
+    **What the CROSS half actually catches — measured, and NOT what an
+    earlier draft of this entry claimed.** It is not the mis-wire detector.
+    Seven wiring shapes were run through the real validator and the cross rise
+    stayed within ±0.4 dB on every one, because a wiring fault changes which
+    DRIVER radiates, not which BAND carries the energy. The **TARGET floor**
+    (unchanged, ≥12 dB) is what fires on a mis-wire. The CROSS half guards
+    abnormal cross-band ENERGY — bleed, skirt and nonlinearity classes, plus
+    the degenerate case of one signal reaching both bands at once — and fails
+    closed on it. A realistically-rolled-off swap clears the whole channel map
+    on `main` and on this change alike; that is a pre-existing gap, tracked as
+    [#2800](https://github.com/jaspercurry/JTS/issues/2800), not something the
+    ratio regressed.
+
+    **The second half of this gotcha is the guard, and it is the part that
+    bites.** The CROSS test refuses when `target_rise − cross_rise < BOUND`,
+    i.e. when `target_rise < BOUND + cross_rise` — so it does not merely sit
+    beside the TARGET floor, it RAISES it, to `max(FLOOR, BOUND + cross_rise)`,
+    eating the floor by `cross_rise` dB. A bound at or below
+    `CHANNEL_MAP_TARGET_RISE_DB` does **not** prevent that; the argument that
+    it does holds only at `cross_rise ≤ 0`, and an earlier draft of this entry
+    made exactly that mistake. Measured end-to-end: a capture at target 13.50 /
+    cross 1.72 — both values from the suite's own noisy-room fixture — gives
+    isolation 11.78 and refused as the NON-retriable `channel_map_mismatch`
+    where `main` refused it as the retriable `snr_floor`. A hard stop telling a
+    household to open its speaker, on a capture whose only real problem was
+    that it was quiet: the #2052/#2644 class, one rung up.
+
+    The fix is `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB` (= FLOOR + BOUND): the
+    cross rises are always MEASURED and published, but only JUDGED above that
+    threshold. Below it the TARGET floor governs alone, because a ratio taken
+    where the target barely cleared its own floor is not a meaningful quantity.
+    What the guard buys is a self-justifying refusal — above the threshold,
+    refusing requires `cross_rise ≥ CHANNEL_MAP_TARGET_RISE_DB`, so the WRONG
+    band cleared the very bar we demand of a driver that played, and nothing
+    merely quiet can manufacture it. The named residual: for `target_rise` in
+    [FLOOR, FLOOR + BOUND) abnormal cross-band energy goes unremarked, which is
+    the deliberate trade against the proven false accusation.
+    `test_channel_map_cross_test_never_eats_the_target_floor` pins it, and
+    `test_channel_map_isolation_boundary_is_inclusive_at_the_bound` pins the
+    boundary direction (isolation exactly AT the bound passes — the safe
+    direction for a non-retriable hard stop).
+
+    12.0 is the bound because margins are ≥32 dB under the hardware table
+    above, it refuses the degenerate both-bands case (~0 dB) and a heavy bleed
+    (10 dB), and a LARGER bound is not free: it raises the judged threshold
+    too, shrinking the region where the cross half looks at all.
 
 ### Future work — the post-W6 follow-ups issue
 
@@ -6026,8 +6060,13 @@ publishes `channel_map_isolation_db` per role plus the bound, beside the two
 raw rises), the analysis-constants paragraph, and gotcha #6 — whose "cross-band
 rise <6 dB" sentence had become false. New gotcha #25 carries the hardware
 table, the baseline-graph discriminator that ruled out crosstalk, and the
-derivation of the bound. **The date below is deliberately NOT bumped**:
-nothing outside those sections was re-verified.
+derivation of the bound. Amended in the same PR's gate round: the ratio is only
+JUDGED above `CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB` (the ungated form raised
+the effective target floor by `cross_rise` and newly hard-stopped a
+quiet-but-correct capture), and the claim that a swap collapses isolation to ~0
+was measured false and replaced — the TARGET floor is the mis-wire catcher; the
+CROSS half guards abnormal cross-band energy. **The date below is deliberately
+NOT bumped**: nothing outside those sections was re-verified.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock

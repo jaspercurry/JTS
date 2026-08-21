@@ -253,6 +253,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
     AppliedAlignment,
@@ -11367,12 +11368,19 @@ class CrossoverV2Session:
             tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
             tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
             tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
-            # The bound the two isolation figures above are GRADED against, on
-            # the same line as the numbers: a `channel_map_mismatch` refusal is
-            # only readable if the line says what the ratio had to clear, and a
-            # future retune of the constant must not silently reinterpret a
-            # journal of old lines.
+            # The two constants the isolation figures above are GRADED against,
+            # on the same line as the numbers. The bound is what the ratio had
+            # to clear; the threshold is the target rise ABOVE WHICH the ratio
+            # was judged at all. Both are needed to read a line honestly: below
+            # the threshold an isolation figure is published but decided
+            # nothing, so the bound alone would let a sub-bound number read as
+            # the cause of a refusal that never happened. A future retune of
+            # either constant must not silently reinterpret a journal of old
+            # lines, which is the other reason they are printed and not implied.
             channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
+            channel_map_isolation_judged_above_db=(
+                CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
+            ),
         )
         self._log_measure_level_solve(analysis)
 
