@@ -2415,3 +2415,165 @@ def test_check_crossover_v2_cloud_pipeline_reports_n_a_when_pipeline_unavailable
         "cloud_measure: spec=n/a excluded_intervals=n/a geometry_locked=True"
         in r.detail
     )
+
+
+# --------------------------------------------------------------------------- #
+# measurement hold + unresolved session volume (test 8 of the plan)
+# --------------------------------------------------------------------------- #
+
+
+def _patch_measurement(monkeypatch, hold=None, error=None):
+    """Point check_measurement_hold's control read at a scripted answer."""
+    from jasper.control import client as control_client
+
+    def fake_get_measurement(**_kwargs):
+        if error is not None:
+            raise error
+        return hold or {}
+
+    monkeypatch.setattr(control_client, "get_measurement", fake_get_measurement)
+
+
+def test_measurement_hold_ok_when_nothing_is_held(monkeypatch):
+    _patch_measurement(monkeypatch, hold={"active": False})
+    r = doctor.check_measurement_hold()
+    assert r.status == "ok"
+    assert "no measurement in progress" in r.detail
+
+
+def test_measurement_hold_ok_for_an_ordinary_live_measurement(monkeypatch):
+    _patch_measurement(monkeypatch, hold={
+        "active": True, "owner": "seat-level", "mode": "gate", "held_for_s": 90.0,
+    })
+    r = doctor.check_measurement_hold()
+    assert r.status == "ok"
+    assert "held by seat-level" in r.detail
+    assert "mode=gate" in r.detail
+
+
+def test_measurement_hold_warns_past_the_longest_legal_session(monkeypatch):
+    """The shape TTLs cannot catch: a live holder whose session never ends.
+
+    Mutation-verified: dropping the ``held_for_s > MAX_WALL_CLOCK_CEILING_S``
+    branch in ``check_measurement_hold`` turns this green-as-ok and the warn
+    assertion red.
+    """
+    from jasper.active_speaker.session_volume_plan import MAX_WALL_CLOCK_CEILING_S
+
+    _patch_measurement(monkeypatch, hold={
+        "active": True,
+        "owner": "correction-measurement",
+        "mode": "gate",
+        "held_for_s": MAX_WALL_CLOCK_CEILING_S + 1.0,
+    })
+    r = doctor.check_measurement_hold()
+    assert r.status == "warn"
+    assert "correction-measurement" in r.detail
+    assert "declined" in r.detail
+    # The remedy is reachable without an operator learning the internals.
+    assert "Close the measurement page" in r.detail
+
+
+def test_measurement_hold_warns_when_held_for_is_unreadable(monkeypatch):
+    """A hold whose age cannot be read must not read as healthy."""
+    _patch_measurement(monkeypatch, hold={
+        "active": True, "owner": "seat-level", "mode": "gate", "held_for_s": None,
+    })
+    r = doctor.check_measurement_hold()
+    assert r.status == "warn"
+    assert "could not be ruled out" in r.detail
+
+
+def test_measurement_hold_skips_when_control_is_down(monkeypatch):
+    from jasper.control import client as control_client
+
+    _patch_measurement(monkeypatch, error=control_client.ControlError("refused"))
+    r = doctor.check_measurement_hold()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def _point_session_volume_at(monkeypatch, path):
+    monkeypatch.setattr(
+        doctor.correction, "DEFAULT_SESSION_VOLUME_STATE_PATH", path,
+    )
+
+
+def _write_session_volume(path, *, status, opened_at, ceiling_s=1800.0):
+    from jasper.active_speaker.session_volume_plan import (
+        SCHEMA_VERSION,
+        STATE_KIND,
+    )
+
+    path.write_text(json.dumps({
+        "kind": STATE_KIND,
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "reason": None if status == "active" else "restore_unconfirmed",
+        "opened_at": opened_at,
+        "wall_clock_ceiling_s": ceiling_s,
+        "measurement_volume_db": -20.0,
+        "original_main_volume_db": -6.0,
+    }), encoding="utf-8")
+
+
+def test_session_volume_ok_on_an_idle_speaker(monkeypatch, tmp_path):
+    _point_session_volume_at(monkeypatch, tmp_path / "absent.json")
+    r = doctor.check_session_volume_unresolved()
+    assert r.status == "ok"
+    assert "no unresolved" in r.detail
+
+
+def test_session_volume_warns_on_an_unresolved_latch(monkeypatch, tmp_path):
+    """Nothing in jasper/cli/doctor read needs_recovery before this check.
+
+    A speaker could sit holding a measurement volume with every check green.
+    Mutation-verified: making the check return ok unconditionally turns this red.
+    """
+    import time
+
+    state = tmp_path / "session_volume.json"
+    _write_session_volume(state, status="unresolved", opened_at=time.time())
+    _point_session_volume_at(monkeypatch, state)
+
+    r = doctor.check_session_volume_unresolved()
+    assert r.status == "warn"
+    assert "unresolved" in r.detail
+    assert "crossover" in r.detail
+
+
+def test_session_volume_reports_a_stale_active_state_as_a_crash_remnant(
+    monkeypatch, tmp_path,
+):
+    """The flow force-drains this one, so it is reported, not acted on."""
+    import time
+
+    state = tmp_path / "session_volume.json"
+    _write_session_volume(
+        state, status="active", opened_at=time.time() - 4000.0, ceiling_s=1800.0,
+    )
+    _point_session_volume_at(monkeypatch, state)
+
+    r = doctor.check_session_volume_unresolved()
+    assert r.status == "ok"
+    assert "force-drains" in r.detail
+
+
+def test_session_volume_warns_on_a_durably_active_state_with_no_owner(
+    monkeypatch, tmp_path,
+):
+    import time
+
+    state = tmp_path / "session_volume.json"
+    _write_session_volume(state, status="active", opened_at=time.time())
+    _point_session_volume_at(monkeypatch, state)
+
+    r = doctor.check_session_volume_unresolved()
+    assert r.status == "warn"
+    assert "durably active" in r.detail
+
+
+def test_both_new_checks_are_registered():
+    names = _registered_check_names()
+    assert "check_measurement_hold" in names
+    assert "check_session_volume_unresolved" in names

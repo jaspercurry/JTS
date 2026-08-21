@@ -398,6 +398,13 @@ _TOKEN_GATED_ROUTES = frozenset({
     "/grouping/set",
     "/aec/firmware/update",
     "/aec/enhanced-aec/install",
+    # measurement/hold|release own the cross-process measurement mutex: a hold
+    # gates household volume observations and, once taken, refuses every other
+    # measurement. A drive-by acquire would silently wedge the host slider for
+    # two minutes at a time; a drive-by release would un-gate somebody's live
+    # capture mid-sweep.
+    "/measurement/hold",
+    "/measurement/release",
 })
 
 
@@ -1392,6 +1399,7 @@ def _make_handler(
     from .handlers import (
         AecRoutes,
         GroupingRoutes,
+        MeasurementRoutes,
         SystemRoutes,
         VoiceRoutes,
         VolumeRoutes,
@@ -1506,6 +1514,7 @@ def _make_handler(
         VoiceRoutes,
         AecRoutes,
         GroupingRoutes,
+        MeasurementRoutes,
         SystemRoutes,
     ):
         _airplay_health_sampler = airplay_health_sampler
@@ -1899,6 +1908,7 @@ def _make_handler(
             "/aec/enhanced-aec": "_get_enhanced_aec",
             "/debug": "_get_debug",
             "/state": "_get_state",
+            "/measurement": "_get_measurement",
             "/grouping": "_get_grouping",
             "/system/snapshot": "_get_system_snapshot",
             "/system/diagnostics": "_get_system_diagnostics",
@@ -1927,6 +1937,8 @@ def _make_handler(
             "/debug": "_post_debug",
             "/usb-forensics": "_post_usb_forensics",
             "/system/audio-quality": "_post_system_audio_quality",
+            "/measurement/hold": "_post_measurement_hold",
+            "/measurement/release": "_post_measurement_release",
             "/system/restart/voice": "_post_system_action",
             "/system/restart/audio": "_post_system_action",
             "/system/reboot": "_post_system_action",

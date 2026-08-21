@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from .. import measurement_hold
 from .. import server as _server
 from ._base import ControlHandlerMixin
 
@@ -146,6 +147,33 @@ class VolumeRoutes(ControlHandlerMixin):
                 {"error": "observation_initial must be a boolean"},
                 status=400,
             )
+            return
+        # A live measurement owns the fader. Decline SOURCE-OBSERVED writes
+        # while the hold is up — a host that moves its USB slider mid-sweep
+        # would otherwise walk the very level the measurement is holding, which
+        # is the writer war seat-level hit on jts3 (journal:
+        # `event=volume.reconciled source=idle drift_db=+9.35`, once a second).
+        # This runs BEFORE _observe_op so no coordinator is built and nothing
+        # touches Camilla, and it returns the ESTABLISHED
+        # `observation_applied: false` contract — the USB bridge already
+        # understands it and re-applies the household slider on its next tick
+        # once the hold lapses, so no bridge change is needed for correctness.
+        # AUTHORITATIVE writes (no `source`: management UI, HID accessory,
+        # voice "louder") stay allowed on purpose: those are a human at the
+        # speaker, and this is not a nanny.
+        if source_name and measurement_hold.held():
+            _server.log_event(
+                _server.logger,
+                "volume.observation_declined",
+                source=str(source_name),
+                owner=measurement_hold.owner() or "",
+                requested_pct=target_pct,
+                client=self.address_string(),
+            )
+            state = _server.asyncio.run(self._get_op())
+            payload = self._volume_payload(state)
+            payload["observation_applied"] = False
+            self._send_json(payload)
             return
         observation_applied: bool | None = None
         try:

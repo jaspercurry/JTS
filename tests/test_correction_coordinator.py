@@ -44,9 +44,33 @@ def _stub_measurement_gate(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def hold_calls(monkeypatch):
+    """Stub the third lease's transport, and hand the log to any test.
+
+    Unstubbed, every window in this file would POST at a real jasper-control on
+    loopback — which is a wasted syscall on a laptop and an actual (brief) hold
+    on somebody's speaker if the suite is run on a Pi. The hold's own behaviour
+    is covered in tests/test_measurement_hold.py.
+    """
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_hold_command(path: str, body: dict) -> tuple[int, dict]:
+        calls.append((path, body))
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", fake_hold_command)
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_skip_both_is_noop(monkeypatch):
-    """With voice and music isolation skipped, enter/exit does no I/O."""
+async def test_skip_both_leaves_only_the_volume_hold(monkeypatch, hold_calls):
+    """With voice and music isolation skipped, no UDS traffic happens.
+
+    The volume hold is deliberately NOT skippable — no consumer wants a
+    measurement that lets the host slider walk the fader, so it gets no flag —
+    and it is the one thing this window still does here.
+    """
     uds_calls: list[str] = []
 
     async def fake_uds(path, cmd, **kw):
@@ -61,6 +85,9 @@ async def test_skip_both_is_noop(monkeypatch):
         pass
 
     assert uds_calls == []
+    assert [path for path, _ in hold_calls] == [
+        "/measurement/hold", "/measurement/release",
+    ]
 
 
 @pytest.mark.asyncio
@@ -490,6 +517,17 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
             aborted.append(clock["t"])
             super().abort(fallback)
 
+    async def hold_unavailable(path: str, body: dict) -> tuple[int, dict]:
+        # No volume hold in THIS simulation, so no hold-renewal task exists.
+        # `fake_sleep` advances one shared modelled clock, so any concurrent
+        # task's sleep would be added to the gate ladder's own timeline and
+        # move the very decision point being measured. Real sleeps run
+        # concurrently; only this harness's single clock makes them additive.
+        raise OSError("jasper-control not reachable in this simulation")
+
+    monkeypatch.setattr(
+        coordinator, "_measurement_hold_command", hold_unavailable,
+    )
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
     monkeypatch.setattr(coordinator, "time", _Clock)

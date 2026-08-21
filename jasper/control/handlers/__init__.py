@@ -10,6 +10,7 @@ These mixins own only the route bodies behind that stable boundary.
 
 from .aec import AecRoutes
 from .grouping import GroupingRoutes
+from .measurement import MeasurementRoutes
 from .system import SystemRoutes
 from .voice import VoiceRoutes
 from .volume import VolumeRoutes
@@ -17,6 +18,7 @@ from .volume import VolumeRoutes
 __all__ = [
     "AecRoutes",
     "GroupingRoutes",
+    "MeasurementRoutes",
     "SystemRoutes",
     "VoiceRoutes",
     "VolumeRoutes",

@@ -222,8 +222,21 @@ active, a host-side observation updates `listening_level` and then
 converges Camilla (`main_volume` plus the 0% `main_mute` flag) to match.
 That is the Wispr Flow/macOS mute-unmute path: host "0%" asserts content
 mute; host unmute restores Camilla to the observed level immediately during a
-normal fan-in voice session. Only the legacy Camilla-ducker lock defers the dB
+normal fan-in voice session. The legacy Camilla-ducker lock defers the dB
 write; the mute flag always reflects the user's current intent.
+
+A live **measurement hold** ([`jasper/control/measurement_hold.py`](../jasper/control/measurement_hold.py))
+is the other exception, and it is a decline rather than a deferral. While the
+hold is up, `_post_volume_set` short-circuits every `source=`-bearing request
+BEFORE `observe_source_volume` is reached: `listening_level` is not updated,
+Camilla is not touched, and the caller gets the established
+`observation_applied: false` on an HTTP 200. Nothing replays it — the USB
+bridge re-presents the host's value on its own next tick once the hold lapses.
+Without this, a host slider moved mid-sweep walks the very fader a measurement
+is holding. **Authoritative** writes (no `source`: remote, web, voice) are
+unaffected; the hold is isolation, not a lockout. The hold is taken by
+[`measurement_window()`](../jasper/correction/coordinator.py) as one of its
+three self-expiring leases and is visible at `/state.measurement`.
 
 A JTS temporary mute (remote, web, or voice) preserves the remembered
 `listening_level` and atomically records `pre_mute_level` plus a fresh

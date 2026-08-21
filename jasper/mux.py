@@ -129,6 +129,7 @@ FANIN_TEST_OWNERS = frozenset({
     "active-speaker-commissioning",
     "correction-measurement",
     "doctor-aec-probe",
+    "seat-level",
 })
 # A diagnostic owner must renew before this monotonic deadline. This is long
 # enough for the commissioning tone (web_commissioning.COMMISSION_TONE_DURATION_S);

@@ -25,7 +25,13 @@ from ...active_speaker.seat_level_reference import (
     seat_level_reference_state_path,
     seat_level_reference_volume_db,
 )
-from ...active_speaker.session_volume_plan import MEASUREMENT_REFERENCE_VOLUME_DB
+from ...active_speaker.session_volume_plan import (
+    DEFAULT_SESSION_VOLUME_STATE_PATH,
+    MAX_WALL_CLOCK_CEILING_S,
+    MEASUREMENT_REFERENCE_VOLUME_DB,
+    SessionVolumePlan,
+)
+from ...control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
 from ...web._systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 
 def _correction_root() -> Path:
@@ -1019,3 +1025,113 @@ def check_seat_level_reference() -> CheckResult:
     how loud every measurement runs without ever announcing itself.
     """
     return _classify_seat_level_reference(seat_level_reference_state_path())
+
+
+@doctor_check(order=25.6, group="correction")
+def check_measurement_hold() -> CheckResult:
+    """A measurement hold that never lapses must be visible here.
+
+    ``jasper.control.measurement_hold`` is jasper-control's self-expiring copy
+    of "a measurement is live" — while it is up, source-observed volume writes
+    (a host moving its USB slider) are declined so they cannot walk the fader a
+    sweep is holding, and every other measurement is refused. It renews every
+    ``coordinator.MEASUREMENT_LEASE_REFRESH_SEC`` and lapses on its own
+    ``MEASUREMENT_HOLD_TTL_SEC`` after that, so a crashed holder recovers with
+    no operator step and this check has nothing to reap.
+
+    What it CAN catch is the shape TTLs cannot: a holder that is alive and
+    renewing, but whose session will never end — a browser tab left open on a
+    measurement page, a wedged CLI. That reads as a permanently declined host
+    slider with no visible cause, so it is warned about rather than left to be
+    discovered by ear.
+
+    The threshold is ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S``: the hard
+    cap the volume plan puts on ANY single measurement session's wall clock. A
+    hold outliving the longest session the flow will ever permit is implausible
+    by construction, so the number is derived rather than guessed, and it
+    cannot drift from the ceiling it is reasoning about.
+
+    Reads ``held_for_s``, NOT ``expires_in_s``: the latter resets on every
+    renewal, so a hold stuck for an hour looks two minutes old through it.
+    """
+    label = "measurement hold"
+    from ...control import client as control
+
+    try:
+        hold = control.get_measurement()
+    except (control.ControlError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        return CheckResult(
+            label, "ok",
+            f"jasper-control unreachable ({type(e).__name__}: {e}) — skipped",
+        )
+    if not hold.get("active"):
+        return CheckResult(label, "ok", "no measurement in progress")
+    owner = str(hold.get("owner") or "unknown")
+    mode = str(hold.get("mode") or "unknown")
+    held_for = hold.get("held_for_s")
+    try:
+        held_for_s = float(held_for)
+    except (TypeError, ValueError):
+        return CheckResult(
+            label, "warn",
+            f"held by {owner} (mode={mode}) but held_for_s is unreadable "
+            f"({held_for!r}) — a stuck hold could not be ruled out",
+        )
+    detail = f"held by {owner} (mode={mode}) for {held_for_s:.0f}s"
+    if held_for_s > MAX_WALL_CLOCK_CEILING_S:
+        return CheckResult(
+            label, "warn",
+            f"{detail}, past the {MAX_WALL_CLOCK_CEILING_S:.0f}s ceiling any "
+            "single measurement session may run. Host-slider volume changes "
+            "are being declined. Close the measurement page (or stop the CLI) "
+            "that owns it; the hold then lapses within "
+            f"{MEASUREMENT_HOLD_TTL_SEC:.0f}s.",
+        )
+    return CheckResult(label, "ok", detail)
+
+
+@doctor_check(order=32.56, group="correction")
+def check_session_volume_unresolved() -> CheckResult:
+    """An unresolved measurement volume must not be silent.
+
+    ``SessionVolumePlan.needs_recovery`` is the durable "a measurement left the
+    speaker's volume in a state that must be drained" latch. Until now nothing
+    in ``jasper/cli/doctor/`` read it, so a speaker could sit holding a
+    measurement volume — quiet, or louder than the household set — with every
+    doctor check green and only the ``/correction/crossover/`` recovery screen
+    aware of it.
+
+    Two shapes refuse a new session and are reported separately because they
+    need different words: a latched ``unresolved`` state, and a durably
+    ``active`` state with no live owner. The second one **self-heals**: past its
+    own wall-clock ceiling the flow's open path force-drains it
+    (``reconcile_session_volume_for_new_session``), so a stale-active state is
+    reported as an ordinary crash remnant rather than as something to act on.
+    """
+    label = "session measurement volume"
+    plan = SessionVolumePlan(state_path=DEFAULT_SESSION_VOLUME_STATE_PATH)
+    if not plan.needs_recovery:
+        return CheckResult(label, "ok", "no unresolved measurement volume")
+    if plan.unresolved_volume_safety is not None:
+        reason = str(
+            plan.unresolved_volume_safety.get("reason")
+            or "session_volume_restore_unconfirmed"
+        )
+        return CheckResult(
+            label, "warn",
+            f"a previous measurement left the volume unresolved ({reason}); "
+            "the next session will refuse to start. Recover it at "
+            "http://jts.local/correction/crossover/",
+        )
+    if plan.stale_active():
+        return CheckResult(
+            label, "ok",
+            "a crashed session's volume state is still on disk but is past its "
+            "wall-clock ceiling; the next session force-drains it",
+        )
+    return CheckResult(
+        label, "warn",
+        "a measurement session's volume state is durably active with no live "
+        "owner in this process; if no measurement is running, recover it at "
+        "http://jts.local/correction/crossover/",
+    )

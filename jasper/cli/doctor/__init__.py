@@ -311,6 +311,8 @@ from .correction import (
     check_correction_latest_bundle,
     check_crossover_v2_applied_is_graded,
     check_crossover_v2_cloud_pipeline,
+    check_measurement_hold,
+    check_session_volume_unresolved,
 )
 from . import web as web
 from .web import (
@@ -634,6 +636,8 @@ __all__ = [
     "check_correction_latest_bundle",
     "check_crossover_v2_applied_is_graded",
     "check_crossover_v2_cloud_pipeline",
+    "check_measurement_hold",
+    "check_session_volume_unresolved",
     "check_conversation_history",
     "check_web_design_assets",
     "check_control_token",
