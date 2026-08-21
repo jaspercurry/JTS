@@ -43,8 +43,10 @@ damage:
 
 - the excitation ledger and the excitation safety plan
   (`jasper/active_speaker/excitation_safety_plan.py`)
-- the output limiters and the volume / `HARD_CEILING_DBFS` rail
-  (`jasper/audio_measurement/ramp.py`)
+- the output limiters — `STARTUP_LIMITER_CLIP_LIMIT_DB` /
+  `BASELINE_LIMITER_CLIP_LIMIT_DB` in
+  `jasper/active_speaker/camilla_yaml.py` — and the volume /
+  `HARD_CEILING_DBFS` rail (`jasper/audio_measurement/ramp.py`)
 - declared per-driver excitation bands and level-duration limits —
   `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`
 - the commissioning level stop — `max_commissioning_level_db_spl`
