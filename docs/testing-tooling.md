@@ -1856,7 +1856,7 @@ all four are stated here:
 | blend (`jts_crossover_blend_prescription`) | `jasper-crossover-prescriber stage` | at `stage` | the staging, not a session — the round runs unprescribed |
 | driver (`jts_crossover_driver_prescription`) | `jasper-crossover-prescriber stage` | at `stage` | the staging, not a session — the round runs unprescribed |
 | alignment (`alignment_prescription`) | request-body key on `POST /crossover/v2/session` | at session open | **the whole session**, at the tap |
-| topology (`topology_prescription`) | request-body key on `POST /crossover/v2/session` | at session open | **the whole session**, at the tap |
+| topology (`topology_prescription`) | request-body key on `POST /crossover/v2/session` (from the laptop, via `run-crossover-round.py --topology-prescription`) | at session open | **the whole session**, at the tap |
 
 The severity split is deliberate rather than historical. A staged prescription
 is an *instruction the next round may follow*: it is banked ahead of time, and a
@@ -2469,11 +2469,11 @@ MEASURING session recorded in durable state, so the household's one choice at
 the tier chooser governs both stages — passing a different tier to the verify
 invocation changes nothing, and is not a way to re-instrument a round.
 
-**Three configurations are refused before anything runs**: an `--apply` with an
+**Four configurations are refused before anything runs**: an `--apply` with an
 empty fingerprint (an absent live candidate also reads as empty, so comparing
 would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
 will serve, which otherwise costs ten minutes and ends as a misnamed idle
-ceiling), and an unreadable `--alignment-prescription`.
+ceiling), and an unreadable `--alignment-prescription` or `--topology-prescription`.
 
 **Completion is polled, not slept.** The runner waits for the session id to
 move off the one that was there before the open, *and* for the phase to leave
