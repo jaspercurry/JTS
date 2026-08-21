@@ -14,10 +14,12 @@ delay / linearization deliberately OMITTED), loaded INLINE with
 words are :meth:`jasper.camilla.CamillaController.get_active_config_raw`'s
 own — so a capture taken through the routing graph and a capture taken
 through the standing applied graph report the **same** ``config_path`` while
-their transfer functions differ by +7…+15 dB per branch. On 2026-08-19 a
-forensic session on jts3 compared levels across those two graphs for hours
-with nothing on disk able to tell them apart, and reconstructed the night's
-−27.5 dB fader out of the journal because no capture recorded it either.
+going through radically different transfer functions. On 2026-08-19 a forensic
+session on jts3 compared levels across those two graphs for hours with nothing
+on disk able to tell them apart (that session reported a +7…+15 dB per-branch
+difference; the number is its observation, not a property this module
+measures), and reconstructed the night's −27.5 dB fader out of the journal
+because no capture recorded it either.
 
 So a retained capture records, read from the ONE live owner of each fact at
 the instant the stimulus is emitted:

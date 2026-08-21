@@ -4638,11 +4638,12 @@ each program channel straight to its driver's physical output, with the
 crossover, delays and linearization left OUT), loaded inline with `SetConfig`
 and restored after. That loader deliberately never repoints the statefile, so
 `config_path` reads the SAME durable anchor whether a capture went through the
-routing graph or through the standing applied one — while their transfer
-functions differ by +7…+15 dB per branch. On 2026-08-19 a jts3 forensic
-session spent hours comparing levels across those two graphs with nothing on
-disk able to tell them apart, and reconstructed the night's −27.5 dB fader out
-of the journal because no capture recorded it either. `kind` is therefore
+routing graph or through the standing applied one — two radically different
+transfer functions. On 2026-08-19 a jts3 forensic session spent hours comparing
+levels across those two graphs with nothing on disk able to tell them apart,
+and reconstructed the night's −27.5 dB fader out of the journal because no
+capture recorded it either. (That session reported a +7…+15 dB per-branch
+difference — its observation, attributed, not a measured property of the code.) `kind` is therefore
 stated by the playback branch that did (or did not) perform the swap —
 `program_routing` or `applied` — never re-inferred from a path; `fingerprint`
 is the running graph's own hash, so the two corroborate. `config_path` is
