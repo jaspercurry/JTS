@@ -30,6 +30,7 @@ from jasper.active_speaker.capture_provenance import (
     CaptureProvenance,
     CaptureProvenanceRecorder,
     observe_capture_provenance,
+    record_capture_provenance,
 )
 from jasper.audio_measurement.program import (
     PHASE_CHECK,
@@ -278,9 +279,65 @@ def test_an_unforeseen_exception_type_still_cannot_reach_the_capture(
         asyncio.run(
             provenance_mod.record_capture_provenance(
                 recorder,
-                cam=_FakeCam(),
+                open_cam=_FakeCam,
                 graph_kind=GRAPH_KIND_APPLIED,
                 program=_program(),
+            )
+        )
+
+    assert recorder.take() is None
+    assert "result=failed" in caplog.text
+
+
+def test_no_recorder_is_a_silent_no_op_not_a_provenance_failure(caplog) -> None:
+    """The belt owns the optionality, so a missing recorder resolves nothing.
+
+    Without this the seams' ``| None`` would reach ``recorder.record`` as an
+    ``AttributeError`` and be logged as a provenance FAILURE — a WARN about a
+    defect where there is only an absent collaborator.
+    """
+    opened: list[str] = []
+
+    with caplog.at_level(logging.WARNING, logger=PROVENANCE_LOGGER):
+        asyncio.run(
+            record_capture_provenance(
+                None,
+                open_cam=lambda: opened.append("cam") or _FakeCam(),
+                graph_kind=GRAPH_KIND_APPLIED,
+                program=_program(),
+            )
+        )
+
+    assert opened == []  # not even the controller was constructed
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("failing", ["open_cam", "read_volume_plan"])
+def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
+    failing: str, caplog
+) -> None:
+    """The belt covers OBTAINING the owners, not just reading them.
+
+    Passed as values these two would be evaluated in the caller's argument
+    list — outside the try, on the play path — so a raise there would take the
+    measurement down with it. They are resolvers for exactly that reason.
+    """
+    def boom():
+        raise RuntimeError(f"{failing} could not be resolved")
+
+    recorder = CaptureProvenanceRecorder()
+    kwargs: dict[str, Any] = {
+        "open_cam": _FakeCam, "read_volume_plan": _FakePlan,
+    }
+    kwargs[failing] = boom
+
+    with caplog.at_level(logging.WARNING, logger=PROVENANCE_LOGGER):
+        asyncio.run(
+            record_capture_provenance(
+                recorder,
+                graph_kind=GRAPH_KIND_APPLIED,
+                program=_program(),
+                **kwargs,
             )
         )
 

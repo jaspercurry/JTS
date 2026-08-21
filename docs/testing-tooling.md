@@ -1771,8 +1771,9 @@ regardless of outcome.
 Before comparing LEVELS across banked sidecars, read each one's
 `provenance` block — the live fader, the held session volume, and which DSP
 graph the capture actually went through. A CHECK/MEASURE capture and a summed
-one report the same `config_path` while their transfer functions differ by
-+7…+15 dB per branch, so `graph.kind` is the field that tells them apart. See
+one report the same `config_path` while going through different transfer
+functions (the 2026-08-19 jts3 session observed a +7…+15 dB per-branch
+difference on that box), so `graph.kind` is the field that tells them apart. See
 ["`provenance` — the config label is not the graph"](HANDOFF-crossover-measurement-v2.md#provenance--the-config-label-is-not-the-graph).
 
 Three things can make the script refuse a run, and none of them ever

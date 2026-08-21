@@ -100,6 +100,7 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
 # adds no cycle and no import cost worth deferring — every other flow symbol in
 # this module stays lazily imported inside its own function, as before.
 from jasper.active_speaker.capture_provenance import (
+    CaptureProvenance,
     CaptureProvenanceRecorder,
     record_capture_provenance,
 )
@@ -4560,7 +4561,7 @@ def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
-    provenance: Any = None,
+    provenance: CaptureProvenanceRecorder | None = None,
 ) -> "AnalyzeCapture":
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
@@ -4745,7 +4746,7 @@ def _prune_capture_dump(
 def _maybe_retain_capture(
     *, phase: str, result: Any, wav: bytes, analysis: Any,
     bundle_session_id: str = "",
-    provenance: Any = None,
+    provenance: CaptureProvenance | None = None,
 ) -> None:
     """Operator-debug capture retention (Part 2 — off by default, bounded).
 
@@ -5479,7 +5480,7 @@ def bind_production_play(
     declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
     on_playback_started: Callable[[Any], None] | None = None,
-    provenance: Any = None,
+    provenance: CaptureProvenanceRecorder | None = None,
 ) -> Callable[[str, Any], None]:
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
@@ -5594,11 +5595,11 @@ def bind_production_play(
                     level=logging.WARNING, phase=phase, exc_info=True,
                 )
 
-        def _observe(cam: Any, graph_kind: str) -> Any:
+        def _observe(open_cam: Callable[[], Any], graph_kind: str) -> Any:
             """Awaitable: record what this stimulus plays THROUGH, fail-soft."""
             return record_capture_provenance(
-                provenance, cam=cam, graph_kind=graph_kind, program=program,
-                artifact=artifact, volume_plan=session_volume_plan(),
+                provenance, open_cam=open_cam, graph_kind=graph_kind, program=program,
+                artifact=artifact, read_volume_plan=session_volume_plan,
             )
 
         async def _play_body() -> None:
@@ -5611,8 +5612,7 @@ def bind_production_play(
             )
 
             # Observing costs CamillaDSP round-trips, so it is bought only when
-            # an operator has switched retention on; with the marker absent
-            # this whole path is one ``Path.exists()``.
+            # retention is on; absent the marker this path is one Path.exists().
             observing = provenance is not None and capture_dump_enabled()
 
             if phase in SUMMED_SWEEP_PHASES:
@@ -5628,7 +5628,7 @@ def bind_production_play(
                 # No load means the standing graph IS what this capture goes
                 # through — stated by the branch that skipped the load.
                 if observing:
-                    await _observe(camilla_factory(), GRAPH_KIND_APPLIED)
+                    await _observe(camilla_factory, GRAPH_KIND_APPLIED)
                 if on_playback_started is not None:
                     on_playback_started(program)
                 await verified_program_aplay(
@@ -5711,7 +5711,7 @@ def bind_production_play(
                 pre_provenance_play_wav = seams["play_wav"]
 
                 async def _play_wav_observed() -> Any:
-                    await _observe(cam, GRAPH_KIND_PROGRAM_ROUTING)
+                    await _observe(lambda: cam, GRAPH_KIND_PROGRAM_ROUTING)
                     return await pre_provenance_play_wav()
 
                 seams["play_wav"] = _play_wav_observed
@@ -6998,7 +6998,7 @@ def bind_v2_stage_seams(
     publish_candidate: Any,
     run_async: Any,
     camilla_factory: Any,
-    provenance: Any = None,
+    provenance: CaptureProvenanceRecorder | None = None,
 ) -> Any:
     """Build one stage's :class:`V2FlowSeams`, and declare what it opened with.
 

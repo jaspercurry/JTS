@@ -4650,6 +4650,17 @@ is the running graph's own hash, so the two corroborate. `config_path` is
 recorded precisely BECAUSE it is the misleading label: side by side with the
 other two it shows what the statefile claimed versus what was playing.
 
+**Two key names now appear twice in one sidecar, meaning different things —
+read the path, not the leaf.** `phase` at the top level (and in the filename)
+is the FLOW's phase, while `stimulus.phase` and `diagnostic.phase` are the
+`ExcitationProgram`'s: those DISAGREE by design on every cloud capture, since
+every cloud position plays the verify-shaped summed sweep — which is exactly
+the #1855 inference that once mislabeled 32 of 45 sidecars, so do not read a
+`stimulus.phase` of `verify` as "this was a VERIFY". `wav_sha256` at the top
+level is the digest of the CAPTURE this ring retained (the corpus join key);
+`stimulus.wav_sha256` is the digest of the program WAV that was PLAYED. They
+are different files and differ on every sidecar.
+
 **Do not join `graph.fingerprint` to a round receipt's
 `entry_graph_fingerprint`.** They are different namespaces answering different
 questions: this one is `running_graph_fingerprint` over CamillaDSP's own

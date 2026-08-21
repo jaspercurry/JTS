@@ -58,7 +58,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from jasper.log_event import log_event
 
@@ -178,13 +178,13 @@ def _stimulus_peak_dbfs(program: Any) -> float | None:
 
 
 async def record_capture_provenance(
-    recorder: CaptureProvenanceRecorder,
+    recorder: CaptureProvenanceRecorder | None,
     *,
-    cam: Any,
+    open_cam: Callable[[], Any],
     graph_kind: str,
     program: Any,
     artifact: Any = None,
-    volume_plan: Any = None,
+    read_volume_plan: Callable[[], Any] | None = None,
 ) -> None:
     """Observe, and hand the result to ``recorder``. The never-break-a-capture belt.
 
@@ -197,9 +197,26 @@ async def record_capture_provenance(
     ``BaseException`` still passes: a cancelled measurement must stay cancelled.
 
     Living here rather than at the call site keeps that one promise in one
-    place, however many playback branches come to record through it.
+    place, however many playback branches come to record through it. A ``None``
+    recorder is one more thing it absorbs: "there is nothing to record into" is
+    a state the seams genuinely have (every caller that passes no recorder), and
+    the belt owning it is what keeps the optionality from becoming a pre-check
+    each playback branch must remember — a forgotten one would otherwise land
+    here as an ``AttributeError`` logged as a provenance FAILURE.
+
+    The controller and the volume plan arrive as ZERO-ARGUMENT RESOLVERS rather
+    than as objects, so that obtaining them happens inside the belt too. Passed
+    as values, they would be evaluated in the caller's argument list — outside
+    the try, on the play path — and a raise there would take the measurement
+    down with it. Neither resolver can raise in production today; the point is
+    that the docstring above says "never", and an argument list is the one
+    place that word would not have covered.
     """
+    if recorder is None:
+        return
     try:
+        cam = open_cam()
+        volume_plan = read_volume_plan() if read_volume_plan is not None else None
         recorder.record(
             await observe_capture_provenance(
                 cam=cam,
