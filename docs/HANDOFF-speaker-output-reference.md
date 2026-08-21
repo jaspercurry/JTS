@@ -1347,12 +1347,15 @@ rejected — see the "Stage 2a landed" callout above.)
   attempt.
   Recovery is out-of-band: udev → `jasper-audio-hardware-reconcile` clears
   `JASPER_OUTPUTD_DUAL_DAC_A_PCM`/`_B_PCM` and acts on outputd. Where it lands
-  is decided by the **saved** topology, not by what survived: a saved composite
-  **parks** the box (`JASPER_OUTPUTD_BACKEND=fake`) behind a named
-  `saved_composite_partially_present` blocker rather than running the survivor
-  as a stereo DAC — owner is
+  is decided by the **saved** topology, not by what survived: a saved
+  **roleful** composite **parks** the box (`JASPER_OUTPUTD_BACKEND=fake`)
+  behind a named `saved_composite_partially_present` blocker rather than
+  running the survivor as a stereo DAC — owner is
   [`jasper/output_hardware.py`](../jasper/output_hardware.py)
-  `apply_saved_topology_policy`. Only a box with no saved composite rewrites
+  `apply_saved_topology_policy`. Rolefulness, not `kind == "composite"`, is the
+  gate: a *passive* composite may legally place every declared speaker on one
+  child's outputs, so losing the other child must not park a working stereo.
+  That box — and any box with no saved composite — rewrites
   `JASPER_OUTPUTD_SINK=single_alsa` for the surviving DAC and restarts outputd.
   The reconciler half of that is shipped code; the end-to-end convergence is still
   **awaiting its on-Pi pass** — it is item 5 of

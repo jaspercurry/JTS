@@ -1377,6 +1377,13 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     assert (
         "event=audio_hardware_reconcile.runtime_env reason=test mode=parked"
     ) in result.stderr
+    # The reason reaches the JOURNAL, not just the record: an operator reading
+    # `output_parked` sees WHY, not only `recognized=0`.
+    assert (
+        "event=audio_hardware_reconcile.output_parked reason=test "
+        "output_dac_id=A output_dac_card=A recognized=0 "
+        "observed_blockers=saved_composite_partially_present"
+    ) in result.stderr
 
 
 def test_reconcile_unparks_when_the_missing_composite_child_returns(
@@ -1434,14 +1441,15 @@ def test_reconcile_unparks_when_the_missing_composite_child_returns(
     assert "--no-block stop jasper-voice.service jasper-outputd.service" not in commands
 
 
-def test_reconcile_saved_passive_topology_still_takes_the_single_dongle(
+def test_reconcile_saved_single_topology_still_takes_the_single_dongle(
     tmp_path: Path,
 ):
     """A saved SINGLE topology keeps today's behaviour: stereo is legal there.
 
-    Same outcome as ``test_reconcile_apple_role_enables_apple_helpers_and_renders``
-    (which saves no topology at all); the record itself is asserted unchanged
-    by ``test_saved_single_topology_keeps_full_range_stereo_ready``.
+    Named for the single *device* it saves. The passive **composite** case —
+    `kind == "composite"` but no per-driver DSP, where the park must also stand
+    down — is a record-level decision and is pinned in
+    ``test_saved_passive_composite_missing_a_child_still_plays``.
     """
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(

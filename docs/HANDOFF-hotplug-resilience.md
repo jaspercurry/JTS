@@ -442,11 +442,14 @@ The repaired output ladder is:
    `jasper-audio-hardware-reconcile --reason outputd-failure --no-restart`;
    the next built-in `Restart=on-failure` attempt then reads fresh
    `outputd.env` — `fake` when no DAC remains, and when exactly one remains,
-   `fake` again if the **saved** topology declares a composite (a half-present
-   composite parks rather than letting the survivor take the box; owner is
+   `fake` again if the **saved** topology is a **roleful** composite (one whose
+   declared drivers need per-driver DSP: a half-present roleful composite parks
+   rather than letting the survivor take the box; owner is
    [`jasper/output_hardware.py`](../jasper/output_hardware.py)
-   `apply_saved_topology_policy`), else single-Apple `single_alsa`.
-   For `EX_CONFIG=78`, where
+   `apply_saved_topology_policy`). A saved *passive* composite — every declared
+   speaker on one child's outputs — keeps single-Apple `single_alsa`, the same
+   calibration `jasper-doctor` makes when it downgrades a non-roleful
+   saved/attached mismatch from fail to warn. For `EX_CONFIG=78`, where
    `RestartPreventExitStatus=78` would normally park immediately, the
    helper gives the system one short-window reconcile plus explicit
    `systemctl --no-block restart jasper-outputd.service`. A second config
@@ -712,12 +715,15 @@ session):**
    `journalctl -u jasper-audio-hardware-reconcile` shows a hotplug or
    outputd-failure reconcile, and
    `/run/jasper-output-hardware/output_hardware.json` reports the single
-   remaining Apple DAC with `status=partial` plus a
-   `saved_composite_partially_present` blocker naming the missing child.
-   With the composite topology saved, `/var/lib/jasper/outputd.env` goes to
-   the parked `JASPER_OUTPUTD_BACKEND=fake` and outputd stops rather than
-   taking the survivor as a stereo DAC; only a box with **no** saved
-   composite switches to `JASPER_OUTPUTD_SINK=single_alsa`. Either way
+   remaining Apple DAC — and, **if the saved composite is roleful**,
+   `status=partial` plus a `saved_composite_partially_present` blocker naming
+   the missing child. In that roleful case `/var/lib/jasper/outputd.env` goes
+   to the parked `JASPER_OUTPUTD_BACKEND=fake`, outputd stops rather than
+   taking the survivor as a stereo DAC, and
+   `event=audio_hardware_reconcile.output_parked` carries
+   `observed_blockers=saved_composite_partially_present`. A saved *passive*
+   composite, or no saved composite at all, switches to
+   `JASPER_OUTPUTD_SINK=single_alsa` as before. Either way
    `jasper-outputd` must not reach the start limit. Then replug the child
    and confirm the reconciler un-parks with no manual step. `/sound/` should
    show "Saved speaker topology" separately from "Currently attached

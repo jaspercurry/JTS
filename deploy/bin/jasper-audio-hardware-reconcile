@@ -189,7 +189,7 @@ find_card() {
 
 observe_output_hardware_state() {
     local should_write="${1:-0}"
-    local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason
+    local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason blocker_codes
     local action="observed" write_arg=""
     OBSERVED_OUTPUT_VALID=0
     if [[ "$should_write" == "1" ]]; then
@@ -211,12 +211,28 @@ observe_output_hardware_state() {
     profile_id="$(printf '%s' "$payload" | sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p')"
     profile_status="$(printf '%s' "$payload" | sed -n 's/.*"status": *"\([^"]*\)".*/\1/p')"
     selected_card_id="$(printf '%s' "$payload" | sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p')"
-    if ! "$OUTPUT_HARDWARE_PYTHON" -c \
-        'import json, sys; data=json.load(sys.stdin); sys.exit(0 if isinstance(data, dict) else 1)' <<<"$payload" >/dev/null 2>&1 ||
-       [[ -z "$profile_id" || -z "$profile_status" ]]; then
+    # Same call that validates the payload also lifts out its BLOCKER CODES.
+    # The record is the only place the park's reason is written, and the sed
+    # extractions above cannot safely reach into the `issues` array; folding it
+    # into the existing interpreter spawn keeps the reason available to the
+    # journal at zero extra process cost on every pass.
+    if ! blocker_codes="$(
+        "$OUTPUT_HARDWARE_PYTHON" -c '
+import json, sys
+data = json.load(sys.stdin)
+if not isinstance(data, dict):
+    raise SystemExit(1)
+print(",".join(
+    str(issue.get("code") or "unnamed")
+    for issue in data.get("issues") or []
+    if isinstance(issue, dict) and issue.get("severity") == "blocker"
+))
+' <<<"$payload" 2>/dev/null
+    )" || [[ -z "$profile_id" || -z "$profile_status" ]]; then
         log_event "state_${action}_failed" "reason=invalid_payload path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
+    OBSERVED_OUTPUT_BLOCKER_CODES="$blocker_codes"
     OBSERVED_OUTPUT_VALID=1
     OBSERVED_OUTPUT_PAYLOAD="$payload"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
@@ -650,6 +666,10 @@ OBSERVED_OUTPUT_PROFILE_ID=""
 OBSERVED_OUTPUT_PROFILE_STATUS=""
 OBSERVED_OUTPUT_SELECTED_CARD_ID=""
 OBSERVED_OUTPUT_PAYLOAD=""
+# Blocker codes from the observed record, comma-joined. The record is where a
+# park's reason is written, so this is what lets `output_parked` name WHY
+# instead of only reporting `recognized=0`.
+OBSERVED_OUTPUT_BLOCKER_CODES=""
 DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
 DUAL_APPLE_ORDER_SOURCE=""
@@ -1399,7 +1419,7 @@ park_output_audio() {
     fi
     "$SYSTEMCTL" --no-block stop jasper-voice.service jasper-outputd.service 2>/dev/null || true
     "$SYSTEMCTL" reset-failed jasper-voice.service jasper-outputd.service 2>/dev/null || true
-    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED}"
+    log_event "output_parked" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} recognized=${OUTPUT_DAC_RECOGNIZED} observed_blockers=$(jasper_asound_log_token "${OBSERVED_OUTPUT_BLOCKER_CODES:-none}")"
 }
 
 restart_audio_if_needed() {
