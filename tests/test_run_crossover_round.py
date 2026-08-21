@@ -476,6 +476,65 @@ def test_an_unreadable_prescription_is_refused_before_anything_is_staged(
     assert ssh_lines == [] and bank_lines == [] and posts == ()
 
 
+def test_a_topology_prescription_is_posted_verbatim(checkout, wizard, tmp_path):
+    """The gate that judges a prescription is the open's own, not this one's."""
+    document = {"fc_hz": 1800.0, "order": 4, "basis_artifacts": ["round-7"]}
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document))
+
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--topology-prescription", str(path)],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    posts = wizard.seen().posts
+    _, body = posts[0]
+    assert body["topology_prescription"] == document
+    assert body["tier"] == "remote"  # always explicit; an absent tier inherits
+
+
+def test_an_unreadable_topology_prescription_is_refused_before_anything_is_staged(
+    checkout, wizard, tmp_path
+):
+    """An argument the operator wrote wrongly ends as argparse's refusal."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--topology-prescription", str(tmp_path / "missing.json"), *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 2  # argparse's own usage exit
+    assert "Traceback" not in proc.stderr
+    posts = wizard.seen().posts
+    assert ssh_lines == [] and bank_lines == [] and posts == ()
+
+
+def test_alignment_and_topology_prescriptions_compose(checkout, wizard, tmp_path):
+    """A round may pin alignment AND topology at once; both land verbatim."""
+    alignment_document = {"delay_us": -120.0, "basis_delay_us": -100.0,
+                          "basis_artifacts": ["round-7"], "polarity": "invert"}
+    topology_document = {"fc_hz": 1800.0, "order": 4, "basis_artifacts": ["round-7"]}
+    alignment_path = tmp_path / "alignment.json"
+    topology_path = tmp_path / "topology.json"
+    alignment_path.write_text(json.dumps(alignment_document))
+    topology_path.write_text(json.dumps(topology_document))
+
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--alignment-prescription", str(alignment_path),
+         "--topology-prescription", str(topology_path)],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    posts = wizard.seen().posts
+    _, body = posts[0]
+    assert body["alignment_prescription"] == alignment_document
+    assert body["topology_prescription"] == topology_document
+
+
 # --------------------------------------------------------------------------- #
 # THE APPLY GATE
 # --------------------------------------------------------------------------- #
