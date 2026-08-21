@@ -917,7 +917,9 @@ def test_sound_module_preserves_editor_behaviour():
     assert "./active-speaker/baseline-profile" in js
     assert "./output-topology" in js
     assert "./output-topology/reset" in js
+    assert "./output-topology/repin" in js
     assert "Reset speaker setup" in js
+    assert "Keep setup, pin the new DAC" in js
     assert "Test combined drivers" in js
     assert "Validate and apply" in js
     assert "Save and apply" in js
@@ -7671,13 +7673,19 @@ def _write_repin_fixture(
     )
 
 
-def _stub_repin_runtime(monkeypatch) -> list[str]:
+def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[str]:
     """Stand in for the audio-parking choreography a re-pin shares with save."""
 
     stops: list[str] = []
+
+    def park_and_commit(_topology, commit, **kwargs):
+        if park_kwargs is not None:
+            park_kwargs.update(kwargs)
+        return _RuntimeMutation(commit())
+
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda _topology, commit, **_kwargs: _RuntimeMutation(commit()),
+        park_and_commit,
     )
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
@@ -7708,13 +7716,15 @@ def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     offered = sound_setup._output_topology_payload()["hardware_repin"]
 
+    # One of the two was replaced, and the indexes name WHICH: lanes 2-3 are
+    # the second child's, so the untouched child keeps its confirmed lanes.
+    assert offered["child_count"] == 2
     assert offered["replaced_child_count"] == 1
     assert offered["reverify_output_indexes"] == [2, 3]
     assert offered["reverify_output_labels"] == [
         "Apple DAC B left",
         "Apple DAC B right",
     ]
-    assert [child["replaced"] for child in offered["children"]] == [False, True]
 
     _write_repin_fixture(
         monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
@@ -7733,7 +7743,8 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
     """
 
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
-    stops = _stub_repin_runtime(monkeypatch)
+    park_kwargs: dict = {}
+    stops = _stub_repin_runtime(monkeypatch, park_kwargs)
     request = sound_setup._output_topology_payload()
 
     payload = sound_setup._repin_output_topology_payload({
@@ -7744,6 +7755,12 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
     assert payload["repin"]["status"] == "repinned"
     assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
     assert stops == ["output_topology_repin"]
+    # The card promises audio stays off until the outputs are re-confirmed. The
+    # graph selector is identity-blind, so that promise is only true because
+    # this endpoint keeps the runtime parked; see
+    # test_runtime_convergence.py::test_stay_parked_skips_selection_...
+    assert park_kwargs["stay_parked"] is True
+    assert "confirm the re-pinned outputs" in park_kwargs["parked_reason"]
 
     saved = load_output_topology()
     assert [child.serial for child in saved.hardware.child_devices] == [

@@ -1607,9 +1607,10 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
 
     plan = composite_serial_repin_plan(before, observed)
     assert plan is not None
-    assert [child.replaced for child in plan.children] == [False, True]
+    # Exactly one of the two was replaced, and the lanes name WHICH: 2-3 belong
+    # to the second child, so the untouched child's lanes stay out of it.
+    assert (plan.child_count, plan.replaced_child_count) == (2, 1)
     assert plan.reverify_output_indexes == (2, 3)
-    assert plan.to_dict()["replaced_child_count"] == 1
 
     after = repin_composite_child_serials(before, observed)
 

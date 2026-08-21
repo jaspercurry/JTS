@@ -6942,6 +6942,178 @@ async function testConfirmedOutputKeepsResetPreconditions() {
   return { confirmedOutputKeepsResetPreconditions: true };
 }
 
+// --- #2814: the same-shape composite re-pin offer ---------------------------
+
+// The mismatch card only renders when the page sees a hardware-mismatch, and a
+// swapped dongle on a declared composite surfaces as an observed-serial clock
+// blocker (not an id/count mismatch) — so the fixture reproduces that shape
+// rather than a shortcut the product never produces.
+const REPIN_PLAN = {
+  child_count: 2,
+  replaced_child_count: 1,
+  reverify_output_indexes: [2, 3],
+  reverify_output_labels: ["Apple DAC B left", "Apple DAC B right"],
+};
+
+function swappedDonglePayload(overrides = {}) {
+  return {
+    output_topology: activeTwoWayTopologyPayload(),
+    topology_revision: "sha256:saved",
+    hardware_adoption: { allowed: true, identity: "sha256:hardware-swapped" },
+    hardware_repin: REPIN_PLAN,
+    clock_domain: {
+      status: "dual_apple_composite_clock_blocked",
+      issues: [{
+        severity: "blocker",
+        code: "dual_apple_observed_serial_mismatch",
+        message: "current dual-Apple DAC serials do not match the saved topology",
+      }],
+    },
+    ...overrides,
+  };
+}
+
+async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
+  const posts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(swappedDonglePayload())),
+    "./output-topology/repin": (path, options = {}) => {
+      posts.push({ path, body: JSON.parse(options.body || "{}") });
+      return Promise.resolve(response({
+        output_topology: activeTwoWayTopologyPayload(),
+        topology_revision: "sha256:repinned",
+        hardware_adoption: { allowed: true, identity: "sha256:hardware-swapped" },
+        hardware_repin: null,
+        repin: {
+          status: "repinned",
+          message: "Pinned the new DAC and kept your speaker setup. Confirm these outputs again: Apple DAC B left, Apple DAC B right. Then re-run the drift measurement.",
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  // The disclosure itself is the contract: a household decides between this and
+  // the destructive reset on these sentences alone, so they are pinned here the
+  // way the reset's dialog copy is.
+  const offer = harness.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "Same speakers, one new DAC",
+    "keep your speaker layout, driver roles, output assignment and tuning",
+    "Apple DAC B left and Apple DAC B right",
+    "audio stays off until you do",
+    "re-run the 15-minute drift measurement",
+    "Keep setup, pin the new DAC",
+  ]) {
+    if (!offer.includes(expected)) {
+      fail("the re-pin offer must disclose what is kept and what must be redone", {
+        expected, offer,
+      });
+    }
+  }
+  // The destructive sibling must stop being the primary action beside it.
+  if (!offer.includes('class="btn btn--ghost" data-act="reset-output-topology"')) {
+    fail("the full reset should de-emphasise while a re-pin is offered", { offer });
+  }
+
+  let confirmation = null;
+  globalThis.__jtsConfirm = async (message, options) => {
+    confirmation = { message, options };
+    return true;
+  };
+  harness.dispatchClick({ "data-act": "repin-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (!confirmation ||
+      !confirmation.message.includes("Apple DAC B left and Apple DAC B right") ||
+      !confirmation.message.includes("audio stays off until you do") ||
+      confirmation.options.confirmLabel !== "Pin the new DAC" ||
+      confirmation.options.danger !== true) {
+    fail("the re-pin confirm must be danger-styled and name the outputs to redo", {
+      confirmation,
+    });
+  }
+  if (posts.length !== 1 ||
+      posts[0].path !== "./output-topology/repin" ||
+      posts[0].body.topology_revision !== "sha256:saved" ||
+      posts[0].body.detected_hardware_identity !== "sha256:hardware-swapped") {
+    fail("the re-pin must post the preconditions it was offered against", { posts });
+  }
+
+  const status = harness.elements.get("status").textContent;
+  if (!status.includes("kept your speaker setup") ||
+      !status.includes("Apple DAC B left, Apple DAC B right")) {
+    fail("a successful re-pin should name the outputs still to confirm", { status });
+  }
+  const after = harness.elements.get("view-body").innerHTML;
+  if (after.includes("Keep setup, pin the new DAC") || after.includes(">Pinning<")) {
+    fail("a spent re-pin offer must clear, and the busy flag with it", { after });
+  }
+  return { repinOfferDisclosesWhatIsKeptAndWhatMustBeRedone: true };
+}
+
+async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
+  // Every exit from the action must leave the button clickable again: a wedged
+  // "Pinning" needs a page reload to escape, which on a silenced speaker is the
+  // worst moment to require one.
+  const cases = [
+    { name: "declined", confirm: false },
+    { name: "conflict", confirm: true, status: 409, body: {
+      error: "Speaker setup or detected hardware changed. Review it and try again.",
+      output_topology: activeTwoWayTopologyPayload(),
+      topology_revision: "sha256:moved",
+      hardware_adoption: { allowed: true, identity: "sha256:hardware-moved" },
+      hardware_repin: REPIN_PLAN,
+      clock_domain: swappedDonglePayload().clock_domain,
+      conflict: "detected_hardware_changed",
+    } },
+    { name: "server error", confirm: true, status: 502, body: {
+      error: "JTS could not confirm whether the new DAC was pinned.",
+    } },
+  ];
+  for (const scenario of cases) {
+    let posted = 0;
+    const fetchHandler = baseFetch({
+      "./output-topology": () => Promise.resolve(response(swappedDonglePayload())),
+      "./output-topology/repin": () => {
+        posted += 1;
+        return Promise.resolve(response(scenario.body, false, scenario.status));
+      },
+    });
+    const harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
+    globalThis.__jtsConfirm = async () => scenario.confirm;
+
+    harness.dispatchClick({ "data-act": "repin-output-topology" });
+    await harness.flush(); await harness.flush(); await harness.flush();
+
+    if (scenario.confirm === false && posted !== 0) {
+      fail("declining the confirm must not post a re-pin", { scenario: scenario.name });
+    }
+    const html = harness.elements.get("view-body").innerHTML;
+    if (html.includes(">Pinning<")) {
+      fail("the re-pin busy flag must clear on every exit path", {
+        scenario: scenario.name, html,
+      });
+    }
+    if (!html.includes("Keep setup, pin the new DAC")) {
+      fail("the offer must remain clickable after a declined or failed re-pin", {
+        scenario: scenario.name, html,
+      });
+    }
+    if (scenario.name === "conflict") {
+      const status = harness.elements.get("status").textContent;
+      if (!status.includes("Review it and try again")) {
+        fail("a 409 must surface the conflict rather than a generic failure", {
+          status,
+        });
+      }
+    }
+  }
+  return { repinDeclinedOrFailedClearsTheBusyFlag: true };
+}
+
 async function testResetPartialCleanupSurfacesWarning() {
   const posts = [];
   const fetchHandler = baseFetch({
@@ -8030,6 +8202,8 @@ results.push(await testCommissionRampLimitKeepsConfirmationOpen());
 results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testConfirmedOutputKeepsResetPreconditions());
+results.push(await testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone());
+results.push(await testRepinDeclinedOrFailedClearsTheBusyFlag());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFailedResetPreservesCommissioningPanels());
 results.push(await testSavedTopologyReconcileFailureNeedsAttention());

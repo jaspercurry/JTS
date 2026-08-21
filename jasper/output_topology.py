@@ -2056,51 +2056,25 @@ def set_channel_protection_status(
 
 
 @dataclass(frozen=True)
-class CompositeChildRepin:
-    """One composite child DAC's before/after identity in a re-pin."""
-
-    child_id: str
-    device_label: str
-    usb_path: str
-    previous_serial: str | None
-    serial: str
-    physical_output_indexes: tuple[int, ...] = field(default_factory=tuple)
-
-    @property
-    def replaced(self) -> bool:
-        """Whether a DIFFERENT physical unit is now in this child's USB port."""
-
-        return self.previous_serial != self.serial
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "child_id": self.child_id,
-            "device_label": self.device_label,
-            "usb_path": self.usb_path,
-            "previous_serial": self.previous_serial,
-            "serial": self.serial,
-            "physical_output_indexes": list(self.physical_output_indexes),
-            "replaced": self.replaced,
-        }
-
-
-@dataclass(frozen=True)
 class CompositeRepinPlan:
     """What a same-shape composite re-pin reuses, and what it re-verifies.
 
-    Entries are data, not prose: a caller renders or re-checks the plan from
-    these fields rather than parsing a sentence.
+    Data, not prose: a caller renders or re-checks the offer from these fields
+    rather than parsing a sentence. Deliberately the smallest shape the page and
+    the log actually consume — per-child before/after records were carried here
+    once and had no reader, and an unread payload field is a claim nothing keeps
+    true.
     """
 
-    children: tuple[CompositeChildRepin, ...]
+    child_count: int
+    replaced_child_count: int
     reverify_output_indexes: tuple[int, ...]
     reverify_output_labels: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "children": [child.to_dict() for child in self.children],
-            "replaced_child_count": sum(1 for c in self.children if c.replaced),
-            "child_count": len(self.children),
+            "child_count": self.child_count,
+            "replaced_child_count": self.replaced_child_count,
             "reverify_output_indexes": list(self.reverify_output_indexes),
             "reverify_output_labels": list(self.reverify_output_labels),
         }
@@ -2182,27 +2156,17 @@ def _composite_repin_plan(
 ) -> CompositeRepinPlan | None:
     """Project paired children into a plan, or ``None`` when nothing changed."""
 
-    children = tuple(
-        CompositeChildRepin(
-            child_id=child.child_id,
-            device_label=child.device_label,
-            usb_path=port,
-            previous_serial=child.serial,
-            serial=card.serial or "",
-            physical_output_indexes=child.physical_output_indexes,
-        )
-        for port, child, card in pairs
-    )
-    if not any(child.replaced for child in children):
+    replaced = [
+        child for _port, child, card in pairs if child.serial != card.serial
+    ]
+    if not replaced:
         return None
     indexes = tuple(sorted({
-        index
-        for child in children
-        if child.replaced
-        for index in child.physical_output_indexes
+        index for child in replaced for index in child.physical_output_indexes
     }))
     return CompositeRepinPlan(
-        children=children,
+        child_count=len(pairs),
+        replaced_child_count=len(replaced),
         reverify_output_indexes=indexes,
         reverify_output_labels=tuple(
             topology.hardware.output_label(index) or f"Output {index + 1}"
@@ -2249,7 +2213,18 @@ def repin_composite_child_serials(
       RE-ARMS real refusals: ``startup_load``'s ``physical_identity_verified``
       and ``staged_topology_matches_current`` gates, and ``path_safety``'s
       ``route_verified`` / evidence-binding checks all fail until the
-      household re-confirms, so a re-pinned speaker cannot arm on trust.
+      household re-confirms, so a re-pinned speaker cannot ARM on trust.
+
+      Those gates guard the next arm, not the graph a box is ALREADY playing,
+      and the runtime graph selector is identity-blind on purpose — it proves
+      a graph legal for the saved SHAPE, which a re-pin does not change. So an
+      armed box would otherwise keep playing through unconfirmed DACs, which
+      on a roleful topology is the full-range-into-a-tweeter hazard class. The
+      committing caller therefore parks the runtime and leaves it parked
+      (``runtime_convergence.park_and_commit_topology(stay_parked=True)``);
+      the arm ladder is the only way back, and its gates own the missing
+      evidence. This function is pure — it clears the evidence; parking is the
+      caller's half of the same promise.
     * ``clock_domain_evidence`` is dropped. The measurement is a property of
       one PAIR of crystals; two units that never ran together have unmeasured
       relative drift, and the composite contract is ``measured_sync_required``
@@ -2275,7 +2250,7 @@ def repin_composite_child_serials(
             "speaker setup"
         )
     reverify = set(plan.reverify_output_indexes)
-    hardware = replace(
+    composed = replace(
         topology.hardware,
         child_devices=tuple(
             replace(
@@ -2289,6 +2264,11 @@ def repin_composite_child_serials(
         ),
         clock_domain_evidence=None,
     )
+    # Round-trip through the artifact contract before it can be persisted: the
+    # rewritten fields are observed strings from the reconciler, and `replace`
+    # bypasses every check `from_mapping` owns (id shape, length caps, lane
+    # coverage). The sibling reset validates the hardware it adopts; so does this.
+    hardware = OutputHardware.from_mapping(composed.to_dict())
     return replace(
         topology,
         hardware=hardware,

@@ -775,7 +775,19 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             saved_revision = mutation.save(after)
             return after
 
-        runtime = park_and_commit_topology(snapshot.topology, commit_repin)
+        runtime = park_and_commit_topology(
+            snapshot.topology,
+            commit_repin,
+            # The graph selector proves a graph legal for the saved SHAPE, which
+            # a re-pin does not change — so it would happily resume the approved
+            # active runtime through DACs nobody has confirmed by ear yet. Stay
+            # parked instead; the arm ladder's identity gates own the way back.
+            stay_parked=True,
+            parked_reason=(
+                "parked after a DAC re-pin; confirm the re-pinned outputs "
+                "before audio resumes"
+            ),
+        )
         reconcile = trigger_reconcile(reason="output_topology_repin")
     needs_attention = not runtime.convergence.ok or not reconcile.get("ok")
     log_event(
@@ -784,8 +796,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         result="needs_attention" if needs_attention else "repinned",
         topology_revision=saved_revision,
         device_id=snapshot.topology.hardware.device_id,
-        replaced_children=sum(1 for child in plan.children if child.replaced),
-        child_count=len(plan.children),
+        replaced_children=plan.replaced_child_count,
+        child_count=plan.child_count,
         reverify_outputs=len(plan.reverify_output_indexes),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),

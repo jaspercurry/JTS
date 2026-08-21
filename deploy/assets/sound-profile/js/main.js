@@ -6884,7 +6884,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       (labels.length ? labels.join(' and ') : 'the affected outputs') +
       ' by ear — audio stays off until you do — and re-run the drift ' +
       'measurement for the new pair.',
-      {title: 'Pin the new DAC?', confirmLabel: 'Pin the new DAC'}
+      // danger: the speaker goes silent immediately and the pair's drift
+      // measurement is dropped, so a stray Enter must not land on confirm.
+      {title: 'Pin the new DAC?', confirmLabel: 'Pin the new DAC', danger: true}
     );
     if (!ok) return;
     outputTopology.repinning = true;
