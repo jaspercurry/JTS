@@ -749,7 +749,11 @@ the module, not a second copy here.
     never a false pass; and republish a candidate whose crossover differs from
     what `/sound` declares — that apply rewrites the declaration and needs the
     minting session's `sound_design_revision`, which no bundle carries, so it
-    refuses naming that fact instead of inventing a revision.
+    refuses naming that fact instead of inventing a revision. Journal:
+    `event=correction.crossover_v2_banked_candidate_found` (the scan),
+    `…_candidate_republished` (success), and `…_republish_refused` carrying a
+    machine `code=` — an incident-recovery door refuses out loud, since an
+    operator reaches it only when something has already gone wrong.
 8. **Undo survives everything.** `handle_v2_apply` stashes the
    `pre_apply_profile` and `persist_conductor_state` carries it
    *unconditionally* across every snapshot, so `handle_v2_restore` can pin a

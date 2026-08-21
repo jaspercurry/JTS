@@ -337,6 +337,45 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
     assert f"relay_session_id={RELAY}" in line
 
 
+@pytest.mark.parametrize(
+    "setup, payload, expected_code",
+    [
+        (lambda root: None, {}, "fingerprint_required"),
+        (lambda root: None, {"fingerprint": "a" * 64}, "not_found"),
+        (
+            lambda root: (
+                _publish(root, _candidate(), bundle="b1", relay="r1"),
+                _publish(root, _candidate(), bundle="b2", relay="r2"),
+            ),
+            None,
+            "ambiguous",
+        ),
+    ],
+)
+def test_every_refusal_reaches_the_journal(bank, caplog, setup, payload, expected_code):
+    """A door reached during an incident must not refuse silently.
+
+    The operator arrives here BECAUSE something already went wrong, so a
+    refusal that lands only in the HTTP response is invisible in the place they
+    look next. Each outcome carries its machine ``code`` so the refusals are
+    greppable apart rather than one undifferentiated line.
+    """
+    setup(bank)
+    body = payload if payload is not None else {
+        "fingerprint": _candidate().fingerprint
+    }
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(v2host.CrossoverV2Refused):
+            republish.handle_v2_republish(body)
+
+    line = next(
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_republish_refused" in r.getMessage()
+    )
+    assert f"code={expected_code}" in line
+
+
 def test_republish_stamps_the_callers_time_not_a_clock_read(bank):
     candidate = _candidate()
     _publish(bank, candidate)
@@ -356,10 +395,19 @@ def _apply_state_reads() -> set[str]:
     """Every durable-state key ``handle_v2_apply`` reads, from its own source.
 
     Derived mechanically rather than listed, for the reason every guard in this
-    repo is: a SEVENTH read added to the apply path must fail this test on the
-    day it lands, not be noticed the next time someone reads both functions
-    side by side. The apply path loads state exactly once (``state =
+    repo is: a seventh read added to ``handle_v2_apply``'s OWN BODY must fail
+    this test on the day it lands, not be noticed the next time someone reads
+    both functions side by side. That body loads state exactly once (``state =
     load_v2_state()``) and then reads it by key, so the key set is greppable.
+
+    **Scoped to that body, and no further.** This parses one function; it does
+    NOT see what apply's callees read. The two state facts apply consumes
+    through :func:`_update_current_review` — ``accepted_phases`` and
+    ``applied`` — are therefore invisible here, and are covered BEHAVIOURALLY
+    instead by ``test_republish_then_apply_reaches_the_banked_candidate``,
+    which drives that compare-and-set for real. A new condition added to the
+    CAS fails that test, not this one. Two guards, two mechanisms, on purpose:
+    do not "fix" this one by teaching it to follow calls.
     """
     source = textwrap.dedent(_function_source("handle_v2_apply"))
     # Three spellings, because a guard that only knows the CURRENT one degrades

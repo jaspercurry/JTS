@@ -36,6 +36,30 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 
+def _refused(code: str, message: str, *, fingerprint: str = "") -> Exception:
+    """Journal the refusal, then hand back the exception for the caller to raise.
+
+    This door exists for incident recovery — an operator reaches it precisely
+    when something has already gone wrong — so a refusal that reaches only the
+    HTTP response is invisible in the journal, which is where they look next.
+    The success paths already log; every refusal does now too, carrying the
+    machine ``code`` so the four outcomes are greppable apart.
+
+    Returns rather than raises so each call site keeps its own ``raise``
+    (and its ``from exc``), which is what makes the control flow readable.
+    """
+    log_event(
+        logger,
+        "correction.crossover_v2_republish_refused",
+        level=logging.WARNING,
+        code=code,
+        candidate_fingerprint=fingerprint,
+    )
+    from jasper.web import correction_crossover_v2 as _host
+
+    return _host.CrossoverV2Refused(message, code=code)
+
+
 def handle_v2_republish(
     raw: Mapping[str, Any], *, now: float | None = None
 ) -> dict[str, Any]:
@@ -118,13 +142,14 @@ def handle_v2_republish(
 
     fingerprint = str(raw.get("fingerprint") or "").strip()
     if not fingerprint:
-        raise _host.CrossoverV2Refused("fingerprint is required")
+        raise _refused("fingerprint_required", "fingerprint is required")
     try:
         banked = find_banked_candidate(fingerprint)
     except CandidateBankRefusal as exc:
-        raise _host.CrossoverV2Refused(
+        raise _refused(
+            exc.code,
             f"that candidate cannot be republished: {exc.detail}",
-            code=exc.code,
+            fingerprint=fingerprint,
         ) from exc
 
     # The one companion fact the bundle cannot supply (see the docstring). Read
@@ -138,7 +163,8 @@ def handle_v2_republish(
         # BOTH numbers, because the operator's next question is always "which
         # one is wrong" — a refusal naming only the candidate's corner makes
         # them go look up the declaration by hand.
-        raise _host.CrossoverV2Refused(
+        raise _refused(
+            "sound_design_revision_unavailable",
             f"that candidate crosses at "
             f"{_host._crossover_label(change.selected, change.changes_slope)} but "
             f"Sound declares "
@@ -146,7 +172,7 @@ def handle_v2_republish(
             "applying it would rewrite the declaration, and the Sound revision "
             "its measurement was taken under (sound_design_revision) is not "
             "recorded in the bundle. Measure this crossover again to apply it.",
-            code="sound_design_revision_unavailable",
+            fingerprint=banked.fingerprint,
         )
 
     summary = _host._candidate_summary(
@@ -190,10 +216,19 @@ def handle_v2_republish(
             "accepted_sound_declaration_change": None,
             "sound_design_revision": None,
             "republished": republished,
-            # Preserved on exactly ``reset_v2_journey_state``'s terms: these are
-            # the host-owned record of the graph that is CURRENTLY playing and
-            # how to undo it. A republish changes no graph, so dropping them
-            # would leave a corrected speaker with Undo unreachable.
+            # Preserved on exactly ``reset_v2_journey_state``'s terms, and for
+            # its reason rather than a stronger-sounding one: these are the
+            # HOST-OWNED apply keys — values only ``observe_apply_success``
+            # produces, which no state rebuild can regenerate. Erasing that
+            # class on a rebuild is a bug that has shipped three times
+            # (``test_every_host_owned_apply_key_survives_persist_conductor_state``
+            # is the guard), so a whole-dict replacement must carry them.
+            #
+            # NOT "otherwise Undo breaks": this write sets ``applied`` False, so
+            # a restore refuses ``not_applied`` from here whatever these hold —
+            # correctly, and byte-for-byte what a fresh measuring session leaves
+            # behind. What preservation buys is that the record of the graph
+            # still playing survives a republish the operator never applies.
             "attempts_loop": (
                 dict(prior["attempts_loop"])
                 if isinstance(prior.get("attempts_loop"), Mapping)

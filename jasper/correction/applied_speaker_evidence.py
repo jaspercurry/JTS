@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 
 # WHERE banked candidates live, how many are scanned, and how large one may be
 # are all owned by the bank reader
-# (:mod:`jasper.active_speaker.crossover_v2.candidate_bank`) — this module asks
+# (:mod:`jasper.active_speaker.candidate_bank`) — this module asks
 # the SAME question of the SAME artifacts, just keyed on the applied profile's
 # stamped fingerprint instead of a caller's, so a second copy of the on-disk
 # shape here would drift on the first layout change and leave the two readers

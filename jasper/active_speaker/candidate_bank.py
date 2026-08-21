@@ -76,11 +76,14 @@ logger = logging.getLogger(__name__)
 #: them joins the wrong round to the wrong bundle.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
-#: How many candidate artifacts to examine before giving up. The bundle root is
+#: How many candidate artifacts to PARSE before giving up. The bundle root is
 #: retention-capped (``DEFAULT_SESSIONS_MAX_BUNDLES = 12``) with a handful of
-#: crossover_v2 sessions each, so a healthy box is far under this. The cap is
-#: here so a pathological directory cannot turn a read into a directory walk of
-#: unbounded cost on a 1 GB Pi.
+#: crossover_v2 sessions each, so a healthy box is far under this. What the cap
+#: bounds is the expensive half — up to 4 MB of JSON plus a fingerprint
+#: recompute per artifact — so a pathological directory cannot turn one lookup
+#: into unbounded work on a 1 GB Pi. It does NOT bound the directory walk: the
+#: glob is fixed-depth and ``sorted()`` completes before the slice is taken,
+#: which is cheap and deliberately left alone.
 MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
 
 #: Largest candidate.json this reader will parse. The publisher's own artifact
