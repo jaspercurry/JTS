@@ -321,7 +321,7 @@ def test_status_invalidation_happens_under_lock_before_apply(tmp_path, monkeypat
     @contextmanager
     def fake_lock(*, env_path, timeout_sec):
         assert env_path == env
-        assert timeout_sec == 788
+        assert timeout_sec == (source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0)
         events.append("lock")
         yield
         events.append("unlock")
@@ -460,7 +460,12 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
             ["systemctl", "start", "jasper-usbsink.service"],
             source_intent._unit_action_timeout_sec("jasper-usbsink.service", "start"),
         ),
-        (["systemctl", "restart", "jasper-usbgadget.service"], 11.0),
+        (
+            ["systemctl", "restart", "jasper-usbgadget.service"],
+            source_intent._unit_action_timeout_sec(
+                "jasper-usbgadget.service", "restart"
+            ),
+        ),
         (["systemctl", "stop", "bt-agent.service"], 11.0),
         (
             ["systemctl", "start", source_intent._ACCESSORY_RECONCILE_UNIT],

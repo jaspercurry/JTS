@@ -1006,10 +1006,15 @@ def test_install_replay_invalidates_previous_source_acknowledgement() -> None:
         "\n}\n", maxsplit=1
     )[0]
 
+    from jasper.source_intent import RECONCILE_BROKER_TIMEOUT_SECONDS
+
     invalidation = "rm -f /run/jasper-source-intent/status.json"
     assert function.count(invalidation) == 2
     assert "--reason install --invalidate-status-before" in function
-    assert "if ! /usr/bin/timeout --foreground --kill-after=5s 793s" in function
+    assert (
+        "if ! /usr/bin/timeout --foreground --kill-after=5s "
+        f"{int(RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
+    ) in function
     first_unlink = function.index(invalidation)
     reconcile = function.index("jasper-source-intent-reconcile")
     second_unlink = function.index(invalidation, first_unlink + 1)

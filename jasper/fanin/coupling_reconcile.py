@@ -821,7 +821,7 @@ def reconcile_coupling(
         # two units are unordered, so an arm would leave camilla#1 on the tap the
         # ring just took fan-in off — a silent bond with healthy daemons. No-op on
         # a solo box. FIRE-AND-FORGET: the re-bake routinely outruns any wait this
-        # side could justify (TimeoutStartSec=2526) and killing the client would
+        # side could justify (TimeoutStartSec=3826) and killing the client would
         # not cancel the queued job, so waiting could only manufacture a WARN for
         # work that succeeded. `ok` is "systemd ACCEPTED the job" — logged because
         # a drifted unit name would otherwise make this fix a SILENT no-op.

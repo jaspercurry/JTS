@@ -230,6 +230,9 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
     assert source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC == {
         "shairport-sync.service": nqptp_start,
         "jasper-usbsink.service": usb_volume_start,
+        "jasper-usbgadget.service": sum(
+            source_intent._USB_GADGET_START_DEPENDENCY_SEC.values()
+        ),
     }
     assert (
         source_intent._unit_action_timeout_sec("shairport-sync.service", "start")
@@ -279,6 +282,183 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
     ):
         path = ROOT / "deploy/systemd" / dependency
         assert source_intent.RECONCILE_UNIT not in path.read_text(encoding="utf-8")
+
+
+def _unit_section_lists(path: Path, keys: tuple[str, ...]) -> dict[str, set[str]]:
+    section = ""
+    result: dict[str, set[str]] = {key: set() for key in keys}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text.startswith("[") and text.endswith("]"):
+            section = text
+            continue
+        if section != "[Unit]" or text.startswith("#") or "=" not in text:
+            continue
+        key, _, value = text.partition("=")
+        if key in result:
+            result[key].update(value.split())
+    return result
+
+
+def _pulled_ordered_dependencies(path: Path) -> set[str]:
+    """Units a start of ``path`` both orders ``After=`` and pulls into its job.
+
+    Requirement dependencies join the same job transaction, and the ordering
+    edge makes PID 1 hold this unit's start job until they report terminal. Type
+    is deliberately not filtered: a long-running dependency that happens to be
+    inactive is waited on exactly like a oneshot that is inactive by design.
+    """
+
+    edges = _unit_section_lists(path, ("After", "Wants", "Requires"))
+    return edges["After"] & (edges["Wants"] | edges["Requires"])
+
+
+def _declared_start_ceiling(name: str) -> float:
+    """A shipped unit's start ceiling, falling back to the manager default."""
+
+    dependency = ROOT / "deploy/systemd" / name
+    directives = _service_directives(dependency)
+    raw = directives.get("TimeoutStartSec")
+    if raw is None:
+        return source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC
+    return _seconds(raw)
+
+
+def _never_stays_complete(name: str) -> bool:
+    """True when a shipped dependency is inactive between runs by construction."""
+
+    directives = _service_directives(ROOT / "deploy/systemd" / name)
+    return (
+        directives.get("Type") == "oneshot"
+        and directives.get("RemainAfterExit", "no") == "no"
+    )
+
+
+def test_dependencies_that_never_stay_complete_are_inside_the_client_bound() -> None:
+    """A pulled dependency that is never still complete is paid for every start.
+
+    The coordinator is ordered After= the shared boot-owned prerequisites, so a
+    dependency that stays active once started costs a source start nothing. A
+    ``Type=oneshot`` with ``RemainAfterExit=no`` is the exception: it is inactive
+    between runs, so every start re-queues it and PID 1 holds the start job until
+    it reports terminal. jts4 proved the cost — `systemctl restart
+    jasper-usbgadget.service` was held 33.64 s while the hardware-role oneshot it
+    pulls re-ran, against an 11.0 s client bound, so a slow-but-successful restart
+    was reported as a failed USB On transition and the coordinator exited
+    non-zero on every pass.
+    """
+
+    requeued: dict[str, dict[str, float]] = {}
+    for unit, path in SOURCE_UNIT_FILES.items():
+        shipped = {
+            name
+            for name in _pulled_ordered_dependencies(path)
+            if (ROOT / "deploy/systemd" / name).exists() and _never_stays_complete(name)
+        }
+        if not shipped:
+            continue
+        requeued[unit] = {name: _declared_start_ceiling(name) for name in shipped}
+        budget = source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC.get(unit, 0.0)
+        required = sum(requeued[unit].values())
+        assert budget >= required, (
+            f"{unit}: dependency budget {budget} must cover the start ceilings of "
+            f"the units it re-queues on every start {sorted(shipped)} ({required})"
+        )
+
+    assert requeued == {
+        "jasper-usbgadget.service": {"jasper-audio-hardware-reconcile.service": 50.0}
+    }
+
+
+def test_gadget_dependency_mirror_matches_the_units_it_pulls_and_orders() -> None:
+    """The gadget budgets its whole pulled+ordered set, not just the oneshot.
+
+    Fan-in stays active once started, so the coordinator's own After= ordering
+    normally covers it — except that the USB path restarts fan-in through the
+    coupling owner before the failed-On rollback recomposes the gadget, so the
+    gadget can be started while fan-in is down. Budget the whole set rather than
+    reasoning per-pass about which member happens to be up.
+    """
+
+    gadget = "jasper-usbgadget.service"
+    modelled = source_intent._USB_GADGET_START_DEPENDENCY_SEC
+    assert set(modelled) == _pulled_ordered_dependencies(SOURCE_UNIT_FILES[gadget])
+    for name, budgeted in modelled.items():
+        assert budgeted >= _declared_start_ceiling(name), name
+    assert source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC[gadget] == sum(
+        modelled.values()
+    )
+
+
+def test_gadget_phase_model_matches_its_shipped_command_count() -> None:
+    """A command added to the gadget re-derives its bound instead of eroding it.
+
+    The declared five seconds is measurably not the enforced whole-phase bound:
+    all 13 gadget starts on jts4 since its 2026-08-17 boot ran past it without
+    PID 1 terminating them, up to 25.51 s. The model is one declared ceiling per
+    Exec* command, so the command count is load-bearing.
+    """
+
+    start_keys = ("ExecCondition", "ExecStartPre", "ExecStart", "ExecStartPost")
+    stop_keys = ("ExecStop", "ExecStopPost")
+    text = SOURCE_UNIT_FILES["jasper-usbgadget.service"].read_text(encoding="utf-8")
+    section = ""
+    starts = stops = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped
+            continue
+        if section != "[Service]" or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.partition("=")[0]
+        starts += key in start_keys
+        stops += key in stop_keys
+
+    assert source_intent._UNIT_PHASE_COMMAND_COUNTS["jasper-usbgadget.service"] == (
+        starts,
+        stops,
+    )
+    declared_start, declared_stop = source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
+        "jasper-usbgadget.service"
+    ]
+    # The modelled start phase plus the client margin must cover the worst start
+    # phase actually measured on jts4 (25.51 s, Starting -> Finished).
+    worst_observed_start_sec = 25.51
+    assert (
+        declared_start * starts + source_intent._UNIT_ACTION_CLIENT_MARGIN_SEC
+        >= worst_observed_start_sec
+    )
+    # And the restart bound must cover the worst measured restart with room:
+    # 33.64 s, Stopping -> Finished, on the pass that produced the false timeout.
+    assert (
+        source_intent._unit_action_timeout_sec("jasper-usbgadget.service", "restart")
+        > 33.64
+    )
+    assert (
+        source_intent._unit_action_timeout_sec("jasper-usbgadget.service", "stop")
+        > declared_stop * stops
+    )
+
+
+def test_failed_usb_on_cleanup_budget_matches_its_enumerated_waits() -> None:
+    """The rollback budget is its own blocking waits, not a hand-picked floor."""
+
+    gadget = "jasper-usbgadget.service"
+    query = source_intent._UNIT_STATE_QUERY_TIMEOUT_SEC
+    enumerated = (
+        # _ensure_active(usbsink, False): probe, stop, probe, failed-state reset
+        2 * query
+        + source_intent._unit_action_timeout_sec("jasper-usbsink.service", "stop")
+        + (2 * query + source_intent._RESET_FAILED_ACTION_TIMEOUT_SEC)
+        # _ensure_enabled(usbsink, False): probe, disable, probe
+        + source_intent._ENABLEMENT_TRANSITION_BUDGET_SEC
+        # recompose the gadget, stop it if audio survived, disarm coupling
+        + source_intent._unit_action_timeout_sec(gadget, "restart")
+        + source_intent._unit_action_timeout_sec(gadget, "stop")
+        + source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[source_intent._USB_COUPLING_UNIT]
+    )
+    assert source_intent._USB_FAILED_ON_CLEANUP_BUDGET_SEC == enumerated
 
 
 def test_control_unit_client_bounds_match_packaged_dropins() -> None:
