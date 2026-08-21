@@ -7876,3 +7876,118 @@ def test_sound_output_topology_repin_http_route_is_csrf_protected(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _save_topology(monkeypatch, tmp_path: Path, raw: dict) -> Path:
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(OutputTopology.from_mapping(raw), path=topology_path)
+    return topology_path
+
+
+def _passive_stereo_topology_raw() -> dict:
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "passive",
+        "name": "Passive pair",
+        "hardware": {"device_id": "hifiberry_dac8x", "physical_output_count": 8},
+        "speaker_groups": [
+            {
+                "id": side,
+                "label": side.title(),
+                "kind": side,
+                "mode": "full_range_passive",
+                "channels": [{
+                    "role": "full_range",
+                    "physical_output_index": index,
+                    "identity_verified": True,
+                }],
+            }
+            for index, side in enumerate(("left", "right"))
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    }
+
+
+def test_unconfirming_a_roleful_output_parks_the_speaker_at_the_click(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """#2814's A2 half: the effect lands at the click, not three deploys later.
+
+    Marking a driver lane "not confirmed" on an armed roleful box is the
+    household declaring doubt about which driver hangs where — the same hazard a
+    DAC swap creates. The graph selector's invariant already refuses to re-select
+    an approved graph for it, but that is the DURABLE half and would only land at
+    the next restart. This is the immediate half, and it reuses the re-pin's
+    exact seam rather than inventing a second mechanism.
+    """
+
+    _write_repin_fixture(
+        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
+    )
+    park_kwargs: dict = {}
+    _stub_repin_runtime(monkeypatch, park_kwargs)
+
+    sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left",
+        "role": "woofer",
+        "identity_verified": False,
+    })
+
+    assert park_kwargs["stay_parked"] is True
+    assert "confirm it again before audio resumes" in park_kwargs["parked_reason"]
+    saved = load_output_topology()
+    assert {
+        (group.id, channel.role): channel.identity_verified
+        for group in saved.speaker_groups
+        for channel in group.channels
+    }[("left", "woofer")] is False
+
+
+def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The park is scoped to the confirmed -> unconfirmed edge on a roleful box.
+
+    Confirming is the common commissioning action and must stay a plain durable
+    write; a passive layout has no crossover to protect; and a box that is
+    already unconfirmed is already parked, so a second un-confirm must not bounce
+    outputd again.
+    """
+
+    # Confirming a lane never parks — including the second lane of a box that is
+    # still unconfirmed elsewhere.
+    _write_repin_fixture(
+        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
+    )
+    park_kwargs: dict = {}
+    _stub_repin_runtime(monkeypatch, park_kwargs)
+    sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left", "role": "woofer", "identity_verified": True,
+    })
+    assert park_kwargs == {}
+
+    # Already unconfirmed: the box is parked, so a second un-confirm is a write.
+    sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left", "role": "woofer", "identity_verified": False,
+    })
+    assert park_kwargs["stay_parked"] is True
+    park_kwargs.clear()
+    sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "right", "role": "woofer", "identity_verified": False,
+    })
+    assert park_kwargs == {}
+
+    # A passive layout carries no crossover: an unconfirmed lane is a channel
+    # swap, not a driver hazard, and it keeps playing.
+    _save_topology(monkeypatch, tmp_path, _passive_stereo_topology_raw())
+    park_kwargs.clear()
+    sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left", "role": "full_range", "identity_verified": False,
+    })
+    assert park_kwargs == {}

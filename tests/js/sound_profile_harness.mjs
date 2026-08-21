@@ -7053,6 +7053,57 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
   return { repinOfferDisclosesWhatIsKeptAndWhatMustBeRedone: true };
 }
 
+async function testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent() {
+  // #2814/A2: the server parks the speaker on this write, so the dialog has to
+  // say so and read as destructive. Confirming keeps its plain, non-danger copy.
+  const topology = activeTwoWayTopologyPayload();
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+      topology_revision: "sha256:armed",
+    })),
+    "./active-speaker/channel-identity": () => Promise.resolve(response({
+      output_topology: topology,
+      topology_revision: "sha256:unconfirmed",
+    })),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const seen = [];
+  globalThis.__jtsConfirm = async (message, options) => {
+    seen.push({ message, options });
+    return false;
+  };
+
+  for (const verified of ["false", "true"]) {
+    harness.dispatchClick({
+      "data-act": "mark-output-identity",
+      "data-group-id": "main",
+      "data-role": "woofer",
+      "data-verified": verified,
+      "data-label": "Main speaker woofer on DAC output 1",
+    });
+    await harness.flush(); await harness.flush(); await harness.flush();
+  }
+
+  const [unconfirm, confirm] = seen;
+  if (!unconfirm ||
+      !unconfirm.message.includes("goes silent until you confirm it again") ||
+      unconfirm.options.danger !== true) {
+    fail("un-confirming a lane must warn that the speaker goes silent", {
+      unconfirm,
+    });
+  }
+  if (!confirm ||
+      confirm.message.includes("goes silent") ||
+      confirm.options.danger !== false) {
+    fail("confirming a lane must stay the plain, non-destructive dialog", {
+      confirm,
+    });
+  }
+  return { unconfirmingAnOutputWarnsThatTheSpeakerGoesSilent: true };
+}
+
 async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
   // Every exit from the action must leave the button clickable again: a wedged
   // "Pinning" needs a page reload to escape, which on a silenced speaker is the
@@ -8203,6 +8254,7 @@ results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
 results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testConfirmedOutputKeepsResetPreconditions());
 results.push(await testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone());
+results.push(await testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent());
 results.push(await testRepinDeclinedOrFailedClearsTheBusyFlag());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testFailedResetPreservesCommissioningPanels());
