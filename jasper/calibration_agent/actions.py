@@ -80,6 +80,9 @@ def run_validated_action_plan(
             audition_executor=audition_executor,
             commit_executor=commit_executor,
         )
+        # Concerns the packet recorded about this action ride out with its
+        # result rather than suppressing it: the operator weighs them.
+        result["policy_advisories"] = list(action.get("policy_advisories") or [])
         action_results.append(result)
         if isinstance(result.get("issue"), dict):
             issues.append(result["issue"])

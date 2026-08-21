@@ -17,9 +17,7 @@ def _prompt_package() -> dict:
             "artifact_schema_version": 1,
             "kind": "jts_advisor_context",
             "advisor_policy": {
-                "allowed_actions": [
-                    {"id": "explain", "allowed": True, "reasons": []},
-                ]
+                "advisory_actions": [{"id": "explain", "reasons": []}],
             },
         }
     )

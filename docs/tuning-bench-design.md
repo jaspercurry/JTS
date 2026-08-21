@@ -127,9 +127,14 @@ The amendment: **the most cross-stack piece already exists and is dead.**
 `actions.run_validated_action_plan` + the injected-`ActionExecutor` seam
 is precisely the layer-neutral, host-mediated apply runner a cross-stack
 agent needs — and the shipped P6 tuning LLM bypassed it
-(`correction_advisor._review_actions` is a parallel re-implementation,
-and `_advisor_packet_for_model` hand-writes the policy rather than
-calling `advisor_context._advisor_policy`). Roughly 55% of the package is
+(`correction_advisor._review_actions` is a parallel re-implementation).
+The second half of that finding — `_advisor_packet_for_model`
+hand-writing a policy rather than calling `advisor_context._advisor_policy`
+— is resolved: the hand-written list existed only to satisfy a per-action
+confidence veto in `response.py`, and retiring that veto under
+[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deleted the
+list along with it. `_advisor_policy` is now the single policy authority
+and emits advisories, not permissions. Roughly 55% of the package is
 live (model client, key provisioning, spend gate, interpret/propose
 routes), 45% dormant scaffold (`tools.py`, `cli.py`, `actions.py`,
 `sound_actions.py`, the runtime-read corpus — which the full-speaker
@@ -469,9 +474,12 @@ here for that session:
   persistence: ephemeral|persistent}`, `propose_setting_change` — making
   the strict response schema O(1) in layers.
 - **Resolve the fork:** merge `correction_advisor._review_actions` back
-  into `actions.run_validated_action_plan` (add a simulate executor);
-  one policy authority (delete the dormant `_advisor_policy`, whose
-  room-confidence-gates-taste-EQ coupling is a bug not to inherit).
+  into `actions.run_validated_action_plan` (add a simulate executor).
+  The policy half of this item is done — `_advisor_policy` is the one
+  authority, and its room-confidence-gates-taste-EQ coupling stopped
+  being a gate when the veto was retired: those reasons now ride out as
+  each action's `policy_advisories`, so there is no coupling left to
+  inherit, only provenance to carry.
 - Split `_SYSTEM_INSTRUCTIONS` into a layer-neutral core + per-layer
   fragments; `sound_actions.py` finally wires as the `preference`
   executor (reconciling the undeclared `advisor` audition mode).

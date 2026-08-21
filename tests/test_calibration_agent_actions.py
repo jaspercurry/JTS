@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 
@@ -18,26 +17,6 @@ def _context(tmp_path: Path) -> dict:
         bundle_dir=write_golden_correction_bundle(tmp_path),
     )
     return tools.build_intake(bundle)["advisor_context"]
-
-
-def _context_allowing_target_move(tmp_path: Path) -> dict:
-    """Golden context with the target-move action permitted by policy.
-
-    The shipped calibration policy packet does NOT list
-    ``propose_target_move`` (the CLI path rejects it as
-    ``action_not_allowed_by_context``), so a bare golden context can't
-    exercise the runner's target-move presentation branch. Appending the
-    allowed-action entry lets a VALIDATED target move reach the runner —
-    the defensive branch this test pins.
-    """
-    ctx = copy.deepcopy(_context(tmp_path))
-    ctx["advisor_policy"]["allowed_actions"].append({
-        "id": "propose_target_move",
-        "label": "may suggest a bounded shared-target move",
-        "allowed": True,
-        "reasons": [],
-    })
-    return ctx
 
 
 def _advisor_response_with_audition() -> dict:
@@ -190,11 +169,16 @@ def test_action_runner_presents_named_target_move_without_side_effect(
 ):
     """A validated named target move is presented, never executed.
 
-    Pins the runner's ``propose_target_move`` branch (defensive
-    completeness — production marks target moves ``applicable: False``,
-    so nothing dispatches them today). The honest shape is
-    presentation-only: ``presented`` + ``user_prompt_only`` + no DSP or
-    config mutation, exactly like ``recommend_remeasure``.
+    Also the regression for the removed confidence veto: the SHIPPED
+    golden packet does not list ``propose_target_move`` in its advisory
+    catalog, and this action used to be dropped for that absence alone
+    (``action_not_allowed_by_context``). It now reaches the runner from a
+    bare golden context — an absent catalog entry means "no concerns
+    recorded", never a refusal.
+
+    The honest shape is presentation-only: ``presented`` +
+    ``user_prompt_only`` + no DSP or config mutation, exactly like
+    ``recommend_remeasure``.
     """
     raw = {
         "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
@@ -208,7 +192,7 @@ def test_action_runner_presents_named_target_move_without_side_effect(
     }
     validation = response.validate_advisor_response(
         raw,
-        advisor_context=_context_allowing_target_move(tmp_path),
+        advisor_context=_context(tmp_path),
     )
     assert validation["accepted"] is True
 
@@ -273,7 +257,7 @@ def test_action_runner_presents_warmth_target_move_without_side_effect(
     }
     validation = response.validate_advisor_response(
         raw,
-        advisor_context=_context_allowing_target_move(tmp_path),
+        advisor_context=_context(tmp_path),
     )
     assert validation["accepted"] is True
 

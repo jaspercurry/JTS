@@ -6487,12 +6487,7 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         or _strategy.DEFAULT_CORRECTION_STRATEGY_ID
     )
     bounds = strat.to_dict()
-    packet = {
-        "advisor_policy": {"allowed_actions": [
-            {"id": "propose_correction_peq_adjustment", "allowed": True, "reasons": []},
-        ]},
-        "correction": {"strategy_bounds": bounds},
-    }
+    packet = {"correction": {"strategy_bounds": bounds}}
     validation = advisor_response.validate_advisor_response(
         {
             "artifact_schema_version": advisor_response.RESPONSE_SCHEMA_VERSION,

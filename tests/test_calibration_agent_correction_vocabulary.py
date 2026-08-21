@@ -15,12 +15,6 @@ from jasper.calibration_agent import response as R
 
 def _ctx(*, cuts_only=True, max_boost=3.0, max_total_boost=0.0):
     return {
-        "advisor_policy": {
-            "allowed_actions": [
-                {"id": "propose_correction_peq_adjustment", "allowed": True, "reasons": []},
-                {"id": "propose_target_move", "allowed": True, "reasons": []},
-            ]
-        },
         "correction": {
             "strategy_bounds": {
                 "f_low_hz": 20.0,
@@ -232,12 +226,23 @@ def test_prohibited_yaml_still_blocked_on_correction_action():
     assert any(i["code"] == "prohibited_fields_present" for i in v["issues"])
 
 
-def test_correction_action_blocked_when_policy_denies():
+def test_policy_reasons_ride_out_as_provenance_never_veto():
+    """The exact payload the confidence veto used to drop.
+
+    A packet whose advisory catalog records a concern about this action no
+    longer refuses it: the in-bounds proposal validates, and the concern
+    rides out on the action as ``policy_advisories`` for the model and the
+    household to weigh (``docs/measurement-loop-doctrine.md`` — heuristics
+    propose, the downstream simulate/acceptance/confirm/apply gates
+    dispose).
+    """
     ctx = _ctx()
-    ctx["advisor_policy"]["allowed_actions"] = [
-        {"id": "propose_correction_peq_adjustment", "allowed": False,
-         "reasons": ["low confidence"]},
-    ]
+    ctx["advisor_policy"] = {
+        "advisory_actions": [
+            {"id": "propose_correction_peq_adjustment",
+             "reasons": ["low confidence"]},
+        ],
+    }
     v = R.validate_advisor_response(
         _resp({
             "type": R.ACTION_PROPOSE_CORRECTION_PEQ,
@@ -246,8 +251,35 @@ def test_correction_action_blocked_when_policy_denies():
         }),
         advisor_context=ctx,
     )
+    assert v["accepted"]
+    assert not any(i["code"] == "action_not_allowed_by_context" for i in v["issues"])
+    assert v["validated_action_plan"][0]["policy_advisories"] == ["low confidence"]
+
+
+def test_out_of_bounds_correction_still_rejected_with_a_concern_recorded():
+    """Removing the veto did not loosen the bounds gate.
+
+    Same concern-carrying packet, but a cut deeper than the strategy's
+    ``max_cut_db``: the schema/bounds gate still refuses it. The doctrine
+    retires prediction vetoes, not the caps a proposal is measured against.
+    """
+    ctx = _ctx()
+    ctx["advisor_policy"] = {
+        "advisory_actions": [
+            {"id": "propose_correction_peq_adjustment",
+             "reasons": ["low confidence"]},
+        ],
+    }
+    v = R.validate_advisor_response(
+        _resp({
+            "type": R.ACTION_PROPOSE_CORRECTION_PEQ,
+            "correction_peqs": [{"freq_hz": 62.0, "q": 3.0, "gain_db": -40.0}],
+            "rationale": "x",
+        }),
+        advisor_context=ctx,
+    )
     assert not v["accepted"]
-    assert any(i["code"] == "action_not_allowed_by_context" for i in v["issues"])
+    assert v["validated_action_plan"] == []
 
 
 def test_response_contract_advertises_new_actions():

@@ -273,70 +273,69 @@ def _safe_doc_path(raw_path: Any) -> str | None:
     return path.name
 
 
-def _allowed_action(
+def _policy_action(
     action_id: str,
     label: str,
     *,
-    allowed: bool = True,
     reasons: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": action_id,
         "label": label,
-        "allowed": bool(allowed),
         "reasons": reasons or [],
     }
 
 
 def _advisor_policy(evidence_packet: dict[str, Any]) -> dict[str, Any]:
+    """The action catalog plus the concerns that ride with each action.
+
+    ``reasons`` is PROVENANCE, not permission: the room-measurement
+    confidence gates below describe how much the evidence supports a
+    preference-EQ move, and the model and the household weigh that. They
+    never veto the proposal — per ``docs/measurement-loop-doctrine.md``
+    a heuristic proposes and the downstream simulate / acceptance /
+    confirm / apply gates dispose. An action absent from this catalog
+    simply carries no concerns; absence is not a refusal.
+    """
     permissions = (
         (evidence_packet.get("capability_permissions") or {}).get("permissions")
         or {}
     )
     safe = permissions.get("safe_peq") or {}
     balanced = permissions.get("balanced_peq") or {}
-    bounded_peq_allowed = bool(safe.get("allowed") or balanced.get("allowed"))
     bounded_peq_reasons = sorted(set(
         [str(reason) for reason in safe.get("reasons") or []]
         + [str(reason) for reason in balanced.get("reasons") or []]
     ))
     commit_reasons = list(bounded_peq_reasons)
-    if not bounded_peq_allowed:
-        commit_reasons.append("bounded PEQ confidence gate is blocked")
+    if not (safe.get("allowed") or balanced.get("allowed")):
+        commit_reasons.append("bounded PEQ confidence gate did not clear")
     return {
         "mode": "read_only_first_bounded_actions",
-        "allowed_actions": [
-            _allowed_action(
+        "advisory_actions": [
+            _policy_action(
                 "explain",
                 "may explain collected evidence and its confidence",
             ),
-            _allowed_action(
+            _policy_action(
                 "recommend_remeasure",
                 "may recommend remeasurement or missing evidence collection",
             ),
-            _allowed_action(
-                "suggest_bounded_peq_strategy",
-                "may suggest bounded PEQ strategy within JTS confidence gates",
-                allowed=bounded_peq_allowed,
-                reasons=bounded_peq_reasons,
-            ),
-            _allowed_action(
+            _policy_action(
                 "propose_preference_eq_audition",
                 (
                     "may propose an ephemeral preference-EQ audition that "
                     "JTS can validate and load through the existing /sound/ "
                     "audition path"
                 ),
-                allowed=bounded_peq_allowed,
                 reasons=bounded_peq_reasons,
             ),
-            _allowed_action(
+            _policy_action(
                 "request_user_approved_preference_commit",
                 (
                     "may request saving a bounded preference-EQ profile only "
                     "after explicit user confirmation"
                 ),
-                allowed=bounded_peq_allowed,
                 reasons=commit_reasons,
             ),
         ],

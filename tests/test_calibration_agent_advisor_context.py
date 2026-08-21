@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jasper.calibration_agent import tools
+from jasper.calibration_agent import advisor_context, response, tools
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
@@ -152,8 +152,8 @@ def test_advisor_context_is_redacted_and_permissioned(tmp_path: Path):
         "generate_fir_taps",
     } <= prohibited
     assert any(
-        action["id"] == "propose_preference_eq_audition" and action["allowed"]
-        for action in context["advisor_policy"]["allowed_actions"]
+        action["id"] == "propose_preference_eq_audition"
+        for action in context["advisor_policy"]["advisory_actions"]
     )
     assert context["advisor_policy"]["execution_boundary"]["model_may_execute"] is False
     assert context["measurement"]["mic_calibration"]["raw_serial_redacted"] is True
@@ -201,6 +201,66 @@ def test_advisor_context_redacts_nested_confidence_browser_audio(
     assert "browser_audio_report" not in context["quality"]["confidence"]
     assert "Private Nested Browser Label" not in encoded
     assert "nested-device-id" not in encoded
+
+
+def test_confidence_concerns_survive_from_packet_to_validated_action() -> None:
+    """End-to-end provenance: a doubt is carried, never spent as a refusal.
+
+    The two seams the removed veto used to sit between: the policy builder
+    turns the capability-permission reasons into the action's advisories,
+    and the response validator rides them out on the accepted action. Both
+    are mutation-sensitive — stub either reason computation to return
+    nothing and this fails.
+    """
+    packet = {
+        "capability_permissions": {
+            "permissions": {
+                "safe_peq": {"allowed": False, "reasons": ["single position only"]},
+                "balanced_peq": {
+                    "allowed": False,
+                    "reasons": ["estimated SNR is low"],
+                },
+            },
+        },
+    }
+
+    policy = advisor_context._advisor_policy(packet)
+    audition = next(
+        action for action in policy["advisory_actions"]
+        if action["id"] == "propose_preference_eq_audition"
+    )
+    assert audition["reasons"] == ["estimated SNR is low", "single position only"]
+    # The commit action inherits the same doubts plus the un-cleared gate,
+    # worded as a concern rather than a block.
+    commit = next(
+        action for action in policy["advisory_actions"]
+        if action["id"] == "request_user_approved_preference_commit"
+    )
+    assert "bounded PEQ confidence gate did not clear" in commit["reasons"]
+
+    validation = response.validate_advisor_response(
+        {
+            "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
+            "kind": "jts_advisor_response",
+            "action_plan": [{
+                "type": response.ACTION_AUDITION,
+                "rationale": "Try a small bass lift as preference EQ.",
+                "profile": {
+                    "enabled": True,
+                    "curve_id": "harman",
+                    "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+                    "parametric_bands": [],
+                },
+            }],
+        },
+        advisor_context={"advisor_policy": policy},
+    )
+
+    assert validation["accepted"] is True
+    assert validation["validated_action_plan"][0]["policy_advisories"] == [
+        "estimated SNR is low",
+        "single position only",
+    ]
 
 
 def test_advisor_context_uses_stable_manifest_error_reason(
