@@ -266,9 +266,13 @@ the ruling and those documents are stale.
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
   a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
   document's campaign-ordering authority ("what supersedes what")
-  transfers here. R21 lives only in that document; the 80-20 plan's landed
-  R14–R20 record remains historical truth and is **not** superseded (it
-  stands in the compatible list below).
+  transfers here. The apply-vertical candidate is recorded only there — the
+  `R21` token elsewhere in the tree (accept-receipt provenance in
+  `crossover_v2/contracts.py` and the crossover-measurement-v2 ledger)
+  names shipped vocabulary, not established as the same round and
+  unaffected by this cancellation. The 80-20 plan's landed R14–R20 record
+  remains historical truth and is **not** superseded (it stands in the
+  compatible list below).
 - `docs/llm-native-tuning-workbench-plan.md` — its planning-authority claim
   and its §5.5 "experiment workspace is the one new mutation owner" are
   superseded: `play_program` is the single activation door (invariant 5),
