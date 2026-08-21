@@ -147,12 +147,15 @@ required NQPTP cold-start ceiling plus margin
 (the old generic 15-second client was observed false-timing-out on JTS4), while
 USB gets 40 seconds because `jasper-usbsink-wait-card` may validly consume 30
 seconds before the oneshot readiness marker becomes active (exited). The USB
-gadget's client covers the USB network plan, the hardware-role reconciler it
-re-queues on every start (a `Type=oneshot` with `RemainAfterExit=no`, so it is
-never still complete), and fan-in, since it orders and pulls all three; the
-gadget is also modelled at one declared ceiling per `Exec*` command rather than
-one per phase, because all 13 of its starts on JTS4 since the 2026-08-17 boot
-ran past the declared five seconds without PID 1 terminating any of them.
+gadget's client covers all three units it orders and pulls: the USB network
+plan, the hardware-role reconciler it re-queues on every start (a
+`Type=oneshot` with `RemainAfterExit=no`, so it is never still complete), and
+fan-in — counted at its start ceiling *plus* its `RestartSec`, because the
+failed-On rollback can recompose the gadget while fan-in is still in restart
+backoff. The gadget is also modelled at one declared ceiling per `Exec*`
+command rather than one per phase, because all 13 of its starts on JTS4 since
+the 2026-08-17 boot ran past the declared five seconds without PID 1
+terminating any of them.
 Owner starts retain their larger
 65/125-second clients, deliberately beyond the target oneshots' 60/120-second
 bounds. The reconciler itself has a separate advisory lock so boot, deploy,
