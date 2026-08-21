@@ -738,3 +738,36 @@ def test_the_document_is_json_serialisable(shortlist) -> None:
     document = prediction_document(shortlist)
 
     assert json.loads(json.dumps(document)) == document
+
+
+def test_a_document_with_nothing_scored_is_still_STRICT_json() -> None:
+    """The refused walk is where a non-finite number reaches the artifact.
+
+    The round-trip above cannot catch this and never could: Python's own
+    ``json`` accepts ``float("inf")`` on the way out and reads its bare
+    ``Infinity`` token back in, so ``loads(dumps(x)) == x`` holds for a
+    document no other parser will take. ``allow_nan=False`` is the assertion
+    that matches the claim — the document is JSON, not almost-JSON.
+
+    The fixture is a walk where every candidate is refused below a declared
+    floor. That is one of the two ways nothing scores — the production
+    docstring names both, "every candidate refused, or no legal band to walk" —
+    and either leaves the best total with nothing real to report.
+    """
+    bounds = _bounds(
+        declared_floor_hz_by_role={"tweeter": 1500.0, "woofer": 5000.0},
+    )
+    refused = _search(bounds=bounds)
+
+    # The precondition, asserted rather than assumed: nothing scored at all.
+    assert refused.bracket.members == ()
+    assert refused.bracket.n_in_region == 0
+    assert refused.refusals
+
+    document = prediction_document(refused)
+
+    # ``None``, following ``crossover_envelope_v2._finite`` — never an infinity.
+    assert document["bracket"]["best_total"] is None
+    # THE PIN: strict JSON. Without it, `inf` here serialises to a bare
+    # `Infinity` that is not valid JSON and that a strict reader rejects.
+    assert json.loads(json.dumps(document, allow_nan=False)) == document

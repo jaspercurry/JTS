@@ -58,22 +58,26 @@ a caveat that goes unread.
 calls :func:`search_candidates` yet, and the reason is one missing input rather
 than a missing caller. :func:`~.forward_model.driver_plants` needs measurements
 duck-typed on ``role`` / ``angle_deg`` / ``freqs_hz`` / ``complex_tf`` /
-``band_hz``, and **a banked round contains none of that**: ``complex_tf``
+``band_hz``, and **no banked artifact carries that object**: ``complex_tf``
 appears in no serializer anywhere in the tree, and
 :func:`~.round_views.load_banked_round` returns per-POSITION real magnitude
 curves with ``degrees=None`` and one COMBINED
 :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`. Per-driver complex
-transfer functions live only in a live session's memory
-(:class:`~.spatial.LateralPoseCurve`, itself missing ``angle_deg``) and are
-dropped when it ends.
+transfer functions are built only in a live session's memory
+(:class:`~.spatial.LateralPoseCurve`, itself missing ``angle_deg``), and it is
+that DERIVED object which is dropped when the session ends — the raw material
+it was derived from survives in the bundle.
 
-So the wiring is a capture-side loader, not an adapter: deconvolve the banked
-per-pose WAVs, join ``role`` and ``position_deg`` from the positions sidecars,
-and take the driven band from the sweep segment. Four smaller inputs ARE
-derivable from a banked round today and are named here so the next session does
-not re-derive them: ``protection_by_role`` via
-:func:`~jasper.active_speaker.branch_chain.confirmed_protection_sections` on
-``design-draft.json`` then :func:`~.priors.role_transfers`; the required-band
+So the wiring is a capture-side loader rather than an adapter, and it is a
+loader the tree can already half-build: deconvolve the banked per-pose WAVs,
+which :func:`~.round_views.verify_pose_curve` already does against each
+capture's own banked program, then join ``role`` and ``position_deg`` from the
+positions sidecars and take the driven band from the sweep segment. Four
+smaller inputs ARE derivable from a banked round today and are named here so
+the next session does not re-derive them: ``protection_by_role`` via
+:func:`~jasper.active_speaker.branch_chain.confirmed_protection_sections`,
+which takes the confirmed safety profile AND ``role_targets``, then
+:func:`~.priors.role_transfers`; the required-band
 narrowing via :func:`~.priors.candidate_required_band_hz`, which is the one
 owner and whose whole-band default refused every banked armrun arm;
 ``delay_step_us`` as ``1e6 / camilla_config_contract.DEFAULT_SAMPLE_RATE``; and
@@ -460,12 +464,13 @@ class Bracket:
     This is what a model with :data:`RANKING_AUTHORITY_BRACKET_ONLY` is
     actually allowed to say, expressed as the artifact rather than promised in
     prose. The thing it replaces was a top-N "ranked" list, and the top-N was
-    wrong on its own terms twice over: :func:`_rank` re-sorts the flat region
-    by distance from the incumbent, so the head of the list was the SMALLEST
-    CHANGE inside the region and not the walk's minimum; and a small
+    wrong on its own terms twice over: the ranking helper it used re-sorted the
+    flat region by distance from the incumbent, so the head of the list was the
+    SMALLEST CHANGE inside the region and not the walk's minimum; and a small
     ``shortlist_size`` could then truncate the minimum out of the list
     entirely, while ``landscape["branches"]`` went on holding a strictly better
-    point the reader never saw.
+    point the reader never saw. That helper is gone, so this paragraph names it
+    by what it did rather than by a symbol a reader would search for in vain.
 
     ``members`` fixes both by construction. The walk's argmin is always one,
     every branch (order x polarity) that reaches the flat region contributes
@@ -500,7 +505,9 @@ class Bracket:
     delay_us_range: tuple[float, float]
     gain_db_range: tuple[float, float]
     epsilon_db: float
-    best_total: float
+    #: The region's best advisory total, or ``None`` when nothing scored.
+    #: Never an infinity — see :func:`_flat_region`.
+    best_total: float | None
     n_in_region: int
     guaranteed: int
     requested_size: int
@@ -1100,19 +1107,27 @@ def _refine(
 
 def _flat_region(
     scored: Sequence[tuple[_GridPoint, XoverCandidate, ObjectiveScore]],
-) -> tuple[list[tuple[_GridPoint, XoverCandidate, ObjectiveScore]], float]:
+) -> tuple[list[tuple[_GridPoint, XoverCandidate, ObjectiveScore]], float | None]:
     """Every scored point within :data:`FLAT_MINIMUM_EPSILON_DB` of the best.
 
     The region, not an ordering of it — ordering is a separate question with a
     separate answer, and conflating the two is what let a tie-break masquerade
-    as a ranking. A point exactly at the epsilon boundary is inside it, the
-    same direction :func:`_rank` takes for the same reason.
+    as a ranking. A point exactly at the epsilon boundary is INSIDE the region:
+    the boundary belongs to "these are the same", which is the direction that
+    prefers the smaller change.
+
+    The best total is ``None`` when nothing scored — every candidate refused,
+    or no legal band to walk. Not an infinity: this number is published in a
+    JSON document, and ``float("inf")`` leaves ``json.dumps`` emitting a bare
+    ``Infinity`` token that is not JSON and that a strict parser rejects. The
+    package already has one answer for this, and it is
+    ``crossover_envelope_v2._finite``'s: a non-finite number becomes ``None``.
     """
     totals = [
         entry[2].total for entry in scored if entry[2].total is not None
     ]
     if not totals:
-        return [], math.inf
+        return [], None
     best = min(totals)
     return (
         [
