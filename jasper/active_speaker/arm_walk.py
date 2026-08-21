@@ -775,7 +775,7 @@ class ArmWalk:
                     released=len(self._served),
                     detail=(
                         "the session is in flight, nothing is pending, and "
-                        "nothing has been released -- either a rejected "
+                        "nothing has been released since -- either a rejected "
                         "capture is waiting on a human (#2506), or a session "
                         "went quiet without publishing a terminal status"
                     ),
