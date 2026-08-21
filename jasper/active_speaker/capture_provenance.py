@@ -39,6 +39,12 @@ statefile claimed versus what was running. ``kind`` is the only field that
 can never read ``null`` — it is structural knowledge held by the branch that
 loaded (or did not load) the graph, not a probe that can fail.
 
+``graph.fingerprint`` compares to OTHER capture provenance and to nothing
+else. It is not the same quantity as a round receipt's
+``entry_graph_fingerprint``, which is the applied profile record's
+``candidate_fingerprint`` (``correction_crossover_v2._active_graph_fingerprint``)
+— a different namespace answering a different question.
+
 Nothing here may ever break a capture. Every read is individually guarded, and
 :func:`record_capture_provenance` wraps the lot in a blind belt; an unreadable
 surface leaves its field ``None`` and contributes its name to one WARN

@@ -4649,6 +4649,14 @@ is the running graph's own hash, so the two corroborate. `config_path` is
 recorded precisely BECAUSE it is the misleading label: side by side with the
 other two it shows what the statefile claimed versus what was playing.
 
+**Do not join `graph.fingerprint` to a round receipt's
+`entry_graph_fingerprint`.** They are different namespaces answering different
+questions: this one is `running_graph_fingerprint` over CamillaDSP's own
+re-serialization of the graph that was playing, while the receipt's is the
+applied Layer-A profile record's `candidate_fingerprint`
+(`_active_graph_fingerprint`). Sidecar fingerprints compare to each other —
+same graph or not — and to nothing else.
+
 Every field except `kind` can read `null` — `kind` is structural knowledge the
 branch holds, not a probe that can fail. An unreadable surface nulls only its
 own field and contributes its name to one WARN
