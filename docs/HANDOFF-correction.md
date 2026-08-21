@@ -2127,6 +2127,22 @@ POST /crossover/v2/apply     v2 conductor: apply the reviewed measured candidate
                              runs the stage-2 openability preflight immediately
                              before committing and refuses fail-closed if the
                              speaker could not then verify the result
+POST /crossover/v2/republish v2 conductor: make a previously-minted, BANKED
+                             candidate the live published one again, so the
+                             apply route above can reach it by fingerprint.
+                             Body `{"fingerprint": …}`. The apply slot is
+                             single-valued and every measure session rewrites
+                             it; the candidates stay write-once in their
+                             bundles, so this is the lookup that slot never
+                             had. Re-verifies the artifact through the same
+                             tamper check apply runs, republishes it with its
+                             MINTING session + bundle ids, and applies nothing
+                             — every apply gate still runs on the next request.
+                             Refuses fail-closed on a missing, unverifiable, or
+                             ambiguously-owned candidate, and on one whose
+                             crossover differs from what /sound declares (that
+                             apply needs the minting session's
+                             sound_design_revision, which no bundle carries)
 POST /crossover/v2/restore   v2 conductor: the verify_fail "Undo" — reload the
                              pre-candidate applied profile handle_v2_apply
                              stashed at apply time and clear the durable v2

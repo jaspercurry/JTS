@@ -667,11 +667,13 @@ the module, not a second copy here.
 | [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector as pure functions over small arrays. No session state, no I/O, no import of the flow. |
 | [`session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
 | [`measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
+| [`candidate_bank.py`](../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint — bounded scan, integrity through the candidate model, minting lineage resolved. The one owner of that shape (`applied_speaker_evidence` reads it from here). |
 | [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |
 | [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | The Layer-1a fit engine: `fit_driver_linearization` and its budgets, bands, and give-back. |
 | [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
 | [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
+| [`web/correction_crossover_v2_republish.py`](../jasper/web/correction_crossover_v2_republish.py) | The republish door (7a): re-publish a banked candidate by fingerprint so apply can reach it. A host sibling reaching `correction_crossover_v2` late-bound, like the relay/wired providers. |
 | [`web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider (#2662): the plan-walk hosting (`build_v2_run_and_consume`), the phone phase ladder, purge grace, and link-TTL policy. The host re-publishes its names. |
 | [`web/correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider (#2662 W2b): source resolution (`JASPER_CAPTURE_SOURCE` + registry usbid match), the local plan walk against the same conductor hooks, and the answer mint. |
 | [`audio_measurement/wired_capture.py`](../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the re-homed ≥128-zero dropout scan, 32-bit WAV encode. |
@@ -729,6 +731,39 @@ the module, not a second copy here.
    `expected_candidate_fingerprint`, translates the measured fingerprint into
    the baseline candidate's own fingerprint at the host boundary, then rides
    the existing `apply_baseline_profile` transaction with rollback.
+    **7a. A BANKED candidate can be made live again — `POST
+    /correction/crossover/v2/republish` (`{"fingerprint": …}`).** The apply
+    slot is single-valued and has no lookup: `persist_conductor_state` rebuilds
+    `state["candidate"]` from a fresh literal on every persist, so each measure
+    session overwrites it and a failed one leaves it `None` — with every
+    candidate still sitting write-once in its bundle. `handle_v2_republish`
+    ([`web/correction_crossover_v2_republish.py`](../jasper/web/correction_crossover_v2_republish.py),
+    a host sibling reaching the host late-bound like the relay/wired providers)
+    locates one by its own fingerprint
+    ([`candidate_bank.py`](../jasper/active_speaker/candidate_bank.py),
+    also the single owner of where banked candidates live — the neighbouring
+    `applied_speaker_evidence` reader shares it), re-verifies it through
+    `MeasuredCrossoverCandidate.from_mapping` (the same recompute-and-compare
+    apply runs; there is no second hasher), and republishes it with its
+    **minting** `session_id` + `evidence.bundle_session_id`, because those two
+    are the path `_reopen_candidate_artifact` rebuilds. It publishes
+    `accepted_phases: ["measure"]` and clears `applied` and the accepted-Sound
+    pair, because `_update_current_review`'s compare-and-set gates on all four
+    and a failed CAS would apply the graph while recording nothing — leaving
+    Undo unreachable. It applies nothing: every admission gate (declared floor,
+    `_assert_stage_2_can_open` → `resolve_conductor_context`, excitation
+    ceilings, the seam's own fingerprint guard) reads live SSOT, so no state
+    write can satisfy one. **Two things it will not do:** restore `verify_priors`
+    — they belong to the stage-1 conductor that ran the fit, so they are
+    cleared rather than inherited and a post-apply VERIFY grades INDETERMINATE,
+    never a false pass; and republish a candidate whose crossover differs from
+    what `/sound` declares — that apply rewrites the declaration and needs the
+    minting session's `sound_design_revision`, which no bundle carries, so it
+    refuses naming that fact instead of inventing a revision. Journal:
+    `event=correction.crossover_v2_banked_candidate_found` (the scan),
+    `…_candidate_republished` (success), and `…_republish_refused` carrying a
+    machine `code=` — an incident-recovery door refuses out loud, since an
+    operator reaches it only when something has already gone wrong.
 8. **Undo survives everything.** `handle_v2_apply` stashes the
    `pre_apply_profile` and `persist_conductor_state` carries it
    *unconditionally* across every snapshot, so `handle_v2_restore` can pin a

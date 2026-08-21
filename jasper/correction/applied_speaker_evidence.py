@@ -64,7 +64,6 @@ module reports ``evidence_absent`` for it.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
@@ -72,21 +71,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker import candidate_bank
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-# How many candidate artifacts to examine before giving up. The bundle root is
-# retention-capped (DEFAULT_SESSIONS_MAX_BUNDLES = 12) with a handful of
-# crossover_v2 sessions each, so a healthy box is far under this. The cap is
-# here so a pathological directory cannot turn a read into a directory walk of
-# unbounded cost on a 1 GB Pi.
-MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
-
-# Largest candidate.json this reader will parse. The publisher's own artifact
-# budget is smaller; this is a defensive ceiling on untrusted-size input, not a
-# contract.
-MAX_CANDIDATE_BYTES = 4 * 1024 * 1024
+# WHERE banked candidates live, how many are scanned, and how large one may be
+# are all owned by the bank reader
+# (:mod:`jasper.active_speaker.candidate_bank`) — this module asks
+# the SAME question of the SAME artifacts, just keyed on the applied profile's
+# stamped fingerprint instead of a caller's, so a second copy of the on-disk
+# shape here would drift on the first layout change and leave the two readers
+# disagreeing about what is missing. Re-exported rather than merely imported:
+# both names are part of this module's tested surface.
+MAX_CANDIDATE_ARTIFACTS_SCANNED = candidate_bank.MAX_CANDIDATE_ARTIFACTS_SCANNED
+MAX_CANDIDATE_BYTES = candidate_bank.MAX_CANDIDATE_BYTES
 
 
 @dataclass(frozen=True)
@@ -180,44 +179,21 @@ def _expected_candidate_fingerprint(profile: Mapping[str, Any]) -> str:
 def _candidate_artifact_paths(root: Path) -> list[Path]:
     """Every published candidate.json under the bundle root, newest last.
 
-    Sorted so the scan is deterministic; the fingerprint decides the match, not
-    the ordering.
-
-    When there are more than :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` artifacts
-    the scan keeps the **newest** ones (``[-MAX:]``, not ``[:MAX]``). Which end
-    is dropped is load-bearing, not a detail: the applied profile's candidate
-    is overwhelmingly likely to be among the most recent, so truncating from
-    the front would discard exactly the artifact being looked for and report a
-    false ``candidate_stale`` — evidence silently disabled on the boxes with
-    the most measurement history.
+    Delegates to the bank reader, which owns the on-disk shape and the scan
+    bound (including WHY the truncation keeps the newest end). Kept as a named
+    local seam because this module's own tests drive it directly.
     """
-    try:
-        found = sorted(root.glob("*/evidence/v1/artifacts/crossover_v2/*/candidate.json"))
-    except OSError:
-        return []
-    return found[-MAX_CANDIDATE_ARTIFACTS_SCANNED:]
+    return candidate_bank.candidate_artifact_paths(root)
 
 
 def _load_candidate(path: Path) -> Any | None:
-    """Parse one candidate artifact, or None if it cannot be trusted."""
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverCandidate,
-        MeasuredCrossoverCandidateError,
-    )
+    """Parse one candidate artifact, or None if it cannot be trusted.
 
-    try:
-        if path.stat().st_size > MAX_CANDIDATE_BYTES:
-            return None
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    try:
-        return MeasuredCrossoverCandidate.from_mapping(raw)
-    except (MeasuredCrossoverCandidateError, TypeError, ValueError):
-        # from_mapping refuses malformed / tampered candidates with its own
-        # typed error. A refusal here is "this artifact is not usable
-        # evidence", which is the same answer as "not found" for our purposes.
-        return None
+    The bank reader owns the byte cap and runs the candidate model's own
+    tamper check. A refusal there is "this artifact is not usable evidence",
+    which is the same answer as "not found" for our purposes.
+    """
+    return candidate_bank.load_candidate_artifact(path)
 
 
 def resolve_applied_speaker_evidence(
