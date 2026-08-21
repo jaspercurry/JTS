@@ -115,10 +115,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
   var outputTopology = {
-    loading: false, saving: false, resetting: false, payload: null, draft: null,
+    loading: false, saving: false, resetting: false, repinning: false,
+    payload: null, draft: null,
     identity: null, clockDomain: null, activeRoute: null,
     observedHardware: null,
     hardwareAdoption: null,
+    hardwareRepin: null,
     revision: null,
     identitySaving: '', protectionSaving: '',
     error: '', dirty: false, touched: false
@@ -3898,6 +3900,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</dl>' +
       '</details>' +
     '</div>';
+    var repinOffer = renderOutputRepinOffer();
     var mismatchCard = mismatch ? (
       '<div class="output-card output-card--hardware">' +
         '<div class="output-card__head">' +
@@ -3906,13 +3909,53 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<span class="status-pill status-pill--blocked">blocked</span>' +
         '</div>' +
         '<p class="setting-row__hint">Reconnect the saved hardware or reconfigure the speaker layout after the attached hardware is stable. JTS keeps the saved topology intact.</p>' +
+        repinOffer +
         (outputTopology.hardwareAdoption && outputTopology.hardwareAdoption.allowed ?
-          '<button type="button" class="btn btn--primary" data-act="reset-output-topology"' +
-            (outputTopology.loading || outputTopology.saving || outputTopology.resetting ? ' disabled' : '') +
+          '<button type="button" class="btn ' +
+            (repinOffer ? 'btn--ghost' : 'btn--primary') +
+            '" data-act="reset-output-topology"' +
+            (outputHardwareActionBusy() ? ' disabled' : '') +
             '>Use detected hardware</button>' : '') +
       '</div>'
     ) : '';
     return mismatchCard + savedCard;
+  }
+  function outputHardwareActionBusy() {
+    return !!(outputTopology.loading || outputTopology.saving ||
+      outputTopology.resetting || outputTopology.repinning);
+  }
+  function renderOutputRepinOffer() {
+    // The narrow alternative to "Use detected hardware": the same rig with a
+    // replacement DAC of the same kind in the same USB port. The server decides
+    // whether that is true (hardware_repin is null unless it is); this only
+    // discloses what will be kept and what the household must still redo.
+    var plan = outputTopology.hardwareRepin;
+    if (!plan) return '';
+    var replaced = Number(plan.replaced_child_count) || 0;
+    var labels = Array.isArray(plan.reverify_output_labels) ?
+      plan.reverify_output_labels : [];
+    return '<div class="output-repin">' +
+      '<p class="output-repin__title">' + escapeHtml(
+        replaced === 1
+          ? 'Same speakers, one new DAC'
+          : 'Same speakers, ' + replaced + ' new DACs'
+      ) + '</p>' +
+      '<p class="setting-row__hint">' + escapeHtml(
+        'JTS can keep your speaker layout, driver roles, output assignment and ' +
+        'tuning, and pin ' + (replaced === 1 ? 'the new unit' : 'the new units') +
+        ' in place of the old.'
+      ) + '</p>' +
+      '<p class="setting-row__hint">' + escapeHtml(
+        'You still confirm ' +
+        (labels.length ? labels.join(' and ') : 'the affected outputs') +
+        ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+        're-run the 15-minute drift measurement for the new pair.'
+      ) + '</p>' +
+      '<button type="button" class="btn btn--primary" data-act="repin-output-topology"' +
+        (outputHardwareActionBusy() ? ' disabled' : '') + '>' +
+        escapeHtml(outputTopology.repinning ? 'Pinning' : 'Keep setup, pin the new DAC') +
+      '</button>' +
+    '</div>';
   }
   function renderOutputStageCard(topology) {
     var groups = outputGroups(topology);
@@ -5162,6 +5205,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
     else if (act === 'reset-output-topology') { resetOutputTopology(); }
+    else if (act === 'repin-output-topology') { repinOutputTopology(); }
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(t); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
@@ -5547,12 +5591,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
     outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
+    outputTopology.hardwareRepin = payload && payload.hardware_repin || null;
     i2sHat = payload && payload.i2s_hat || i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;
     outputTopology.resetting = false;
+    outputTopology.repinning = false;
     outputTopology.loading = false;
     outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
@@ -6826,6 +6872,71 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     render();
   }
+  async function repinOutputTopology() {
+    if (outputTopology.repinning) return;
+    var plan = outputTopology.hardwareRepin;
+    if (!plan) return;
+    var labels = Array.isArray(plan.reverify_output_labels) ?
+      plan.reverify_output_labels : [];
+    var ok = await jtsConfirm(
+      'JTS keeps your speaker layout, driver roles, output assignment and ' +
+      'tuning, and pins the DAC attached now. You then confirm ' +
+      (labels.length ? labels.join(' and ') : 'the affected outputs') +
+      ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+      're-run the drift measurement for the new pair.',
+      // danger: the speaker goes silent immediately and the pair's drift
+      // measurement is dropped, so a stray Enter must not land on confirm.
+      {title: 'Pin the new DAC?', confirmLabel: 'Pin the new DAC', danger: true}
+    );
+    if (!ok) return;
+    outputTopology.repinning = true;
+    outputTopology.error = '';
+    render();
+    try {
+      var resp = await fetch('./output-topology/repin', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          topology_revision: outputTopology.revision,
+          detected_hardware_identity: outputTopology.hardwareAdoption &&
+            outputTopology.hardwareAdoption.identity
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) {
+        if (resp.status === 409 && payload.output_topology) {
+          ingestOutputTopology(payload);
+          status(payload.error ||
+            'Speaker setup or detected hardware changed. Review it and try again.',
+            true);
+          render();
+          return;
+        }
+        throw new Error(payload.error || 'pinning the new DAC failed');
+      }
+      ingestOutputTopology(payload);
+      // The commissioning design SURVIVES a re-pin, so nothing about it is
+      // cleared here (unlike the reset above). Only the in-flight ramp is
+      // stopped, because the server parked the graph it was pulsing.
+      stopCommissionAutoRamp('');
+      await refreshCommissioningView();
+      // Let the backend's own current step win: identity is now unverified for
+      // the replaced lanes, so the derived default lands on the right rung.
+      outputStepOverride = '';
+      var repinStatus = payload && payload.repin || {};
+      if (repinStatus.status === 'needs_attention') {
+        outputTopology.error = repinStatus.message ||
+          'The new DAC was pinned, but JTS requires attention before continuing.';
+        status(outputTopology.error, true);
+      } else {
+        status(repinStatus.message || 'Pinned the new DAC and kept your speaker setup.');
+      }
+    } catch (e) {
+      outputTopology.repinning = false;
+      status('Could not pin the new DAC: ' + e.message, true);
+    }
+    render();
+  }
   async function updateOutputChannelIdentity(button) {
     if (outputTopology.dirty) {
       status('Save the speaker layout before confirming outputs.', true);
@@ -6837,13 +6948,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
     var message = verified
       ? 'Confirm that "' + label + '" is wired to the driver shown here?'
-      : 'Mark "' + label + '" as not confirmed?';
+      // Un-confirming a driver lane silences the speaker at the click (the
+      // server parks it), so the dialog says so and reads as destructive.
+      : 'Mark "' + label + '" as not confirmed? The speaker goes silent until ' +
+        'you confirm it again and the speaker re-arms.';
     if (commissionAutoRamp.running || commissionPendingStep()) {
       stopCommissionAutoRamp('');
       var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
       if (!abortResult || !abortResult.ok) return;
     }
-    if (!await jtsConfirm(message, {danger: false})) {
+    if (!await jtsConfirm(message, {danger: !verified})) {
       status('Stopped the test tone. Output confirmation was not changed.');
       return;
     }
@@ -6865,7 +6979,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error(payload.error || 'channel identity update failed');
       ingestOutputTopology(payload);
       await refreshCommissioningView();
-      status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
+      // When the server had to silence the speaker for this write, its own
+      // sentence wins: only it knows whether the immediate park landed.
+      var park = payload && payload.identity_park;
+      if (park && park.message) {
+        status(park.message, !park.parked);
+      } else {
+        status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
+      }
     } catch (e) {
       outputTopology.identitySaving = '';
       outputTopology.error = e.message;

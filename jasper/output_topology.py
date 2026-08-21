@@ -45,7 +45,9 @@ from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
 from .output_hardware import (
+    OutputCardFact,
     OutputHardwareState,
+    detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
     normalize_output_device_id,
     topology_hardware_from_state,
@@ -2050,6 +2052,248 @@ def set_channel_protection_status(
         role=role_id,
         ambiguity_subject="protection",
         update=update,
+    )
+
+
+@dataclass(frozen=True)
+class CompositeRepinPlan:
+    """What a same-shape composite re-pin reuses, and what it re-verifies.
+
+    Data, not prose: a caller renders or re-checks the offer from these fields
+    rather than parsing a sentence. Deliberately the smallest shape the page and
+    the log actually consume — per-child before/after records were carried here
+    once and had no reader, and an unread payload field is a claim nothing keeps
+    true.
+    """
+
+    child_count: int
+    replaced_child_count: int
+    reverify_output_indexes: tuple[int, ...]
+    reverify_output_labels: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "child_count": self.child_count,
+            "replaced_child_count": self.replaced_child_count,
+            "reverify_output_indexes": list(self.reverify_output_indexes),
+            "reverify_output_labels": list(self.reverify_output_labels),
+        }
+
+
+def _composite_repin_pairs(
+    topology: OutputTopology,
+    observed: OutputHardwareState | None,
+) -> tuple[tuple[str, OutputChildDevice, OutputCardFact], ...] | None:
+    """Pair each saved composite child with the DAC now in its USB port.
+
+    Returns ``None`` unless the attached hardware is the SAME SHAPE as the
+    saved declaration — same profile, same physical output count, same child
+    count, one child of the same kind per saved USB port — so that the only
+    thing that can differ is WHICH physical unit is plugged into each port.
+    The classifier
+    (:func:`jasper.output_hardware.classify_output_cards`, projected through
+    ``detected_hardware_adoption_precondition``) is the authority on whether
+    the attached hardware is usable at all; this only compares its verdict
+    against the saved declaration.
+
+    The pairing anchor is ``usb_path`` — the sysfs port topology path, which
+    survives a unit swap in the same port and is the first identity token the
+    runtime child-order matcher already tries
+    (``jasper.output_hardware.dual_apple_runtime_mapping``). Serial cannot be
+    the anchor: it is the thing that changed. A DAC moved to a DIFFERENT port
+    is therefore not a re-pin — nothing then says which physical unit landed on
+    which lanes, and the saved speaker/role assignment has no anchor to keep.
+
+    ``physical_output_indexes`` are deliberately NOT compared against the
+    observed projection: observed lane order follows ALSA enumeration, which is
+    precisely what a saved topology exists to override. Those indexes are
+    declaration, and a re-pin preserves them.
+    """
+
+    if observed is None:
+        return None
+    if not detected_hardware_adoption_precondition(observed)["allowed"]:
+        return None
+    hardware = topology.hardware
+    # Two or more child DACs is what "composite" means in a saved topology
+    # (mirrors ``active_speaker.runtime_contract.topology_sink_is_composite``).
+    # A single-child DAC has no serial-keyed pairing contract to repair.
+    if len(hardware.child_devices) < 2:
+        return None
+    if normalize_output_device_id(observed.profile_id) != hardware.device_id:
+        return None
+    if observed.physical_output_count != hardware.physical_output_count:
+        return None
+    if len(observed.child_devices) != len(hardware.child_devices):
+        return None
+
+    saved_by_port: dict[str, OutputChildDevice] = {}
+    for child in hardware.child_devices:
+        if not child.usb_path or child.usb_path in saved_by_port:
+            return None
+        saved_by_port[child.usb_path] = child
+    attached_by_port: dict[str, OutputCardFact] = {}
+    for card in observed.child_devices:
+        if not card.usb_path:
+            return None
+        attached_by_port[card.usb_path] = card
+    if set(saved_by_port) != set(attached_by_port):
+        return None
+
+    pairs: list[tuple[str, OutputChildDevice, OutputCardFact]] = []
+    # dicts keep insertion order, so this walks the saved child order.
+    for port, child in saved_by_port.items():
+        card = attached_by_port[port]
+        if card.device_id != child.device_id or not card.serial:
+            return None
+        pairs.append((port, child, card))
+    return tuple(pairs)
+
+
+def _composite_repin_plan(
+    topology: OutputTopology,
+    pairs: tuple[tuple[str, OutputChildDevice, OutputCardFact], ...],
+) -> CompositeRepinPlan | None:
+    """Project paired children into a plan, or ``None`` when nothing changed."""
+
+    replaced = [
+        child for _port, child, card in pairs if child.serial != card.serial
+    ]
+    if not replaced:
+        return None
+    indexes = tuple(sorted({
+        index for child in replaced for index in child.physical_output_indexes
+    }))
+    return CompositeRepinPlan(
+        child_count=len(pairs),
+        replaced_child_count=len(replaced),
+        reverify_output_indexes=indexes,
+        reverify_output_labels=tuple(
+            topology.hardware.output_label(index) or f"Output {index + 1}"
+            for index in indexes
+        ),
+    )
+
+
+def composite_serial_repin_plan(
+    topology: OutputTopology,
+    observed: OutputHardwareState | None,
+) -> CompositeRepinPlan | None:
+    """Return the same-shape re-pin available for ``topology``, if any.
+
+    ``None`` means "not offerable": the attached hardware is a different shape,
+    is not usable, or is the very same pair of units already pinned.
+    """
+
+    pairs = _composite_repin_pairs(topology, observed)
+    if pairs is None:
+        return None
+    return _composite_repin_plan(topology, pairs)
+
+
+def repin_composite_child_serials(
+    topology: OutputTopology,
+    observed: OutputHardwareState | None,
+) -> OutputTopology:
+    """Return a copy pinned to the units now attached, keeping the design.
+
+    This is the NARROW counterpart to :func:`new_topology_draft`'s wipe. It
+    preserves everything a swapped dongle cannot invalidate — speaker groups,
+    roles, driver styles, physical-output assignment, protection status, the
+    crossover/commissioning design — and rewrites only what belongs to the
+    physical unit: each child's observed identity (serial, ALSA card, sysfs
+    path, controller).
+
+    Two things it must NOT carry over:
+
+    * ``identity_verified`` is cleared for every channel on a REPLACED child's
+      lanes. A household cannot be spared knowing which physical speaker the
+      new unit landed in, and the per-lane tone check
+      (:func:`channel_identity_report`) is what re-establishes it. This clear
+      RE-ARMS real refusals: ``startup_load``'s ``physical_identity_verified``
+      and ``staged_topology_matches_current`` gates, and ``path_safety``'s
+      ``route_verified`` / evidence-binding checks all fail until the
+      household re-confirms, so a re-pinned speaker cannot ARM on trust.
+
+      Those gates guard the next arm, not the graph a box is ALREADY playing,
+      so an armed box would otherwise keep playing through unconfirmed DACs —
+      on a roleful topology, the full-range-into-a-tweeter hazard class.
+      Silencing it is ONE promise kept in TWO halves, neither sufficient alone:
+
+      1. **Immediate**, same request:
+         ``runtime_convergence.park_and_commit_topology(stay_parked=True)``
+         skips graph selection and makes the park durable, so the effect lands
+         at the click.
+      2. **Durable**, every later pass:
+         ``runtime_contract.roleful_identity_confirmed`` gates the two
+         approved-active-runtime rungs of the graph selector. Without it the
+         park was LIVE-ONLY — the reconcile fired by that same request
+         re-selected the applied baseline, and audio returned at the next
+         ``jasper-camilla`` bounce, which every deploy and reboot performs.
+
+      Audio returns once every assigned lane is confirmed again and the box
+      re-arms — the arm ladder is one route to that, not the only one. This
+      function is pure: it clears the evidence, and both halves above belong to
+      its callers.
+    * ``clock_domain_evidence`` is dropped. The measurement is a property of
+      one PAIR of crystals; two units that never ran together have unmeasured
+      relative drift, and the composite contract is ``measured_sync_required``
+      (:func:`_dual_apple_clock_issues`). Dropping it is an HONESTY repair,
+      not a new gate: it stops the artifact claiming a passed measurement of
+      units that are no longer here, and returns
+      :func:`clock_domain_report` to its "no measurement yet" state. Verified
+      2026-08-21: no arm/load path reads that report — the stored-evidence
+      blockers are inert everywhere, so leaving the stale record instead would
+      refuse nothing either. The runtime backstop for an unmeasured pair
+      remains ``PairedCompositeSink``'s fail-closed delay-delta guard.
+
+    Raises ``OutputTopologyError`` when the attached hardware is not a
+    same-shape re-pin — callers offer this only after
+    :func:`composite_serial_repin_plan` returns a plan.
+    """
+
+    pairs = _composite_repin_pairs(topology, observed)
+    plan = _composite_repin_plan(topology, pairs) if pairs is not None else None
+    if pairs is None or plan is None:
+        raise OutputTopologyError(
+            "attached output hardware is not a same-shape re-pin of the saved "
+            "speaker setup"
+        )
+    reverify = set(plan.reverify_output_indexes)
+    composed = replace(
+        topology.hardware,
+        child_devices=tuple(
+            replace(
+                child,
+                serial=card.serial,
+                card_id=card.card_id,
+                stable_path=card.stable_path,
+                controller=card.controller,
+            )
+            for _port, child, card in pairs
+        ),
+        clock_domain_evidence=None,
+    )
+    # Round-trip through the artifact contract before it can be persisted: the
+    # rewritten fields are observed strings from the reconciler, and `replace`
+    # bypasses every check `from_mapping` owns (id shape, length caps, lane
+    # coverage). The sibling reset validates the hardware it adopts; so does this.
+    hardware = OutputHardware.from_mapping(composed.to_dict())
+    return replace(
+        topology,
+        hardware=hardware,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, identity_verified=False)
+                    if channel.physical_output_index in reverify
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
     )
 
 

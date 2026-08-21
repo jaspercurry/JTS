@@ -323,3 +323,86 @@ def test_flat_fallback_is_composed_before_load(
     assert calls == [str(flat)]
     assert controller.path_sets == [str(composed)]
     assert str(flat) not in controller.path_sets
+
+
+def test_stay_parked_skips_selection_so_a_re_pin_cannot_resume_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The postcondition behind #2814's copy: a re-pin leaves the box silent.
+
+    ``safe_graph_for_current_topology`` is identity-blind by design — it proves
+    a graph legal for the saved SHAPE, and a DAC re-pin changes no shape. So on
+    an ALREADY-ARMED box every rung it can reach resumes audio, through DACs
+    whose per-lane identity nobody has re-confirmed; on a roleful topology that
+    is the full-range-into-a-tweeter hazard class. The identity gates guard the
+    next ARM, not the graph already playing, which is why parking has to be the
+    committing caller's job.
+
+    Both halves are asserted from ONE stubbed selector: without ``stay_parked``
+    it is consulted and its playing graph is loaded (the hazard, demonstrated
+    rather than assumed); with it the selector is never called and the durable
+    parked graph is loaded instead.
+    """
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR", tmp_path
+    )
+    topology = _topology([])
+    playing = tmp_path / "approved_active_runtime.yml"
+    playing.write_text("the graph this box was playing", encoding="utf-8")
+    contract = parked_safe_graph_decision(topology).topology_contract
+    resumed = replace(
+        parked_safe_graph_decision(topology),
+        status="preserve_current",
+        selected_config_path=str(playing),
+        topology_contract=contract,
+    )
+    consulted: list[str] = []
+
+    def selector(*_args, **_kwargs):
+        consulted.append("selected")
+        return resumed
+
+    monkeypatch.setattr(
+        runtime_convergence, "safe_graph_for_current_topology", selector
+    )
+
+    resuming_controller = _Controller(tmp_path / "graph.lock")
+    asyncio.run(
+        runtime_convergence._converge_committed_topology(
+            topology,
+            controller=resuming_controller,
+            prior_config_path=str(playing),
+            profile_path=None,
+            config_dir=None,
+            coupling=None,
+        )
+    )
+
+    assert consulted == ["selected"]
+    assert resuming_controller.path_sets == [str(playing)]
+
+    parked_controller = _Controller(tmp_path / "graph.lock")
+    parked = asyncio.run(
+        runtime_convergence._converge_committed_topology(
+            topology,
+            controller=parked_controller,
+            prior_config_path=str(playing),
+            profile_path=None,
+            config_dir=None,
+            coupling=None,
+            stay_parked=True,
+            parked_reason="confirm the re-pinned outputs before audio resumes",
+        )
+    )
+
+    assert consulted == ["selected"], "stay_parked must not consult the selector"
+    assert parked.ok is True
+    assert parked.decision.status == "parked_muted"
+    assert parked.decision.reason == (
+        "confirm the re-pinned outputs before audio resumes"
+    )
+    assert parked_controller.path_sets == [
+        str(parked_safe_graph_decision(topology).selected_config_path)
+    ]
+    assert str(playing) not in parked_controller.path_sets

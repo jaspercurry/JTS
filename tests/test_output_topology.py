@@ -15,6 +15,7 @@ import pytest
 from jasper import output_topology as output_topology_mod
 from jasper.output_hardware import (
     OutputCardFact,
+    OutputHardwareState,
     classify_output_cards,
     write_state as write_output_hardware_state,
 )
@@ -32,11 +33,13 @@ from jasper.output_topology import (
     SpeakerChannel,
     channel_identity_report,
     clock_domain_report,
+    composite_serial_repin_plan,
     hardware_from_env,
     load_output_topology,
     load_output_topology_snapshot,
     load_output_topology_strict,
     new_topology_draft,
+    repin_composite_child_serials,
     save_output_topology,
     set_channel_identity_verified,
     set_channel_protection_status,
@@ -104,6 +107,43 @@ def _dual_apple_hardware(*, include_evidence: bool = True) -> dict:
     return hardware
 
 
+def _dual_apple_observation(
+    *,
+    serial_a: str = "DWH53530FHL2FN3AC",
+    serial_b: str = "DWH53530FLL2FN3A3",
+    port_b: str = "usb1/1-1",
+    same_bus: bool = True,
+) -> OutputHardwareState:
+    """Classify the two attached Apple dongles the saved fixture pins.
+
+    ``port_b`` moves the second dongle to another port on the SAME USB bus, so
+    the classifier still calls the pair ready — that is the case a re-pin's
+    port anchor must reject on its own merits rather than inheriting a refusal
+    from ``same_bus=False`` (which the classifier already blocks).
+    """
+
+    return classify_output_cards([
+        OutputCardFact(
+            card_id="A",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial=serial_a,
+            usb_path="usb1/1-2",
+            busnum="1",
+            controller="xhci-hcd.0",
+            endpoint_sync="SYNC",
+        ),
+        OutputCardFact(
+            card_id="A_1",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial=serial_b,
+            usb_path=port_b if same_bus else "usb3/3-1",
+            busnum="1" if same_bus else "3",
+            controller="xhci-hcd.0" if same_bus else "xhci-hcd.1",
+            endpoint_sync="SYNC",
+        ),
+    ])
+
+
 def _write_dual_apple_observation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -115,26 +155,7 @@ def _write_dual_apple_observation(
         str(tmp_path / "output_hardware.json"),
     )
     write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FLL2FN3A3",
-                usb_path="usb1/1-1" if same_bus else "usb3/3-1",
-                busnum="1" if same_bus else "3",
-                controller="xhci-hcd.0" if same_bus else "xhci-hcd.1",
-                endpoint_sync="SYNC",
-            ),
-        ]),
+        _dual_apple_observation(same_bus=same_bus),
         path=tmp_path / "output_hardware.json",
     )
 
@@ -1533,3 +1554,158 @@ def test_sub_crossover_bounds_mirror_profile() -> None:
 
     assert SUB_CROSSOVER_HZ_LO == PROFILE_LO == SHARED_LO == 40.0
     assert SUB_CROSSOVER_HZ_HI == PROFILE_HI == SHARED_HI == 200.0
+
+
+def _dual_apple_active_topology() -> OutputTopology:
+    """A fully commissioned dual-Apple pair: one active 2-way per side."""
+
+    def group(group_id: str, kind: str, woofer: int, tweeter: int) -> dict:
+        return {
+            "id": group_id,
+            "label": group_id.title(),
+            "kind": kind,
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "driver_style": "sealed_cone",
+                    "physical_output_index": woofer,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "driver_style": "compression_horn",
+                    "physical_output_index": tweeter,
+                    "identity_verified": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                    "startup_muted": True,
+                },
+            ],
+        }
+
+    return _topology(
+        groups=[group("left", "left", 0, 1), group("right", "right", 2, 3)],
+        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
+        hardware=_dual_apple_hardware(),
+    )
+
+
+def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() -> None:
+    """A swapped dongle re-pins its own identity and nothing else.
+
+    The opposite of ``new_topology_draft``'s wipe: speaker groups, roles,
+    driver styles, physical-output assignment, protection status, routing and
+    the declaration-owned child fields all survive. Only the replaced unit's
+    observed identity is rewritten, only ITS lanes lose identity confirmation,
+    and the pair's drift evidence is dropped because it described crystals that
+    are no longer both here.
+    """
+
+    before = _dual_apple_active_topology()
+    observed = _dual_apple_observation(serial_b="NEW-DONGLE-SERIAL")
+
+    plan = composite_serial_repin_plan(before, observed)
+    assert plan is not None
+    # Exactly one of the two was replaced, and the lanes name WHICH: 2-3 belong
+    # to the second child, so the untouched child's lanes stay out of it.
+    assert (plan.child_count, plan.replaced_child_count) == (2, 1)
+    assert plan.reverify_output_indexes == (2, 3)
+
+    after = repin_composite_child_serials(before, observed)
+
+    # Re-pinned: the swapped unit's observed identity, and nothing else.
+    assert [child.serial for child in after.hardware.child_devices] == [
+        "DWH53530FHL2FN3AC",
+        "NEW-DONGLE-SERIAL",
+    ]
+    assert after.hardware.clock_domain_evidence is None
+    # Preserved: everything keyed to physical output index, not to a serial.
+    assert [child.child_id for child in after.hardware.child_devices] == [
+        "left_dac",
+        "right_dac",
+    ]
+    assert [
+        child.physical_output_indexes for child in after.hardware.child_devices
+    ] == [(0, 1), (2, 3)]
+    assert after.routing == before.routing
+    assert [group.mode for group in after.speaker_groups] == ["active_2_way"] * 2
+    assert [
+        (channel.role, channel.driver_style, channel.physical_output_index,
+         channel.protection_status, channel.startup_muted)
+        for group in after.speaker_groups
+        for channel in group.channels
+    ] == [
+        (channel.role, channel.driver_style, channel.physical_output_index,
+         channel.protection_status, channel.startup_muted)
+        for group in before.speaker_groups
+        for channel in group.channels
+    ]
+    # Identity is cleared for the REPLACED child's lanes only.
+    assert {
+        (group.id, channel.role): channel.identity_verified
+        for group in after.speaker_groups
+        for channel in group.channels
+    } == {
+        ("left", "woofer"): True,
+        ("left", "tweeter"): True,
+        ("right", "woofer"): False,
+        ("right", "tweeter"): False,
+    }
+    assert channel_identity_report(after)["unverified_channel_count"] == 2
+    # A re-pin is not a second offer: the same hardware now matches the save.
+    assert composite_serial_repin_plan(after, observed) is None
+
+
+def test_composite_repin_is_offered_only_for_the_same_shape() -> None:
+    """Same profile, same lanes, same ports — differing only in which units.
+
+    Each rejection below is a case where nothing reliable says which physical
+    unit landed on which lanes, so the full declaration ladder stays the honest
+    answer.
+    """
+
+    topology = _dual_apple_active_topology()
+
+    # The very same two units: there is nothing to re-pin.
+    assert composite_serial_repin_plan(topology, _dual_apple_observation()) is None
+    # A replacement DAC in a DIFFERENT port, still a ready pair: the port
+    # anchor is gone, so nothing says which unit owns which lanes.
+    moved = _dual_apple_observation(serial_b="NEW", port_b="usb1/1-3")
+    assert moved.status == "ready"
+    assert composite_serial_repin_plan(topology, moved) is None
+    # Two DACs on different USB buses: the classifier already blocks the pair.
+    assert composite_serial_repin_plan(
+        topology,
+        _dual_apple_observation(serial_b="NEW", same_bus=False),
+    ) is None
+    # A different profile and physical output count entirely.
+    assert composite_serial_repin_plan(
+        topology,
+        classify_output_cards([
+            OutputCardFact(
+                card_id="A",
+                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+                serial="NEW",
+                usb_path="usb1/1-2",
+            ),
+        ]),
+    ) is None
+    # Hardware the classifier refuses to call ready is never adopted.
+    ready = _dual_apple_observation(serial_b="NEW")
+    assert ready.status == "ready"
+    assert composite_serial_repin_plan(topology, replace(ready, status="partial")) is None
+    assert composite_serial_repin_plan(topology, None) is None
+    # A single-DAC topology has no serial-keyed pairing contract to repair.
+    assert composite_serial_repin_plan(
+        _topology(groups=[_passive_main("mono", "mono", 0)]),
+        _dual_apple_observation(serial_b="NEW"),
+    ) is None
+
+
+def test_composite_repin_refuses_to_mutate_without_an_offer() -> None:
+    """The mutation is not a second, laxer door onto the same change."""
+
+    topology = _dual_apple_active_topology()
+    with pytest.raises(OutputTopologyError):
+        repin_composite_child_serials(topology, _dual_apple_observation())

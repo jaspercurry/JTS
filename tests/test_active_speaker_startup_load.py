@@ -22,7 +22,18 @@ from jasper.active_speaker.startup_load import (
     load_startup_load_state,
     rollback_protected_startup_config,
 )
-from jasper.output_topology import OutputTopology
+from jasper.output_hardware import (
+    APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    OutputCardFact,
+    OutputHardwareState,
+    classify_output_cards,
+)
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    repin_composite_child_serials,
+)
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -485,3 +496,130 @@ def test_startup_rollback_reports_snapshot_failure(
     assert "startup_rollback_failed" in {
         issue["code"] for issue in rollback["rollback"]["issues"]
     }
+
+
+def _composite_topology() -> OutputTopology:
+    """A commissioned dual-Apple pair: one active 2-way per side, all verified."""
+
+    def group(group_id: str, kind: str, woofer: int, tweeter: int) -> dict:
+        return {
+            "id": group_id,
+            "label": group_id.title(),
+            "kind": kind,
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": woofer,
+                    "identity_verified": True,
+                },
+                {
+                    "role": "tweeter",
+                    "physical_output_index": tweeter,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        }
+
+    def child(child_id: str, serial: str, port: str, indexes: list[int]) -> dict:
+        return {
+            "child_id": child_id,
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": "Apple USB-C audio adapter",
+            "serial": serial,
+            "usb_path": port,
+            "controller": "xhci-hcd.0",
+            "physical_output_indexes": indexes,
+        }
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "hardware": {
+            "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            "device_label": "Dual Apple USB-C DAC 4-channel pair",
+            "physical_output_count": 4,
+            "child_devices": [
+                child("left_dac", "SERIAL-A", "usb1/1-2", [0, 1]),
+                child("right_dac", "SERIAL-B", "usb1/1-1", [2, 3]),
+            ],
+        },
+        "speaker_groups": [group("left", "left", 0, 1), group("right", "right", 2, 3)],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
+def _composite_observation(*, serial_b: str) -> OutputHardwareState:
+    def card(card_id: str, serial: str, port: str) -> OutputCardFact:
+        return OutputCardFact(
+            card_id=card_id,
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial=serial,
+            usb_path=port,
+            busnum="1",
+            controller="xhci-hcd.0",
+            endpoint_sync="SYNC",
+        )
+
+    return classify_output_cards([
+        card("A", "SERIAL-A", "usb1/1-2"),
+        card("A_1", serial_b, "usb1/1-1"),
+    ])
+
+
+def test_repinned_composite_refuses_startup_load_until_identity_is_reconfirmed(
+    tmp_path: Path,
+) -> None:
+    """A swapped dongle cannot arm on the confirmation the old unit earned.
+
+    ``repin_composite_child_serials`` keeps the design but clears identity for
+    the replaced unit's lanes. That one clear must be enough for the gates that
+    ALREADY exist to refuse the protected startup load — the re-pin flow adds
+    no verification of its own, so if this stopped holding, a household could
+    swap a DAC and arm four drivers whose wiring nobody re-checked.
+
+    The assertion is a before/after FLIP, not ``load_allowed`` alone: a
+    composite cannot complete ``stage_protected_startup_config`` in a
+    hardware-free test, so ``load_allowed`` is already False on both sides and
+    proves nothing by itself. What the re-pin must own is that
+    ``physical_identity_verified`` was passing on this exact topology and stops
+    passing, and that the signature binding staged/path-safety evidence to the
+    topology moves — so a restage cannot silently reuse the old evidence.
+    """
+
+    from jasper.active_speaker.path_safety import topology_target_signature
+
+    before = _composite_topology()
+    staged = stage_protected_startup_config(
+        before,
+        config_path=tmp_path / "active_staged.yml",
+        metadata_path=tmp_path / "active_staged.json",
+        validate=_valid_config,
+        created_at="2026-06-04T12:00:00Z",
+    )
+    evidence = _write_path_safety(
+        tmp_path / "path_safety.json", topology=before, staged=staged
+    )
+
+    def gates_for(topology: OutputTopology) -> dict[str, bool]:
+        report = build_startup_load_preflight(
+            topology,
+            staged_config=staged,
+            path_safety_evidence_path=evidence,
+            validate=_valid_config,
+        )
+        assert report["load_allowed"] is False
+        return {gate["id"]: gate["passed"] for gate in report["required_gates"]}
+
+    after = repin_composite_child_serials(
+        before, _composite_observation(serial_b="SERIAL-NEW")
+    )
+
+    assert gates_for(before)["physical_identity_verified"] is True
+    assert gates_for(after)["physical_identity_verified"] is False
+    assert topology_target_signature(after) != topology_target_signature(before)

@@ -154,26 +154,45 @@ async def _converge_committed_topology(
     profile_path: str | Path | None,
     config_dir: str | Path | None,
     coupling: str | None,
+    stay_parked: bool = False,
+    parked_reason: str | None = None,
 ) -> RuntimeConvergenceResult:
-    decision = safe_graph_for_current_topology(
-        topology,
-        current_config_path=prior_config_path,
-        coupling=coupling,
-    )
-    try:
-        decision = compose_selected_flat_graph(
-            decision,
-            topology=topology,
+    if stay_parked:
+        # The committing caller says this topology change invalidated evidence
+        # the graph selector cannot see. ``safe_graph_for_current_topology`` is
+        # deliberately identity-blind — it proves a graph legal for the saved
+        # SHAPE, and every rung that could fire here (preserve_current on an
+        # approved active runtime, select_active_baseline, select_flat) would
+        # resume audio. So skip selection entirely and make the pre-commit park
+        # durable: silence is the only state that is honest about evidence the
+        # box no longer has. The household's route back is the arm ladder,
+        # whose gates own the missing evidence.
+        decision = parked_safe_graph_decision(
+            topology,
+            reason=parked_reason or (
+                "parked after a topology change that invalidated runtime evidence"
+            ),
+        )
+    else:
+        decision = safe_graph_for_current_topology(
+            topology,
+            current_config_path=prior_config_path,
             coupling=coupling,
-            profile_path=profile_path,
-            config_dir=config_dir,
         )
-    except (OSError, RuntimeError, ValueError, TypeError) as exc:
-        return RuntimeConvergenceResult(
-            decision,
-            False,
-            f"{type(exc).__name__}: {exc}",
-        )
+        try:
+            decision = compose_selected_flat_graph(
+                decision,
+                topology=topology,
+                coupling=coupling,
+                profile_path=profile_path,
+                config_dir=config_dir,
+            )
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            return RuntimeConvergenceResult(
+                decision,
+                False,
+                f"{type(exc).__name__}: {exc}",
+            )
     if not decision.ok or not decision.selected_config_path:
         return RuntimeConvergenceResult(decision, False, decision.reason)
     # Temporary pre-commit park is raw-only, but committed unconfigured intent
@@ -222,8 +241,24 @@ def park_and_commit_topology(
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     coupling: str | None = None,
+    stay_parked: bool = False,
+    parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
-    """Park, durably commit topology, then converge under one graph lock."""
+    """Park, durably commit topology, then converge under one graph lock.
+
+    ``stay_parked`` keeps the speaker silent after the commit instead of
+    converging onto a graph. Pass it when the committed change invalidated
+    evidence the graph selector cannot see; per-lane channel identity is one
+    such kind — see
+    :func:`jasper.output_topology.repin_composite_child_serials`.
+
+    This is only the IMMEDIATE half of that promise. A later reconcile, deploy,
+    or reboot re-decides from scratch, so whatever fact made the park necessary
+    must ALSO be visible to the selector — for identity that is
+    :func:`jasper.active_speaker.runtime_contract.roleful_identity_confirmed`.
+    Passing ``stay_parked`` without a matching durable half buys silence only
+    until the next ``jasper-camilla`` bounce.
+    """
 
     return asyncio.run(
         _park_and_commit_topology(
@@ -233,6 +268,8 @@ def park_and_commit_topology(
             profile_path=profile_path,
             config_dir=config_dir,
             coupling=coupling,
+            stay_parked=stay_parked,
+            parked_reason=parked_reason,
         )
     )
 
@@ -245,6 +282,8 @@ async def _park_and_commit_topology(
     profile_path: str | Path | None,
     config_dir: str | Path | None,
     coupling: str | None,
+    stay_parked: bool = False,
+    parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
     from jasper.dsp_apply import (
         CANONICAL_DSP_WRITER_LOCK_PATH,
@@ -296,6 +335,8 @@ async def _park_and_commit_topology(
             profile_path=profile_path,
             config_dir=config_dir,
             coupling=resolved_coupling,
+            stay_parked=stay_parked,
+            parked_reason=parked_reason,
         )
         return TopologyRuntimeMutationResult(
             parked=parked,

@@ -198,6 +198,25 @@ The first product-facing slice is intentionally non-audible:
 - `clock_domain_report` and the active playback-route capability expose that
   constrained composite clock to topology checks, but neither grants playback
   authority; the protected commission ramp owns per-driver audible tests.
+- Replacing one dongle with another of the same kind in the same USB port is a
+  **re-pin**, not a re-declaration. `output_topology.composite_serial_repin_plan`
+  offers it from `/sound/setup/`'s hardware-mismatch card when the attached
+  hardware is the same shape and differs only in which units are plugged in;
+  `repin_composite_child_serials` then rewrites each child's observed identity,
+  keeps the speaker/role/crossover design (all of which is keyed to physical
+  output index, never to a serial), clears `identity_verified` for the replaced
+  unit's lanes, and drops the pair's drift evidence. The re-pin adds no
+  verification of its own — it re-arms the existing ones. It also leaves the
+  speaker silent, in two halves: `park_and_commit_topology(stay_parked=True)`
+  parks it on the same request, and `roleful_identity_confirmed` gates the graph
+  selector's two approved-active-runtime rungs so no later reconcile, deploy, or
+  reboot can re-select the applied baseline. Audio returns once every assigned
+  lane is confirmed again and the box re-arms. The same pair of halves fires when
+  a household marks a driver lane "not confirmed" by hand — the same doubt about
+  which driver hangs where, self-declared — except there the cleared flag is
+  saved FIRST and the park is best-effort, so a park failure cannot discard the
+  doubt. A dongle moved to a DIFFERENT port is not offered a re-pin at all:
+  nothing then says which unit owns which lanes.
 - One DAC per speaker is disclosed, not enforced. When a saved speaker group's
   drivers land on two different child DACs, `evaluate_output_topology` reports a
   `speaker_group_spans_child_devices` warning naming the group and the children

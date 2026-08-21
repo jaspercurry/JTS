@@ -626,6 +626,47 @@ def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
 
 
+def roleful_identity_confirmed(
+    topology: OutputTopology,
+    contract: OutputContract | None = None,
+) -> bool:
+    """Whether every ASSIGNED lane of a ROLEFUL topology is confirmed by ear.
+
+    The one place this fact is stated, because two owners need the same answer:
+    :func:`safe_graph_for_current_topology` (which graph may be selected) and
+    the ``/sound/setup/`` identity endpoint (whether a write must park the
+    speaker). It reads the topology directly — the household's confirmation
+    lives there and nowhere else, so there is no marker file to drift.
+
+    Scope is deliberate and narrow:
+
+    * **Roleful only.** A passive full-range topology carries no crossover, so
+      an unconfirmed lane is a channel-swap annoyance, not a driver hazard.
+      ``requires_roleful_graph`` False answers True here and the flat rungs are
+      untouched.
+    * **Assigned lanes only.** An unassigned channel has no physical output to
+      confirm; it is already a topology blocker in its own right.
+
+    This is the UNVERIFIED direction. Its mirror —
+    ``test_safe_graph_preserves_staged_startup_after_identity_confirmation`` —
+    guards the CONFIRM direction, that flipping a lane back to verified must
+    not bounce a staged all-muted graph. The two do not meet: that test lands on
+    the ``GRAPH_ALL_MUTED_ACTIVE_STARTUP`` rung, which this predicate never
+    gates, and it reads a stale flag on the staged METADATA while this reads the
+    topology. Only the two approved-active-runtime rungs consult this.
+    """
+
+    contract = contract or classify_output_contract(topology)
+    if not contract.requires_roleful_graph:
+        return True
+    return all(
+        channel.identity_verified
+        for group in topology.speaker_groups
+        for channel in group.channels
+        if channel.physical_output_index is not None
+    )
+
+
 def topology_sink_is_composite(topology: OutputTopology) -> bool:
     """True iff the saved topology's output sink spans MULTIPLE child DACs.
 
@@ -4734,10 +4775,19 @@ def safe_graph_for_current_topology(
             current_graph=current_graph,
             preferred_graph=preferred_graph,
         )
+    # An approved active runtime graph drives roleful lanes at program level. It
+    # is only legal while the household still vouches for WHICH driver hangs on
+    # each of those lanes — a fact this selector was blind to until #2814, so a
+    # re-pinned (or explicitly un-confirmed) box re-selected its baseline on the
+    # next reconcile and resumed audio through drivers nobody had re-checked.
+    # Unconfirmed, both rungs below fall through to the staged all-muted /
+    # parked selection; confirming every assigned lane again releases them.
+    identity_confirmed = roleful_identity_confirmed(topology, contract)
     if (
         current_graph
         and current_graph.allowed
         and current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+        and identity_confirmed
     ):
         return SafeGraphDecision(
             status="preserve_current",
@@ -4751,6 +4801,7 @@ def safe_graph_for_current_topology(
         preferred_graph
         and preferred_graph.allowed
         and preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+        and identity_confirmed
     ):
         return SafeGraphDecision(
             status="select_active_baseline",
