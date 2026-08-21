@@ -54,6 +54,32 @@ prediction document so a consumer reading the artifact alone still sees it. It
 is printed, not merely documented, because a caveat that lives only in prose is
 a caveat that goes unread.
 
+**WHAT IS NOT WIRED, and exactly what is missing.** Nothing in ``jasper/``
+calls :func:`search_candidates` yet, and the reason is one missing input rather
+than a missing caller. :func:`~.forward_model.driver_plants` needs measurements
+duck-typed on ``role`` / ``angle_deg`` / ``freqs_hz`` / ``complex_tf`` /
+``band_hz``, and **a banked round contains none of that**: ``complex_tf``
+appears in no serializer anywhere in the tree, and
+:func:`~.round_views.load_banked_round` returns per-POSITION real magnitude
+curves with ``degrees=None`` and one COMBINED
+:class:`~jasper.active_speaker.flat_spec.FlatSpecReport`. Per-driver complex
+transfer functions live only in a live session's memory
+(:class:`~.spatial.LateralPoseCurve`, itself missing ``angle_deg``) and are
+dropped when it ends.
+
+So the wiring is a capture-side loader, not an adapter: deconvolve the banked
+per-pose WAVs, join ``role`` and ``position_deg`` from the positions sidecars,
+and take the driven band from the sweep segment. Four smaller inputs ARE
+derivable from a banked round today and are named here so the next session does
+not re-derive them: ``protection_by_role`` via
+:func:`~jasper.active_speaker.branch_chain.confirmed_protection_sections` on
+``design-draft.json`` then :func:`~.priors.role_transfers`; the required-band
+narrowing via :func:`~.priors.candidate_required_band_hz`, which is the one
+owner and whose whole-band default refused every banked armrun arm;
+``delay_step_us`` as ``1e6 / camilla_config_contract.DEFAULT_SAMPLE_RATE``; and
+the per-seat frozen reference via :func:`~.round_views.frozen_reference_grade`,
+which keys by ``position_id`` rather than by angle.
+
 Units are in every name: ``_hz``, ``_us``, ``_db``, ``_deg``.
 """
 from __future__ import annotations
@@ -92,14 +118,26 @@ __all__ = [
     "RANKING_AUTHORITY_BRACKET_ONLY",
     "RANKING_AUTHORITY_RANK",
     "REFINEMENT_FACTOR",
+    "SHORTLIST_SCHEMA_VERSION",
+    "Bracket",
     "RankedCandidate",
     "RankingAuthority",
     "SearchPlan",
     "Shortlist",
+    "ShortlistProvenance",
     "prediction_document",
     "search_candidates",
     "spearman_rho",
 ]
+
+#: The shape of :func:`prediction_document`'s output.
+#:
+#: A plain int and a module constant, the same shape
+#: :data:`~jasper.active_speaker.crossover_v2.evidence_packet.PACKET_SCHEMA_VERSION`
+#: takes, so a reader that already knows one artifact's versioning convention
+#: knows this one's. Bump when a consumer would have to change to keep reading
+#: the document.
+SHORTLIST_SCHEMA_VERSION = 1
 
 #: This search may choose which candidates are worth MEASURING.
 RANKING_AUTHORITY_BRACKET_ONLY = "bracket_only"
@@ -373,20 +411,142 @@ class RankedCandidate:
 
 
 @dataclass(frozen=True)
+class ShortlistProvenance:
+    """WHICH round, capture and speaker a prediction document speaks for.
+
+    Every field is the CALLER's to state, and every one defaults to ``None``.
+    This module reads no clock, no filesystem and no hostname — the same
+    posture :mod:`.evidence_packet` takes, where no ``datetime.now`` appears at
+    all. A module that stamped its own time would make two runs over identical
+    inputs produce different documents, which would break the determinism the
+    walk is built to guarantee and which a test asserts byte for byte.
+
+    ``generated_at`` is therefore a string the caller passes, expected as
+    ISO-8601 UTC. It is not validated here: this module has no opinion about
+    the caller's clock, and a parse it could only fail on would trade one
+    unverifiable field for one unverifiable exception.
+
+    ``identified`` is derived rather than declared, so a document cannot claim
+    to name its round while carrying nothing.
+    """
+
+    round_id: str | None = None
+    session_id: str | None = None
+    speaker_id: str | None = None
+    generated_at: str | None = None
+
+    @property
+    def identified(self) -> bool:
+        """Whether anything at all ties this document to a round."""
+        return any(
+            value is not None
+            for value in (self.round_id, self.session_id, self.speaker_id)
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "round_id": self.round_id,
+            "session_id": self.session_id,
+            "speaker_id": self.speaker_id,
+            "generated_at": self.generated_at,
+            "identified": self.identified,
+        }
+
+
+@dataclass(frozen=True)
+class Bracket:
+    """WHERE the flat minimum is, and a set of candidates that spans it.
+
+    This is what a model with :data:`RANKING_AUTHORITY_BRACKET_ONLY` is
+    actually allowed to say, expressed as the artifact rather than promised in
+    prose. The thing it replaces was a top-N "ranked" list, and the top-N was
+    wrong on its own terms twice over: :func:`_rank` re-sorts the flat region
+    by distance from the incumbent, so the head of the list was the SMALLEST
+    CHANGE inside the region and not the walk's minimum; and a small
+    ``shortlist_size`` could then truncate the minimum out of the list
+    entirely, while ``landscape["branches"]`` went on holding a strictly better
+    point the reader never saw.
+
+    ``members`` fixes both by construction. The walk's argmin is always one,
+    every branch (order x polarity) that reaches the flat region contributes
+    its own best, and so does every distinct corner — so a reader measuring the
+    members samples the region's SHAPE instead of one corner of it. Members are
+    emitted in incumbent-distance order, which is a PICK order for an operator
+    choosing what to measure first, never a ranking: with the H5 stamp at
+    bracket-only, position in this tuple carries no claim about the speaker.
+
+    The per-axis extents say how wide the minimum is in each variable the walk
+    moved. A 300 Hz-wide fc extent and a 20 us-wide delay extent are different
+    messages about what the next measurement should resolve, and a list of
+    points does not carry either one.
+
+    **This is provenance, not a gate** (``docs/measurement-loop-doctrine.md``
+    section 3: prediction-engine rankings "ride with the data ... [and] must
+    never refuse an experiment on [their] own"). A candidate outside these
+    extents is not forbidden — it is merely not one the walk found inside the
+    flat minimum. Nothing here refuses anything.
+
+    ``guaranteed`` is how many members the diversity rule itself required and
+    ``requested_size`` is what the plan asked for. When the first exceeds the
+    second the guarantee wins and both numbers are published, because silently
+    honouring a size cap by dropping the argmin is the exact failure this
+    class replaces.
+    """
+
+    members: tuple[RankedCandidate, ...]
+    fc_hz_range: tuple[float, float]
+    order_set: tuple[int, ...]
+    polarity_set: tuple[int, ...]
+    delay_us_range: tuple[float, float]
+    gain_db_range: tuple[float, float]
+    epsilon_db: float
+    best_total: float
+    n_in_region: int
+    guaranteed: int
+    requested_size: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "members": [entry.to_dict() for entry in self.members],
+            "extent": {
+                "fc_hz": list(self.fc_hz_range),
+                "order": list(self.order_set),
+                "polarity": list(self.polarity_set),
+                "delay_us": list(self.delay_us_range),
+                "gain_db": list(self.gain_db_range),
+            },
+            "epsilon_db": self.epsilon_db,
+            "best_total": self.best_total,
+            "n_in_region": self.n_in_region,
+            "guaranteed": self.guaranteed,
+            "requested_size": self.requested_size,
+            "member_order": (
+                "distance from the incumbent — a PICK order for an operator "
+                "choosing what to measure first, never a ranking"
+            ),
+            "extent_is_provenance": (
+                "a candidate outside these extents is not forbidden; the walk "
+                "simply did not find it inside the flat minimum"
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class Shortlist:
-    """The ranked few, the incumbent, and everything the walk refused.
+    """The bracket, the incumbent, and everything the walk refused.
 
     ``incumbent`` is always present and always evaluated — ``select_fc``'s S9.8
     discipline kept verbatim: the configured candidate is in the evaluated set,
     an alternative must beat it, and keeping configured is an honest verdict.
-    It is NOT in ``ranked`` unless it earned a place there on its own score.
+    It is NOT in the bracket unless it earned a place there on its own score.
 
     ``authority`` is the H5 stamp. While it is
-    :data:`RANKING_AUTHORITY_BRACKET_ONLY`, ``ranked`` is a list of candidates
-    worth MEASURING and its ORDER is not a claim about the speaker.
+    :data:`RANKING_AUTHORITY_BRACKET_ONLY`, :attr:`Bracket.members` names the
+    candidates worth MEASURING and their ORDER is not a claim about the
+    speaker.
     """
 
-    ranked: tuple[RankedCandidate, ...]
+    bracket: Bracket
     incumbent: RankedCandidate
     bounds: CandidateBounds
     authority: RankingAuthority
@@ -664,9 +824,14 @@ def search_candidates(
     exactly the case where a household most needs to see what it is running
     graded beside the alternatives. Its refusal is recorded.
 
-    Ranking is by advisory total, ties broken by distance from the incumbent
-    (:func:`_incumbent_distance`) so a flat minimum resolves to the smallest
-    change rather than to whichever grid point numpy visited first.
+    The result is a :class:`Bracket` rather than a ranked top-N: the flat
+    minimum's per-axis extent, plus members chosen so the walk's argmin, every
+    branch in the region and every corner in it are all represented. Distance
+    from the incumbent (:func:`_incumbent_distance`) orders the members, so a
+    flat minimum still resolves toward the smallest change rather than toward
+    whichever grid point numpy visited first — but it orders WITHIN the
+    bracket and no longer decides membership, which is what let a truncated
+    list lose the minimum.
     """
     refusals: list[tuple[str, str]] = []
     evaluate = _evaluator(
@@ -733,15 +898,27 @@ def search_candidates(
     for branch in sorted(winners):
         _score(_refine(winners[branch], bounds, plan, incumbent))
 
-    ordered = _rank(scored, incumbent_point)
+    region, best_total = _flat_region(scored)
+    selected, guaranteed = _bracket_members(
+        region, incumbent_point, requested_size=plan.shortlist_size,
+    )
+    extents = _axis_extents(region)
     incumbent_primary = incumbent_score.primary
-    ranked = tuple(
-        RankedCandidate(
-            candidate=candidate,
-            score=score,
-            domination=_domination(score, incumbent_score),
-        )
-        for _point, candidate, score in ordered[: max(0, plan.shortlist_size)]
+    bracket = Bracket(
+        members=tuple(
+            RankedCandidate(
+                candidate=candidate,
+                score=score,
+                domination=_domination(score, incumbent_score),
+            )
+            for _point, candidate, score in selected
+        ),
+        epsilon_db=FLAT_MINIMUM_EPSILON_DB,
+        best_total=best_total,
+        n_in_region=len(region),
+        guaranteed=guaranteed,
+        requested_size=int(plan.shortlist_size),
+        **extents,
     )
     landscape["evaluated"] = len(scored)
     landscape["incumbent_total"] = incumbent_score.total
@@ -749,7 +926,7 @@ def search_candidates(
         None if incumbent_primary is None else incumbent_primary.residual_db
     )
     return Shortlist(
-        ranked=ranked,
+        bracket=bracket,
         incumbent=incumbent_ranked,
         bounds=bounds,
         authority=authority,
@@ -921,38 +1098,143 @@ def _refine(
                 )
 
 
-def _rank(
+def _flat_region(
     scored: Sequence[tuple[_GridPoint, XoverCandidate, ObjectiveScore]],
-    incumbent_point: _GridPoint,
-) -> list[tuple[_GridPoint, XoverCandidate, ObjectiveScore]]:
-    """Sort by score, then resolve the flat minimum toward the incumbent.
+) -> tuple[list[tuple[_GridPoint, XoverCandidate, ObjectiveScore]], float]:
+    """Every scored point within :data:`FLAT_MINIMUM_EPSILON_DB` of the best.
 
-    Two passes rather than one comparator: the epsilon is measured from the BEST
-    score, which is not known until everything is scored. Inside the flat region
-    the order is by distance from the incumbent; outside it the order is by
-    score. A point exactly at the epsilon boundary is inside it — the boundary
-    belongs to "these are the same", which is the direction that prefers the
-    smaller change.
+    The region, not an ordering of it — ordering is a separate question with a
+    separate answer, and conflating the two is what let a tie-break masquerade
+    as a ranking. A point exactly at the epsilon boundary is inside it, the
+    same direction :func:`_rank` takes for the same reason.
     """
-    if not scored:
-        return []
-    ordered = sorted(
-        scored,
+    totals = [
+        entry[2].total for entry in scored if entry[2].total is not None
+    ]
+    if not totals:
+        return [], math.inf
+    best = min(totals)
+    return (
+        [
+            entry for entry in scored
+            if entry[2].total is not None
+            and entry[2].total - best <= FLAT_MINIMUM_EPSILON_DB
+        ],
+        float(best),
+    )
+
+
+def _bracket_members(
+    region: Sequence[tuple[_GridPoint, XoverCandidate, ObjectiveScore]],
+    incumbent_point: _GridPoint,
+    *,
+    requested_size: int,
+) -> tuple[list[tuple[_GridPoint, XoverCandidate, ObjectiveScore]], int]:
+    """One point per branch, one per corner — each its group's best — then fill.
+
+    Two grouping rules, each answering a question a single point cannot:
+
+    * **one per branch** (order x polarity), because branches are different
+      FILTERS and a region that spans two of them is telling the operator the
+      measurement has to decide between shapes, not nudge a number.
+    * **one per distinct corner**, because the corner is the axis a crossover
+      argument is actually about, and sampling one corner five times at five
+      delays would measure the delay axis while the fc extent went untested.
+
+    Each slot takes its own group's BEST point rather than an arbitrary member,
+    walking ``by_total``, so the set is a lower envelope of the region rather
+    than a scatter through it.
+
+    **The walk's argmin is a member, and the branch rule is why** — stated
+    rather than enforced twice. Every point belongs to exactly one branch, so
+    the region's best point IS its own branch's best, and the branch rule takes
+    each branch's best; an explicit argmin line alongside it would be a second
+    guarantee of one fact and could drift from the first. That membership is
+    the concrete defect the top-N had: with the flat region re-sorted toward
+    the incumbent and a small size cap, the minimum fell off the end of the
+    list while ``landscape["branches"]`` still held it. A test pins the
+    membership against ``landscape``, so the guarantee is checked at the
+    property rather than at the line that happens to deliver it.
+
+    ``requested_size`` then fills from what is left, nearest the incumbent
+    first. It is a target and not a ceiling: when the three guarantees already
+    exceed it they win, and the caller is told so through
+    :attr:`Bracket.guaranteed`.
+    """
+    if not region:
+        return [], 0
+    by_total = sorted(
+        region,
         key=lambda entry: (
             entry[2].total if entry[2].total is not None else math.inf,
             _incumbent_distance(entry[0], incumbent_point),
         ),
     )
-    best = ordered[0][2].total
-    if best is None:
-        return ordered
-    flat = [
-        entry for entry in ordered
-        if entry[2].total is not None
-        and entry[2].total - best <= FLAT_MINIMUM_EPSILON_DB
-    ]
-    flat.sort(key=lambda entry: _incumbent_distance(entry[0], incumbent_point))
-    return flat + ordered[len(flat):]
+    chosen: dict[tuple[int, int, float, float, float], Any] = {}
+
+    def _take(entry: tuple[_GridPoint, XoverCandidate, ObjectiveScore]) -> None:
+        point = entry[0]
+        chosen.setdefault(
+            (point.order, point.polarity, point.fc_hz, point.delay_us, point.gain_db),
+            entry,
+        )
+
+    for group in (
+        lambda point: (point.order, point.polarity),
+        lambda point: point.fc_hz,
+    ):
+        seen: set[Any] = set()
+        for entry in by_total:
+            key = group(entry[0])
+            if key in seen:
+                continue
+            seen.add(key)
+            _take(entry)
+    guaranteed = len(chosen)
+
+    for entry in sorted(
+        region, key=lambda entry: _incumbent_distance(entry[0], incumbent_point),
+    ):
+        if len(chosen) >= max(0, requested_size):
+            break
+        _take(entry)
+
+    members = sorted(
+        chosen.values(),
+        key=lambda entry: _incumbent_distance(entry[0], incumbent_point),
+    )
+    return members, guaranteed
+
+
+def _axis_extents(
+    region: Sequence[tuple[_GridPoint, XoverCandidate, ObjectiveScore]],
+) -> dict[str, Any]:
+    """How wide the flat minimum is on each axis the walk moved."""
+    points = [entry[0] for entry in region]
+    if not points:
+        return {
+            "fc_hz_range": (0.0, 0.0),
+            "order_set": (),
+            "polarity_set": (),
+            "delay_us_range": (0.0, 0.0),
+            "gain_db_range": (0.0, 0.0),
+        }
+    return {
+        "fc_hz_range": (
+            min(point.fc_hz for point in points),
+            max(point.fc_hz for point in points),
+        ),
+        "order_set": tuple(sorted({point.order for point in points})),
+        "polarity_set": tuple(sorted({point.polarity for point in points})),
+        "delay_us_range": (
+            min(point.delay_us for point in points),
+            max(point.delay_us for point in points),
+        ),
+        "gain_db_range": (
+            min(point.gain_db for point in points),
+            max(point.gain_db for point in points),
+        ),
+    }
 
 
 def _evaluator(
@@ -1044,7 +1326,9 @@ def _refusals_by_reason(
     ]
 
 
-def prediction_document(shortlist: Shortlist) -> dict[str, Any]:
+def prediction_document(
+    shortlist: Shortlist, *, provenance: ShortlistProvenance | None = None,
+) -> dict[str, Any]:
     """The shortlist as one document, in the harness's own currency.
 
     Mirrors the evidence packet's two rules rather than inventing a shape:
@@ -1054,14 +1338,24 @@ def prediction_document(shortlist: Shortlist) -> dict[str, Any]:
     improvement and a measured one are the same quantity.
 
     ``ranking_authority`` is printed here and not merely documented. While it
-    reads :data:`RANKING_AUTHORITY_BRACKET_ONLY`, ``ranked`` names the
-    candidates worth measuring and its ORDER carries no claim — a reader acting
-    on the order alone would be repeating the mistake this stamp exists to
-    prevent.
+    reads :data:`RANKING_AUTHORITY_BRACKET_ONLY`, ``bracket.members`` names the
+    candidates worth measuring and their ORDER carries no claim — a reader
+    acting on the order alone would be repeating the mistake this stamp exists
+    to prevent.
+
+    ``provenance`` says WHICH round this document speaks for. Absent, the
+    block is still emitted with null fields and
+    ``"identified": false``, because a shortlist that cannot name its round is
+    a fact a reader needs rather than one to hide behind a missing key: two
+    documents from two captures are otherwise indistinguishable once they
+    leave the process that made them.
     """
     incumbent_primary = shortlist.incumbent.score.primary
+    stated = provenance or ShortlistProvenance()
     return {
         "kind": "crossover_shortlist",
+        "schema_version": SHORTLIST_SCHEMA_VERSION,
+        "provenance": stated.to_dict(),
         "ranking_authority": shortlist.authority.to_dict(),
         "currency": {
             "residual": "flat_spec.spec_convergence_residual.rms_db",
@@ -1104,7 +1398,7 @@ def prediction_document(shortlist: Shortlist) -> dict[str, Any]:
         "incumbent_residual_db": (
             None if incumbent_primary is None else incumbent_primary.residual_db
         ),
-        "ranked": [entry.to_dict() for entry in shortlist.ranked],
+        "bracket": shortlist.bracket.to_dict(),
         "landscape": dict(shortlist.landscape),
         "refusals": _refusals_by_reason(shortlist.refusals),
         "evaluated": shortlist.evaluated,
@@ -1112,8 +1406,8 @@ def prediction_document(shortlist: Shortlist) -> dict[str, Any]:
             list(pair)
             for pair in sorted({
                 pair
-                for ranked in (shortlist.incumbent, *shortlist.ranked)
-                for pair in ranked.score.not_evaluated
+                for entry in (shortlist.incumbent, *shortlist.bracket.members)
+                for pair in entry.score.not_evaluated
             })
         ],
         "vertical_polar": (

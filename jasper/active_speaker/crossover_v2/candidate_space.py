@@ -510,17 +510,28 @@ class CandidateBounds:
 
         ``directivity_ceiling_hz`` is the woofer's -6 dB at 30 degrees off
         axis: crossing above it hands the horn a band the cone has already
-        stopped covering off axis, which no on-axis EQ repairs. It REFUSES.
+        stopped covering off axis, which no on-axis EQ repairs. It REFUSES,
+        in :func:`refusal_for`.
 
         ``matched_beamwidth_hz`` is where the two coverages meet. It is the
         literature's primary Fc selector and an excellent seed, but it is a
         target rather than a limit — a candidate away from it may still measure
         better, and this file does not get to decide that in advance. It never
-        refuses; the search reads it.
+        refuses, and **nothing reads it as a seed**: its only reader anywhere
+        is :func:`~jasper.active_speaker.crossover_v2.search.prediction_document`,
+        which echoes it into the document's ``bounds`` block so a reader can
+        weigh it themselves. An earlier version of this sentence said "the
+        search reads it", which was never true — the walk seeds its corner
+        grid from ``fc_band_hz`` alone.
 
-        Neither number is computed here. Deriving them is per-angle
-        measurement work that belongs to whoever holds the captures; this
-        module's job is to carry them with the right force.
+        **Neither number has a producer in ``jasper/`` today.** Deriving them
+        is per-angle measurement work that belongs to whoever holds the
+        captures, and no such caller exists yet:
+        :func:`with_measured_directivity` is reached only from tests. So a
+        shipped shortlist carries ``None`` for both, ``directivity_ceiling_hz``
+        refuses nothing because it is absent rather than because it passed,
+        and this module's job stays what it says — carrying them with the right
+        force once somebody measures them.
         """
         return replace(
             self,

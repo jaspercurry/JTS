@@ -20,6 +20,8 @@ import math
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2 import search as search_module
+
 from jasper.active_speaker.branch_chain import CrossoverSection
 from jasper.active_speaker.crossover_v2.candidate_space import (
     CandidateBounds, XoverCandidate, strictest_highpass_hz,
@@ -30,8 +32,8 @@ from jasper.active_speaker.crossover_v2.search import (
     DELAY_RANKING_AUTHORITY, DELAY_RANKING_BAR_RHO, DELAY_RANKING_MARK_RHO,
     DELAY_RANKING_MEASURED_RHO, FLAT_MINIMUM_EPSILON_DB,
     MARK_VS_POOL_REFEREE_RHO, RANKING_AUTHORITY_BRACKET_ONLY,
-    RANKING_AUTHORITY_RANK, SearchPlan, prediction_document, search_candidates,
-    spearman_rho,
+    RANKING_AUTHORITY_RANK, SHORTLIST_SCHEMA_VERSION, SearchPlan,
+    ShortlistProvenance, prediction_document, search_candidates, spearman_rho,
 )
 
 FLOOR_HZ = 357.14285714285717
@@ -303,7 +305,7 @@ def test_every_proposed_delay_lands_on_the_declared_lattice(shortlist) -> None:
 
     proposed = [
         entry.candidate.delay_us_by_role["tweeter"]
-        for entry in (shortlist.incumbent, *shortlist.ranked)
+        for entry in (shortlist.incumbent, *shortlist.bracket.members)
     ]
     assert proposed
     for delay_us in proposed:
@@ -322,9 +324,9 @@ def test_every_emitted_candidate_high_passes_the_floor_declared_role(shortlist) 
     plan high-passes, or the whole walk would refuse itself for silence rather
     than for any property of the crossover.
     """
-    for entry in (shortlist.incumbent, *shortlist.ranked):
+    for entry in (shortlist.incumbent, *shortlist.bracket.members):
         assert strictest_highpass_hz(entry.candidate, "tweeter") is not None
-    assert shortlist.ranked
+    assert shortlist.bracket.members
 
 
 def test_a_floor_nothing_in_the_chain_high_passes_refuses_everything() -> None:
@@ -349,7 +351,7 @@ def test_a_floor_nothing_in_the_chain_high_passes_refuses_everything() -> None:
 
     for bounds in (lf_floor, unnamed_role):
         refused = _search(bounds=bounds)
-        assert refused.ranked == ()
+        assert refused.bracket.members == ()
         assert refused.refusals
         assert {why for _what, why in refused.refusals} == {"below_declared_floor"}
         # The incumbent is graded anyway — a household running an unprotected
@@ -360,7 +362,7 @@ def test_a_floor_nothing_in_the_chain_high_passes_refuses_everything() -> None:
     # The control: the same walk with only the HF role's floor declared does
     # produce a shortlist, so the two assertions above are about the LF floor
     # and not about the fixture refusing everything for some other reason.
-    assert _search(bounds=_bounds()).ranked
+    assert _search(bounds=_bounds()).bracket.members
 
 
 def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -> None:
@@ -383,7 +385,7 @@ def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -
     )
     admitted = _search(bounds=bass_managed)
 
-    assert admitted.ranked
+    assert admitted.bracket.members
     assert ("incumbent", "below_declared_floor") not in admitted.refusals
 
     # The same walk the fixture produces with no LF floor declared at all,
@@ -415,7 +417,7 @@ def test_a_lower_driver_floor_the_chain_does_high_pass_leaves_the_space_open() -
         declared_floor_hz_by_role={"tweeter": 1500.0, "woofer": 100.0},
         standing_highpass_hz_by_role={"woofer": 80.0},
     ))
-    assert exposed.ranked == ()
+    assert exposed.bracket.members == ()
     assert {why for _what, why in exposed.refusals} == {"below_declared_floor"}
 
 
@@ -424,7 +426,7 @@ def test_every_proposed_trim_is_inside_the_declared_range() -> None:
     bounds = _bounds()
     shortlist = _search(bounds=bounds)
 
-    for entry in shortlist.ranked:
+    for entry in shortlist.bracket.members:
         gain_db = entry.candidate.gain_db_by_role["tweeter"]
         assert bounds.gain_db_range[0] <= gain_db <= bounds.gain_db_range[1]
 
@@ -433,7 +435,7 @@ def test_a_refused_point_is_named_and_never_silently_dropped() -> None:
     """An empty shortlist and a fully-refused one must not look the same."""
     shortlist = _search(bounds=_bounds(declared_floor_hz_by_role={"tweeter": 9000.0}))
 
-    assert shortlist.ranked == ()
+    assert shortlist.bracket.members == ()
     assert shortlist.refusals
     assert all(why for _what, why in shortlist.refusals)
     assert {why for _what, why in shortlist.refusals} == {"below_declared_floor"}
@@ -450,7 +452,7 @@ def test_a_refused_point_is_named_and_never_silently_dropped() -> None:
 def test_no_proposal_is_legal_when_the_band_is_empty() -> None:
     shortlist = _search(bounds=_bounds(fc_band_hz=None))
 
-    assert shortlist.ranked == ()
+    assert shortlist.bracket.members == ()
     assert shortlist.bounds.proposable is False
     # The incumbent is still graded — "keep configured" needs a number too.
     assert shortlist.incumbent.score.total is not None
@@ -463,7 +465,7 @@ def test_the_flat_minimum_resolves_toward_the_incumbent(shortlist) -> None:
     angle-independent in shape, so the graded curve does not move — which makes
     the whole grid one flat minimum and puts the tie-break entirely in charge.
     """
-    totals = [entry.score.total for entry in shortlist.ranked]
+    totals = [entry.score.total for entry in shortlist.bracket.members]
 
     assert len(totals) >= 2
     # The PRECONDITION is asserted, not tested for. Guarding the real assertion
@@ -472,24 +474,122 @@ def test_the_flat_minimum_resolves_toward_the_incumbent(shortlist) -> None:
     # nothing.
     assert max(totals) - min(totals) <= FLAT_MINIMUM_EPSILON_DB
 
-    head = shortlist.ranked[0].candidate
+    head = shortlist.bracket.members[0].candidate
     # The incumbent's own order and polarity win the tie before its corner
     # does: a different filter SHAPE is a bigger ask than a nudged corner.
     assert head.polarity_by_role["tweeter"] == 1
     assert next(iter(head.sections_by_role["tweeter"])).order == 4
 
 
-def test_ranking_is_bounded_by_the_declared_shortlist_size() -> None:
-    shortlist = _search(
+def _tight(size: int):
+    """One walk whose size target is deliberately below the diversity floor."""
+    return _search(
         plan=SearchPlan(
             hf_role="tweeter", lf_role="woofer",
             fc_steps=3, delay_steps=3, gain_steps=3, refinement=1,
-            shortlist_size=2,
+            shortlist_size=size,
         ),
     )
 
-    assert len(shortlist.ranked) <= 2
-    assert shortlist.evaluated > len(shortlist.ranked)
+
+def test_the_bracket_never_loses_the_walks_own_minimum() -> None:
+    """The defect the top-N had, pinned against an INDEPENDENT witness.
+
+    ``landscape["branches"]`` records each branch's best total while the walk
+    is scoring — a different code path from the one that selects members, and
+    the path the audit caught holding a strictly better point than the head of
+    the old ranked list. So the best member is compared against the best
+    number ANY branch reported rather than against the bracket's own summary,
+    which would be the bracket agreeing with itself.
+
+    The size target is set below the diversity floor on purpose: that is the
+    configuration where the old top-N could truncate the minimum off the end
+    of the list, so a bracket that still holds it is answering the real
+    charge and not an easy one.
+    """
+    shortlist = _tight(2)
+
+    best_any_branch = min(
+        branch["total"] for branch in shortlist.landscape["branches"].values()
+    )
+    best_member = min(
+        entry.score.total for entry in shortlist.bracket.members
+    )
+
+    # The precondition, asserted rather than assumed: the floor really does
+    # exceed the target here, so truncation really was possible.
+    assert shortlist.bracket.guaranteed > shortlist.bracket.requested_size
+    # THE PIN: no branch found anything better than the bracket carries.
+    assert best_member == pytest.approx(best_any_branch, abs=1e-12)
+    assert shortlist.bracket.best_total == pytest.approx(best_any_branch, abs=1e-12)
+
+
+def test_the_bracket_spans_every_branch_and_every_corner_in_the_flat_region(
+    shortlist,
+) -> None:
+    """A bracket that sampled one corner five times would measure one axis.
+
+    Both guarantees at once, because they fail independently: a member set
+    can cover every branch while sitting on one corner, and vice versa.
+    """
+    bracket = shortlist.bracket
+    branches = {
+        (
+            next(iter(entry.candidate.sections_by_role["tweeter"])).order,
+            entry.candidate.polarity_by_role["tweeter"],
+        )
+        for entry in bracket.members
+    }
+    corners = {entry.candidate.corner_hz for entry in bracket.members}
+
+    # The region really does span more than one of each — otherwise the
+    # assertions below would pass against a single-point bracket.
+    assert len(bracket.order_set) * len(bracket.polarity_set) > 1
+    assert bracket.fc_hz_range[0] < bracket.fc_hz_range[1]
+
+    # THE PIN: every branch in the extent, and every corner in it, is
+    # represented by a member.
+    assert branches == {
+        (order, polarity)
+        for order in bracket.order_set
+        for polarity in bracket.polarity_set
+    }
+    assert len(corners) >= 2
+
+
+def test_the_size_target_is_a_target_and_never_costs_the_guarantee() -> None:
+    """A size cap may trim the fill; it may not trim the spanning set.
+
+    Superseding ``test_ranking_is_bounded_by_the_declared_shortlist_size``:
+    that test asserted the top-N cap this bracket exists to replace, and
+    keeping it would pin the very truncation that lost the minimum.
+    """
+    tight = _tight(2)
+    roomy = _tight(50)
+
+    # Below the floor: the floor wins, and BOTH numbers are published so the
+    # reader can see the cap was exceeded rather than silently honoured.
+    assert len(tight.bracket.members) == tight.bracket.guaranteed
+    assert tight.bracket.guaranteed > tight.bracket.requested_size
+    # Above the floor: the target fills, and never past the region itself.
+    assert len(roomy.bracket.members) > roomy.bracket.guaranteed
+    assert len(roomy.bracket.members) <= roomy.bracket.n_in_region
+    assert roomy.bracket.n_in_region < roomy.evaluated
+
+
+def test_the_extent_bounds_every_member_on_every_axis(shortlist) -> None:
+    """The published extent has to contain what the bracket hands over."""
+    bracket = shortlist.bracket
+
+    for entry in bracket.members:
+        section = next(iter(entry.candidate.sections_by_role["tweeter"]))
+        assert bracket.fc_hz_range[0] <= section.fc_hz <= bracket.fc_hz_range[1]
+        assert section.order in bracket.order_set
+        assert entry.candidate.polarity_by_role["tweeter"] in bracket.polarity_set
+        delay_us = entry.candidate.delay_us_by_role["tweeter"]
+        assert bracket.delay_us_range[0] <= delay_us <= bracket.delay_us_range[1]
+        gain_db = entry.candidate.gain_db_by_role["tweeter"]
+        assert bracket.gain_db_range[0] <= gain_db <= bracket.gain_db_range[1]
 
 
 def test_the_refinement_pass_visits_points_the_coarse_pass_did_not() -> None:
@@ -537,7 +637,7 @@ def test_the_document_declares_its_vertical_blindness(shortlist) -> None:
     document = prediction_document(shortlist)
 
     assert "NOT MEASURED" in document["vertical_polar"]
-    for entry in document["ranked"]:
+    for entry in document["bracket"]["members"]:
         assert entry["score"]["directivity"]["coverage"] == "horizontal_only"
 
 
@@ -555,8 +655,8 @@ def test_the_document_carries_the_primary_views_chunk_table(shortlist) -> None:
     """Acceptance reads the profile, so the profile has to be IN the artifact."""
     document = prediction_document(shortlist)
 
-    assert document["ranked"]
-    for entry in document["ranked"]:
+    assert document["bracket"]["members"]
+    for entry in document["bracket"]["members"]:
         primary = entry["score"]["primary_view"]
         views = {view["view"]: view for view in entry["score"]["views"]}
         assert views[primary]["profile"]["chunks"]
@@ -564,6 +664,74 @@ def test_the_document_carries_the_primary_views_chunk_table(shortlist) -> None:
         assert len(entry["score"]["per_seat"]) == len(ANGLES)
         for seat in entry["score"]["per_seat"]:
             assert "worst_chunk_db" in seat
+
+
+def test_the_document_names_the_round_it_speaks_for(shortlist) -> None:
+    """Nothing tied a shortlist to its round before this block existed.
+
+    Two documents from two captures were byte-comparable and otherwise
+    indistinguishable once they left the process that made them, which is the
+    shape a stale artifact hides in.
+    """
+    document = prediction_document(
+        shortlist,
+        provenance=ShortlistProvenance(
+            round_id="xover-armrun-2026-08-18/e0-control",
+            session_id="relay-abc123",
+            speaker_id="jts3.local",
+            generated_at="2026-08-21T12:00:00Z",
+        ),
+    )
+
+    assert document["schema_version"] == SHORTLIST_SCHEMA_VERSION
+    stated = document["provenance"]
+    assert stated["round_id"] == "xover-armrun-2026-08-18/e0-control"
+    assert stated["session_id"] == "relay-abc123"
+    assert stated["speaker_id"] == "jts3.local"
+    assert stated["generated_at"] == "2026-08-21T12:00:00Z"
+    assert stated["identified"] is True
+
+
+def test_an_unidentified_document_says_so_rather_than_omitting_the_block(
+    shortlist,
+) -> None:
+    """A missing key reads as an older schema; ``identified: false`` reads as a fact."""
+    document = prediction_document(shortlist)
+
+    stated = document["provenance"]
+    assert stated["identified"] is False
+    # Present and null, never absent — the evidence packet's disclosure rule.
+    for field in ("round_id", "session_id", "speaker_id", "generated_at"):
+        assert field in stated
+        assert stated[field] is None
+
+
+def test_the_module_reads_no_clock_so_two_runs_still_agree() -> None:
+    """Determinism survives provenance because the caller states the time.
+
+    A module-stamped ``generated_at`` would make the byte-identical guarantee
+    above false by construction, so the field is the caller's and this pins
+    that it stayed that way.
+    """
+    stated = ShortlistProvenance(generated_at="2026-08-21T12:00:00Z")
+
+    first = json.dumps(
+        prediction_document(_search(), provenance=stated), sort_keys=True,
+    )
+    second = json.dumps(
+        prediction_document(_search(), provenance=stated), sort_keys=True,
+    )
+
+    assert first == second
+
+    # The claim behind the guarantee, checked rather than trusted: the module
+    # binds no name it could read a clock through. Asserted on the NAMESPACE
+    # rather than by grepping the source, because the source says the words
+    # "datetime.now" in the docstring that explains why it must not call it —
+    # a text search finds its own warning and reports the defect it forbids.
+    bound = vars(search_module)
+    for clock in ("time", "datetime"):
+        assert clock not in bound, f"{clock} would let this module stamp its own time"
 
 
 def test_the_document_is_json_serialisable(shortlist) -> None:
