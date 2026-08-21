@@ -248,8 +248,9 @@ def park_and_commit_topology(
 
     ``stay_parked`` keeps the speaker silent after the commit instead of
     converging onto a graph. Pass it when the committed change invalidated
-    evidence the graph selector cannot see — per-lane channel identity is the
-    case that exists today (:func:`jasper.output_topology.repin_composite_child_serials`).
+    evidence the graph selector cannot see; per-lane channel identity is one
+    such kind — see
+    :func:`jasper.output_topology.repin_composite_child_serials`.
     """
 
     return asyncio.run(

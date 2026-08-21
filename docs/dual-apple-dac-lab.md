@@ -205,10 +205,14 @@ The first product-facing slice is intentionally non-audible:
   `repin_composite_child_serials` then rewrites each child's observed identity,
   keeps the speaker/role/crossover design (all of which is keyed to physical
   output index, never to a serial), clears `identity_verified` for the replaced
-  unit's lanes, and drops the pair's drift evidence. Those two clears are what
-  make the household re-confirm by ear and re-measure; the re-pin adds no
-  verification of its own. A dongle moved to a DIFFERENT port is not offered a
-  re-pin — nothing then says which unit owns which lanes.
+  unit's lanes, and drops the pair's drift evidence. The re-pin adds no
+  verification of its own — it re-arms the existing ones. It also leaves the
+  speaker PARKED (`park_and_commit_topology(stay_parked=True)`): the runtime
+  graph selector is identity-blind by design, so an already-armed box would
+  otherwise keep playing through DACs nobody has re-confirmed. The arm ladder,
+  whose gates own the missing evidence, is the only way back to audio. A dongle
+  moved to a DIFFERENT port is not offered a re-pin — nothing then says which
+  unit owns which lanes.
 - One DAC per speaker is disclosed, not enforced. When a saved speaker group's
   drivers land on two different child DACs, `evaluate_output_topology` reports a
   `speaker_group_spans_child_devices` warning naming the group and the children
