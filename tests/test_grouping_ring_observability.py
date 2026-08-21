@@ -209,10 +209,12 @@ def test_a_short_file_is_unreadable(tmp_path):
 def test_a_ring_this_process_cannot_read_says_so(tmp_path):
     """The vantage question, and why it is not folded into ``absent``.
 
-    The ring files are 0660 group ``jts-ring``. A reader outside that group gets
-    the same "no header" as a box with no ring at all, and reporting the two the
-    same way would let a permission regression read as an idle speaker. The
-    detail names the mode so the fix is obvious.
+    A reader outside group ``jts-ring`` gets the same "no header" as a box with
+    no ring at all, and reporting the two the same way would let a permission
+    regression read as an idle speaker. What the detail must therefore carry is
+    the REQUIREMENT — group-readability by ``jts-ring`` — and deliberately not a
+    mode; the comment on the assertions below says why naming one would be
+    wrong, and the last assertion pins that it is not named.
     """
     path = _ring(tmp_path, writer_pid=1, writer_hb=_FRESH)
     os.chmod(path, 0o000)
