@@ -280,9 +280,32 @@ def test_the_packet_names_every_question_this_round_cannot_answer(packet):
         "first_reflection_ms",
         "harmonic_distortion",
         "per_bin_minimum_phase_class",
+        "vertical_plane_response",
     } <= fields
     for entry in packet["not_evaluated"]:
         assert entry["reason"].strip(), f"{entry['field']} claims absence with no reason"
+
+
+def test_the_vertical_plane_is_disclosed_once_and_refuses_nothing(packet):
+    """Owner ruling, 2026-08-21: the boost door is open on exactly this risk.
+
+    Every capture shape a round banks is horizontal, so nothing measured can
+    say what a filter does off that plane. That is a QUALITY bound — reversible
+    and measurable in the round that follows — not a component-safety one, so
+    it DISCLOSES and refuses nothing. It is stated HERE, once, for the whole
+    corpus — rather than as a per-row flag two producers spelled two ways
+    (#2783). The register's own half is pinned by
+    ``tests/test_crossover_v2_driver_prescription.py``.
+    """
+    stated = [
+        entry for entry in packet["not_evaluated"]
+        if entry["field"] == "vertical_plane_response"
+    ]
+
+    assert len(stated) == 1
+    assert "horizontal" in stated[0]["reason"]
+    # It bounds BOTH signs, which is the half a boost-only refusal got wrong.
+    assert "either sign" in stated[0]["reason"]
 
 
 def test_a_missing_state_file_is_reported_not_papered_over(tmp_path):

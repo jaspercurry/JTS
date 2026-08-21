@@ -1916,12 +1916,14 @@ re-ran an arm nobody asked for is the same class of dishonesty as clamping one.
 
 The per-driver class carries **both signs**, and every filter must be aimed at
 a feature a banked classification typed as a minimum-phase driver defect of the
-MATCHING sign — a **peak** for a cut, a **dip** for a boost. A boost owes two
-things a cut does not: the vouching verdict must not be `vertical_blind`, and it
-must report a `depth_db` the boost does not exceed. Its cost is maximum SPL
-rather than safety (the graph attenuates before the split), bounded at 5.0 dB by
-a per-role composed budget. It needs two pieces of
-evidence, and they arrive by **different routes** — one flag, one file:
+MATCHING sign — a **peak** for a cut, a **dip** for a boost. A boost
+additionally owes **one** thing a cut does not: that verdict must report a
+`depth_db`, and the boost may not exceed it. The matching-sign requirement
+above is not that thing — a cut owes it identically.
+Its cost is maximum SPL rather than safety (the graph attenuates
+before the split), bounded at 5.0 dB by a per-role composed budget. It needs
+two pieces of evidence, and they arrive by **different routes** — one flag,
+one file:
 
 ```sh
 # --drivers is the ONLY extra flag; the classification is found in the bundle
@@ -1985,7 +1987,9 @@ What the packet is for beyond the model loop: it is the single document the
 deterministic trend engine and any by-hand round review both want, and its
 `not_evaluated` block is the fastest way to see what a round **cannot** answer
 (no numeric mic angle is banked anywhere; the reflection time exists only
-inside gate-disclosure prose; no round banks a distortion reading).
+inside gate-disclosure prose; no round banks a distortion reading; every
+banked capture is horizontal, so the vertical plane is disclosed as
+`vertical_plane_response` rather than measured).
 
 Owners:
 [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)
@@ -2068,15 +2072,18 @@ just works.
 - `classification_no_admissible_captures` / `classification_program_missing` /
   `classification_no_features_detected`.
 
-**Every verdict it emits is `vertical_blind`, and that is not a placeholder.**
-Every capture shape it reads is horizontal — a turntable swings at fixed height
-and radius, a position cloud is a floor plan, a single anchor sees the vertical
-plane no better — so a floor or ceiling bounce is invariant to every position
-it saw. `driver_prescription` refuses a boost on that alone
-(`driver_boost_vertically_blind`), because a boost aimed at a vertical null
-feeds it. Cuts are unaffected. The 2026-08-19 lab artifacts carry a field of
-the same name computed as "fewer than two gates resolved"; that is a fact about
-the GATE test, and this instrument reports it as `resolved_gates`.
+**Every capture shape it reads is horizontal**, and that is still a fact about
+the instrument, not a placeholder — a turntable swings at fixed height and
+radius, a position cloud is a floor plan, a single anchor sees the vertical
+plane no better, so a floor or ceiling bounce is invariant to every position it
+saw. It no longer stamps that as a per-verdict flag, and `driver_prescription`
+no longer refuses a boost for it: the owner's 2026-08-21 ruling holds that a
+boost's off-plane risk is a QUALITY question (it may not generalise —
+reversible, measurable), not a component-safety one, so the boost bar is
+classification and measured depth alone (above). On the prescription path the
+geometry is disclosed in one place, the evidence packet's `not_evaluated` block
+as `vertical_plane_response`; the remote tier and the unwired crossover-search
+modules carry their own disclosures about their own artifacts.
 
 **Exit codes are the contract**: `0` classified and filed, `1` the round could
 not be read, `2` refused, `3` the verdict could not be written. `--json` prints

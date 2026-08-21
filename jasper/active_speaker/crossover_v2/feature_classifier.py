@@ -47,9 +47,6 @@ round, not handed an empty result. The pre-apply half of that set
 different reason: it measures a DIFFERENT graph, and pooling the two would
 classify a mixture.
 
-**Every verdict off this instrument is vertically blind, and says so.** See
-:data:`CAPTURES_ARE_VERTICALLY_BLIND`.
-
 **Why it lives here and not in** :mod:`jasper.audio_measurement`, where the DSP
 seams it uses live.  ``tests/test_correction_boundary_ssot.py``'s
 ``test_audio_measurement_imports_neither_consumer_package`` pins that no file
@@ -171,24 +168,6 @@ class FeatureClassificationRefused(RuntimeError):
 #: pre-apply members of ``programs.SUMMED_SWEEP_PHASES`` are deliberately not
 #: here — see the module docstring.
 ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY})
-
-#: Emitted on every row, unconditionally, and this is not a placeholder.
-#:
-#: The register defines the field as "a horizontal-turntable capture cannot see
-#: vertical-plane interference at all", and every shape this instrument reads is
-#: horizontal: a turntable walk swings at fixed height and radius, a prompted
-#: position cloud is a floor-plan of seats, and a single on-axis anchor sees the
-#: vertical plane no better than either. A floor or ceiling bounce is therefore
-#: invariant to every position any of them visits.
-#:
-#: The consequence is deliberate and load-bearing: ``driver_prescription``
-#: refuses a boost whose vouching verdict is blind
-#: (``driver_boost_vertically_blind``), because a boost aimed at a vertical
-#: null FEEDS it. Cuts are unaffected. The 2026-08-19 lab artifacts carry a
-#: field of the same name computed as "fewer than two gates resolved", which is
-#: a different fact about the GATE test; this instrument reports that one under
-#: its own name (``resolved_gates``) and does not let it answer this question.
-CAPTURES_ARE_VERTICALLY_BLIND = True
 
 #: The artifact's own version. Deliberately not a new number: the row shape is
 #: the one the register already reads and the 2026-08-19 records already carry.
@@ -1567,7 +1546,6 @@ def _compose(
         "confidence": confidence,
         "measured_q": measured_q,
         "depth_db": abs(pooled_db),
-        "vertical_blind": CAPTURES_ARE_VERTICALLY_BLIND,
         "pooled_db": pooled_db,
         "is_dip": is_dip,
         "excursion_us": excursion,
@@ -1793,11 +1771,6 @@ def classify_round(
             "phases": sorted({c.phase for c in captures}),
             "captures": [c.wav.name for c in captures],
             "features_requested": list(at) if at is not None else None,
-            "vertical_blind": CAPTURES_ARE_VERTICALLY_BLIND,
-            "vertical_blind_note": (
-                "every capture shape this instrument reads is horizontal, so a "
-                "floor or ceiling bounce is invariant to every position it saw"
-            ),
         },
         "controls_ok": controls_ok,
         "controls": controls,

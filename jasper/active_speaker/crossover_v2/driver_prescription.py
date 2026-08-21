@@ -62,12 +62,12 @@ bounds that spend; the emitter's 12 dB rail, the per-driver soft-clip limiters
 and the runtime contract's re-proof are unchanged and are not this class's to
 weaken.
 
-The admission bars are therefore the only new safety logic.  Three are
+The admission bars are therefore the only new safety logic.  Two are
 EVIDENCE, and they are what a boost owes over a cut: a banked
 :data:`~.feature_classification.DEFECT_BOOSTABLE` verdict is the nearest one to
-the filter's centre, that verdict saw the vertical plane, and the boost is no
-deeper than the dip the verdict measured.  The rest are SHAPE, and mirror the
-cut side: a per-filter magnitude window, the shared Q envelope, and
+the filter's centre, and the boost is no deeper than the dip that verdict
+measured.  The rest are SHAPE, and mirror the cut side: a per-filter
+magnitude window, the shared Q envelope, and
 :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.  That
 last one is what sizes the class: it bounds the spend one document can command
 at :data:`MAX_SPL_SPEND_BOUND_DB` = 5.0 dB.  Two independent gates still, on
@@ -200,7 +200,6 @@ __all__ = [
     "BOOST_EXCEEDS_FEATURE_DEPTH",
     "BOOST_IN_CROSSOVER_OVERLAP",
     "BOOST_UNVOUCHED",
-    "BOOST_VERTICALLY_BLIND",
     "FEATURE_DEPTH_UNAVAILABLE",
     "FEATURE_NOT_BOOSTABLE",
     "FEATURE_NOT_CLASSIFIED",
@@ -295,8 +294,8 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 #: ``blend_prescription.max_q_for_gain`` — whose boost arm is 2.0 — because
 #: this seam substitutes EVIDENCE for width: the sharp-boost-into-a-null hazard
 #: that number exists to prevent is refused here by name
-#: (:data:`FEATURE_NOT_BOOSTABLE`, :data:`BOOST_VERTICALLY_BLIND`), and depth
-#: caps what a real dip can absorb. Owner ruling, 2026-08-19: width is free
+#: (:data:`FEATURE_NOT_BOOSTABLE`, for every null the classifier resolved), and
+#: depth caps what a real dip can absorb. Owner ruling, 2026-08-19: width is free
 #: ("filters can be whatever works best to get flat").
 DRIVER_MAX_CUT_Q = 8.0
 
@@ -462,12 +461,6 @@ FEATURE_NOT_CUTTABLE = "driver_feature_not_cuttable"
 #: stage P3 rule 1, and the mirror of :data:`FEATURE_NOT_CUTTABLE`.
 FEATURE_NOT_BOOSTABLE = "driver_feature_not_boostable"
 
-#: The vouching verdict came off a horizontal-turntable capture, which cannot
-#: see the vertical plane at all. A boost aimed at a vertical-plane
-#: interference null FEEDS the null — the one physics failure a boost has that
-#: a cut does not — so a bounded sighting is not evidence a boost may use.
-BOOST_VERTICALLY_BLIND = "driver_boost_vertically_blind"
-
 #: The vouching verdict reported no depth, so there is no measured dip for the
 #: boost to be bounded by. Fail-closed rather than substituted: a boost bounded
 #: by a guessed depth is a boost bounded by nothing.
@@ -524,7 +517,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FEATURE_NOT_CLASSIFIED,
     FEATURE_NOT_CUTTABLE,
     FEATURE_NOT_BOOSTABLE,
-    BOOST_VERTICALLY_BLIND,
     FEATURE_DEPTH_UNAVAILABLE,
     BOOST_EXCEEDS_FEATURE_DEPTH,
     BOOST_IN_CROSSOVER_OVERLAP,
@@ -1191,7 +1183,8 @@ def _check_classification(
     the frequency — an instruction to go and measure, not a verdict on the
     proposal — and with :data:`FEATURE_NOT_CUTTABLE` /
     :data:`FEATURE_NOT_BOOSTABLE` when something was and it does not admit that
-    sign. A boost pays three more bars, in :func:`_boost_basis`.
+    sign. A boost pays two more bars, both about the dip's measured depth, in
+    :func:`_boost_basis`.
 
     **What clearing this bar does and does not mean.** It means the feature is
     not one a cut is structurally the wrong tool for. It does NOT mean a cut
@@ -1278,12 +1271,11 @@ def _boost_basis(
     """The boost half of the classification bar. Four refusals, in this order.
 
     :data:`FEATURE_NOT_CLASSIFIED` (nothing there) → :data:`FEATURE_NOT_BOOSTABLE`
-    (the nearest verdict is not a minimum-phase dip) → :data:`BOOST_VERTICALLY_BLIND`
-    (it is, and the capture could not see the plane a null would hide in) →
-    :data:`FEATURE_DEPTH_UNAVAILABLE` (it could, and reported no depth) →
+    (the nearest verdict is not a minimum-phase dip) →
+    :data:`FEATURE_DEPTH_UNAVAILABLE` (it is, and reported no depth) →
     :data:`BOOST_EXCEEDS_FEATURE_DEPTH` (it did, and the boost is deeper than it).
 
-    Each sends a prescriber somewhere different, which is why they are five
+    Each sends a prescriber somewhere different, which is why they are four
     slugs and not one. The last two are what stop a boost being bounded by
     policy alone: the ceiling says how much a document MAY spend, and the
     measured depth says how much this feature can absorb.
@@ -1324,23 +1316,6 @@ def _boost_basis(
             freq_hz=freq,
             gain_db=gain,
             **nearest.to_dict(),
-        )
-    if vouching.vertical_blind:
-        # The one physics failure a boost has that a cut does not. A horizontal
-        # turntable cannot see a vertical-plane null at all, so `MIN-PHASE` here
-        # is a statement about one plane rather than about the feature.
-        _refuse(
-            BOOST_VERTICALLY_BLIND,
-            f"filter {position} boosts {freq:.1f} Hz against a verdict the "
-            "classifier itself flagged vertically blind: a horizontal capture "
-            "cannot see a vertical-plane interference null, and a boost aimed "
-            "at one feeds the null instead of filling the dip. A cut at this "
-            "feature would be bounded by the same disclosure and harmed by it "
-            "less. Measure the vertical plane, or aim a cut elsewhere.",
-            role=role,
-            freq_hz=freq,
-            gain_db=gain,
-            **vouching.to_dict(),
         )
     if vouching.depth_db is None:
         _refuse(
@@ -1588,9 +1563,9 @@ def driver_prescription_route(prescription: DriverPrescription) -> str:
 
     That is the SECOND of two gates, not the only one:
     :func:`_check_classification` has already applied the full bar — nearest
-    verdict, vertical sighting, measured depth — by the time a gated
-    prescription exists. This one makes the promise a property of the FUNCTION,
-    which is what the two ungated constructors need: a
+    verdict, measured depth — by the time a gated prescription exists. This one
+    makes the promise a property of the FUNCTION, which is what the two ungated
+    constructors need: a
     :class:`DriverPrescription` built directly, or read back by
     :func:`driver_prescription_from_mapping` (which rebuilds no basis at all),
     reaches here with an empty basis and refuses. A cut needs no such condition
@@ -1937,12 +1912,13 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "the driver has a real dip, and only as deep as the dip"
             ),
             "eligible_classification": DEFECT_BOOSTABLE,
-            "a_boost_owes_three_things_a_cut_does_not": (
-                "the nearest banked verdict must be a minimum-phase DIP; that "
-                "verdict must NOT be vertical_blind, because a horizontal "
-                "capture cannot see a vertical-plane null and a boost aimed at "
-                "one feeds it; and that verdict must report a depth_db, which "
-                "bounds the boost more tightly than the ceiling does"
+            "a_boost_owes_one_thing_a_cut_does_not": (
+                "the vouching verdict must report a depth_db, and the boost "
+                "may not exceed it — the measured dip is what bounds a boost, "
+                "more tightly than the ceiling does. Needing a matching-sign "
+                "verdict is NOT that thing: a cut owes a defect-cuttable one "
+                "identically, so it is stated once for both signs under "
+                "classification_bar"
             ),
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
             "spend_is_a_step_function": (
@@ -1962,7 +1938,6 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
             "refusals": sorted({
                 FEATURE_NOT_BOOSTABLE,
-                BOOST_VERTICALLY_BLIND,
                 FEATURE_DEPTH_UNAVAILABLE,
                 BOOST_EXCEEDS_FEATURE_DEPTH,
                 BOOST_IN_CROSSOVER_OVERLAP,
