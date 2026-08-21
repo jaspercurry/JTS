@@ -7,27 +7,151 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from jasper.calibration_agent import cli, response, tools
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
 
-def test_legacy_strategy_policy_does_not_authorize_preference_audition() -> None:
-    allowed, reasons = response._policy_allows(
-        {
-            "advisor_policy": {
-                "allowed_actions": [{
-                    "id": "suggest_bounded_peq_strategy",
-                    "allowed": True,
-                    "reasons": [],
-                }],
-            },
+def test_policy_advisories_read_the_matching_catalog_entry() -> None:
+    """Concerns are looked up by exact action id, and absence is silence.
+
+    An entry for a different id contributes nothing, and — since the
+    lookup no longer decides anything — an unlisted action simply carries
+    no concerns rather than being refused.
+    """
+    catalog = {
+        "advisor_policy": {
+            "advisory_actions": [
+                {"id": "propose_preference_eq_audition",
+                 "reasons": ["same-position repeatability is poor"]},
+                {"id": "request_user_approved_preference_commit", "reasons": []},
+            ],
         },
-        response.ACTION_AUDITION,
+    }
+
+    assert response._policy_advisories(catalog, response.ACTION_AUDITION) == [
+        "same-position repeatability is poor"
+    ]
+    assert response._policy_advisories(catalog, response.ACTION_COMMIT) == []
+    assert response._policy_advisories(catalog, response.ACTION_PROPOSE_TARGET_MOVE) == []
+    assert response._policy_advisories({}, response.ACTION_AUDITION) == []
+
+
+_PROFILE = {
+    "enabled": True,
+    "curve_id": "harman",
+    "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+    "parametric_bands": [],
+}
+
+#: Every executable action type, the side effect it declares, and whether
+#: the validator alone leaves it execution-ready. The two that can reach
+#: persistent or DSP state are NOT: a commit waits on the caller's
+#: ``user_confirmed``, and a correction proposal waits on simulate-and-judge
+#: plus a confirm. This is the table the removed confidence veto was NOT
+#: the bound for — see the PR that retired it.
+_ACTION_REACH = [
+    ({"type": response.ACTION_EXPLAIN, "message": "x"}, "none", True),
+    ({"type": response.ACTION_REMEASURE, "reason": "x"}, "user_prompt_only", True),
+    (
+        {"type": response.ACTION_AUDITION, "rationale": "x", "profile": _PROFILE},
+        "ephemeral_audio_state",
+        True,
+    ),
+    (
+        {"type": response.ACTION_COMMIT, "rationale": "x",
+         "profile_name": "AI audition", "profile": _PROFILE},
+        "persistent_preference_profile",
+        False,
+    ),
+    (
+        {"type": response.ACTION_PROPOSE_CORRECTION_PEQ, "rationale": "x",
+         "correction_peqs": [{"freq_hz": 62.0, "q": 3.0, "gain_db": -4.0}]},
+        "proposed_room_correction",
+        False,
+    ),
+    (
+        {"type": response.ACTION_PROPOSE_TARGET_MOVE, "rationale": "x",
+         "target_id": "warm", "warmth": 0.0},
+        "user_prompt_only",
+        True,
+    ),
+]
+
+#: A packet that records a concern about EVERY action type. Under the
+#: retired veto each of these would have been dropped outright.
+_ALL_DOUBTED = {
+    "advisor_policy": {
+        "advisory_actions": [
+            {"id": action["type"], "reasons": ["evidence is thin"]}
+            for action, _side_effect, _ready in _ACTION_REACH
+        ],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("action", "side_effect", "execution_ready"),
+    [(a, s, r) for a, s, r in _ACTION_REACH],
+    ids=[a["type"] for a, _s, _r in _ACTION_REACH],
+)
+def test_each_action_type_keeps_its_downstream_bound(
+    action: dict,
+    side_effect: str,
+    execution_ready: bool,
+) -> None:
+    """Per-action reach, pinned against a packet that doubts all six.
+
+    Every action validates despite the recorded concern, carries that
+    concern as provenance, and declares the same side effect and
+    execution-readiness it did before the veto existed. Nothing became
+    execution-ready by removing the veto.
+    """
+    validation = response.validate_advisor_response(
+        {
+            "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
+            "kind": "jts_advisor_response",
+            "action_plan": [action],
+        },
+        advisor_context=_ALL_DOUBTED,
+        user_confirmed=False,
     )
 
-    assert allowed is False
-    assert reasons == ["advisor policy does not list this action"]
+    assert validation["accepted"] is True
+    normalized = validation["validated_action_plan"][0]
+    assert normalized["policy_advisories"] == ["evidence is thin"]
+    assert normalized["side_effect"] == side_effect
+    assert normalized["execution_ready"] is execution_ready
+
+
+def test_correction_proposal_is_never_execution_ready_even_when_confirmed() -> None:
+    """The one action reaching CamillaDSP answers to simulate-and-judge.
+
+    ``user_confirmed`` promotes a preference commit but must never
+    promote a room-correction proposal: its gate is the deterministic
+    simulation plus the P4 acceptance verdict at the apply seam, not the
+    validator.
+    """
+    action = next(
+        a for a, _s, _r in _ACTION_REACH
+        if a["type"] == response.ACTION_PROPOSE_CORRECTION_PEQ
+    )
+    validation = response.validate_advisor_response(
+        {
+            "artifact_schema_version": response.RESPONSE_SCHEMA_VERSION,
+            "kind": "jts_advisor_response",
+            "action_plan": [action],
+        },
+        advisor_context=_ALL_DOUBTED,
+        user_confirmed=True,
+    )
+
+    normalized = validation["validated_action_plan"][0]
+    assert normalized["execution_ready"] is False
+    assert normalized["requires_simulation"] is True
+    assert normalized["requires_user_confirmation"] is True
 
 
 def _context(tmp_path: Path) -> dict:

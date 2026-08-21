@@ -4,10 +4,16 @@
 
 """Deterministic response contract for the future calibration advisor.
 
-The model is allowed to propose bounded actions, but this module is
-the gate. It rejects unsafe payloads, normalizes preference-EQ plans
-through the same sound-profile substrate used by ``/sound/``, and
-marks persistence as user-confirmation-only.
+The model proposes bounded actions; this module is the schema-and-bounds
+gate. It rejects malformed and out-of-bounds payloads, normalizes
+preference-EQ plans through the same sound-profile substrate used by
+``/sound/``, and marks persistence as user-confirmation-only.
+
+What it does NOT do is refuse an action because a confidence heuristic
+doubts it. Per ``docs/measurement-loop-doctrine.md`` those doubts are
+provenance: they ride out on each validated action as
+``policy_advisories`` for the model and the household to weigh, and the
+downstream simulate / acceptance / confirm / apply gates dispose.
 """
 from __future__ import annotations
 
@@ -295,6 +301,9 @@ def validate_advisor_response(
         )
         issues.extend(action_issues)
         if normalized is not None:
+            normalized["policy_advisories"] = _policy_advisories(
+                advisor_context, normalized["type"]
+            )
             actions.append(normalized)
 
     for field in ("summary", "recommended_next_action"):
@@ -384,18 +393,6 @@ def _validate_action(
             )
         ], None
 
-    allowed, reasons = _policy_allows(advisor_context, action_type)
-    if not allowed:
-        return [
-            _issue(
-                "fail",
-                "action_not_allowed_by_context",
-                f"{action_type} is blocked by the current JTS confidence policy",
-                index=index,
-                reasons=reasons,
-            )
-        ], None
-
     if action_type == ACTION_EXPLAIN:
         message = _bounded_text(raw.get("message"), "message", index, issues)
         return issues, {
@@ -462,28 +459,23 @@ def _validate_action(
     }
 
 
-def _policy_allows(
+def _policy_advisories(
     advisor_context: dict[str, Any],
     action_type: str,
-) -> tuple[bool, list[str]]:
+) -> list[str]:
+    """Concerns the packet recorded about this action, as PROVENANCE.
+
+    Advisory only, never a veto: a confidence heuristic proposes, the
+    measurement and the downstream apply gates dispose
+    (``docs/measurement-loop-doctrine.md``). The strings ride out with
+    the validated action so the model and the household weigh them; an
+    action is never dropped for carrying one.
+    """
     policy = advisor_context.get("advisor_policy") or {}
-    actions = {
-        action.get("id"): action
-        for action in policy.get("allowed_actions") or []
-        if isinstance(action, dict)
-    }
-    policy_id = {
-        ACTION_EXPLAIN: "explain",
-        ACTION_REMEASURE: "recommend_remeasure",
-        ACTION_AUDITION: "propose_preference_eq_audition",
-        ACTION_COMMIT: "request_user_approved_preference_commit",
-        ACTION_PROPOSE_CORRECTION_PEQ: "propose_correction_peq_adjustment",
-        ACTION_PROPOSE_TARGET_MOVE: "propose_target_move",
-    }.get(action_type, action_type)
-    payload = actions.get(policy_id)
-    if not payload:
-        return False, ["advisor policy does not list this action"]
-    return bool(payload.get("allowed")), [str(r) for r in payload.get("reasons") or []]
+    for action in policy.get("advisory_actions") or []:
+        if isinstance(action, dict) and action.get("id") == action_type:
+            return [str(reason) for reason in action.get("reasons") or []]
+    return []
 
 
 def _correction_bounds(advisor_context: dict[str, Any]) -> dict[str, Any]:

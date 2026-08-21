@@ -254,13 +254,7 @@ def _validate_raw_responses(responses: "list[bytes]") -> None:
         advisor = json.loads(text)
         validation = advisor_response.validate_advisor_response(
             advisor,
-            advisor_context={"advisor_policy": {"allowed_actions": [
-                {"id": "explain", "allowed": True, "reasons": []},
-                {"id": "recommend_remeasure", "allowed": True, "reasons": []},
-                {"id": "propose_correction_peq_adjustment", "allowed": True, "reasons": []},
-                {"id": "propose_target_move", "allowed": True, "reasons": []},
-                {"id": "propose_preference_eq_audition", "allowed": True, "reasons": []},
-            ]}},
+            advisor_context={},
         )
         _assert(
             validation["accepted"],

@@ -468,12 +468,18 @@ def interpret(
 
     Builds the correction packet, asks the model for a plain-language
     explanation (contracted JSON), validates it against the deterministic
-    response contract (so it cannot smuggle an action), and runs the
-    provenance check on the summary/message text.
+    response contract, and runs the provenance check on the
+    summary/message text.
+
+    Read-only is a property of THIS function's return, not of the
+    validator: only the narration is surfaced, there is no ``proposals``
+    key and no apply route, so an action the model volunteered here is
+    simply never carried anywhere. :func:`propose` is the route that
+    reviews and offers actions.
     """
     context = build_correction_advisor_context(session)
     package = prompt.build_advisor_prompt_package(
-        _advisor_packet_for_model(context, allow_actions=False),
+        _advisor_packet_for_model(context),
         user_message=user_message
         or "Explain what my room measurement shows, in plain language.",
     )
@@ -491,7 +497,7 @@ def interpret(
     advisor = call.get("advisor_response") or {}
     validation = response.validate_advisor_response(
         advisor,
-        advisor_context=_advisor_packet_for_model(context, allow_actions=False),
+        advisor_context=_advisor_packet_for_model(context),
     )
     narration = _narration_text(advisor)
     provenance = check_number_provenance(narration, context)
@@ -535,7 +541,7 @@ def propose(
     confirmation.
     """
     context = build_correction_advisor_context(session)
-    packet = _advisor_packet_for_model(context, allow_actions=True)
+    packet = _advisor_packet_for_model(context)
     package = prompt.build_advisor_prompt_package(
         packet,
         user_message=user_message
@@ -647,40 +653,22 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
     }
 
 
-def _advisor_packet_for_model(
-    context: dict[str, Any],
-    *,
-    allow_actions: bool,
-) -> dict[str, Any]:
+def _advisor_packet_for_model(context: dict[str, Any]) -> dict[str, Any]:
     """Fold the correction context into the shape the response validator +
-    prompt builder expect: it carries an ``advisor_policy.allowed_actions``
-    list (so :func:`response._policy_allows` permits the correction/target
-    proposals) plus a ``correction`` block with the live strategy bounds.
+    prompt builder expect: a ``correction`` block carrying the live
+    strategy bounds every proposed filter set is checked against.
+
+    It no longer hand-writes an ``advisor_policy`` permission list. That
+    list existed only to satisfy a per-action veto in ``response.py``;
+    with the veto gone (``docs/measurement-loop-doctrine.md`` — heuristics
+    propose, measurements dispose) what bounds a proposal is the strategy
+    caps below, then simulate / acceptance / confirm / apply.
     """
-    strategy_bounds = (context.get("correction") or {}).get("strategy_bounds")
-    allowed = [
-        {"id": "explain", "allowed": True, "reasons": []},
-        {"id": "recommend_remeasure", "allowed": True, "reasons": []},
-    ]
-    if allow_actions:
-        allowed.extend([
-            {
-                "id": "propose_correction_peq_adjustment",
-                "allowed": True,
-                "reasons": [],
-            },
-            {"id": "propose_target_move", "allowed": True, "reasons": []},
-            {"id": "propose_preference_eq_audition", "allowed": True, "reasons": []},
-        ])
     packet = dict(context)
-    packet["advisor_policy"] = {
-        "mode": "correction_flow_bounded_actions",
-        "allowed_actions": allowed,
-    }
     # response._correction_bounds reads advisor_context["correction"]["strategy_bounds"].
     packet["correction"] = {
         **(context.get("correction") or {}),
-        "strategy_bounds": strategy_bounds,
+        "strategy_bounds": (context.get("correction") or {}).get("strategy_bounds"),
     }
     return packet
 
