@@ -3086,8 +3086,9 @@ def test_volume_set_event_log_level_tracks_state_change(
     assert records[0].levelno == logging.INFO
     caplog.clear()
 
-    # Declined observation -> DEBUG (no-op: source inactive, echo window,
-    # measurement hold, etc. — nothing about the speaker's state changed).
+    # Declined observation -> DEBUG (no-op: the active-source gate — source
+    # inactive — or the coordinator's own-echo window — nothing about the
+    # speaker's state changed).
     async def _decline(source, percent, *, initial=False):
         return False
 

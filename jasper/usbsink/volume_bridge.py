@@ -58,21 +58,36 @@ logger = logging.getLogger(__name__)
 # Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
 # perceptible lag.
 POLL_INTERVAL_SEC = 0.25
-# When jasper-control declines an observation (USB not the active source yet,
-# a measurement hold, etc.), retry with a capped exponential backoff rather
-# than hammering /volume/set at the poll cadence forever. POST_RETRY_INTERVAL_SEC
-# is the starting delay — short enough to close the boot/deploy race where the
-# first mixer read arrives before source activation — and each consecutive
-# decline of the SAME value doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to
-# POST_RETRY_CEILING_SEC. Measured on the jts3 lab Pi (2026-08-20): the
-# un-backed-off bridge posted ~3,200 times/hour to report an unchanged slider
-# while USB was idle all day; a 30 s ceiling bounds that to ~120/hour. A changed
-# host value, or an accepted post, resets the backoff to the base interval, so
-# once jasper-control starts accepting again the current slider position lands
-# within one ceiling-length window rather than waiting out the full backoff.
+# When jasper-control declines an observation (USB not the active source yet
+# — the active-source gate — or the coordinator's own-echo window), retry
+# with a capped exponential backoff rather than hammering /volume/set at the
+# poll cadence forever. POST_RETRY_INTERVAL_SEC is the starting delay — short
+# enough to close the boot/deploy race where the first mixer read arrives
+# before source activation — and each consecutive decline of the SAME value
+# doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to POST_RETRY_CEILING_SEC.
+#
+# The ceiling is kept deliberately small — this backoff is NOT what kills the
+# measured journal spam (jasper-control's event=volume.set at INFO, ~3,200
+# lines/hour on the jts3 lab Pi, 2026-08-20 — see jasper/control/handlers/
+# volume.py, whose DEBUG demotion owns that fix regardless of this ceiling).
+# What the ceiling still has to bound: (1) residual HTTP+mux IPC volume and
+# flight-recorder-ring pressure — at the 5 s ceiling, up to ~3600/5 = 720
+# POSTs/hour once backed off, vs. ~3,200/hour unbacked-off; (2) the USB
+# source-handoff volume-mismatch window — a value pinned at the ceiling plus
+# a host that starts playback right after plays at the stale canonical level
+# for up to one ceiling-length window (plus one poll tick: ~5.25 s at the
+# current ceiling) before the next retry lands, then jumps without
+# transition to the true slider position. A 30 s ceiling was rejected here:
+# it left the same ~3,200/hour spam un-killed by this backoff alone, cut the
+# residual POST rate only to ~120/hour, and widened the handoff window to
+# ~30.25 s — a jts3 measurement (21%->70%) showed that's an unattributed
+# +24.75 dB jump. A changed host value, or an accepted post, resets the
+# backoff to the base interval, so once jasper-control starts accepting
+# again the current slider position lands within one ceiling-length window
+# rather than waiting out the full backoff.
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
-POST_RETRY_CEILING_SEC = 30.0
+POST_RETRY_CEILING_SEC = 5.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -154,12 +169,13 @@ class VolumeBridge:
         bridge.run()  # async, blocks until cancelled
 
     The bridge does NOT cache jasper-control state. Every observed
-    mixer change triggers one POST; a declined value (USB not the
-    active source, a measurement hold, etc.) is retried with a capped
-    exponential backoff until the controller acknowledges it, so a
-    long-lived decline costs one POST every POST_RETRY_CEILING_SEC
-    rather than one per poll. Accepted values are deduplicated
-    locally, while the coordinator owns source and echo policy.
+    mixer change triggers one POST; a declined value (the active-source
+    gate — USB isn't the active source — or the coordinator's own-echo
+    window) is retried with a capped exponential backoff until the
+    controller acknowledges it, so a long-lived decline costs one POST
+    every POST_RETRY_CEILING_SEC rather than one per poll. Accepted
+    values are deduplicated locally, while the coordinator owns source
+    and echo policy.
     """
 
     def __init__(

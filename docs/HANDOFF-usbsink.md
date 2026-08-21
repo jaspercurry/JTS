@@ -588,14 +588,17 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
   which translates and updates `listening_level` + `camilla.main_volume`.
   The controller explicitly acknowledges whether the source-active gate
   accepted the observation. A value first seen while USB is idle is retried
-  with a capped exponential backoff (`POST_RETRY_INTERVAL_SEC` = 1 s base,
-  doubling to a `POST_RETRY_CEILING_SEC` = 30 s ceiling) until USB becomes
-  active; a slider move or an accepted post resets the backoff to the base
-  interval, and only an accepted value is deduplicated. This prevents a
-  deploy/control restart from caching a declined initial read forever, and
-  bounds retry traffic during a long-lived decline — a flat once-per-second
-  retry was measured on the jts3 lab Pi (2026-08-20) posting ~3,200
-  times/hour to report an unchanged slider while USB sat idle all day.
+  with a capped exponential backoff (`POST_RETRY_INTERVAL_SEC` base,
+  doubling by `POST_RETRY_BACKOFF_FACTOR` up to a `POST_RETRY_CEILING_SEC`
+  ceiling — current values and the latency-vs-spam-rate tradeoff that sets
+  them live in the prose comment above those constants in
+  `volume_bridge.py`, not restated here) until USB becomes active; a slider
+  move or an accepted post resets the backoff to the base interval, and only
+  an accepted value is deduplicated. This prevents a deploy/control restart
+  from caching a declined initial read forever, and bounds retry traffic
+  during a long-lived decline — a flat once-per-second retry was measured on
+  the jts3 lab Pi (2026-08-20) posting ~3,200 times/hour to report an
+  unchanged slider while USB sat idle all day.
 - Outbound: remote twist / voice "louder" goes through the normal
   `_set_camilla` path. **No write back to the gadget mixer**.
 
@@ -2380,11 +2383,20 @@ source of truth per the documentation paradigm.)
 
 Last verified: 2026-08-20 (scoped: the §3.2 volume-model bullet's declined-
 observation retry description was corrected to match
-`jasper/usbsink/volume_bridge.py` — a capped exponential backoff (1 s base,
-doubling to a 30 s ceiling; reset on a slider move or an accepted post), not
-the flat once-per-second-forever retry the bullet previously described. The
-flat retry was measured on the jts3 lab Pi posting ~3,200 times/hour to
-report an unchanged slider while USB sat idle all day. Nothing else in this
+`jasper/usbsink/volume_bridge.py` — a capped exponential backoff
+(`POST_RETRY_INTERVAL_SEC` base, doubling by `POST_RETRY_BACKOFF_FACTOR` to
+a `POST_RETRY_CEILING_SEC` ceiling; reset on a slider move or an accepted
+post), not the flat once-per-second-forever retry the bullet previously
+described, and not the invented "a measurement hold, etc." decline reason a
+same-PR draft of the module comment briefly named — the real decline
+reasons at HEAD are the active-source gate and the coordinator's own-echo
+window. The flat retry was measured on the jts3 lab Pi posting ~3,200
+times/hour to report an unchanged slider while USB sat idle all day; an
+initial 30 s ceiling was tightened after an adversarial-gate finding that it
+widened the USB source-handoff volume-mismatch window (stale level, then an
+unattributed jump once the host starts playback) — current value and the
+full latency-vs-spam-rate tradeoff live in the prose comment above the
+constants in `volume_bridge.py`, not restated here. Nothing else in this
 doc was re-verified this pass.) Prior 2026-08-15: only the
 Current-operational-truth banner's DIRECT-capture width sentence was
 re-verified, after the ring wire's default sample format flipped narrow →

@@ -22,6 +22,8 @@ import pytest
 
 from jasper.usbsink.volume_bridge import (
     POLL_INTERVAL_SEC,
+    POST_RETRY_BACKOFF_FACTOR,
+    POST_RETRY_CEILING_SEC,
     POST_RETRY_INTERVAL_SEC,
     USBSINK_VOLUME_DB_MAX,
     USBSINK_VOLUME_DB_MIN,
@@ -558,23 +560,63 @@ async def test_tick_retries_observation_declined_before_source_activation(
 # ----------------------------------------------------------------------
 # Bounded backoff for declined observations (jts3, 2026-08-20): jasper-control
 # can decline an observation for a long stretch — not just the boot/deploy
-# race above, but hours of USB being idle, or a measurement hold owned by
-# another in-flight subsystem. Retrying at the flat base cadence forever
-# measured ~3,200 POSTs/hour reporting an unchanged slider. These tests pin
-# the capped-exponential-backoff fix: bounded retries, reset on value change,
-# reset on acceptance.
+# race above, but hours of USB being idle (the active-source gate) or a
+# stretch inside the coordinator's own-echo window. Retrying at the flat
+# base cadence forever measured ~3,200 POSTs/hour reporting an unchanged
+# slider. These tests pin the capped-exponential-backoff fix: bounded
+# retries, reset on value change, reset on acceptance.
 # ----------------------------------------------------------------------
+
+
+def _expected_declined_post_times(
+    window_sec: float,
+    *,
+    base: float = POST_RETRY_INTERVAL_SEC,
+    factor: float = POST_RETRY_BACKOFF_FACTOR,
+    ceiling: float = POST_RETRY_CEILING_SEC,
+) -> list[float]:
+    """Reproduce _tick()'s retry schedule analytically for a value that is
+    always declined: an immediate first attempt at t=0, then a retry every
+    `backoff` seconds where `backoff` starts at `base` and multiplies by
+    `factor` after each decline, capped at `ceiling`. Returns the POST
+    timestamps landing in [0, window_sec).
+
+    Deriving the expected count from the live constants — instead of a
+    hand-picked magic number — keeps the assertion meaningful no matter
+    what base/factor/ceiling are currently tuned to: an implementation bug
+    that disables growth (flat retries at `base` forever) or breaks the cap
+    (unbounded exponential growth) diverges sharply from this formula
+    either way. See the sensitivity check in the test below for a direct
+    demonstration that the formula (and thus the test) actually depends on
+    `ceiling` — a hardcoded `< N` upper bound does not.
+    """
+    times = [0.0]
+    backoff = base
+    t = 0.0
+    while True:
+        t += backoff
+        if t >= window_sec:
+            break
+        times.append(t)
+        backoff = min(backoff * factor, ceiling)
+    return times
 
 
 @pytest.mark.asyncio
 async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog):
     """A value jasper-control keeps declining must not be retried at the base
-    poll cadence forever. Simulate a 10 simulated-minute window (via a
-    controllable fake clock, so the test runs instantly) of a constant,
-    always-declined slider value and assert BOTH the POST count and the
-    matching DEBUG journal-line count stay far under the flat-cadence
-    baseline (~2,400 over the same window at the 4 Hz poll rate, ~600 at the
-    old flat 1 Hz retry cadence)."""
+    poll cadence forever — unbounded retries mean unbounded HTTP+mux IPC
+    volume and flight-recorder-ring pressure, independent of log level.
+    Simulate a 10 simulated-minute window (via a controllable fake clock, so
+    the test runs instantly) of a constant, always-declined slider value and
+    assert BOTH the POST count and this bridge process's own DEBUG-level
+    deferral-log count stay far under the flat-cadence baseline (~2,400 over
+    the same window at the 4 Hz poll rate, ~600 at the old flat 1 Hz retry
+    cadence). Note: the journal spam actually MEASURED on jts3 was a
+    different process's line — jasper-control's event=volume.set at INFO,
+    fixed by the DEBUG demotion in jasper/control/handlers/volume.py — not
+    this bridge-side deferral line, which bounding POSTs here only bounds
+    for IPC/flight-recorder reasons."""
     bridge = VolumeBridge()
     bridge._vol_numid = 1
     bridge._switch_numid = None
@@ -623,12 +665,33 @@ async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog)
         if "event=usbsink.volume_observation_deferred" in r.getMessage()
     ]
 
-    # A flat 1 Hz retry (the pre-fix behavior) would produce ~600 POSTs in
-    # this window; a naive per-poll retry would produce ~2,400. The capped
-    # backoff must land far below either baseline.
-    assert 0 < fake_control.calls < 40
-    # Every declined POST logs exactly one DEBUG deferral line — bounding the
-    # POSTs bounds the journal lines the same way.
+    expected_times = _expected_declined_post_times(simulated_seconds)
+
+    # Exact match against the analytical schedule — not a hand-picked magic
+    # number. This fails in BOTH directions: mutation A (backoff growth
+    # disabled) posts at the flat base cadence (600 in this window, wildly
+    # more than expected), and a "cap removed" bug (unbounded exponential
+    # growth) posts far FEWER times than expected. A fixed upper bound like
+    # the previous `< 40` only ever catches the first direction.
+    assert fake_control.calls == len(expected_times)
+
+    # Sensitivity check: prove this bound actually tracks the ceiling,
+    # rather than being a fixed number that would keep passing regardless
+    # of what the ceiling is set to. (This is what a hardcoded `< 40` upper
+    # bound could not show: raising the ceiling to 300 s still satisfies
+    # `< 40`, so that version of the test would never notice.)
+    larger_ceiling_expected = _expected_declined_post_times(
+        simulated_seconds, ceiling=300.0,
+    )
+    assert len(larger_ceiling_expected) < len(expected_times)
+
+    # Every declined POST logs exactly one DEBUG deferral line in THIS
+    # process — bounding the POSTs bounds this count too, which matters for
+    # IPC/flight-recorder-ring pressure. This is NOT the journal spam
+    # actually measured on jts3: that was jasper-control's separate
+    # event=volume.set INFO line (a different process), fixed by the DEBUG
+    # demotion in jasper/control/handlers/volume.py regardless of this
+    # backoff.
     assert len(deferred_lines) == fake_control.calls
 
 
