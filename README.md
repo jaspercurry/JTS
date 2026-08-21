@@ -955,6 +955,14 @@ reference. Currently:
   historical appendix holding the campaign narrative, the failure-taxonomy
   catalog, and the W6 hardware bug list. Read the spine for how the flow works
   today; the design/decision record below is the "why."
+- [`measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md) —
+  **Canonical doctrine (owner-ratified 2026-08-21)** for how an LLM drives
+  the crossover-v2/correction measurement loop: measure → propose → run →
+  collect → recommend → confirm, the propose/dispose authority model
+  (predictions and heuristics propose, measurements dispose, the owner
+  rules), and the closed hard-stop list — refusals are for a named
+  component-damage mechanism only, never a "might not work" hunch. Short
+  and durable by design; other docs point here rather than restating it.
 - [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
   — **Adopted design (2026-07-23): the five-layer tuning model** — driver
   linearization (the layer the "no sparkle" incident exposed) + crossover
