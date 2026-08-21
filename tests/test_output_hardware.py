@@ -711,6 +711,37 @@ def test_classify_more_than_two_apple_dacs_is_not_auto_promoted() -> None:
     assert "too_many_apple_dacs" in {issue["code"] for issue in state.issues}
 
 
+def test_topology_path_resolves_identically_to_the_topology_module(
+    monkeypatch,
+) -> None:
+    """Two modules spell the same topology path; the park needs them equal.
+
+    `output_hardware` keeps its own literal on purpose — importing
+    `output_topology` for a constant would cost the import-cheapness this
+    module advertises, and that trade is the right one. What the trade buys is
+    a drift risk that nothing pinned until the park arm existed:
+    `_read_topology_hardware` reads the file through one resolver while
+    `_saved_topology_requires_roleful_graph` classifies it through the other,
+    so a divergence would not raise — the rolefulness lookup would simply find
+    no topology, report "not roleful", and the box would quietly stop parking.
+
+    Asserting the resolvers rather than only the literals also pins the env-var
+    name, which is the other half of "these two name one file".
+    """
+
+    from jasper import output_topology
+
+    monkeypatch.delenv("JASPER_OUTPUT_TOPOLOGY_PATH", raising=False)
+    assert (
+        output_hardware.DEFAULT_TOPOLOGY_PATH
+        == output_topology.OUTPUT_TOPOLOGY_PATH
+    )
+    assert output_hardware._topology_path() == output_topology.topology_path()
+
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", "/tmp/jts-elsewhere.json")
+    assert output_hardware._topology_path() == output_topology.topology_path()
+
+
 def _apple_child(card_id: str, serial: str, usb_path: str) -> OutputCardFact:
     return OutputCardFact(
         card_id=card_id,
@@ -747,8 +778,21 @@ def _assert_saved_rolefulness(topology_path: Path, expected: bool) -> None:
     no-op that still passes for the wrong reason. That happened once here —
     `"outputs": []` against `physical_output_count: 4` failed validation, and
     the tests only caught it because the park assertions were downstream.
+
+    The group check is the other half, and it is the half that matters on the
+    `expected=False` side: an empty draft is not roleful either, so asserting
+    "not roleful" alone would pass for the very malformation this guard exists
+    to catch — leaving the passive fixture, which is what pins the SF-1 carve
+    out, unprotected.
     """
 
+    from jasper.output_topology import load_output_topology
+
+    topology = load_output_topology(topology_path)
+    assert topology.speaker_groups, (
+        f"{topology_path} loaded with no speaker groups — the fixture is "
+        "malformed and soft-loaded to an empty draft"
+    )
     assert output_hardware._saved_topology_requires_roleful_graph(
         topology_path
     ) is expected
@@ -1057,8 +1101,48 @@ def test_reason_never_names_a_child_that_is_physically_present(
     ]
     assert len(blockers) == 1
     message = blockers[0]["message"]
-    assert "no saved child device could be matched" in message
+    # Pin the TRUE sentence for this shape. Both children are attached, so the
+    # remediation is to remove the interloper — NOT to reconnect anything, and
+    # certainly not the inverse claim that nothing could be matched.
+    assert "every declared child device is attached" in message
+    assert "detach it" in message
     assert "missing child devices" not in message
+    assert "no saved child device could be matched" not in message
+    assert "left" not in message
+    assert "right" not in message
+
+
+def test_reason_says_so_when_the_topology_declares_no_children(
+    tmp_path: Path,
+) -> None:
+    """A roleful composite with no declared children is its own sentence.
+
+    Reachable: a composite `hardware` block with `child_devices` absent or
+    empty still loads and is still roleful, so the park arm runs with nothing
+    to diff. "No child matched" would be vacuously true here and actively
+    misleading in the sibling shape above, which is why they are separate.
+    """
+
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    hardware = _saved_composite_hardware()
+    del hardware["child_devices"]
+    topology_path = _saved_topology(
+        tmp_path, _active_topology("stereo", "active_2_way"), hardware
+    )
+    _assert_saved_rolefulness(topology_path, True)
+    cards = [_apple_child("A", "left", "1-1")]
+
+    state = output_hardware.apply_saved_topology_policy(
+        classify_output_cards(cards),
+        cards,
+        topology_path=topology_path,
+    )
+
+    message = state.issues[-1]["message"]
+    assert "declares no child devices" in message
+    assert "missing child devices" not in message
+    assert "every declared child device is attached" not in message
 
 
 def test_published_record_carries_the_partial_composite_reason(

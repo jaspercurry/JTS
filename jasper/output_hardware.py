@@ -867,6 +867,17 @@ def _child_topology_order(child: Mapping[str, Any]) -> int:
     return min(values) if values else 999
 
 
+def _declared_child_devices(
+    hardware: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    """The child devices the saved topology declares, if it declares any."""
+
+    children = hardware.get("child_devices") or []
+    if not isinstance(children, list):
+        return ()
+    return tuple(item for item in children if isinstance(item, Mapping))
+
+
 def _missing_topology_child_labels(
     hardware: Mapping[str, Any],
     observed: Iterable[OutputCardFact],
@@ -877,12 +888,7 @@ def _missing_topology_child_labels(
     for card in observed:
         observed_tokens.update(_identity_tokens(card))
     missing: list[str] = []
-    children = hardware.get("child_devices") or []
-    if not isinstance(children, list):
-        return ()
-    for child in children:
-        if not isinstance(child, Mapping):
-            continue
+    for child in _declared_child_devices(hardware):
         tokens = _identity_tokens(child)
         if tokens and observed_tokens.intersection(tokens):
             continue
@@ -908,9 +914,19 @@ def _saved_topology_requires_roleful_graph(
     declared composite that is not the observed profile), never on an ordinary
     reconcile pass.
 
-    ``load_output_topology`` fails soft to an empty draft, which is not roleful
-    — matching ``apply_saved_topology_policy``'s decision to leave an
-    unreadable topology on today's behaviour.
+    **A topology that parses as JSON but is invalid as a topology does not
+    park, and that is the decision, not an oversight.**
+    ``load_output_topology`` fails soft to an empty draft — logging
+    ``event=output_topology.load_failed`` as it does — and an empty draft is
+    not roleful, so such a box keeps today's behaviour. Two reasons to leave it
+    there. Parking on it would mean parking every speaker whose topology file
+    is malformed for any reason, which reaches far past a half-present
+    composite; and the shape is already loud twice over — that WARN event, plus
+    ``jasper-doctor``'s own topology reporting — where this policy would only
+    add silence. It is the same call ``apply_saved_topology_policy`` makes for a
+    file that is not readable JSON at all, kept deliberately consistent so the
+    two malformations do not behave differently for no reason a reader could
+    name.
     """
 
     from .active_speaker.runtime_contract import (
@@ -981,12 +997,27 @@ def apply_saved_topology_policy(
     # (attach a registered single DAC beside both dongles and the record's
     # children are that DAC), which would report a plugged-in child missing.
     # The one surface this policy exists to produce must not misname hardware.
+    # Three genuinely different situations reach this point, and they call for
+    # three different sentences. An earlier cut had one `else` reading "no saved
+    # child device could be matched", which fired EXACTLY when every child had
+    # matched — the inverse of the truth, on the one surface this policy exists
+    # to produce.
     missing = _missing_topology_child_labels(hardware, observed_cards)
-    detail = (
-        f"missing child devices: {', '.join(missing)}"
-        if missing
-        else "no saved child device could be matched to an observed card"
-    )
+    if missing:
+        detail = f"missing child devices: {', '.join(missing)}"
+    elif not _declared_child_devices(hardware):
+        detail = "the saved topology declares no child devices to look for"
+    else:
+        # Every declared child IS attached. Reaching here at all means
+        # classification went elsewhere, and it can only do that when other
+        # output hardware is also attached — two Apple children alone classify
+        # as the composite and return above. So the remediation is to remove
+        # the interloper, not to reconnect anything.
+        detail = (
+            "every declared child device is attached; other output hardware is "
+            "also present and was classified first — detach it so the declared "
+            "children are recognized as one device"
+        )
     return replace(
         state,
         # An already-partial/missing observation keeps its own status; only a
