@@ -30,9 +30,11 @@ narrow question of *who may control grouping across devices*.
   origin*, not *caller identity*, and are the wrong primitive for
   machine-to-machine calls (industry-standard guidance, §4).
 - WS1 Phase 2 made that token **mandatory** on the six routes it shipped
-  with (a seventh, `/aec/firmware/update`, and an eighth,
-  `/aec/usb-mic`, were added later — see §7),
-  including `/grouping/set`. That silently broke two flows that predate it:
+  with; routes have been added since, and the live set is
+  `_TOKEN_GATED_ROUTES` in [`jasper/control/server.py`](../jasper/control/server.py)
+  — read it there rather than trusting a count in prose (this line carried a
+  stale one for three additions). It has always
+  included `/grouping/set`. That silently broke two flows that predate it:
   1. **Leader → follower `/grouping/set`** (multiroom): each speaker
      auto-generates its *own* token, so the leader has nothing the follower
      will accept → `403 control_token_required`. **(device-to-device gap)**
@@ -368,9 +370,18 @@ audit (below) shows it is the *only* such client besides the M2M path.
   daemon-independent resilience).
 
 **Audit result (July 2026, updated for the `/aec/usb-mic` addition):** across
-all eight token-gated routes, the *only*
+the eight routes gated **at that date**, the *only*
 clients missing the token are (a) this landing-page button and (b) the M2M
-grouping path (§6). Every ES-module wizard uses the shared `http.js`
+grouping path (§6). Routes gated since have not been re-audited against this
+list, so treat the conclusion as dated rather than as covering the current
+`_TOKEN_GATED_ROUTES`. Two of them are worth naming because they share a client
+shape this section had not seen before: `/measurement/hold` and
+`/measurement/release` are called by
+`measurement_window()` from jasper-correction-web and from CLIs such as
+`jasper-seat-level`, which read the token from **this box's own**
+`control_token.current_token()` and present it over loopback — the
+local-process path this section already treats as inside the boundary, not the
+cross-device gap §6 is about. Every ES-module wizard uses the shared `http.js`
 `csrfHeaders()`/`postControlAction()`; the balance/sync/rooms/system/wake
 server-side flows (the last covers `/aec/firmware/update` and
 `/aec/usb-mic`) forward the browser token via

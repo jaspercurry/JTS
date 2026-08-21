@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
 
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
@@ -325,37 +326,38 @@ def live_measurement_session(
     file, which is why the question lives here beside the plan rather than in
     either door.
 
-    **This reuses the flow's own cross-process exclusivity fact rather than
-    minting a second one, and WHICH fact it reuses is the whole point.** The
-    crossover flow has three exclusion layers and only one of them is visible
-    from another process:
+    **Two different facts are being asked about, and each is asked of its own
+    owner.** Answering both from one place is what makes this a door and not a
+    second source of truth:
 
-    * ``correction_setup._crossover_blocking_phase`` (the balance/sync/correction
-      interlock) and ``_begin_relay_capture``'s single relay slot are BOTH
-      module-globals of the ``jasper-correction-web`` process. A CLI cannot see
-      either, and a copy of them here would be a second answer that is wrong the
-      moment the real one changes.
-    * :class:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan`'s
-      durable state IS cross-process: it is a file, written when a session opens
-      the fixed measurement volume and drained on every close/abandon/ceiling
-      path. A session holding the speaker records ``status == "active"`` in it.
+    * **Is a measurement LIVE right now?** That is the open measurement window,
+      and its cross-process copy lives in jasper-control
+      (``jasper.control.measurement_hold``) — the same self-expiring hold
+      ``measurement_window()`` takes for every measuring surface, web and CLI
+      alike. Asking jasper-control means this door refuses a *crossover-web*
+      session too, which the volume statefile alone could not distinguish from
+      a crashed one. Acting under a live measurement would either queue an
+      instruction for a session past the point of taking one, or fight it for
+      the very volume it is holding.
+    * **Did a previous measurement leave the volume UNRESOLVED?** That is a
+      volume-recovery fact, not a liveness fact, and it stays with
+      :class:`SessionVolumePlan`'s durable statefile — it outlives every
+      process, which is exactly the point of it. Staging into it is staging
+      for a session that will refuse to start, so the refusal belongs here
+      where the operator can act on it.
 
-    So this asks the volume state file -- the same file ``prepare_v2_session``
-    itself gates on before it will open anything. The read is
-    :attr:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.needs_recovery`,
-    and it is exact here for a reason worth stating: that property is
-    ``unresolved OR (durably active AND not opened by this process)``, and a
-    freshly-constructed plan in a CLI process has opened nothing. So in THIS
-    process it reads as "unresolved or active", which is precisely the question
-    being asked. Two conditions refuse, for two different reasons:
+    The two other exclusion layers the crossover flow has —
+    ``correction_setup._crossover_blocking_phase`` and ``_begin_relay_capture``'s
+    single relay slot — are module-globals of the ``jasper-correction-web``
+    process. A CLI cannot see either, and a copy of them here would be a second
+    answer that is wrong the moment the real one changes.
 
-    * **active** -- a session owns the speaker. Acting under it would either
-      queue an instruction for a session already past the point of taking one,
-      or fight it for the very volume it is holding.
-    * **unresolved** -- a prior session left the measurement volume in a state
-      that must be drained before any new session opens. Staging into that is
-      staging for a session that will refuse to start, so the refusal belongs
-      here where the operator can act on it.
+    **When jasper-control cannot be reached**, the liveness question falls back
+    to the durable statefile — ``needs_recovery`` minus ``stale_active``, which
+    is precisely the answer this door gave before the hold existed. That is a
+    documented degradation with one authority and one fallback, not two
+    competing answers: the box that owns the live fact is unreachable, so the
+    most conservative record still readable is used instead.
 
     A **stale** active state -- one past its own wall-clock ceiling -- is NOT a
     live session and does not refuse: that is the crashed-session shape the
@@ -378,24 +380,42 @@ def live_measurement_session(
             DEFAULT_SESSION_VOLUME_STATE_PATH if state_path is None else state_path
         )
     )
-    if not plan.needs_recovery:
-        return None
-    # ``stale_active`` is the crash shape, and it is deliberately NOT a refusal.
-    # Tested BEFORE the two arms below because a stale state is durably
-    # "active" too, so answering the active arm first would refuse exactly the
-    # session the flow is able to force-drain.
-    if plan.stale_active(now):
-        return None
+    # Unresolved first: it is a pure file read, it is mutually exclusive with
+    # the active state (they are different values of one ``status`` field), and
+    # it is the more actionable of the two sentences.
     if plan.unresolved_volume_safety is not None:
         return (
             "a previous measurement left the speaker's measurement volume "
             "unresolved; recover it at http://jts.local/correction/crossover/ "
             f"before {action}"
         )
+    if not _a_measurement_is_live(plan=plan, now=now):
+        return None
     return (
         "a measurement session is already running (the speaker is held at its "
         f"measurement volume); finish or stop it before {action}"
     )
+
+
+def _a_measurement_is_live(
+    *,
+    plan: "SessionVolumePlan",
+    now: float | None,
+) -> bool:
+    """Is a measurement holding the speaker right now?
+
+    jasper-control's hold is the authority; the durable statefile is the
+    fallback when it cannot be reached. See :func:`live_measurement_session`
+    for why the two facts are split that way.
+    """
+    hold = read_measurement_hold()
+    if hold is not None:
+        return bool(hold.get("active"))
+    # ``needs_recovery`` minus the unresolved arm (already answered above) is
+    # "durably active and not opened by this process", and a freshly built plan
+    # in a CLI process has opened nothing. ``stale_active`` drops the crashed
+    # shape the flow force-drains. Together: exactly the pre-hold answer.
+    return plan.needs_recovery and not plan.stale_active(now)
 
 
 @dataclass(frozen=True)

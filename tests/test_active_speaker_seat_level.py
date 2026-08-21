@@ -44,6 +44,7 @@ import time
 import pytest
 
 from jasper.active_speaker import seat_level_ramp as slr
+from jasper.active_speaker import session_volume_plan as svp
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     live_measurement_session,
@@ -70,6 +71,71 @@ UMIK2_CAL_TEXT = (
     "10.179\t-6.4980\n"
 )
 UMIK2 = MicSensitivity(sens_factor_db=-12.07, analog_gain_db=18.0, serial="8108494")
+
+
+class FakeWindow:
+    """Recording stand-in for ``coordinator.measurement_window()``.
+
+    The real window talks to jasper-mux over UDS, jasper-voice over UDS, and
+    jasper-control over HTTP — none of which exist here. It records enter/exit
+    so a test can assert the ramp really runs INSIDE it, and can be told to
+    fail on either boundary.
+    """
+
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        enter_error: Exception | None = None,
+        exit_error: Exception | None = None,
+    ) -> None:
+        self.log = log
+        self.enter_error = enter_error
+        self.exit_error = exit_error
+
+    async def __aenter__(self):
+        if self.enter_error is not None:
+            raise self.enter_error
+        self.log.append("window_enter")
+        return None
+
+    async def __aexit__(self, *exc):
+        self.log.append("window_exit")
+        if self.exit_error is not None:
+            raise self.exit_error
+        return False
+
+
+class WindowRecorder:
+    """What the autouse fixture hands back: the boundary log + the kwargs."""
+
+    def __init__(self) -> None:
+        self.log: list[str] = []
+        self.kwargs: list[dict] = []
+
+
+@pytest.fixture(autouse=True)
+def measurement_window_log(monkeypatch):
+    """Every ramp in this file runs under a recorded, in-process window."""
+    recorder = WindowRecorder()
+
+    def _window(**kw):
+        recorder.kwargs.append(kw)
+        return FakeWindow(recorder.log)
+
+    monkeypatch.setattr(slr, "measurement_window", _window)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def _control_unreachable(monkeypatch):
+    """No jasper-control in this suite, so the door uses its documented
+    fallback: the durable volume statefile. Pinned rather than left to whether
+    something happens to be listening on 8780 on the machine running the tests.
+    """
+    monkeypatch.setattr(
+        svp, "read_measurement_hold", lambda: None,
+    )
 
 # Below the runaway guard's abort level (start + probe span) on purpose, so
 # ``max(commanded)`` in the guard tests reads the RAMP's peak and not the
@@ -825,3 +891,102 @@ def test_a_written_reference_round_trips(tmp_path):
         state_path=path,
     )
     assert seat_level_reference_volume_db(state_path=path) == pytest.approx(-17.25)
+
+
+# --------------------------------------------------------------------------- #
+# the shared measurement window: this pass runs inside it, or not at all
+# --------------------------------------------------------------------------- #
+
+
+def test_the_whole_pass_runs_inside_the_measurement_window(
+    tmp_path, measurement_window_log,
+):
+    """Test 1 of the measurement-mode plan, and the jts3 incident's actual fix.
+
+    Without the window, jasper-voice's ``VolumeCoordinator`` patrol reconciles
+    the fader back toward the household level once a second and fights the ramp
+    the whole way up (journal: ``event=volume.reconciled source=idle
+    drift_db=+9.35``). The window is what sets ``_measurement_active``.
+
+    The window must wrap ``plan.open`` too, not only the ramp: the latch's own
+    first write (to the quiet start floor) is a fader write like any other.
+    Mutation-verified: deleting the ``async with measurement_window(...)`` from
+    ``run_seat_level_ramp`` empties the log and turns the first assertion red.
+    """
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+    assert result.status == "converged", result.reason
+
+    assert measurement_window_log.log == ["window_enter", "window_exit"]
+    # Owner-scoped, and the owner is the one mux registers for this pass.
+    assert measurement_window_log.kwargs == [
+        {"gate_owner": slr.SEAT_LEVEL_GATE_OWNER}
+    ]
+
+
+def test_the_seat_level_owner_is_registered_with_mux():
+    """An unregistered owner is refused by mux, so the pass could never isolate.
+
+    ``TEST_RELEASE`` is owner-scoped, which is why the name has to be in the
+    registry rather than merely passed.
+    """
+    from jasper.mux import FANIN_TEST_OWNERS
+
+    assert slr.SEAT_LEVEL_GATE_OWNER in FANIN_TEST_OWNERS
+
+
+def test_a_window_that_will_not_open_refuses_the_pass(tmp_path, monkeypatch):
+    """Another measurement owns the speaker, or mux cannot prove isolation.
+
+    A leveling pass that ran anyway would be measuring household music.
+    """
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    def _refusing(**_kw):
+        return FakeWindow(
+            [], enter_error=MeasurementWindowError("a measurement is in progress"),
+        )
+
+    monkeypatch.setattr(slr, "measurement_window", _refusing)
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_ISOLATION_UNAVAILABLE
+    assert "a measurement is in progress" in (result.detail or "")
+    # Nothing was mutated and nothing was banked.
+    assert volume.commanded == []
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_converged_pass_survives_a_failed_isolation_teardown(
+    tmp_path, monkeypatch,
+):
+    """The pass finished and already restored the household volume.
+
+    Reporting "refused" here would be a lie in the other direction -- the
+    reference is on disk. Every lease self-expires within ~2 minutes, so the
+    stuck isolation is logged loudly rather than turned into a lost result.
+    """
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    log: list[str] = []
+
+    def _leaky(**_kw):
+        return FakeWindow(
+            log, exit_error=MeasurementWindowError("mux did not confirm release"),
+        )
+
+    monkeypatch.setattr(slr, "measurement_window", _leaky)
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+
+    assert result.status == "converged", result.reason
+    assert log == ["window_enter", "window_exit"]
+    assert (tmp_path / "seat_level_reference.json").exists()

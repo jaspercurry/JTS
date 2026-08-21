@@ -2458,7 +2458,13 @@ jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
 two-point jump, confirm streak, clip abort, feed-liveness abort, derived safety
 timeout, fade before the tone is killed); the mic feed is
 [`wired_level_meter.py`](../jasper/audio_measurement/wired_level_meter.py); the
-volume hold is the crossover session's own `SessionVolumePlan`. What this verb
+volume hold is the crossover session's own `SessionVolumePlan`; the whole pass
+runs inside the shared
+[`measurement_window()`](../jasper/correction/coordinator.py) as owner
+`seat-level`, which is what stops jasper-voice's volume patrol reconciling the
+fader back to the household level once a second while the ramp climbs, keeps
+household music out of the mix, and holds jasper-control off applying
+host-slider volume observations. What this verb
 adds is the SPL domain: the band, the ceilings, and the ambient floor.
 
 **The ceiling is mic-independent, and that is deliberate.** The ramp's hard bound
@@ -2504,6 +2510,7 @@ refusal restores the household volume and banks nothing.
 | `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
 | `spl_target_unreachable` | the ceiling was reached without entering the band |
 | `mic_feed_lost` / `mic_clipping` / `ramp_timeout` | the kernel's own aborts |
+| `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 
 Read the journal, not the code, to find out what happened:
 

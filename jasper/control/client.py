@@ -199,6 +199,24 @@ def get_state(
     return data if isinstance(data, dict) else {}
 
 
+def get_measurement(
+    *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
+) -> dict:
+    """The ``/measurement`` hold snapshot as a dict.
+
+    Deliberately NOT ``get_state()["measurement"]``: the operator doors that ask
+    "is a measurement live?" would otherwise pay for the whole aggregate
+    (camilla, renderers, mux, a 20 s budget) to read one in-memory dict.
+
+    Raises :class:`ControlError` if jasper-control is unreachable; returns
+    ``{}`` for a non-dict body."""
+    data = get("/measurement", base_url=base_url, timeout=timeout).json()
+    if not isinstance(data, dict):
+        return {}
+    hold = data.get("measurement")
+    return hold if isinstance(hold, dict) else {}
+
+
 def healthz(
     *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
 ) -> bool:

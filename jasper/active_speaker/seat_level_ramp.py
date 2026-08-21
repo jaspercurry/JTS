@@ -73,6 +73,10 @@ from jasper.audio_measurement.ramp import (
     RampLockKind,
     RampState,
 )
+from jasper.correction.coordinator import (
+    MeasurementWindowError,
+    measurement_window,
+)
 from jasper.log_event import log_event
 
 from .seat_level_reference import (
@@ -95,6 +99,13 @@ logger = logging.getLogger(__name__)
 # below the codified -20 dB reference, so the first audible moment of a leveling
 # pass is far under any level the session would hold.
 SEAT_LEVEL_START_DB = -50.0
+
+# This pass's identity in the shared measurement window: the mux diagnostic-gate
+# owner (registered in ``mux.FANIN_TEST_OWNERS``, so ``TEST_RELEASE`` stays
+# owner-scoped) AND jasper-control's volume-hold owner, because the window
+# reuses one name for both. It is what ``/state.measurement.owner`` and every
+# ``event=measurement.hold_*`` line say while a leveling pass is running.
+SEAT_LEVEL_GATE_OWNER = "seat-level"
 
 # Worst-case delay between commanding a volume and seeing it in a sample. A
 # wired mic read in-process is chunk-bounded, an order of magnitude tighter than
@@ -156,6 +167,11 @@ REFUSE_VOLUME_CEILING_TOO_LOW = "volume_ceiling_below_ramp_start"
 REFUSE_VOLUME_LATCH_UNCONFIRMED = "volume_latch_unconfirmed"
 # Reuses jasper-angle-capture's slug verbatim: same door, same durable fact.
 REFUSE_SESSION_ALREADY_LIVE = "measurement_session_already_live"
+# The shared measurement window would not open — another measurement holds the
+# speaker, or mux could not prove household music is out of the mix. Distinct
+# from REFUSE_SESSION_ALREADY_LIVE, which is the durable volume-latch fact read
+# before anything is attempted.
+REFUSE_ISOLATION_UNAVAILABLE = "measurement_isolation_unavailable"
 
 
 class SeatLevelRampError(RuntimeError):
@@ -429,6 +445,17 @@ async def run_seat_level_ramp(
     ``jasper-angle-capture stage`` does (:func:`live_measurement_session`). A
     private statefile would have been invisible to every one of them.
 
+    **The whole pass runs inside the shared measurement window**
+    (:func:`jasper.correction.coordinator.measurement_window`), owned as
+    ``seat-level``. That is what stops jasper-voice's ``VolumeCoordinator``
+    patrol reconciling the fader back toward the household level once a second
+    while the ramp climbs, keeps household music out of the mix through mux's
+    diagnostic gate, and holds jasper-control off applying host-slider volume
+    observations. The window wraps ``plan.open`` too, since the latch's first
+    write is a fader write like any other. A window that cannot open is a
+    refusal (``measurement_isolation_unavailable``), and every lease it holds
+    self-expires, so a killed pass frees the speaker with no operator step.
+
     Persists a reference only on a converged, in-window lock whose reading rose
     clear of the measured ambient floor.
     """
@@ -458,120 +485,166 @@ async def run_seat_level_ramp(
         return SeatLevelResult(
             status="refused", reason=REFUSE_SESSION_ALREADY_LIVE, detail=busy
         )
-    plan = SessionVolumePlan(
-        state_path=(
-            DEFAULT_SESSION_VOLUME_STATE_PATH
-            if volume_state_path is None
-            else volume_state_path
-        )
-    )
-    # A leveling pass is bounded by the kernel's own derived safety timeout, so
-    # a killed process should surface far sooner than a measurement session's
-    # 30-minute walked-away window.
-    plan.set_wall_clock_ceiling_s(config.safety_timeout + 60.0)
-    try:
-        opened = await plan.open(
-            SEAT_LEVEL_START_DB, set_main_volume_db, get_main_volume_db
-        )
-    except SessionVolumePlanError:
-        # An undrainable prior latch. Nothing was mutated here; the recovery
-        # path owns that state and must run before another pass.
-        logger.exception("seat-level ramp could not open the volume latch")
-        opened = SessionVolumeOpenResult.FAILED
-    if opened is not SessionVolumeOpenResult.OPENED:
-        log_event(
-            logger,
-            "active_speaker.seat_level_refused",
-            level=logging.ERROR,
-            reason=REFUSE_VOLUME_LATCH_UNCONFIRMED,
-            open_result=opened.value,
-        )
-        return SeatLevelResult(
-            status="refused", reason=REFUSE_VOLUME_LATCH_UNCONFIRMED
-        )
 
-    log_event(
-        logger,
-        "active_speaker.seat_level_start",
-        session=session_id,
-        target_db_spl=f"{target.target_db_spl:.1f}",
-        band_db_spl=f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}]",
-        window_dbfs=(
-            f"[{config.window_low_dbfs:.1f},{config.window_high_dbfs:.1f}]"
-        ),
-        sens_factor_db=f"{sensitivity.sens_factor_db:.2f}",
-        analog_gain_db=(
-            "" if sensitivity.analog_gain_db is None
-            else f"{sensitivity.analog_gain_db:.1f}"
-        ),
-        max_main_volume_db=f"{config.cap_ceil_db:.2f}",
-        spl_ceiling_db_spl=f"{spl_ceiling_db_spl:.1f}",
-        start_db=f"{config.start_db:.1f}",
-        step_db=f"{config.step_db:.2f}",
-        # The absolute SPL is only as true as the capture gain the vendor's
-        # sens factor assumes. An operator reads journal lines, not docstrings.
-        precondition="mic capture volume must be at maximum (amixer -c <card>)",
-    )
-
-    try:
-        ambient_dbfs = await measure_ambient_dbfs(
-            next_samples, clock=clock, sleep=sleep
+    async def _leveled_under_isolation() -> SeatLevelResult:
+        """The whole pass, run with the measurement window already held."""
+        plan = SessionVolumePlan(
+            state_path=(
+                DEFAULT_SESSION_VOLUME_STATE_PATH
+                if volume_state_path is None
+                else volume_state_path
+            )
         )
-        if ambient_dbfs is None:
+        # A leveling pass is bounded by the kernel's own derived safety timeout, so
+        # a killed process should surface far sooner than a measurement session's
+        # 30-minute walked-away window.
+        plan.set_wall_clock_ceiling_s(config.safety_timeout + 60.0)
+        try:
+            opened = await plan.open(
+                SEAT_LEVEL_START_DB, set_main_volume_db, get_main_volume_db
+            )
+        except SessionVolumePlanError:
+            # An undrainable prior latch. Nothing was mutated here; the recovery
+            # path owns that state and must run before another pass.
+            logger.exception("seat-level ramp could not open the volume latch")
+            opened = SessionVolumeOpenResult.FAILED
+        if opened is not SessionVolumeOpenResult.OPENED:
             log_event(
                 logger,
                 "active_speaker.seat_level_refused",
-                level=logging.WARNING,
-                session=session_id,
-                reason=REFUSE_MIC_FEED_LOST,
-                detail="the microphone delivered no finite sample before the tone",
+                level=logging.ERROR,
+                reason=REFUSE_VOLUME_LATCH_UNCONFIRMED,
+                open_result=opened.value,
             )
-            return SeatLevelResult(status="refused", reason=REFUSE_MIC_FEED_LOST)
+            return SeatLevelResult(
+                status="refused", reason=REFUSE_VOLUME_LATCH_UNCONFIRMED
+            )
+
         log_event(
             logger,
-            "active_speaker.seat_level_ambient",
+            "active_speaker.seat_level_start",
             session=session_id,
-            ambient_dbfs=f"{ambient_dbfs:.1f}",
-            ambient_db_spl=f"{sensitivity.db_spl_from_dbfs(ambient_dbfs):.1f}",
-            probe_db=f"{probe_db:.1f}",
-            required_rise_db=f"{min_rise_db:.1f}",
+            target_db_spl=f"{target.target_db_spl:.1f}",
+            band_db_spl=f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}]",
+            window_dbfs=(
+                f"[{config.window_low_dbfs:.1f},{config.window_high_dbfs:.1f}]"
+            ),
+            sens_factor_db=f"{sensitivity.sens_factor_db:.2f}",
+            analog_gain_db=(
+                "" if sensitivity.analog_gain_db is None
+                else f"{sensitivity.analog_gain_db:.1f}"
+            ),
+            max_main_volume_db=f"{config.cap_ceil_db:.2f}",
+            spl_ceiling_db_spl=f"{spl_ceiling_db_spl:.1f}",
+            start_db=f"{config.start_db:.1f}",
+            step_db=f"{config.step_db:.2f}",
+            # The absolute SPL is only as true as the capture gain the vendor's
+            # sens factor assumes. An operator reads journal lines, not docstrings.
+            precondition="mic capture volume must be at maximum (amixer -c <card>)",
         )
-        controller = RampController(session_id=session_id, config=config)
-        guard = _MicObservationGuard(
-            controller=controller,
-            source=next_samples,
-            sensitivity=sensitivity,
-            spl_ceiling_db_spl=spl_ceiling_db_spl,
-            ambient_dbfs=ambient_dbfs,
-            start_volume_db=config.start_db,
-            probe_db=probe_db,
-            min_rise_db=min_rise_db,
+
+        try:
+            ambient_dbfs = await measure_ambient_dbfs(
+                next_samples, clock=clock, sleep=sleep
+            )
+            if ambient_dbfs is None:
+                log_event(
+                    logger,
+                    "active_speaker.seat_level_refused",
+                    level=logging.WARNING,
+                    session=session_id,
+                    reason=REFUSE_MIC_FEED_LOST,
+                    detail="the microphone delivered no finite sample before the tone",
+                )
+                return SeatLevelResult(status="refused", reason=REFUSE_MIC_FEED_LOST)
+            log_event(
+                logger,
+                "active_speaker.seat_level_ambient",
+                session=session_id,
+                ambient_dbfs=f"{ambient_dbfs:.1f}",
+                ambient_db_spl=f"{sensitivity.db_spl_from_dbfs(ambient_dbfs):.1f}",
+                probe_db=f"{probe_db:.1f}",
+                required_rise_db=f"{min_rise_db:.1f}",
+            )
+            controller = RampController(session_id=session_id, config=config)
+            guard = _MicObservationGuard(
+                controller=controller,
+                source=next_samples,
+                sensitivity=sensitivity,
+                spl_ceiling_db_spl=spl_ceiling_db_spl,
+                ambient_dbfs=ambient_dbfs,
+                start_volume_db=config.start_db,
+                probe_db=probe_db,
+                min_rise_db=min_rise_db,
+            )
+            data = await controller.run(
+                get_main_volume_db=get_main_volume_db,
+                set_main_volume_db=set_main_volume_db,
+                play_continuous_tone=play_continuous_tone,
+                cancel_tone=cancel_tone,
+                next_samples=guard,
+                noise_floor_dbfs=ambient_dbfs,
+                clock=clock,
+                sleep=sleep,
+            )
+            return _finish(
+                data=data,
+                guard=guard,
+                target=target,
+                sensitivity=sensitivity,
+                config=config,
+                session_id=session_id,
+                reference_state_path=reference_state_path,
+            )
+        finally:
+            # Restore-exactly-once, on converged / refused / raised alike. The
+            # kernel's own restore returns to the latched START floor (that is the
+            # volume it snapshotted); this returns the household's.
+            await plan.close(
+                set_main_volume_db, get_main_volume_db, reason="seat_level_complete"
+            )
+
+    # Everything that touches the fader runs inside the shared measurement
+    # window (jasper.correction.coordinator). Without it, jasper-voice's
+    # VolumeCoordinator patrol keeps reconciling the main volume back toward
+    # the household level once a second and fights the ramp the whole way up
+    # -- the jts3 writer war (journal: `event=volume.reconciled source=idle
+    # ... drift_db=+9.35`). The window ALSO holds jasper-control's
+    # volume-observation hold, so a host slider cannot walk the level either.
+    # It wraps `plan.open` as well as the ramp: the latch's own first write
+    # is a fader write like any other.
+    leveled: SeatLevelResult | None = None
+    try:
+        async with measurement_window(gate_owner=SEAT_LEVEL_GATE_OWNER):
+            leveled = await _leveled_under_isolation()
+        return leveled
+    except MeasurementWindowError as exc:
+        if leveled is not None:
+            # The pass finished and already restored the household volume;
+            # only teardown failed. Report the outcome that actually
+            # happened and make the stuck isolation loud -- every lease
+            # self-expires within ~2 minutes, so this is observable, not
+            # actionable-or-bust.
+            log_event(
+                logger,
+                "active_speaker.seat_level_isolation_cleanup_failed",
+                level=logging.ERROR,
+                session=session_id,
+                error=str(exc),
+            )
+            return leveled
+        log_event(
+            logger,
+            "active_speaker.seat_level_refused",
+            level=logging.WARNING,
+            session=session_id,
+            reason=REFUSE_ISOLATION_UNAVAILABLE,
+            detail=str(exc),
         )
-        data = await controller.run(
-            get_main_volume_db=get_main_volume_db,
-            set_main_volume_db=set_main_volume_db,
-            play_continuous_tone=play_continuous_tone,
-            cancel_tone=cancel_tone,
-            next_samples=guard,
-            noise_floor_dbfs=ambient_dbfs,
-            clock=clock,
-            sleep=sleep,
-        )
-        return _finish(
-            data=data,
-            guard=guard,
-            target=target,
-            sensitivity=sensitivity,
-            config=config,
-            session_id=session_id,
-            reference_state_path=reference_state_path,
-        )
-    finally:
-        # Restore-exactly-once, on converged / refused / raised alike. The
-        # kernel's own restore returns to the latched START floor (that is the
-        # volume it snapshotted); this returns the household's.
-        await plan.close(
-            set_main_volume_db, get_main_volume_db, reason="seat_level_complete"
+        return SeatLevelResult(
+            status="refused",
+            reason=REFUSE_ISOLATION_UNAVAILABLE,
+            detail=str(exc),
         )
 
 

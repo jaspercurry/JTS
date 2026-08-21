@@ -3589,6 +3589,7 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
     from jasper.control.handlers import (
         AecRoutes,
         GroupingRoutes,
+        MeasurementRoutes,
         SystemRoutes,
         VoiceRoutes,
         VolumeRoutes,
@@ -3609,6 +3610,7 @@ def test_control_route_bodies_stay_partitioned_by_concern() -> None:
         VoiceRoutes,
         AecRoutes,
         GroupingRoutes,
+        MeasurementRoutes,
         SystemRoutes,
     )
     routed_methods = {
@@ -6139,6 +6141,8 @@ def test_grouping_set_stays_in_token_gated_routes():
             "/aec/enhanced-aec/install",
             "/grouping/set",
         "/aec/firmware/update",
+        "/measurement/hold",
+        "/measurement/release",
     })
 
 

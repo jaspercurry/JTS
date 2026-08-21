@@ -1274,7 +1274,7 @@ Verified seams (checked 2026-08-08; re-verify before building):
   The mux lease's owner/label sets are closed frozensets in `jasper/mux.py`
   (`FANIN_TEST_LABELS = {"correction"}`, `FANIN_TEST_OWNERS =
   {"active-speaker-commissioning", "correction-measurement",
-  "doctor-aec-probe"}`) — any future workbench-specific owner id is a
+  "doctor-aec-probe", "seat-level"}`) — any future workbench-specific owner id is a
   deliberate `jasper/mux.py` change, not just a new string, and a mux owner
   alone does not prevent a racing `MEASURE_RESUME`. The shipped doctor pairs
   its registered owner with strict voice pause: `AssistantOutputGate` closes

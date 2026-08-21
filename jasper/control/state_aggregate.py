@@ -57,6 +57,7 @@ from . import (
     content_lane_state,
     debug_control,
     grouping_supervisor,
+    measurement_hold,
     mpris,
     shairport_supervisor,
     system_supervisor,
@@ -1482,6 +1483,16 @@ async def _get_state(
         # Phone-mic capture relay config snapshot (network-free; the doctor
         # probes reachability on demand). {configured, relay_base}.
         "capture_relay": capture_relay_state,
+        # The open measurement window, as jasper-control sees it
+        # ({active, owner, mode, expires_in_s, held_for_s}). This process holds
+        # one of the three self-expiring copies of that fact — the copy that
+        # makes it decline source-observed volume writes — so the projection is
+        # a plain in-memory read of jasper.control.measurement_hold, not a
+        # probe. `active` is what a household surface renders as "measurement
+        # in progress"; `held_for_s` is what jasper-doctor's
+        # check_measurement_hold reads, since `expires_in_s` resets on every
+        # renewal and so can never reveal a stuck hold.
+        "measurement": measurement_hold.snapshot(),
         # USB management network (docs/HANDOFF-usb-gadget.md): the default-on,
         # hardware-gated NCM link on usb0 that lets http://<JASPER_HOSTNAME>/
         # work with WiFi off when the resolved USB role permits gadget mode.

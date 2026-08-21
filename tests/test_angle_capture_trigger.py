@@ -74,6 +74,14 @@ def slot(tmp_path, monkeypatch):
         "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
         volume_state,
     )
+    # No jasper-control in this suite, so the door falls back to the durable
+    # statefile above. Pinned rather than left to whether something happens to
+    # be listening on 8780 on the machine running the suite; the tests that
+    # exercise the reachable-control path patch this themselves.
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.read_measurement_hold",
+        lambda: None,
+    )
     try:
         yield path, volume_state
     finally:
@@ -525,7 +533,12 @@ def test_an_idle_speaker_with_no_volume_state_stages_cleanly(slot):
 
 
 def test_a_live_session_refuses_the_stage(slot):
-    """The durable measurement-volume state is the cross-process fact."""
+    """With jasper-control unreachable, the durable state is the fallback fact.
+
+    The authority is jasper-control's measurement hold; this is the documented
+    degradation for when it cannot be asked, and it is the answer this door
+    gave before the hold existed.
+    """
     _, volume_state = slot
     _write_volume_state(volume_state, status="active", opened_at=time.time())
 

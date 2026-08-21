@@ -29,6 +29,15 @@ What gets paused (and why):
     that started a moment earlier cannot bleed into the first capture
     (#1898); that drain is bounded daemon-side and must stay under
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC below.
+  - jasper-control's source-observed volume writes, via the hold at
+    ``jasper.control.measurement_hold``. A host moving its USB slider
+    mid-sweep would otherwise walk the very fader the measurement holds.
+    Authoritative volume writes (a human at the management UI, a remote,
+    voice "louder") stay allowed — this is isolation, not a lockout.
+
+This window is the ONE writer of "a measurement is live"; each of those
+three enforcement points keeps a self-expiring copy (voice 120 s, mux 60 s,
+control 120 s) that lapses on its own if this process dies.
 
 What does NOT get paused:
 
@@ -48,15 +57,20 @@ Robustness:
   - Music daemons keep running and fan-in keeps draining their private lanes;
     only mux's selected-input gate changes. A web crash therefore cannot leave
     enabled household sources manually stopped.
-  - Gate and voice restoration run in ``finally`` and both have independent
-    crash-recovery leases.
+  - Gate, voice, and volume-hold restoration all run in ``finally``, and each
+    has an independent crash-recovery lease.
   - The voice-daemon RESUME has a server-side auto-clear safety timer
     (voice_daemon.MEASUREMENT_AUTOCLEAR_SEC). A healthy long-running window
     renews that lease every MEASUREMENT_LEASE_REFRESH_SEC; a coordinator crash
-    (kill -9) stops renewal and still recovers automatically.
+    (kill -9) stops renewal and still recovers automatically. The volume hold
+    renews on the same cadence against its own
+    measurement_hold.MEASUREMENT_HOLD_TTL_SEC and recovers the same way.
   - A precondition check refuses to start if a voice session is
     currently active — yanking an in-flight session is worse than
     asking the user to wait or end it first.
+  - The volume hold is also the CROSS-PROCESS mutex: ``_window_active`` below
+    is one process's module global, so only jasper-control can tell a CLI that
+    a web session already owns the speaker.
 """
 from __future__ import annotations
 
@@ -80,13 +94,18 @@ DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
 # remains open. A relay setup may wait up to eight minutes for a human;
 # renewal preserves that legitimate window without weakening crash recovery.
 # Must stay under the daemon's auto-clear with room for a retry; a test pins
-# the pair.
+# the pair. Since the volume hold joined the window this is ALSO its renewal
+# cadence, and a second test pins it against MEASUREMENT_HOLD_TTL_SEC — the two
+# TTLs happen to share a value today, but they are separate contracts owned by
+# separate daemons.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
-# Back-off before re-trying a failed lease renewal. One policy, deliberately
-# shared by BOTH leases an open window holds — the voice pause above and the
-# mux gate below. It is budgeted twice: the voice/auto-clear pin and the mux
-# abort-ladder bound (see MEASUREMENT_GATE_ABORT_SEC) both read it, so
-# retuning it for one lease is checked against the other.
+# Back-off before re-trying a failed lease acquire/renewal. One policy,
+# deliberately shared by ALL THREE leases an open window holds — the voice
+# pause above, the mux gate below, and jasper-control's volume hold. It is
+# budgeted three times: the voice/auto-clear pin, the mux abort-ladder bound
+# (see MEASUREMENT_GATE_ABORT_SEC), and the volume-hold TTL pin (see
+# MEASUREMENT_HOLD_TTL_SEC) all read it, so retuning it for one lease is
+# checked against the other two.
 MEASUREMENT_LEASE_RETRY_SEC = 5.0
 # How long we wait for the daemon's MEASURE_PAUSE reply. Named because it
 # is now a contract, not a local timeout: since #1898 the daemon may hold
@@ -127,6 +146,21 @@ MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC = 3.0
 # timeout twice, and that is what the test pins — bare ordering stays green
 # while the abort lands after mux has already let music back in.
 MEASUREMENT_GATE_ABORT_SEC = 40.0
+# jasper-control's volume-observation hold — the window's THIRD lease. It stops
+# jasper-control applying source-observed volume writes (a host moving its USB
+# slider) into the fader a measurement is holding.
+# `_measurement_hold_command` is a module attribute on purpose: tests
+# monkeypatch it exactly the way they monkeypatch `_mux_socket_command`.
+MEASUREMENT_HOLD_PATH = "/measurement/hold"
+MEASUREMENT_HOLD_RELEASE_PATH = "/measurement/release"
+# One jasper-control round trip. Loopback HTTP with no pooling, so this is a
+# wedged-daemon bound, not a latency budget. Named for the same reason
+# MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC is; it happens to share that value.
+MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC = 3.0
+# The isolation mode declared to jasper-control. Only `gate` exists today —
+# voice keeps running and drops mic frames in-process. See
+# jasper.control.measurement_hold.MEASUREMENT_HOLD_MODES.
+MEASUREMENT_HOLD_MODE = "gate"
 
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
 # at a time: a second concurrent window would let whichever exits FIRST send
@@ -306,6 +340,173 @@ async def _release_measurement_gate(
     )
 
 
+async def _measurement_hold_command(path: str, body: dict) -> tuple[int, dict]:
+    """One POST to jasper-control's measurement-hold surface.
+
+    Returns ``(status, decoded-body)``. Raises whatever the control client
+    raises on a transport failure; the callers below own the policy.
+
+    The control token is read from THIS box's own token file and presented as
+    ``X-JTS-Token``. Both hold routes are gated (see
+    ``server._TOKEN_GATED_ROUTES``), and the gate's job is to keep other LAN
+    devices out — a process that can already read ``/var/lib/jasper/control_token``
+    is inside the boundary the gate draws. ``current_token()`` returns ``""``
+    when the gate is off or the file is unreadable; the header is then omitted
+    and the request is either accepted (gate off) or refused 403 (gate on,
+    unreadable file), which the fail-soft policy below downgrades to a warning.
+    """
+    from ..control import control_token
+    from ..control.client import AsyncControlClient
+
+    headers: dict[str, str] = {}
+    token = control_token.current_token()
+    if token:
+        headers["X-JTS-Token"] = token
+    client = AsyncControlClient(timeout=MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC)
+    response = await client.post(path, body, headers=headers or None)
+    try:
+        payload = response.json()
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    return response.status, payload if isinstance(payload, dict) else {}
+
+
+async def _acquire_measurement_hold(owner: str) -> bool:
+    """Take (or renew) jasper-control's volume-observation hold.
+
+    Returns True when the hold is ours, False when it could not be taken.
+
+    **Policy — fail-soft on unreachable, fail-CLOSED on 409.** The two existing
+    leases already sit at opposite ends of that axis: the mux gate raises when
+    it cannot be proven (music might still be in the mix), while the voice
+    pause logs and proceeds under its default permissive policy. This lease
+    takes the permissive end for reachability and the strict end for conflict,
+    and the split is not a compromise — it follows from what each failure means:
+
+    * **Unreachable / any non-409 refusal → warn and proceed.** The only writer
+      this lease holds back is ``POST /volume/set`` with a ``source``, which is
+      served BY jasper-control. At any instant when the lease is un-takeable
+      because the daemon is down, that daemon is also not applying
+      observations, so the hazard cannot occur *then*. Failing closed here
+      would make ``jasper-seat-level`` refuse to run on a box whose control
+      daemon is down — a nanny, and a refusal that buys nothing.
+
+      That instant-by-instant argument does NOT cover the window as a whole:
+      jasper-control comes back (a deploy restarts it, and it is not
+      socket-activated), and a window that gave up after one attempt would then
+      be running un-held against a live daemon. Which is why the caller's
+      refresh task is started **unconditionally** and keeps retrying this
+      function until it lands — see ``_refresh_measurement_hold``. Returning
+      False here means "not yet", never "give up".
+    * **409 → raise.** That is a DIFFERENT measurement already holding the
+      speaker. This is the cross-process mutex ``_window_active`` cannot be
+      (it is one process's module global), so a conflict must stop us.
+    """
+    try:
+        status, payload = await _measurement_hold_command(
+            MEASUREMENT_HOLD_PATH,
+            {"owner": owner, "mode": MEASUREMENT_HOLD_MODE},
+        )
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        asyncio.TimeoutError,
+    ) as exc:
+        # The same tuple _acquire_measurement_gate catches. RuntimeError covers
+        # control.client's ControlError without importing it here.
+        logger.warning(
+            "jasper-control measurement hold unavailable (%s) — proceeding "
+            "without it; host-slider volume observations are not held off",
+            exc,
+        )
+        return False
+    if status == 409:
+        raise MeasurementWindowError(
+            payload.get("error")
+            or "a measurement is already in progress on this speaker"
+        )
+    if status < 200 or status >= 300:
+        logger.warning(
+            "jasper-control refused the measurement hold (HTTP %s: %s) — "
+            "proceeding without it; host-slider volume observations are not "
+            "held off",
+            status,
+            payload.get("error", ""),
+        )
+        return False
+    return True
+
+
+async def _release_measurement_hold(owner: str) -> None:
+    """Release jasper-control's hold. Never raises.
+
+    A failed release is recoverable without an operator: the hold self-expires
+    after ``measurement_hold.MEASUREMENT_HOLD_TTL_SEC``. Same reasoning — and
+    the same ERROR-log-and-move-on shape — as the ``MEASURE_RESUME`` failure
+    path below, and deliberately unlike the mux gate, whose failed release
+    leaves household music silent and therefore must be surfaced.
+    """
+    try:
+        status, payload = await _measurement_hold_command(
+            MEASUREMENT_HOLD_RELEASE_PATH, {"owner": owner},
+        )
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        asyncio.TimeoutError,
+    ) as exc:
+        logger.error(
+            "measurement hold release failed (%s) — jasper-control's %.0fs "
+            "TTL will recover it",
+            exc,
+            _measurement_hold_ttl_sec(),
+        )
+        return
+    if status < 200 or status >= 300:
+        logger.error(
+            "measurement hold release refused (HTTP %s: %s) — "
+            "jasper-control's %.0fs TTL will recover it",
+            status,
+            payload.get("error", ""),
+            _measurement_hold_ttl_sec(),
+        )
+
+
+async def _stop_lease_refresh(
+    task: "asyncio.Task[None] | None", label: str,
+) -> None:
+    """Cancel one lease-renewal task and absorb whatever it died of.
+
+    Renewal is resilience-only: a dead background task must never bypass
+    MEASURE_RESUME, the mux-gate release, or the volume-hold release, so its
+    failure is logged and swallowed rather than propagated out of ``finally``.
+    One helper for all three leases — three literal copies of this drifted the
+    moment a third lease arrived.
+    """
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.exception("%s refresh task failed", label)
+
+
+def _measurement_hold_ttl_sec() -> float:
+    """The registrar's TTL, read from its owner so the log cannot drift."""
+    from ..control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
+
+    return MEASUREMENT_HOLD_TTL_SEC
+
+
 async def _voice_uds_command(
     socket_path: str, cmd: str, *, timeout: float = 5.0,
 ) -> dict:
@@ -438,6 +639,8 @@ async def measurement_window(
     measurement_gate_acquired = False
     measurement_gate_refresh_task: asyncio.Task[None] | None = None
     measurement_gate_lease_error: MeasurementWindowError | None = None
+    hold_acquired = False
+    hold_refresh_task: asyncio.Task[None] | None = None
     voice_paused = False
     voice_pause_cleanup_required = False
     lease_refresh_task: asyncio.Task[None] | None = None
@@ -453,6 +656,63 @@ async def measurement_window(
                 voice_socket_path,
                 require_voice_pause=require_voice_pause,
             )
+
+        # jasper-control's volume-observation hold — taken BEFORE the mux gate
+        # and the voice pause so a conflicting second measurement is refused
+        # (409 -> MeasurementWindowError) before this window disturbs anything,
+        # and released LAST on the way out so nothing can start while we are
+        # still restoring. `gate_owner` is reused as the hold owner on purpose:
+        # ONE name identifies this measurement across mux, jasper-control,
+        # /state.measurement, and every event= line.
+        hold_acquired = await _acquire_measurement_hold(gate_owner)
+
+        async def _refresh_measurement_hold() -> None:
+            # Started UNCONDITIONALLY, including when the first acquire did not
+            # land, because this loop both renews and RETRIES. jasper-control is
+            # restarted by every deploy and is not socket-activated, so a single
+            # connection-refused at the top of the window is an ordinary event —
+            # and gating the loop on that one attempt would leave a window that
+            # can legitimately run for MAX_WALL_CLOCK_CEILING_S with the hold
+            # never taken, /state.measurement reporting nothing, and no
+            # cross-process mutex, off ONE failed round trip. The fail-soft
+            # policy in _acquire_measurement_hold is only honest instant by
+            # instant; retrying is what makes it honest for the whole window.
+            #
+            # A renewal we cannot land retries on the shared back-off rather
+            # than aborting the window, matching the voice lease's permissive
+            # refresh. It does NOT clear `hold_acquired`: a lost response may
+            # still have landed, so cleanup responsibility, once taken, is kept
+            # (the same rule `measurement_gate_cleanup_required` follows above).
+            # A 409 is the one definitive answer — our lease lapsed and a
+            # DIFFERENT owner took it — so renewal stops AND cleanup
+            # responsibility is dropped, because releasing from here would
+            # un-gate their live capture.
+            nonlocal hold_acquired
+            delay = (
+                MEASUREMENT_LEASE_REFRESH_SEC
+                if hold_acquired
+                else MEASUREMENT_LEASE_RETRY_SEC
+            )
+            while True:
+                await asyncio.sleep(delay)
+                try:
+                    landed = await _acquire_measurement_hold(gate_owner)
+                except MeasurementWindowError as exc:
+                    logger.warning(
+                        "measurement hold lost to another owner (%s); "
+                        "stopping renewal", exc,
+                    )
+                    hold_acquired = False
+                    return
+                if landed:
+                    hold_acquired = True
+                delay = (
+                    MEASUREMENT_LEASE_REFRESH_SEC
+                    if landed
+                    else MEASUREMENT_LEASE_RETRY_SEC
+                )
+
+        hold_refresh_task = asyncio.create_task(_refresh_measurement_hold())
 
         if not skip_music_isolation:
             # Gate first: even a renderer that races its subsequent stop cannot
@@ -643,7 +903,11 @@ async def measurement_window(
                     ) from e
                 raise
 
-        logger.info("measurement window OPEN (voice_paused=%s)", voice_paused)
+        logger.info(
+            "measurement window OPEN (voice_paused=%s, volume_hold=%s)",
+            voice_paused,
+            hold_acquired,
+        )
         yield
     finally:
         # Release the mutex in an INNER finally — after the restore I/O, but
@@ -656,24 +920,15 @@ async def measurement_window(
         # (e.g. systemctl missing). The inner finally gives both: serialized
         # against the restore, and never leaked.
         try:
-            if measurement_gate_refresh_task is not None:
-                measurement_gate_refresh_task.cancel()
-                try:
-                    await measurement_gate_refresh_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    logger.exception("measurement gate refresh task failed")
-            if lease_refresh_task is not None:
-                lease_refresh_task.cancel()
-                try:
-                    await lease_refresh_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    # Renewal is resilience-only. Never let a dead background
-                    # task bypass MEASURE_RESUME or mux-gate restoration.
-                    logger.exception("measurement lease refresh task failed")
+            await _stop_lease_refresh(
+                measurement_gate_refresh_task, "measurement gate",
+            )
+            await _stop_lease_refresh(
+                hold_refresh_task, "measurement hold",
+            )
+            await _stop_lease_refresh(
+                lease_refresh_task, "measurement lease",
+            )
             # Restore voice first, then release mux's music-isolation gate.
             if voice_pause_cleanup_required:
                 try:
@@ -716,6 +971,11 @@ async def measurement_window(
                     # If release truly did not land, the still-held mux gate
                     # keeps music silent; surface the action required.
                     gate_release_error = exc
+            # Hold last: LIFO against the acquire order above, so no second
+            # measurement can take the speaker while this one is still
+            # restoring voice and the mux gate.
+            if hold_acquired:
+                await _release_measurement_hold(gate_owner)
             logger.info("measurement window CLOSED")
             if measurement_gate_lease_error is not None:
                 raise measurement_gate_lease_error
