@@ -445,6 +445,11 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/session",
     "/crossover/v2/verify",
     "/crossover/v2/apply",
+    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
+    # so the apply door above can reach it by fingerprint. The apply slot is
+    # single-valued and every measure session overwrites it; this is the lookup
+    # it never had.
+    "/crossover/v2/republish",
     "/crossover/v2/restore",
     # The review screen's "Keep current sound", which #2641 found inert.
     "/crossover/v2/decline",
@@ -6176,6 +6181,23 @@ def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any
     )
 
 
+def _handle_crossover_v2_republish(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/v2/republish: re-publish a banked candidate by fingerprint.
+
+    Touches no DSP and holds no relay — it moves the published-candidate
+    pointer and nothing else — so unlike its apply sibling it needs neither
+    ``_run_async`` nor ``_camilla`` nor the stage-2 ``status_payload()``. The
+    apply door still runs every gate it always did, on the next request.
+    """
+    raw = _read_json_body(handler)
+
+    from . import correction_crossover_v2_republish as republish
+
+    return republish.handle_v2_republish(raw)
+
+
 def _handle_crossover_v2_restore(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /crossover/v2/restore: the v2-aware Undo (W6 run-8 Blocker Q)."""
     _read_json_body(handler)  # no fields consumed; drains the request body
@@ -7228,6 +7250,23 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             else HTTPStatus.OK
                         ),
                     )
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/republish":
+                try:
+                    # No payload-derived status: every refusal is a
+                    # CrossoverV2Refused (a ValueError -> 400 below), and a
+                    # success only moves a pointer, so there is no third
+                    # "blocked" outcome to classify like apply/restore have.
+                    self._send_json(_handle_crossover_v2_republish(self))
                 except ValueError as e:
                     self._send_json(
                         {"ok": False, "error": str(e)},
