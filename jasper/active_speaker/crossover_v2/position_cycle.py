@@ -40,17 +40,18 @@ own.**  The speaker already stamps the true pose on every accepted take:
 the signed ``position_deg``, the ``index``/``attempt``/``take_id`` identity, the
 ``role``, the ``regime`` and the ``wav_sha256`` verifier;
 ``crossover_v2_flow._retain_lateral_pose`` hands it to retention; the web host
-publishes it as ``crossover_v2/{session}/positions/{take_id}.json`` under the
-evidence bundle; and ``bank-crossover-round.sh`` tars that whole bundle tree into
-the round directory.  A laptop-written mapping would therefore be a SECOND
+publishes it through the evidence store, which lands it at
+``{EVIDENCE_ROOT}/artifacts/crossover_v2/{relay}/positions/{take_id}.json``
+inside the bundle; and ``bank-crossover-round.sh`` tars that whole bundle tree
+into the round directory.  A laptop-written mapping would therefore be a SECOND
 writer of one fact — the runner's *intent* beside the speaker's *record* — and
 the two disagree exactly when it matters (a rejected take, a retake, a walk the
 session refused at take time and ran its ordinary shape instead).
 
 So :func:`position_cycle_document` reads those banked records and projects them.
-Every value in the document it returns can be found in
-``bundle/*/crossover_v2/*/positions/*.json``; nothing in it is computed from what
-the round MEANT to stage.  What the document adds is convenience: one sorted
+Every value in the document it returns can be found under
+:data:`_BANKED_POSITIONS_GLOB`; nothing in it is computed from what the round
+MEANT to stage.  What the document adds is convenience: one sorted
 index at the round root, instead of a glob over a nested per-take tree that also
 holds the cloud group's positions.  When the banked evidence cannot support the
 index, this refuses and names exactly what was missing — it never falls back to
@@ -69,6 +70,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .journey import PHASE_LATERAL
 
 #: The index's own name, so a reader that finds this document anywhere knows
@@ -83,7 +85,22 @@ POSITION_CYCLE_FILENAME = "position_cycle.json"
 #: web host publishes one JSON record per accepted take inside it. Stated as a
 #: glob because both the session id and the relay session id are minted at run
 #: time.
-_BANKED_POSITIONS_GLOB = "bundle/*/crossover_v2/*/positions/*.json"
+#:
+#: **The store's namespace is imported, never respelled.** A record does not land
+#: at the relative path its writer passes: ``publish_json_artifact`` runs it
+#: through ``_artifact_path``, which prefixes
+#: ``{EVIDENCE_ROOT}/artifacts/`` — so the writer's
+#: ``crossover_v2/{relay}/positions/{take_id}.json`` becomes
+#: ``evidence/v1/artifacts/crossover_v2/…`` inside the bundle. Getting that
+#: wrong is not a loud failure: the glob simply matches nothing and this module
+#: reports a walk that was never refused. It is what
+#: ``test_the_glob_matches_a_record_the_REAL_store_wrote`` exists for — that test
+#: publishes through the real store and derives from the result, so the segments
+#: still written as literals here are pinned to the actual writer rather than to
+#: a second reading of it.
+_BANKED_POSITIONS_GLOB = (
+    f"bundle/*/{EVIDENCE_ROOT}/artifacts/crossover_v2/*/positions/*.json"
+)
 
 #: ``kind`` on the speaker's own per-take record
 #: (``correction_crossover_v2``'s ``retain_position``). Records that do not
@@ -145,10 +162,14 @@ def expand_angle_spec(angles: str, per_position: int) -> str:
 def staged_stops(angles: str) -> int:
     """How many stops ``angles`` stages — the walk's own release count.
 
-    True only for the ``per_driver`` regime, and that is why the runner refuses
-    ``--per-position`` for any other one: ``jasper-angle-capture`` composes stops
-    as ``angle x _REGIME_STOPS[regime]``, so ``both`` is TWO stops per token and
-    a count taken from the tokens alone would be half the real one.
+    True for any regime that composes ONE stop per angle.
+    ``jasper.cli.angle_capture._REGIME_STOPS`` maps every member of ``REGIMES``
+    to a 1-tuple of itself, so a single-regime walk is one stop per token and
+    ``both`` — the entry pairing two regimes — is the exception at two. That is
+    the regime the runner refuses ``--per-position`` for, and it asks the table
+    rather than naming regimes: stops are composed as
+    ``angle x _REGIME_STOPS[regime]``, so a count taken from the tokens alone
+    would be half the real one there.
 
     Its caller compares it against ``--complete-after``, which counts RELEASES
     (``arm_walk._complete_due``): a walk told to complete on fewer releases than

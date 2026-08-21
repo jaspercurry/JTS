@@ -2512,10 +2512,11 @@ ordered tuple with no uniqueness rule, and `angle_capture.both_at` already ships
 adjacent same-angle stops); what it adds over typing it is the arithmetic a
 hand-typed list gets wrong — `--complete-after` counts RELEASES, so it must
 scale with N, and a short one completes the walk partway through at `rc 0`. It
-governs a staged **measure** walk at **`--regime per_driver`**, and is refused
-otherwise: stage 2 serves the tier's own poses, and `jasper-angle-capture`
-composes stops as `angle × _REGIME_STOPS[regime]`, so `both` is two stops per
-token and the floor — which counts tokens — would be half the real count.
+governs a staged **measure** walk at any regime composing **one stop per angle**
+(`per_driver` and `summed`). Two cases are refused: stage 2 serves the tier's
+own poses, and `--regime both` composes *two* stops per token
+(`jasper-angle-capture` builds stops as `angle × _REGIME_STOPS[regime]`), so the
+floor — which counts tokens — would be half the real count there.
 
 **Every staged round banks `position_cycle.json`, cycled or not** — one sorted
 index of the poses the round actually measured, **derived** from the evidence
@@ -2549,8 +2550,9 @@ would POST); (2) `--apply` with `--per-position` at any value, including `1`
 walk nobody will serve, which otherwise costs ten minutes and ends as a misnamed
 idle ceiling); (4) an unreadable `--alignment-prescription`; (5) an unreadable
 `--topology-prescription`; (6) `--per-position` under 1; (7) `--per-position`
-without `--angles`, with `--stage verify`, or with a `--regime` other than
-`per_driver`; and (8) a `--complete-after` below the staged stop count, whose
+without `--angles`, with `--stage verify`, or with a regime that does not compose
+exactly one stop per angle (`both`, and any regime this runner cannot read a
+count for); and (8) a `--complete-after` below the staged stop count, whose
 refusal names the number to pass. That last one is a FLOOR, not the honest
 number: the session's own non-walk captures are gated holds too, and how many
 there are is the tier's, decided on the speaker. An **empty angle field is not**

@@ -265,7 +265,11 @@ def checkout(tmp_path: Path):
         printf '%s\\t%s\\t%s\\t%s\\n' "$1" "${PI_HOST:-}" "${PI_USER:-}" "${SINCE:-}" \\
             >> "$FAKE_BANK_LOG"
         mkdir -p "$1"
-        positions="$1/bundle/sess-1/crossover_v2/relay-1/positions"
+        # The REAL banked layout: publish_json_artifact prefixes the writer's
+        # relative path with the store's `evidence/v1/artifacts/` namespace, and
+        # the bank untars the whole bundle. A double that skipped that prefix is
+        # what let a wrong glob look right (see the position_cycle contract test).
+        positions="$1/bundle/sess-1/evidence/v1/artifacts/crossover_v2/relay-1/positions"
         mkdir -p "$positions"
         # A counting `while`, never `for i in $(seq 1 "$takes")`: BSD seq counts
         # DOWN when last < first, so `seq 1 0` emits `1 0` and "zero takes"
@@ -525,7 +529,9 @@ def test_the_index_is_derived_from_the_bundle_the_bank_pulled(
     assert [t["take_id"] for t in document["takes"]] == [
         f"lateral_0{i}_a01" for i in range(1, 7)
     ]
-    assert document["sources"] == ["bundle/sess-1/crossover_v2/relay-1/positions"]
+    assert document["sources"] == [
+        "bundle/sess-1/evidence/v1/artifacts/crossover_v2/relay-1/positions"
+    ]
     # Nothing the runner INTENDED is in the document — no angles, no
     # per_position, no staged list.
     assert set(document) == {"kind", "schema_version", "derived_at", "sources",
@@ -653,14 +659,37 @@ def test_fewer_than_one_take_per_position_is_refused(
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
 
 
+@pytest.mark.parametrize("regime", ["per_driver", "summed"])
+def test_takes_are_taken_for_every_regime_that_stages_ONE_stop_per_angle(
+    checkout, wizard, tmp_path, regime
+):
+    """``_REGIME_STOPS`` maps every member of ``REGIMES`` to a 1-tuple of
+    itself, so ``summed`` composes exactly one stop per angle just as
+    ``per_driver`` does — the token count is its exact stop count too, and the
+    floor is sound. Refusing it (as an earlier version did, on a stated
+    mechanism that was simply false) blocked a reversible experiment for no
+    reason at all."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,7", "--per-position", "3", "--attest-rig-clear",
+         "--regime", regime, "--complete-after", "6"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--angles 0,0,0,7,7,7" in stage_cmd and f"--regime {regime}" in stage_cmd
+
+
 def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
     checkout, wizard, tmp_path
 ):
     """``jasper-angle-capture`` composes stops as ``angle x
-    _REGIME_STOPS[regime]``, so ``both`` is TWO stops per token — and the
-    ``--complete-after`` floor, which counts tokens, would then be exactly half
-    the real stop count. Refused rather than multiplied: a multiplier here would
-    be this file's second opinion about another tool's composition rule.
+    _REGIME_STOPS[regime]``, so ``both`` — and only ``both`` — is TWO stops per
+    token, where the ``--complete-after`` floor, which counts tokens, would be
+    exactly half the real stop count. Refused rather than multiplied: a
+    multiplier here would be this file's second opinion about another tool's
+    composition rule.
 
     What is declined is the FLAG, never the experiment — measurement-loop
     doctrine §4. The refusal has to say so and name the way through, because a
@@ -676,7 +705,10 @@ def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
     )
 
     assert proc.returncode == 2
-    assert "--regime both" in proc.stderr and "per_driver" in proc.stderr
+    assert "--regime both" in proc.stderr
+    # The stated mechanism has to be the REAL one — the composed count — not a
+    # claim about which single regime is blessed. That sentence was false once.
+    assert "2 stops per angle" in proc.stderr
     assert "0,0,0,7,7,7" in proc.stderr  # the way through, not just the "no"
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
 

@@ -118,9 +118,27 @@ def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
     )
 
 
+#: The banked layout, spelled out as a LITERAL on purpose.
+#:
+#: Deriving it from ``position_cycle``'s own glob would make every test below
+#: pass against a wrong path as happily as against the right one — which is
+#: exactly what happened: the first version of this file built
+#: ``bundle/<session>/crossover_v2/…``, the module globbed the same wrong shape,
+#: 32 tests agreed with each other, and a real bank was reported as a walk that
+#: never ran. So the fixture states the tree independently, and
+#: ``test_the_glob_matches_a_record_the_REAL_store_wrote`` binds this literal to
+#: the actual writer.
+_BANKED_ARTIFACTS = "evidence/v1/artifacts/crossover_v2"
+
+
 def _bank(root: Path, records, *, relay: str = "relay-1") -> Path:
-    """A banked round: the bundle tree ``bank-crossover-round.sh`` untars."""
-    positions = root / "bundle" / "sess-1" / "crossover_v2" / relay / "positions"
+    """A banked round: the bundle tree ``bank-crossover-round.sh`` untars.
+
+    ``<round>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/positions/``
+    — the same tree ``test_active_speaker_crossover_v2_round_views``'s
+    ``_make_round_dir`` builds, because both model one bank's output.
+    """
+    positions = root / "bundle" / "sess-1" / _BANKED_ARTIFACTS / relay / "positions"
     positions.mkdir(parents=True, exist_ok=True)
     for record in records:
         payload = {
@@ -145,7 +163,7 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
     assert document["schema_version"] == SCHEMA_VERSION
     assert document["derived_at"] == "2026-08-21T12:00:00Z"
     assert document["sources"] == [
-        "bundle/sess-1/crossover_v2/relay-1/positions"
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-1/positions"
     ]
     assert document["takes"] == [
         {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "position_deg": 0,
@@ -198,7 +216,7 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
     """The same directory holds the CLOUD group's positions — one publisher
     serves both — so the phase is what separates them."""
     _bank(tmp_path, [_record(1, 0)])
-    positions = tmp_path / "bundle/sess-1/crossover_v2/relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
     (positions / "cloud_02_a01.json").write_text(json.dumps({
         "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
         "relay_session_id": "relay-1", "phase": "cloud_measure",
@@ -212,7 +230,7 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
 
 def test_a_foreign_json_file_in_the_positions_dir_is_not_a_take(tmp_path):
     _bank(tmp_path, [_record(1, 0)])
-    positions = tmp_path / "bundle/sess-1/crossover_v2/relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
     (positions / "notes.json").write_text(json.dumps({"phase": PHASE_LATERAL}))
 
     assert len(position_cycle_document(tmp_path, derived_at=STAMP)["takes"]) == 1
@@ -222,7 +240,7 @@ def test_one_corrupt_sidecar_does_not_cost_the_index_the_takes_that_are_fine(
     tmp_path
 ):
     _bank(tmp_path, [_record(1, 0), _record(2, 7)])
-    positions = tmp_path / "bundle/sess-1/crossover_v2/relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
     (positions / "lateral_03_a01.json").write_text("{ truncated")
 
     assert len(position_cycle_document(tmp_path, derived_at=STAMP)["takes"]) == 2
@@ -235,9 +253,89 @@ def test_takes_from_two_relay_sessions_name_both_sources(tmp_path):
     document = position_cycle_document(tmp_path, derived_at=STAMP)
 
     assert document["sources"] == [
-        "bundle/sess-1/crossover_v2/relay-1/positions",
-        "bundle/sess-1/crossover_v2/relay-2/positions",
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-1/positions",
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-2/positions",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# the layout contract — this glob against the REAL writer
+# --------------------------------------------------------------------------- #
+
+
+def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
+    """The one test that could have caught the wrong path, and the reason it is
+    written against the store instead of against a fixture.
+
+    A record does NOT land at the relative path its writer passes:
+    ``publish_json_artifact`` runs it through ``_artifact_path``, which prefixes
+    ``evidence/v1/artifacts/``. Every other test here builds the tree itself, so
+    all of them agreed with a glob that was missing that prefix — matching
+    nothing against a real bank and reporting a walk that was never refused.
+
+    So this one publishes through the REAL store, copies the bundle exactly as
+    ``bank-crossover-round.sh`` untars it, and derives from the result. If either
+    side of the layout moves — the store's root, its ``artifacts/`` namespace, or
+    the ``crossover_v2/{relay}/positions/{take_id}.json`` shape the web host
+    passes — this fails instead of the derivation silently globbing nothing.
+    """
+    import shutil
+
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_3_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    assert info is not None
+    store = CommissioningEvidenceStore.open(
+        info["bundle_dir"], expected_session_id=info["session_id"],
+    )
+
+    relay, record = "cap1", _record(1, 7)
+    # The EXACT call ``correction_crossover_v2``'s ``retain_position`` makes —
+    # same relative path expression, same payload preamble.
+    store.publish_json_artifact(
+        f"crossover_v2/{relay}/positions/{record['take_id']}.json",
+        {
+            "schema_version": 1,
+            "kind": POSITION_EVIDENCE_KIND,
+            "relay_session_id": relay,
+            **record,
+        },
+    )
+
+    # `bank-crossover-round.sh` untars <sessions>/<BUNDLE> into <round>/bundle/.
+    round_dir = tmp_path / "round"
+    bundle_dir = Path(info["bundle_dir"])
+    shutil.copytree(bundle_dir, round_dir / "bundle" / bundle_dir.name)
+
+    document = position_cycle_document(round_dir, derived_at=STAMP)
+
+    assert [take["take_id"] for take in document["takes"]] == [record["take_id"]]
+    assert document["takes"][0]["position_deg"] == 7
+    assert document["sources"] == [
+        f"bundle/{bundle_dir.name}/{_BANKED_ARTIFACTS}/{relay}/positions"
+    ]
+
+
+def test_the_fixture_tree_and_the_real_store_agree_on_the_layout(tmp_path):
+    """The fixture literal above is the same path the store actually writes.
+
+    Stated separately from the derivation so a failure says WHICH of the two
+    drifted: this one compares the tree ``_bank`` builds against the tree the
+    store produces, with the reader out of the picture entirely.
+    """
+    from jasper.active_speaker.commissioning_evidence_store import _artifact_path
+
+    written = _artifact_path("crossover_v2/relay-1/positions/lateral_01_a01.json")
+
+    assert written == f"{_BANKED_ARTIFACTS}/relay-1/positions/lateral_01_a01.json"
 
 
 # --------------------------------------------------------------------------- #
