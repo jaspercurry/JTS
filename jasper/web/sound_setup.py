@@ -784,8 +784,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             # parked instead; the arm ladder's identity gates own the way back.
             stay_parked=True,
             parked_reason=(
-                "parked after a DAC re-pin; confirm the re-pinned outputs "
-                "before audio resumes"
+                "parked after a DAC re-pin; confirm the re-pinned outputs and "
+                "re-arm before audio resumes"
             ),
         )
         reconcile = trigger_reconcile(reason="output_topology_repin")
@@ -872,35 +872,45 @@ def _active_speaker_channel_identity_save_payload(
             identity_verified=verified,
         )
 
-        def commit_identity() -> OutputTopology:
-            mutation.save(updated)
-            return updated
-
         # Un-confirming an ASSIGNED lane of a ROLEFUL topology is a household
         # member declaring doubt about which driver hangs where — the same
-        # hazard a DAC swap creates, self-declared. `roleful_identity_confirmed`
-        # already makes the graph selector refuse to re-select an approved graph
-        # for it, but that is the DURABLE half and would land at some later
-        # restart. Take the same immediate park the re-pin takes so the effect
-        # is at the click, not a mystery silence three deploys later. Gated on
-        # the confirmed -> unconfirmed EDGE: a box that is already unconfirmed is
-        # already parked, and confirming never parks at all.
-        parked = (
+        # hazard a DAC swap creates, self-declared. Gated on the confirmed ->
+        # unconfirmed EDGE: a box that is already unconfirmed is already parked,
+        # and confirming never parks at all.
+        park_needed = (
             roleful_identity_confirmed(topology)
             and not roleful_identity_confirmed(updated)
         )
-        if parked:
-            park_and_commit_topology(
-                topology,
-                commit_identity,
-                stay_parked=True,
-                parked_reason=(
-                    "parked after an output was marked not confirmed; confirm it "
-                    "again before audio resumes"
-                ),
-            )
-        else:
-            commit_identity()
+        # ORDER IS THE SAFETY PROPERTY HERE. The DURABLE half — the cleared flag
+        # that makes `roleful_identity_confirmed` refuse an approved graph on
+        # every later pass — lands FIRST and unconditionally. Handing this save
+        # to `park_and_commit_topology` instead would invert that: it parks
+        # BEFORE it commits, so a park failure would discard the household's
+        # declared doubt entirely, leaving the lane verified and the box on its
+        # approved graph across every reboot. A park most plausibly fails when
+        # the graph is already unhealthy, which is exactly when the doubt matters
+        # most. So: record the doubt, then silence best-effort.
+        #
+        # (The re-pin endpoint does NOT share this shape and keeps its
+        # commit-inside-park: a failed park there leaves the old serials pinned,
+        # and the hardware mismatch keeps flagging.)
+        mutation.save(updated)
+        parked = False
+        park_error: str | None = None
+        if park_needed:
+            try:
+                park_and_commit_topology(
+                    updated,
+                    lambda: updated,
+                    stay_parked=True,
+                    parked_reason=(
+                        "parked after an output was marked not confirmed; "
+                        "confirm it again and re-arm before audio resumes"
+                    ),
+                )
+                parked = True
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                park_error = f"{type(exc).__name__}: {exc}"
     report = channel_identity_report(updated)
     evaluation = updated.evaluation()
     log_event(
@@ -914,9 +924,28 @@ def _active_speaker_channel_identity_save_payload(
         verified="%d/%d"
         % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
         blockers=len(evaluation.get("blockers") or []),
+        park_needed=str(park_needed),
         parked=str(parked),
+        park_error=park_error,
     )
-    return _output_topology_payload()
+    payload = _output_topology_payload()
+    if park_needed:
+        # Say which half actually landed. The doubt is recorded either way; only
+        # the immediate silence can fail, and a household that just declared a
+        # driver might be miswired should not be left believing the speaker went
+        # quiet when it did not.
+        payload["identity_park"] = {
+            "parked": parked,
+            "message": (
+                "Marked not confirmed. The speaker is silent until you confirm "
+                "it again and it re-arms."
+                if parked
+                else "Marked not confirmed, but JTS could not silence the "
+                "speaker right now. It stays silent from the next restart. "
+                "Open Status before playing anything loud."
+            ),
+        }
+    return payload
 
 
 def _active_speaker_channel_protection_save_payload(

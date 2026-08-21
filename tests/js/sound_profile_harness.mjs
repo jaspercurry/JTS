@@ -7002,7 +7002,7 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
     "Same speakers, one new DAC",
     "keep your speaker layout, driver roles, output assignment and tuning",
     "Apple DAC B left and Apple DAC B right",
-    "audio stays off until you do",
+    "audio stays off until you do and the speaker re-arms",
     "re-run the 15-minute drift measurement",
     "Keep setup, pin the new DAC",
   ]) {
@@ -7027,7 +7027,7 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
 
   if (!confirmation ||
       !confirmation.message.includes("Apple DAC B left and Apple DAC B right") ||
-      !confirmation.message.includes("audio stays off until you do") ||
+      !confirmation.message.includes("audio stays off until you do and the speaker re-arms") ||
       confirmation.options.confirmLabel !== "Pin the new DAC" ||
       confirmation.options.danger !== true) {
     fail("the re-pin confirm must be danger-styled and name the outputs to redo", {
@@ -7088,7 +7088,7 @@ async function testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent() {
 
   const [unconfirm, confirm] = seen;
   if (!unconfirm ||
-      !unconfirm.message.includes("goes silent until you confirm it again") ||
+      !unconfirm.message.includes("goes silent until you confirm it again and the speaker re-arms") ||
       unconfirm.options.danger !== true) {
     fail("un-confirming a lane must warn that the speaker goes silent", {
       unconfirm,

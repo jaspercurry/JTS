@@ -3948,8 +3948,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<p class="setting-row__hint">' + escapeHtml(
         'You still confirm ' +
         (labels.length ? labels.join(' and ') : 'the affected outputs') +
-        ' by ear — audio stays off until you do — and re-run the 15-minute ' +
-        'drift measurement for the new pair.'
+        ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+        're-run the 15-minute drift measurement for the new pair.'
       ) + '</p>' +
       '<button type="button" class="btn btn--primary" data-act="repin-output-topology"' +
         (outputHardwareActionBusy() ? ' disabled' : '') + '>' +
@@ -6882,8 +6882,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'JTS keeps your speaker layout, driver roles, output assignment and ' +
       'tuning, and pins the DAC attached now. You then confirm ' +
       (labels.length ? labels.join(' and ') : 'the affected outputs') +
-      ' by ear — audio stays off until you do — and re-run the drift ' +
-      'measurement for the new pair.',
+      ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+      're-run the drift measurement for the new pair.',
       // danger: the speaker goes silent immediately and the pair's drift
       // measurement is dropped, so a stray Enter must not land on confirm.
       {title: 'Pin the new DAC?', confirmLabel: 'Pin the new DAC', danger: true}
@@ -6951,7 +6951,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       // Un-confirming a driver lane silences the speaker at the click (the
       // server parks it), so the dialog says so and reads as destructive.
       : 'Mark "' + label + '" as not confirmed? The speaker goes silent until ' +
-        'you confirm it again.';
+        'you confirm it again and the speaker re-arms.';
     if (commissionAutoRamp.running || commissionPendingStep()) {
       stopCommissionAutoRamp('');
       var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
@@ -6979,7 +6979,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (!resp.ok) throw new Error(payload.error || 'channel identity update failed');
       ingestOutputTopology(payload);
       await refreshCommissioningView();
-      status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
+      // When the server had to silence the speaker for this write, its own
+      // sentence wins: only it knows whether the immediate park landed.
+      var park = payload && payload.identity_park;
+      if (park && park.message) {
+        status(park.message, !park.parked);
+      } else {
+        status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
+      }
     } catch (e) {
       outputTopology.identitySaving = '';
       outputTopology.error = e.message;

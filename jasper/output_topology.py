@@ -2231,9 +2231,10 @@ def repin_composite_child_serials(
          re-selected the applied baseline, and audio returned at the next
          ``jasper-camilla`` bounce, which every deploy and reboot performs.
 
-      The arm ladder is the way back, and its gates own the missing evidence.
-      This function is pure: it clears the evidence, and both halves above
-      belong to its callers.
+      Audio returns once every assigned lane is confirmed again and the box
+      re-arms — the arm ladder is one route to that, not the only one. This
+      function is pure: it clears the evidence, and both halves above belong to
+      its callers.
     * ``clock_domain_evidence`` is dropped. The measurement is a property of
       one PAIR of crystals; two units that never ran together have unmeasured
       relative drift, and the composite contract is ``measured_sync_required``

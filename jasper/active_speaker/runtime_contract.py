@@ -4781,7 +4781,7 @@ def safe_graph_for_current_topology(
     # re-pinned (or explicitly un-confirmed) box re-selected its baseline on the
     # next reconcile and resumed audio through drivers nobody had re-checked.
     # Unconfirmed, both rungs below fall through to the staged all-muted /
-    # parked selection, and the arm ladder is the way back.
+    # parked selection; confirming every assigned lane again releases them.
     identity_confirmed = roleful_identity_confirmed(topology, contract)
     if (
         current_graph

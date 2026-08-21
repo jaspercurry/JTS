@@ -4986,8 +4986,8 @@ def test_safe_graph_refuses_an_approved_graph_while_roleful_identity_is_unconfir
     hand too. Until #2814 this selector could not see that fact: an armed box
     re-selected its approved baseline on the very next reconcile and resumed
     audio through drivers nobody had re-checked. Both approved-runtime rungs now
-    require confirmed identity; the box falls to the staged all-muted graph and
-    the arm ladder is the way back.
+    require confirmed identity; the box falls to the staged all-muted graph
+    until every assigned lane is confirmed again.
 
     The verified half is asserted first and is load-bearing: without it a
     refusal below would prove nothing, because the fixture might have been

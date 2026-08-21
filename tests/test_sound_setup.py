@@ -7939,13 +7939,60 @@ def test_unconfirming_a_roleful_output_parks_the_speaker_at_the_click(
     })
 
     assert park_kwargs["stay_parked"] is True
-    assert "confirm it again before audio resumes" in park_kwargs["parked_reason"]
+    assert "confirm it again and re-arm before audio resumes" in park_kwargs["parked_reason"]
     saved = load_output_topology()
     assert {
         (group.id, channel.role): channel.identity_verified
         for group in saved.speaker_groups
         for channel in group.channels
     }[("left", "woofer")] is False
+
+
+def test_a_failed_park_still_records_the_household_s_declared_doubt(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """The durable half must land even when the immediate half cannot.
+
+    ``park_and_commit_topology`` parks BEFORE it commits, so handing this
+    endpoint's save into it would mean a park failure discards the un-confirm
+    entirely: the lane stays verified, ``roleful_identity_confirmed`` never
+    engages, and the box keeps its approved graph across every reboot. A park
+    most plausibly fails when the audio graph is already unhealthy — exactly
+    when the household's doubt matters most. So the flag is saved first and the
+    silence is best-effort, and the response says which half landed.
+    """
+
+    from jasper.active_speaker.runtime_contract import roleful_identity_confirmed
+
+    _write_repin_fixture(
+        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("could not safely park audio before changing topology")
+        ),
+    )
+
+    payload = sound_setup._active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "left",
+        "role": "woofer",
+        "identity_verified": False,
+    })
+
+    saved = load_output_topology()
+    assert {
+        (group.id, channel.role): channel.identity_verified
+        for group in saved.speaker_groups
+        for channel in group.channels
+    }[("left", "woofer")] is False
+    # And therefore the durable half is armed: the selector now refuses to hand
+    # this box back an approved graph on any later pass.
+    assert roleful_identity_confirmed(saved) is False
+    # The household is told the immediate silence did not happen.
+    assert payload["identity_park"]["parked"] is False
+    assert "could not silence the speaker" in payload["identity_park"]["message"]
 
 
 def test_identity_writes_that_cannot_silence_a_driver_do_not_park(

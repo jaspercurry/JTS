@@ -210,11 +210,13 @@ The first product-facing slice is intentionally non-audible:
   speaker silent, in two halves: `park_and_commit_topology(stay_parked=True)`
   parks it on the same request, and `roleful_identity_confirmed` gates the graph
   selector's two approved-active-runtime rungs so no later reconcile, deploy, or
-  reboot can re-select the applied baseline. The arm ladder, whose gates own the
-  missing evidence, is the way back to audio. The same pair of halves fires when
+  reboot can re-select the applied baseline. Audio returns once every assigned
+  lane is confirmed again and the box re-arms. The same pair of halves fires when
   a household marks a driver lane "not confirmed" by hand — the same doubt about
-  which driver hangs where, self-declared. A dongle moved to a DIFFERENT port is
-  not offered a re-pin at all: nothing then says which unit owns which lanes.
+  which driver hangs where, self-declared — except there the cleared flag is
+  saved FIRST and the park is best-effort, so a park failure cannot discard the
+  doubt. A dongle moved to a DIFFERENT port is not offered a re-pin at all:
+  nothing then says which unit owns which lanes.
 - One DAC per speaker is disclosed, not enforced. When a saved speaker group's
   drivers land on two different child DACs, `evaluate_output_topology` reports a
   `speaker_group_spans_child_devices` warning naming the group and the children
