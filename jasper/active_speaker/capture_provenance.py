@@ -87,7 +87,8 @@ class CaptureProvenance:
     stimulus_peak_dbfs: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """The sidecar block. Additive; no key here collides with an existing one."""
+        """The sidecar block, written under one ``provenance`` key so that
+        nothing the sidecar already carries moves or changes."""
         return {
             "main_volume_db": self.main_volume_db,
             "session_volume_db": self.session_volume_db,
@@ -115,11 +116,12 @@ class CaptureProvenanceRecorder:
     session bridges the gap, exactly as ``PlaybackStartSignal`` already bridges
     "audio starts now" from the same play seam to the relay runner.
 
-    :meth:`take` CONSUMES. Every capture is preceded by its own play, so a
-    second read with no play in between is not a second capture of the same
-    stimulus — it is a capture this recorder cannot speak for, and it gets
-    ``None`` rather than the previous capture's context. Stale provenance on a
-    forensic clip is worse than absent provenance: absent is visibly absent.
+    :meth:`take` CONSUMES. The plan runner arms and plays each capture before
+    consuming it (``on_armed`` → the play seam, then ``consume_capture`` → the
+    analyze seam), so a second read with no play in between is not a second
+    capture of the same stimulus — it is a capture this recorder cannot speak
+    for, and it gets ``None`` rather than the previous capture's context. Stale
+    provenance on a forensic clip is worse than absent: absent is visibly absent.
     """
 
     def __init__(self) -> None:

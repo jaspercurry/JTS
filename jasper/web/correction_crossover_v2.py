@@ -5595,7 +5595,7 @@ def bind_production_play(
                 )
 
         def _observe(cam: Any, graph_kind: str) -> Any:
-            """Awaitable: record what this stimulus plays THROUGH. Never raises."""
+            """Awaitable: record what this stimulus plays THROUGH, fail-soft."""
             return record_capture_provenance(
                 provenance, cam=cam, graph_kind=graph_kind, program=program,
                 artifact=artifact, volume_plan=session_volume_plan(),
