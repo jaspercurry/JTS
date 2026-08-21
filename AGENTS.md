@@ -236,6 +236,28 @@ worked example of getting this wrong and repairing it.
   inline. Significant bugs, design judgments, or behavior changes
   should be surfaced after finishing the requested task. When in
   doubt, flag it.
+- **One vocabulary per question (extends single source of truth).**
+  Before minting a verdict/status/confidence/phase enum, a refusal
+  set, or any closed constant vocabulary, grep for an existing set
+  answering the same question and extend or consume it — and before
+  creating a module or public constant, search the tree for the name.
+  Two live vocabularies for one question, and identical names for
+  different concepts, are the defect class import-graph audits cannot
+  see: the 2026-08-21 sweep found six severity sets for "is this
+  capture usable" and a `PHASE_*` triple whose names AND string
+  values collide across two packages while meaning different things.
+- **Quote, don't paraphrase.** A claim about what another document,
+  module docstring, or recorded ruling says is written by re-reading
+  that source at writing time and citing it — never from memory.
+  Every finding in the 2026-08-21 master-plan gate rounds was a
+  paraphrase drifting from its source; not one was a code-symbol
+  claim.
+- **Every write needs a reader.** A field, artifact, or sidecar that
+  production code writes must have a production reader or a ticket
+  naming the intended one. Computed-then-dropped values and
+  write-only stores hide evidence and rot silently (the 7-of-26-key
+  verdict truncation and the write-only position sidecars both hid
+  data the tuning loop needed).
 - **Verify at the user's surface, not at upstream config.** When
   the user references what they observe (a wizard, dashboard,
   HTTP response), verify by hitting that URL or reading the
@@ -642,6 +664,15 @@ right place. Read this before adding or restructuring docs.
    each edit rather than the matched line alone — give every edit a
    reading radius. **Never read "sweep returns 0" as proof of
    completeness:** the sweeps are a floor, block-reading is the method.
+
+12. **One planning authority per domain.** A new plan/design doc names
+   what it supersedes and applies the historical tags (rule 10) to the
+   docs it replaces, in the same PR. "Supersedes: nothing" on a doc
+   whose scope overlaps an existing plan is the smell to catch at
+   review — five silently-competing roadmaps for the tuning program
+   accumulated exactly this way before the 2026-08-21 reconciliation
+   ([`docs/tuning-master-plan.md`](docs/tuning-master-plan.md)'s
+   Supersessions section is the pattern to copy).
 
 ---
 
