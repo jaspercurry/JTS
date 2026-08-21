@@ -588,9 +588,17 @@ Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
   which translates and updates `listening_level` + `camilla.main_volume`.
   The controller explicitly acknowledges whether the source-active gate
   accepted the observation. A value first seen while USB is idle is retried
-  once per second until USB becomes active; only an accepted value is
-  deduplicated. This prevents a deploy/control restart from caching a
-  declined initial read forever.
+  with a capped exponential backoff (`POST_RETRY_INTERVAL_SEC` base,
+  doubling by `POST_RETRY_BACKOFF_FACTOR` up to a `POST_RETRY_CEILING_SEC`
+  ceiling — current values and the latency-vs-spam-rate tradeoff that sets
+  them live in the prose comment above those constants in
+  `volume_bridge.py`, not restated here) until USB becomes active; a slider
+  move or an accepted post resets the backoff to the base interval, and only
+  an accepted value is deduplicated. This prevents a deploy/control restart
+  from caching a declined initial read forever, and bounds retry traffic
+  during a long-lived decline — a flat once-per-second retry was measured on
+  the jts3 lab Pi (2026-08-20) posting ~3,200 times/hour to report an
+  unchanged slider while USB sat idle all day.
 - Outbound: remote twist / voice "louder" goes through the normal
   `_set_camilla` path. **No write back to the gadget mixer**.
 
@@ -2373,9 +2381,33 @@ includes `tap` and `host_clock`, both pointed at
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) as their single
 source of truth per the documentation paradigm.)
 
-Last verified: 2026-08-15 (scoped: only the Current-operational-truth banner's
-DIRECT-capture width sentence was re-verified, after the ring wire's default
-sample format flipped narrow → wide. The high-word truncation it stated
+Last verified: 2026-08-20 (scoped: the §3.2 volume-model bullet's declined-
+observation retry description was corrected to match
+`jasper/usbsink/volume_bridge.py` — a capped exponential backoff
+(`POST_RETRY_INTERVAL_SEC` base, doubling by `POST_RETRY_BACKOFF_FACTOR` to
+a `POST_RETRY_CEILING_SEC` ceiling; reset on a slider move or an accepted
+post), not the flat once-per-second-forever retry the bullet previously
+described. The bullet's decline-reason list went through two wrong drafts
+in this same PR before landing on the real ones: first "a measurement
+hold, etc." (a reason that doesn't exist at HEAD — it described an unlanded
+sibling branch), then "the coordinator's own-echo window" (verified
+unreachable for USB: `_stamp_outbound`, the only writer of the state
+`_is_own_echo` reads, has exactly two call sites in the whole `jasper/`
+tree — Spotify and Bluetooth — never USB, since USB never writes back to
+the gadget mixer). The real decline reasons at HEAD are the active-source
+gate and a recent cross-process write (remote/web/voice moved the canonical
+level within `PERSISTENCE_ECHO_WINDOW_SEC`). The flat retry was measured on
+the jts3 lab Pi posting ~3,200 times/hour to report an unchanged slider
+while USB sat idle all day; an initial 30 s ceiling was tightened after an
+adversarial-gate finding that it widened the USB source-handoff
+volume-mismatch window (stale level, then an unattributed jump once the
+host starts playback) — current value and the full latency-vs-spam-rate
+tradeoff live in the prose comment above the constants in
+`volume_bridge.py`, not restated here. Nothing else in this doc was
+re-verified this pass.) Prior 2026-08-15: only the
+Current-operational-truth banner's DIRECT-capture width sentence was
+re-verified, after the ring wire's default sample format flipped narrow →
+wide. The high-word truncation it stated
 unconditionally is gated on `Config::program_wire_is_wide`
 (`rust/jasper-fanin/src/mixer.rs`'s `lane_wants_spine_buffer` →
 `mixer/direct_capture.rs`'s `push_capture_chunk`), whose format half now

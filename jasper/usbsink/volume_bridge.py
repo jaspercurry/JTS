@@ -58,11 +58,41 @@ logger = logging.getLogger(__name__)
 # Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
 # perceptible lag.
 POLL_INTERVAL_SEC = 0.25
-# When jasper-control declines an observation because USB is not the active
-# source yet, retry at a bounded cadence. This closes the boot/deploy race where
-# the first mixer read arrived before source activation and was then cached
-# forever. A changed host value bypasses the delay and publishes immediately.
+# When jasper-control declines an observation — e.g. the active-source gate
+# (USB isn't the active source yet) or a recent cross-process write (remote/
+# web/voice moved the canonical level within PERSISTENCE_ECHO_WINDOW_SEC) —
+# retry with a capped exponential backoff rather than hammering /volume/set
+# at the poll cadence forever. (volume_coordinator.py's own-echo window is
+# NOT one of these: it's stamped only for Spotify's and Bluetooth's outbound
+# writes, and USB never writes back to the gadget mixer, so it can never
+# fire for USBSINK.) POST_RETRY_INTERVAL_SEC is the starting delay — short
+# enough to close the boot/deploy race where the first mixer read arrives
+# before source activation — and each consecutive decline of the SAME value
+# doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to POST_RETRY_CEILING_SEC.
+#
+# The ceiling is kept deliberately small — this backoff is NOT what kills the
+# measured journal spam (jasper-control's event=volume.set at INFO, ~3,200
+# lines/hour on the jts3 lab Pi, 2026-08-20 — see jasper/control/handlers/
+# volume.py, whose DEBUG demotion owns that fix regardless of this ceiling).
+# What the ceiling still has to bound: (1) residual HTTP+mux IPC volume and
+# flight-recorder-ring pressure — at the 5 s ceiling, up to ~3600/5 = 720
+# POSTs/hour once backed off, vs. ~3,200/hour unbacked-off; (2) the USB
+# source-handoff volume-mismatch window — a value pinned at the ceiling plus
+# a host that starts playback right after plays at the stale canonical level
+# for up to one ceiling-length window (plus one poll tick: ~5.25 s at the
+# current ceiling) before the next retry lands, then jumps without
+# transition to the true slider position. A 30 s ceiling was rejected here:
+# it left the same ~3,200/hour spam un-killed by this backoff alone, cut the
+# residual POST rate only to ~120/hour, and widened the handoff window to
+# ~30.25 s — a jts3 measurement (21%->70%) implies an unattributed +24.75 dB
+# jump (the percent pair was measured; the dB figure is percent_to_db
+# arithmetic over it, not a separate dB measurement). A changed host value,
+# or an accepted post, resets the backoff to the base interval, so once
+# jasper-control starts accepting again the current slider position lands
+# within one ceiling-length window rather than waiting out the full backoff.
 POST_RETRY_INTERVAL_SEC = 1.0
+POST_RETRY_BACKOFF_FACTOR = 2.0
+POST_RETRY_CEILING_SEC = 5.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -144,10 +174,15 @@ class VolumeBridge:
         bridge.run()  # async, blocks until cancelled
 
     The bridge does NOT cache jasper-control state. Every observed
-    mixer change triggers one POST; a value declined because USB is
-    not active yet is retried at a bounded cadence until the controller
-    acknowledges it. Accepted values are deduplicated locally, while
-    the coordinator owns source and echo policy.
+    mixer change triggers one POST; a declined value (e.g. the
+    active-source gate — USB isn't the active source — or a recent
+    cross-process write within the persistence echo window; NOT the
+    coordinator's own-echo window, which is never stamped for USB) is
+    retried with a capped exponential backoff until the controller
+    acknowledges it, so a long-lived decline costs one POST every
+    POST_RETRY_CEILING_SEC rather than one per poll. Accepted values
+    are deduplicated locally, while the coordinator owns source and
+    echo policy.
     """
 
     def __init__(
@@ -186,6 +221,10 @@ class VolumeBridge:
         self._last_published_pct: Optional[int] = None
         self._last_attempted_pct: Optional[int] = None
         self._retry_not_before: float = 0.0
+        # Current backoff step for a repeated decline of _last_attempted_pct.
+        # Starts at (and resets to) the base interval; see the constants'
+        # comment above for the growth/reset rules.
+        self._retry_backoff_sec: float = POST_RETRY_INTERVAL_SEC
         # First mixer snapshot after bridge startup is state discovery, not
         # proof of a new host action. Keep its identity through bounded retries
         # so a restarted bridge cannot erase a mute asserted by another surface.
@@ -352,11 +391,16 @@ class VolumeBridge:
         if pct == self._last_published_pct:
             return
         now = time.monotonic()
-        if (
-            pct == self._last_attempted_pct
-            and now < self._retry_not_before
-        ):
-            return
+        if pct == self._last_attempted_pct:
+            if now < self._retry_not_before:
+                return
+        else:
+            # The target value changed since our last attempt (a fresh
+            # slider move, possibly while we were backing off a previous
+            # decline) — always attempt immediately, and reset the backoff
+            # so this new value isn't delayed by the old one's decline
+            # history.
+            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
         self._last_attempted_pct = pct
         accepted = await self._post(
             pct,
@@ -368,8 +412,13 @@ class VolumeBridge:
         if accepted:
             self._last_published_pct = pct
             self._retry_not_before = 0.0
+            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
         else:
-            self._retry_not_before = now + POST_RETRY_INTERVAL_SEC
+            self._retry_not_before = now + self._retry_backoff_sec
+            self._retry_backoff_sec = min(
+                self._retry_backoff_sec * POST_RETRY_BACKOFF_FACTOR,
+                POST_RETRY_CEILING_SEC,
+            )
 
     def _raw_to_pct(self, raw: int) -> int:
         """THE volume curve: raw mixer STEP INDEX -> JTS 0-100 percent.

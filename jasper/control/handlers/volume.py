@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from .. import server as _server
 from ._base import ControlHandlerMixin
 
@@ -168,6 +170,15 @@ class VolumeRoutes(ControlHandlerMixin):
             source=source_name or "authoritative",
             observation_applied=observation_applied,
             client=self.address_string(),
+            # A declined observation is a no-op (state unchanged) — an
+            # inactive-source host slider can retry for hours, and INFO
+            # would spam the journal for something that changed nothing.
+            # Every other outcome (authoritative set, applied observation)
+            # is a real state change and stays at the default INFO level.
+            level=(
+                logging.DEBUG if observation_applied is False
+                else logging.INFO
+            ),
         )
         payload = self._volume_payload(state)
         if observation_applied is not None:
