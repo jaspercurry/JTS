@@ -409,8 +409,14 @@ BOTH the reconciler's own adoption gate
 profile) AND the DECLARED topology genuinely not matching what's attached
 (`declared_hardware_mismatch`, in `jasper/output_topology.py` — the same
 comparison `/sound/setup/`'s "Use detected hardware" affordance uses,
-published once and read by both surfaces so neither forks the rule). The
-second conjunct is load-bearing: an already-declared, already-armed box
+published once and read by both surfaces so neither forks the rule). On a box
+that has never saved a topology at all — the primary case — the second
+conjunct is satisfied directly from `load_output_topology_snapshot`'s
+`revision == "missing"`, without ever calling `declared_hardware_mismatch`:
+that function has no way to see "undeclared" on its own, because a missing
+file's `new_topology_draft` fallback auto-seeds `hardware` FROM the observed
+record whenever it has outputs, which would otherwise read as a false match.
+The second conjunct is load-bearing: an already-declared, already-armed box
 hitting an ordinary outputd hiccup (a deploy's audio-graph bounce, a crash)
 must not be told to "finish setup" for a setup that already happened. Declared
 topology is read on the same slow `_route_interval` cadence as the
@@ -700,9 +706,11 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 Last verified: 2026-08-21 (the Audio alert card's override chain rechecked
 against `jasper/control/audio_health.py`: added the fourth writer,
-`_undeclared_hardware_signal` (#2812), its two-conjunct gate against
-`jasper.output_hardware.detected_hardware_adoption_precondition` and the new
-`jasper.output_topology.declared_hardware_mismatch`, its slow-cadence
+`_undeclared_hardware_signal` (#2812), its two-conjunct gate — read from
+`jasper.output_hardware.detected_hardware_adoption_precondition` plus, only
+when a topology was ever saved, `jasper.output_topology.declared_hardware_mismatch`,
+with a never-saved box instead satisfying the second conjunct directly from
+`load_output_topology_snapshot`'s `revision == "missing"` — its slow-cadence
 topology read, and its matching `path.*` incident-alignment fix).
 Prior 2026-07-22 (the three-member debug registry and USB gadget
 forensics' separate bounded-diagnostics boundary were rechecked against code,
