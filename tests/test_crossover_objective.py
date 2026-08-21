@@ -510,6 +510,85 @@ def test_two_seats_cancelling_do_not_cancel_in_the_role_profile() -> None:
     assert abs(role_chunk.level_db) < 0.5
 
 
+def _one_role_two_floors(freqs, floor_at_minus_seven_hz, floor_at_plus_seven_hz):
+    """One role, two seats, each with its own frame — the S8.9 shape."""
+    curve = _flat(freqs)
+    return score_prediction(
+        {-7.0: curve, 7.0: curve},
+        freqs,
+        role_by_angle={-7.0: "onax", 7.0: "onax"},
+        primary_role="onax",
+        on_axis_deg=-7.0,
+        frame_by_angle={
+            -7.0: GradingFrame.self_referenced(
+                trusted_floor_hz=floor_at_minus_seven_hz,
+            ),
+            7.0: GradingFrame.self_referenced(
+                trusted_floor_hz=floor_at_plus_seven_hz,
+            ),
+        },
+        crossover_region_hz=(1000.0, 4000.0),
+    )
+
+
+def test_one_roles_seats_graded_over_different_spectrum_refuse_rather_than_union() -> None:
+    """Two non-aligned chunk ladders are not one role profile.
+
+    Frames are per SEAT by design, so nothing structurally stops one role
+    holding a 900 Hz seat and a 357 Hz one. Merged, their chunk ladders do not
+    line up ANYWHERE — the two geometric ladders start at different edges — so
+    a union produces a profile whose chunks are every chunk of both seats,
+    whose ``n_bins`` counts spectrum neither seat covers alone, and whose
+    ``band_hz`` is read off whichever seat happened to sort first. That last
+    one is the finding: the declared band was ORDER-DEPENDENT, and in one of
+    the two orders it EXCLUDED chunks the profile itself reported.
+
+    Both orders are exercised, because a refusal in one order and an answer in
+    the other would be the same defect wearing a guard.
+    """
+    freqs = _grid()
+
+    # The trap, made visible rather than assumed: the ladders share no edge,
+    # so a union really is both seats' chunks side by side.
+    scored = _one_role_two_floors(freqs, 900.0, FLOOR_HZ)
+    high, low = scored.per_seat
+    assert high.evaluable and low.evaluable
+    assert high.band_hz[0] == pytest.approx(900.0)
+    assert low.band_hz[0] == pytest.approx(FLOOR_HZ)
+    edges = {(c.f_lo_hz, c.f_hi_hz) for c in high.chunks} | {
+        (c.f_lo_hz, c.f_hi_hz) for c in low.chunks
+    }
+    assert len(edges) == len(high.chunks) + len(low.chunks)
+
+    for floors in ((900.0, FLOOR_HZ), (FLOOR_HZ, 900.0)):
+        view = _one_role_two_floors(freqs, *floors).view("onax")
+        assert view is not None
+        # THE PIN: refused in BOTH orders, and the reason names both spans so
+        # a reader learns which two seats disagreed rather than that one did.
+        assert view.profile.evaluable is False
+        assert view.profile.chunks == ()
+        assert "different spectrum" in view.profile.not_evaluated_reason
+        assert "900" in view.profile.not_evaluated_reason
+        assert "357" in view.profile.not_evaluated_reason
+
+
+def test_the_shipped_one_floor_role_still_merges() -> None:
+    """The positive control: the refusal above is narrow, not a shutdown.
+
+    The live caller grades a role's seats at one group floor, which is why
+    nothing shipped changes. Without this, deleting the merge entirely would
+    leave the refusal test green.
+    """
+    freqs = _grid()
+
+    view = _one_role_two_floors(freqs, FLOOR_HZ, FLOOR_HZ).view("onax")
+
+    assert view is not None
+    assert view.profile.evaluable is True
+    assert view.profile.chunks
+    assert view.profile.band_hz[0] == pytest.approx(FLOOR_HZ)
+
+
 def test_a_frame_from_another_floor_is_refused_not_reconciled() -> None:
     """Grading at one floor and profiling at another states two spans as one."""
     freqs = _grid()
@@ -794,6 +873,60 @@ def test_incomparable_chunk_sets_refuse_rather_than_match_by_position() -> None:
 
     assert verdict.dominates is False
     assert verdict.refusal == "chunk_sets_are_not_comparable"
+
+
+def test_a_candidate_that_speaks_for_less_spectrum_is_charged_for_what_it_dropped() -> None:
+    """The SUBSET direction — the fail-open half of the same rule.
+
+    The sibling test above catches a candidate with EXTRA chunks, which a
+    per-candidate-chunk walk hits on its own. The dangerous direction is the
+    other one: a candidate whose chunks are a strict SUBSET of the incumbent's
+    has a comparable partner for every chunk it still holds, so a one-sided
+    walk charges it NOTHING for the third-octave it stopped speaking for. Here
+    that is a whole 630-794 Hz band gone while the surviving chunk improves by
+    1.3 dB and the residual improves by 1.9 — a losing trade that a one-sided
+    walk returns as ``dominates=True``, ``refusal=''``,
+    ``worst_regression_db=-1.3``, i.e. as a clean win with a credit attached.
+
+    Both directions are asserted from ONE pair, swapped, because the claim
+    being pinned is symmetry and a single direction cannot express it.
+    """
+    kept = (500.0, 630.0)
+    dropped = (630.0, 794.0)
+    incumbent = _profile_of((
+        _chunk(*kept, level_db=+2.0, worst_db=+2.0, rms_db=2.0),
+        _chunk(*dropped, level_db=+2.0, worst_db=+2.0, rms_db=2.0),
+    ))
+    candidate = _profile_of((
+        _chunk(*kept, level_db=+0.7, worst_db=+0.7, rms_db=0.7),
+    ))
+
+    verdict = dominates(
+        candidate, incumbent,
+        candidate_residual_db=0.10,
+        incumbent_residual_db=2.00,
+    )
+
+    # The trap is live: the primary residual really does clear the bar, so
+    # nothing but the chunk-set rule stands between this and a win.
+    assert 0.10 - 2.00 < -PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
+    # THE PIN: refused, and refused by the rule that names the reason.
+    assert verdict.dominates is False
+    assert verdict.refusal == "chunk_sets_are_not_comparable"
+    # A refusal reports no regression figure: there is no comparable pair to
+    # take one over, and a -1.3 dB "improvement" here would be a credit for
+    # the band that went missing.
+    assert verdict.worst_regression_db is None
+
+    # ...and the same pair the other way round, which the one-sided walk did
+    # already catch. Symmetric, from one construction.
+    swapped = dominates(
+        incumbent, candidate,
+        candidate_residual_db=0.10,
+        incumbent_residual_db=2.00,
+    )
+    assert swapped.dominates is False
+    assert swapped.refusal == "chunk_sets_are_not_comparable"
 
 
 def test_an_unevaluable_profile_refuses_rather_than_wins() -> None:
