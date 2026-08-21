@@ -321,8 +321,10 @@ class DelayGraphSnapshot:
     """Zero-relative F1 predecessor plus two graph-proven delay lanes.
 
     The host stages both bound delay slots to numeric zero inside its outer
-    exact-restore transaction, reads back that graph, and freezes the same
-    :class:`DspPredecessor` the F1 runner will later restore.
+    exact-restore transaction, reads back that graph, and freezes the
+    :class:`DspPredecessor` **that same host** will later restore. There is no
+    shared walk runner: ``null_walk`` is decision content only, so the exact
+    restore is the host's own obligation.
     """
 
     scope: DelayWalkScope

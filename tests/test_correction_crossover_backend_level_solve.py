@@ -280,41 +280,30 @@ async def test_level_solve_refused_str_is_the_mapped_household_copy(monkeypatch)
     assert "too high to measure reliably at safe levels" in message
 
 
-def test_refusal_pending_predicate_parity_with_envelope_rendering():
-    """W2.4 parity pin: the between-set restart's clear/preserve decision
-    (``CrossoverLevelLease._target_refusal_pending``, reading
-    ``_solve_refusal`` + the exhausted write count directly) and the
-    envelope's refusal rendering
-    (``crossover_envelope._active_level_solve_refusal``, re-deriving the
-    same OR from ``level_match_snapshot()``'s ``solve_refusal`` /
-    ``solve_correction.exhausted`` projections) are SEPARATE readers of the
-    same two stored facts. They are equivalent today only because both
-    sides implement the same OR -- nothing structural forces it -- so this
-    test pins ``envelope-renders-a-refusal <=> restart-clears`` across the
-    three representative states. If either side changes, this is the
-    contract to keep green: a divergence means the household could be shown
-    a refusal whose restart preserves the doomed correction (run 20's dead
-    loop) or have a correction cleared with no refusal ever rendered."""
+def test_refusal_pending_predicate_across_the_three_stored_states():
+    """W2.4 pin on the between-set restart's clear/preserve decision.
 
-    from jasper.active_speaker.crossover_envelope import (
-        _active_level_solve_refusal,
-    )
+    ``CrossoverLevelLease._target_refusal_pending`` reads ``_solve_refusal``
+    plus the exhausted write count directly, and decides whether the restart
+    clears a REFUSED target's correction state. This pins its verdict across
+    the three representative stored states, because a wrong answer either
+    preserves a doomed correction behind a refusal the household already saw
+    (run 20's dead loop) or clears a correction with no refusal ever shown.
+
+    This used to be a *parity* pin against a second reader,
+    ``crossover_envelope._active_level_solve_refusal``, which re-derived the
+    same OR from ``level_match_snapshot()``'s projections. That reader had no
+    production caller -- nothing rendered the ``solve_refusal`` field it read
+    -- so it was deleted, and with it the divergence risk the parity half
+    guarded. One reader now owns the decision; the state assertions below are
+    what survive and are what actually bind behaviour.
+    """
 
     _topology, _profile, targets = _safety_profile_and_targets()
     target_id = "mono:woofer"
 
-    def parity(lease) -> None:
-        status = {"level_match": lease.level_match_snapshot()}
-        rendered = _active_level_solve_refusal(status, target_id) is not None
-        pending = lease._target_refusal_pending(target_id)
-        assert rendered == pending, (
-            f"envelope renders refusal={rendered} but restart "
-            f"refusal_pending={pending} -- the two readers of the same "
-            "stored facts have diverged"
-        )
-
     # State 1 (run 20's shape): genuine pre-flight refusal at writes=1 --
-    # one write BELOW the exhausted bound. Both readers must say refusal.
+    # one write BELOW the exhausted bound. The predicate must say refusal.
     lease = CrossoverLevelLease()
     _configure_lease(lease, targets)
     lease.record_solve_correction(
@@ -330,12 +319,11 @@ def test_refusal_pending_predicate_parity_with_envelope_rendering():
     }
     assert lease._correction_budget_exhausted(target_id) is False
     assert lease._target_refusal_pending(target_id) is True
-    parity(lease)
 
     # State 2 (run 19's completion-time exhaustion shape): budget exhausted
-    # with NO fresh solve refusal stored -- the envelope synthesizes the
-    # measurement_window_unreachable refusal from the exhausted flag; the
-    # restart must agree via the same write count.
+    # with NO fresh solve refusal stored -- exhaustion alone is the signal;
+    # the
+    # predicate must agree via the same write count.
     lease = CrossoverLevelLease()
     _configure_lease(lease, targets)
     for _ in range(3):
@@ -345,10 +333,9 @@ def test_refusal_pending_predicate_parity_with_envelope_rendering():
     assert lease._solve_refusal is None
     assert lease._correction_budget_exhausted(target_id) is True
     assert lease._target_refusal_pending(target_id) is True
-    parity(lease)
 
     # State 3 (the preserve path): a correction exists but no refusal was
-    # ever shown and the budget is not exhausted. Both readers must say
+    # ever shown and the budget is not exhausted. The predicate must say
     # no-refusal -- this is what keeps the completed-insufficient
     # "JTS will play the next measurement louder" promise intact.
     lease = CrossoverLevelLease()
@@ -358,7 +345,6 @@ def test_refusal_pending_predicate_parity_with_envelope_rendering():
     )
     assert lease._solve_refusal is None
     assert lease._target_refusal_pending(target_id) is False
-    parity(lease)
 
 
 @pytest.mark.asyncio

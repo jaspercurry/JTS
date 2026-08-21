@@ -142,18 +142,18 @@ from jasper.log_event import log_event
 #
 # Patch contract for test doubles: this HOST calls build_v2_run_and_consume,
 # relay_link_ttl_s, and PlaybackStartSignal through these bindings, so
-# patching them on this module reaches the preparers. The other three are
-# re-published for external callers only — the host never invokes them — so
-# a double for program_phase_schedule / start_program_phase_ladder /
-# TERMINAL_FAILURE_PURGE_GRACE_S must patch the provider module, or it
-# rebinds a name nothing here reads.
+# patching them on this module reaches the preparers.
+#
+# Three further names (program_phase_schedule, start_program_phase_ladder,
+# TERMINAL_FAILURE_PURGE_GRACE_S) were re-published here too, for external
+# callers the host never invoked. No external caller ever arrived — only tests
+# addressed them as ``v2host.<name>`` — so the re-exports are gone and the
+# provider module owns them outright. Reach them at
+# ``jasper.web.correction_crossover_v2_relay``.
 from jasper.web.correction_crossover_v2_relay import (
-    TERMINAL_FAILURE_PURGE_GRACE_S as TERMINAL_FAILURE_PURGE_GRACE_S,
     PlaybackStartSignal as PlaybackStartSignal,
     build_v2_run_and_consume as build_v2_run_and_consume,
-    program_phase_schedule as program_phase_schedule,
     relay_link_ttl_s as relay_link_ttl_s,
-    start_program_phase_ladder as start_program_phase_ladder,
 )
 
 if TYPE_CHECKING:
@@ -5562,7 +5562,7 @@ def bind_production_play(
     ``on_playback_started`` (optional) is fired with the program at the instant
     its WAV reaches the playback call — the closest the host gets to "audio
     starts now" without reaching into the shared aplay path. It is what anchors
-    the phone's pre-tone phase ladder (:func:`start_program_phase_ladder`);
+    the phone's pre-tone phase ladder (:func:`~jasper.web.correction_crossover_v2_relay.start_program_phase_ladder`);
     omitted, playback is unchanged and the caller keeps whatever progress
     reporting it had.
 

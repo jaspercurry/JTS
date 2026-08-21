@@ -551,18 +551,6 @@ def test_append_capture_rejects_oversized_source(tmp_path: Path, caplog) -> None
     assert "event=active_speaker.bundle_write_failed" in caplog.text
 
 
-def test_max_capture_wav_bytes_matches_web_measurement_cap() -> None:
-    """bundles.py hand-mirrors web_measurement's browser-capture-store cap
-    (a bundle copy is never larger than the capture it was made from). This
-    is a mirror-drift pin: it catches the two constants silently diverging,
-    not a functional dependency (bundles.py does not import web_measurement
-    at module load, to stay light and cycle-free)."""
-
-    from jasper.active_speaker import web_measurement
-
-    assert bundles.MAX_CAPTURE_WAV_BYTES == web_measurement.MAX_CAPTURE_WAV_BYTES
-
-
 def test_append_capture_rejects_source_that_is_not_a_filesystem_path(
     tmp_path: Path, caplog
 ) -> None:

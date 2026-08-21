@@ -4222,12 +4222,19 @@ def test_active_speaker_tone_backend_status_is_explicit_lab_only(
         issue["code"] for issue in stale_env_status["issues"]
     }
 
+    # Selecting the audio-lab backend echoes the operator's typed values but
+    # is BLOCKED, not audio-enabled: nothing wires an audio backend, so the
+    # tone renders to a WAV artifact whatever the knob says.
     monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "aplay")
     monkeypatch.setenv("JASPER_AUDIO_LAB_TEST_PCM", "hw:Active")
     lab_status = sound_setup._active_speaker_tone_backend_status()
-    assert lab_status["status"] == "audio_enabled"
+    assert lab_status["status"] == "blocked"
+    assert lab_status["audio_enabled"] is False
     assert lab_status["backend"] == "aplay"
-    assert lab_status["audio_backend"] == "aplay"
+    assert lab_status["audio_backend"] is None
+    assert "tone_backend_not_wired" in {
+        issue["code"] for issue in lab_status["issues"]
+    }
     assert lab_status["playback_device"] == "hw:Active"
     assert lab_status["channel_count"] == 8
     assert lab_status["requires_protected_startup"] is True

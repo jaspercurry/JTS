@@ -585,36 +585,25 @@ create a second retention system.
   50–100 µs grids, and selects only after *every* candidate has at least five
   calibrated reverse-null captures from that exact crossover region, each
   gated, above-floor, alignment-SNR-qualified, and with <2 dB null spread. Its
-  public capture input has no impulse-arrival field. The injected runner rejects
-  explicit apply/restore failure and reports a walk failure together with a
-  restore failure. Before its first candidate mutation, the runner requires a
-  host-owned `DspPredecessor` carrying the exact entry-state payload; it freezes
-  the unambiguous JSON data model at the transaction boundary, derives its
-  canonical SHA-256 fingerprint, and passes a fresh copy of that snapshot to the
-  subsystem restore adapter. Restore must read back the active DSP state and
-  build `DspRestoreConfirmation` from that observation; the runner compares its
-  fingerprint with the predecessor. Restore runs in a dedicated task shielded
-  from repeated caller cancellation with a 15-second cancellation deadline by
-  default (30-second configured maximum); wall completion also includes the
-  host adapter's own bounded cancellation drain. Candidate DSP mutation is
-  likewise shielded and settled before restoration starts, so a cancelled
-  offloaded worker cannot finish after rollback and put the candidate back
-  live. Host adapters must
-  bound and cancellation-drain their mutation I/O (the shared Camilla controller
-  does), and orchestration must exclude concurrent DSP writers for the whole
-  walk. Cancellation is propagated only after restoration terminates; if
-  restore also fails, the runner preserves the entry failure, a cancellation
-  observed during cleanup, and the restore failure in causal order in a
-  `BaseExceptionGroup`. Timeout, refusal, or a mismatched read-back fails loudly.
-  Lifecycle evidence uses the generic `correction.delay_walk_*` event family
-  with one required closed scope declared by each adapter:
-  `active_crossover` or `bass_management`. Failure events expose only the closed
-  `failure_code` vocabulary (`timeout`, `readback_mismatch`,
-  `invalid_confirmation`, `self_cancelled`, or `other`); arbitrary exception
-  text and the snapshot payload never enter the journal. Subsystem adapters
-  still own the actual DSP mutation, exact restore, read-back, writer exclusion,
-  and capture transport. The exhaustive runner preflights and refuses above 25
-  candidates or beyond CamillaDSP's 20 ms delay ceiling before touching DSP.
+  public capture input has no impulse-arrival field.
+  **The module is decision content only — it executes nothing.** It ships specs,
+  schedules, candidate scoring and selection, and the frozen `DspPredecessor`
+  rollback identity; it owns no apply/capture/restore transaction. A shared
+  `run_null_walk` runner (with a `DspRestoreConfirmation` read-back type, a
+  cancellation-drained restore, and a `correction.delay_walk_*` event family)
+  did live here for the two declared hosts, `active_speaker.alignment_walk` and
+  `bass_alignment`; **neither ever called it**, so it was deleted rather than
+  left standing as an unexercised resilience claim. A host that later needs to
+  execute a walk owns its own writer exclusion, bounded mutation I/O,
+  cancellation-drained exact restore, and read-back proof — the shape
+  `jasper/bass_extension/bench/activation.py` already implements for the bench
+  lane. `DspPredecessor` remains the shared rollback identity such a host
+  freezes: it normalizes the unambiguous JSON data model, derives a canonical
+  SHA-256 fingerprint, and returns a fresh copy of the state so a mutable caller
+  object cannot silently move the rollback target.
+  `NullWalkSpec.candidate_delays_us()` preflights and refuses above 25
+  candidates or beyond CamillaDSP's 20 ms delay ceiling — a pure spec check, so
+  it fires with no DSP involved at all.
   `BoundedNullWalkSchedule` is the separate resumable-host scheduling contract:
   it retains the seed and both aligned endpoints, chooses at most 25 symmetric
   coarse coordinates, and adds only the two immediate fine-grid neighbors of
@@ -623,12 +612,12 @@ create a second retention system.
   separate final evaluator: it requires exact scheduled-coordinate coverage
   and delegates to the same quality, repeatability, plateau, and tie policy as
   exhaustive `select_delay()`. Non-allocating fine-grid membership lets graph
-  proof validate one scheduled coordinate without bypassing the exhaustive
-  runner's refusal.
+  proof validate one scheduled coordinate without bypassing the spec's own
+  candidate-budget refusal.
   `delay_graph.py` is the inert candidate graph-*content* seam beside that
-  runner. Inside an outer exact-restore transaction, a host stages both delay
-  lanes to numeric zero and supplies the same `DspPredecessor` the F1 runner
-  will restore, with parsed CamillaDSP `active_raw` in its frozen state. Typed
+  decision layer. Inside an outer exact-restore transaction, a host stages both
+  delay lanes to numeric zero and supplies the same `DspPredecessor` it will
+  itself restore, with parsed CamillaDSP `active_raw` in its frozen state. Typed
   bindings carry the owning host's exact non-empty topology channel set plus one
   non-Delay identity filter from that target's emitter-owned chain. Mono roles
   use a one-channel tuple; stereo role chains can use sets such as `[0, 2]`.
@@ -865,8 +854,10 @@ create a second retention system.
   `level_ramp`, `bass_nearfield`; `"summed"` survives only as a `driver_role`
   value selecting consent/placement copy). The shipped crossover measurement
   is now the **v2 conductor** — the cloud phone capture page driving
-  `/crossover/v2/*`, with `build_crossover_envelope` a shim straight to
-  `build_crossover_envelope_v2` — and it is owned by
+  `/crossover/v2/*`, serving `build_crossover_envelope_v2` (directly, or via
+  `crossover_envelope.build_crossover_envelope_logged`, which is that call plus
+  a serve log; the `build_crossover_envelope` shim that used to forward to it
+  has been deleted) — and it is owned by
   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
   not restated here. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also

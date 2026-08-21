@@ -4,7 +4,10 @@
 
 """Fail-closed measured-crossover candidate boundary.
 
-Wave 2 readiness remains a permanent forensic classification. Wave 3 can
+Candidates from this boundary are non-authoritative, and say so in their own
+serialized shape: :data:`_CANDIDATE_FLAGS` pins ``score_available`` and
+``acoustic_target_claimed`` False on every emitted candidate, and the input
+contract's ``candidate_output_enabled`` is False. Wave 3 can
 refine only attenuation, retained polarity, and delay from exact evidence
 reopened by the commissioning evidence store. It owns no playback, search,
 persistence, apply transaction, or acoustic-target claim.
@@ -15,7 +18,6 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import asdict, dataclass, field
-from enum import Enum
 from typing import Any, Mapping, NoReturn, Sequence
 
 from jasper.audio_measurement.evidence_identity import (
@@ -54,7 +56,6 @@ from .profile import ActiveSpeakerPreset, required_driver_roles
 
 SCHEMA_VERSION = 1
 INPUT_CONTRACT_KIND = "jts_active_measured_candidate_input_contract"
-READINESS_KIND = "jts_active_measured_candidate_readiness"
 CANDIDATE_KIND = "jts_active_measured_electrical_candidate"
 CANDIDATE_ALGORITHM_ID = "jts_active_electrical_preset_refinement"
 CANDIDATE_ALGORITHM_VERSION = "1"
@@ -81,24 +82,6 @@ class MeasuredCandidateEvaluationError(MeasuredCandidateError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
-
-
-class MeasuredCandidateRefusal(str, Enum):
-    CAPTURE_NOT_ADMITTED = "measured_candidate_capture_not_admitted"
-    SHARED_PERSISTED_ADMISSION_UNAVAILABLE = (
-        "measured_candidate_shared_persisted_admission_unavailable"
-    )
-    CURRENT_PROTECTION_PROOF_MISSING = (
-        "measured_candidate_current_protection_proof_missing"
-    )
-    DRIVER_CAPTURES_MISSING = "measured_candidate_driver_captures_missing"
-    MEASURED_VALIDITY_BAND_MISSING = "measured_candidate_measured_validity_band_missing"
-    DELAY_WALK_MISSING = "measured_candidate_delay_walk_missing"
-    NORMAL_EVIDENCE_MISSING = "measured_candidate_normal_evidence_missing"
-    REVERSE_EVIDENCE_MISSING = "measured_candidate_reverse_evidence_missing"
-    NULL_EVIDENCE_MISSING = "measured_candidate_null_evidence_missing"
-    TOPOLOGY_GRAPH_PROOF_MISSING = "measured_candidate_topology_graph_proof_missing"
-    CANDIDATE_PUBLICATION_DISABLED = "measured_candidate_publication_disabled_in_wave2"
 
 
 @dataclass(frozen=True, init=False)
@@ -164,82 +147,6 @@ class MeasuredCandidateInputContract:
 
 def measured_candidate_input_contract() -> MeasuredCandidateInputContract:
     return MeasuredCandidateInputContract._wave2()
-
-
-@dataclass(frozen=True, init=False)
-class MeasuredCandidateReadiness:
-    source_classification: str
-    refusals: tuple[MeasuredCandidateRefusal, ...]
-    input_contract: MeasuredCandidateInputContract
-    fingerprint: str = field(init=False)
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        raise TypeError("use a measured candidate readiness factory")
-
-    @classmethod
-    def _not_ready(
-        cls,
-        source_classification: str,
-        refusals: tuple[MeasuredCandidateRefusal, ...],
-    ) -> MeasuredCandidateReadiness:
-        if not source_classification.strip() or len(set(refusals)) != len(refusals):
-            raise MeasuredCandidateError("non-ready classification is malformed")
-        if MeasuredCandidateRefusal.CANDIDATE_PUBLICATION_DISABLED not in refusals:
-            raise MeasuredCandidateError("non-ready state must block publication")
-        self = object.__new__(cls)
-        object.__setattr__(self, "source_classification", source_classification)
-        object.__setattr__(self, "refusals", refusals)
-        object.__setattr__(self, "input_contract", measured_candidate_input_contract())
-        object.__setattr__(self, "fingerprint", json_fingerprint(self._core()))
-        return self
-
-    def _core(self) -> dict[str, Any]:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "kind": READINESS_KIND,
-            "source_classification": self.source_classification,
-            "input_contract": self.input_contract.to_dict(),
-            "ready": False,
-            "score_available": False,
-            "candidate_authority": False,
-            "persistable_candidate": False,
-            "apply_authority": False,
-            "receipt_authority": False,
-            "refusals": [reason.value for reason in self.refusals],
-        }
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**self._core(), "fingerprint": self.fingerprint}
-
-
-def legacy_measured_candidate_readiness() -> MeasuredCandidateReadiness:
-    return MeasuredCandidateReadiness._not_ready(
-        "historical_legacy_non_admitted",
-        (
-            MeasuredCandidateRefusal.CAPTURE_NOT_ADMITTED,
-            MeasuredCandidateRefusal.DRIVER_CAPTURES_MISSING,
-            MeasuredCandidateRefusal.MEASURED_VALIDITY_BAND_MISSING,
-            MeasuredCandidateRefusal.DELAY_WALK_MISSING,
-            MeasuredCandidateRefusal.NORMAL_EVIDENCE_MISSING,
-            MeasuredCandidateRefusal.REVERSE_EVIDENCE_MISSING,
-            MeasuredCandidateRefusal.NULL_EVIDENCE_MISSING,
-            MeasuredCandidateRefusal.TOPOLOGY_GRAPH_PROOF_MISSING,
-            MeasuredCandidateRefusal.CANDIDATE_PUBLICATION_DISABLED,
-        ),
-    )
-
-
-def wave2_measured_candidate_readiness() -> MeasuredCandidateReadiness:
-    return MeasuredCandidateReadiness._not_ready(
-        "wave2_shared_boundary_pending",
-        (
-            MeasuredCandidateRefusal.SHARED_PERSISTED_ADMISSION_UNAVAILABLE,
-            MeasuredCandidateRefusal.CURRENT_PROTECTION_PROOF_MISSING,
-            MeasuredCandidateRefusal.TOPOLOGY_GRAPH_PROOF_MISSING,
-            MeasuredCandidateRefusal.CANDIDATE_PUBLICATION_DISABLED,
-        ),
-    )
 
 
 def _refuse(code: str, detail: str) -> NoReturn:

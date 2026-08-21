@@ -647,7 +647,9 @@ second) — see §14.
 was never validated against the wizard's own envelope-derivation guard.**
 `_assert_crossover_driver_action` / `_assert_crossover_reference_axis_level_action`
 (`jasper/web/correction_setup.py`) re-derive "is this the server-owned next
-step" from `build_crossover_envelope` a second time, independent of
+step" from the envelope builder a second time (`build_crossover_envelope_v2`;
+at the time of this run it was reached through a `build_crossover_envelope`
+shim that has since been deleted), independent of
 `authorize_begin`'s `repeat_admission` reservation — built for the v2 order
 (guard → reserve → capture). Protocol v3 flips that order (reserve → phone
 arms → guard): by the time `on_armed` calls the guard, the SAME attempt's
@@ -955,21 +957,24 @@ mode for a tool whose entire job is a trustworthy result.
   `assert_alignment_confident` itself still has **exactly one call site in the tree**
   ([`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py), added
   by #1384) and that site is **not reachable from any live household flow
-  today**: it runs only when `ambient_duration_s` is supplied, and all **three**
-  suppliers are dead, each for a different reason:
+  today**: it runs only when `ambient_duration_s` is supplied, and **both**
+  remaining suppliers are dead, each for a different reason:
   1. the commissioning capture producer — `RawCaptureTransport` is a `TypeAlias`
      for an async callable, and no production code ever supplies one (the
      service's `capture_next` / `capture_post_apply` entry points have no
      production caller, and non-test construction passes `None`);
-  2. `legacy_replay.replay_legacy_current_winner` — no production caller;
-  3. the web capture chain `correction_crossover_backend.record_driver_capture`
+  2. the web capture chain `correction_crossover_backend.record_driver_capture`
      → `web_measurement.record_driver_capture` →
      `commissioning_capture.record_driver_acoustic_capture` — dead because #1688
      deleted the legacy crossover flow that called it, leaving the `/crossover/`
      route set with no driver-capture upload route.
 
-  (3) is the one to watch: **a future maintainer re-adding a driver-capture POST
-  route arms this gate immediately**, with no change to either other supplier.
+  There was a third supplier, `legacy_replay.replay_legacy_current_winner`; it
+  was deleted with the rest of the `legacy_replay` island, so it can no longer
+  arm the gate at all.
+
+  (2) is the one to watch: **a future maintainer re-adding a driver-capture POST
+  route arms this gate immediately**, with no change to the other supplier.
   The dead surface is the whole `ambient_duration_s` branch, not just the gate
   call, so #1384's signal-located repeat capture and band-SNR admission are
   equally unreached. #1384 built the seam; it did not put the gate on a

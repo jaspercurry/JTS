@@ -872,18 +872,16 @@ class CrossoverLevelLease:
         """Whether ``target_id`` is currently showing a pre-flight refusal.
 
         W2.4 (hardware run 20, 2026-07-17, jts3): the between-set restart's
-        (``invalidate_comparison_context``'s) reader of the same TWO stored
-        facts -- ``self._solve_refusal`` and the
-        ``_correction_budget_exhausted`` write count -- that the envelope's
-        refusal rendering
-        (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
-        independently re-derives from ``level_match_snapshot()``'s
-        ``solve_refusal`` / ``solve_correction.exhausted`` projections of
-        those same facts. The two readers are separate code paths, so their
-        agreement is pinned by a parity regression
-        (``test_refusal_pending_predicate_parity_with_envelope_rendering``
-        in tests/test_correction_crossover_backend_level_solve.py) across
-        the representative states rather than claimed structurally. True on
+        (``invalidate_comparison_context``'s) reader of TWO stored facts --
+        ``self._solve_refusal`` and the ``_correction_budget_exhausted``
+        write count. It is now the SOLE reader of them: an envelope-side
+        re-derivation from ``level_match_snapshot()``'s ``solve_refusal`` /
+        ``solve_correction.exhausted`` projections used to exist, was never
+        called by any production path, and was deleted along with the parity
+        regression that pinned the two readers in agreement. Its verdict
+        across the representative states is still pinned, by
+        ``test_refusal_pending_predicate_across_the_three_stored_states``
+        in tests/test_correction_crossover_backend_level_solve.py. True on
         EITHER of the two ways a refusal reaches the household:
 
         * the bounded correction budget is exhausted
@@ -1008,15 +1006,11 @@ class CrossoverLevelLease:
         SAME endpoint/body (``_handle_crossover_relay_level_match``'s
         non-continuing branch, the single production caller passing this
         flag). The two are distinguished by STORED STATE, never by request
-        shape, via ``_target_refusal_pending``, which reads the same TWO
+        shape, via ``_target_refusal_pending``, the sole reader of the TWO
         stored facts (``self._solve_refusal`` and the
-        ``_correction_budget_exhausted`` write count) that the envelope's
-        refusal rendering
-        (``jasper.active_speaker.crossover_envelope._active_level_solve_refusal``)
-        independently re-derives from ``level_match_snapshot()``; the two
-        readers' agreement about "was a refusal shown" is pinned by a
-        parity regression
-        (``test_refusal_pending_predicate_parity_with_envelope_rendering``):
+        ``_correction_budget_exhausted`` write count); its verdict about
+        "was a refusal shown" is pinned by
+        ``test_refusal_pending_predicate_across_the_three_stored_states``:
 
         * a target with NO pre-flight refusal pending keeps its signed
           adjustment, write count, measured gain/peak, and mic identity

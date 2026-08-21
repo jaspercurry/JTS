@@ -2910,23 +2910,15 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         sess.noise_floor_db = noise_floor_db
         sess.room_authority_binding = authority_binding
 
-        if sess.browser_audio_report.get("failed") is True:
-            issue_codes = [
-                issue.get("code")
-                for issue in sess.browser_audio_report.get("issues", [])
-                if isinstance(issue, dict) and issue.get("severity") == "fail"
-            ]
-            log_event(
-                logger,
-                "correction.start_rejected",
-                reason="browser_audio_path_failed",
-                issue_codes=",".join(str(code) for code in issue_codes if code),
-                level=logging.WARNING,
-            )
-            raise ValueError(
-                sess.browser_audio_report.get("summary")
-                or "browser audio path is not safe for measurement"
-            )
+        # A second copy of the browser-audio refusal used to sit here, re-reading
+        # ``sess.browser_audio_report``. It could not fire: MeasurementSession
+        # builds that report by calling the same pure
+        # ``browser_audio.assess_browser_audio_path`` with the same three inputs
+        # -- this ``input_device``, ``mic_calibration is not None``, and
+        # ``SessionConfig.sample_rate`` (48000), which equals
+        # ``REQUIRED_SAMPLE_RATE`` -- and neither input is reassigned between
+        # the two points. So it was always the verdict the block above had
+        # already raised on.
 
         from jasper.sound.graph_carrier import CarrierCannotHostEq
 
@@ -5377,15 +5369,17 @@ def _assert_crossover_reference_axis_level_action(
     fixed-axis LEVEL CHECK holds no ``repeat_admission`` reservation of its
     own — its handler (`_handle_crossover_relay_level_match`) only ever calls
     ``repeat_admission.invalidate()``, never ``reserve()`` — so there is no
-    in-flight reservation for this guard's ``build_crossover_envelope``
+    in-flight reservation for this guard's ``build_crossover_envelope_v2``
     recompute to misread as orphaned.
     """
 
-    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
 
     action_status = dict(status)
     action_status["relay"] = None
-    expected_action = build_crossover_envelope(action_status).get("next_action")
+    expected_action = build_crossover_envelope_v2(action_status).get("next_action")
     expected_body = (
         expected_action.get("body")
         if isinstance(expected_action, Mapping)

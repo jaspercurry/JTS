@@ -76,7 +76,6 @@ INT16_PEAK = 32767
 DEFAULT_APLAY_BINARY = "aplay"
 DEFAULT_AUDIO_BACKEND = "wav_artifact"
 APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
-APLAY_BINARY_ENV = "JASPER_APLAY"
 APLAY_TIMEOUT_PAD_SEC = 1.0
 # Every daemon-owned lane an audio-lab tone must NEVER be injected into. These
 # are sinks and readers in the RUNTIME graph, not test-tone injection points:
@@ -269,11 +268,21 @@ def tone_backend_status(
 ) -> dict[str, Any]:
     """Return the current active-speaker tone backend boundary.
 
-    The artifact backend is always available and never emits audio. The aplay
-    backend is explicit audio-lab mode: it is considered audio-enabled only
-    when the operator selects it and points it at a dedicated lab test PCM.
+    The artifact backend is always available and never emits audio.
     Daemon-owned CamillaDSP / outputd lanes are intentionally forbidden: they
     are sinks/readers in the runtime graph, not test-tone injection points.
+
+    **``audio_enabled`` is structurally ``False``.** Selecting the aplay
+    audio-lab backend used to be reported as audio-enabled, but no production
+    path has ever consulted that selection: all four ``start_tone_playback``
+    call sites pass ``backend=None``, which always resolves to
+    :class:`WavArtifactTonePlaybackBackend`. The one function that turned this
+    status into an :class:`AplayTonePlaybackBackend` (``enabled_audio_backend``)
+    had zero callers and was deleted. So an operator who set the knob was told
+    "audio_enabled" while the tone still rendered silently to a WAV --- this
+    reports a ``tone_backend_not_wired`` blocker instead of that quiet lie. The
+    operator-typed value is still validated (unknown backend, missing test PCM,
+    forbidden daemon lane) so a stale or wrong setting is named, not swallowed.
     """
 
     source = env if env is not None else os.environ
@@ -320,13 +329,17 @@ def tone_backend_status(
                 f"dedicated audio-lab test PCM",
             )
         )
-    audio_enabled = audio_backend_requested and bool(pcm) and forbidden_token is None
-    if issues:
-        status = "blocked"
-    elif audio_enabled:
-        status = "audio_enabled"
-    else:
-        status = "artifact_only"
+    if audio_backend_requested and not issues:
+        issues.append(
+            _issue(
+                "blocker",
+                "tone_backend_not_wired",
+                f"{AUDIO_LAB_TONE_BACKEND_ENV}=aplay selects a backend nothing "
+                f"wires; tones still render to a WAV artifact. Unset it.",
+            )
+        )
+    audio_enabled = False
+    status = "blocked" if issues else "artifact_only"
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": TONE_BACKEND_STATUS_KIND,
@@ -346,38 +359,11 @@ def tone_backend_status(
         "test_pcm": pcm or None,
         "issues": issues,
         "next_step": (
-            "Audio-lab tone playback is explicitly enabled."
-            if audio_enabled
-            else (
-                "Artifact verification is available; audio-lab playback "
-                f"requires {AUDIO_LAB_TONE_BACKEND_ENV}=aplay and "
-                f"{AUDIO_LAB_TEST_PCM_ENV}."
-            )
+            "Artifact verification is the only tone path; no backend emits "
+            f"audio. Unset {AUDIO_LAB_TONE_BACKEND_ENV} / "
+            f"{AUDIO_LAB_TEST_PCM_ENV} if either is set."
         ),
     }
-
-
-def enabled_audio_backend(
-    *,
-    env: dict[str, str] | None = None,
-    runner: AplayRunner = _aplay_runner,
-    artifact_dir: str | Path | None = None,
-    default_pcm: str | None = None,
-) -> "AplayTonePlaybackBackend | None":
-    """Return the configured audio backend, or ``None`` when not enabled."""
-
-    status = tone_backend_status(
-        env,
-        default_pcm=default_pcm,
-    )
-    if not status["audio_enabled"] or status.get("audio_backend") != APLAY_AUDIO_BACKEND:
-        return None
-    return AplayTonePlaybackBackend(
-        pcm=str(status["test_pcm"]),
-        runner=runner,
-        artifact_dir=artifact_dir,
-        aplay_binary=(env or os.environ).get(APLAY_BINARY_ENV) or DEFAULT_APLAY_BINARY,
-    )
 
 
 def _target_output_index(plan: dict[str, Any]) -> int | None:

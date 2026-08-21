@@ -508,7 +508,7 @@ def test_tone_backend_status_requires_explicit_audio_lab_pcm() -> None:
     blocked = tone_backend_status({
         "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
     })
-    enabled = tone_backend_status({
+    selected = tone_backend_status({
         "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
         "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
     })
@@ -519,12 +519,34 @@ def test_tone_backend_status_requires_explicit_audio_lab_pcm() -> None:
     assert "test_pcm_required" in {
         issue["code"] for issue in blocked["issues"]
     }
-    assert enabled["status"] == "audio_enabled"
-    assert enabled["audio_enabled"] is True
-    assert enabled["test_pcm"] == "hw:Active"
-    assert enabled["tone_backend_env"] == "JASPER_AUDIO_LAB_TONE_BACKEND"
-    assert enabled["test_pcm_env"] == "JASPER_AUDIO_LAB_TEST_PCM"
-    assert "allow_audio_env" not in enabled
+    # The operator-typed value is still parsed and echoed back...
+    assert selected["test_pcm"] == "hw:Active"
+    assert selected["tone_backend_env"] == "JASPER_AUDIO_LAB_TONE_BACKEND"
+    assert selected["test_pcm_env"] == "JASPER_AUDIO_LAB_TEST_PCM"
+    assert "allow_audio_env" not in selected
+
+
+def test_a_well_formed_aplay_selection_is_reported_as_not_wired() -> None:
+    """The honesty half: selecting aplay must never report audio_enabled.
+
+    No production path consults this selection -- every ``start_tone_playback``
+    call site passes ``backend=None``, so the tone renders to a WAV artifact
+    whatever the knob says. Reporting ``audio_enabled: true`` told the operator
+    the opposite; a named blocker tells the truth.
+    """
+
+    selected = tone_backend_status({
+        "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
+        "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
+    })
+
+    assert selected["status"] == "blocked"
+    assert selected["audio_enabled"] is False
+    assert selected["tone_playback_implemented"] is False
+    assert selected["audio_backend"] is None
+    assert "tone_backend_not_wired" in {
+        issue["code"] for issue in selected["issues"]
+    }
 
 
 def test_tone_backend_status_blocks_forbidden_main_lane_test_pcm() -> None:
@@ -541,15 +563,22 @@ def test_tone_backend_status_blocks_forbidden_main_lane_test_pcm() -> None:
 
 
 def test_tone_backend_status_allows_dedicated_active_test_pcm() -> None:
-    enabled = tone_backend_status({
+    """A dedicated lab PCM is not the forbidden-lane failure.
+
+    It is still blocked -- nothing wires an audio backend -- but for the
+    not-wired reason, never for targeting a daemon-owned lane.
+    """
+
+    selected = tone_backend_status({
         "JASPER_AUDIO_LAB_TONE_BACKEND": "aplay",
         "JASPER_AUDIO_LAB_TEST_PCM": "hw:Active",
     })
 
-    assert enabled["status"] == "audio_enabled"
-    assert enabled["audio_enabled"] is True
     assert "test_pcm_forbidden_main_lane" not in {
-        issue["code"] for issue in enabled["issues"]
+        issue["code"] for issue in selected["issues"]
+    }
+    assert {issue["code"] for issue in selected["issues"]} == {
+        "tone_backend_not_wired"
     }
 
 

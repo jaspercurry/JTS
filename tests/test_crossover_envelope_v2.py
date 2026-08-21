@@ -178,12 +178,19 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
     """W5b retired the ``JASPER_CROSSOVER_FLOW`` selector and the legacy flow —
     v2 is the only flow now. A box carrying a stale
     ``JASPER_CROSSOVER_FLOW=legacy`` from before the selector was deleted must
-    still serve the v2 (schema 8) envelope through the ``build_crossover_envelope``
-    entry point, not crash or fall back to a deleted legacy path."""
-    from jasper.active_speaker.crossover_envelope import build_crossover_envelope
+    still be served the v2 envelope, not crash or fall back to a deleted legacy
+    path. Nothing reads that variable any more, so setting it must be inert.
+
+    This used to run through a ``build_crossover_envelope`` compatibility
+    dispatcher in ``crossover_envelope``. That dispatcher only forwarded to v2
+    and has been deleted; the web flow's entry point is the logged wrapper
+    below, so the contract is pinned there instead."""
+    from jasper.active_speaker.crossover_envelope import (
+        build_crossover_envelope_logged,
+    )
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
-    env = build_crossover_envelope(_status(phase="check"))
+    env = build_crossover_envelope_logged(_status(phase="check"))
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 14
     assert env["flow"] == "v2"
 

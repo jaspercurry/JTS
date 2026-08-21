@@ -34,14 +34,10 @@ from jasper.active_speaker.measured_candidate import (
     MeasuredCandidateError,
     MeasuredCandidateEvaluationError,
     MeasuredCandidateInputContract,
-    MeasuredCandidateReadiness,
-    MeasuredCandidateRefusal,
     MeasuredElectricalCandidate,
     _level,
     evaluate_measured_candidate,
-    legacy_measured_candidate_readiness,
     measured_candidate_input_contract,
-    wave2_measured_candidate_readiness,
 )
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
@@ -62,17 +58,6 @@ from tests.test_active_speaker_commissioning_evidence_store import (
 )
 
 
-def test_wave2_states_remain_non_authoritative() -> None:
-    legacy = legacy_measured_candidate_readiness().to_dict()
-    wave2 = wave2_measured_candidate_readiness().to_dict()
-    assert legacy["ready"] is wave2["ready"] is False
-    assert legacy["candidate_authority"] is wave2["candidate_authority"] is False
-    assert MeasuredCandidateRefusal.CAPTURE_NOT_ADMITTED.value in legacy["refusals"]
-    assert wave2["refusals"][-1] == (
-        MeasuredCandidateRefusal.CANDIDATE_PUBLICATION_DISABLED.value
-    )
-
-
 def test_input_contract_and_factories_are_pinned() -> None:
     contract = measured_candidate_input_contract().to_dict()
     assert contract["stationary_capture_count_per_target"] == 3
@@ -81,8 +66,6 @@ def test_input_contract_and_factories_are_pinned() -> None:
     assert contract["candidate_output_enabled"] is False
     with pytest.raises(TypeError):
         MeasuredCandidateInputContract()
-    with pytest.raises(TypeError):
-        MeasuredCandidateReadiness()
     with pytest.raises(TypeError):
         MeasuredElectricalCandidate()
 
