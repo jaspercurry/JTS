@@ -21,6 +21,15 @@ the microphone taps to advance; this is the lab-arm path only, and it is opt-in
 
     poll status -> power preflight -> move -> settle -> position-ready
 
+**A walk ends when its session does.** The same poll carries the session's own
+``relay.status``, and the three terminal values (:data:`SESSION_ENDED_STATUSES`)
+are the walk's cue to stop: ``complete`` is a clean finish, ``stopped`` is
+:data:`EXIT_SESSION_STOPPED`, ``failed`` carries the session's own error into
+:data:`EXIT_SESSION_FAILED`. A terminal status only counts once this walk has
+seen its session LIVE, because the wizard keeps one relay slot and a walk is
+launched before its session opens -- so the first polls of a round read the
+PREVIOUS round's outcome.
+
 **The safety invariants, held here rather than left to an operator's attention.**
 Each one is a test in ``tests/test_arm_walk.py``:
 
@@ -112,7 +121,9 @@ DEFAULT_IDLE_CEILING_S = 1200.0
 
 #: In flight, nothing pending, nothing released for this long. The signature of
 #: a REJECTED capture, which renders a human "Try again" that no unattended run
-#: can press (issue #2506). Named rather than waited out.
+#: can press (issue #2506). Named rather than waited out. "In flight" is the
+#: session's own published status, not merely the presence of a relay block --
+#: see :func:`poll_from_status`.
 DEFAULT_STUCK_ALARM_S = 300.0
 
 #: The status endpoint unreadable for this long WITHOUT a single good read. A
@@ -120,6 +131,14 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: a 403, or a stopped wizard never clears and ends here by name. Short, because
 #: none of those get better by waiting and every one of them is a typo away.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
+
+#: The ``relay.status`` values that mean the session is OVER — the wizard's own
+#: three terminal arms (``_run_relay_capture``'s ``_run``). Every other value,
+#: INCLUDING one this module does not recognise, reads as in flight: ending a
+#: walk early strands a round, while waiting one more poll costs one poll, so
+#: the unknown case fails toward waiting. Pinned against the wizard's own
+#: in-flight set by ``tests/test_arm_walk.py``.
+SESSION_ENDED_STATUSES = frozenset({"complete", "stopped", "failed"})
 
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
 DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
@@ -163,6 +182,12 @@ EXIT_RELEASE_REJECTED = 13
 #: The status endpoint could not be read for a whole
 #: :data:`DEFAULT_UNREADABLE_CEILING_S`. Usually the wrong ``--hostname``.
 EXIT_STATUS_UNREACHABLE = 14
+#: The session this walk was serving was STOPPED — somebody hit Stop, or the
+#: host tore it down. Not :data:`EXIT_OK`, because a stopped session measured
+#: fewer positions than it planned and a caller that banked on a zero would
+#: bank a partial round; not :data:`EXIT_SESSION_FAILED`, because nothing
+#: failed and there is no error to report.
+EXIT_SESSION_STOPPED = 15
 
 #: The signals that stop a walk THROUGH its park rather than around it, and
 #: the shell's own base for "ended by this signal". SIGHUP is the remote
@@ -195,6 +220,7 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_REFUSED: "refused",
     EXIT_RELEASE_REJECTED: "release_rejected",
     EXIT_STATUS_UNREACHABLE: "status_unreachable",
+    EXIT_SESSION_STOPPED: "session_stopped",
     EXIT_HANGUP_PARKED: "hangup_parked",
     EXIT_INTERRUPTED_PARKED: "interrupted_parked",
     EXIT_TERMINATED_PARKED: "terminated_parked",
@@ -239,8 +265,10 @@ class Poll:
 
     ``failed_error`` is the session's OWN error string when it reported
     ``relay.status == "failed"``. It rides the same payload the pending does, so
-    reading it turns a dead session into an immediate, correctly attributed exit
-    instead of a wait for :data:`DEFAULT_STUCK_ALARM_S` and a guess.
+    reading it turns a dead session into an immediate exit instead of a wait for
+    :data:`DEFAULT_STUCK_ALARM_S` and a guess. Which SESSION it is attributed to
+    is the walk's own to decide, not this reader's -- see
+    :meth:`ArmWalk._session_ended`.
 
     ``readable`` is whether the envelope was READ at all, and it is separate
     from ``in_flight`` because conflating them mis-attributes the single most
@@ -251,12 +279,20 @@ class Poll:
     unreadable poll still reports ``in_flight=True`` so a transient blip cannot
     trip the idle ceiling; it is :data:`WalkConfig.unreadable_ceiling_s` that
     ends an unbroken run of them, by its own name.
+
+    ``ended`` is the TERMINAL ``relay.status`` a finished session published
+    (:data:`SESSION_ENDED_STATUSES`), or empty. It is a third state rather than
+    the negation of ``in_flight``: no relay block at all is "no session has
+    opened yet", which is what a walk launched ahead of its session sees and
+    must keep waiting through, while a terminal block is "the session this walk
+    was serving is over" and is the walk's own cue to stop.
     """
 
     pending: Pending | None
     in_flight: bool
     failed_error: str | None = None
     readable: bool = True
+    ended: str = ""
 
 
 class Mover(Protocol):
@@ -612,6 +648,7 @@ class ArmWalk:
         self._clock = clock
         self._sleep = sleep
         self._parked = False
+        self._saw_session = False
         self._served: set[tuple[int, int]] = set()
         self._served_angles: set[int] = set()
         self._releases: list[tuple[int, int, float]] = []
@@ -645,6 +682,18 @@ class ArmWalk:
 
     # -- the loop ----------------------------------------------------------- #
 
+    def _poll(self) -> Poll:
+        """One read of the envelope, and the ``_saw_session`` latch.
+
+        EVERY read goes through here so the latch cannot miss one. An UNREADABLE
+        poll proves nothing about a session and therefore never opens it -- the
+        same rule that keeps a 403 from being diagnosed as a stuck capture.
+        """
+        poll = self._session.poll()
+        if poll.in_flight and poll.readable:
+            self._saw_session = True
+        return poll
+
     def _walk(self) -> int:
         cfg = self._config
         self._trail.emit(
@@ -665,11 +714,7 @@ class ArmWalk:
             return EXIT_POWER_VOID
         self._trail.emit("start_offset", offset_deg=self._mover.offset_deg())
 
-        first = self._session.poll()
-        if first.failed_error is not None:
-            self._trail.emit("session_failed", level=logging.ERROR,
-                             error=first.failed_error)
-            return EXIT_SESSION_FAILED
+        first = self._poll()
         staged = self._staged_walk_check(first)
         if staged is not None:
             return staged
@@ -678,11 +723,9 @@ class ArmWalk:
         idle_since = last_progress = now
         unreadable_since: float | None = None if first.readable else now
         while True:
-            poll = self._session.poll()
-            if poll.failed_error is not None:
-                self._trail.emit("session_failed", level=logging.ERROR,
-                                 error=poll.failed_error)
-                return EXIT_SESSION_FAILED
+            poll = self._poll()
+            if poll.ended and self._saw_session:
+                return self._session_ended(poll)
 
             if poll.readable:
                 unreadable_since = None
@@ -732,8 +775,9 @@ class ArmWalk:
                     released=len(self._served),
                     detail=(
                         "the session is in flight, nothing is pending, and "
-                        "nothing has been released -- a rejected capture is "
-                        "probably waiting on a human (#2506)"
+                        "nothing has been released -- either a rejected "
+                        "capture is waiting on a human (#2506), or a session "
+                        "went quiet without publishing a terminal status"
                     ),
                 )
                 return EXIT_STUCK
@@ -867,6 +911,42 @@ class ArmWalk:
         )
         return EXIT_OK if status == 200 else EXIT_COMPLETE_FAILED
 
+    def _session_ended(self, poll: Poll) -> int:
+        """The session published a terminal status. Its verdict becomes ours.
+
+        Reached only once ``_saw_session`` -- the walk has read at least one
+        LIVE, readable poll -- and that latch is load-bearing rather than
+        defensive. The wizard keeps ONE relay slot, and it keeps the FINISHED
+        session's block in it, because that block is what the status page
+        renders the outcome from. A walk is launched BEFORE its session opens
+        (the staged-walk check needs a not-yet-open session to answer), so the
+        first polls of round N+1 read round N's terminal block. Without the
+        latch every round after the first would end on the previous round's
+        outcome before its own session existed -- and a ``failed`` one would be
+        reported with the PREVIOUS round's error, the same false attribution
+        ``readable`` exists to prevent.
+
+        The three terminal statuses are three verdicts. ``failed`` carries the
+        session's OWN error, so it is reported rather than summarised. A
+        ``stopped`` session is not :data:`EXIT_OK`: it measured fewer positions
+        than it planned, and a caller that banks on a zero would bank a partial
+        round. ``complete`` returns cleanly and leaves the last word to
+        :meth:`_final_code`, whose ``--expect-angles`` check is what catches a
+        session that finished without ever asking for a stated angle.
+        """
+        if poll.failed_error is not None:
+            self._trail.emit("session_failed", level=logging.ERROR,
+                             error=poll.failed_error)
+            return EXIT_SESSION_FAILED
+        stopped = poll.ended == "stopped"
+        self._trail.emit(
+            "session_ended",
+            level=logging.ERROR if stopped else logging.INFO,
+            status=poll.ended,
+            released=len(self._served),
+        )
+        return EXIT_SESSION_STOPPED if stopped else EXIT_OK
+
     # -- the exits ---------------------------------------------------------- #
 
     def _final_code(self, code: int) -> int:
@@ -967,16 +1047,28 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     a transient read failure cannot be mistaken for "the session ended", and
     ``readable=False`` so an unbroken run of them is named for what it is rather
     than diagnosed as a stuck capture.
+
+    **A relay block is not by itself a live session.** The wizard keeps the
+    finished session's block in its single relay slot -- that block IS what the
+    status page renders the outcome from -- so a terminal ``status`` has to be
+    read, not merely the block's presence. Reading only ``"failed"`` (which this
+    did) left ``"complete"`` and ``"stopped"`` looking exactly like a live
+    session with nothing pending, which is the shape :data:`EXIT_STUCK`
+    diagnoses: on 2026-08-21 a jts3 stage-1 measure round accepted all eight of
+    its captures, closed cleanly, and was then reported as a stuck capture 300 s
+    later because the walk had no way to see the close.
     """
     if status is None:
         return Poll(None, True, None, readable=False)
     relay = status.get("relay")
     if not isinstance(relay, Mapping):
         return Poll(None, False, None)
+    state = str(relay.get("status") or "")
     failed = None
-    if str(relay.get("status") or "") == "failed":
+    if state == "failed":
         failed = str(relay.get("error") or "(the session supplied no error)")
-    return Poll(pending_from_relay(relay), True, failed)
+    ended = state if state in SESSION_ENDED_STATUSES else ""
+    return Poll(pending_from_relay(relay), not ended, failed, ended=ended)
 
 
 def staged_walk_pending() -> bool:
@@ -1014,6 +1106,7 @@ __all__: Sequence[str] = (
     "EXIT_POWER_VOID",
     "EXIT_REFUSED",
     "EXIT_SESSION_FAILED",
+    "EXIT_SESSION_STOPPED",
     "EXIT_SETTLE_FLOOR",
     "EXIT_STUCK",
     "EXIT_TERMINATED_PARKED",
@@ -1022,6 +1115,7 @@ __all__: Sequence[str] = (
     "PARK_ON_SIGNALS",
     "PARK_SETTLE_S",
     "PARK_TOLERANCE_DEG",
+    "SESSION_ENDED_STATUSES",
     "SETTLE_FLOOR_S",
     "SIGNAL_EXIT_BASE",
     "Mover",

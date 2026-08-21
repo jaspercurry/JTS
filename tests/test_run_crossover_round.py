@@ -717,7 +717,7 @@ def test_an_ssh_transport_failure_is_not_reported_as_the_arms_fault(
 ):
     """255 is ssh's code, and the harness cannot produce it.
 
-    Its exit codes are 0-14 plus 128+signum, so within this runner 255 is
+    Its exit codes are 0-15 plus 128+signum, so within this runner 255 is
     unambiguously the link failing. Calling that ``walk_failed`` on the line an
     operator reads would send them to the rig to look at an arm that never
     misbehaved.

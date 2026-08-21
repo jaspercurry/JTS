@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import inspect
 import io
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -164,6 +166,39 @@ _QUIET = aw.Poll(None, False, None)
 _IN_FLIGHT_QUIET = aw.Poll(None, True, None)
 #: What an unreachable, 403ing, or non-JSON status endpoint reads as.
 _UNREADABLE = aw.Poll(None, True, None, readable=False)
+#: The three terminal blocks a finished session leaves in the relay slot, in
+#: the shape ``poll_from_status`` really mints them (``in_flight`` is FALSE --
+#: the block is the outcome the status page renders, not a live session).
+_COMPLETE = aw.Poll(None, False, None, ended="complete")
+_STOPPED = aw.Poll(None, False, None, ended="stopped")
+
+
+def _failed(error: str = "the fit refused: level too low") -> aw.Poll:
+    return aw.Poll(None, False, error, ended="failed")
+
+
+class LiveThen:
+    """One LIVE poll, then the given poll forever.
+
+    A terminal status is only this walk's verdict once the walk has read its
+    session live, so a double that answers terminal from the first poll is
+    replaying the PREVIOUS round's outcome, not this walk's session. Every test
+    about a session ENDING therefore has to let it begin.
+    """
+
+    def __init__(self, terminal: aw.Poll) -> None:
+        self._terminal = terminal
+        self._polls = 0
+
+    def poll(self) -> aw.Poll:
+        self._polls += 1
+        return _IN_FLIGHT_QUIET if self._polls == 1 else self._terminal
+
+    def release(self, index: int) -> tuple[int, str]:  # pragma: no cover
+        raise AssertionError("nothing is ever pending in this double")
+
+    def complete(self) -> tuple[int, str]:  # pragma: no cover
+        raise AssertionError("this double never completes a stage")
 
 
 def _walk(mover, session, *, clock=None, trail=None, walk_staged=None, **cfg):
@@ -381,8 +416,7 @@ def test_a_park_that_fails_is_reported_and_never_masks_the_verdict():
             raise OSError("the controller is gone")
 
     trail = _RecordingTrail()
-    session = FakeSession([aw.Poll(None, True, "the session failed")])
-    walk = _walk(Unparkable(), session, trail=trail)
+    walk = _walk(Unparkable(), LiveThen(_failed("the session failed")), trail=trail)
     assert walk.run() == aw.EXIT_SESSION_FAILED
     assert "OSError" in trail.error("parked")["error"]
 
@@ -696,9 +730,9 @@ def test_the_settle_actually_taken_is_what_the_trail_states():
 
 def test_a_failed_session_exits_immediately_with_its_own_error():
     mover = FakeMover()
-    session = FakeSession([aw.Poll(None, True, "the fit refused: level too low")])
     trail = _RecordingTrail()
-    assert _walk(mover, session, trail=trail).run() == aw.EXIT_SESSION_FAILED
+    walk = _walk(mover, LiveThen(_failed()), trail=trail, idle_ceiling_s=600.0)
+    assert walk.run() == aw.EXIT_SESSION_FAILED
     assert trail.error("session_failed")["error"] == "the fit refused: level too low"
     assert mover.moves == [0]
 
@@ -778,6 +812,130 @@ def test_a_retake_of_the_same_index_re_gates():
     session = FakeSession([_pending(4, 22, 1), _pending(4, 22, 2), _QUIET])
     assert _walk(FakeMover(), session, idle_ceiling_s=10.0).run() == aw.EXIT_OK
     assert session.released == [4, 4]
+
+
+# --------------------------------------------------------------------------- #
+# a walk ends when its session does
+# --------------------------------------------------------------------------- #
+
+
+def test_a_session_that_finished_is_never_diagnosed_as_a_stuck_capture():
+    """The 2026-08-21 jts3 incident, as a test.
+
+    A stage-1 measure round served every planned position, the session closed
+    itself cleanly, and the walk -- which read only the PRESENCE of the relay
+    block, never its terminal ``status`` -- called that "in flight with nothing
+    pending" and fired the stuck alarm 300 s later. rc 6 on a round that had
+    measured everything it was asked for, and the laptop runner skipped banking.
+    """
+    trail = _RecordingTrail()
+    session = FakeSession([_pending(1, 7), _COMPLETE])
+    walk = _walk(FakeMover(), session, trail=trail,
+                 stuck_alarm_s=10.0, idle_ceiling_s=600.0)
+    assert walk.run() == aw.EXIT_OK
+    assert not [row for row in trail.rows if row["event"] == "stuck"]
+    ended = trail.one("session_ended")
+    assert ended["status"] == "complete" and ended["released"] == 1
+
+
+def test_a_finished_session_ends_the_walk_rather_than_the_idle_ceiling():
+    """Waiting the ceiling out would reach the same rc twenty minutes later.
+
+    ``DEFAULT_IDLE_CEILING_S`` is 1200 s and the round runner is blocked on this
+    process, so "the session said it is done" has to be read, not waited out.
+    """
+    clock = FakeClock()
+    started = clock.now()
+    session = FakeSession([_pending(1, 7), _COMPLETE])
+    walk = _walk(FakeMover(), session, clock=clock, idle_ceiling_s=1200.0)
+    assert walk.run() == aw.EXIT_OK
+    # The settle (30 s) + the park settle (10 s) + a poll or two -- nowhere near
+    # the ceiling this used to have to reach.
+    assert clock.now() - started < 120.0
+
+
+def test_a_stopped_session_is_not_a_clean_zero():
+    """Stop measured fewer positions than the plan named; a zero would bank it."""
+    trail = _RecordingTrail()
+    session = FakeSession([_pending(1, 7), _STOPPED])
+    walk = _walk(FakeMover(), session, trail=trail, idle_ceiling_s=600.0)
+    assert walk.run() == aw.EXIT_SESSION_STOPPED
+    assert trail.error("session_ended")["status"] == "stopped"
+
+
+def test_a_session_that_ends_parks_the_arm_like_every_other_exit():
+    mover = FakeMover()
+    assert _walk(mover, FakeSession([_pending(1, 7), _COMPLETE]),
+                 idle_ceiling_s=600.0).run() == aw.EXIT_OK
+    assert mover.moves == [7, 0]
+
+
+@pytest.mark.parametrize("residue", [_COMPLETE, _STOPPED, _failed("last round")])
+def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
+    """The wizard keeps ONE relay slot, and a walk is launched BEFORE its
+    session opens -- so the first polls of round N+1 read round N's terminal
+    block. Ending on it would report the previous round's verdict as this
+    walk's, and after the first round of a night nothing would ever measure."""
+    class ResidueThenLive:
+        def __init__(self) -> None:
+            self._polls = 0
+            self.released: list[int] = []
+
+        def poll(self) -> aw.Poll:
+            self._polls += 1
+            # Two polls of the previous round's block, then this walk's own
+            # session opens and asks for a position.
+            return residue if self._polls <= 2 else _pending(1, 7)
+
+        def release(self, index: int) -> tuple[int, str]:
+            self.released.append(index)
+            return 200, '{"ok": true}'
+
+        def complete(self) -> tuple[int, str]:
+            return 200, '{"ok": true}'
+
+    session = ResidueThenLive()
+    # ``--complete-after`` only so the walk has an end; what is under test is
+    # that it reached the position at all instead of ending on the residue.
+    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0, complete_after=1)
+    assert walk.run() == aw.EXIT_OK
+    assert session.released == [1]
+
+
+def test_residue_does_not_skip_the_staged_walk_check_either():
+    """``in_flight`` gates that check too: a terminal block read as a live
+    session made the one pre-motion evidence unanswerable, so a walk the
+    session would refuse got moved for anyway."""
+    trail = _RecordingTrail()
+    walk = _walk(FakeMover(), FakeSession([_COMPLETE]), trail=trail,
+                 expect_angles=(7,), walk_staged=lambda: False)
+    assert walk.run() == aw.EXIT_WALK_NOT_STAGED
+    assert not [r for r in trail.rows if r["event"] == "staged_check_skipped"]
+
+
+def test_a_session_that_finished_without_the_stated_angles_still_fails():
+    """The end-of-session arm hands the last word to ``_final_code``."""
+    session = FakeSession([_pending(1, 7), _COMPLETE])
+    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0,
+                 expect_angles=(7, -7))
+    assert walk.run() == aw.EXIT_WALK_NOT_TAKEN
+
+
+def test_ending_on_the_sessions_own_close_never_posts_a_second_one():
+    """The two closes are exclusive, and neither can double-fire.
+
+    ``--complete-after`` is how a WALK closes a wired stage's held set, and it
+    returns the moment its POST is accepted. A session that closed ITSELF needs
+    no second close -- the slot dropped the completion signal with the gate, so
+    a POST could only 409 -- and the terminal block repeats to every later poll,
+    so reading it more than once has to stay a no-op. Here the walk is still
+    four releases short of its ``--complete-after`` when the session ends.
+    """
+    session = FakeSession([_pending(1, 7), _COMPLETE])
+    walk = _walk(FakeMover(), session, idle_ceiling_s=600.0, complete_after=5)
+    assert walk.run() == aw.EXIT_OK
+    assert session.completes == 0
+    assert session.released == [1]
 
 
 def test_a_failed_move_stops_the_walk():
@@ -927,6 +1085,50 @@ def test_an_unreadable_status_is_in_flight_not_finished():
 
 def test_no_relay_block_is_no_session():
     assert aw.poll_from_status({"relay": None}) == aw.Poll(None, False, None)
+
+
+@pytest.mark.parametrize("status", sorted(aw.SESSION_ENDED_STATUSES))
+def test_a_terminal_relay_block_is_not_a_live_session(status):
+    """The block the status page renders the OUTCOME from is not a session.
+
+    Reading its presence as "in flight" is what turned a finished round into
+    :data:`EXIT_STUCK` (2026-08-21, jts3).
+    """
+    poll = aw.poll_from_status({"relay": {"status": status}})
+    assert poll.ended == status
+    assert not poll.in_flight and poll.readable
+
+
+@pytest.mark.parametrize("status", [
+    "starting", "awaiting_phone", "committing", "finishing", "stopping",
+    "a_status_this_module_has_never_heard_of", "",
+])
+def test_anything_not_terminal_reads_as_in_flight(status):
+    """The fail-safe direction: a status this module cannot name keeps the walk
+    waiting. Ending early strands a round; one more poll costs one poll."""
+    poll = aw.poll_from_status({"relay": {"status": status}})
+    assert poll.in_flight and not poll.ended
+
+
+def test_the_walks_terminal_statuses_are_the_wizards_own_three():
+    """One vocabulary, two modules -- pinned rather than trusted.
+
+    ``jasper.web.correction_setup`` owns the relay slot: ``_run_relay_capture``
+    writes every terminal status a session can end on, and
+    ``_RELAY_IN_FLIGHT_STATUSES`` names the rest. A fourth terminal arm added
+    there without a matching name here would leave the walk reading a finished
+    session as live again -- which is exactly the defect this pins.
+    """
+    from jasper.web import correction_setup
+
+    terminal = set(re.findall(
+        r'"status": "([a-z_]+)"',
+        inspect.getsource(correction_setup._run_relay_capture),
+    ))
+    assert terminal == set(aw.SESSION_ENDED_STATUSES)
+    assert aw.SESSION_ENDED_STATUSES.isdisjoint(
+        correction_setup._RELAY_IN_FLIGHT_STATUSES
+    )
 
 
 # --------------------------------------------------------------------------- #
