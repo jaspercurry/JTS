@@ -548,6 +548,16 @@ def read_topology_prescription(
     untouched.  Otherwise a validated :class:`TopologyPrescription`, or
     :class:`TopologyPrescriptionRefused` naming which gate said no.
 
+    **The web boundary short-circuits before it gets here**, so in production
+    this function is only ever handed a real block.  That is not a redundancy
+    to tidy away in either direction: the boundary skips the call because the
+    five declarations below cost a context read each, and an ORDINARY round
+    must not depend on declarations it is not using; this function still
+    tolerates ``None`` because it is a public gate and a total one is cheaper
+    to reason about than one whose contract is "ask my caller".  Absence is
+    decided in exactly one place — at the request key — and both spellings
+    agree about what it means.
+
     **Every keyword is required and undefaulted**, on
     :func:`~.alignment_prescription.read_alignment_prescription`'s rule and for
     the sharpest version of it: unlike the delay gate, NONE of these rest on a
