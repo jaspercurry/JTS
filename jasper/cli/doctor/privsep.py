@@ -104,7 +104,16 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         unit_file="deploy/systemd/jasper-control.service",
         user="jasper-control",
         group="jasper",
-        supplementary_groups=("systemd-journal", "jasper-intsecrets"),
+        supplementary_groups=(
+            "systemd-journal",
+            "jasper-intsecrets",
+            # #2786: read access to /dev/shm/jts-ring/grouping.ring's shared
+            # header for /state's grouping `ring` block. Read-only in use; the
+            # unit file carries the full rationale. Not in `paths` below — that
+            # set is scoped to the group-`jasper` state trees this check
+            # reasons about, and /dev/shm is a different group entirely.
+            "jts-ring",
+        ),
         paths=(
             # Security gate: present-but-unreadable = CSRF gate silently off.
             "/var/lib/jasper/control_token",

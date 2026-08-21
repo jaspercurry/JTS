@@ -200,6 +200,15 @@ create_jasper_service_users() {
         # ring FILE mode comes from the shared spawn helper's umask, not a
         # group.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
+        # #2786 — jasper-control READS one ring header: /state's grouping
+        # `ring` block opens /dev/shm/jts-ring/grouping.ring O_RDONLY for its
+        # first 128 bytes. Unlike every other member here it never writes a
+        # ring. Same shape as the jasper-web line above: the RUNTIME grant is
+        # the unit's SupplementaryGroups=, and this passwd record serves the
+        # non-systemd consumers plus this file's convention that the -G lists
+        # match each unit. Takes effect on the daemon's next start, which the
+        # deploy performs.
+        usermod -aG jts-ring jasper-control 2>/dev/null || true
         # U3/P6d — shairport-sync writes the airplay lane's ring as its own
         # non-root user. Fresh boxes get the group at useradd time
         # (renderers.sh hard-lists it, which is safe because THIS function
@@ -211,7 +220,7 @@ create_jasper_service_users() {
             usermod -aG jts-ring shairport-sync 2>/dev/null || true
         fi
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync; bluealsa-aplay and the root correction-lane identities write rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the root correction-lane identities write rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

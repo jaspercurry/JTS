@@ -340,11 +340,17 @@ DROPPED = {
     "jasper-input": ("jasper-input", {"input"}),
     # 3b-2: control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no
-    # ALSA/input device. The one supplementary group is `systemd-journal` —
-    # the airplay_health and wifi_guardian /state cards read the journal.
-    # Deliberately NOT in jasper-secrets: it reads the active provider NAME from
-    # the (now keyless) voice_provider.env, never the keys (Phase 4a).
-    "jasper-control": ("jasper-control", {"systemd-journal", "jasper-intsecrets"}),
+    # ALSA/input device. `systemd-journal` — the airplay_health and
+    # wifi_guardian /state cards read the journal. `jts-ring` (#2786) — /state's
+    # grouping `ring` block reads the grouping ring's 128-byte shared header,
+    # which is 0660 root:jts-ring; control is the only member of that group that
+    # never WRITES a ring, and the unit file carries why no narrower grant
+    # exists. Deliberately NOT in jasper-secrets: it reads the active provider
+    # NAME from the (now keyless) voice_provider.env, never the keys (Phase 4a).
+    "jasper-control": (
+        "jasper-control",
+        {"systemd-journal", "jasper-intsecrets", "jts-ring"},
+    ),
     # 3b-3: web's NetworkManager writes (the /wifi/ wizard) are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), not a group. Its supplementary groups
     # are `audio` (ALSA correction_substream for active-speaker commissioning),

@@ -43,8 +43,10 @@ from __future__ import annotations
 import subprocess
 from typing import Any, Callable
 
+from ..ring_assets import RingFlowState, ring_flow_state
 from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
 from .effective_role import read_effective_role_status
+from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 from .reconcile import (
     SNAP_STREAM_ID,
     desired_snapfifo_path,
@@ -576,6 +578,55 @@ def derive_grouping_runtime(
     )
 
 
+def _read_grouping_ring_state() -> RingFlowState:
+    """Production reader for the ``ring`` block: the grouping ring's own header.
+
+    One read-only 128-byte read of a tmpfs file — no mmap, no ALSA open, no
+    lock — so polling it cannot perturb a live bond. Named rather than inlined
+    so the injectable parameter and the default it replaces have one shape.
+    """
+    return ring_flow_state(GROUPING_RING_FILE)
+
+
+def _ring_age_ms(age_ns: int | None) -> int | None:
+    """Nanosecond heartbeat age -> whole milliseconds, preserving "never"."""
+    return None if age_ns is None else age_ns // 1_000_000
+
+
+def _grouping_ring_signal(flow: RingFlowState) -> dict[str, Any]:
+    """Project one :class:`~jasper.ring_assets.RingFlowState` into the ``ring``
+    block. PURE.
+
+    The ingress transport's own health, which no unit state can see: every
+    snapcast unit reads ``active`` while the bonded endpoint's CamillaDSP has
+    stopped draining the ring, and since the pacing governor landed that failure
+    is quiet — the writer is held to roughly nominal instead of storming, so the
+    journal's drop volume no longer announces it.
+
+    ``state`` is the whole answer for an operator; the rest is the evidence
+    behind it. ``read_seq`` is the one that repays a second look: while ``state``
+    is ``reader_stalled`` nothing live is draining, so the WRITER is advancing
+    that cursor itself — one slot per dropped publish — and two polls bound the
+    drops between them. ``reader_age_ms`` already says how long the stall has
+    run, so the common question needs no differencing at all.
+
+    Ages are milliseconds (the unit the doctor's sibling alarm reports in);
+    ``None`` means that end has never stamped a heartbeat.
+    """
+    return {
+        "pcm": GROUPING_RING_PCM,
+        "path": GROUPING_RING_FILE,
+        "state": flow.state,
+        "detail": flow.detail,
+        "writer_age_ms": _ring_age_ms(flow.writer_age_ns),
+        "reader_age_ms": _ring_age_ms(flow.reader_age_ns),
+        "write_seq": flow.write_seq,
+        "read_seq": flow.read_seq,
+        "occupancy_slots": flow.occupancy_slots,
+        "writer_epoch": flow.writer_epoch,
+    }
+
+
 def _self_client_name() -> str:
     """This speaker's snapcast client name (snapclient reports the bare
     hostname). Total: any failure resolves to "" (the own-client check
@@ -596,6 +647,7 @@ def read_grouping_state(
     stream_clients_reader: Callable[[], Any] | None = None,
     local_outputd_reader: Callable[[], Any] | None = None,
     endpoint_status_reader: Callable[[], dict[str, Any]] | None = None,
+    ring_state_reader: Callable[[], RingFlowState] | None = None,
 ) -> dict[str, Any]:
     """Read the grouping config fresh from the SSOT file and return a
     JSON-able snapshot dict for ``/state`` and the dashboard.
@@ -628,9 +680,16 @@ def read_grouping_state(
     honestly shows ``degraded`` instead of a healthy-looking-but-silent
     bond.
 
-    ``unit_state_reader`` and ``tap_path_reader`` are injectable for tests;
-    production uses :func:`read_unit_active_states` and
-    :func:`active_leader_pipe_path`.
+    Also when ENABLED, a ``ring`` block reports the grouping-ingress
+    transport's own health (see :func:`_grouping_ring_signal`) — the layer
+    below the units, where a bonded endpoint can have every unit ``active``
+    and still be dropping audio because its CamillaDSP stopped draining the
+    ring. Gated the same way, so a solo snapshot gains no key and reads no
+    file.
+
+    ``unit_state_reader``, ``tap_path_reader`` and ``ring_state_reader`` are
+    injectable for tests; production uses :func:`read_unit_active_states`,
+    :func:`active_leader_pipe_path` and :func:`_read_grouping_ring_state`.
     """
     cfg = load_config(path)
     subwoofer_present = (
@@ -752,6 +811,18 @@ def read_grouping_state(
         provision = read_provision_status()
         if provision.get("state"):
             snapshot["provision"] = provision
+
+        # Grouping-ingress ring health (issue #2786). Gated on cfg.enabled like
+        # every block above, so a solo snapshot stays byte-for-byte what it was.
+        # Total by construction — ring_flow_state resolves every failure to a
+        # state — but wrapped anyway so this block can never be the thing that
+        # nulls the whole grouping section.
+        try:
+            snapshot["ring"] = _grouping_ring_signal(
+                (ring_state_reader or _read_grouping_ring_state)()
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            snapshot["ring"] = None
     return snapshot
 
 

@@ -281,7 +281,7 @@ wifi-lockout-risk change you could only happy-path test:
 | jasper-usbmic | `jasper-usbmic` | `audio` | **USB host mic (LANDED 2026-07-15)** | optional localhost-UDP-to-UAC2 relay; reads only group-shared USB-mic intent, writes only its private runtime status, and deliberately has no `input`/secret membership |
 | jasper-accessory-reconcile | root (oneshot) | `jasper` primary group | **accessory reconciler (LANDED 2026-06-26)** | reads BlueZ paired-device state, writes `/var/lib/jasper/accessory-mics.env`, and owns adapter unit enable/disable; `Group=jasper` gives access to the group-owned state dir while `CapabilityBoundingSet=` stays empty; kept as a narrow root oneshot rather than granting systemctl privilege to `jasper-input` or a wizard |
 | jasper-wiim-remote-mic | `jasper-input` | `bluetooth` | **accessory adapter (LANDED 2026-06-26)** | BlueZ D-Bus GATT client for WiiM Remote 2 voice reports; sends decoded PCM to localhost UDP; no filesystem writes |
-| jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, and `systemd-journal` for journal-based /state cards |
+| jasper-control | `jasper-control` | `systemd-journal`, `jasper-intsecrets`, `jts-ring` | **3b-2 + 4b (LANDED)** | a **polkit rule** (broker/supervisor `systemctl`/reboot + a root `jasper-doctor-json` oneshot for /system/diagnostics), fresh HA/Spotify reads via `jasper-intsecrets`, group-readable non-secret config it reads off disk, `systemd-journal` for journal-based /state cards, and `jts-ring` (#2786: `/state`'s grouping `ring` block reads the grouping ring's 128-byte shared header, which is `0660 root:jts-ring`). Control is the one member of `jts-ring` that never WRITES a ring — it opens `O_RDONLY` and reads a fixed 128 bytes, pinned by `tests/test_grouping_ring_observability.py`. The grant is wide-in-mechanism (the group's whole purpose is ring write) and there is no narrower one: a file's group is its only handle, the ring header cannot be separated from the audio payload at the filesystem layer, and unlike Ring A/B — whose fan-in and outputd owners publish what they read on their own STATUS surfaces — the grouping ring's two ends are snapclient and CamillaDSP, neither of which publishes anything to aggregate |
 | jasper-web | `jasper-web` | `audio`, `bluetooth`, `systemd-journal`, `jasper-secrets`, `jasper-intsecrets`, `jts-ring` | **3b-3 + 4a/4b (LANDED)** | the big one: a **polkit rule** for NetworkManager (the `/wifi/` wizard), `jasper-secrets`/`jasper-intsecrets` for wizard-owned secret compartments, `audio` (active-speaker commissioning tones write the same-path `correction_substream`), the `bluetooth` group (BlueZ Alias) + `systemd-journal` (`journalctl -k`), `jts-ring` (U3/P6c: `/dev/shm/jts-ring` write so wizard-spawned correction-lane `aplay` children can create the lane's SHM ring while the box has that lane armed; unarmed boxes — the fleet default — spawn on the aloop alias), group-writable `/etc/bluetooth` + `camilladsp/configs`; `CAP_NET_ADMIN` withheld and scan repair routed through a start-only root helper — **wifi-lockout** is the worst-case brick, so it was gated on failed-connect-rollback validation under the dropped user |
 
 **3b-1 (landed) — voice/mux/input.** The file model is deliberately minimal:
@@ -392,8 +392,9 @@ not-yet-created window. Pinned by `tests/test_systemd_hardening.py` (mux has no
 `tests/test_mux.py`.
 
 **3b-2 (LANDED) — control.** `jasper-control` drops to a non-root
-`jasper-control` user (primary group `jasper`, no supplementary groups —
-no ALSA/input, just TCP + a localhost CamillaDSP WebSocket) with
+`jasper-control` user (primary group `jasper`; no ALSA/input membership — just
+TCP, a localhost CamillaDSP WebSocket, and the read-only supplementary groups
+the table above enumerates) with
 `CapabilityBoundingSet=` (empty) + `SystemCallFilter=@system-service`. Two
 coupled artifacts make the drop work:
 

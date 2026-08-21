@@ -188,7 +188,22 @@ Increment 6 (per-follower calibration). What exists:
   reads `unobservable` and the overall verdict is `unknown` rather than
   pretending bytes flow proves lock. This is intentional: P2's rejoin gate can
   consume the shape now and tighten the one signal when a real lock source
-  exists.
+  exists. **Since #2786 an enabled snapshot also carries a `ring` block** — the
+  ingress transport one layer below the units, where every snapcast unit can
+  read `active` while the endpoint's CamillaDSP has stopped draining what
+  snapclient writes. One read-only 128-byte read of the ring's shared header
+  (`jasper.ring_assets.ring_flow_state`; never mmap, never an ALSA open, so
+  polling it cannot perturb a live bond) classifies it as `flowing` /
+  `priming` / `reader_stalled` / `idle` / `absent` / `unreadable`, with the two
+  heartbeat ages and the `write_seq`/`read_seq` cursor pair as evidence. The
+  `priming`-vs-`reader_stalled` split is the point: the S0 pacing governor
+  holds a stalled reader to roughly nominal, so it no longer separates itself
+  from a cold start by drop volume. While `reader_stalled`, `read_seq` is
+  advanced by the WRITER — one slot per dropped publish — so it is the drop
+  cursor the shared header has no counter for. Same solo gating as `runtime`:
+  no key, no file read. `jasper-doctor`'s `grouping ring device` check is the
+  paired surface, and it answers the different question of whether
+  `pcm.jts_ring_grouping` opens at all.
 - **`jasper/atomic_io.py`** — the single home for atomic text-file writes
   (`atomic_write_text(path, text, *, mode=0o644)`: same-dir tempfile →
   `chmod`-before-`os.replace`, parent created, RAISES on failure + cleans up
