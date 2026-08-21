@@ -2216,15 +2216,24 @@ def repin_composite_child_serials(
       household re-confirms, so a re-pinned speaker cannot ARM on trust.
 
       Those gates guard the next arm, not the graph a box is ALREADY playing,
-      and the runtime graph selector is identity-blind on purpose — it proves
-      a graph legal for the saved SHAPE, which a re-pin does not change. So an
-      armed box would otherwise keep playing through unconfirmed DACs, which
-      on a roleful topology is the full-range-into-a-tweeter hazard class. The
-      committing caller therefore parks the runtime and leaves it parked
-      (``runtime_convergence.park_and_commit_topology(stay_parked=True)``);
-      the arm ladder is the only way back, and its gates own the missing
-      evidence. This function is pure — it clears the evidence; parking is the
-      caller's half of the same promise.
+      so an armed box would otherwise keep playing through unconfirmed DACs —
+      on a roleful topology, the full-range-into-a-tweeter hazard class.
+      Silencing it is ONE promise kept in TWO halves, neither sufficient alone:
+
+      1. **Immediate**, same request:
+         ``runtime_convergence.park_and_commit_topology(stay_parked=True)``
+         skips graph selection and makes the park durable, so the effect lands
+         at the click.
+      2. **Durable**, every later pass:
+         ``runtime_contract.roleful_identity_confirmed`` gates the two
+         approved-active-runtime rungs of the graph selector. Without it the
+         park was LIVE-ONLY — the reconcile fired by that same request
+         re-selected the applied baseline, and audio returned at the next
+         ``jasper-camilla`` bounce, which every deploy and reboot performs.
+
+      The arm ladder is the way back, and its gates own the missing evidence.
+      This function is pure: it clears the evidence, and both halves above
+      belong to its callers.
     * ``clock_domain_evidence`` is dropped. The measurement is a property of
       one PAIR of crystals; two units that never ran together have unmeasured
       relative drift, and the composite contract is ``measured_sync_required``

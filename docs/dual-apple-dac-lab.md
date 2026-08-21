@@ -207,12 +207,14 @@ The first product-facing slice is intentionally non-audible:
   output index, never to a serial), clears `identity_verified` for the replaced
   unit's lanes, and drops the pair's drift evidence. The re-pin adds no
   verification of its own — it re-arms the existing ones. It also leaves the
-  speaker PARKED (`park_and_commit_topology(stay_parked=True)`): the runtime
-  graph selector is identity-blind by design, so an already-armed box would
-  otherwise keep playing through DACs nobody has re-confirmed. The arm ladder,
-  whose gates own the missing evidence, is the only way back to audio. A dongle
-  moved to a DIFFERENT port is not offered a re-pin — nothing then says which
-  unit owns which lanes.
+  speaker silent, in two halves: `park_and_commit_topology(stay_parked=True)`
+  parks it on the same request, and `roleful_identity_confirmed` gates the graph
+  selector's two approved-active-runtime rungs so no later reconcile, deploy, or
+  reboot can re-select the applied baseline. The arm ladder, whose gates own the
+  missing evidence, is the way back to audio. The same pair of halves fires when
+  a household marks a driver lane "not confirmed" by hand — the same doubt about
+  which driver hangs where, self-declared. A dongle moved to a DIFFERENT port is
+  not offered a re-pin at all: nothing then says which unit owns which lanes.
 - One DAC per speaker is disclosed, not enforced. When a saved speaker group's
   drivers land on two different child DACs, `evaluate_output_topology` reports a
   `speaker_group_spans_child_devices` warning naming the group and the children

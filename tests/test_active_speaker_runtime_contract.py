@@ -5010,7 +5010,7 @@ def test_safe_graph_refuses_an_approved_graph_while_roleful_identity_is_unconfir
             **kwargs,
         )
 
-    # Armed and confirmed: exactly as today, from both entries.
+    # Armed and confirmed: both entries keep their pre-#2814 selection.
     assert decide(verified, "verified-boot").status == "select_active_baseline"
     assert decide(
         verified, "verified-playing", current_config_path=baseline_path

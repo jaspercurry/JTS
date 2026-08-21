@@ -251,6 +251,13 @@ def park_and_commit_topology(
     evidence the graph selector cannot see; per-lane channel identity is one
     such kind — see
     :func:`jasper.output_topology.repin_composite_child_serials`.
+
+    This is only the IMMEDIATE half of that promise. A later reconcile, deploy,
+    or reboot re-decides from scratch, so whatever fact made the park necessary
+    must ALSO be visible to the selector — for identity that is
+    :func:`jasper.active_speaker.runtime_contract.roleful_identity_confirmed`.
+    Passing ``stay_parked`` without a matching durable half buys silence only
+    until the next ``jasper-camilla`` bounce.
     """
 
     return asyncio.run(
