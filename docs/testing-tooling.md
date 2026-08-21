@@ -48,6 +48,7 @@
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
 | Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
 | Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
+| Take more than one capture at each pose of one walk — so what differs between them is time and whatever you changed, never the pose — and bank which stop measured which pose and take | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --per-position` |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -2442,6 +2443,12 @@ PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
     --angles 0,7,-7,22,-22 --regime per_driver \
     --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
 
+# the same five angles, three takes at each — one walk, fifteen stops
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r2 --tier remote \
+    --angles 0,7,-7,22,-22 --per-position 3 --regime per_driver \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 15
+
 # …read the candidate it printed, decide, THEN apply it BY NAME
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
 
@@ -2494,11 +2501,46 @@ MEASURING session recorded in durable state, so the household's one choice at
 the tier chooser governs both stages — passing a different tier to the verify
 invocation changes nothing, and is not a way to re-instrument a round.
 
-**Four configurations are refused before anything runs**: an `--apply` with an
+**`--per-position N` takes N captures at each pose, in ONE walk.** It stages
+each angle N times adjacently, so the arm settles and releases N times without
+travelling: what varies between the takes is time and whatever you changed
+between them, never the pose. Adjacent and not interleaved is the whole point —
+`0,7,0,7,0,7` would walk the arm six times and measure the drift the takes exist
+to hold still. It is sugar over a list an operator could type (the stops are an
+ordered tuple with no uniqueness rule, and `angle_capture.both_at` already ships
+adjacent same-angle stops); what it adds over typing it is the two facts a
+hand-typed list gets wrong, both refused before anything is staged: that
+`--complete-after` counts RELEASES and so must scale with N, and that nothing
+otherwise writes down which stop was which take.
+
+**Every staged round banks `position_cycle.json`, cycled or not** — a
+schema-versioned manifest mapping stop ordinal → pose + take, written into the
+round directory after the bank (the bank refuses a destination that already has
+something in it), owned by
+[`jasper/active_speaker/crossover_v2/position_cycle.py`](../jasper/active_speaker/crossover_v2/position_cycle.py).
+It exists because the pose is otherwise LOST: a banked round records
+`position_id` and a coarse onax/offax role, the staged angles live in a
+single-use spool on the speaker that `bank-crossover-round.sh` does not pull,
+and `jasper-round-views` says so itself — "no numeric microphone angle is
+recovered for any position this module reads". It does **not** name a config:
+what graph a capture actually played through is the speaker's to record, per
+capture, in the retained capture's `provenance.graph.fingerprint` (see
+[`jasper/active_speaker/capture_provenance.py`](../jasper/active_speaker/capture_provenance.py),
+whose own argument is *the config label is not the graph*), and a fingerprint
+written from the laptop would be the runner's intent rather than what played.
+
+**Seven configurations are refused before anything runs**: an `--apply` with an
 empty fingerprint (an absent live candidate also reads as empty, so comparing
 would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
 will serve, which otherwise costs ten minutes and ends as a misnamed idle
-ceiling), and an unreadable `--alignment-prescription` or `--topology-prescription`.
+ceiling), an unreadable `--alignment-prescription` or `--topology-prescription`,
+`--per-position` under 1, `--per-position` without `--angles` (there would be no
+walk to put the takes in, and the round would run its ordinary shape while you
+believed it was cycling), and a `--complete-after` below the staged stop count
+(the walk would post its all-spots-measured signal partway through and exit
+`ok`). That last one is a FLOOR, not the honest number: the session's own
+non-walk captures are gated holds too, and how many there are is the tier's,
+decided on the speaker.
 
 **Completion is polled, not slept.** The runner waits for the session id to
 move off the one that was there before the open, *and* for the phase to leave

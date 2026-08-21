@@ -36,6 +36,8 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from jasper.active_speaker.crossover_v2.position_cycle import read_position_cycle
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-crossover-round.py"
 
@@ -368,7 +370,7 @@ def test_a_round_runs_its_phases_in_order(checkout, wizard, tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert [row["step"] for row in _trail(trail)] == [
         "identity", "target", "stage", "walk_launched", "open", "walk",
-        "await", "bank", "candidate",
+        "await", "bank", "position_cycle", "candidate",
     ]
     assert all(row["ok"] for row in _trail(trail))
     assert len(bank_lines) == 1
@@ -427,6 +429,218 @@ def test_staging_angles_without_the_attestation_is_refused_up_front(
     assert "--attest-rig-clear" in proc.stderr
     requests = wizard.seen().requests
     assert ssh_lines == [] and bank_lines == [] and requests == ()
+
+
+# --------------------------------------------------------------------------- #
+# takes per position
+# --------------------------------------------------------------------------- #
+
+
+def _cycle(tmp_path: Path) -> dict[str, Any]:
+    return json.loads((tmp_path / "camp" / "r1" / "position_cycle.json").read_text())
+
+
+def test_per_position_stages_each_angle_that_many_times_adjacently(
+    checkout, wizard, tmp_path
+):
+    """Adjacent, so the arm settles and releases without travelling.
+
+    Interleaving them (``0,7,0,7,0,7``) would walk the arm six times and measure
+    the drift the takes exist to hold still.
+    """
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+         "--angles", "0,7,-7", "--per-position", "3", "--regime", "per_driver",
+         "--attest-rig-clear", "--expect-angles", "7,-7", "--complete-after", "9"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--angles 0,0,0,7,7,7,-7,-7,-7" in stage_cmd
+
+
+def test_the_walk_gets_the_expectations_the_operator_wrote_not_the_expansion(
+    checkout, wizard, tmp_path
+):
+    """``--expect-angles`` is a set the walk must SERVE, so repeats add nothing
+    to it — ``_final_code`` checks membership in ``_served_angles``."""
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+         "--angles", "0,7,-7", "--per-position", "3",
+         "--attest-rig-clear", "--expect-angles", "7,-7", "--complete-after", "9"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    walk_cmd = next(line for line in ssh_lines if "jasper-arm-walk" in line)
+    assert "--expect-angles 7,-7" in walk_cmd
+    assert "--complete-after 9" in walk_cmd
+
+
+def test_the_banked_manifest_says_which_stop_measured_which_pose_and_take(
+    checkout, wizard, tmp_path
+):
+    """The one fact a banked round otherwise loses.
+
+    A bank records ``position_id`` and a coarse onax/offax role; the staged
+    angles live in a single-use spool on the speaker that nothing pulls.
+    """
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote",
+         "--angles", "0,7", "--per-position", "3",
+         "--attest-rig-clear", "--complete-after", "6"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    document = _cycle(tmp_path)
+    assert document["per_position"] == 3
+    assert document["angles"] == "0,7"
+    assert document["staged_angles"] == "0,0,0,7,7,7"
+    assert [(s["stop"], s["angle"], s["take"]) for s in document["stops"]] == [
+        (1, "0", 1), (2, "0", 2), (3, "0", 3),
+        (4, "7", 1), (5, "7", 2), (6, "7", 3),
+    ]
+    # It reads back through its own strict reader, not just as JSON.
+    assert read_position_cycle(
+        tmp_path / "camp" / "r1" / "position_cycle.json") == document
+
+
+def test_an_ordinary_staged_round_banks_the_manifest_too(
+    checkout, wizard, tmp_path
+):
+    """Not a cycling feature: the pose is lost for EVERY staged round, not
+    only a cycled one, so every staged round gets the manifest."""
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    document = _cycle(tmp_path)
+    assert document["per_position"] == 1
+    assert document["staged_angles"] == "0,7,-7"
+    assert [s["take"] for s in document["stops"]] == [1, 1, 1]
+
+
+def test_a_round_that_staged_no_walk_banks_no_manifest(checkout, wizard, tmp_path):
+    """Nothing was staged, so there is no walk to describe — and an empty
+    mapping would read as a walk that measured nothing."""
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", "--tier", "remote"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not (tmp_path / "camp" / "r1" / "position_cycle.json").exists()
+
+
+def test_a_refused_bank_banks_no_manifest(checkout, wizard, tmp_path):
+    """The bank's rc is the round's verdict; a manifest written on top of a
+    refusal would describe a round whose evidence was never pulled."""
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+        FAKE_BANK_EXIT="2",
+    )
+
+    assert proc.returncode == 9
+    assert not (tmp_path / "camp" / "r1" / "position_cycle.json").exists()
+
+
+def test_takes_without_a_staged_walk_are_refused_up_front(
+    checkout, wizard, tmp_path
+):
+    """The takes ARE stops in a staged walk. Without ``--angles`` the round
+    would run its ordinary shape while the operator believed it was cycling —
+    a night's evidence silently answering a different question."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--per-position", "3"],
+    )
+
+    assert proc.returncode == 2
+    assert "--angles" in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+@pytest.mark.parametrize("per_position", ["0", "-1"])
+def test_fewer_than_one_take_per_position_is_refused(
+    checkout, wizard, tmp_path, per_position
+):
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,7", "--attest-rig-clear",
+         "--per-position", per_position],
+    )
+
+    assert proc.returncode == 2
+    assert "at least 1" in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_a_complete_after_below_the_staged_stop_count_is_refused(
+    checkout, wizard, tmp_path
+):
+    """``--complete-after`` counts RELEASES, so a walk told to complete on
+    fewer of them than it has stops posts its all-spots-measured signal partway
+    through and exits ``ok`` — a round that measured a walk nobody asked for,
+    with no failing code to say so."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,7,-7", "--per-position", "3", "--attest-rig-clear",
+         "--complete-after", "3"],
+    )
+
+    assert proc.returncode == 2
+    assert "9 stops" in proc.stderr and "3 per position" in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_the_stop_count_floor_does_not_refuse_an_ordinary_round(
+    checkout, wizard, tmp_path
+):
+    """One release per stop is the shipped shape; the floor must not move it."""
+    proc, _, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert len(bank_lines) == 1
+
+
+def test_a_malformed_angle_list_is_refused_by_argparse_not_a_traceback(
+    checkout, wizard, tmp_path
+):
+    """A typed comma is not a stop, and the seam would read it as an angle."""
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,,7", "--attest-rig-clear", "--per-position", "2"],
+    )
+
+    assert proc.returncode == 2
+    assert "empty angle" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_apply_refuses_takes_per_position_because_it_measures_nothing(
+    checkout, wizard
+):
+    proc, ssh_lines, bank_lines = _run(
+        checkout, wizard, ["--apply", FINGERPRINT, "--per-position", "3"],
+    )
+
+    assert proc.returncode == 2
+    assert "--per-position" in proc.stderr
+    assert ssh_lines == [] and bank_lines == []
+    assert wizard.seen().requests == ()
 
 
 def test_a_verify_stage_opens_the_post_apply_check(checkout, wizard, tmp_path):

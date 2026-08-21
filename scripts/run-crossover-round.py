@@ -37,7 +37,29 @@ One measurement stage, in order::
     await the walk   the arm harness exits; its rc is the walk's verdict
     await the stage  poll the envelope until this session's phases are accepted
     bank             bash scripts/bank-crossover-round.sh <campaign>/<label>
+    record the walk  position_cycle.json — which stop measured which pose
     summarise        the candidate's fingerprint + numbers, printed and banked
+
+**``--per-position N`` takes N captures at each pose in ONE walk.** It stages
+each angle N times adjacently, so the arm settles and releases N times without
+travelling: what varies between the takes is time (and whatever the operator
+changed between them), never the pose. It is sugar over a staged list an
+operator could type — the stops are an ordered tuple with no uniqueness rule and
+``angle_capture.both_at`` already ships adjacent same-angle stops — and the
+value it adds over typing it is the two facts a hand-typed list gets wrong: that
+``--complete-after`` counts RELEASES and so must scale with N, and that nothing
+otherwise writes down which stop was which take. Both are stated below.
+
+**Every staged round banks ``position_cycle.json``, cycled or not**, because the
+pose a capture was taken at is otherwise LOST: a banked round records
+``position_id`` and a coarse onax/offax role, the staged angles live in a
+single-use spool on the speaker that nothing banks, and ``jasper-round-views``
+says so itself — "no numeric microphone angle is recovered for any position this
+module reads". The manifest maps stop ordinal -> pose + take. It does NOT name a
+config: what graph a capture actually played through is the SPEAKER's to record,
+per capture, in the retained capture's ``provenance.graph.fingerprint``, and a
+fingerprint written from here would be this runner's intent rather than what
+played.
 
 The walk starts BEFORE the open because ``jasper-arm-walk``'s first poll is
 what checks a staged walk is still waiting — see its module docstring. It is
@@ -60,6 +82,12 @@ Usage::
         --campaign captures/my-night --label r1 --tier remote \\
         --angles 0,7,-7,22,-22 --regime per_driver \\
         --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+
+    # the same five angles, three takes at each — one walk, fifteen stops
+    PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
+        --campaign captures/my-night --label r2 --tier remote \\
+        --angles 0,7,-7,22,-22 --per-position 3 --regime per_driver \\
+        --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 15
 
     # …read the printed candidate, decide, THEN apply it by name
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fp>
@@ -108,6 +136,13 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPTURE_PHASES,
     PHASE_APPLYING,
     PHASE_CLOSING,
+)
+from jasper.active_speaker.crossover_v2.position_cycle import (
+    POSITION_CYCLE_FILENAME,
+    PositionCycleError,
+    expand_angle_spec,
+    position_cycle_document,
+    staged_stops,
 )
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_KEY,
@@ -449,6 +484,8 @@ def stage_walk(target: Target, angles: str, regime: str, trail: Trail) -> int:
     ``--angles`` and ``--regime`` are passed through as the operator wrote
     them: bounds, whole-degree-ness and the regime vocabulary are the seam's,
     and a second validator here would be a second answer to the same question.
+    ``--per-position`` repeats each token verbatim before it gets here for that
+    same reason — see ``position_cycle.expand_angle_spec``.
     """
     remote = (
         f"sudo {PI_VENV_BIN}/jasper-angle-capture stage --mover arm "
@@ -461,6 +498,7 @@ def stage_walk(target: Target, angles: str, regime: str, trail: Trail) -> int:
     ok = proc.returncode == 0
     trail.emit(
         "stage", ok=ok, angles=angles, regime=regime, mover="arm",
+        stops=staged_stops(angles),
         angle_capture_exit=proc.returncode,
         detail=(proc.stdout or proc.stderr).strip()[-300:],
     )
@@ -630,6 +668,36 @@ def bank(dest: Path, *, since: str, target: Target, trail: Trail) -> int:
     ok = proc.returncode in (0, 1)
     trail.emit("bank", ok=ok, dest=str(dest), bank_exit=proc.returncode)
     return proc.returncode
+
+
+def bank_position_cycle(
+    dest: Path, *, angles: str, per_position: int, regime: str, trail: Trail,
+) -> None:
+    """Write ``position_cycle.json`` beside the round it describes.
+
+    AFTER the bank, for ``summarise_candidate``'s reason: the bank refuses a
+    destination that already has something in it.
+
+    Best-effort in exactly the way the candidate write is — a round that
+    measured is not un-measured by a filesystem that would not take one more
+    file, and the trail says so rather than the exit code. What it must never do
+    is claim a mapping it did not write, so a failure is a printed line and an
+    ``ok=false`` row, never a quiet return.
+    """
+    path = dest / POSITION_CYCLE_FILENAME
+    try:
+        document = position_cycle_document(
+            angles=angles, per_position=per_position, regime=regime,
+        )
+        path.write_text(json.dumps(document, indent=2) + "\n")
+    except (PositionCycleError, OSError) as exc:
+        trail.emit("position_cycle", ok=False, detail=str(exc)[:200])
+        print(f"round: the staged walk could not be banked: {exc}", file=sys.stderr)
+        return
+    trail.emit(
+        "position_cycle", banked=str(path), per_position=per_position,
+        stops=len(document["stops"]), staged_angles=document["staged_angles"],
+    )
 
 
 def summarise_candidate(wizard: Wizard, dest: Path, trail: Trail) -> str:
@@ -815,7 +883,15 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
                since=since, prior_session_id=prior_session_id or "(none)")
 
     if args.angles:
-        rc = stage_walk(target, args.angles, args.regime, trail)
+        # Expanded HERE rather than at parse time so the trail's ``stage`` row
+        # names the list that was actually staged, which is the one an operator
+        # comparing it against ``--complete-after`` needs to see.
+        rc = stage_walk(
+            target,
+            expand_angle_spec(args.angles, args.per_position),
+            args.regime,
+            trail,
+        )
         if rc != 0:
             return EXIT_STAGE
 
@@ -878,6 +954,11 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
     if bank_rc not in (0, 1):
         return EXIT_BANK
 
+    if args.angles:
+        bank_position_cycle(
+            dest, angles=args.angles, per_position=args.per_position,
+            regime=args.regime, trail=trail,
+        )
     summarise_candidate(wizard, dest, trail)
     return EXIT_OK
 
@@ -990,6 +1071,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--per-position", type=int, default=1, metavar="N",
+        help=(
+            "take N captures at EACH staged angle, adjacently, in one walk — "
+            "the arm settles and releases N times without travelling, so what "
+            "varies between the takes is time and whatever you changed between "
+            "them, never the pose. Requires --angles. There is no ceiling here: "
+            "how many stops a session can carry is the relay's own, and it "
+            "refuses by name. --complete-after counts RELEASES, so it must "
+            "scale with N (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--regime", default="per_driver",
         help="what a staged walk plays at each angle (default: %(default)s)",
     )
@@ -1052,11 +1145,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.apply.strip():
             parser.error("--apply needs the fingerprint you mean to put on the speaker")
         for flag, value in (("--campaign", args.campaign), ("--label", args.label),
-                            ("--angles", args.angles or None)):
+                            ("--angles", args.angles or None),
+                            # `1` is the default and means "an ordinary walk",
+                            # so only a value the operator actually chose is a
+                            # contradiction worth refusing.
+                            ("--per-position",
+                             args.per_position if args.per_position != 1 else None)):
             if value:
                 parser.error(f"--apply runs no measurement, so {flag} means nothing")
     elif not args.campaign or not args.label:
         parser.error("--campaign and --label are required to measure a round")
+    elif args.per_position < 1:
+        parser.error(
+            f"--per-position is how many captures to take at each pose, so it "
+            f"is at least 1; got {args.per_position}"
+        )
+    elif args.per_position != 1 and not args.angles:
+        # The takes are stops in a staged walk. Without --angles there is no
+        # walk to put them in, and the round would run its ordinary shape while
+        # the operator believed it was cycling — the failure mode this refuses
+        # is a night's evidence that silently answers a different question.
+        parser.error(
+            "--per-position repeats each STAGED angle, so it needs --angles"
+        )
     elif args.angles and not args.attest_rig_clear:
         # A staged walk is an ARM walk, and without the attestation no arm walk
         # is launched — so the session would open, hold at its first position
@@ -1067,6 +1178,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--angles stages a walk for the arm, which only runs with "
             "--attest-rig-clear; add it, or drop --angles"
         )
+    elif args.angles:
+        # The expansion is run HERE too, so a malformed angle list — a typed
+        # comma, an empty token — is argparse's refusal rather than a traceback
+        # from between a launched walk and an open. What the tokens MEAN is
+        # still the seam's; this only counts them.
+        try:
+            stops = staged_stops(expand_angle_spec(args.angles, args.per_position))
+        except PositionCycleError as exc:
+            parser.error(str(exc))
+        if args.complete_after is not None and args.complete_after < stops:
+            # --complete-after counts RELEASES (arm_walk._complete_due), so a
+            # walk told to complete on fewer of them than it has stops posts its
+            # all-spots-measured signal partway through and exits `ok` — a round
+            # that measured a walk nobody asked for, with no failing code to say
+            # so. It is only a FLOOR: the session's own non-walk captures are
+            # gated holds too, so the honest number is usually higher, and this
+            # runner cannot know it (the count is the tier's, decided on the
+            # speaker). Refusing the arithmetic it CAN do beats refusing none.
+            parser.error(
+                f"--complete-after counts releases and this walk stages {stops} "
+                f"stops ({args.per_position} per position), so {args.complete_after} "
+                f"would complete it partway through"
+            )
 
     # The trail opens FIRST: resolving which speaker this is can itself fail,
     # and that failure is the first thing worth a row.
