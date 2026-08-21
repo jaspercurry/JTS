@@ -298,11 +298,16 @@ def check_grouping_ring_device() -> CheckResult:
     solo box nothing opens it yet, so the same defect is a ``warn`` that gets
     fixed by the next deploy before it can cost anyone a bond.
 
+    NO BUSY CASE, and that follows from the safety property rather than being a
+    separate policy. Every ``-EBUSY`` the ring can produce comes from
+    ``jts_ring_writer_open`` / ``jts_ring_reader_open`` — the single-writer and
+    single-reader guards — and both are reached only from the ``prepare``
+    callbacks this probe never enters. A ring busy with live bonded audio is
+    therefore indistinguishable here from an idle one: both simply resolve. The
+    outcomes are name-resolves, name-does-not-resolve, and probe-could-not-run.
+
     Statuses:
-      - ok   — the name resolved and the ioplug loaded. ``-EBUSY`` is also ok:
-               it can only come from the ioplug's own single-writer guard, which
-               means the name resolved AND a live writer already owns the ring.
-               A ring in use is the healthy state, never a defect.
+      - ok   — the name resolved and the ioplug loaded.
       - warn — the probe could not be run (no libasound on this host), or the
                name did not resolve on a box that is not bonded.
       - fail — the conf.d block is missing, or the name did not resolve on a
@@ -326,13 +331,6 @@ def check_grouping_ring_device() -> CheckResult:
     if rc == 0:
         return CheckResult(
             label, "ok", f"pcm.{GROUPING_RING_PCM} resolves and the ioplug loads"
-        )
-    if rc == -errno.EBUSY:
-        return CheckResult(
-            label,
-            "ok",
-            f"pcm.{GROUPING_RING_PCM} resolves; the ring already has a live "
-            "writer (EBUSY from the single-writer guard) — in use, not broken",
         )
     named = errno.errorcode.get(-rc, "") if rc < 0 else ""
     bonded = _load_grouping_config().enabled

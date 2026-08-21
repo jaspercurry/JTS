@@ -1318,6 +1318,40 @@ class RingStallVerdict:
     detail: str = ""
 
 
+def _heartbeat_age_ns(stamp: int, now_ns: int) -> int | None:
+    """Saturating age of one heartbeat stamp, or None when never stamped.
+
+    Saturating because a heartbeat stamped AFTER the observer sampled ``now_ns``
+    would make the subtraction underflow and read as enormously stale — an alarm
+    on a perfectly live ring. Shared by both judges below: the ARITHMETIC is one
+    rule even where the PREDICATES around it differ.
+    """
+    if stamp == 0:
+        return None
+    return now_ns - stamp if now_ns > stamp else 0
+
+
+def _end_is_live(pid: int, heartbeat_ns: int, now_ns: int, timeout_ns: int) -> bool:
+    """Is one end of a ring live, by the C ioplug's OWN predicate?
+
+    ``reader_is_live`` / ``writer_is_live`` (``c/jts-ring-ioplug/jts_ring_shm.c``)
+    both require **all three**: a non-zero pid, a non-zero heartbeat, and an age
+    inside the liveness window. The pid clause is the one an observer is tempted
+    to drop, and must not: ``jts_ring_reader_close`` clears ``reader_pid`` but
+    leaves the last heartbeat standing, so a cleanly-closed end stays
+    heartbeat-fresh for a full window after the writer has already begun
+    free-running and dropping. Judging on the heartbeat alone reports a ring as
+    healthy for those two seconds while audio is being lost.
+
+    Mirroring the writer's own predicate is what makes an observer's verdict and
+    the mechanism it reports agree by construction rather than by coincidence.
+    """
+    if pid == 0 or heartbeat_ns == 0:
+        return False
+    age = _heartbeat_age_ns(heartbeat_ns, now_ns)
+    return age is not None and age < timeout_ns
+
+
 def ring_stall_verdict(
     path: str,
     *,
@@ -1344,37 +1378,9 @@ def ring_stall_verdict(
     stalled, and alarming on it would fire on every unarmed box in the fleet.
     The alarm is specifically "audio is flowing IN and not OUT".
     """
-    header = read_ring_header(path)
-    return _stall_verdict_from_header(header, now_ns=now_ns, timeout_ns=timeout_ns)
-
-
-def _heartbeat_age_ns(stamp: int, now_ns: int) -> int | None:
-    """Saturating age of one heartbeat stamp, or None when never stamped.
-
-    Saturating because a heartbeat stamped AFTER the observer sampled ``now_ns``
-    would make the subtraction underflow and read as enormously stale — an alarm
-    on a perfectly live ring. Shared by every judge below so they cannot drift on
-    the arithmetic.
-    """
-    if stamp == 0:
-        return None
-    return now_ns - stamp if now_ns > stamp else 0
-
-
-def _stall_verdict_from_header(
-    header: RingHeader,
-    *,
-    now_ns: int | None = None,
-    timeout_ns: int = RING_LIVENESS_TIMEOUT_NS,
-) -> RingStallVerdict:
-    """The stall judgement over an ALREADY-READ header.
-
-    Extracted so :func:`ring_flow_state` can reach the same verdict from the same
-    single header read instead of re-reading the file and re-deriving liveness —
-    one judge, one sample, no second opinion about who is alive.
-    """
     import time
 
+    header = read_ring_header(path)
     if not header.valid:
         return RingStallVerdict(present=False, detail="no coherent ring header")
     if now_ns is None:
@@ -1383,6 +1389,17 @@ def _stall_verdict_from_header(
     def _age(stamp: int) -> int | None:
         return _heartbeat_age_ns(stamp, now_ns)
 
+    # NOTE (#2786): this judge is HEARTBEAT-ONLY on purpose. The C's own
+    # `reader_is_live` also requires a non-zero pid, so a cleanly-closed reader
+    # is dead to the writer instantly while its last heartbeat stays fresh for
+    # one liveness window — during which this verdict still reads "both ends
+    # live". :func:`ring_flow_state` applies the full pid-and-heartbeat
+    # predicate; this alarm was deliberately NOT re-scoped, because it judges
+    # four rings and the divergence costs it at most one window of late
+    # alarming on a ring whose reader left cleanly. If that ever matters, change
+    # it here for all four rings at once rather than letting the two drift
+    # silently — `test_the_two_judges_diverge_only_on_a_cleanly_closed_end`
+    # pins exactly where they disagree.
     writer_age = _age(header.writer_heartbeat_ns)
     reader_age = _age(header.reader_heartbeat_ns)
     if writer_age is None:
@@ -1449,10 +1466,18 @@ class RingFlowState:
     """What is happening on one ring right now, in one word plus its evidence.
 
     :func:`ring_stall_verdict` answers one narrow question — is this ring being
-    written but not read — and answers it for the doctor's alarm. This is the
-    OPERATOR-FACING projection of the same single header sample: it keeps that
-    verdict as its spine and adds the two things a reader of ``/state`` needs and
-    a boolean alarm cannot carry.
+    written but not read — and answers it for the doctor's four-ring alarm. This
+    is the OPERATOR-FACING classification over the same 128 bytes, and it differs
+    from that alarm in two deliberate ways.
+
+    **It judges liveness by the writer's own rule.** Both ends are tested with
+    :func:`_end_is_live`, i.e. pid AND heartbeat AND window — the same
+    conjunction ``reader_is_live`` / ``writer_is_live`` apply in
+    ``c/jts-ring-ioplug/jts_ring_shm.c``. The stall alarm tests the heartbeat
+    only, which is correct enough for a wedge but reports a cleanly-closed end as
+    live for one window after the writer has already started dropping. An
+    operator surface cannot afford that gap, so this one closes it; the alarm was
+    left alone because it judges four rings.
 
     **The startup split.** A ring whose writer is live and whose reader has never
     stamped a heartbeat is the SAME instantaneous shape at second one of a cold
@@ -1466,8 +1491,9 @@ class RingFlowState:
     own age: below one liveness window's worth of slots the ring is still
     :data:`RING_FLOW_PRIMING`, above it the reader is genuinely late and the
     state is :data:`RING_FLOW_READER_STALLED`. The budget is DERIVED from the
-    header's own ``rate``/``period_frames`` and the ioplug's own liveness window,
-    so no threshold is invented here.
+    header's own ``rate``/``period_frames`` and the ioplug's own demotion window,
+    so no threshold is invented here. Note this splits only the NEVER-ATTACHED
+    case: a ring that had a reader and lost it is never priming, however young.
 
     **The drop cursor.** There is still no drop COUNT in the shared header (the
     writer's ``drop_no_reader`` is a process-local ``jts_ring_writer_t`` field —
@@ -1545,11 +1571,18 @@ def ring_flow_state(
                 detail="no ring file — nothing has opened this PCM",
             )
         if not os.access(path, os.R_OK):
+            # The requirement, not a mode: ring files are group `jts-ring` by the
+            # setgid directory, but their MODE is the creating unit's umask
+            # (0660 under UMask=0007, 0640 under systemd's default — see
+            # deploy/tmpfiles/jts-ring.conf). Both grant the group read, which is
+            # all an observer needs, so naming a specific mode here would be a
+            # claim that is false on half the boxes.
             return RingFlowState(
                 state=RING_FLOW_UNREADABLE,
                 detail=(
-                    f"{path} exists but is not readable by this process "
-                    "(the ring files are mode 0660 group jts-ring)"
+                    f"{path} exists but is not readable by this process — ring "
+                    "files are group-readable by `jts-ring`; this process is not "
+                    "in that group"
                 ),
             )
         return RingFlowState(
@@ -1559,28 +1592,58 @@ def ring_flow_state(
 
     if now_ns is None:
         now_ns = time.monotonic_ns()
-    verdict = _stall_verdict_from_header(header, now_ns=now_ns, timeout_ns=timeout_ns)
-    occupancy = (
-        header.write_seq - header.read_seq
-        if header.write_seq >= header.read_seq
-        else None
+    writer_age = _heartbeat_age_ns(header.writer_heartbeat_ns, now_ns)
+    reader_age = _heartbeat_age_ns(header.reader_heartbeat_ns, now_ns)
+    # Occupancy is only meaningful when the cursor pair is coherent. Over-range
+    # (the writer lapped a wedged reader, or a torn read) and inverted are both
+    # published as None rather than as a number: the C resolves an out-of-range
+    # W - R by resyncing to the tip, so the raw difference is not an occupancy
+    # anybody would act on, and printing it as fact is how a dashboard ends up
+    # showing 900000 slots in a 16-slot ring. The raw cursors stay published, so
+    # nothing is hidden.
+    raw_occupancy = header.write_seq - header.read_seq
+    occupancy: int | None = (
+        raw_occupancy if 0 <= raw_occupancy <= header.n_slots else None
     )
     evidence = {
-        "writer_age_ns": verdict.writer_age_ns,
-        "reader_age_ns": verdict.reader_age_ns,
+        "writer_age_ns": writer_age,
+        "reader_age_ns": reader_age,
         "write_seq": header.write_seq,
         "read_seq": header.read_seq,
         "occupancy_slots": occupancy,
         "writer_epoch": header.writer_epoch,
     }
 
-    if not verdict.present:
-        # A coherent header the stall judge declines to alarm on: nobody is
-        # writing. Its own detail already says which of the two (never written /
-        # writer heartbeat itself stale) and is reused verbatim.
-        return RingFlowState(state=RING_FLOW_IDLE, detail=verdict.detail, **evidence)
-    if not verdict.stalled:
-        return RingFlowState(state=RING_FLOW_FLOWING, detail=verdict.detail, **evidence)
+    writer_live = _end_is_live(
+        header.writer_pid, header.writer_heartbeat_ns, now_ns, timeout_ns
+    )
+    reader_live = _end_is_live(
+        header.reader_pid, header.reader_heartbeat_ns, now_ns, timeout_ns
+    )
+
+    if not writer_live:
+        if header.writer_heartbeat_ns == 0:
+            why = "ring has never been written (no writer heartbeat)"
+        elif header.writer_pid == 0:
+            why = "the writer has closed the ring (writer pid cleared)"
+        else:
+            why = (
+                f"writer heartbeat is itself stale ({(writer_age or 0) / 1e6:.0f} ms)"
+            )
+        return RingFlowState(
+            state=RING_FLOW_IDLE,
+            detail=f"{why} — an idle or stopped ring, not a stall",
+            **evidence,
+        )
+    if reader_live:
+        return RingFlowState(
+            state=RING_FLOW_FLOWING,
+            detail=(
+                f"both ends live (writer {(writer_age or 0) / 1e6:.0f} ms, reader "
+                f"{(reader_age or 0) / 1e6:.0f} ms behind)"
+            ),
+            **evidence,
+        )
 
     # The writer is live and no reader is. Startup transient or a real stall?
     never_attached = header.reader_pid == 0 and header.reader_heartbeat_ns == 0
@@ -1597,9 +1660,15 @@ def ring_flow_state(
     if never_attached:
         why = f"no reader has ever attached ({header.write_seq} slots published)"
     elif header.reader_pid == 0:
-        why = "the reader detached and has not come back"
+        # Reached the instant a reader closes cleanly, not only after it wedges:
+        # the writer stops honouring a pid-less reader immediately, so the drops
+        # start immediately too. Worded to say what happened, not to imply a hang.
+        why = "the reader closed the ring and has not come back"
     else:
-        why = f"reader pid {header.reader_pid} stopped stamping its heartbeat"
+        why = (
+            f"reader pid {header.reader_pid} stopped stamping its heartbeat "
+            f"({(reader_age or 0) / 1e6:.0f} ms behind)"
+        )
     return RingFlowState(
         state=RING_FLOW_READER_STALLED,
         detail=(

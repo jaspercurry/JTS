@@ -27,9 +27,10 @@ degrades to ``null`` instead of erroring the grouping section.
 **C-3 — the doctor's device probe cannot disturb a live bond.** The check opens
 and closes the PCM and never reaches ``prepare``, which is the only callback that
 attaches the SHM ring. That claim is a claim about the C source, so it is pinned
-against the C source; a busy ring is asserted HEALTHY, because the one way this
-probe could ever see ``EBUSY`` is the ioplug's single-writer guard, which fires
-precisely when the transport is working.
+against the C source — and it is also why the check has no busy case at all:
+every ``-EBUSY`` the ring can produce comes from the two guards inside
+``jts_ring_writer_open`` / ``jts_ring_reader_open``, which only ``prepare``
+reaches. A ring busy with live audio and an idle one are the same answer here.
 """
 
 from __future__ import annotations
@@ -221,7 +222,13 @@ def test_a_ring_this_process_cannot_read_says_so(tmp_path):
         os.chmod(path, 0o600)
     assert flow.state == RING_FLOW_UNREADABLE
     assert "not readable by this process" in flow.detail
-    assert "0660" in flow.detail
+    # The REQUIREMENT, not a mode. A ring's mode follows its creating unit's
+    # umask — 0660 under UMask=0007, 0640 under systemd's default — so naming a
+    # number here would pin a claim that is false on half the fleet. Both grant
+    # the group read, which is the fact the remediation needs to convey.
+    assert "jts-ring" in flow.detail
+    assert "group-readable" in flow.detail
+    assert "0660" not in flow.detail
 
 
 @pytest.mark.parametrize(
@@ -262,23 +269,129 @@ def test_the_startup_window_is_derived_from_the_ioplugs_own_liveness_window(tmp_
     assert "no reader has ever attached" in just_past.detail
 
 
-def test_a_reader_that_detached_is_a_stall_not_a_startup(tmp_path):
-    """``reader_pid`` cleared with a heartbeat still stamped: CamillaDSP closed
-    the ring. The consequence is identical to a wedged reader — the writer
-    free-runs and drops — so the STATE is the same and only the detail differs.
-    The startup grace must not apply: this ring had a reader."""
+def test_a_cleanly_closed_reader_is_a_stall_the_instant_it_closes(tmp_path):
+    """THE PID CLAUSE, and the bug it exists to prevent.
+
+    ``jts_ring_reader_close`` clears ``reader_pid`` and leaves the last heartbeat
+    standing, so for one whole liveness window a closed reader looks fresh. The C
+    is not fooled — ``reader_is_live`` requires pid AND heartbeat AND window, so
+    the writer demotes that reader and starts dropping *immediately*. An observer
+    that judged on the heartbeat alone would report a healthy ring for two
+    seconds while audio was being lost.
+
+    The heartbeat here is FRESH on purpose: with a stale one this passes even
+    without the pid clause, which is exactly how the gap survived the first
+    round. The startup grace must not apply either — this ring had a reader.
+    """
     flow = _state(
         _ring(
             tmp_path,
             writer_pid=1,
             reader_pid=0,
             writer_hb=_FRESH,
-            reader_hb=_STALE,
+            reader_hb=_FRESH,
             write_seq=5,
         )
     )
     assert flow.state == RING_FLOW_READER_STALLED
-    assert "detached" in flow.detail
+    assert "closed the ring" in flow.detail
+
+
+def test_a_cleanly_closed_writer_is_idle_not_flowing(tmp_path):
+    """The symmetric half. ``writer_is_live`` has the same pid clause, so a
+    writer that closed is gone even while its heartbeat is fresh — and a ring
+    with no live writer is idle, whatever the reader is doing."""
+    flow = _state(
+        _ring(
+            tmp_path,
+            writer_pid=0,
+            reader_pid=2,
+            writer_hb=_FRESH,
+            reader_hb=_FRESH,
+            write_seq=900,
+        )
+    )
+    assert flow.state == RING_FLOW_IDLE
+    assert "closed the ring" in flow.detail
+
+
+def test_a_wedged_reader_is_named_differently_from_a_closed_one(tmp_path):
+    """Same state, different cause: a pid still stamped with a stale heartbeat is
+    a reader that stopped running its loop, not one that left. The state word is
+    what an operator acts on; the detail is what they read next."""
+    flow = _state(
+        _ring(
+            tmp_path,
+            writer_pid=1,
+            reader_pid=202,
+            writer_hb=_FRESH,
+            reader_hb=_STALE,
+            write_seq=900_000,
+        )
+    )
+    assert flow.state == RING_FLOW_READER_STALLED
+    assert "202" in flow.detail
+    assert "stopped stamping" in flow.detail
+
+
+def test_the_two_judges_diverge_only_on_a_cleanly_closed_end(tmp_path):
+    """The divergence between this classifier and the four-ring stall alarm,
+    pinned where it is rather than left to be discovered.
+
+    ``ring_stall_verdict`` is heartbeat-only and was deliberately not re-scoped
+    (it judges four rings; #2786 owns one). So on a cleanly-closed reader it
+    still reads "both ends live" for one window while ``ring_flow_state``
+    already says the writer is dropping. Naming the exact input where they
+    disagree means a future change to either one has to come here and decide,
+    instead of the two drifting apart quietly.
+    """
+    closed = _ring(
+        tmp_path / "closed",
+        writer_pid=1,
+        reader_pid=0,
+        writer_hb=_FRESH,
+        reader_hb=_FRESH,
+    )
+    assert ring_assets.ring_stall_verdict(closed, now_ns=_NOW_NS).stalled is False
+    assert _state(closed).state == RING_FLOW_READER_STALLED
+
+    # …and they agree everywhere else, so the divergence really is that one case.
+    wedged = _ring(
+        tmp_path / "wedged",
+        writer_pid=1,
+        reader_pid=2,
+        writer_hb=_FRESH,
+        reader_hb=_STALE,
+    )
+    live = _ring(
+        tmp_path / "live", writer_pid=1, reader_pid=2, writer_hb=_FRESH, reader_hb=_FRESH
+    )
+    assert ring_assets.ring_stall_verdict(wedged, now_ns=_NOW_NS).stalled is True
+    assert _state(wedged).state == RING_FLOW_READER_STALLED
+    assert ring_assets.ring_stall_verdict(live, now_ns=_NOW_NS).stalled is False
+    assert _state(live).state == RING_FLOW_FLOWING
+
+
+def test_an_over_range_occupancy_is_not_published_as_fact(tmp_path):
+    """A writer that lapped a wedged reader (or a torn read) can present a
+    ``write_seq - read_seq`` far past ``n_slots``. The C resolves that by
+    resyncing to the tip, so the raw difference is not an occupancy anyone would
+    act on — publishing it would put "900000 slots" in a 16-slot ring on a
+    dashboard. The raw cursors stay published, so nothing is hidden."""
+    flow = _state(
+        _ring(
+            tmp_path,
+            writer_pid=1,
+            reader_pid=2,
+            writer_hb=_FRESH,
+            reader_hb=_FRESH,
+            write_seq=900_000,
+            read_seq=0,
+            n_slots=16,
+        )
+    )
+    assert flow.occupancy_slots is None
+    assert (flow.write_seq, flow.read_seq) == (900_000, 0)
 
 
 def test_a_torn_sequence_pair_does_not_invent_a_negative_occupancy(tmp_path):
@@ -300,12 +413,10 @@ def test_a_torn_sequence_pair_does_not_invent_a_negative_occupancy(tmp_path):
     assert flow.state == RING_FLOW_FLOWING
 
 
-def test_the_narrow_stall_verdict_is_unchanged_by_the_shared_core(tmp_path):
-    """:func:`ring_stall_verdict` kept its exact behaviour when its judgement was
-    extracted for reuse. It is the doctor's standing alarm over FOUR rings, so a
-    refactor that shifted it would change verdicts on rings this issue never
-    touched — and both judges now read one sample through one core, so they can
-    never disagree about who is alive.
+def test_the_narrow_stall_verdict_keeps_its_original_behaviour(tmp_path):
+    """:func:`ring_stall_verdict` is the doctor's standing alarm over FOUR rings.
+    #2786 owns one of them, so this issue changed none of its verdicts — a
+    refactor that shifted it would move alarms on three rings nobody reviewed.
     """
     stalled = _ring(
         tmp_path / "s", writer_pid=1, reader_pid=2, writer_hb=_FRESH, reader_hb=_STALE
@@ -485,15 +596,26 @@ def test_a_resolving_pcm_is_ok(monkeypatch, _installed_confd):
     assert "resolves" in result.detail
 
 
-def test_a_busy_ring_is_healthy_never_a_failure(monkeypatch, _installed_confd):
-    """THE SAFETY RULE, stated as a verdict. ``-EBUSY`` can only come from the
-    ioplug's single-writer guard, which means the name resolved AND a live writer
-    already owns the ring — the transport working, not a defect. Reporting it as
-    a failure would make every bonded speaker fail its own doctor run.
+def test_the_check_has_no_busy_case_because_busy_cannot_happen():
+    """The corollary of the attach-site pin below, asserted as ABSENCE.
+
+    Every ``-EBUSY`` the ring can produce comes from the single-writer /
+    single-reader guards inside ``jts_ring_writer_open`` /
+    ``jts_ring_reader_open``, and both are reached only from the ``prepare``
+    callbacks this probe never enters. So there is no busy state to handle, and
+    handling one would mean writing a branch that can only ever be wrong about
+    why it fired. This guards the deletion: re-adding EBUSY handling here means
+    either the probe grew an attach (caught by the two pins below) or someone
+    wrote dead code with a false explanation attached.
     """
-    result = _check(monkeypatch, -errno.EBUSY, bonded=True)
-    assert result.status == "ok"
-    assert "in use, not broken" in result.detail
+    import inspect
+
+    from jasper.cli.doctor import grouping as doctor_grouping
+
+    source = inspect.getsource(doctor_grouping.check_grouping_ring_device)
+    assert "EBUSY" not in source.split('"""')[-1], (
+        "check_grouping_ring_device has no reachable busy case — see its docstring"
+    )
 
 
 def test_a_name_that_does_not_resolve_fails_a_bonded_box(monkeypatch, _installed_confd):

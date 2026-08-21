@@ -100,12 +100,17 @@ create_jasper_service_users() {
     # (0.0.0.0:8780), opens a localhost WebSocket to CamillaDSP, and writes
     # /var/lib/jasper + /etc/avahi/services — no /dev/snd or /dev/input. Its
     # privileged restarts/reboots are granted by polkit
-    # (deploy/polkit/49-jasper-control.rules), not a group. The one supplementary
-    # group is `systemd-journal`: the airplay_health and wifi_guardian
-    # last-action /state cards read the journal. The unit's
-    # User=jasper-control matches this exact name (the polkit rule keys on it).
+    # (deploy/polkit/49-jasper-control.rules), not a group. Its three
+    # supplementary groups are `systemd-journal` (the airplay_health and
+    # wifi_guardian last-action /state cards read the journal),
+    # `jasper-intsecrets` (fresh HA reads + Spotify token-cache writes), and
+    # `jts-ring` (#2786: /state's grouping `ring` block reads the grouping
+    # ring's shared header — read-only, see the unit file). `jts-ring` is safe
+    # to hard-list here because THIS function creates that group above, the
+    # same guarantee the other hard-listed ring-group member relies on. The
+    # unit's User=jasper-control matches this exact name (polkit keys on it).
     if ! getent passwd jasper-control >/dev/null 2>&1; then
-        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets jasper-control
+        useradd -r -M -s /usr/sbin/nologin -g jasper -G systemd-journal,jasper-intsecrets,jts-ring jasper-control
     fi
     # Ensure the systemd-journal membership on UPGRADE too — the useradd above is
     # skipped when the user already exists (e.g. a Pi from an earlier 3b-2 build
