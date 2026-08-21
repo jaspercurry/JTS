@@ -53,7 +53,7 @@ class MeasurementRoutes(ControlHandlerMixin):
                 status=409,
             )
             return
-        except measurement_hold.MeasurementHoldModeError as e:
+        except measurement_hold.MeasurementHoldRequestError as e:
             self._send_json({"error": str(e)}, status=400)
             return
         self._send_json({"measurement": state})

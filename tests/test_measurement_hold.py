@@ -172,9 +172,9 @@ def test_only_implemented_modes_are_accepted():
     hold = mh.MeasurementHold(clock=Clock())
     assert mh.MEASUREMENT_HOLD_MODES == frozenset({"gate"})
 
-    with pytest.raises(mh.MeasurementHoldModeError):
+    with pytest.raises(mh.MeasurementHoldRequestError):
         hold.acquire("seat-level", "evict")
-    with pytest.raises(mh.MeasurementHoldModeError):
+    with pytest.raises(mh.MeasurementHoldRequestError):
         hold.acquire("", "gate")
     assert hold.held() is False
 

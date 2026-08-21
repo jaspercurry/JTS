@@ -63,7 +63,7 @@ __all__ = [
     "MEASUREMENT_HOLD_TTL_SEC",
     "MeasurementHold",
     "MeasurementHoldConflict",
-    "MeasurementHoldModeError",
+    "MeasurementHoldRequestError",
     "acquire",
     "held",
     "read_measurement_hold",
@@ -99,8 +99,13 @@ class MeasurementHoldConflict(RuntimeError):
         self.owner = owner
 
 
-class MeasurementHoldModeError(ValueError):
-    """The caller asked for an isolation mode this registrar does not honour."""
+class MeasurementHoldRequestError(ValueError):
+    """The request itself is malformed — a nameless owner, or an isolation
+    mode this registrar does not honour. Distinct from
+    :class:`MeasurementHoldConflict`, which means the request was well-formed
+    and somebody else holds the speaker; the HTTP layer maps this to 400 and
+    that to 409.
+    """
 
 
 class MeasurementHold:
@@ -188,15 +193,15 @@ class MeasurementHold:
         """Take the hold, or renew it when ``owner`` already holds it.
 
         Raises :class:`MeasurementHoldConflict` when a different, unexpired
-        owner holds it, and :class:`MeasurementHoldModeError` for a mode this
-        registrar does not honour.
+        owner holds it, and :class:`MeasurementHoldRequestError` for a nameless
+        owner or a mode this registrar does not honour.
         """
         owner = str(owner).strip()
         if not owner:
-            raise MeasurementHoldModeError("owner must be a non-empty string")
+            raise MeasurementHoldRequestError("owner must be a non-empty string")
         mode = str(mode).strip()
         if mode not in MEASUREMENT_HOLD_MODES:
-            raise MeasurementHoldModeError(
+            raise MeasurementHoldRequestError(
                 f"mode must be one of {sorted(MEASUREMENT_HOLD_MODES)}, "
                 f"got {mode!r}"
             )
