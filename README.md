@@ -983,9 +983,10 @@ reference. Currently:
   that supersedes the stage-P2 *search* framing: crossover corners are
   declared and executed (never measured-searched), driver linearization runs
   as measured candidate tournaments driven by an LLM over SSH through the
-  prescription doors, and room correction stays pinned on the shared capture
-  /analysis substrate. Carries the product invariants, the post-review
-  decision register, and the owner-researched measurement-program constants.
+  prescription doors, and room correction stays pinned on the shared
+  measurement substrate. Carries the product invariants, the post-review
+  decision register, the doc supersessions, and the owner-researched
+  measurement-program constants.
 - [`flat-linearization-plan.md`](docs/flat-linearization-plan.md)
   — **Adopted plan (2026-07-25): the flat-linearization program** — why the
   speaker layer's measurement instrument moves from a single-point gated
