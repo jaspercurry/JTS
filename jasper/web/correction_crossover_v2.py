@@ -5562,7 +5562,7 @@ def bind_production_play(
     ``on_playback_started`` (optional) is fired with the program at the instant
     its WAV reaches the playback call — the closest the host gets to "audio
     starts now" without reaching into the shared aplay path. It is what anchors
-    the phone's pre-tone phase ladder (:func:`start_program_phase_ladder`);
+    the phone's pre-tone phase ladder (:func:`~jasper.web.correction_crossover_v2_relay.start_program_phase_ladder`);
     omitted, playback is unchanged and the caller keeps whatever progress
     reporting it had.
 

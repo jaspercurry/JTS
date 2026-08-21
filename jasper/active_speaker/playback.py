@@ -76,7 +76,6 @@ INT16_PEAK = 32767
 DEFAULT_APLAY_BINARY = "aplay"
 DEFAULT_AUDIO_BACKEND = "wav_artifact"
 APLAY_AUDIO_BACKEND = AUDIO_LAB_APLAY_BACKEND
-APLAY_BINARY_ENV = "JASPER_APLAY"
 APLAY_TIMEOUT_PAD_SEC = 1.0
 # Every daemon-owned lane an audio-lab tone must NEVER be injected into. These
 # are sinks and readers in the RUNTIME graph, not test-tone injection points:

@@ -11,8 +11,9 @@
 //      status line. (The producer this originally cited,
 //      `correction_crossover_flow`'s per-driver `post_phase`, was deleted with
 //      the legacy flow and left the consumer dead; the live producer is
-//      `jasper.web.correction_crossover_v2.start_program_phase_ladder` — see
-//      test 5 below.)
+//      `jasper.web.correction_crossover_v2_relay.start_program_phase_ladder`
+//      — the host module re-exported that name for a while and no longer
+//      does — see test 5 below.)
 //   2. A phone-tappable Stop — `stopCapture()` (wired to the shared "stop"
 //      button action) calls whichever capture leg's own `abort(reason)` is
 //      currently live, landing on the SAME terminal "Measurement stopped."
