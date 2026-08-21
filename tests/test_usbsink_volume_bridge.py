@@ -561,11 +561,21 @@ async def test_tick_retries_observation_declined_before_source_activation(
 # Bounded backoff for declined observations (jts3, 2026-08-20): jasper-control
 # can decline an observation for a long stretch — not just the boot/deploy
 # race above, but hours of USB being idle (the active-source gate) or a
-# stretch inside the coordinator's own-echo window. Retrying at the flat
-# base cadence forever measured ~3,200 POSTs/hour reporting an unchanged
-# slider. These tests pin the capped-exponential-backoff fix: bounded
-# retries, reset on value change, reset on acceptance.
+# recent cross-process write (remote/web/voice moved the canonical level
+# within the persistence echo window). Retrying at the flat base cadence
+# forever measured ~3,200 POSTs/hour reporting an unchanged slider. These
+# tests pin the capped-exponential-backoff fix: bounded retries, reset on
+# value change, reset on acceptance.
 # ----------------------------------------------------------------------
+
+
+def test_ceiling_stays_within_handoff_latency_budget():
+    # Bounds the USB source-handoff volume-mismatch window (a value pinned
+    # at the ceiling, then an unattributed jump once the host starts
+    # playback — see the prose comment above the constants in
+    # volume_bridge.py) to roughly ceiling + one poll tick, under the ~10 s
+    # household-perception budget that window must stay under.
+    assert POST_RETRY_CEILING_SEC <= 10.0
 
 
 def _expected_declined_post_times(

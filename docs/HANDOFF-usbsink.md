@@ -2387,17 +2387,24 @@ observation retry description was corrected to match
 (`POST_RETRY_INTERVAL_SEC` base, doubling by `POST_RETRY_BACKOFF_FACTOR` to
 a `POST_RETRY_CEILING_SEC` ceiling; reset on a slider move or an accepted
 post), not the flat once-per-second-forever retry the bullet previously
-described, and not the invented "a measurement hold, etc." decline reason a
-same-PR draft of the module comment briefly named — the real decline
-reasons at HEAD are the active-source gate and the coordinator's own-echo
-window. The flat retry was measured on the jts3 lab Pi posting ~3,200
-times/hour to report an unchanged slider while USB sat idle all day; an
-initial 30 s ceiling was tightened after an adversarial-gate finding that it
-widened the USB source-handoff volume-mismatch window (stale level, then an
-unattributed jump once the host starts playback) — current value and the
-full latency-vs-spam-rate tradeoff live in the prose comment above the
-constants in `volume_bridge.py`, not restated here. Nothing else in this
-doc was re-verified this pass.) Prior 2026-08-15: only the
+described. The bullet's decline-reason list went through two wrong drafts
+in this same PR before landing on the real ones: first "a measurement
+hold, etc." (a reason that doesn't exist at HEAD — it described an unlanded
+sibling branch), then "the coordinator's own-echo window" (verified
+unreachable for USB: `_stamp_outbound`, the only writer of the state
+`_is_own_echo` reads, has exactly two call sites in the whole `jasper/`
+tree — Spotify and Bluetooth — never USB, since USB never writes back to
+the gadget mixer). The real decline reasons at HEAD are the active-source
+gate and a recent cross-process write (remote/web/voice moved the canonical
+level within `PERSISTENCE_ECHO_WINDOW_SEC`). The flat retry was measured on
+the jts3 lab Pi posting ~3,200 times/hour to report an unchanged slider
+while USB sat idle all day; an initial 30 s ceiling was tightened after an
+adversarial-gate finding that it widened the USB source-handoff
+volume-mismatch window (stale level, then an unattributed jump once the
+host starts playback) — current value and the full latency-vs-spam-rate
+tradeoff live in the prose comment above the constants in
+`volume_bridge.py`, not restated here. Nothing else in this doc was
+re-verified this pass.) Prior 2026-08-15: only the
 Current-operational-truth banner's DIRECT-capture width sentence was
 re-verified, after the ring wire's default sample format flipped narrow →
 wide. The high-word truncation it stated

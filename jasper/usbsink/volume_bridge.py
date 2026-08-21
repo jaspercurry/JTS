@@ -58,10 +58,14 @@ logger = logging.getLogger(__name__)
 # Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
 # perceptible lag.
 POLL_INTERVAL_SEC = 0.25
-# When jasper-control declines an observation (USB not the active source yet
-# — the active-source gate — or the coordinator's own-echo window), retry
-# with a capped exponential backoff rather than hammering /volume/set at the
-# poll cadence forever. POST_RETRY_INTERVAL_SEC is the starting delay — short
+# When jasper-control declines an observation — e.g. the active-source gate
+# (USB isn't the active source yet) or a recent cross-process write (remote/
+# web/voice moved the canonical level within PERSISTENCE_ECHO_WINDOW_SEC) —
+# retry with a capped exponential backoff rather than hammering /volume/set
+# at the poll cadence forever. (volume_coordinator.py's own-echo window is
+# NOT one of these: it's stamped only for Spotify's and Bluetooth's outbound
+# writes, and USB never writes back to the gadget mixer, so it can never
+# fire for USBSINK.) POST_RETRY_INTERVAL_SEC is the starting delay — short
 # enough to close the boot/deploy race where the first mixer read arrives
 # before source activation — and each consecutive decline of the SAME value
 # doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to POST_RETRY_CEILING_SEC.
@@ -80,11 +84,12 @@ POLL_INTERVAL_SEC = 0.25
 # transition to the true slider position. A 30 s ceiling was rejected here:
 # it left the same ~3,200/hour spam un-killed by this backoff alone, cut the
 # residual POST rate only to ~120/hour, and widened the handoff window to
-# ~30.25 s — a jts3 measurement (21%->70%) showed that's an unattributed
-# +24.75 dB jump. A changed host value, or an accepted post, resets the
-# backoff to the base interval, so once jasper-control starts accepting
-# again the current slider position lands within one ceiling-length window
-# rather than waiting out the full backoff.
+# ~30.25 s — a jts3 measurement (21%->70%) implies an unattributed +24.75 dB
+# jump (the percent pair was measured; the dB figure is percent_to_db
+# arithmetic over it, not a separate dB measurement). A changed host value,
+# or an accepted post, resets the backoff to the base interval, so once
+# jasper-control starts accepting again the current slider position lands
+# within one ceiling-length window rather than waiting out the full backoff.
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
@@ -169,13 +174,15 @@ class VolumeBridge:
         bridge.run()  # async, blocks until cancelled
 
     The bridge does NOT cache jasper-control state. Every observed
-    mixer change triggers one POST; a declined value (the active-source
-    gate — USB isn't the active source — or the coordinator's own-echo
-    window) is retried with a capped exponential backoff until the
-    controller acknowledges it, so a long-lived decline costs one POST
-    every POST_RETRY_CEILING_SEC rather than one per poll. Accepted
-    values are deduplicated locally, while the coordinator owns source
-    and echo policy.
+    mixer change triggers one POST; a declined value (e.g. the
+    active-source gate — USB isn't the active source — or a recent
+    cross-process write within the persistence echo window; NOT the
+    coordinator's own-echo window, which is never stamped for USB) is
+    retried with a capped exponential backoff until the controller
+    acknowledges it, so a long-lived decline costs one POST every
+    POST_RETRY_CEILING_SEC rather than one per poll. Accepted values
+    are deduplicated locally, while the coordinator owns source and
+    echo policy.
     """
 
     def __init__(
