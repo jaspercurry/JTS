@@ -1871,8 +1871,9 @@ Owning modules and their gates:
 
 - alignment — [`crossover_v2/alignment_prescription.py`](../jasper/active_speaker/crossover_v2/alignment_prescription.py),
   `read_alignment_prescription`. Pins the inter-driver delay and, optionally,
-  the polarity basin. Bounded as a **bounded excursion** from a declared
-  measured basis (half a period at the corner).
+  the polarity basin. Bounded as a **bounded excursion** from a declared,
+  measured basis — at most half a period at the corner away from what that
+  measurement says coincident is.
 - topology — [`crossover_v2/topology_prescription.py`](../jasper/active_speaker/crossover_v2/topology_prescription.py),
   `read_topology_prescription`. Pins the crossover corner and order so a
   pre-registered Fc/slope tournament can measure chosen candidates. Bounded by
