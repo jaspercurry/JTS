@@ -802,7 +802,19 @@ MAX_LINES_BY_PATH = {
     # end of this dict, beside the `program_analysis` bump it moves with.
     # 2026-08-21 topology pin: 13,232 -> 13,282. Argued in the dated block at
     # the end of this dict, with the two files it moves with.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_282,
+    #
+    # 2026-08-21 (channel-map CROSS test becomes an isolation ratio):
+    # 13,282 -> 13,291, stacked on the topology pin above rather than counted
+    # on paper against the pre-pin number. +9, of which 3 execute —
+    # `_log_check_diag` emits each role's `channel_map_isolation_db` and, once,
+    # the bound those ratios were graded against. The 6 comment lines are why
+    # the BOUND is on the line at all: household copy for this refusal is
+    # number-free by design, so the diag IS the operator's record of it, and a
+    # ratio printed without the bar it was judged against silently re-reads
+    # every old line the next time the constant moves. The metric itself is
+    # `program_analysis`'s (see its bump at the end of this dict); this file
+    # only reports it.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_291,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1386,7 +1398,7 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_374,
+    "jasper/audio_measurement/program_analysis.py": 7_457,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its
@@ -1439,6 +1451,36 @@ MAX_LINES_BY_PATH = {
     #    "(pinned for this round)" and never as something the round measured.
     #    This file is a pure `status -> envelope` renderer, so a key it does not
     #    project is a key the browser cannot render.
+    #
+    # 2026-08-21 (channel-map CROSS test becomes an isolation ratio):
+    # `program_analysis` 7,374 -> 7,457, +83 counted (not estimated), of which
+    # ~13 execute. The retired `CHANNEL_MAP_CROSS_RISE_DB` was a flat additive
+    # bound tuned against a masked room floor, so a louder honest session made a
+    # healthy speaker fail a zero-retry hard stop. Where the lines went:
+    #   37  the new constant's derivation — the three-level hardware table, the
+    #       BASELINE-graph discriminator that ruled out crosstalk (the finding
+    #       rests on that, and a reader who cannot see it will re-tune the
+    #       number), and the ceiling argument: isolation can never exceed a
+    #       pilot's own target rise, so a bound above the TARGET floor makes
+    #       that floor unreachable and converts every low-SNR capture into a
+    #       rewire instruction. A 20 dB bound was proposed and MEASURED to flip
+    #       two of the suite's own honest fixtures; that measurement is the
+    #       reason 12.0 is not 20.0, and deleting it invites the revert.
+    #   18  `channel_map_isolation_db`, the ONE definition of the metric — the
+    #       verdict and both reporting surfaces read it, so the ratio an
+    #       operator sees beside a refusal is the ratio that caused it. The
+    #       alternative was three subtractions, which is the second-source-of-
+    #       truth this file's neighbours keep warning about.
+    #   28  the three docstrings the change falsified: `_channel_map_ok`'s CROSS
+    #       bullet and its return contract, and `PilotObservation`'s note on why
+    #       the two RAW rises stay published beside a ratio derived from them.
+    # No seam to cut: this is one threshold and its argument, and extracting a
+    # constant's reasons from the constant is how a threshold stops carrying
+    # them. The two behavioural additions went to the modules that own them —
+    # the diag field to `capture_dispatch._pilot_diag_fields`, the emit to the
+    # flow (+9, above) — not here. The topology pin above did not move this
+    # file, so this bump stacks on nothing: 7,374 is still the number it
+    # started from.
 }
 
 

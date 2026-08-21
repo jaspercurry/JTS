@@ -933,51 +933,43 @@ PILOT_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min)
 # -78.9 dBFS ambient floor — 27 dB of real, ignored SNR).
 CHANNEL_MAP_TARGET_RISE_DB = 12.0
 
-# The CROSS test is a RATIO, not an additive bound (2026-08-21, jts3).
-#
-# It was `cross_rise >= CHANNEL_MAP_CROSS_RISE_DB` with that constant at a flat
-# 6.0 dB — tuned against the OLD measurement frame's room floor, which MASKED
-# the cross-band content an honest capture always carries. Raise the session
-# level and the mask lifts, so the same healthy speaker starts failing a hard
-# stop that tells its household to rewire it. One speaker, one basin-2 config,
-# byte-identical graph, three session levels (all from
-# `event=correction.crossover_v2_check_diag`):
+# The CROSS test is a RATIO, not an additive bound (2026-08-21, jts3). It was
+# `cross_rise >= 6.0` — a constant tuned against the OLD measurement frame's
+# room floor, which MASKED the cross-band content an honest capture always
+# carries. Raise the session level, the mask lifts, and the SAME healthy
+# speaker fails a `channel_map_mismatch` hard stop that tells its household to
+# rewire it. One speaker, one basin-2 config, byte-identical graph
+# (`event=correction.crossover_v2_check_diag`, rows also pinned as fixtures in
+# `test_channel_map_accepts_every_measured_session_level`):
 #
 #   session ref   seat SPL   woofer target/cross   tweeter target/cross  verdict
 #   -27.5 (old)     68.1 dB    53.4 / -0.79          (healthy)            pass
 #    -9.77          73.3 dB    48.5 /  4.13          71.7 / 10.81         FAIL
 #    -6.80          78.6 dB    51.4 /  7.27          73.1 / 15.23         FAIL
 #
-# What that cross energy IS was established by a two-level discriminator run
-# through the BASELINE graph: cross-band rise stayed <=3 dB at BOTH the -16.8
-# and -6.8 faders while own-band rises tracked the fader exactly — so the chain
-# is linear and there is no electrical crosstalk. Through the per-driver
-# ROUTING graph (which strips no crossover filters) the CHECK instead sees
-# program-segment SKIRT content plus modest driver nonlinearity: content at a
-# roughly FIXED RELATIVE level, which an additive bound cannot describe and a
-# ratio can. The isolation ratio `target_rise - cross_rise` on those same rows
-# is 44.4 / 60.9 dB (73.3 dB SPL), 44.1 / 57.9 dB (78.6 dB SPL) and 54.2 dB
-# (old frame) — flat across a 10.5 dB span of session level. A true channel
-# swap, or a driver fed both bands, lands near 0.
+# The cross energy is not electrical crosstalk, and that was MEASURED: a
+# two-level discriminator through the BASELINE graph held cross-band rise at
+# <=3 dB at both the -16.8 and -6.8 faders while own-band rises tracked the
+# fader exactly. Through the per-driver ROUTING graph (which strips no
+# crossover filters) CHECK instead sees program-segment SKIRT content plus
+# modest driver nonlinearity — content at a roughly FIXED RELATIVE level, which
+# an additive bound cannot describe and a ratio can. `target_rise - cross_rise`
+# on those rows reads 54.2 / 44.4 / 60.9 / 44.1 / 57.9 dB: flat across a 10.5 dB
+# span of level. A swap, or a driver fed both bands, lands near 0.
 #
-# Why 12.0 and not higher. Isolation can never EXCEED this pilot's own target
-# rise, because cross rise is >=0 whenever the other band merely sits at its
-# ambient. A bound above `CHANNEL_MAP_TARGET_RISE_DB` would therefore make that
-# floor unreachable — the CROSS test would silently become a STRICTER TARGET
-# test, and a genuinely quiet-but-correct pilot would refuse as a rewire
-# instruction instead of the honest `snr_floor`. Measured, not argued: at a
-# 20 dB bound two of this suite's own honest fixtures flip to
-# `channel_map_mismatch` —
-# `test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail` at
-# 17.20 dB isolation and
-# `test_measure_backed_off_into_a_noisy_room_reports_insufficient` at 19.49 dB
-# — which is exactly the #2052/#2644 class (a hard stop telling a household to
-# open its speaker, decided on evidence that was never there). 12.0 is the
-# largest bound that keeps the TARGET floor live while still refusing a swap
-# (~0 dB) and a heavy-bleed shape (10 dB), and it clears every honest row on
-# record: >=32 dB of margin under tonight's hardware, 5.2 dB under the
-# quietest synthetic fixture in the suite. PROVISIONAL, like its neighbours,
-# pending broader hardware runs.
+# Why 12.0 and not higher — the part that bites. Isolation can never EXCEED a
+# pilot's own target rise, because cross rise is >=0 whenever the other band
+# merely sits at its ambient. So a bound above `CHANNEL_MAP_TARGET_RISE_DB`
+# makes that floor UNREACHABLE: the CROSS test silently becomes a stricter
+# TARGET test, and a quiet-but-correct pilot refuses as a rewire instruction
+# instead of the honest, retriable `snr_floor` — the #2052/#2644 class, one
+# rung up. Measured, not argued: at a 20 dB bound two of this suite's own
+# honest fixtures flip to `channel_map_mismatch`, at 17.20 dB and 19.49 dB of
+# isolation. 12.0 is the largest bound that keeps the floor live while still
+# refusing a swap (~0 dB) and a heavy bleed (10 dB); margins are >=32 dB under
+# the table above and 5.2 dB under the quietest fixture in the suite.
+# `test_channel_map_isolation_bound_cannot_supersede_the_target_floor` pins the
+# ceiling. PROVISIONAL, like its neighbours, pending broader hardware runs.
 CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 
 # VERIFY tracking-error smoothing: 1/6-octave, the constant design §5.2 names

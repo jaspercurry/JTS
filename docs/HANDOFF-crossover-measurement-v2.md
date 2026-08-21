@@ -5663,7 +5663,8 @@ no retries-as-bodge). Treat these as regression fences.
     zero retry budget** that told the household to rewire a correctly-wired
     speaker and blocked every measurement round in the louder frame. One
     speaker, one basin-2 config, byte-identical graph, three levels (read off
-    `event=correction.crossover_v2_check_diag`):
+    `event=correction.crossover_v2_check_diag`; the executable copy of these
+    rows is `test_channel_map_accepts_every_measured_session_level`):
 
     | session ref | seat SPL | woofer target/cross | tweeter target/cross | verdict |
     |---|---|---|---|---|
