@@ -1610,7 +1610,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # ONE condition owns both the refusal sentence and the refusal's own
     # resolution button below (review N-2). They were gated differently — the
     # sentence also required `gradeable` — so an ungradeable prediction beside
-    # an action-carrying refusal rendered a bare "Confirm safety limits" button
+    # an action-carrying refusal rendered a bare "Review safety limits" button
     # with nothing explaining why it was there.
     #
     # Aligned toward SHOWING both, not hiding one. A household in that state
@@ -3523,10 +3523,10 @@ def _failure_envelope(
         # copy + the phone's stopped/failed status stay visible together. The
         # renderer only shows the QR for an IN-FLIGHT relay, so a purged
         # session never re-advertises a live link here.
-        # Issue #1820: a hard-stop reason that knows the exact control which
-        # clears it (``program_profile_not_confirmed`` → the confirm-safety-
-        # limits button) declares that control on its own ReasonSpec, and it
-        # wins over this screen's generic "Back to speaker setup" destination.
+        # Issue #1820: a hard-stop reason that knows the exact place which
+        # explains it (``program_profile_not_confirmed`` → the safety-limits
+        # review callout) declares that destination on its own ReasonSpec, and
+        # it wins over this screen's generic "Back to speaker setup" one.
         # The registry stays the single copy source for BOTH halves — the
         # sentence and the button it points at — so the verdict text and the
         # action can never disagree about what the household should do next.

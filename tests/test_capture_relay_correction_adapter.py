@@ -2043,7 +2043,7 @@ def test_crossover_level_start_refuses_unauthorized_driver_safety_profile(
     )
 
     with pytest.raises(
-        ValueError, match="confirm the driver safety details in speaker setup"
+        ValueError, match="review the driver safety details in speaker setup"
     ):
         body = json.dumps({"capture_geometry": "near_field"}).encode()
         handler = SimpleNamespace(

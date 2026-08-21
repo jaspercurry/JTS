@@ -90,7 +90,7 @@ function el(tag, attrs = {}, children = []) {
 // control beside the message. It exists because a SESSION-OPEN refusal never
 // reaches the envelope: the envelope renders from a persisted `failure`, and the
 // pre-flight refuses before any state is written, on purpose. Without this the
-// household read "confirm the safety limits in speaker setup" as flat text and
+// household read "review the limits in speaker setup" as flat text and
 // had to go find the control themselves — one navigation plus one click, for a
 // refusal whose exact remedy the server already named. The server sends it in
 // the 400 body (`next_action`), from the same registry entry the hard-stop

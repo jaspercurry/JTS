@@ -3254,10 +3254,13 @@ def test_design_draft_save_payload_requires_strict_revision_contract() -> None:
         sound_setup._active_speaker_design_draft_save_payload({
             "expected_revision": True,
         })
-    with pytest.raises(ValueError, match="confirm_safety_profile must be boolean"):
+    # The separate confirm step was retired -- saving the declaration IS
+    # declaring it -- so this key is no longer part of the request contract at
+    # all, and a stale client sending it is told so rather than silently obeyed.
+    with pytest.raises(ValueError, match="unknown fields: confirm_safety_profile"):
         sound_setup._active_speaker_design_draft_save_payload({
             "expected_revision": 0,
-            "confirm_safety_profile": 1,
+            "confirm_safety_profile": True,
         })
     with pytest.raises(ValueError, match="unknown fields: typo"):
         sound_setup._active_speaker_design_draft_save_payload({
@@ -3347,7 +3350,6 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
         "driver_research": _research_result(request),
         "manual_settings": _manual_settings(),
         "operator_inputs": _operator_inputs(),
-        "confirm_safety_profile": True,
     })
     before = draft_path.read_bytes()
 
@@ -3364,9 +3366,21 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     )
 
 
-def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
+def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
+    """The nanny loop, pinned shut at the seam that caused it.
+
+    Accepting a measured crossover writes the Sound declaration from the ROOT
+    correction-web process, with no human present. Before this change that write
+    went through ``build_driver_safety_profile`` with ``confirm=False``, so it
+    could only ever CARRY a confirmation forward -- and on a box where there was
+    nothing to carry (a prior profile already stale/malformed, or a driver
+    detail edited between measurements) the machine's own write landed
+    ``needs_confirmation`` and every measurement surface then refused until a
+    human clicked Confirm in the wizard. The declaration the machine just wrote
+    must read as current.
+    """
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from jasper.active_speaker.design_draft import load_design_draft
     from tests.active_speaker_fixtures import mono_output_topology
@@ -3390,9 +3404,9 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {"notes": "keep this"},
-        "confirm_safety_profile": True,
     })
-    original_confirmation = original["driver_safety_profile"]["confirmation"]
+    # The starting state is the one the loop needs: a usable declaration.
+    assert original["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
 
     saved = sound_setup.apply_measured_crossover_geometry(
         expected_revision=1,
@@ -3410,8 +3424,21 @@ def test_measured_fc_uses_sound_cas_and_preserves_confirmation(
     assert saved["manual_settings"]["crossover_candidates"][0][
         "frequency_hz"
     ] == 5750
-    assert saved["driver_safety_profile"]["confirmation"] == original_confirmation
+    # The whole point: the machine's own write does not lock the loop it is
+    # part of. Also asserted on the RELOADED artifact, since the gates read from
+    # disk rather than from this return value.
+    profile = saved["driver_safety_profile"]
+    assert profile["status"] == "confirmed"
+    assert (
+        profile["confirmation"]["confirmed_fingerprint"]
+        == profile["profile_fingerprint"]
+    )
     assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    reloaded = load_design_draft(topology=topology)
+    assert reloaded["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    # And it is still not an audio authorization.
+    assert profile["authorizes_playback"] is False
+
     with pytest.raises(ValueError, match="another session"):
         sound_setup.apply_measured_crossover_geometry(
             expected_revision=1,
@@ -3457,7 +3484,6 @@ def test_apply_measured_crossover_geometry_saves_durably(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {},
-        "confirm_safety_profile": True,
     })
     assert fsync_calls == []  # ordinary wizard save: no fsync
 
@@ -3502,7 +3528,6 @@ def test_apply_measured_crossover_geometry_writes_slope_only_change(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {},
-        "confirm_safety_profile": True,
     })
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
@@ -3552,7 +3577,6 @@ def test_apply_measured_crossover_geometry_writes_frequency_and_slope_together(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {},
-        "confirm_safety_profile": True,
     })
 
     saved = sound_setup.apply_measured_crossover_geometry(
@@ -3600,7 +3624,6 @@ def test_apply_measured_crossover_geometry_refuses_when_declared_slope_moved(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {},
-        "confirm_safety_profile": True,
     })
 
     with pytest.raises(
@@ -3649,7 +3672,6 @@ def test_apply_measured_crossover_geometry_refuses_when_declared_slope_absent(
         "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": {},
-        "confirm_safety_profile": True,
     })
 
     with pytest.raises(

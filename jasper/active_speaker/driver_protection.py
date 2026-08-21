@@ -314,12 +314,12 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     research + manual-settings merge, which can carry a research-only value
     that no confirmation gate has seen.
 
-    Confirmation is validated elsewhere and stays there:
+    Believability is validated elsewhere and stays there:
     ``driver_safety._target_issues`` refuses a *visible* declaration that is not
     believable for its style (``<role>:low_limit_implausible_for_style``), and
-    ``build_driver_safety_profile`` raises rather than confirm a profile
-    carrying that issue. Note what that does NOT buy since the 2026-08-17
-    ruling: a confirmed declaration may sit BELOW this module's
+    ``build_driver_safety_profile`` lands ``incomplete`` — never ``confirmed`` —
+    for a profile carrying that issue. Note what that does NOT buy since the
+    2026-08-17 ruling: a confirmed declaration may sit BELOW this module's
     ``min_highpass_hz`` class default, because a published manufacturer figure
     wins outright. "Confirmed" now means plausible for the style, never at or
     above policy — and either way it is a property of the confirmed profile,

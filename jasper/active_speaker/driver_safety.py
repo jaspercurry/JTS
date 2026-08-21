@@ -124,10 +124,10 @@ class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
     Its own bands and protective high-pass disagree about where the driver
     stops, which is what the 2026-08-17 ruling exists to end. Split out from
     the generic malformed case so the household is told the ACTIONABLE thing --
-    re-confirm the driver profile at /sound/ -- rather than "schema invalid",
-    which reads as corruption and suggests no remedy. Playback is unaffected:
-    the staged CamillaDSP graph is a separate artifact, so the speaker keeps
-    working while the profile waits to be re-confirmed.
+    review the driver profile at /sound/ and save it again -- rather than
+    "schema invalid", which reads as corruption and suggests no remedy.
+    Playback is unaffected: the staged CamillaDSP graph is a separate artifact,
+    so the speaker keeps working while the profile waits to be rebuilt.
     """
 
 
@@ -135,9 +135,16 @@ class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
 class DriverSafetyProfileEvaluation:
     """Fail-closed freshness result for one persisted safety profile.
 
-    ``confirmed_and_current`` describes only this contract.  It is explicitly
-    not permission to emit audio; excitation and live protected-graph checks
-    remain separate downstream gates.
+    ``confirmed_and_current`` means the declaration is schema-valid, its
+    fingerprint is intact, it is bound to the CURRENT hardware targets, and it
+    carries no blocking issues.  It is explicitly not permission to emit audio;
+    excitation and live protected-graph checks remain separate downstream
+    gates.  It is also not a record that a human clicked anything: saving the
+    declaration is declaring it, so every write of structurally sound values
+    lands ``confirmed``.  What still evaluates false is what was always worth
+    failing closed on -- ``missing``, ``malformed``, ``stale`` (the outputs
+    moved underneath it), and ``incomplete`` (the declared values carry
+    blocking issues).
     """
 
     status: str
@@ -1403,7 +1410,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     robs usable range, a needlessly low level under-drives the measurement —
     and buys nothing the clamps do not already guarantee.  The operator is the
     arbiter: /sound/ echoes every consumed value back with its published or
-    estimated badge and its source before anything is confirmed.
+    estimated badge and its source before anything is saved.
 
     What did **not** move is the protection itself.  ``_target_issues`` still
     refuses an estimate that lands outside code policy — the per-style
@@ -1872,7 +1879,7 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
                 reasons.append(f"{role}:{item.get('kind')}_cutoff_outside_hard_band")
     # The style table used to VETO here: a declared high-pass below the class
     # default landed ``<role>:highpass_below_code_policy`` and the profile
-    # refused to confirm. The 2026-08-17 ruling (#2603) reversed that -- a
+    # landed incomplete. The 2026-08-17 ruling (#2603) reversed that -- a
     # sourced manufacturer figure wins outright, and B&C's published 1.6 kHz
     # for the DE250 is exactly the number the 2 kHz class default was rejecting.
     # What remains is a plausibility bound: a declared low limit wildly away
@@ -1992,8 +1999,8 @@ def _profile_core(
             # both -- so a household that deliberately entered a stricter
             # number was told only that the field was derived, never that their
             # own entry had been superseded and by what. Naming it is what
-            # makes the replacement reviewable at the confirm gate, where every
-            # unknown is shown before anything is frozen.
+            # makes the replacement reviewable on the page, where every unknown
+            # is shown before the save that freezes it.
             replaced = _superseded_typed_highpass(visible, derived) if (
                 field == "required_protection_filters"
             ) else ()
@@ -2104,55 +2111,53 @@ def build_driver_safety_profile(
     *,
     manual_settings: Mapping[str, Any] | None,
     driver_research: Mapping[str, Any] | None,
-    prior_profile: Mapping[str, Any] | None = None,
-    confirm: bool = False,
-    confirmed_at: str | None = None,
+    saved_at: str,
 ) -> dict[str, Any]:
-    """Build or preserve the immutable profile for the visible current values."""
+    """Build the immutable profile for the visible current values.
+
+    Saving the declaration IS declaring it: every write stamps the confirmation
+    over the values it just wrote, so the only two outcomes are ``incomplete``
+    (the declared values carry blocking issues) and ``confirmed``. There is no
+    separate operator confirm step and no confirmation to preserve across a
+    rebuild -- which is why this takes neither a ``prior_profile`` nor a
+    ``confirm`` flag.
+
+    Why that is not a dropped safety gate: the confirmation bit never
+    authorized playback (``authorizes_playback`` is unconditionally ``False``),
+    and every physical protection -- the excitation ledger and its permitted
+    bands, the limiters, the output ceiling, the commissioning level stops --
+    reads the declared LIMITS, not the bit. What the bit actually gated was a
+    second human acknowledgement of numbers a human had already typed -- which
+    the crossover-accept seam could not supply for its own machine-measured
+    write. That seam saved with ``confirm=False``, so it could only ever CARRY
+    an existing confirmation forward; wherever there was nothing to carry (a
+    prior profile already stale or malformed, or a driver detail edited between
+    measurements) the machine's own write landed ``needs_confirmation`` and then
+    refused the very measurement loop that produced the value. ``issues`` still
+    blocks, so a garbage or half-declared profile is still fail-closed.
+    """
 
     normalised_manual = _normalise_profile_manual_settings(topology, manual_settings)
     core, issues = _profile_core(topology, normalised_manual, driver_research)
     fingerprint = _fingerprint(core)
-    prior_evaluation = evaluate_driver_safety_profile(prior_profile, topology)
-    prior_confirmation = (
-        prior_profile.get("confirmation")
-        if isinstance(prior_profile, Mapping)
-        and prior_profile.get("profile_fingerprint") == fingerprint
-        and isinstance(prior_profile.get("confirmation"), Mapping)
-        and prior_evaluation.confirmed_and_current
-        else None
-    )
-    if confirm and issues:
-        raise DriverSafetyProfileError(
-            "driver safety profile cannot be confirmed: " + ", ".join(issues)
-        )
-    confirmation_time = None
-    if confirm:
-        confirmation_time = _text(
-            confirmed_at,
-            "driver_safety_profile.confirmed_at",
-            required=True,
-            max_chars=64,
-        )
     confirmation: dict[str, Any] | None = None
-    if confirm:
+    if not issues:
         confirmation = {
             "confirmed_fingerprint": fingerprint,
-            "confirmed_at": confirmation_time,
+            "confirmed_at": _text(
+                saved_at,
+                "driver_safety_profile.confirmed_at",
+                required=True,
+                max_chars=64,
+            ),
+            # The stored literal is unchanged so profiles already on disk stay
+            # canonical, and it stays true: every write of this declaration
+            # originates from an operator action on a page that shows the values
+            # -- the /sound/ save, or Apply on the crossover review screen that
+            # picked the measured candidate. There is no headless writer.
             "method": "operator_reviewed_visible_values",
         }
-    elif (
-        not issues
-        and prior_confirmation
-        and prior_confirmation.get("confirmed_fingerprint") == fingerprint
-    ):
-        confirmation = dict(prior_confirmation)
-    if issues:
-        status = "incomplete"
-    elif confirmation:
-        status = "confirmed"
-    else:
-        status = "needs_confirmation"
+    status = "incomplete" if issues else "confirmed"
     profile = {
         **core,
         "profile_fingerprint": fingerprint,
@@ -2161,18 +2166,9 @@ def build_driver_safety_profile(
         "issues": _profile_issue_payload(issues),
     }
     evaluation = evaluate_driver_safety_profile(profile, topology)
-    expected_evaluation_status = {
-        "incomplete": "incomplete",
-        "needs_confirmation": "unconfirmed",
-        "confirmed": "confirmed",
-    }[status]
-    if evaluation.status != expected_evaluation_status:
+    if evaluation.status != status:
         raise DriverSafetyProfileError(
             "driver safety profile builder produced an incoherent artifact"
-        )
-    if confirm and not evaluation.confirmed_and_current:
-        raise DriverSafetyProfileError(
-            "driver safety profile confirmation did not validate as current"
         )
     return profile
 
@@ -2234,6 +2230,10 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         required=True,
         max_chars=160,
     )
+    # ``needs_confirmation`` is no longer WRITTEN -- the builder emits only
+    # ``incomplete`` or ``confirmed`` -- but stays readable so a box carrying a
+    # profile saved before the confirm step was retired is not reported as
+    # corrupt. ``evaluate_driver_safety_profile`` reads it as current.
     if profile.get("status") not in {
         "incomplete",
         "needs_confirmation",
@@ -2741,12 +2741,15 @@ def evaluate_driver_safety_profile(
             tuple(derived_issues),
         )
     if profile.get("status") == "needs_confirmation" and confirmation is None:
-        return DriverSafetyProfileEvaluation(
-            "unconfirmed",
-            False,
-            str(fingerprint),
-            ("driver_safety_profile_not_confirmed",),
-        )
+        # A profile written before the confirm step was retired, read under the
+        # CURRENT definition of confirmed: the declared values are structurally
+        # sound and bound to this hardware, which is the whole of what the word
+        # means now. The only thing this artifact is missing is a second human
+        # acknowledgement that no longer exists, so it reads as current here
+        # rather than locking the measurement loop out of an already-deployed
+        # box until somebody re-saves the same numbers. The next save collapses
+        # the stored status; no migration pass is needed.
+        return DriverSafetyProfileEvaluation("confirmed", True, str(fingerprint), ())
     if (
         profile.get("status") != "confirmed"
         or not isinstance(confirmation, Mapping)

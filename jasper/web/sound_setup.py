@@ -2355,7 +2355,6 @@ def _active_speaker_design_draft_save_payload(
         "driver_research",
         "manual_settings",
         "operator_inputs",
-        "confirm_safety_profile",
         "expected_revision",
     }
     unknown = sorted(str(key) for key in raw if key not in allowed)
@@ -2372,10 +2371,6 @@ def _active_speaker_design_draft_save_payload(
         or expected_revision < 0
     ):
         raise ValueError("expected_revision must be a non-negative integer")
-    if "confirm_safety_profile" in raw and not isinstance(
-        raw.get("confirm_safety_profile"), bool
-    ):
-        raise ValueError("confirm_safety_profile must be boolean")
     topology, _guards_changed = ensure_missing_software_guards()
     payload = save_design_draft(
         topology,
@@ -2383,7 +2378,6 @@ def _active_speaker_design_draft_save_payload(
         driver_research=raw.get("driver_research"),
         manual_settings=raw.get("manual_settings"),
         operator_inputs=raw.get("operator_inputs"),
-        confirm_safety_profile=raw.get("confirm_safety_profile") is True,
         expected_revision=expected_revision,
         durable=durable,
     )
@@ -2521,7 +2515,6 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
             driver_research=draft.get("driver_research"),
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
-            prior_safety_profile=draft.get("driver_safety_profile"),
             created_at=draft.get("created_at"),
         )
         draft["revision"] = saved_revision

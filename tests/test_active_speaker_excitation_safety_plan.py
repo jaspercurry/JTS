@@ -119,8 +119,7 @@ def _profile_and_targets(
         topology,
         manual_settings=settings,
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-13T12:00:00Z",
+        saved_at="2026-07-13T12:00:00Z",
     )
     targets = {target["role"]: target for target in active_driver_targets(topology)}
     return topology, profile, targets
@@ -182,20 +181,39 @@ def test_closed_generator_rejects_positive_gain():
         )
 
 
-def test_safety_plan_refuses_unconfirmed_profile():
+def test_safety_plan_refuses_a_profile_it_cannot_read_back():
+    """The deep gate still fails closed on an unusable declaration.
+
+    What it no longer refuses is a declaration nobody re-acknowledged: the
+    confirm ceremony is gone, and a profile carrying that legacy status reads as
+    current (pinned in tests/test_active_speaker_driver_safety.py). What still
+    stops every sweep is a declaration this code cannot trust -- here a
+    fingerprint that does not match the values it claims to cover.
+    """
+
     topology, profile, targets = _profile_and_targets()
-    unconfirmed = dict(profile)
-    unconfirmed["status"] = "needs_confirmation"
-    unconfirmed["confirmation"] = None
+    tampered = dict(profile)
+    tampered["profile_fingerprint"] = "0" * 64
     with pytest.raises(
         ExcitationSafetyPlanError,
         match=ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value,
     ):
         prepare_driver_excitation_plan(
             topology,
-            unconfirmed,
+            tampered,
             _requested(targets["woofer"]["target_fingerprint"]),
         )
+
+    # And the legacy status is genuinely admitted, so the test above is about
+    # the fingerprint rather than passing by accident.
+    legacy = dict(profile)
+    legacy["status"] = "needs_confirmation"
+    legacy["confirmation"] = None
+    prepare_driver_excitation_plan(
+        topology,
+        legacy,
+        _requested(targets["woofer"]["target_fingerprint"]),
+    )
 
 
 # --- resolve_driver_excitation_ceilings: two-invariant protection model ------

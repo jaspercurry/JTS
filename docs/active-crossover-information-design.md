@@ -412,8 +412,11 @@ context demotes that obsolete binding while retaining the normalized manual
 values and safety profile.
 Before an
 automatic isolated-driver measurement can run, every physical driver target
-must have a separately versioned, explicitly confirmed safety profile bound to
-the current topology target. That profile distinguishes:
+must have a separately versioned, declared safety profile bound to the current
+topology target. Declaring it is saving it: there is no second confirm step,
+because the value the machine writes at the crossover-accept seam has no human
+to vouch for it and the ceremony only ever stopped the loop the accept was part
+of. That profile distinguishes:
 
 - the hard minimum and maximum excitation frequencies;
 - required high/low-pass protection, including cutoff and minimum slope;
@@ -433,14 +436,15 @@ the current topology target. That profile distinguishes:
 `usable_frequency_range_hz` is descriptive product information, not a hard
 safety boundary. A filter cutoff is not a brick wall either: required filter
 slope and the hard excitation edge remain separate facts. Missing, unknown,
-unconfirmed, stale, or target-mismatched safety facts refuse new automatic
+incomplete, stale, or target-mismatched safety facts refuse new automatic
 isolated-driver audio. They do not mute an already working normal-playback
 graph merely because the newer commissioning profile has not been created.
-Every profile field is visible and editable in `/sound/`; confirmation freezes
+Every profile field is visible and editable in `/sound/`; a save freezes
 the normalized visible values, their target/value binding, code-owned policy
 snapshot, unknowns, and field provenance. Any target, topology, output,
-driver-style, make/model, or visible safety-value change invalidates the prior
-confirmation. The profile always reports `authorizes_playback=false`: a later
+driver-style, make/model, or visible safety-value change rotates the profile
+fingerprint, and the next save re-freezes the declaration over it. The profile
+always reports `authorizes_playback=false`: a later
 adapter must still compose and freshly prove the stricter excitation and live
 graph authorities.
 

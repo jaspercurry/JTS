@@ -286,46 +286,48 @@ def test_the_flow_reason_code_is_the_admission_slug():
 # --------------------------------------------------------------------------- #
 
 
-def test_profile_not_confirmed_copy_names_confirmation_never_re_editing():
-    """The harmful advice, pinned out. Editing the driver details rotates the
-    profile fingerprint (``build_driver_safety_profile``), which CLEARS an
-    existing confirmation — so "re-check the driver details" is a loop, not a
-    fix, for this one reason."""
+def test_profile_not_confirmed_copy_names_the_save_never_re_editing():
+    """The harmful advice, pinned out. "Re-check the driver details" was the one
+    action that made this worse. And the copy must no longer name a CONFIRM
+    step: there isn't one — the states that still reach this code (``stale``,
+    ``malformed``) are cleared by an ordinary save."""
 
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
     copy = spec.message.lower()
-    assert "confirm the safety limits" in copy
+    assert "save them again" in copy
     assert "re-check the driver details" not in copy
+    assert "confirm" not in copy
     # Terminal: a second identical measurement reproduces it exactly.
     assert spec.template == TEMPLATE_HARD_STOP
     assert spec.retry_budget == 0
 
 
-def test_profile_not_confirmed_action_deep_links_the_confirm_control():
+def test_profile_not_confirmed_action_deep_links_the_review_callout():
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
     assert spec.next_action == {
-        "id": "confirm_safety_limits",
-        "label": "Confirm safety limits",
+        "id": "review_safety_limits",
+        "label": "Review safety limits",
         "href": "/sound/setup/#confirm-safety-limits",
     }
 
 
 # --------------------------------------------------------------------------- #
-# the two states where "confirm" is the WRONG action (review round, S2/S3)
+# the two states where "review and save" is the WRONG action (review round,
+# S2/S3)
 # --------------------------------------------------------------------------- #
 
 
-def test_missing_profile_never_tells_the_household_to_confirm():
+def test_missing_profile_never_tells_the_household_to_review_limits():
     """Reproduced by the reviewer on a never-saved / unreadable / pre-crossover
-    draft: ``/sound/`` renders NO confirm control when the evaluation is
-    ``missing`` (correctly — there is nothing to confirm), so copy telling the
-    household to "confirm the safety limits" names a button that is not on the
-    page. This state keeps the pre-gate's original, correct action."""
+    draft: ``/sound/`` renders NO safety callout when the evaluation is
+    ``missing`` (correctly — there is no declaration to review), so copy telling
+    the household to review the limits names a panel that is not on the page.
+    This state keeps the pre-gate's original, correct action."""
 
     assert v2host.profile_refusal_code("missing") == REASON_PROGRAM_PROFILE_MISSING
     spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_MISSING]
     copy = spec.message.lower()
-    assert "confirm the safety limits" not in copy
+    assert "review the limits" not in copy
     assert "finish the driver details" in copy
     assert spec.template == TEMPLATE_HARD_STOP and spec.retry_budget == 0
     # No fragment: there is no callout to land on in this state.
@@ -333,10 +335,11 @@ def test_missing_profile_never_tells_the_household_to_confirm():
     assert spec.next_action["href"] == "/sound/setup/"
 
 
-def test_incomplete_profile_asks_for_the_values_not_a_confirm_the_server_refuses():
-    """``build_driver_safety_profile`` raises while derived issues exist, so a
-    "Confirm" button here 400s. The refusal copy names the same action
-    ``/sound/``'s own callout already names for this state."""
+def test_incomplete_profile_asks_for_the_values_not_a_save_that_changes_nothing():
+    """A save with values missing rebuilds the same ``incomplete`` profile, so
+    "save them again" would send the household in a circle. The refusal copy
+    names the same action ``/sound/``'s own callout already names for this
+    state."""
 
     assert (
         v2host.profile_refusal_code("incomplete") == REASON_PROGRAM_PROFILE_INCOMPLETE
@@ -347,15 +350,17 @@ def test_incomplete_profile_asks_for_the_values_not_a_confirm_the_server_refuses
     assert "advanced" in copy
     assert spec.next_action is not None
     assert spec.next_action["label"] == "Add the missing limits"
-    assert "confirm" not in spec.next_action["label"].lower()
+    assert "save" not in spec.next_action["label"].lower()
 
 
-@pytest.mark.parametrize("status", ["unconfirmed", "stale", "malformed", ""])
-def test_every_other_evaluation_status_is_cleared_by_confirming(status):
-    """One confirm action saves the visible values and rebuilds the profile, so
-    a rotated fingerprint, an output change, and a corrupt artifact all end the
-    same way. An unknown status falls here too — fail toward the state that has
-    a working control rather than one that has none."""
+@pytest.mark.parametrize("status", ["stale", "malformed", ""])
+def test_every_other_evaluation_status_is_cleared_by_saving(status):
+    """One ordinary save rebuilds the profile from the visible values, so an
+    output change and a corrupt artifact end the same way. An unknown status
+    falls here too — fail toward the state whose remedy always exists.
+
+    ``unconfirmed`` is deliberately absent: the evaluation no longer produces
+    it, because saving the declaration IS declaring it."""
 
     assert v2host.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
 
@@ -378,7 +383,7 @@ def test_hard_stop_screen_renders_the_reasons_own_action():
     env = build_crossover_envelope_v2(_status(REASON_PROGRAM_PROFILE_NOT_CONFIRMED))
     assert env["screen"] == "hard_stop"
     assert env["next_action"]["href"] == "/sound/setup/#confirm-safety-limits"
-    assert env["next_action"]["label"] == "Confirm safety limits"
+    assert env["next_action"]["label"] == "Review safety limits"
     assert env["verdict_text"] == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
@@ -395,15 +400,14 @@ def test_hard_stop_screen_renders_the_reasons_own_action():
 # --------------------------------------------------------------------------- #
 
 
-def _profile(topology, *, confirm: bool):
+def _profile(topology, *, saved_at: str = "2026-07-28T12:00:00Z"):
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     return build_driver_safety_profile(
         topology,
         manual_settings=_manual_settings(),
         driver_research=None,
-        confirm=confirm,
-        confirmed_at="2026-07-28T12:00:00Z" if confirm else None,
+        saved_at=saved_at,
     )
 
 
@@ -485,19 +489,24 @@ def session_open(monkeypatch):
     )
 
 
-def test_unconfirmed_profile_refuses_at_session_open_with_the_named_reason(
+def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     session_open, caplog,
 ):
     """No link minted, no session burned: ``prepare_v2_session`` raises BEFORE
     it registers the relay session, and it says the same sentence the phone's
-    failure screen would have said four screens later."""
+    failure screen would have said four screens later.
+
+    The state exercised is ``malformed`` rather than the retired
+    ``unconfirmed``: a declaration JTS cannot read back is one of the two things
+    that still legitimately stops the loop."""
     import logging
 
     env = session_open
-    profile = _profile(env.topology, confirm=False)
+    profile = dict(_profile(env.topology))
+    profile["profile_fingerprint"] = "0" * 64
     assert evaluate_driver_safety_profile(
         topology=env.topology, profile=profile
-    ).status == "unconfirmed"
+    ).status == "malformed"
     env.install(profile)
 
     with caplog.at_level(logging.WARNING):
@@ -509,11 +518,11 @@ def test_unconfirmed_profile_refuses_at_session_open_with_the_named_reason(
     assert str(excinfo.value) == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     )
-    assert "confirm the safety limits" in str(excinfo.value).lower()
+    assert "save them again" in str(excinfo.value).lower()
     assert excinfo.value.code == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
     assert "event=correction.crossover_v2_profile_not_confirmed" in caplog.text
     assert "gate=session_open" in caplog.text
-    assert "profile_status=unconfirmed" in caplog.text
+    assert "profile_status=malformed" in caplog.text
     # Nothing downstream of the gate ran: no evidence bundle opened, and the
     # relay registration that mints the phone link was never reached (its seam
     # raises loudly if it is — see the fixture).
@@ -526,7 +535,7 @@ def test_a_stale_profile_is_caught_by_the_same_session_open_gate(session_open):
     the old presence-only check sailed past) refuses here too."""
 
     env = session_open
-    profile = _profile(env.topology, confirm=True)
+    profile = _profile(env.topology)
     stale = dict(profile)
     stale["topology_id"] = "some-other-topology"
     env.install(stale)
@@ -593,15 +602,33 @@ def test_the_refusal_carries_its_own_resolution_action_for_the_400_body():
     assert v2host.refusal_next_action(ValueError("not ours")) is None
 
 
-def test_a_confirmed_profile_still_mints_a_session(session_open):
-    """The other half of the gate: confirming is a real exit, not a new wall.
+def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
+    """The nanny loop, pinned shut at the session-open seam.
+
+    A safety-relevant edit rotates the fingerprint, which USED to clear the
+    confirmation and refuse every measurement until a human clicked Confirm --
+    the state the crossover-accept seam put jts3 into with its own machine-
+    measured write. Saving now re-stamps the declaration, so the session opens
+    on the freshly-rotated fingerprint with no human in the loop.
 
     Also the cannot-over-block half of the "no link minted" pin: the evidence
     store IS opened here, so its emptiness on every refused path above is a
     real observation about the gate rather than a stub that never runs."""
 
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
     env = session_open
-    profile = _profile(env.topology, confirm=True)
+    before = _profile(env.topology)
+
+    edited = _manual_settings()
+    edited["drivers"][1]["measurement_band_hz"] = [5000.0, 19000.0]
+    profile = build_driver_safety_profile(
+        env.topology,
+        manual_settings=edited,
+        driver_research=None,
+        saved_at="2026-07-28T12:05:00Z",
+    )
+    assert profile["profile_fingerprint"] != before["profile_fingerprint"]
     assert evaluate_driver_safety_profile(
         topology=env.topology, profile=profile
     ).confirmed_and_current is True

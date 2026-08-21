@@ -1205,24 +1205,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var ka1Hz = Math.round(343 / (2 * Math.PI * radiusM));
     return {ka1Hz: ka1Hz, ka2Hz: ka1Hz * 2};
   }
-  // One-sentence restatement of the confirmed tweeter style(s) + floor for
-  // the safety-confirmation toast. Floor is only stated for styles the local
-  // table knows; anything else stays label-only (server is the authority).
-  function tweeterStyleConfirmNote() {
-    var notes = [];
-    var seen = {};
-    driverResearchTargets(currentOutputTopology()).forEach(function(target) {
-      if (target.role !== 'tweeter') return;
-      var entry = hfDriverStyleEntry(target.driver_style);
-      var note = entry
-        ? entry.label + ', ' + entry.floor_hz + ' Hz default minimum crossover'
-        : (target.driver_style
-          ? driverStyleLabel(target.driver_style)
-          : 'style not set, cautious 5000 Hz default');
-      if (!seen[note]) { seen[note] = true; notes.push(note); }
-    });
-    return notes.length ? ' Tweeter: ' + notes.join('; ') + '.' : '';
-  }
   function activeCrossoverPairs(topology) {
     var pairs = [];
     var seen = {};
@@ -2683,18 +2665,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function driverSafetyLowLimitStale(reasons) {
     return (reasons || []).indexOf(SAFETY_LOW_LIMIT_STALE) >= 0;
   }
-  // Reasons that mean a REBUILD would REFUSE, not merely that the stored
-  // artifact is out of date. The page cannot rebuild, so the server appends
-  // them to the stale evaluation's reasons (driver_safety.py's
-  // `_stale_low_limit_rebuild_issues`) in the same `<role>:<code>` vocabulary
-  // the incomplete path already uses. Without this the Confirm button was
-  // offered on a profile whose rebuild raises, and the operator's first click
-  // returned a bare reason code.
-  function driverSafetyRebuildBlockers(reasons) {
-    return (reasons || []).filter(function(raw) {
-      return String(raw).indexOf(':') > 0;
-    });
-  }
   function renderDriverResearchSummary(options) {
     options = options || {};
     var saved = driverResearch.designDraft || {};
@@ -2715,14 +2685,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           'Driver safety notes captured for ' + roleSentenceText(safetyRoles) + '.'
         ) + '</p>' : '') +
         '<p class="setting-row__hint">Safety profile: ' + escapeHtml(
-          safetyReady ? 'confirmed for the current outputs' :
-            (driverResearch.safetyDirty ? 'needs confirmation after saving current edits' :
-            (safetyStatus === 'stale' ? 'needs confirmation after an output change' :
+          safetyReady ? 'declared for the current outputs' :
+            (driverResearch.safetyDirty ? 'save your current edits to update it' :
+            (safetyStatus === 'stale' ? 'the outputs changed; save the visible values again' :
               (safetyStatus === 'incomplete' ?
                 (driverSafetyConflicts(safetyEvaluation.reasons).length ?
-                  'resolve the limits that do not line up before confirmation' :
-                  'add the missing limits before confirmation') :
-                'review and confirm the visible limits')))
+                  'resolve the limits that do not line up' :
+                  'add the missing limits') :
+                'save the visible limits again')))
         ) + '.</p>' +
       '</div>';
     if (driverResearch.error) {
@@ -3516,126 +3486,88 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div data-driver-echo>' + renderDriverEchoBack(topology) + '</div>' +
     '</section>';
   }
-  // Issue #1820 defect 3. The ONE control that clears a needs-confirmation
-  // safety profile is "Confirm safety limits" — and until an unconfirmed
-  // profile is confirmed, EVERY crossover measurement is refused at program
-  // admission. #1819 demoted that control from a top-level primary button into
-  // a default-closed "Advanced" disclosure while promoting the enclosure
-  // selector — one of the fields whose edit rotates the profile fingerprint and
-  // so clears the confirmation — into the always-visible form. The invalidating
-  // input became more visible than its only remedy. This resolves the state
-  // once so the hoisted callout below and the Advanced button can never
-  // disagree about whether confirmation is possible.
-  function driverSafetyConfirmState(topology) {
+  // Saving the declaration IS declaring it, so there is no confirm control and
+  // nothing to un-confirm. What remains is the set of states in which the
+  // server still refuses a measurement — 'incomplete', 'stale', 'malformed' —
+  // each of which needs a DIFFERENT edit before a save can succeed. This
+  // resolves that state once so the hoisted callout and the Advanced editor
+  // cannot disagree about whether the declared values are usable.
+  function driverSafetyReviewState(topology) {
     var draft = driverResearch.designDraft || {};
     var evaluation = draft.driver_safety_profile_evaluation || {};
     var profile = draft.driver_safety_profile || {};
-    var permitted =
-      (draft.permissions || {}).may_confirm_visible_driver_safety_profile === true;
     var status = String(evaluation.status || profile.status || '');
-    // Unsaved safety-relevant edits mean the SAVED profile's evaluation no
-    // longer describes what is on screen: still "needs confirmation", because
-    // the confirm POST saves and confirms in one step.
-    var confirmed = evaluation.confirmed_and_current === true &&
-      !driverResearch.safetyDirty;
-    var needsConfirmation = permitted && !!topology && !!status &&
-      status !== 'missing' && !confirmed;
-    var reasons = Array.isArray(evaluation.reasons) ? evaluation.reasons : [];
     return {
-      needsConfirmation: needsConfirmation,
-      // build_driver_safety_profile REFUSES a confirm while ANY issue stands,
-      // so offering the button in 'incomplete' would be an error waiting to
-      // happen and the callout names the remedy instead. WHICH remedy depends
-      // on the issues themselves — a missing value and a band relationship
-      // that does not line up are different actions (#2191) — so carry the
-      // evaluation's own reason codes rather than assuming one cause.
-      //
-      // #2603 adds the second way a rebuild can refuse: a profile whose stored
-      // values predate the one-owner low limit evaluates 'malformed', not
-      // 'incomplete', so the status test alone let the button through onto a
-      // rebuild that raises. Any `<role>:<code>` in the reasons is the server
-      // telling us the rebuild would refuse, whatever the status says.
-      canConfirm: needsConfirmation && status !== 'incomplete' &&
-        !driverSafetyRebuildBlockers(reasons).length,
+      // 'missing' stays out: a speaker with no active crossover pair has no
+      // declaration to review, and the callout would be pure noise.
+      needsReview: !!topology && !!status && status !== 'missing' &&
+        evaluation.confirmed_and_current !== true,
       status: status,
-      reasons: reasons
+      reasons: Array.isArray(evaluation.reasons) ? evaluation.reasons : []
     };
   }
-  function driverSafetyConfirmHint(state) {
-    if (driverResearch.safetyDirty) {
-      return 'Confirming saves your current edits and confirms the safety ' +
-        'limits for the outputs in use.';
-    }
+  function driverSafetyReviewHint(state) {
     if (state.status === 'incomplete') {
       var conflicts = driverSafetyConflicts(state.reasons);
       if (!conflicts.length) {
         return 'Some safety limits are still missing. Add them under Advanced, ' +
-          'then confirm.';
+          'then save.';
       }
       return (driverSafetyHasMissing(state.reasons) ?
         'Some safety limits are still missing, and some do not line up: ' :
         'Nothing is missing, but some safety limits do not line up: ') +
         joinListText(conflicts, {two: ' and ', final: ', and '}) +
-        '. Fix them under Advanced, then confirm.';
+        '. Fix them under Advanced, then save.';
     }
-    // #2603. Named before the generic 'stale'/unconfirmed text, because the
-    // cause is specific and so is the fix: this profile was confirmed when a
-    // driver's minimum crossover could be declared in two places, and the two
-    // no longer agree. Re-confirming is the remedy — unless deriving the one
-    // number pushed something else out of range, which the server tells us.
+    // #2603. Named before the generic 'stale' text, because the cause is
+    // specific and so is the fix: this profile was written when a driver's
+    // minimum crossover could be declared in two places, and the two no longer
+    // agree. Saving rebuilds it — unless deriving the one number pushed
+    // something else out of range, which the server tells us.
     if (driverSafetyLowLimitStale(state.reasons)) {
       var stale = driverSafetyConflicts(state.reasons);
       if (!stale.length) {
-        return 'These limits were confirmed before JTS kept one declared ' +
+        return 'These limits were saved before JTS kept one declared ' +
           'minimum crossover per driver. Review the visible values, then ' +
-          'confirm them again.';
+          'save them again.';
       }
-      return 'These limits were confirmed before JTS kept one declared ' +
-        'minimum crossover per driver, and re-confirming needs one fix first: ' +
-        joinListText(stale, {two: ' and ', final: ', and '}) +
+      return 'These limits were saved before JTS kept one declared ' +
+        'minimum crossover per driver, and rebuilding them needs one fix ' +
+        'first: ' + joinListText(stale, {two: ' and ', final: ', and '}) +
         '. Under Advanced, either enter the minimum crossover the datasheet ' +
         'publishes for that driver, or move the range that no longer fits.';
     }
     if (state.status === 'stale') {
-      return 'The outputs changed since these limits were confirmed. Review ' +
-        'the visible values, then confirm them again.';
+      return 'The outputs changed since these limits were saved. Review the ' +
+        'visible values, then save them again.';
     }
-    return 'JTS will not play a measurement signal until you confirm these ' +
-      'limits. Changing a driver detail clears the confirmation, so confirm ' +
-      'again after any edit.';
+    return 'JTS could not read these limits. Review the visible values, then ' +
+      'save them again.';
   }
-  function renderDriverSafetyConfirmCallout(topology) {
-    var state = driverSafetyConfirmState(topology);
-    if (!state.needsConfirmation) return '';
-    var saveDisabled = driverResearch.saving || outputTopology.dirty || !topology;
+  function renderDriverSafetyReviewCallout(topology) {
+    var state = driverSafetyReviewState(topology);
+    if (!state.needsReview) return '';
     // No estimate COUNT here any more (#2195). A tally told the operator how
     // many numbers to distrust without saying which, so it could only produce
     // unease. "Here's what we're running with" below the paste box names every
     // value, its published/estimated badge, and its source instead.
     return '<div class="driver-research__section driver-research__confirm" id="' +
         CONFIRM_SAFETY_ANCHOR_ID + '">' +
-      '<div><h3 class="setting-row__title">Confirm the safety limits</h3>' +
+      '<div><h3 class="setting-row__title">Review the safety limits</h3>' +
         '<p class="setting-row__hint">' +
-          escapeHtml(driverSafetyConfirmHint(state)) + '</p>' +
+          escapeHtml(driverSafetyReviewHint(state)) + '</p>' +
         '</div>' +
-      (state.canConfirm ?
-        '<div class="driver-research__actions">' +
-          '<button type="button" class="btn btn--primary" data-act="confirm-driver-safety"' +
-            (saveDisabled ? ' disabled' : '') + '>' +
-            escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
-          '</button>' +
-        '</div>' : '') +
     '</div>';
   }
-  // Deep link from the measurement wizard's profile-not-confirmed hard stop.
-  // A bare fragment is not enough: the confirm control lives inside a
-  // collapsible step card that is only open when it is the current step, so
-  // this opens the owning step, re-renders, and then scrolls the control into
-  // view. No-ops when there is nothing to confirm, so a stale bookmark cannot
-  // yank an unrelated page into the component step.
-  function applyConfirmSafetyDeepLink() {
+  // Deep link from the measurement wizard's profile hard stop. A bare fragment
+  // is not enough: the callout lives inside a collapsible step card that is
+  // only open when it is the current step, so this opens the owning step,
+  // re-renders, and then scrolls the callout into view. No-ops when there is
+  // nothing to review, so a stale bookmark cannot yank an unrelated page into
+  // the component step.
+  function applySafetyLimitsDeepLink() {
     if (window.location.hash !== '#' + CONFIRM_SAFETY_ANCHOR_ID) return;
-    if (!driverSafetyConfirmState(currentOutputTopology()).needsConfirmation) return;
+    if (!driverSafetyReviewState(currentOutputTopology()).needsReview) return;
     outputStepOverride = 'research';
     render();
     var node = document.getElementById(CONFIRM_SAFETY_ANCHOR_ID);
@@ -3644,12 +3576,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
   function renderDriverResearchCard(topology) {
-    var saveDisabled = driverResearch.saving || outputTopology.dirty ||
-      !currentOutputTopology();
     return '<div class="output-card output-card--driver-research">' +
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
-      renderDriverSafetyConfirmCallout(topology) +
+      renderDriverSafetyReviewCallout(topology) +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
         renderComponentSettings(topology) +
@@ -3670,24 +3600,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
             '<div><h3 class="setting-row__title">Crossover points</h3>' +
               '<p class="setting-row__hint">Edit the proposed split, filter, slope, polarity, and delay.</p></div>' +
             renderManualCrossoverSettings(topology) +
-          '</section>' +
-          '<section class="driver-research__advanced-section driver-research__advanced-section--actions">' +
-            '<div class="driver-research__actions driver-research__actions--save">' +
-              // Same gate as the hoisted callout's button. This one was
-              // reachable whenever Advanced was open, whatever the evaluation
-              // said, so the dead click the callout carefully withheld was
-              // still one disclosure away — and this is the panel the operator
-              // is IN while fixing the very values that make a rebuild refuse.
-              // `disabled` rather than absent: the button belongs to the
-              // Advanced editor's own save row, and removing it there would
-              // read as the row losing an action rather than the action being
-              // unavailable.
-              '<button type="button" class="btn btn--ghost" data-act="confirm-driver-safety"' +
-                (saveDisabled || !driverSafetyConfirmState(topology).canConfirm
-                  ? ' disabled' : '') + '>' +
-                escapeHtml(driverResearch.saving ? 'Saving' : 'Confirm safety limits') +
-              '</button>' +
-            '</div>' +
           '</section>' +
         '</div>' +
       '</details>' +
@@ -5253,9 +5165,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(t); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
-    else if (act === 'confirm-driver-safety') {
-      saveDriverResearchDraft({confirmSafetyProfile: true});
-    }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'back-to-output-map') { backToOutputConfiguration(); }
@@ -6081,7 +5990,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // above). driver_style is topology-owned, not part of manual_settings /
   // driver_research: build_driver_safety_profile reads it straight off the
   // topology channel, so a style change here folds into the safety profile's
-  // fingerprint and requires re-confirmation, the same as any other
+  // fingerprint and is picked up by the next save, the same as any other
   // topology/output change (docs/active-crossover-information-design.md,
   // "Hardware research and confirmed safety profile").
   function setOutputChannelDriverStyle(groupId, role, rawValue) {
@@ -6632,7 +6541,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           manual_settings: manualPayload,
           driver_research_request: driverResearch.researchRequest,
           driver_research: researchPayload,
-          confirm_safety_profile: options.confirmSafetyProfile === true,
           expected_revision: Number((driverResearch.designDraft || {}).revision || 0)
         })
       });
@@ -6664,10 +6572,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
       if (options.nextStep) outputStepOverride = options.nextStep;
-      if (options.confirmSafetyProfile) {
-        status('Safety limits confirmed for the current physical outputs.' +
-          tweeterStyleConfirmNote() + ' This still does not authorize sound.');
-      } else if (!options.forPreview) {
+      if (!options.forPreview) {
         status(importWarning
           ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
             importWarning
@@ -7380,7 +7285,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       // The design draft the deep link needs arrives with this refresh, so the
       // fragment is applied after it settles, not at DOMContentLoaded.
       if (pageMode === 'setup') {
-        refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
+        refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
       }
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
@@ -7390,7 +7295,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // domain). Paint the local active-speaker shell, then load its hardware state.
   function loadFollowerActive() {
     render();
-    refreshOutputTopology({silent: true}).then(applyConfirmSafetyDeepLink);
+    refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
   }
   window.addEventListener('pagehide', function() {
     if (activeSpeaker.action === 'Starting combined test' ||

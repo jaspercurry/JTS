@@ -333,8 +333,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         topo,
         manual_settings=settings,
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-19T12:00:00Z",
+        saved_at="2026-07-19T12:00:00Z",
     )
     targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
     status = {
@@ -482,8 +481,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
         topo,
         manual_settings=settings,
         driver_research=None,
-        confirm=True,
-        confirmed_at="2026-07-19T12:00:00Z",
+        saved_at="2026-07-19T12:00:00Z",
     )
     targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
     status = {

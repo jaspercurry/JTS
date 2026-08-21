@@ -81,6 +81,14 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/audio_health_incidents.json"
         "f:0660:${STATE_DIR}/mux_mode.json"
         "f:0640:${STATE_DIR}/output_topology.json"
+        # The crossover-accept seam writes these two from the ROOT
+        # jasper-correction-web process while /sound/ reads them as jasper-web.
+        # Their writers now pass group_from_parent=True, but that only fixes
+        # FUTURE writes -- a box that accepted a measured crossover before this
+        # shipped still carries root:root 0640 and renders an empty design page
+        # until something happens to rewrite them. Heal the ones already on disk.
+        "f:0640:${STATE_DIR}/active_speaker_design_draft.json"
+        "f:0640:${STATE_DIR}/active_speaker_crossover_preview.json"
         "f:0660:${STATE_DIR}/grouping.env"
         "f:0660:${STATE_DIR}/.grouping.env.lock"
         "f:0660:${STATE_DIR}/source_intent.env"

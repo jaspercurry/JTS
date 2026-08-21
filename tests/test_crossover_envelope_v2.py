@@ -4728,18 +4728,18 @@ def test_a_box_that_cannot_open_stage_2_gets_the_named_refusal_and_no_apply():
     """
     env = build_crossover_envelope_v2(_review_status(stage2_preflight={
         "ok": False,
-        "message": "This speaker's safety limits are not confirmed.",
+        "message": "JTS could not use this speaker's saved safety limits.",
         "next_action": {
-            "id": "confirm_safety_limits",
-            "label": "Confirm safety limits",
+            "id": "review_safety_limits",
+            "label": "Review safety limits",
             "href": "/sound/#confirm-safety-limits",
         },
     }))
     assert env["next_action"]["enabled"] is False
     refusal = [n for n in env["nudges"]
                if n["code"] == "crossover_v2_stage2_preflight_refused"]
-    assert refusal and "safety limits are not confirmed" in refusal[0]["text"]
-    assert env["alternate_actions"][0]["id"] == "confirm_safety_limits"
+    assert refusal and "could not use this speaker" in refusal[0]["text"]
+    assert env["alternate_actions"][0]["id"] == "review_safety_limits"
 
 
 def test_a_refusal_button_never_renders_without_its_explaining_sentence():
@@ -4747,7 +4747,7 @@ def test_a_refusal_button_never_renders_without_its_explaining_sentence():
 
     The sentence used to also require a gradeable prediction while the button
     did not, so an ungradeable prediction beside an action-carrying refusal
-    rendered a bare "Confirm safety limits" control with nothing on screen
+    rendered a bare "Review safety limits" control with nothing on screen
     saying why it was there.
 
     Aligned toward SHOWING both rather than hiding one: the household has two
@@ -4760,17 +4760,17 @@ def test_a_refusal_button_never_renders_without_its_explaining_sentence():
         prediction=_prediction(overall_passed=None, bands=[]),  # ungradeable
         stage2_preflight={
             "ok": False,
-            "message": "This speaker's safety limits are not confirmed.",
+            "message": "JTS could not use this speaker's saved safety limits.",
             "next_action": {
-                "id": "confirm_safety_limits",
-                "label": "Confirm safety limits",
+                "id": "review_safety_limits",
+                "label": "Review safety limits",
                 "href": "/sound/#confirm-safety-limits",
             },
         },
     ))
     assert env["next_action"]["enabled"] is False
     # The button is there...
-    assert env["alternate_actions"][0]["id"] == "confirm_safety_limits"
+    assert env["alternate_actions"][0]["id"] == "review_safety_limits"
     # ...and so is the sentence that explains it.
     assert [n for n in env["nudges"]
             if n["code"] == "crossover_v2_stage2_preflight_refused"]
@@ -4788,10 +4788,10 @@ def test_no_refusal_button_survives_when_there_is_no_apply_decision():
         candidate=None,
         stage2_preflight={
             "ok": False,
-            "message": "This speaker's safety limits are not confirmed.",
+            "message": "JTS could not use this speaker's saved safety limits.",
             "next_action": {
-                "id": "confirm_safety_limits",
-                "label": "Confirm safety limits",
+                "id": "review_safety_limits",
+                "label": "Review safety limits",
                 "href": "/sound/#confirm-safety-limits",
             },
         },

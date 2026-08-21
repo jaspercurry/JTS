@@ -127,6 +127,49 @@ def test_save_design_draft_durable_fsyncs_the_write(tmp_path: Path, monkeypatch)
     assert len(fsync_calls) == 2  # file fsync + parent-directory fsync
 
 
+def test_the_store_publishes_under_its_parent_group_so_the_wizard_can_read_it(
+    tmp_path: Path,
+) -> None:
+    """The 2026-08-21 jts3 defect, pinned at the write site.
+
+    The crossover-accept seam runs in the ROOT ``jasper-correction-web``
+    process; ``/sound/`` reads this store as ``jasper-web`` (group ``jasper``).
+    ``/var/lib/jasper`` is group ``jasper`` but NOT setgid, so a root write
+    without ``group_from_parent`` published ``root:root 0640`` and the design
+    page rendered empty against a store it could not open -- the API reporting
+    it "unreadable" at revision 0. Both halves are asserted: the mode, and that
+    the published file carries the DIRECTORY's group rather than the writer's.
+    """
+
+    import stat
+
+    from jasper.active_speaker import design_draft as design_draft_mod
+
+    real_write = design_draft_mod.atomic_write_text
+    calls: list[dict] = []
+
+    def recording_write(path, text, **kwargs):
+        calls.append(kwargs)
+        real_write(path, text, **kwargs)
+
+    path = tmp_path / "active_speaker_design_draft.json"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(design_draft_mod, "atomic_write_text", recording_write)
+        save_design_draft(_topology(), path=path)
+        # And the durable accept-seam write keeps the same contract.
+        save_design_draft(_topology(), path=path, durable=True)
+
+    # The kwarg, not just the resulting stat: on a dev box the tempfile already
+    # inherits the test user's gid, so the filesystem check below cannot fail
+    # when the argument is dropped. This one can.
+    assert calls and all(call.get("group_from_parent") is True for call in calls)
+    assert all(call.get("mode") == 0o640 for call in calls)
+
+    published = path.stat()
+    assert stat.S_IMODE(published.st_mode) == 0o640
+    assert published.st_gid == tmp_path.stat().st_gid
+
+
 def test_driver_research_cannot_weaken_human_review_requirements():
     raw = _research()
     raw["human_review"] = {
@@ -965,7 +1008,6 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
     #         driver_research=draft.get("driver_research"),
     #         manual_settings=draft.get("manual_settings"),
     #         operator_inputs=draft.get("operator_inputs"),
-    #         prior_safety_profile=draft.get("driver_safety_profile"),
     #         created_at=draft.get("created_at"),
     #     )
     #
@@ -1009,7 +1051,6 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
         driver_research=saved.get("driver_research"),
         manual_settings=saved.get("manual_settings"),
         operator_inputs=saved.get("operator_inputs"),
-        prior_safety_profile=saved.get("driver_safety_profile"),
         created_at=saved.get("created_at"),
     )
     _woofer2, tweeter2 = regenerated["manual_settings"]["drivers"]

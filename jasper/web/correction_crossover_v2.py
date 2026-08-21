@@ -312,7 +312,7 @@ def classify_program_failure(
     WHOLE family — ``ProgramPlaybackError``, ``ProgramAdmissionError``,
     ``CrossoverV2FlowError`` — into a single
     :data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_PROGRAM_UNPLAYABLE`,
-    so a deterministic "the household has not confirmed the safety limits" and
+    so a deterministic "JTS cannot use the saved safety limits" and
     a genuine level-ceiling failure rendered the same sentence and offered the
     same (for the former, actively harmful) action. Refusal identity survives
     the boundary now: ``PROFILE_NOT_CONFIRMED`` gets its own code and screen,
@@ -421,16 +421,15 @@ def profile_refusal_code(evaluation_status: str) -> str:
     un-playable profile state — so this is where the three genuinely different
     household actions separate:
 
-    * ``missing``    → finish the driver details. ``/sound/`` renders no confirm
-      control at all in this state, so "confirm the safety limits" would name a
-      button that is not on the page.
-    * ``incomplete`` → add the missing values first.
-      ``build_driver_safety_profile`` refuses a confirm while derived issues
-      exist, so "confirm" would 400 even if the household found the control.
-    * everything else (``unconfirmed``, ``stale``, ``malformed``) → confirm.
-      All three are cleared by the one confirm action: it saves the visible
-      values and rebuilds the profile, so a fingerprint rotation, an output
-      change, and a corrupt artifact all end the same way.
+    * ``missing``    → finish the driver details. ``/sound/`` renders no
+      callout at all in this state, so "review the safety limits" would name a
+      panel that is not on the page.
+    * ``incomplete`` → add the missing values first. Saving with values missing
+      just rebuilds the same ``incomplete`` profile, so "save again" would send
+      the household in a circle.
+    * everything else (``stale``, ``malformed``) → review and save. Both are
+      cleared by one ordinary save: it rebuilds the profile from the visible
+      values, so an output change and an unreadable artifact end the same way.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         REASON_PROGRAM_PROFILE_INCOMPLETE,

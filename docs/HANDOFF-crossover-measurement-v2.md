@@ -3570,9 +3570,9 @@ unready setup.
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). Relay verdict, terminal exhaustion, defensive replay refusal, apply-seam refusal, and envelope all select the diagnosis from the same paired evidence; retry versus terminal state changes only the action. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every refusal EXCEPT `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820) |
-| `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | the driver-safety profile is not confirmed and current (evaluation `unconfirmed` / `stale` / `malformed` — all three are cleared by the one confirm action, which saves the visible values and rebuilds the profile). Split out of `program_unplayable` (#1820): it is deterministic, self-inflicted (any driver-detail edit rotates the profile fingerprint and clears the confirmation by design), and one control away — so its copy names *confirm the safety limits* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
-| `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** confirm control here, so "confirm the safety limits" would name a button that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
-| `program_profile_incomplete` | session open | 0 (hard stop) | evaluation `incomplete` — declared values are still missing, and `build_driver_safety_profile` **refuses** a confirm while derived issues exist, so a "Confirm" button here would 400. Copy names the same action `/sound/`'s own callout names in this state (add them under Advanced, then confirm) |
+| `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | JTS cannot use the saved driver-safety declaration (evaluation `stale` — the outputs moved underneath it — or `malformed`). Both are cleared by one ordinary save, which rebuilds the profile from the visible values. Split out of `program_unplayable` (#1820) because it is deterministic and one edit away, so its copy names *review the limits and save them again* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. The slug keeps its wire name; `unconfirmed` no longer occurs, because saving the declaration IS declaring it. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
+| `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** safety callout here, so "review the limits" would name a panel that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
+| `program_profile_incomplete` | session open | 0 (hard stop) | evaluation `incomplete` — declared values are still missing or do not line up. A save is allowed here (the operator keeps their work) but rebuilds the same `incomplete` profile, so "save again" would be a circle. Copy names the same action `/sound/`'s own callout names in this state: add them under Advanced, then save |
 | `internal_error` | any host fault | 0 | catch-all cleanup arm caught a seam raise |
 | `relay_timeout` | any | new session | link/session died — Start over mints a fresh one |
 | `user_stopped` | any | new session | the household tapped Stop on the phone — honest copy, not a manufactured "timed out" (gotcha #18) |
@@ -5600,14 +5600,22 @@ no retries-as-bodge). Treat these as regression fences.
     with a bare sentence; most refusals' only honest answer is prose, and
     inventing a button for them would be worse than none.
 
-    **"Confirm" is not always the right verb.** Two profile states have
-    no working confirm control at all — `missing` (`/sound/` renders none)
-    and `incomplete` (`build_driver_safety_profile` refuses a confirm
-    while values are missing) — so the pre-flight resolves the evaluation
-    status to one of three reason codes via `profile_refusal_code`. The
-    play seam cannot do this: its admission vocabulary carries a single
-    `PROFILE_NOT_CONFIRMED` slug for all three. The gate that holds the
-    evidence is the gate that names the action.
+    **One verb is not always the right verb.** The states need different
+    actions — `missing` (`/sound/` renders no safety callout at all) and
+    `incomplete` (a save just rebuilds the same incomplete profile) — so
+    the pre-flight resolves the evaluation status to one of three reason
+    codes via `profile_refusal_code`. The play seam cannot do this: its
+    admission vocabulary carries a single `PROFILE_NOT_CONFIRMED` slug for
+    all three. The gate that holds the evidence is the gate that names the
+    action.
+
+    **The confirm ceremony this entry is about no longer exists.** Saving
+    the declaration IS declaring it, so a fingerprint rotation no longer
+    strands a household — see the refusal table above and
+    [`HANDOFF-sound-preferences.md`](HANDOFF-sound-preferences.md) for the
+    current shape. Everything above stays true of the incident and of the
+    session-open gate, which still runs and still fails closed on
+    `missing` / `incomplete` / `stale` / `malformed`.
 
 24. **Background work must hold the wizard's idle exit** (#1854,
     2026-07-29). correction-web is socket-activated and `os._exit(0)`s
