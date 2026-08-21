@@ -275,6 +275,7 @@ def _write_wired_capture(
     reflection_gain: float = 0.0,
     noise_scale: float = 1e-5,
     noise_seed: int = 0,
+    bank_shape: bool = False,
 ) -> np.ndarray:
     """Bank a ``{phase}_program.wav`` plus ``n_takes`` dump-ring captures of
     it through a synthetic "room" — a pure delay by default (an identity
@@ -282,12 +283,21 @@ def _write_wired_capture(
     ``tests/test_correction_sweep_deconv.py`` uses for the underlying DSP),
     plus one optional reflection.
 
+    ``bank_shape=True`` banks the program WAV the way the product's own sole
+    producer (``_play`` in ``jasper.web.correction_crossover_v2``) always
+    does: in a SIBLING ``crossover_v2/<relay>/`` directory next to — not
+    inside — ``evidence/``. Every real banked round is in this shape; the
+    default (``False``) is the shape this suite's fixtures assumed instead,
+    which a #2796 gate review found the product has never once produced.
+
     Returns the truth IR's peak sample offset, for the caller's own checks.
     """
     sig, meta = sweep.synchronized_swept_sine(duration_approx_s=1.0, sample_rate=48000)
     sr = meta.sample_rate
     relay_dir = next((session_dir / "evidence/v1/artifacts/crossover_v2").iterdir())
-    sweep.write_sweep_wav(relay_dir / f"{phase}_program.wav", sig, sr)
+    program_dir = (session_dir / "crossover_v2" / relay_dir.name) if bank_shape else relay_dir
+    program_dir.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(program_dir / f"{phase}_program.wav", sig, sr)
 
     delay_samples = 480  # 10 ms
     length = delay_samples + 50
@@ -349,6 +359,31 @@ def test_verify_pose_curve_recovers_a_flat_response_from_an_identity_capture(tmp
     verify_seat = next(s for s in seats if s.position_id == "verify")
     trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
     assert np.max(np.abs(verify_seat.normalized_db[trusted])) < 3.0
+
+
+def test_verify_pose_curve_resolves_the_bank_shape_program_wav(tmp_path):
+    """The shape every real banked round is actually in.
+
+    A #2796 gate review proved the product's sole program-WAV producer
+    (``_play`` in ``jasper.web.correction_crossover_v2``) has never once
+    written into ``evidence/v1/artifacts/`` — a tree-wide sweep of a real
+    banked round found zero ``*_program.wav`` files there. Before
+    ``_find_program_wav`` adopted
+    ``evidence_packet.round_program_dir``, this view returned "no
+    verify_program.wav banked" on every real bundle, silently inert since
+    #2769/#2781 shipped it. This is that failure, reproduced synthetically
+    with the program WAV where the product actually banks it.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    banked = load_banked_round(round_dir)
+    _write_wired_capture(round_dir, banked.session_dir, n_takes=2, bank_shape=True)
+
+    result = verify_pose_curve(banked)
+    assert result.curve is not None
+    assert result.n_captures == 2
+    assert result.curve.position_id == "verify"
 
 
 def test_verify_pose_curve_smooths_at_the_positions_fraction_not_the_spec_ones(tmp_path):

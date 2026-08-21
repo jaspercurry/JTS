@@ -17,13 +17,16 @@ so the artifact cannot land where the reader does not look, and a bundle
 carrying more than one round is refused rather than guessed at.
 
 That round directory's ``<phase>_program.wav`` files are then read from
-either of two places, tried in order and chosen by structure alone, never a
-flag: beside the JSON receipts themselves (the campaign-receipts shape this
-instrument was first built against), or — only when neither admissible phase
-is there — a SIBLING ``crossover_v2/<relay>/`` directory next to, not inside,
-``evidence/``. The second shape is how ``scripts/bank-crossover-round.sh``
-pulls a live Pi session bundle: verbatim, so the Pi's own split between the
-JSON receipts and the raw captured programs survives the pull.
+either of two places, resolved by
+:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_program_dir`
+— the SAME rule :func:`~jasper.active_speaker.crossover_v2.round_views._find_program_wav`
+shares, so the two readers cannot answer "where do the programs live"
+differently. Beside the JSON receipts themselves is tried first; only when
+neither admissible phase is there does resolution fall back to a SIBLING
+``crossover_v2/<relay>/`` directory next to, not inside, ``evidence/`` — the
+shape ``scripts/bank-crossover-round.sh`` actually produces, because it tars
+a live Pi session bundle verbatim and that is where the product's own sole
+program-WAV writer (``correction_crossover_v2.py``) has always filed them.
 
 ``--dumps`` is the banked capture ring, which lives outside the bundle. The
 ring is scoped to this round by the bundle's own ``session_id``: a sidecar
@@ -52,7 +55,9 @@ from jasper.atomic_io import atomic_write_text
 
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
+    NO_ROUND_ARTIFACTS_REASON,
     round_artifact_dir,
+    round_program_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
@@ -138,49 +143,26 @@ def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) ->
     return code
 
 
-def _resolve_programs_dir(bundle_dir: Path, round_dir: Path) -> Path:
-    """Where this round's ``<phase>_program.wav`` files actually live.
-
-    Two shapes, tried in order and chosen by structure alone, never a flag.
-    The campaign-receipts shape banks the programs straight into
-    ``round_dir``, beside the JSON receipts —
-    :func:`~jasper.active_speaker.crossover_v2.feature_classifier.load_round_captures`
-    was first built against exactly that, so it is tried first and
-    unconditionally wins whenever it has anything.
-
-    ``scripts/bank-crossover-round.sh`` instead tars a live Pi session bundle
-    verbatim (``/var/lib/jasper/active_speaker/sessions/<session>/``), whose
-    own on-disk layout keeps the programs in a SIBLING ``crossover_v2/<relay>/``
-    directory next to — never inside — ``evidence/``. Falling back to it only
-    when ``round_dir`` carries NONE of the admissible phases means a
-    receipts-shape round that is genuinely missing one program still gets
-    ``round_dir``'s own honest :data:`~jasper.active_speaker.crossover_v2.feature_classifier.PROGRAM_MISSING`
-    refusal, rather than being quietly rescued by an unrelated sibling
-    directory that happens to sit beside it.
-    """
-    if any(
-        (round_dir / f"{phase}_program.wav").is_file() for phase in ADMISSIBLE_PHASES
-    ):
-        return round_dir
-    sibling = bundle_dir / "crossover_v2" / round_dir.name
-    if any(
-        (sibling / f"{phase}_program.wav").is_file() for phase in ADMISSIBLE_PHASES
-    ):
-        return sibling
-    return round_dir
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     round_dir, why = round_artifact_dir(args.bundle_dir)
     if round_dir is None:
+        message = f"cannot read the round: {why}"
+        if why == NO_ROUND_ARTIFACTS_REASON:
+            # Only on THIS reason: a bundle refused for carrying more than
+            # one round has the right structure already, and telling that
+            # operator to check for a second accepted shape is misleading —
+            # the fix there is naming which round, not where programs live.
+            message += (
+                " — bundle_dir must hold info.json beside "
+                "evidence/v1/artifacts/crossover_v2/<relay>/, either the "
+                "campaign-receipts shape (program WAVs filed right there) or "
+                "the shape bank-crossover-round.sh pulls (program WAVs in a "
+                "sibling crossover_v2/<relay>/ directory instead)"
+            )
         return _fail(
-            f"cannot read the round: {why} — bundle_dir must hold info.json "
-            "beside evidence/v1/artifacts/crossover_v2/<relay>/, either the "
-            "campaign-receipts shape (program WAVs filed right there) or the "
-            "shape bank-crossover-round.sh pulls (program WAVs in a sibling "
-            "crossover_v2/<relay>/ directory instead)",
+            message,
             {"ok": False, "error": why},
             as_json=args.json,
             code=EXIT_ROUND_UNREADABLE,
@@ -200,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         session_id = info["session_id"]
 
     try:
-        programs_dir = _resolve_programs_dir(args.bundle_dir, round_dir)
+        programs_dir = round_program_dir(args.bundle_dir, round_dir, ADMISSIBLE_PHASES)
         captures = load_round_captures(
             programs_dir,
             args.dumps,
@@ -209,9 +191,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         artifact = classify_round(captures, at=args.at, gate_ms=args.gate_ms)
     except FeatureClassificationRefused as refusal:
+        # The directory actually read, named explicitly: a refusal whose
+        # own detail can be misread as describing a directory with zero
+        # WAVs (PROGRAM_MISSING's `programs_present` is scoped to whichever
+        # directory this resolved to, not to `round_dir` by name) must not
+        # start the very wrong-directory hunt this instrument exists to end.
+        try:
+            programs_dir_display = programs_dir.relative_to(args.bundle_dir)
+        except ValueError:  # pragma: no cover - defensive, see round_program_dir
+            programs_dir_display = programs_dir
         return _fail(
-            f"refused: {refusal.reason}",
-            {"ok": False, "reason": refusal.reason, "detail": refusal.detail},
+            f"refused: {refusal.reason} (programs read from {programs_dir_display})",
+            {
+                "ok": False,
+                "reason": refusal.reason,
+                "detail": refusal.detail,
+                "programs_dir": str(programs_dir_display),
+            },
             as_json=args.json,
             code=EXIT_REFUSED,
         )

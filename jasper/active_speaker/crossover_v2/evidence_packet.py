@@ -61,6 +61,7 @@ never enter.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,7 @@ from .feature_classification import FeatureVerdict, read_feature_verdicts
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
+    "NO_ROUND_ARTIFACTS_REASON",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
     "CrossoverEvidencePacketError",
@@ -87,6 +89,7 @@ __all__ = [
     "packet_positional_evidence",
     "packet_region_band_hz",
     "round_artifact_dir",
+    "round_program_dir",
 ]
 
 #: Bumped when a reader that understood the previous version would misread this
@@ -107,6 +110,15 @@ GENERATED_BY = (
 #: ``session_id`` — the two namespaces are distinct on disk and conflating them
 #: is how a reader ends up joining the wrong round to the wrong bundle.
 _EVIDENCE_GLOB = "evidence/v1/artifacts/crossover_v2/*"
+
+#: :func:`round_artifact_dir`'s reason when no
+#: ``evidence/v1/artifacts/crossover_v2/<relay>/`` directory exists under the
+#: given path at all. Named so a caller can distinguish this specific
+#: refusal from "bundle carries more than one round" without parsing prose —
+#: :mod:`jasper.cli.classify_features` appends shape guidance only here,
+#: never on the two-round refusal, where "point at a different shape" is not
+#: the fix.
+NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
 
 #: Position fields copied verbatim. ``wav_path`` is deliberately absent — it is
 #: an absolute path on the speaker's filesystem, and ``wav_sha256`` identifies
@@ -236,7 +248,7 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
         path for path in session_dir.glob(_EVIDENCE_GLOB) if path.is_dir()
     )
     if not matches:
-        return None, "no crossover_v2 round artifacts under evidence/v1"
+        return None, NO_ROUND_ARTIFACTS_REASON
     if len(matches) > 1:
         # Fail closed rather than pick. Two round directories in one bundle
         # means the caller has to say which round it is asking about, and
@@ -244,6 +256,40 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
         names = ", ".join(path.name for path in matches)
         return None, f"bundle carries more than one round ({names})"
     return matches[0], ""
+
+
+def round_program_dir(
+    session_dir: Path, round_dir: Path, phases: Iterable[str]
+) -> Path:
+    """Where this round's ``<phase>_program.wav`` files actually live, for
+    the given ``phases``.
+
+    Two shapes, tried in order and chosen by structure alone, never a flag.
+    ``round_dir`` (:func:`round_artifact_dir`'s own return value) is tried
+    first and wins whenever it holds ANY of ``phases``' program WAVs — so a
+    round genuinely missing one of them still gets its own honest refusal
+    from whichever caller asked, rather than being quietly rescued by an
+    unrelated directory that happens to sit beside it.
+
+    That "beside" directory is not hypothetical: the product's OWN sole
+    producer of these files (``_play`` in
+    :mod:`jasper.web.correction_crossover_v2`) writes every one of them to
+    ``<session_dir>/crossover_v2/<relay>/`` — a SIBLING of ``evidence/``,
+    never inside it. A tree-wide sweep of a real banked round confirms
+    ``evidence/v1/artifacts/`` never carries a single ``*_program.wav``; the
+    shape ``round_dir`` alone was built to read is one this instrument's own
+    fixtures assumed but the product has never actually produced. Both
+    :mod:`jasper.cli.classify_features` and
+    :func:`~.round_views._find_program_wav` share this one rule so the
+    location fact cannot drift between them again.
+    """
+    phases = tuple(phases)
+    if any((round_dir / f"{phase}_program.wav").is_file() for phase in phases):
+        return round_dir
+    sibling = session_dir / "crossover_v2" / round_dir.name
+    if any((sibling / f"{phase}_program.wav").is_file() for phase in phases):
+        return sibling
+    return round_dir
 
 
 def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
