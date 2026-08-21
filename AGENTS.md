@@ -13,6 +13,7 @@ document order):
 
 **Conventions & quality bars**
 - **Extensibility doctrine — the lens for adding anything modular: [`docs/extensibility.md`](docs/extensibility.md)** (one invariant, five contracts, decision tree)
+- **Measurement-loop doctrine — the LLM-driven crossover-v2/correction measurement loop: [`docs/measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md)** (propose/dispose authority, closed hard-stop list, the nanny test)
 - [Agent behavior baseline](#agent-behavior-baseline)
 - [The standing multi-agent method](#the-standing-multi-agent-method)
 - [COAH quality bar](#coah-quality-bar)
