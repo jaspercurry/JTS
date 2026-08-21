@@ -5984,8 +5984,9 @@ def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
     :func:`~jasper.active_speaker.crossover_preview.load_crossover_preview`)
     is left byte-untouched — reused, not regenerated. Anything else (absent,
     stale, or blocked) is regenerated once; if the fresh attempt still cannot
-    reach ``ready_for_protected_staging`` (an unconfirmed safety profile, a
-    blocked design draft, etc.), this raises a named :class:`CrossoverV2Refused`
+    reach ``ready_for_protected_staging`` (a safety profile whose declared
+    values are ``incomplete`` or whose outputs moved under it, a blocked design
+    draft, etc.), this raises a named :class:`CrossoverV2Refused`
     pointing at ``/sound/`` instead of leaving the surprise for apply time.
     """
     from jasper.active_speaker.crossover_preview import load_crossover_preview

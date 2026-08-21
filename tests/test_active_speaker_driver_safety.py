@@ -973,6 +973,56 @@ def test_a_profile_saved_before_the_confirm_step_was_retired_reads_as_current(
     assert saved["driver_safety_profile"]["status"] == "confirmed"
 
 
+def test_a_legacy_artifact_carrying_blocking_issues_never_reads_as_current() -> None:
+    """The legacy read is fail-closed ONLY because of where it sits.
+
+    ``evaluate_driver_safety_profile`` returns for ``derived_issues`` BEFORE it
+    reaches the ``needs_confirmation`` compatibility branch. That ordering is
+    the entire safety property: hoist the branch above the issues gate and a
+    half-declared profile reads ``confirmed`` -- the measurement loop would then
+    run against a declaration with no crossover search band and no level or
+    duration ceiling. Nothing in the branch itself says so, so this is the test
+    that says it.
+
+    The artifact is the one the hoist would wave through: a stored
+    ``needs_confirmation`` status whose ``issues`` are CORRECTLY derived and
+    non-empty, so it clears every earlier gate (schema, fingerprint, target
+    binding, issue-payload equality) and lands on the ordering.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    manual = _manual_settings()
+    for driver in manual["drivers"]:
+        driver.pop("crossover_search_band_hz", None)
+        driver.pop("level_duration_limits", None)
+
+    incomplete = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        saved_at="2026-07-13T12:00:00Z",
+    )
+    assert incomplete["status"] == "incomplete"
+    codes = {issue["code"] for issue in incomplete["issues"]}
+    assert codes == {
+        "woofer:crossover_search_band_missing",
+        "woofer:level_duration_limits_missing",
+        "tweeter:crossover_search_band_missing",
+        "tweeter:level_duration_limits_missing",
+    }
+
+    legacy = dict(incomplete)
+    legacy["status"] = "needs_confirmation"
+    legacy["confirmation"] = None
+
+    evaluation = evaluate_driver_safety_profile(legacy, topology)
+    # The load-bearing assertion: blocking issues outrank the compatibility
+    # read, whatever the stored status says.
+    assert evaluation.confirmed_and_current is False
+    assert evaluation.status != "confirmed"
+    assert evaluation.reasons != ()
+
+
 def test_profile_refuses_stale_topology_and_fingerprint_tampering() -> None:
     topology = mono_output_topology(card_id=None)
     profile = build_driver_safety_profile(

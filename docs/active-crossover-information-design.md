@@ -1625,9 +1625,11 @@ not create a parallel Room-owned research wizard or let an LLM write a live
 graph. JTS binds a research request to the current physical target identities,
 the returned packet echoes those identities and uses explicit unknowns, and the
 server strictly validates it. Every safety-relevant value is visible and
-editable. Confirmation freezes the normalized values and their field-level
+editable. A save freezes the normalized values and their field-level
 provenance into an immutable fingerprint; any topology/output assignment or
-value change requires confirmation again.
+value change rotates that fingerprint, and the next save re-freezes over it —
+there is no separate confirm step (see "Before an automatic isolated-driver
+measurement can run" above for the ruling).
 
 The version distinction is intentional: version 1 is legacy advisory research;
 version 2 is bound to a current server request. Neither is authority. The
@@ -1662,11 +1664,11 @@ component card before **Build notes** and **Copy prompt**. The component selecto
 through the existing
 `/output-topology` writer, the same one that owns every other topology field.
 `build_driver_safety_profile` reads it straight off the topology channel, so
-it folds into the safety profile's confirmation fingerprint automatically —
-changing it invalidates a prior `operator_reviewed_visible_values`
-confirmation exactly like any other topology/output change, and the declared
-style (or its absence) is rendered on the driver research/review card before
-that confirmation. An undeclared style is fail-safe: it behaves identically
+it folds into the safety profile's fingerprint automatically — changing it
+rotates that fingerprint exactly like any other topology/output change, and the
+next save re-freezes the declaration over it. The declared style (or its
+absence) is rendered on the driver research/review card before that save. An
+undeclared style is fail-safe: it behaves identically
 to today's pre-existing conservative floor, never a stricter or looser one by
 accident.
 

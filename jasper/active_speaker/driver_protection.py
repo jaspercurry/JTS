@@ -309,10 +309,10 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
 
     Reads exactly one thing: the strictest ``kind="highpass"`` ``cutoff_hz`` in
     this payload's own ``required_protection_filters``. It does **not** prove
-    the value was confirmed, and callers must not read it as such. On the
-    staging path the payload comes from ``crossover_preview``'s role-keyed
-    research + manual-settings merge, which can carry a research-only value
-    that no confirmation gate has seen.
+    the value was ever frozen into a declaration, and callers must not read it
+    as such. On the staging path the payload comes from ``crossover_preview``'s
+    role-keyed research + manual-settings merge, which can carry a research-only
+    value that no saved safety profile has validated.
 
     Believability is validated elsewhere and stays there:
     ``driver_safety._target_issues`` refuses a *visible* declaration that is not

@@ -291,8 +291,10 @@ computer gets a mono USB input.
   for the composition contract, profile semantics, and observability
   hooks. The same card now has a silent, per-physical-target hardware-research
   flow: version-2 results must echo a server-authored request, every safety
-  value remains visible/editable, and operator confirmation produces an inert
-  safety-profile fingerprint. Research and the confirmed profile are not
+  value remains visible/editable, and saving freezes them into an inert
+  safety-profile fingerprint — there is no separate confirm step, and a
+  declaration JTS cannot use still raises a review callout on the card.
+  Research and the saved profile are not
   playback permission; live excitation/graph integration remains a later
   active-crossover slice. Measurement navigation is
   `http://jts.local/sound/crossover/` (**Active speaker**),

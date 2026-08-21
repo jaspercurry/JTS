@@ -1771,7 +1771,7 @@ def _search_band_issues(
     -- so requiring ``search`` to be a subset of ``measurement`` made a search
     band that MEASURE legitimately sweeps unstorable: the tweeter repair
     ``[2000, 2500]`` -> ``[1600, 2500]`` against ``measurement=[2000, 18000]``
-    landed the profile ``incomplete`` and hid the Confirm control (#2191).
+    landed the profile ``incomplete``, which no save can clear (#2191).
     This function is the store-time half of one rule, restated because
     ``excitation_safety_plan`` imports this module and cannot be imported back;
     ``tests/test_active_speaker_driver_safety.py`` pins the two halves to the
@@ -2433,7 +2433,8 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         if _canonical_json(raw_safety) != _canonical_json(rederived_safety):
             raise DriverSafetyProfileStaleLowLimitError(
                 f"{field_name} safety fields no longer match this driver's "
-                "declared low limit; re-confirm the driver profile at /sound/"
+                "declared low limit; review the driver profile at /sound/ and "
+                "save it again"
             )
         normalised_unknowns = _normalise_unknowns(
             target.get("unknowns"),
@@ -2604,19 +2605,19 @@ def evaluate_driver_safety_profile(
         _validate_driver_safety_profile_shape(profile)
     except DriverSafetyProfileStaleLowLimitError:
         # Named separately from the generic malformed case so /sound/ can say
-        # "re-confirm" instead of "corrupt". Still a RETURN, never a raise, so a
-        # box carrying a pre-#2603 split declaration reports and waits rather
-        # than crash-looping a daemon.
+        # "save it again" instead of "corrupt". Still a RETURN, never a raise,
+        # so a box carrying a pre-#2603 split declaration reports and waits
+        # rather than crash-looping a daemon.
         #
         # The reasons carry MORE than the name, because the name alone cannot
-        # answer the only question the household has: will re-confirming work?
+        # answer the only question the household has: will saving fix it?
         # Deriving the low limit moves the hard band's lower edge up to it, and
         # that can push an already-declared crossover-search band outside its
-        # own hard band -- at which point ``build_driver_safety_profile``
-        # REFUSES to confirm. Appending the rebuild's own blocking issues lets
-        # /sound/ decide whether to offer the button at all, and name the
-        # remedy when it cannot, instead of offering it and raising on the
-        # first click. jts3 is exactly this shape.
+        # own hard band -- at which point the rebuild lands ``incomplete``, and
+        # the save the copy just recommended changes nothing. Appending the
+        # rebuild's own blocking issues lets /sound/ name the field to fix
+        # first, instead of sending the household round a loop. jts3 is exactly
+        # this shape.
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(
             "malformed",
