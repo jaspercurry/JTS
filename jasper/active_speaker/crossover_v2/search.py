@@ -83,10 +83,12 @@ __all__ = [
     "DELAY_RANKING_AUTHORITY",
     "DELAY_RANKING_BAR_RHO",
     "DELAY_RANKING_EVIDENCE",
+    "DELAY_RANKING_MARK_RHO",
     "DELAY_RANKING_MEASURED_RHO",
     "FLAT_MINIMUM_EPSILON_DB",
     "GAIN_SEARCH_STEP_DB",
     "GAIN_SEARCH_WINDOW_DB",
+    "MARK_VS_POOL_REFEREE_RHO",
     "RANKING_AUTHORITY_BRACKET_ONLY",
     "RANKING_AUTHORITY_RANK",
     "REFINEMENT_FACTOR",
@@ -125,21 +127,51 @@ DELAY_RANKING_BAR_RHO: float = 0.6
 #:
 #: **This number names a REFEREE, and a different one answers differently.** It
 #: is the POOLED five-position measurement. Against the on-axis MARK, the same
-#: artifact reports rho = **+0.6571** self-referenced across all six arms, which
-#: would CLEAR the bar above. That is not a reason to adopt the mark: the same
-#: analysis swings to **-1.0000** on the frozen reference over the invert-only
-#: subset, and the artifact's own verdict on it is that "a statistic that swings
-#: from +0.66 to -1.00 across reasonable analysis choices is not evidence in
-#: either direction — at the mark, this bank cannot answer the question." The
-#: pooled axis is taken because it is the campaign's own referee and it is
-#: stable, and the mark figure is recorded here so nobody rediscovers it later
+#: artifact reports :data:`DELAY_RANKING_MARK_RHO`, which would CLEAR the bar
+#: above. That is not a reason to adopt the mark: the same analysis swings to
+#: **-1.0000** on the frozen reference over the invert-only subset, and the
+#: artifact's own verdict on it is that "a statistic that swings from +0.66 to
+#: -1.00 across reasonable analysis choices is not evidence in either
+#: direction — at the mark, this bank cannot answer the question." The pooled
+#: axis is taken because it is the campaign's own referee and it is stable, and
+#: the mark figure is recorded beside this one so nobody rediscovers it later
 #: and reads a passing grade off it. The two measured axes anti-correlate with
-#: each other at rho = -0.66, which is the lobe re-aiming this module's
-#: directivity term exists to charge for.
+#: each other at :data:`MARK_VS_POOL_REFEREE_RHO`, which is the lobe re-aiming
+#: this module's directivity term exists to charge for.
 DELAY_RANKING_MEASURED_RHO: float = -1.0
 
+#: The same lever against the ON-AXIS MARK referee — the EXCULPATORY number.
+#:
+#: The figure a reader reaches for to argue the guard above is too harsh, so it
+#: is a named constant rather than prose: an argument made from a number nobody
+#: can check is an argument nobody can refute. Self-referenced across all six
+#: arms, and on its own it would clear :data:`DELAY_RANKING_BAR_RHO`.
+#:
+#: It does not rescue the pooled verdict, and the reason is arithmetic rather
+#: than preference — see :data:`MARK_VS_POOL_REFEREE_RHO`.
+DELAY_RANKING_MARK_RHO: float = 0.6571
+
+#: What the two measured REFEREES say about each other, on the same six arms.
+#:
+#: The on-axis mark and the pooled five-position measurement anti-correlate:
+#: this is the lobe being re-aimed — on-axis flatness bought at off-axis cost —
+#: and it is the defect :func:`~jasper.active_speaker.crossover_v2.objective.directivity_continuity`
+#: exists to charge for.
+#:
+#: It is also what closes the door on reading a passing grade off
+#: :data:`DELAY_RANKING_MARK_RHO`. Three correlations over one set of arms are
+#: not free of each other: a correlation matrix must stay positive
+#: semi-definite, which bounds the third given two. With the mark figure at
+#: +0.6571 and the referees at -0.66, the pooled rho is confined to roughly
+#: [-1.00, +0.13] — an interval lying ENTIRELY below the +0.6 bar. So the model
+#: cannot have ranking authority against the pooled referee no matter how the
+#: mark figure is read, and the recorded -1.000 sits at that interval's lower
+#: extreme rather than outside it. Pinned by a test rather than asserted here.
+MARK_VS_POOL_REFEREE_RHO: float = -0.66
+
 #: Where :data:`DELAY_RANKING_MEASURED_RHO` came from, so the number can be
-#: re-derived rather than believed.
+#: re-derived rather than believed. The same artifact carries
+#: :data:`DELAY_RANKING_MARK_RHO` and :data:`MARK_VS_POOL_REFEREE_RHO`.
 DELAY_RANKING_EVIDENCE = (
     "captures/xover-armrun-2026-08-18/analysis/README-delay-arm-regrade.md "
     "(2026-08-19): 6 arms, 5 distinct delays, the delay-sensitive predicted sum "

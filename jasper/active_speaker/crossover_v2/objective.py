@@ -657,6 +657,18 @@ def _floors_disagree(frame_hz: float | None, graded_hz: float | None) -> bool:
     )
 
 
+def _bands_disagree(left: tuple[float, float], right: tuple[float, float]) -> bool:
+    """Whether two profiles were chunked over different spectrum.
+
+    Both edges through :func:`_floors_disagree`, so the tolerance has one owner
+    for both questions it is asked. A band's lower edge IS a trusted floor
+    (raised to the spec's own gate by :func:`_graded_band_hz`), and its upper
+    edge travels through the same JSON and deserves the same relative
+    comparison rather than an exact one.
+    """
+    return _floors_disagree(left[0], right[0]) or _floors_disagree(left[1], right[1])
+
+
 def _chunk_edges(band_hz: tuple[float, float], fraction: int) -> list[tuple[float, float]]:
     """Geometric ``1/fraction``-octave chunk edges spanning ``band_hz``.
 
@@ -827,7 +839,13 @@ def dominates(
     profiles share exactly when they were chunked over the same band at the same
     fraction. When they were not, the comparison REFUSES rather than matching by
     position or interpolating — a chunk-by-chunk verdict between two different
-    chunkings is not a verdict about the speaker.
+    chunkings is not a verdict about the speaker. The check is over the UNION of
+    the two chunk sets and so is SYMMETRIC: a chunk present on either side and
+    absent on the other refuses. Asymmetry here is fail-open in one direction
+    only, and it is the dangerous one — a candidate that speaks for LESS
+    spectrum than the incumbent is charged for nothing it dropped, so losing a
+    whole third-octave costs it nothing while an improvement elsewhere carries
+    it to ``dominates=True``.
 
     Regression is measured on the chunk's worst-bin magnitude, not on its level
     or its RMS: a chunk that develops a notch has regressed even if its mean and
@@ -851,18 +869,24 @@ def dominates(
         )
 
     by_edges = {(chunk.f_lo_hz, chunk.f_hi_hz): chunk for chunk in incumbent.chunks}
+    # The comparison is over the UNION of the two chunk sets, tested as one set
+    # equality rather than one direction: a candidate whose chunks are a strict
+    # SUBSET of the incumbent's is the fail-open direction — every chunk it
+    # still has is comparable, so a per-candidate-chunk walk charges it nothing
+    # for the third-octave it stopped speaking for, and it can dominate on the
+    # primary residual alone while a whole region went missing.
+    if {(chunk.f_lo_hz, chunk.f_hi_hz) for chunk in candidate.chunks} != by_edges.keys():
+        return Domination(
+            dominates=False,
+            primary_delta_db=None,
+            worst_regression_db=None,
+            worst_regression_hz=None,
+            refusal=_REFUSE_CHUNKS_DIFFER,
+        )
     worst_regression_db: float | None = None
     worst_regression_hz: float | None = None
     for chunk in candidate.chunks:
-        before = by_edges.get((chunk.f_lo_hz, chunk.f_hi_hz))
-        if before is None:
-            return Domination(
-                dominates=False,
-                primary_delta_db=None,
-                worst_regression_db=None,
-                worst_regression_hz=None,
-                refusal=_REFUSE_CHUNKS_DIFFER,
-            )
+        before = by_edges[(chunk.f_lo_hz, chunk.f_hi_hz)]
         regression_db = abs(chunk.worst_db) - abs(before.worst_db)
         if worst_regression_db is None or regression_db > worst_regression_db:
             worst_regression_db = float(regression_db)
@@ -1136,6 +1160,18 @@ def _merge_profiles(
     ``reference_policy`` for the question a comparison actually needs answered
     (whether these numbers are frozen or self-referenced), and read the seat
     profiles for a frame a number is really stated in.
+
+    **Seats graded over different spectrum are REFUSED, not unioned**, the same
+    posture and the same tolerance :func:`flatness_profile` takes to a frame
+    whose floor is not the report's. Seats carry their frames one apiece — that
+    is the S8.9 rule — so nothing structurally stops a caller handing this role
+    a 900 Hz seat and a 357 Hz one, and a union of two non-aligned chunk ladders
+    is not one profile: the chunks do not overlap, ``n_bins`` double-counts
+    spectrum neither seat covers alone, and ``band_hz`` would be read off
+    whichever seat happened to sort first and could then exclude chunks the
+    profile itself reports. The shipped caller grades a role at one group floor,
+    so nothing live changes; the refusal is what keeps the per-seat frame from
+    becoming a silent second span when a new caller uses it as invited.
     """
     evaluable = [profile for profile in profiles if profile.evaluable]
     if not evaluable:
@@ -1155,6 +1191,30 @@ def _merge_profiles(
             evaluable=False,
             not_evaluated_reason="no seat of this role was evaluable",
         )
+
+    baseline = evaluable[0]
+    for profile in evaluable[1:]:
+        if _bands_disagree(baseline.band_hz, profile.band_hz):
+            return FlatnessProfile(
+                view=view,
+                reference_db=baseline.reference_db,
+                reference_policy=baseline.reference_policy,
+                band_hz=baseline.band_hz,
+                chunks=(),
+                worst_chunk_db=None,
+                worst_chunk_hz=None,
+                tilt_db_per_octave=None,
+                tilt_span_db=None,
+                rms_db=None,
+                n_bins=0,
+                evaluable=False,
+                not_evaluated_reason=(
+                    f"this role's seats were graded over different spectrum: "
+                    f"{baseline.view} over {baseline.band_hz[0]:g}-"
+                    f"{baseline.band_hz[1]:g} Hz and {profile.view} over "
+                    f"{profile.band_hz[0]:g}-{profile.band_hz[1]:g} Hz"
+                ),
+            )
 
     by_edges: dict[tuple[float, float], list[ChunkDeviation]] = {}
     for profile in evaluable:

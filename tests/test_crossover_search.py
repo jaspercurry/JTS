@@ -15,6 +15,7 @@ never been graded against the thing it was ordering.
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -26,8 +27,9 @@ from jasper.active_speaker.crossover_v2.candidate_space import (
 from jasper.active_speaker.crossover_v2.forward_model import DriverPlant
 from jasper.active_speaker.crossover_v2.objective import GradingFrame
 from jasper.active_speaker.crossover_v2.search import (
-    DELAY_RANKING_AUTHORITY, DELAY_RANKING_BAR_RHO, DELAY_RANKING_MEASURED_RHO,
-    FLAT_MINIMUM_EPSILON_DB, RANKING_AUTHORITY_BRACKET_ONLY,
+    DELAY_RANKING_AUTHORITY, DELAY_RANKING_BAR_RHO, DELAY_RANKING_MARK_RHO,
+    DELAY_RANKING_MEASURED_RHO, FLAT_MINIMUM_EPSILON_DB,
+    MARK_VS_POOL_REFEREE_RHO, RANKING_AUTHORITY_BRACKET_ONLY,
     RANKING_AUTHORITY_RANK, SearchPlan, prediction_document, search_candidates,
     spearman_rho,
 )
@@ -119,6 +121,45 @@ def test_the_authority_would_flip_only_on_a_measurement_that_clears_the_bar() ->
     assert _authority_for(0.59, DELAY_RANKING_BAR_RHO) == RANKING_AUTHORITY_BRACKET_ONLY
     # An unmeasured lever brackets: absence of evidence is not a passing grade.
     assert _authority_for(None, DELAY_RANKING_BAR_RHO) == RANKING_AUTHORITY_BRACKET_ONLY
+
+
+def test_the_exculpatory_mark_figure_cannot_rescue_the_pooled_verdict() -> None:
+    """The three banked correlations are not free of each other.
+
+    The guard's obvious counter-argument is the on-axis MARK figure
+    (:data:`DELAY_RANKING_MARK_RHO`), which on its own clears the bar. This
+    pins why it cannot be reached for, and pins it as ARITHMETIC rather than
+    as a preference between referees.
+
+    All three rhos are Pearson correlations of the SAME six arms' rank
+    vectors — model-at-the-mark, measured-at-the-mark, measured-pooled — so
+    they are entries of one 3x3 correlation matrix, which must be positive
+    semi-definite. That confines the third given two, to
+    ``r12*r23 +/- sqrt((1-r12^2)(1-r23^2))``. Here the interval is about
+    [-1.00, +0.13], and its CEILING lies below
+    :data:`DELAY_RANKING_BAR_RHO`: no pooled rho consistent with the mark
+    figure and with the two referees' own disagreement could have earned this
+    lever a ranking vote. The recorded -1.000 sits at the interval's lower
+    extreme — 7e-6 outside it, which is the rounding of two published
+    four- and two-digit inputs and not an inconsistency.
+    """
+    from jasper.active_speaker.crossover_v2.search import _authority_for
+
+    center = DELAY_RANKING_MARK_RHO * MARK_VS_POOL_REFEREE_RHO
+    radius = math.sqrt(
+        (1.0 - DELAY_RANKING_MARK_RHO ** 2) * (1.0 - MARK_VS_POOL_REFEREE_RHO ** 2),
+    )
+    lower, upper = center - radius, center + radius
+
+    # The interval the audit derived, stated in both directions.
+    assert lower == pytest.approx(-1.0, abs=1e-4)
+    assert upper == pytest.approx(+0.1326, abs=1e-3)
+    # The recorded pooled rho sits at that lower extreme.
+    assert DELAY_RANKING_MEASURED_RHO == pytest.approx(lower, abs=1e-4)
+    # THE PIN: the whole feasible interval is below the bar, so reading the
+    # mark figure at face value still cannot flip the authority stamp.
+    assert upper < DELAY_RANKING_BAR_RHO
+    assert _authority_for(upper, DELAY_RANKING_BAR_RHO) == RANKING_AUTHORITY_BRACKET_ONLY
 
 
 def test_spearman_matches_known_values() -> None:
