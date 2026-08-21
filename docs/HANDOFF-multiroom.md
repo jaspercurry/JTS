@@ -334,9 +334,9 @@ Increment 6 (per-follower calibration). What exists:
   running, a bounded blocking `start` joins it without interruption, then a
   second blocking `start` runs the guaranteed-fresh role pass.
   `jasper-grouping-reconcile.service` therefore carries the conservative finite
-  `TimeoutStartSec=2526`: its two-unit Snapcast plan, one-time provisioning
+  `TimeoutStartSec=2826`: its two-unit Snapcast plan, one-time provisioning
   (apt update + install), six bounded post-plan service/hardware actions, up to
-  two 788-second source starts, manager probes, and a terminal margin. It never
+  two 938-second source starts, manager probes, and a terminal margin. It never
   uses `restart` on the source owner, so ordered source/USB work remains atomic.
   Direct/install invocations also bound every adjacent
   `systemctl` call: five seconds for manager requests and 60 seconds for

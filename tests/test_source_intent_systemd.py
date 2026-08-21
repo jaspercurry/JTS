@@ -230,6 +230,9 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
     assert source_intent._SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC == {
         "shairport-sync.service": nqptp_start,
         "jasper-usbsink.service": usb_volume_start,
+        "jasper-usbgadget.service": (
+            source_intent._USB_GADGET_ROLE_DEPENDENCY_START_SEC
+        ),
     }
     assert (
         source_intent._unit_action_timeout_sec("shairport-sync.service", "start")
@@ -279,6 +282,96 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
     ):
         path = ROOT / "deploy/systemd" / dependency
         assert source_intent.RECONCILE_UNIT not in path.read_text(encoding="utf-8")
+
+
+def _unit_section_lists(path: Path, keys: tuple[str, ...]) -> dict[str, set[str]]:
+    section = ""
+    result: dict[str, set[str]] = {key: set() for key in keys}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text.startswith("[") and text.endswith("]"):
+            section = text
+            continue
+        if section != "[Unit]" or text.startswith("#") or "=" not in text:
+            continue
+        key, _, value = text.partition("=")
+        if key in result:
+            result[key].update(value.split())
+    return result
+
+
+def _requeued_start_dependencies(path: Path) -> dict[str, float]:
+    """Shipped deps a start of ``path`` re-queues, mapped to their start ceiling.
+
+    A dependency that is ordered ``After=`` and also pulled by ``Wants=`` or
+    ``Requires=`` joins the same job transaction. When that dependency is a
+    ``Type=oneshot`` with ``RemainAfterExit=no`` it is inactive between runs, so
+    every start of the depending unit queues it again and PID 1 holds the
+    depending unit's start job until it reports terminal.
+    """
+
+    edges = _unit_section_lists(path, ("After", "Wants", "Requires"))
+    pulled = edges["After"] & (edges["Wants"] | edges["Requires"])
+    requeued: dict[str, float] = {}
+    for name in sorted(pulled):
+        dependency = ROOT / "deploy/systemd" / name
+        if not dependency.exists():
+            continue
+        directives = _service_directives(dependency)
+        if directives.get("Type") != "oneshot":
+            continue
+        if directives.get("RemainAfterExit", "no") != "no":
+            continue
+        requeued[name] = _seconds(directives["TimeoutStartSec"])
+    return requeued
+
+
+def test_requeued_oneshot_dependencies_are_inside_the_client_start_bound() -> None:
+    """A dependency that never stays complete is paid for on every start.
+
+    jts4 proved the cost: `systemctl restart jasper-usbgadget.service` held for
+    32.3 s while the hardware-role oneshot it Wants= re-ran, against an 11.0 s
+    client bound, so a slow-but-successful restart was reported as a failed USB
+    On transition and the coordinator exited non-zero on every pass.
+    """
+
+    observed: dict[str, dict[str, float]] = {}
+    for unit, path in SOURCE_UNIT_FILES.items():
+        requeued = _requeued_start_dependencies(path)
+        if not requeued:
+            continue
+        observed[unit] = requeued
+        directives = _service_directives(path)
+        start = _seconds(directives["TimeoutStartSec"])
+        stop = _seconds(directives["TimeoutStopSec"])
+        floor = start + sum(requeued.values())
+        assert source_intent._unit_action_timeout_sec(unit, "start") > floor, (
+            f"{unit}: client start bound must outlast its own ceiling plus the "
+            f"re-queued dependencies {sorted(requeued)}"
+        )
+        assert source_intent._unit_action_timeout_sec(unit, "restart") > floor + stop
+
+    # The gadget is the only source unit that re-queues one, and its
+    # dependency's ceiling is mirrored in source_intent rather than re-read.
+    assert observed == {
+        "jasper-usbgadget.service": {
+            source_intent._USB_GADGET_ROLE_DEPENDENCY_UNIT: (
+                source_intent._USB_GADGET_ROLE_DEPENDENCY_START_SEC
+            )
+        }
+    }
+
+
+def test_failed_usb_on_cleanup_budget_covers_its_blocking_waits() -> None:
+    """The rollback path's own systemd waits stay inside its declared budget."""
+
+    gadget = "jasper-usbgadget.service"
+    blocking = (
+        source_intent._unit_action_timeout_sec(gadget, "restart")
+        + source_intent._unit_action_timeout_sec(gadget, "stop")
+        + source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[source_intent._USB_COUPLING_UNIT]
+    )
+    assert source_intent._USB_FAILED_ON_CLEANUP_BUDGET_SEC > blocking
 
 
 def test_control_unit_client_bounds_match_packaged_dropins() -> None:
@@ -416,8 +509,7 @@ def test_root_fanin_owners_do_not_inherit_group_writable_fanin_env() -> None:
     assert "EnvironmentFile=-/var/lib/jasper/fanin.env" not in unit
     assert "EnvironmentFile=-/etc/jasper/jasper.env" in unit
     assert (
-        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:"
-        "/sbin:/bin"
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     ) in unit
     assert (
         "UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT "

@@ -81,7 +81,6 @@ _MAX_INTENT_BYTES = 64 * 1024
 _MAX_STATUS_BYTES = 64 * 1024
 _REQUEST_LOCK_TIMEOUT_SEC = 2.0
 SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS = 5.0
-_INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS = 788.0
 _RESET_FAILED_ACTION_TIMEOUT_SEC = 5.0
 _USB_DIRECT_SETTLE_ATTEMPTS = 20
 _USB_DIRECT_SETTLE_SECONDS = 0.25
@@ -116,14 +115,25 @@ _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
 _CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     _BLUETOOTH_SERVICE: (10.0, 10.0),
 }
+# The hardware-role reconciler the USB gadget orders its start half after. It is
+# a Type=oneshot with RemainAfterExit=no, so it returns to inactive after every
+# run: the gadget's Wants= re-queues it on every gadget start, and PID 1 holds
+# the gadget's start job until that oneshot reports terminal. Its own
+# TimeoutStartSec is therefore part of any gadget start/restart the client waits
+# on. Pinned to the shipped unit by tests/test_source_intent_systemd.py.
+_USB_GADGET_ROLE_DEPENDENCY_UNIT = "jasper-audio-hardware-reconcile.service"
+_USB_GADGET_ROLE_DEPENDENCY_START_SEC = 50.0
 # A synchronous start waits for the whole required dependency transaction, not
 # just the named service. AirPlay's packaged unit Requires=/After= our nqptp
-# timing service, so a cold start legally consumes both start ceilings.
+# timing service, so a cold start legally consumes both start ceilings. The USB
+# gadget pays the same way for the hardware-role oneshot above: that oneshot is
+# inactive between runs, so every gadget start re-queues it.
 _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
     "shairport-sync.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0],
     "jasper-usbsink.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
         "jasper-usbsink-volume.service"
     ][0],
+    "jasper-usbgadget.service": _USB_GADGET_ROLE_DEPENDENCY_START_SEC,
 }
 # Owner oneshots are different: a synchronous ``systemctl start`` may join and
 # wait for their full Type=oneshot activation. Bluetooth deliberately starts
@@ -212,7 +222,12 @@ _USB_DIRECT_WAIT_BUDGET_SEC = (
     _USB_DIRECT_SETTLE_ATTEMPTS * 0.5
     + (_USB_DIRECT_SETTLE_ATTEMPTS - 1) * _USB_DIRECT_SETTLE_SECONDS
 )
-_USB_FAILED_ON_CLEANUP_BUDGET_SEC = 165.0
+# The failed-On rollback stops and disables the derived unit, recomposes the
+# gadget to NCM-only, stops the gadget if audio survived that, and disarms the
+# coupling owner. Its three blocking systemd waits are one gadget restart, one
+# gadget stop, and one coupling start; the remainder is enablement and
+# state-probe overhead.
+_USB_FAILED_ON_CLEANUP_BUDGET_SEC = 215.0
 _RECONCILE_TIMEOUT_MARGIN_SEC = 21.25
 _NON_OWNER_RECONCILE_BUDGET_SEC = (
     _NON_SYSTEMD_RECONCILE_BUDGET_SEC
@@ -230,6 +245,10 @@ RECONCILE_SYSTEMD_TIMEOUT_SECONDS = (
     + _RECONCILE_TIMEOUT_MARGIN_SEC
 )
 RECONCILE_BROKER_TIMEOUT_SECONDS = RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 10.0
+# The status-invalidating entry point waits out a legitimate in-flight pass
+# rather than racing it, so its lock wait outlasts the unit ceiling. It stays
+# below the broker bound so the caller still owns the terminal result.
+_INVALIDATING_RECONCILE_LOCK_TIMEOUT_SECONDS = RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
 _UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
 _INTENT_FILE_MODE = 0o660
 _SHARED_LOCK_MODE = 0o660

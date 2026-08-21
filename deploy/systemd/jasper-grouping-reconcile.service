@@ -24,12 +24,12 @@ StateDirectoryMode=0755
 # A steady-state grouping apply remains short, but the finite outer ceiling
 # covers every conservative sequential branch: the two-unit Snapcast plan,
 # one-time provisioning (apt update + install), six bounded post-plan service /
-# hardware actions, up to two 788 s source-coordinator starts (drain a prior
+# hardware actions, up to two 938 s source-coordinator starts (drain a prior
 # activation, then synchronously converge the completed role), manager probes,
 # and a final margin. The handoff uses `start`, never restart, so an ordered
 # source transition is not cut in half; grouping succeeds only after source
-# park/restore does. Tests derive this 2526 s value from the child bounds.
-TimeoutStartSec=2526
+# park/restore does. Tests derive this 2826 s value from the child bounds.
+TimeoutStartSec=2826
 EnvironmentFile=-/etc/jasper/jasper.env
 # grouping.env is wizard-owned data, not a process environment. The Python
 # reconciler parses that fixed file itself; importing it here would let a

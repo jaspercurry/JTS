@@ -29,10 +29,10 @@ RuntimeDirectory=jasper-source-intent
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 # The pass always visits all four sources and every child operation has its own
-# shorter ceiling. 783 s is the final finite boot/request boundary with margin
-# over the declared worst-case path; the synchronous broker waits 793 s for
+# shorter ceiling. 933 s is the final finite boot/request boundary with margin
+# over the declared worst-case path; the synchronous broker waits 943 s for
 # PID 1 to report the terminal result.
-TimeoutStartSec=783
+TimeoutStartSec=933
 # Do not use Restart= here. Persistent malformed intent or hardware failure
 # must park after one observable pass, not create a rate-dependent retry loop.
 # Web requests retry once only when the first activation lacks a fresh exact

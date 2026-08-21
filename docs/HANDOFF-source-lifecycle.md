@@ -125,11 +125,11 @@ target outcome. If that start joined an older activation, the stale
 acknowledgement triggers one fresh pass. An aggregate sibling failure does not
 poison a target that explicitly succeeded; missing, malformed, stale, or
 mismatched status fails loudly. Each exact blocking `start` of this singleton
-helper may wait up to 793 seconds, just beyond the
-coordinator's finite 783-second systemd ceiling. Every other broker unit/verb
+helper may wait up to 943 seconds, just beyond the
+coordinator's finite 933-second systemd ceiling. Every other broker unit/verb
 and every `--no-block` shape retains the 120-second hard ceiling; the broker
 derives this exception from the validated request rather than trusting the
-client's requested number alone. The coordinator's 783-second ceiling has an
+client's requested number alone. The coordinator's 933-second ceiling has an
 explicit complete budget for enablement/activity probes and actions, bounded
 failed-state probes and `reset-failed` actions before desired-On starts and
 after desired-Off stops,
@@ -152,11 +152,11 @@ the lock primitive does not follow symlinks and does not require a
 group writer to chmod an already-correct root-owned lock.
 
 The HTTP envelope matches the same synchronous contract. Both `/sources/` and
-`/bluetooth/` use `proxy_read_timeout 1700s` in the full and streambox nginx
-configs: the stale-join case can require two broker calls at 793 seconds plus
+`/bluetooth/` use `proxy_read_timeout 2000s` in the full and streambox nginx
+configs: the stale-join case can require two broker calls at 943 seconds plus
 the broker client's five-second response margin, with bounded handler/readback
 slack. The generous path timeout does not make any child
-unbounded; the 783-second coordinator and 60/120-second owner limits remain the
+unbounded; the 933-second coordinator and 60/120-second owner limits remain the
 enforcement points.
 
 There is deliberately no resident lifecycle daemon and no plugin API. The
@@ -360,7 +360,7 @@ grouped-playback order and UI contract remain in
 - **Boot:** `jasper-source-intent-reconcile.service` is enabled for both install
   profiles, wanted by `multi-user.target`, ordered after
   `systemd-rfkill.service` and `hciuart.service`, and bounded by
-  `TimeoutStartSec=783`. It deliberately has no automatic `Restart=` loop;
+  `TimeoutStartSec=933`. It deliberately has no automatic `Restart=` loop;
   deploy, boot, role changes, and the next user toggle are explicit bounded
   replay points. It has no ordering pull on
   `bluetooth.service`; the Bluetooth applier starts the control plane when On
@@ -368,9 +368,9 @@ grouped-playback order and UI contract remain in
 - **Deploy:** both profile installers refresh only renderers that were already
   active, then invoke the same coordinator directly as root with `--reason
   install --invalidate-status-before`. Install removes the prior completion
-  fact before waiting, drains the canonical reconcile lock for at most 788
+  fact before waiting, drains the canonical reconcile lock for at most 938
   seconds, and removes the fact again under that lock before applying. The
-  outer 793-second process ceiling deliberately leaves little room for a fresh
+  outer 943-second process ceiling deliberately leaves little room for a fresh
   pass after a worst-case older pass: timeout warns and leaves no acceptable
   acknowledgement, so deploy health fails closed rather than certifying stale
   state. Install never starts or enables an Off source as a temporary baseline.
