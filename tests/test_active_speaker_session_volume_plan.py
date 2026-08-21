@@ -273,6 +273,226 @@ def test_the_unsegmented_ceiling_refuses_a_non_finite_stimulus_peak():
         )
 
 
+# --- the per-branch bound (the second conservatism, retired) ----------------
+#
+# JTS3's declared numbers throughout: woofer admitted at -8.0 dBFS, declared
+# sensitivities 108.5 (tweeter) / 83.3 (woofer), and a -14.4 dB L-pad on the
+# tweeter recorded in the same declaration.
+
+_JTS3_NAKED_SENS = {"woofer": 83.3, "tweeter": 108.5}
+_JTS3_PADDED_SENS = {"woofer": 83.3, "tweeter": 108.5 - 14.4}
+
+
+def test_pad_folding_moves_the_ceiling_by_exactly_the_pad():
+    """Conservatism 1, isolated: the tweeter's cap is a sensitivity DELTA.
+
+    The derived HF ceiling is the woofer's own cap less the two drivers'
+    declared sensitivity difference, so folding a -14.4 dB L-pad into the
+    tweeter's figure moves its cap — and therefore ``min(caps)`` — by exactly
+    the pad and nothing else. The woofer, which has no pad and whose cap is
+    read straight from its declaration, does not move at all.
+
+    Mutation guard: revert ``jasper.cli.seat_level._derive_bounds`` to the
+    naked reader and the ceiling it derives lands on the -21.2 asserted here
+    as the BEFORE value, 14.4 dB adrift of the after.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    naked = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_NAKED_SENS,
+    )
+    padded = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+    )
+    # min(-8.0, -33.2) - (-12.0): the ceiling jasper-seat-level shipped.
+    assert naked == pytest.approx(-21.2)
+    # min(-8.0, -18.8) - (-12.0): the same derivation on the honest figure.
+    assert padded == pytest.approx(-6.8)
+    assert padded - naked == pytest.approx(14.4)
+
+
+def test_the_per_branch_bound_is_the_tightest_cap_less_its_OWN_branch_peak():
+    """Conservatism 2, isolated: each driver against what its branch receives.
+
+    The full-band bound assumes every driver sees the whole stimulus peak. Told
+    what each branch actually gets, the same per-driver caps bind against their
+    own branch instead — here the tweeter still binds, and the woofer alone
+    would have allowed more, which is the JTS3 shape.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    branch = {targets["woofer"]: -18.03, targets["tweeter"]: -22.66}
+    ceiling = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+        branch_peaks_dbfs=branch,
+    )
+    # tweeter: -18.8 - (-22.66) = +3.86 (binds); woofer: -8.0 - (-18.03) = +10.03.
+    assert ceiling == pytest.approx(3.86)
+    # The move is exactly the full-band peak less the BINDING branch's peak.
+    full_band = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+    )
+    assert ceiling - full_band == pytest.approx(-12.0 - (-22.66))
+
+
+def test_a_branch_that_BOOSTS_binds_tighter_than_the_full_band_bound():
+    """This is not a one-way loosening, and the direction is not decorative.
+
+    A branch whose chain has net positive gain — a peaking EQ above unity —
+    hands back a peak ABOVE the full-band figure, and the same arithmetic then
+    derives a QUIETER ceiling than the bound it replaces. A change that only
+    ever raised the ceiling would be a hedge removal; this is a measurement.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    full_band = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+    )
+    boosted = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+        # The tweeter branch drives 6 dB ABOVE the program's own peak.
+        branch_peaks_dbfs={targets["woofer"]: -18.03, targets["tweeter"]: -6.0},
+    )
+    assert boosted == pytest.approx(-12.8)
+    assert boosted < full_band
+
+
+@pytest.mark.parametrize(
+    "branch, why",
+    [
+        ({}, "an empty mapping"),
+        ({"woofer-only": -18.0}, "a mapping for a driver that is not active"),
+        ({"BOTH": -18.0}, "only one of the two active drivers"),
+        ({"BOTH": float("nan"), "OTHER": -22.0}, "a non-finite branch peak"),
+        ({"BOTH": None, "OTHER": -22.0}, "a null branch peak"),
+        ({"BOTH": True, "OTHER": -22.0}, "a bool where a peak belongs"),
+    ],
+)
+def test_incomplete_branch_facts_fall_back_to_the_conservative_bound(branch, why):
+    """Fail-conservative, never fail-open.
+
+    A partial render would bound the speaker by only the drivers that happened
+    to resolve — which is the fail-OPEN direction, since a driver with no
+    branch fact would simply stop constraining the ceiling. Every incomplete
+    shape must land back on the full-band bound instead.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    resolved = dict(branch)
+    if "BOTH" in resolved:
+        resolved[targets["woofer"]] = resolved.pop("BOTH")
+    if "OTHER" in resolved:
+        resolved[targets["tweeter"]] = resolved.pop("OTHER")
+    ceiling = unsegmented_stimulus_ceiling_db(
+        profile,
+        targets.values(),
+        stimulus_peak_dbfs=-12.0,
+        declared_sensitivities=_JTS3_PADDED_SENS,
+        branch_peaks_dbfs=resolved,
+    )
+    assert ceiling == pytest.approx(-6.8), why
+
+
+def test_callers_that_pass_no_branch_peaks_are_bit_for_bit_unchanged():
+    """The whole existing caller set, pinned: absent branch facts must derive
+    the identical number the shipped ``min(caps) - peak`` derived."""
+    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
+    assert (
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=-12.0
+        )
+        == -53.0
+    )
+    assert (
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=-12.0, branch_peaks_dbfs=None
+        )
+        == -53.0
+    )
+
+
+def test_which_bound_was_used_is_logged_with_the_per_driver_numbers(caplog):
+    """A silent fallback looks identical to a genuinely tight graph.
+
+    Both outcomes name themselves, and both carry each driver's cap and branch
+    peak, so an operator triaging a ``spl_target_unreachable`` can see whether
+    the ceiling is the honest bound or the hedge — and if the hedge, which
+    driver had no branch fact.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    branch = {targets["woofer"]: -18.03, targets["tweeter"]: -22.66}
+
+    with caplog.at_level("INFO", logger="jasper.active_speaker.session_volume_plan"):
+        unsegmented_stimulus_ceiling_db(
+            profile,
+            targets.values(),
+            stimulus_peak_dbfs=-12.0,
+            declared_sensitivities=_JTS3_PADDED_SENS,
+            branch_peaks_dbfs=branch,
+        )
+    used = caplog.text
+    assert "event=active_speaker.unsegmented_ceiling_bound" in used
+    assert "bound=per_branch" in used
+    assert "cap=-18.80" in used and "branch=-22.66" in used
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="jasper.active_speaker.session_volume_plan"):
+        unsegmented_stimulus_ceiling_db(
+            profile,
+            targets.values(),
+            stimulus_peak_dbfs=-12.0,
+            declared_sensitivities=_JTS3_PADDED_SENS,
+            branch_peaks_dbfs={targets["woofer"]: -18.03},
+        )
+    fell_back = caplog.text
+    assert "bound=full_band" in fell_back
+    assert "reason=branch_peaks_incomplete" in fell_back
+    # The driver whose fact was missing is named as missing, not as a number.
+    assert "branch=none" in fell_back
+
+    # And a caller that never asked for the honest bound stays silent — this
+    # derivation runs on every session open and must not spam the journal.
+    caplog.clear()
+    with caplog.at_level("INFO", logger="jasper.active_speaker.session_volume_plan"):
+        unsegmented_stimulus_ceiling_db(
+            profile, targets.values(), stimulus_peak_dbfs=-12.0
+        )
+    assert "unsegmented_ceiling_bound" not in caplog.text
+
+
+def test_the_session_measurement_volume_is_untouched_by_branch_facts():
+    """A different contract, deliberately left alone.
+
+    ``session_measurement_volume_db`` derives from ``max(caps)`` because a
+    composed v2 program attenuates every other driver down to its own cap with
+    per-segment gains. It takes no branch peaks and none of this changes it.
+    """
+    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
+    assert (
+        session_measurement_volume_db(
+            profile, targets.values(), declared_sensitivities=_JTS3_PADDED_SENS
+        )
+        == -20.0
+    )
+    assert loudest_driver_cap_dbfs(
+        profile, targets.values(), declared_sensitivities=_JTS3_PADDED_SENS
+    ) == pytest.approx(-8.0)
+
+
 def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
     """W6.5 pin: this module exclusively serves the program-admission v2
     conductor, so it always resolves ceilings on the proven-HP path. With

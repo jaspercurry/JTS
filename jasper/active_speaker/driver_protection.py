@@ -186,11 +186,15 @@ def driver_protection_profile(
 # a bound.
 #
 # Measured consequence, 2026-08-19 overnight linearization session
-# (captures/linearization-night-2026-08-19/): the seat-SPL leveling ramp takes
+# (captures/linearization-night-2026-08-19/): the seat-SPL leveling ramp took
 # its mic-independent ceiling from min(driver caps) - stimulus peak
 # (session_volume_plan.unsegmented_stimulus_ceiling_db), so the tweeter's -35
 # WAS min(caps) and capped the whole session at 68.07 dB SPL at the seat
-# against the operator's 75-80 dB SPL target.
+# against the operator's 75-80 dB SPL target. That formula is now the FALLBACK
+# half of that function: given the applied graph it bounds each driver by its
+# own branch's rendered peak instead (active_speaker.branch_peak). The tweeter
+# is still the binding driver on JTS3 either way -- what changed is that its
+# cap is compared against what the crossover actually delivers to it.
 #
 # Owner ratification, 2026-08-20, verbatim: "i use a fixed gain amp and
 # digitally control the volume. i can hit loud volumes - im confident the
@@ -236,9 +240,10 @@ def driver_protection_profile(
 # leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
 # 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp's volume
 # ceiling to the same), and the nominal measurement stimulus peaks at -12.0 dBFS
-# (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS). The
-# measured SPL band top and the ramp's runaway guard sit above those as the
-# mic-DEPENDENT layer.
+# (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS) -- of
+# which a crossed-over driver receives its own branch's share, at most that peak
+# for any branch sitting at or under unity. The measured SPL band top and the
+# ramp's runaway guard sit above those as the mic-DEPENDENT layer.
 #
 # Refusing to derive on delta <= 0 is NOT the fix -- it would break the
 # legitimate pro-woofer case above, and the two shapes derive the SAME ceiling:

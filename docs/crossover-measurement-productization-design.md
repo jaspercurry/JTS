@@ -777,9 +777,11 @@ Two mic-independent stops survive a swapped declaration even so, which is why
 the residual is bounded rather than open-ended: `MAX_TEST_LEVEL_DBFS` still
 clamps the derived cap at 0.0 dBFS (and `HARD_CEILING_DBFS` clamps the ramp's
 volume ceiling to the same), and the nominal measurement stimulus itself peaks at
-−12 dBFS (`AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS`), so the signal reaching
-the driver sits that far under full scale. The measured SPL band top and the
-ramp guards are then the mic-*dependent* layer on top. Refusing to derive on
+−12 dBFS (`AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS`) — of which a crossed-over
+driver receives only its own branch's share, so the signal reaching it sits at
+least that far under full scale for any branch at or under unity. The measured
+SPL band top and the ramp guards are then the mic-*dependent* layer on top.
+Refusing to derive on
 Δ ≤ 0 is not the fix — it would break the legitimate pro-woofer case above.
 Validating the declaration is; see the issue linked from the block comment above
 `derive_hf_measurement_ceiling_dbfs`.

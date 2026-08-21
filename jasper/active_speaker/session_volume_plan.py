@@ -204,6 +204,7 @@ def unsegmented_stimulus_ceiling_db(
     *,
     stimulus_peak_dbfs: float,
     declared_sensitivities: Mapping[str, float] | None = None,
+    branch_peaks_dbfs: Mapping[str, float] | None = None,
 ) -> float:
     """The loudest main volume at which ONE un-segmented signal admits everywhere.
 
@@ -211,18 +212,47 @@ def unsegmented_stimulus_ceiling_db(
     cap`` for that channel's driver
     (:mod:`jasper.active_speaker.program_admission`, ``effective_true_peak_dbfs``).
     A signal played through the whole graph carries no per-driver segment gain,
-    so every driver may see the full stimulus peak and the rule must hold for
-    all of them at once. Solved for the volume::
+    so the rule must hold for every driver at once. Solved for the volume, in
+    two bounds — which one applies depends on whether the caller can say what
+    each driver's branch actually receives.
+
+    **Full-band bound (no ``branch_peaks_dbfs``)** — every driver is assumed to
+    see the whole stimulus peak::
 
         ceiling = min(caps) - stimulus_peak_dbfs
 
     ``min``, not ``max``: the TIGHTEST cap binds, because nothing attenuates the
     signal down to the quieter drivers' ledgers the way a composed program's
-    segment gains do. Deliberately conservative in one direction — without a
-    per-channel role map this cannot know that a given channel only reaches the
-    woofer, so it bounds every channel by the tightest driver. Conservative here
-    means quieter, which is the safe direction, and the caller reports
-    ``spl_target_unreachable`` rather than exceeding it.
+    segment gains do. Conservative here means quieter, which is the safe
+    direction, and the caller reports ``spl_target_unreachable`` rather than
+    exceeding it. This stays the answer for every caller that passes no branch
+    peaks, and is the fallback whenever the branch facts are incomplete.
+
+    **Per-branch bound (``branch_peaks_dbfs`` given)** — the caller has rendered
+    the ACTUAL stimulus through the ACTUAL live graph and measured what each
+    driver's branch receives, so each driver is bounded by its own branch::
+
+        ceiling = min over drivers of (cap_d - branch_peak_d)
+
+    This retires the "bounds every channel by the tightest driver" hedge the
+    full-band bound carries by construction. It is not a loosening of any cap:
+    the SAME per-driver caps bind, each now against the peak that driver's
+    branch really sees rather than against a full-band peak no crossed-over
+    driver ever receives. It moves in BOTH directions — a branch whose chain
+    boosts (a peaking EQ with positive gain) reports a peak ABOVE the full-band
+    figure and binds TIGHTER than the old bound did.
+
+    ``branch_peaks_dbfs`` is keyed by ``target_fingerprint`` and is a claim about
+    one specific stimulus through one specific graph. It is never reusable: a
+    different WAV, or the same WAV after the graph is re-applied, needs a fresh
+    render. :mod:`jasper.active_speaker.branch_peak` owns producing it and
+    refuses rather than guessing.
+
+    **Fail-conservative, never fail-open.** A branch peak that is missing for any
+    active driver, non-finite, or unusable falls back to the full-band bound and
+    logs ``event=active_speaker.unsegmented_ceiling_bound`` naming which bound
+    was used and the per-driver numbers behind it. An incomplete render can only
+    ever make this quieter.
 
     Mic-independent by construction: no calibration, sensitivity, or measured
     level enters this number, so a mis-scaled microphone cannot move it.
@@ -231,12 +261,91 @@ def unsegmented_stimulus_ceiling_db(
         raise SessionVolumePlanError(
             f"stimulus peak must be finite, got {stimulus_peak_dbfs!r}"
         )
+    # Materialised once and handed to the helper as the SAME list, so the caps
+    # come back in a known one-to-one order with these fingerprints (and a
+    # generator argument is not consumed twice).
+    fingerprints = list(target_fingerprints)
     caps = _driver_caps_dbfs(
         safety_profile,
-        target_fingerprints,
+        fingerprints,
         declared_sensitivities=declared_sensitivities,
     )
-    return min(caps) - float(stimulus_peak_dbfs)
+    peak = float(stimulus_peak_dbfs)
+    full_band = min(caps) - peak
+    per_branch = _per_branch_ceiling_db(fingerprints, caps, branch_peaks_dbfs)
+    if per_branch is None:
+        if branch_peaks_dbfs is not None:
+            # Asked for the honest bound and could not have it: say so, because
+            # silently serving the conservative one reads as "the graph is just
+            # this tight" and sends an operator hunting the wrong number.
+            log_event(
+                logger,
+                "active_speaker.unsegmented_ceiling_bound",
+                bound="full_band",
+                reason="branch_peaks_incomplete",
+                ceiling_db=f"{full_band:.2f}",
+                stimulus_peak_dbfs=f"{peak:.2f}",
+                drivers=_driver_bound_detail(fingerprints, caps, branch_peaks_dbfs),
+            )
+        return full_band
+    log_event(
+        logger,
+        "active_speaker.unsegmented_ceiling_bound",
+        bound="per_branch",
+        ceiling_db=f"{per_branch:.2f}",
+        full_band_ceiling_db=f"{full_band:.2f}",
+        stimulus_peak_dbfs=f"{peak:.2f}",
+        drivers=_driver_bound_detail(fingerprints, caps, branch_peaks_dbfs),
+    )
+    return per_branch
+
+
+def _per_branch_ceiling_db(
+    fingerprints: list[str],
+    caps: list[float],
+    branch_peaks_dbfs: Mapping[str, float] | None,
+) -> float | None:
+    """``min(cap_d - branch_peak_d)``, or ``None`` when the facts are incomplete.
+
+    ``None`` is the fail-conservative answer the caller turns back into the
+    full-band bound. EVERY active driver must carry a finite branch peak: a
+    partial render would bound the speaker by only the drivers that happened to
+    resolve, which is exactly the fail-open direction this must never take.
+    """
+    if not branch_peaks_dbfs:
+        return None
+    candidates: list[float] = []
+    for fingerprint, cap in zip(fingerprints, caps):
+        branch_peak = branch_peaks_dbfs.get(fingerprint)
+        if (
+            isinstance(branch_peak, bool)
+            or not isinstance(branch_peak, (int, float))
+            or not math.isfinite(float(branch_peak))
+        ):
+            return None
+        candidates.append(cap - float(branch_peak))
+    return min(candidates) if candidates else None
+
+
+def _driver_bound_detail(
+    fingerprints: list[str],
+    caps: list[float],
+    branch_peaks_dbfs: Mapping[str, float] | None,
+) -> str:
+    """One log-safe token per driver: ``<fingerprint>:cap=<x>,branch=<y>``."""
+    peaks = branch_peaks_dbfs or {}
+    parts: list[str] = []
+    for fingerprint, cap in zip(fingerprints, caps):
+        branch_peak = peaks.get(fingerprint)
+        shown = (
+            f"{float(branch_peak):.2f}"
+            if isinstance(branch_peak, (int, float))
+            and not isinstance(branch_peak, bool)
+            and math.isfinite(float(branch_peak))
+            else "none"
+        )
+        parts.append(f"{fingerprint}:cap={cap:.2f},branch={shown}")
+    return " ".join(parts)
 
 
 def session_measurement_volume_db(
