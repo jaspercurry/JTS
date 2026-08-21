@@ -37,11 +37,17 @@
 | Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
+| Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
+| Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
+| Grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {frozen,per-seat,repeat,agreement}` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
+| Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
+| Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
+| Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -67,6 +73,7 @@
 | Point a laptop-durable flat-linearization corpus at a non-default location, or re-derive a pinned reading after a detector/reading change | [`tests/_flat_lin_corpus.py`](../tests/_flat_lin_corpus.py) — `JTS_FLAT_LIN_S0` / `JTS_FLAT_LIN_CORPUS` env vars; re-derivation procedure lives in `tests/test_spatial_combine.py::test_band_deficit_separates_honest_captures_from_stopband_residue` |
 | Find out what a measurement change actually moved — including the readings a tolerance absorbed and the prose homes that restate them, neither of which any lane can go red on | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Reproduce a flake that only appears when the box is busy, without leaking a CPU burner onto a machine other agent sessions are sharing | [Reproducing a load-dependent flake](#reproducing-a-load-dependent-flake) |
+| Run a lane or tool from a worktree/export and be sure it exercised THAT copy, not the main checkout | [Running a lane in an isolated checkout](#running-a-lane-in-an-isolated-checkout) |
 | Fix a test that only flakes in a loaded full-suite run (spawn/thread/FD exhaustion), without papering over a real failure | [Guard & contract test patterns](#guard--contract-test-patterns) — transient-resource retry row |
 | Find out *why* a loaded run runs out of file descriptors, instead of retrying around it | [Guard & contract test patterns](#guard--contract-test-patterns) — fd-leak row |
 | Understand why a test failed with "Timeout … from pytest-timeout", or bound a legitimately slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
@@ -186,6 +193,17 @@ for p in ${=PIDS}; do kill "$p"; done      # NOT 2>/dev/null
 Time-bound the loop body as well, keeping the bound comfortably above your
 repro's own runtime, so a cleanup you lose anyway self-heals in under a
 minute instead of burning a core until someone else notices.
+
+---
+
+## Running a lane in an isolated checkout
+
+[`DEEP-AUDIT-PLAYBOOK.md`](DEEP-AUDIT-PLAYBOOK.md) item 4 owns the rule — pin
+`PYTHONPATH` to the checkout under test and confirm a known edit is visible
+before trusting a green run. The mechanism behind it: the venv's editable
+install appends a `sys.meta_path` finder that **hardcodes the main checkout's
+path**, so it answers whenever nothing earlier on `sys.path` does, and an
+isolated worktree or export imports the LIVE tree with no error at all.
 
 ---
 
@@ -942,9 +960,10 @@ in `/tmp/` during a specific investigation and get promoted to
 | Tool | Status | Purpose |
 |---|---|---|
 | [`scripts/verify-ref-no-silence-bug.sh`](../scripts/verify-ref-no-silence-bug.sh) | in repo | Verifies the ref-path fixes from PRs #150 / #154 / #157 are active on the deployed build (resampler HF loss, silence fallback, drain-newest dup-frame bug). Run after any deploy that touched the bridge. |
-| [`scripts/aec-probe-latency.sh`](../scripts/aec-probe-latency.sh) | in repo | Injects a chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus one selected XVF3800 capture channel, and reports the reference-to-mic lag. Use `MIC_CHANNEL=0` or `MIC_CHANNEL=1` for chip ASR beams and `MIC_CHANNEL=2` for the raw channel used in older timing comparisons. |
-| [`scripts/aec-probe-xvf-ref-level.sh`](../scripts/aec-probe-xvf-ref-level.sh) | in repo | Bounded diagnostic for chip-reference legality and level. It injects a short chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus all XVF3800 capture channels, reports L/R reference parity, clipping, chip-ref 16 kHz mono model, `AUDIO_MGR_REF_GAIN` estimate, per-channel RMS/correlation, and selected XVF profile readbacks. See [`docs/AEC-DIAG-06-xvf-format-level-profile.md`](AEC-DIAG-06-xvf-format-level-profile.md). |
-| [`scripts/aec-probe-timing.py`](../scripts/aec-probe-timing.py) | in repo | Diagnostic-only timing probe for explicit reference sources: `outputd_udp` and `chip_ref_tee`. Writes JSON/CSV/Markdown plus short WAV artifacts, labels mic channels (`ch0` conference/beam, `ch1` ASR beam, `ch2` raw mic0), snapshots outputd state, and can run outputd period/buffer profiles `default`, `1024/2048`, and `512/1024`. See [`docs/AEC-DIAG-03-timing-probe.md`](AEC-DIAG-03-timing-probe.md). |
+| [`scripts/aec-probe-latency.sh`](../scripts/aec-probe-latency.sh) | in repo | Injects a chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus one selected XVF3800 capture channel, and reports the reference-to-mic lag. Use `MIC_CHANNEL=0` or `MIC_CHANNEL=1` for chip ASR beams and `MIC_CHANNEL=2` for the raw channel used in older timing comparisons. **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-xvf-ref-level.sh`](../scripts/aec-probe-xvf-ref-level.sh) | in repo | Bounded diagnostic for chip-reference legality and level. It injects a short chirp through `correction_substream`, captures outputd's final speaker-reference UDP stream plus all XVF3800 capture channels, reports L/R reference parity, clipping, chip-ref 16 kHz mono model, `AUDIO_MGR_REF_GAIN` estimate, per-channel RMS/correlation, and selected XVF profile readbacks. See [`docs/AEC-DIAG-06-xvf-format-level-profile.md`](AEC-DIAG-06-xvf-format-level-profile.md). **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-timing.py`](../scripts/aec-probe-timing.py) | in repo | Diagnostic-only timing probe for explicit reference sources: `outputd_udp` and `chip_ref_tee`. Writes JSON/CSV/Markdown plus short WAV artifacts, labels mic channels (`ch0` conference/beam, `ch1` ASR beam, `ch2` raw mic0), snapshots outputd state, and can run outputd period/buffer profiles `default`, `1024/2048`, and `512/1024`. See [`docs/AEC-DIAG-03-timing-probe.md`](AEC-DIAG-03-timing-probe.md). **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
+| [`scripts/aec-probe-pinknoise.sh`](../scripts/aec-probe-pinknoise.sh) | in repo | Runs the bridge with stationary pink noise as the far-end signal and logs RMS attenuation per 5-second window. Pink noise is AEC3's best case (stationary, broad-spectrum), so the plateau here is the engine's upper-bound attenuation for the setup — compare against music-as-far-end, typically 5–10 dB worse. Stops shairport-sync and jasper-voice for the run and restores them after; plays loud-ish noise at whatever the remote's volume is set to. **Ring-armed boxes: silently measures silence** — plays into `correction_substream` unconditionally (#2767). |
 | `scripts/xvf-interrogate.sh` | in repo | Deep XVF3800 diagnostic — USB descriptors, ALSA card state, all chip params, RMS levels. Tagged by chip iSerial. Run when the mic seems off and you want a full dump before changing anything. |
 | `/tmp/analyze_aec_distortion.py` | **NOT in repo** | Per-clip peak / RMS / crest / tanh-zone occupancy / hard-clip count. Promote to `scripts/_analyze_aec_distortion.py` when stable. |
 | `/tmp/analyze_tearing.py` | **NOT in repo** | NS musical noise / RS HF gating (`hf_CV`) / frame-boundary clicks / AGC pumping / HF aliasing detectors. Promote to `scripts/_analyze_tearing.py` when stable. |
@@ -991,19 +1010,28 @@ The throwaway feasibility harness for multi-room grouping (stereo pair,
 2.1 wireless sub). Answers the one gating unknown before any product
 code: **does Snapcast hold inter-speaker sync on WiFi, at what buffer
 depth + codec, and what does the FLAC encode cost on a 1 GB Pi?** Runs
-entirely off the live JTS audio path; cleans up after itself.
+entirely off the live JTS audio path; cleans up after itself. The last two
+rows are a later, narrower gate — the **S0-sync** bench, which characterises an
+snd-aloop re-entry seam rather than P0's buffer/codec question — and carry
+their own scope caveat.
 
 | Tool | Methodology | When to use |
 |---|---|---|
 | [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Stands up a throwaway `snapserver` + `snapclient`s (leader + 2nd Pi + Pi Zero sub) reading a hand-fed FIFO, sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/`. | Before P1: pick the buffer/codec that holds the p99<5 ms L/R bound on WiFi. |
 | [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer. `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — ground-truth inter-speaker offset), `summarize` (PASS/FAIL vs target + RAM/CPU + recommended cell). | Analyze a spike run; the acoustic mode is the authoritative comb-filtering check. |
+| [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) | Laptop-side SSH harness for the S0-sync de-risk gate (throwaway, not product). Stands up two throwaway **active** followers whose seam is `snapclient` → snd-aloop → crossover-only CamillaDSP → real DAC, feeds a 1 Hz broadband click, and soaks for the xrun / CPU / temp budget. Answers the one thing the dumb-follower path deliberately avoids: the loopback re-entry and its `rate_adjust`-no-resampler clock seam. | **Not evidence about a ring-backed seam.** The bench stands up its own throwaway snd-aloop rig and characterises the aloop clock-tracking mechanism — CamillaDSP nudging the `PCM Rate Shift` control on its snd-aloop *capture* device. A ring PCM is an ioplug and exposes no such mixer control, so a green run here answers nothing about a ring transport. See #2766 for the bonded grouping round-trip's move onto a ring, and #2768 for the owed ring-seam de-risk. |
+| [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py) | Pure-stdlib analyzer, the measurement half of the bench. `acoustic --wav` (single-mic autocorrelation of the broadband click → inter-speaker arrival offset) and `soak --dir` (parse soak logs for snd-aloop xrun totals + CPU/temp/throttle/Pss, run the acoustic estimate over every periodic capture, report p50/p95/p99/max raw *and* placement-detrended, count resync jumps, emit the combined PASS/FAIL). | Analyze an `s0-sync-bench.sh` run. Same scope caveat as the row above — the numbers describe an snd-aloop rig, not a ring-backed seam (#2768). |
 
-**Safety note:** the spike plays a test track/music straight through a
-throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`
-ceiling, and its leader-side client can contend with `jasper-outputd`
-for the DAC. Run it with the JTS audio daemons stopped (or on bring-up
-hardware), and set a conservative volume before the first sweep. See
-[`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8.
+**Safety note — the P0 spike rows only:** `multiroom-spike.sh` plays a test
+track/music straight through a throwaway `snapclient`, **bypassing**
+CamillaDSP's `volume_limit: 0.0` ceiling, and its leader-side client can
+contend with `jasper-outputd` for the DAC. Run it with the JTS audio daemons
+stopped (or on bring-up hardware), and set a conservative volume before the
+first sweep. See [`HANDOFF-multiroom.md`](HANDOFF-multiroom.md) §8. The S0
+bench is not in that class — it drives the DACs outside outputd, but its
+throwaway CamillaDSP keeps `volume_limit: 0.0`, negative-only gains, and a
+protective Layer-A high-pass. It still needs exclusive DAC ownership, so
+`--up` stops the live stack on both Pis and `--teardown` restores it.
 
 ---
 
@@ -1704,6 +1732,73 @@ which runs the same offline checks `--selftest` does.
 
 ---
 
+## Crossover-v2 round banking
+
+`scripts/bank-crossover-round.sh <dest-dir>` pulls one crossover-v2 round's
+evidence off the Pi into a directory you name — never a hardcoded campaign
+path, unlike the throwaway `night_bank.sh` / `pull_dumps.sh` /
+`integrity_summary.py` scripts this productizes (most recently
+`captures/linearization-night-2026-08-19/tools/`). `<dest-dir>` must not
+already exist non-empty — re-running into a used directory is refused
+(exit `4`) rather than silently truncating the prior pull, since every
+artifact below is written with a plain `>` redirect.
+
+The first thing written, before any Pi round-trip, is `provenance.json`
+— the host and user actually banked, a UTC timestamp, and this script's
+own commit — so a banked tree always names its own source even if every
+pull below it fails. This is also where an explicit `PI_HOST=` /
+`PI_USER=` override is guaranteed to win: `_lib.sh` sources `.env.local`
+with `set -a`, which can otherwise silently overwrite an
+already-exported `PI_HOST` before the `${PI_HOST:-jts.local}` fallback
+ever runs (repo-wide, tracked as #2689) — this script captures the
+caller's export before sourcing `_lib.sh` and re-applies it after, so
+`PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>`
+reliably banks jts3 even when `.env.local` points somewhere else.
+
+It then pulls the newest session bundle, the crossover-v2 flow state, the
+design draft, a bounded journal window (the four units a round speaks
+through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
+`jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
+under-voltage grep counts), the round's own prediction fields lifted out
+of the flow state before the next round overwrites them
+(`verify_priors.predicted_sum` / `verify_priors.predicted_spec` /
+`fc_selection` / etc.), and the dump-ring captures
+(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
+and `dumps/sidecar/`). Every pull is best-effort and independently
+reported to stderr, and a per-artifact status summary prints at the end
+regardless of outcome.
+
+Three things can make the script refuse a run, and none of them ever
+deletes a file that was already pulled — the refusal is the exit code
+plus the printed findings, forensics stay on disk. Each has its own exit
+code, on purpose: a caller scripting a retry loop over this command needs
+to tell "this destination is unusable" apart from "nothing to check yet"
+without parsing stderr.
+
+| Exit | Meaning |
+|---|---|
+| `0` | the round bundle and flow state were both pulled, and `jasper.audio_measurement.capture_integrity` found every dump-ring sidecar clean |
+| `1` | the capture-integrity check found nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) — **or** `<dest-dir>` was omitted entirely (bash's own `${1:?…}` exit code; a one-time invocation mistake, not a state a retry loop cycles through, so it is not worth a distinct code) |
+| `2` | the round bundle and flow state were both pulled, but capture-integrity found at least one dump-ring sidecar dirty (including one whose JSON could not be parsed) — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
+| `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank; this overrides whatever capture-integrity found, even a clean dump-ring |
+| `4` | `<dest-dir>` already exists and is non-empty. Nothing was pulled — a caller retrying into the same destination after a failed bank needs this distinguishable from `1`'s "nothing to check" |
+
+Exit `0`/`1`/`2` are exactly `jasper.audio_measurement.capture_integrity`'s
+own contract, propagated unchanged; `3` and `4` are this script's own,
+layered on top of it (that command alone never returns either — the
+non-empty-`<dest-dir>` and incomplete-bank checks are the bank script's
+job, not the checker's). Standalone: `python -m
+jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`.
+Hardware-free coverage — clean / dirty / unreadable fixture trees, the
+exit-code values themselves (not just the names), and one test per named
+finding class — lives in
+[`tests/test_capture_integrity.py`](../tests/test_capture_integrity.py);
+the bank script's own non-empty-`<dest-dir>` refusal (exit `4`, no Pi
+needed — the check runs before any SSH call) is pinned in
+[`tests/test_bank_crossover_round_script.py`](../tests/test_bank_crossover_round_script.py).
+
+---
+
 ## Crossover prescriber harness
 
 `jasper-crossover-prescriber`
@@ -1766,9 +1861,9 @@ jasper-crossover-prescriber propose <bundle-dir> \
   alongside `round_receipt.json` and `cloud_verify.json`. There is no flag for
   it and no way to point it elsewhere. Absent → `driver_feature_not_classified`.
 
-Nothing in the product **produces** a classification today — stage P3's
-instrument is not built — so that file is an operator's banked lab result
-dropped into the round directory. A `defect-*` verdict says EQ is not
+That file is written by `jasper-classify-features` (below), or is an
+operator's own banked lab result dropped into the round directory under the
+same name. A `defect-*` verdict says EQ is not
 structurally barred at that feature, never that EQ will help; and
 `defect-boostable` is a minimum-phase **dip**, which is still refused, because
 cutting a dip deepens it. The **nearest** banked verdict to a filter's centre is
@@ -1830,6 +1925,178 @@ a golden against a real banked round when `captures/` is present, lives in
 [`tests/test_crossover_v2_blend_prescription.py`](../tests/test_crossover_v2_blend_prescription.py)
 and
 [`tests/test_crossover_v2_driver_prescription.py`](../tests/test_crossover_v2_driver_prescription.py).
+
+---
+
+## Feature-classification instrument
+
+`jasper-classify-features`
+([`jasper/cli/classify_features.py`](../jasper/cli/classify_features.py) over
+[`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py))
+answers the question a magnitude curve cannot: is that bump a **minimum-phase
+driver defect** (a filter is at least the right kind of tool), a
+**non-minimum-phase cancellation** (it is structurally the wrong one — a filter
+lowers the direct sound and its delayed copy together), or the **room**? It
+runs offline over captures a round already banked — no Pi, no re-measuring —
+and files `feature_classification.json` into that round's own artifact
+directory, where the evidence packet reads it.
+
+```sh
+jasper-classify-features <bundle-dir> --dumps <capture-ring> [--json]
+# a lab round with a turntable trail, so the timing test has repeated angles:
+jasper-classify-features <bundle-dir> --dumps <ring> --walk-log logs/walk-1.jsonl
+# classify exactly these frequencies instead of detecting them:
+jasper-classify-features <bundle-dir> --dumps <ring> --at 1037 --at 4149
+```
+
+It composes directly with
+[`scripts/bank-crossover-round.sh`](../scripts/bank-crossover-round.sh), whose
+`<dest>` holds exactly the two inputs this wants:
+
+```sh
+bash scripts/bank-crossover-round.sh <dest>
+jasper-classify-features <dest>/bundle/<session> --dumps <dest>/dumps
+```
+
+`<bundle-dir>` is a commissioning bundle; the round directory inside it is
+found by the same rule the packet reader uses, so the artifact cannot land
+where the reader does not look. `--dumps` is the banked capture ring, scoped to
+this round by the bundle's own `session_id` (a sidecar stamps it into
+`jts_session_identity`) — a ring holding several rounds needs no flag to be
+split correctly.
+
+**It refuses more often than it reports, and each refusal has a name.**
+
+- `classification_controls_failed` — known answers are pushed through the
+  identical pipeline on the round's own IR before anything is reported: a
+  minimum-phase peaking filter that must read flat, an all-pass that must
+  recover its own group delay, a quiet delayed copy that must ALSO read flat
+  (`|g| < 1` puts every zero inside the unit circle, so it is minimum phase),
+  and a loud one that must not. Fail any of them and no verdict is written at
+  all — a reading from an instrument that just failed its own check is a
+  number, not evidence.
+- `classification_lateral_capture_shape` — a `lateral` capture replays the
+  per-driver MEASURE program one driver at a time, so it carries no
+  summed-system response for a feature verdict to be about. A hard refusal
+  rather than a silent skip: a caller who pointed this at a per-driver round
+  should be told what is wrong with the round.
+- `classification_no_admissible_captures` / `classification_program_missing` /
+  `classification_no_features_detected`.
+
+**Every verdict it emits is `vertical_blind`, and that is not a placeholder.**
+Every capture shape it reads is horizontal — a turntable swings at fixed height
+and radius, a position cloud is a floor plan, a single anchor sees the vertical
+plane no better — so a floor or ceiling bounce is invariant to every position
+it saw. `driver_prescription` refuses a boost on that alone
+(`driver_boost_vertically_blind`), because a boost aimed at a vertical null
+feeds it. Cuts are unaffected. The 2026-08-19 lab artifacts carry a field of
+the same name computed as "fewer than two gates resolved"; that is a fact about
+the GATE test, and this instrument reports it as `resolved_gates`.
+
+**Exit codes are the contract**: `0` classified and filed, `1` the round could
+not be read, `2` refused, `3` the verdict could not be written. `--json` prints
+the named `reason` and the evidence behind it.
+
+The 2026-08-19 lab harness this was promoted from
+(`captures/*/tools/classify_*.py`) also fitted a single-delay null ladder
+through the dips with a 4000-trial randomisation, and read each dip's depth
+through the shipped two-path reflection law. Both were reported and neither
+entered a verdict — the run log's own conclusion was that four dips with free
+rung integers pin nothing — so neither was promoted. Hardware-free coverage,
+built on synthetic speakers whose answers are known before the instrument runs
+(an RBJ resonance is minimum-phase by construction; a delayed copy inside the
+window is the room), lives in
+[`tests/test_crossover_v2_feature_classifier.py`](../tests/test_crossover_v2_feature_classifier.py).
+
+---
+
+## Round-grading comparison views
+
+`jasper-round-views`
+([`jasper/cli/round_views.py`](../jasper/cli/round_views.py), core in
+[`jasper/active_speaker/crossover_v2/round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py))
+is the product promotion of four laptop tools that had been re-derived by hand
+under `captures/linearization-night-2026-08-19/tools/` — `frozen_reference.py`,
+`per_seat.py`, `repeatability.py`, `agreement.py` — the numbers a crossover-v2
+tournament's "dominance decides" rule was actually judged on (issue #2769).
+`captures/` is gitignored; those originals never entered the repo, so there is
+nothing to `git rm` — this tool is the one copy going forward.
+
+Every subcommand reads a *banked round directory*, the tree
+`scripts/bank-crossover-round.sh <dest-dir>` produces (see
+["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
+`bundle/<session>/` evidence bundle, optional `state.json` / `design-draft.json`, and optional
+`dumps/wav/` + `dumps/sidecar/` dump-ring captures. No file is globbed or
+re-parsed by hand — positions and the graded spec come from
+[`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
+grading comes from
+[`flat_spec.evaluate_flat_spec`](../jasper/active_speaker/flat_spec.py) and
+the `flat_spec_views` per-position/per-role building blocks, and the one DSP
+chain this module runs itself (recovering the VERIFY pose, which a round's
+`positions` block never carries a row for) is
+`deconvolve` → `gate_impulse_response` (the reflection-detecting gate, not a
+fixed window) → `magnitude_response` → `smooth_fractional_octave` — the same
+seams the shipped measurement pipeline uses, imported rather than
+re-implemented.
+
+```sh
+# grade a round shipped AND frozen to a baseline's own reference level —
+# the freeze §8.9 needed to show a prescribed cut was lowering its own
+# grading frame rather than actually flattening the response
+jasper-round-views frozen <baseline-round-dir> <target-round-dir>
+
+# every banked position plus the VERIFY pose, normalised onto one
+# comparable basis (each curve expressed as its own deviation from its
+# own median level — no cross-calibration assumption between the banked
+# cloud curves and the freshly-deconvolved VERIFY capture)
+jasper-round-views per-seat <round-dir>
+
+# session-to-session spread of the pooled honest figures — the stop
+# criterion: are session deltas within the measured repeat noise?
+jasper-round-views repeat <round-dir> [<round-dir> ...]
+
+# per-seat sign/magnitude testimony for every feature in the trusted
+# sweep, reported separately (a feature can agree in sign at every seat
+# and still split badly in size — the campaign's own 1400 Hz finding)
+jasper-round-views agreement <round-dir>
+```
+
+**No numeric microphone angle for a CLOUD position.** `evidence_packet.py`
+only ever reads the cloud positions block (`spatial.cloud_position_record`
+rows), which carries a coarse `role` (`onax`/`offax`) and no angle at all — a
+LATERAL walk pose (`spatial.lateral_pose_record`) does stamp a signed
+`position_deg`, but this module never reads those records. The campaign's
+`frozen_reference.py` carried a hardcoded `index -> degrees` table for
+exactly this reason; it is not ported. Every view here keys a position by
+its own stable `position_id` (`f"{phase}_{index:02d}"`, assigned once by the
+walk driver and stable across rounds that walk the same shape) instead.
+
+**Agreement's sign-agreement rule is the campaign's own literal threshold**
+(`testify >= 3` and `dissent <= 1`), not scaled to the seat count — below 3
+seats the verdict is `common_mode: null` in the JSON, a named not-evaluable
+state, never a fabricated pass or fail. `--lo` defaults to the round's own
+`trusted_floor_hz` when not given explicitly.
+
+Each subcommand writes its JSON result into the round directory by default
+(`per_seat.json`, `frozen_reference.json`, `agreement.json` under the graded
+round's own dir; `repeatability.json` under the first round dir for `repeat`)
+— `--out PATH` writes somewhere else, `--out -` writes to stdout. Exit `0` on
+success, `1` when a round directory could not be read into a comparable view
+(an unreadable evidence document, a truncated dump-ring WAV, or any of the
+round's other documented failure shapes).
+
+Hardware-free coverage — including a golden fixture whose `spec` block is a
+REAL `evaluate_flat_spec(...).to_dict()` (so a schema drift fails the suite
+rather than going unnoticed), an end-to-end synthetic wired capture through
+the real `deconvolve`/`gate_impulse_response`/`magnitude_response` chain, and
+a verified mutation kill for each of the agreement thresholds, the
+sample-variance (`ddof=1`) spread, the median seat normalisation, and the
+gate/smoothing steps — lives in
+[`tests/test_active_speaker_crossover_v2_round_views.py`](../tests/test_active_speaker_crossover_v2_round_views.py).
+`FlatSpecReport.from_dict`/`BandResult.from_dict` (the shared rehydration
+this module and `scripts/render-metric-views.py` both use) are pinned by a
+round-trip test in
+[`tests/test_flat_spec.py`](../tests/test_flat_spec.py).
 
 ---
 
@@ -1907,7 +2174,7 @@ Read the journal, not the code, to find out what happened:
 | `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
 | `crossover_v2_lateral_close_suppressed` | `planned`/`captured`, and `fc_statistic_paused=true` |
 
-**Five refusals.** The session opens in its ordinary shape after every one, and
+**Six refusals.** The session opens in its ordinary shape after every one, and
 the document is consumed — except on the spool's two unreadable arms, which
 deliberately do not consume so a permissions mistake cannot destroy the evidence
 of itself. The `consumed=` field says which happened; do not assume it.
@@ -1916,13 +2183,20 @@ of itself. The `consumed=` field says which happened; do not assume it.
 |---|---|
 | `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
 | `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
+| `walk_over_mover_envelope` | a stop is outside the stated mover's own reach (arm ±45°, person ±80°). Normally refused far earlier — see below — so reaching the take means a document was banked before that bound existed, or edited by hand |
 | `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |
 | `walk_lateral_group_already_planned` | the session already walks a lateral group |
 | `walk_stop_no_longer_valid` | a banked stop no longer satisfies the seam (a hand-edited angle); the detail carries the seam's own sentence |
 
 The spool's own slugs (`angle_request_spool_*`, `measurement_session_already_live`)
 reach the same journal line, so this table is the take's half, not the whole
-vocabulary.
+vocabulary. `walk_over_mover_envelope` is the one slug decided by the REQUEST
+alone (its mover plus its angles), so `plan` and `stage` refuse it at the door
+and a session is normally never offered a walk its positioner cannot serve —
+refusing it later would cost `600 s` of held budget per unreachable stop. It can
+still reach the take, and the row above says when: the take re-validates every
+banked document, so a walk staged before that bound existed, or edited on disk,
+refuses there with the same slug rather than running.
 
 Hardware-free coverage: the mailbox and the CLI in
 [`tests/test_angle_capture_trigger.py`](../tests/test_angle_capture_trigger.py),
@@ -1931,6 +2205,231 @@ the composition and its refusals in
 take in [`tests/test_angle_capture_take.py`](../tests/test_angle_capture_take.py),
 and the suppression pins in
 [`tests/test_crossover_v2_lateral_evidence.py`](../tests/test_crossover_v2_lateral_evidence.py).
+
+---
+
+## Lab-arm walk harness
+
+`jasper-arm-walk` ([`jasper/cli/arm_walk.py`](../jasper/cli/arm_walk.py), loop in
+[`jasper/active_speaker/arm_walk.py`](../jasper/active_speaker/arm_walk.py)) is
+what actually WALKS a live measurement session with the lab turntable arm. Both
+ends already shipped and nothing joined them: the session publishes
+`relay.position_pending` and holds every begin until something POSTs
+`/correction/crossover/v2/position-ready`, and the turntable adapter moves the
+microphone. Between them sat a script rewritten per campaign — this is that
+script's contract, kept.
+
+Runs **on the speaker**, in the foreground, one run per walk:
+
+```sh
+# stage the walk first (angle-walk door, above), then start this, THEN open
+# the session — the first poll is what checks a walk is still waiting.
+sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \
+    --attest-rig-clear --hostname jts3.local \
+    --expect-angles 7,-7,22,-22 --complete-after 5 \
+    --trail /tmp/arm-walk.jsonl
+```
+
+`pi` is the identity, not a habit: the adapter opens a serial port, and `pi` is
+what the shipped turntable unit runs as (`User=pi` plus `dialout` in
+[`jasper-turntable-autostop@.service`](../deploy/systemd/jasper-turntable-autostop@.service)).
+`--hostname` is required and is the speaker's own name — it becomes the `Host:`
+header, without which the wizard's management-host guard refuses the loopback
+read (see `rc 14` below).
+
+One turn of the loop: poll → power preflight → move → measured settle (30 s by
+default) → `position-ready`. It reads the envelope over loopback with the
+speaker's own `Host:` header (the shape the deploy's management-surface probe
+and the doctor's `check_management_surface` use — the wizard's host guard
+rejects a bare `127.0.0.1`), and drives the adapter as a **subprocess** at
+`/opt/jasper/experiments/usb-turntable/jts_turntable.py` (`--tool` points it at
+a checkout), never as an import.
+
+**The safety invariants are in the code, each pinned by a test in
+[`tests/test_arm_walk.py`](../tests/test_arm_walk.py):**
+
+| invariant | what it does |
+|---|---|
+| power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `rc 3`. Stricter than the adapter's own gate, which is right for a human at the rig and not for an unattended walk. The PARK's own move is not re-checked, deliberately: the walk is often parking *because* of a power sign, and refusing to go home would strand the arm at the last measured angle. That move still passes the adapter's own preflight, so a park during a live brownout is refused there and reported `ok=false` |
+| ±45° clamp | belt-and-braces over the adapter's own refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
+| park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream, so only the command sign is truth |
+| `set-zero` is unreachable | `power`, `position` and `offset` are the complete set of verbs this tool can emit |
+| the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED, so the trail states what was taken, not what was intended |
+
+**Attestation, not a nanny.** The adapter wants two `--confirm-*` flags per
+move, which no unattended caller can honestly answer per move. So the operator
+answers once for the run with `--attest-rig-clear`, and a power sign is the one
+thing that voids it — because a power event is exactly when the saved zero may
+have stopped being the acoustic axis. One flag, one honest void condition, no
+zero-validity state machine.
+
+**Exit codes are the contract** — `0` walk complete, and a distinct code per
+failure class: `3` power void, `4` move refused/failed, `5` the wired
+completion signal was not accepted, `6` stuck (a rejected capture is awaiting a
+human — [#2506](https://github.com/jaspercurry/JTS/issues/2506)), `7` the
+session itself failed (its own error is on the line), `8` nothing ever asked
+the arm to move, `9` `--expect-angles` given with no walk staged and no session
+open, `10` a stated angle never arrived, `11` the measured settle broke the
+floor, `12` refused before anything moved, `13` a `position-ready` the session
+did not accept, `14` the status endpoint never answered. `EXIT_NAMES` maps them.
+
+**A release is a request, and `13` is the session saying no.** A `409` (the gate
+is waiting on a different capture), a `403` (wrong CSRF pair), a `400`, or a POST
+that never arrived all mean *no capture began* — so the position is not counted,
+`--expect-angles` is not satisfied, `--complete-after` does not advance, and the
+walk stops rather than exit 0 having measured nothing.
+
+**`14` is almost always the wrong `--hostname`.** An unreachable or 403ing status
+endpoint has no pending and no session verdict, which is indistinguishable from a
+session sitting on a rejected capture — so a naive driver reports `rc 6` and
+blames #2506 for a typo. Unreadable polls are counted separately and a whole
+`unreadable_ceiling_s` of them without one good read is its own named exit. A
+single blip is absorbed: any readable poll clears the run.
+
+**`--expect-angles` is how a silently degraded walk is caught.** A session that
+refuses a staged walk runs its ordinary shape instead, whose captures are ALL
+design-axis — so an unattended driver serves them happily and the run looks
+fine. Stating the walk's non-zero angles turns that into `rc 10`. The envelope
+cannot be asked "did you take a walk", so the pre-motion half of the check is
+narrower: with no session yet in flight, a walk must still be staged (`rc 9`).
+
+**A signal stops the walk once — and SIGHUP is one of them.** A remote walk is
+stopped by its ssh transport going away: sshd closes the PTY and the kernel
+hangs up this process group. Python's *default* for SIGHUP is death with no
+unwinding, so until `PARK_ON_SIGNALS` gained it, every dropped link — an
+operator's laptop sleeping, a driver terminating its own ssh client — left the
+arm wherever it stood, with the walk's log ending mid-sentence. Signal endings
+exit `128 + signum` (`129` hangup, `130` interrupt, `143` terminate, all named
+`*_parked` in `EXIT_NAMES`) so a trail can tell them from a failure.
+SIGTERM/SIGINT/SIGHUP becomes the `SystemExit` whose unwind IS the park — and the handler disarms itself on that first fire, because
+a second signal arriving mid-park would abandon the arm at an unknown angle with
+no verification, which is the state one signal was meant to avoid. Later signals
+are ignored until the arm is home; `SIGKILL` remains the escape hatch.
+
+**Observability**: `event=arm_walk.*` in the journal (`pending`, `moved`,
+`released`, `release_rejected`, `power_void`, `stuck`, `status_unreachable`,
+`parked`, `walk_not_taken`, …) — failures at `ERROR`, progress at `INFO` — each
+line carrying the deciding numbers, and the same fields as JSONL rows under
+`--trail`: one call site, so the two can never disagree.
+
+---
+
+## Crossover round runner
+
+`scripts/run-crossover-round.py`
+([source](../scripts/run-crossover-round.py)) runs ONE crossover-v2 round end
+to end from the laptop. It composes the pieces above — `jasper-angle-capture
+stage`, `jasper-arm-walk`, the wizard's own endpoints, and
+`bank-crossover-round.sh` — and builds nothing new on the Pi. Every campaign
+had rebuilt this as chained shell (`stage1.sh` → `walk8.sh` → `cycle.sh` in
+`captures/linearization-night-2026-08-19/tools/`): launch a walk driver, sleep,
+POST the open, grep a log for `released index=N`, sleep again, bank.
+
+```sh
+# measure (stage 1), lab arm walking five angles
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r1 --tier remote \
+    --angles 0,7,-7,22,-22 --regime per_driver \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+
+# …read the candidate it printed, decide, THEN apply it BY NAME
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
+
+# the post-apply check (stage 2)
+PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
+    --campaign captures/my-night --label r1-verify --stage verify \
+    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+```
+
+**The apply gate is why the file exists.** The chained scripts had none, and a
+round applied a candidate nobody had sanctioned — one measured round, lost. So
+a measurement run NEVER applies: it ends with the candidate's fingerprint and
+its numbers printed on stdout and banked as `<campaign>/<label>/candidate.json`,
+and stops. Applying is a second invocation that must NAME the fingerprint, and
+the runner re-reads the live candidate and refuses **before any POST leaves the
+laptop** when the two differ (the envelope GET that reads the live candidate is
+the one request it does make — the promise is about what it never SENDS) (`rc 11`, and
+[`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
+asserts nothing was sent, not merely that the exit code was non-zero). The
+endpoint runs that same comparison server-side and would refuse the same
+request — the local check is not a second opinion about the candidate, it is
+what keeps a mistyped or stale fingerprint from becoming a state-changing
+request at all. What closes the hole is upstream of either check: that an apply
+is a separate invocation naming the fingerprint, instead of a step a chain
+filled in for itself.
+
+**Phase order, and why.** The walk is launched *before* the session opens,
+because `jasper-arm-walk`'s first poll is what checks a staged walk is still
+waiting — opening first would make that check unreachable. It is launched only
+when `--attest-rig-clear` is given: the attestation is the operator's, and the
+runner never invents one, so without it the round runs the same phases minus
+the walk. `--angles` / `--regime` / `--expect-angles` are forwarded as written
+— bounds, whole-degree-ness and the regime vocabulary are the seam's, and a
+second validator here would be a second answer. A walk staged by a round that
+then aborted stays staged, single-use and last-wins: the next session takes it,
+or `jasper-angle-capture withdraw` removes it.
+
+**Stopping a walk is a transport drop, and the park happens elsewhere.** An
+aborted round terminates its ssh client; that drops the PTY, which hangs up the
+remote walk, which parks in its own unwind — on the speaker, after the local
+client is already gone. The runner therefore reports the hangup, never the arm
+as parked: the one thing it can see is its own client exiting.
+[`tests/test_run_crossover_round.py`](../tests/test_run_crossover_round.py)
+drives a real two-process double (a client, and a remote running the harness's
+own signal handlers) and asserts the PARK MARKER, so removing SIGHUP from
+`PARK_ON_SIGNALS` or dropping `-tt` each fail it.
+
+**`--tier` is ignored by `--stage verify`.** Stage 2 takes the instrument the
+MEASURING session recorded in durable state, so the household's one choice at
+the tier chooser governs both stages — passing a different tier to the verify
+invocation changes nothing, and is not a way to re-instrument a round.
+
+**Three configurations are refused before anything runs**: an `--apply` with an
+empty fingerprint (an absent live candidate also reads as empty, so comparing
+would POST), `--angles` without `--attest-rig-clear` (a staged arm walk nobody
+will serve, which otherwise costs ten minutes and ends as a misnamed idle
+ceiling), and an unreadable `--alignment-prescription`.
+
+**Completion is polled, not slept.** The runner waits for the session id to
+move off the one that was there before the open, *and* for the phase to leave
+the running set — every capture phase plus `closing` and `applying`, the two
+control-page phases that are a session mid-flight. Both conditions matter: a
+previous round's terminal phase would otherwise read as this round's completion
+the moment the poll started, and treating `closing`/`applying` as terminal
+banks a round while its fit is still running.
+
+**No verdict is re-mapped.** `jasper-arm-walk`'s exit code rides through under
+its own name (`arm_walk_exit=6 arm_walk_exit_name=stuck`), and
+`bank-crossover-round.sh`'s `0/1/2/3/4` decides the round: `0` clean and `1`
+nothing to grade both continue, while `2` dirty, `3` incomplete and `4`
+destination-in-use abort it. A failing walk stops the round *before* banking —
+the walk's rc is the verdict and a bank on top would be a second one — and the
+runner prints the one `bank-crossover-round.sh` command that keeps the evidence
+still sitting on the Pi.
+
+**Exit codes are the contract**: `0` done, `3` the staged walk was refused, `4`
+the session would not open, `5` the walk did not finish clean, `6` the verify
+would not open, `7` the stage never finished inside `--stage-timeout-s`, `8`
+the session reported a failure, `9` the bank refused, `10` the apply was
+refused/blocked/failed, `11` the named fingerprint is not the live candidate
+(nothing was sent). Each carries its deciding value on the phase line and in
+the `--trail` JSONL.
+
+**Which speaker — and both halves of the answer.** The ssh target and the
+speaker's *name* resolve independently, so exporting only `PI_HOST` takes the
+first from you and the second from `.env.local`: a round can then ssh to one
+speaker carrying another's `Host:` header, which the management-host guard
+403s. The runner discloses the pair and where each half came from (the
+`identity` trail row), and a 403 on the open names the mismatch as a possible
+cause with both values — it does not guess which one you meant. `--hostname`
+sets the name explicitly.
+
+An exported `PI_HOST`/`PI_USER` wins over `.env.local`,
+which wins over the `jts.local` default — `scripts/_lib.sh`'s own resolution
+with the caller's exports re-applied over it (the
+[#2689](https://github.com/jaspercurry/JTS/issues/2689) shape). The resolved
+host is named in the trail and exported into the bank, so one round can never
+measure one Pi and bank another.
 
 ---
 

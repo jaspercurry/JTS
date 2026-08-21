@@ -477,6 +477,14 @@ Revisit only when ≥2 plugins genuinely need runtime probes *and* you're
 ready to give the registry a list-returning shape; until then a bespoke
 `check_<plugin>` is cheaper and clearer.
 
+**A drift check needs a reference the thing it checks cannot rewrite.**
+Comparing a live artifact against a record under `/run` is structurally dead
+when a reconciler regenerates that record from the same live state on every
+pass — `/run` is tmpfs, so after a reboot the record is re-derived from the
+very thing it is meant to catch, and the two can never disagree. Probe the
+live artifact at the verification surface instead: a check that cannot fail
+still reads as coverage.
+
 ---
 
 ## Documentation paradigm
@@ -622,6 +630,17 @@ right place. Read this before adding or restructuring docs.
    was a false positive (PR #2660). So sweep by SUBJECT as well: grep
    the deleted thing's own vocabulary (its name, its class, the reason
    it existed) and read the enumerations it appears in.
+
+   **Mechanical invisibility defeats the subject sweep too.** In #2766's
+   loopback-retirement wave, every one of eleven falsified sites that
+   survived a sweep was hidden for a purely mechanical reason: a bigram
+   split across a line wrap, a slashed literal (`Loopback,0/1,6`), a
+   possessive, markdown emphasis inside a phrase, and vocabulary no term
+   list thought to enumerate. No grep pattern anticipates all five. What
+   found them, three times running, was reading the whole block around
+   each edit rather than the matched line alone — give every edit a
+   reading radius. **Never read "sweep returns 0" as proof of
+   completeness:** the sweeps are a floor, block-reading is the method.
 
 ---
 

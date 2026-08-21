@@ -18,6 +18,7 @@ tolerance is a measured number rather than an asserted one.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -1287,5 +1288,161 @@ def test_the_floor_boundary_matches_the_shared_predicate_exactly():
                      fc_band_hz=(200.0, 9000.0))
     assert refusal_for(_two_way(fc_hz=5000.0), bounds) is None
     assert refusal_for(_two_way(fc_hz=4999.0), bounds) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+# --- #2760: the lower driver's floor, and what actually satisfies it ---------
+
+
+def _woofer_floor_bounds(standing_hz: float | None = None) -> CandidateBounds:
+    """A two-way whose WOOFER declares a 40 Hz protective high-pass floor.
+
+    The shape the offline search met the first time a confirmed driver-safety
+    profile was supplied. ``standing_hz`` is what the chain high-passes that
+    branch at outside the crossover — ``None`` when it carries nothing there.
+    """
+    return _bounds(
+        declared_floor_hz_by_role={TWEETER: 1600.0, WOOFER: 40.0},
+        standing_highpass_hz_by_role=({} if standing_hz is None
+                                      else {WOOFER: standing_hz}),
+    )
+
+
+def test_a_two_way_woofer_floor_is_satisfied_by_the_chains_standing_highpass():
+    """#2760's reproduction: a two-way never high-passes its LOWER driver.
+
+    ``_two_way`` gives the woofer a low-pass and the tweeter a high-pass, which
+    is what every two-way candidate in the space looks like. Compared against a
+    declared woofer floor with the crossover corner alone, that refused 1681 of
+    1681 candidates INCLUDING the incumbent — a search zeroed by a filter the
+    crossover was never responsible for.
+
+    The bass-management high-pass ``camilla_yaml._driver_baseline_filter_chain``
+    prepends ahead of the split is what honours that floor (80 Hz here, the
+    ``camilla_emit.BASS_MANAGEMENT_CORNER_HZ_DEFAULT`` a local sub ships with).
+    Declared, it is read; the candidate is legal; the tweeter's own floor is
+    still compared against the crossover corner exactly as before.
+    """
+    assert refusal_for(_two_way(fc_hz=2000.0), _woofer_floor_bounds(80.0)) is None
+    # ...and the wall is genuinely present rather than vacuous: the same chain
+    # cannot buy a corner below the TWEETER's floor, whose protection IS the
+    # split and which no standing entry is declared for.
+    assert refusal_for(_two_way(fc_hz=1500.0), _woofer_floor_bounds(80.0)) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+def test_a_woofer_floor_with_no_standing_highpass_still_refuses():
+    """Fail-closed survives the fix, because the standing filter is CONDITIONAL.
+
+    ``camilla_yaml._bass_management_active`` emits the lowest driver's high-pass
+    only when the preset carries a local subwoofer, so a chain without one runs
+    that branch through a low-pass, a delay, a gain and a limiter — and nothing
+    that high-passes it. A woofer declaring 40 Hz on that chain IS open below
+    its floor, and this door still says so by name.
+    """
+    assert refusal_for(_two_way(fc_hz=2000.0), _woofer_floor_bounds()) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+def test_a_standing_highpass_is_compared_to_the_floor_by_the_shared_predicate():
+    """The standing corner is a NUMBER the floor bounds, not a presence flag.
+
+    Same rule and same boundary as every other consumer of
+    ``protection_highpass_floor_satisfied``: at the floor is legal, one Hz below
+    refuses. A chain whose bass-management corner sits under the woofer's own
+    declared minimum is the case a bare "is there a high-pass?" check would wave
+    through — ``bass_management_corner_matched`` proves only that the sub and
+    mains halves share one Fc, and ``runtime_contract._bass_management_filter_safe``
+    bounds it at 40-200 Hz against policy rather than against this driver.
+    """
+    assert refusal_for(_two_way(fc_hz=2000.0), _woofer_floor_bounds(40.0)) is None
+    assert refusal_for(_two_way(fc_hz=2000.0), _woofer_floor_bounds(39.0)) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+def test_a_standing_highpass_never_rescues_a_corner_the_candidate_proposes():
+    """The asymmetry that keeps this door a superset of the backstop.
+
+    Physically a branch carrying both filters is protected at the higher of the
+    two, so a ``max`` would be the complete answer. It is deliberately not taken:
+    the apply gate reads the CROSSOVER corner alone
+    (``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), so a
+    candidate admitted here on a standing filter's strength would be refused
+    there — after the Sound declaration is written, which is the ambiguous
+    "could not confirm whether the DSP apply finished" this pairing exists to
+    prevent.
+
+    The tweeter proposes 1500 against a 1600 floor while its branch is declared
+    to stand at 1700. Refused, on the corner the candidate actually proposes.
+    """
+    bounds = _bounds(
+        declared_floor_hz_by_role={TWEETER: 1600.0},
+        standing_highpass_hz_by_role={TWEETER: 1700.0},
+        fc_band_hz=(200.0, 9000.0),
+    )
+    assert refusal_for(_two_way(fc_hz=1500.0), bounds) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+
+
+def test_a_caller_that_declares_no_standing_highpass_gets_the_unchanged_wall():
+    """Absent means absent — the default may not credit a filter nobody named.
+
+    ``bounds_from_declarations`` resolves DECLARATIONS, and what a chain carries
+    outside the crossover is not one. Its default is therefore empty, and every
+    pre-#2760 refusal stands for a caller that passes nothing.
+    """
+    bounds = bounds_from_declarations(
+        drivers_by_role={
+            WOOFER: {"required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 40.0},
+            ]},
+        },
+        search_band_hz_by_role={TWEETER: (200.0, 9000.0), WOOFER: (200.0, 9000.0)},
+        excitation_ceiling_hz_by_role={},
+        incumbent_fc_hz=2000.0,
+        geometry_seed_us=0.0,
+        delay_step_us=20.833,
+    )
+    assert dict(bounds.standing_highpass_hz_by_role) == {}
+    assert bounds.declared_floor_hz_by_role[WOOFER] == 40.0
+    assert refusal_for(_two_way(fc_hz=2000.0), bounds) == (
+        FC_REJECT_BELOW_DECLARED_FLOOR
+    )
+    # Handed the same chain's real standing corner, the identical candidate is
+    # legal — so the refusal above is about the missing filter and not about
+    # some other property of these bounds.
+    assert refusal_for(_two_way(fc_hz=2000.0), replace(
+        bounds, standing_highpass_hz_by_role={WOOFER: 80.0},
+    )) is None
+    # ...and the same is true through the real constructor, not only through
+    # ``replace``. Dropping the pass-through would leave every assertion above
+    # green while silently restoring the refusal this whole module fixed, so
+    # the declared value is asserted to ARRIVE — coerced to ``float`` from the
+    # ``int`` a caller reading a corner off a preset naturally holds. The
+    # neighbouring ``delay_step_us`` is the identical shape and is pinned in
+    # the same breath, for the same reason.
+    declared = replace(bounds, standing_highpass_hz_by_role={})
+    landed = bounds_from_declarations(
+        drivers_by_role={
+            WOOFER: {"required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 40.0},
+            ]},
+        },
+        search_band_hz_by_role={TWEETER: (200.0, 9000.0), WOOFER: (200.0, 9000.0)},
+        excitation_ceiling_hz_by_role={},
+        incumbent_fc_hz=2000.0,
+        geometry_seed_us=0.0,
+        delay_step_us=20.833,
+        standing_highpass_hz_by_role={WOOFER: 80},
+    )
+    assert dict(landed.standing_highpass_hz_by_role) == {WOOFER: 80.0}
+    assert landed.delay_step_us == 20.833
+    assert refusal_for(_two_way(fc_hz=2000.0), landed) is None
+    assert refusal_for(_two_way(fc_hz=2000.0), declared) == (
         FC_REJECT_BELOW_DECLARED_FLOOR
     )

@@ -224,7 +224,9 @@ existing owner.
 > at — a boost additionally owing a vertical-plane sighting and the dip's own
 > measured depth
 > ([`crossover_v2/feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
-> is the verdict register; nothing in the product produces a verdict yet).
+> is the verdict register;
+> [`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+> is the instrument that produces one, offline over a round's banked captures).
 >
 > `stage` closed the gap the first wired night hit: until it shipped, an
 > accepted prescription had nowhere to go, and the loop was proven only up to

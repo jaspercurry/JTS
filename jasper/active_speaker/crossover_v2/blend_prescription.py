@@ -68,10 +68,12 @@ dip has two causes and only one of them can be filled.  A minimum-phase
 shortfall — a driver, a box, a baffle radiating less energy there — is fixed by
 adding energy.  An interference null is direct sound cancelling a delayed copy,
 and boosting it lifts the reflection along with the direct sound, so the null
-swallows whatever you feed it.  The instrument that separates those per bin
-does not exist yet (it is the queued excess-phase work).  What DOES exist is
-the observation that the two behave differently **across positions**: an
-interference null moves with the microphone, a radiating shortfall does not.
+swallows whatever you feed it.  :mod:`.feature_classifier` separates those, but
+per detected FEATURE rather than per bin, and only for a round somebody
+classified offline — it is the per-DRIVER class's bar, and nothing has wired it
+to this one.  What this class has is the observation that the two behave
+differently **across positions**: an interference null moves with the
+microphone, a radiating shortfall does not.
 :func:`positional_support` makes that the deterministic stand-in — the
 null-exclusion rule without the null instrument — and
 :data:`BOOST_MIN_TESTIFYING_POSITIONS` says why "all but one" needs three
@@ -84,7 +86,7 @@ of 4 positions at 1210 Hz, 0 of 4 at 3232 Hz — and passes 4 of 4 at 1018 Hz
 and 1616 Hz.  It is a *spatial* test, so its power is bounded by the angular
 spread of the cloud it reads: a feature that moves with the microphone more
 slowly than that spread reads as stable.  A tightly-clustered walk can
-therefore support a boost the excess-phase instrument might later classify as
+therefore support a boost :mod:`.feature_classifier` would classify as
 interference.  That is one of the two reasons
 :func:`prescription_route` refuses the boost class outright today rather than
 treating this bar as sufficient — the bar's job is to say whether a proposal
@@ -575,9 +577,11 @@ class BlendPrescriptionRefused(ValueError):
 class PositionalSupport:
     """Whether one frequency's dip is a property of the speaker or the seat.
 
-    The deterministic stand-in for the per-bin minimum-phase classifier that
-    does not exist yet. Its whole content is a fraction and the disclosure of
-    how that fraction's denominator was arrived at.
+    This class's deterministic stand-in for a per-bin minimum-phase
+    classification. :mod:`.feature_classifier` types detected FEATURES, not
+    bins, and feeds the per-DRIVER bar; nothing has wired it here. Its whole
+    content is a fraction and the disclosure of how that fraction's
+    denominator was arrived at.
     """
 
     #: The proposed centre frequency this was evaluated at, and the grid bin

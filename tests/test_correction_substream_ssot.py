@@ -27,7 +27,7 @@ Three checks:
      values, not this one. Only ``jasper/`` is scanned; see
      ``jasper/audio_measurement/correction_lane.py``'s "Scope of the drift
      guard" docstring section for what legitimately spells the literal
-     outside it (the checked-in ALSA config, five stdlib-only lab probes)
+     outside it (the checked-in ALSA config, four stdlib-only lab probes)
      and why.
   2. **Co-ownership.** The sites that used to hold their own named copy of
      the literal still resolve to the SSOT's value, not a reintroduced local
