@@ -4620,6 +4620,71 @@ sidecar) is the FLOW's own phase — `check`/`measure`/`verify`/
 `ExcitationProgram.phase`, which is only ever `check`/`measure`/`verify`
 since every cloud position plays the verify-shaped summed sweep.
 
+##### `provenance` — the config label is not the graph
+
+The sidecar also carries a `provenance` block: `main_volume_db`,
+`session_volume_db`, `graph` (`kind` / `config_path` / `fingerprint`) and
+`stimulus` (`program_id` / `phase` / `wav_sha256` / `peak_dbfs`). Each field
+is read from exactly one LIVE owner at the moment the stimulus is emitted —
+the fader from `CamillaController.get_volume_db`, the held volume from
+`SessionVolumePlan.measurement_volume_db`, the running graph from
+`get_config_file_path` + `running_graph_fingerprint(get_active_config_raw())`,
+the stimulus from the `ExcitationProgram` and its published WAV artifact.
+Owner and code: `jasper/active_speaker/capture_provenance.py`.
+
+**Why `graph.kind` exists.** A CHECK/MEASURE program plays through the
+transient per-driver ROUTING graph (`emit_active_speaker_program_config` —
+each program channel straight to its driver's physical output, with the
+crossover, delays and linearization left OUT), loaded inline with `SetConfig`
+and restored after. That loader deliberately never repoints the statefile, so
+`config_path` reads the SAME durable anchor whether a capture went through the
+routing graph or through the standing applied one — two radically different
+transfer functions. On 2026-08-19 a jts3 forensic session spent hours comparing
+levels across those two graphs with nothing on disk able to tell them apart,
+and reconstructed the night's −27.5 dB fader out of the journal because no
+capture recorded it either. (That session reported a +7…+15 dB per-branch
+difference — its observation, attributed, not a measured property of the code.) `kind` is therefore
+stated by the playback branch that did (or did not) perform the swap —
+`program_routing` or `applied` — never re-inferred from a path; `fingerprint`
+is the running graph's own hash, so the two corroborate. `config_path` is
+recorded precisely BECAUSE it is the misleading label: side by side with the
+other two it shows what the statefile claimed versus what was playing.
+
+**Two key names now appear twice in one sidecar, meaning different things —
+read the path, not the leaf.** `phase` at the top level (and in the filename)
+is the FLOW's phase, while `stimulus.phase` and `diagnostic.phase` are the
+`ExcitationProgram`'s: those DISAGREE by design on every cloud capture, since
+every cloud position plays the verify-shaped summed sweep — which is exactly
+the #1855 inference that once mislabeled 32 of 45 sidecars, so do not read a
+`stimulus.phase` of `verify` as "this was a VERIFY". `wav_sha256` at the top
+level is the digest of the CAPTURE this ring retained (the corpus join key);
+`stimulus.wav_sha256` is the digest of the program WAV that was PLAYED. They
+are different files and differ on every sidecar.
+
+**Do not join `graph.fingerprint` to a round receipt's
+`entry_graph_fingerprint`.** They are different namespaces answering different
+questions: this one is `running_graph_fingerprint` over CamillaDSP's own
+re-serialization of the graph that was playing, while the receipt's is the
+applied Layer-A profile record's `candidate_fingerprint`
+(`_active_graph_fingerprint`). Sidecar fingerprints compare to each other —
+same graph or not — and to nothing else.
+
+Every field except `kind` can read `null` — `kind` is structural knowledge the
+branch holds, not a probe that can fail. An unreadable surface nulls only its
+own field and contributes its name to one WARN
+`event=active_speaker.capture_provenance result=incomplete unreadable=…`;
+provenance never blocks or fails a capture. `session_volume_db` is `null`
+whenever no measurement session is open, which is an answer rather than a
+failed read, and does not appear in that WARN.
+
+Observation is bought only while the enable marker exists
+(`capture_dump_enabled()` is the one reader of it): with retention off — every
+household — the play path spends one `Path.exists()` and no CamillaDSP
+round-trips. The block is absent, not `null`, for a capture no play was
+observed for; the recorder's `take()` consumes, so a second analyze with no
+play between it and the last one reports nothing rather than the previous
+capture's context.
+
 Ring-buffered by **both** file count (`XOVER_CAPTURE_DUMP_MAX_FILES = 90`)
 and total bytes (`XOVER_CAPTURE_DUMP_MAX_BYTES = 300 MB`), oldest-first
 deletion, so a forgotten marker cannot fill the SD card. The enable marker
@@ -4641,10 +4706,13 @@ Diagnostic-logging failures (Part 1) are guarded the same way, through
 `CrossoverV2Conductor._safe_log_diag` — a bug in a `_log_*_diag` method logs
 `event=correction.crossover_v2_diag_log_failed` (WARN) instead of crashing
 the capture or changing the verdict already decided.
-Source: `_maybe_retain_capture` / `_prune_capture_dump` in
-`jasper/web/correction_crossover_v2.py`; constants
+Source: `_maybe_retain_capture` / `_prune_capture_dump` /
+`capture_dump_enabled` in `jasper/web/correction_crossover_v2.py`; constants
 `XOVER_CAPTURE_DUMP_DIR` / `_MAX_FILES` / `_MAX_BYTES` at the top of that
-module.
+module. The `provenance` block's own owner is
+`jasper/active_speaker/capture_provenance.py`, recorded from
+`bind_production_play` and retained by `bind_production_analyze`; tests in
+`tests/test_capture_provenance.py`.
 
 Session state on the Pi (both mode 0640, atomic writes):
 
