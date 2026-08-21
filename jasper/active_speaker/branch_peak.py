@@ -69,11 +69,14 @@ from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 _BLOCK_SAMPLES = 32768
 _OVERLAP_SAMPLES = 8192
 
-# The longest stimulus this will render. A seat-leveling stimulus is seconds
-# long; ten minutes at 48 kHz is far past any legitimate one and is the bound
-# that keeps an accidental hour-long WAV from putting a 1 GB Pi under memory
-# pressure. Over it, the caller falls back to the conservative bound.
-_MAX_STIMULUS_SAMPLES = 48_000 * 600
+# The longest stimulus this will render, and the one place peak memory is
+# bounded. A seat-leveling stimulus is SECONDS long — it is a continuous program
+# the ramp loops while it climbs — so 60 s is already an order of magnitude of
+# slack, and it is what keeps the decoded float64 copy small: 60 s x 48 kHz x
+# 2 ch x 8 B = 46 MB, on a box whose whole budget is 1 GB. Everything after the
+# decode is per-BLOCK, so that copy is the high-water mark. Over this bound the
+# render refuses and the caller falls back to the conservative full-band bound.
+_MAX_STIMULUS_SAMPLES = 48_000 * 60
 
 # CamillaDSP filter types this module models EXACTLY. Anything else refuses.
 _MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Gain", "Delay", "Limiter"})
@@ -479,19 +482,26 @@ def stimulus_branch_peaks_dbfs(
                 f"{key} names output channel {channel} of {playback_channels}"
             )
 
-    # Front-padded by the overlap so the first block's discarded head is the
-    # pad, and tail-padded by the same so a branch's delay and ringing land
-    # inside the render rather than being truncated away.
-    padded = np.zeros(
-        (samples.shape[0] + 2 * _OVERLAP_SAMPLES, capture_channels), dtype=np.float64
-    )
-    padded[_OVERLAP_SAMPLES : _OVERLAP_SAMPLES + samples.shape[0], :] = samples
+    # The render walks a VIRTUAL padded signal: the stimulus with an overlap of
+    # silence in front (so the first block's discarded head is that pad) and
+    # another behind (so a branch's delay and ringing land inside the render
+    # rather than being truncated away). Each block is filled by slicing the
+    # stimulus directly rather than materialising that padded copy, which would
+    # double peak memory for no gain.
+    frames = samples.shape[0]
     hop = _BLOCK_SAMPLES - _OVERLAP_SAMPLES
     peaks = {key: 0.0 for key in output_channels}
-    for start in range(0, padded.shape[0], hop):
+    for start in range(0, frames + 2 * _OVERLAP_SAMPLES, hop):
         block = np.zeros((_BLOCK_SAMPLES, capture_channels), dtype=np.float64)
-        chunk = padded[start : start + _BLOCK_SAMPLES, :]
-        block[: chunk.shape[0], :] = chunk
+        # Padded index i is stimulus index i - _OVERLAP_SAMPLES; clip to the
+        # frames that exist and leave the rest of the block as the pad.
+        low = start - _OVERLAP_SAMPLES
+        source_low = max(low, 0)
+        source_high = min(low + _BLOCK_SAMPLES, frames)
+        if source_high > source_low:
+            block[source_low - low : source_high - low, :] = (
+                samples[source_low:source_high, :]
+            )
         spectra = [
             np.fft.rfft(block[:, channel], n=_BLOCK_SAMPLES)
             for channel in range(capture_channels)

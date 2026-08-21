@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
+from jasper.active_speaker import branch_peak
 from jasper.active_speaker.branch_peak import (
     BranchPeakError,
     branch_peaks_for_targets,
@@ -509,6 +510,32 @@ def test_an_output_channel_the_graph_does_not_reach_refuses(tmp_path):
         },
         wav,
         output_channels={"a": 7},
+    )
+
+
+def test_a_stimulus_past_the_render_bound_refuses(tmp_path, monkeypatch):
+    """Peak memory has exactly one bound and this is it.
+
+    Everything after the decode is per-block, so the decoded float64 copy is the
+    high-water mark and the frame count is what caps it. Driven by lowering the
+    bound rather than by writing a 60-second WAV, so the guard is pinned without
+    the fixture cost it exists to prevent.
+    """
+    # The shipped bound leaves a real seat-leveling stimulus far inside it:
+    # seconds of program against a 60-second ceiling. Asserted BEFORE the
+    # monkeypatch, which is still in force for the rest of this test.
+    assert branch_peak._MAX_STIMULUS_SAMPLES == 48_000 * 60
+
+    wav = _tone_wav(tmp_path / "s.wav", seconds=1.0)
+    monkeypatch.setattr(branch_peak, "_MAX_STIMULUS_SAMPLES", 4096)
+    _refuses(
+        {
+            "devices": _devices(),
+            "filters": {},
+            "mixers": _passthru_mixer(),
+            "pipeline": [{"type": "Mixer", "name": "passthru"}],
+        },
+        wav,
     )
 
 
