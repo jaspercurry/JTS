@@ -1835,14 +1835,84 @@ jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
 and the only difference is that `stage` banks the result. Run the first to see
 the answer, the second to commit to it.
 
-**Two prescription classes, one door.** A document names its own `kind` and
-that is what picks its gate — there is no `--class` flag and no inference from
-shape:
+**Two prescription classes come through THIS door.** A document names its own
+`kind` and that is what picks its gate — there is no `--class` flag and no
+inference from shape:
 
 | `kind` | what it corrects | bounded by | lands in |
 |---|---|---|---|
 | `jts_crossover_blend_prescription` | the SUMMED blend region | the round's crossover region | the candidate's `blend_correction` |
 | `jts_crossover_driver_prescription` | ONE driver's own full band | that driver's own declared band | the candidate's `linearization` |
+
+### The other two prescriptions do NOT come through this door (#2773)
+
+Four things can be prescribed for a round, and they arrive by **two different
+entry surfaces with two different severities**. A reader who found only the CLI
+would never learn the other two exist, which is exactly what #2773 is about, so
+all four are stated here:
+
+| prescription | entry surface | when it is judged | what a refusal costs |
+|---|---|---|---|
+| blend (`jts_crossover_blend_prescription`) | `jasper-crossover-prescriber stage` | at `stage` | the staging, not a session — the round runs unprescribed |
+| driver (`jts_crossover_driver_prescription`) | `jasper-crossover-prescriber stage` | at `stage` | the staging, not a session — the round runs unprescribed |
+| alignment (`alignment_prescription`) | request-body key on `POST /crossover/v2/session` | at session open | **the whole session**, at the tap |
+| topology (`topology_prescription`) | request-body key on `POST /crossover/v2/session` | at session open | **the whole session**, at the tap |
+
+The severity split is deliberate rather than historical. A staged prescription
+is an *instruction the next round may follow*: it is banked ahead of time, and a
+round that cannot follow it still measures something real. A request-time
+prescription is *what the round IS* — a named arm — and running a silently
+different arm is worse than running none, because the receipt would carry the
+arm's name. So the first pair fails soft into an unprescribed round and the
+second pair refuses the session before any evidence store, relay registration or
+capture happens.
+
+Owning modules and their gates:
+
+- alignment — [`crossover_v2/alignment_prescription.py`](../jasper/active_speaker/crossover_v2/alignment_prescription.py),
+  `read_alignment_prescription`. Pins the inter-driver delay and, optionally,
+  the polarity basin. Bounded as a **bounded excursion** from a declared,
+  measured basis — at most half a period at the corner away from what that
+  measurement says coincident is.
+- topology — [`crossover_v2/topology_prescription.py`](../jasper/active_speaker/crossover_v2/topology_prescription.py),
+  `read_topology_prescription`. Pins the crossover corner and order so a
+  pre-registered Fc/slope tournament can measure chosen candidates. Bounded by
+  **admissibility** rather than excursion — an excursion bound from the
+  incumbent would refuse a tournament by construction, and no measured ranking
+  exists to anchor on instead. Its bounds are the same three declared frequency
+  bounds the automatic Fc proposal path applies (asked of that path's own
+  predicate, so a pin and a proposal are admissible on identical terms), plus
+  the protected role's declared `minimum_slope_db_per_octave`. **Nothing else
+  applies that slope to a crossover** — the commissioning admission path reads
+  it, crossover apply compares corner frequencies only — so an order-2 arm at a
+  legal corner was previously admitted silently.
+
+Two things a topology pin does that no other prescription does:
+
+- It **closes the Fc search and suppresses the selector** for that round. There
+  is one corner, an operator chose it, and a selector verdict about a
+  comparison that never ran is the same dishonesty as reporting polarity
+  disagreement for a comparison that never ran. `fc_selection` is `None` and the
+  journal says `fc_adjudication=suppressed fc_statistic_paused=true`.
+- Its receipt carries an **authority caveat** (`operator_pinned_no_measured_ranking`).
+  No shipped path ranks one topology against another — the offline candidate
+  search has no production caller — so a pinned corner is an operator's choice
+  from an offline argument, and a receipt read six weeks later must not be
+  mistakable for a measured verdict.
+
+**Measuring a pinned arm and adopting it are two acts.** The round measures,
+grades and banks at the pinned topology end to end (the session is opened
+there, so the fit, the de-embedding, the emitted graph and VERIFY's design
+target are all that topology's). *Applying* it still needs the saved crossover
+declaration to name that corner and order first: `baseline_profile`'s
+`measured_candidate_preset_mismatch` guard compares the candidate's preset with
+the one recompiled from the declaration, whole-dataclass. That is the same
+guard an alternative-Fc apply already satisfies by writing the declaration
+before recomposing; a pinned order is not exempt from it.
+
+None of the four is ever inherited from a lapsed session's durable state — the
+way `tier` deliberately is (#2639) — because a "measure again" that silently
+re-ran an arm nobody asked for is the same class of dishonesty as clamping one.
 
 The per-driver class carries **both signs**, and every filter must be aimed at
 a feature a banked classification typed as a minimum-phase driver defect of the

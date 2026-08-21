@@ -258,7 +258,36 @@ function renderCandidateReview(review) {
   // round-trip that carries it here.
   const polarityPinned = review.polarity_pinned === true;
 
+  // The SAME rule one level up: a crossover an operator pinned is not a corner
+  // this round measured, and no shipped path ranks one topology against
+  // another, so it must never be worded as a result. Python owns the bit
+  // (`CrossoverV2Session._topology_prescription` → `_candidate_summary` →
+  // `_candidate_review_payload`); `tests/test_crossover_envelope_v2.py` pins
+  // the round-trip that carries it here, and
+  // `tests/js/crossover_topology_provenance_test.mjs` drives this renderer
+  // with a pinned payload.
+  const crossoverPinned = review.crossover_pinned === true;
+  const crossover = review.crossover;
+  const hasCrossover = crossover && typeof crossover.fc_hz === 'number';
+
   const rows = [];
+  if (hasCrossover) {
+    // First, because it is the topology every row below sits inside: the
+    // trims, the delay and the polarity are all decisions made AT this corner.
+    const slope = typeof crossover.slope_db_per_octave === 'number'
+      ? `, ${Number(crossover.slope_db_per_octave).toFixed(0)} dB/octave`
+      : '';
+    rows.push(el('div', {class: 'measurement-row'}, [
+      el('div', {}, [
+        el('p', {class: 'measurement-row__title', text: 'Crossover'}),
+        el('p', {
+          class: 'measurement-row__meta',
+          text: `${Number(crossover.fc_hz).toFixed(0)} Hz${slope}` +
+            (crossoverPinned ? ' (pinned for this round)' : ''),
+        }),
+      ]),
+    ]));
+  }
   trims.forEach((trim) => {
     rows.push(el('div', {class: 'measurement-row'}, [
       el('div', {}, [

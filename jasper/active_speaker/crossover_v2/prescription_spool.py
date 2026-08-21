@@ -76,10 +76,13 @@ accepts, and the two seams differ: :func:`~.blend_prescription.prescription_rout
 still refuses every boost, while :mod:`.driver_prescription` admits one against
 a banked ``defect-boostable`` verdict.  Neither answer is decided here.
 
-**Two prescription classes, ONE door.**  Since the per-driver class
+**Two STAGED prescription classes, ONE door.**  Since the per-driver class
 (:mod:`.driver_prescription`) there are two shapes an operator may stage — a
 blend-region correction and one driver's own full-band shape — and they share
-this slot rather than each getting one.  A round takes AN instruction, and two
+this slot rather than each getting one.  "Staged" is the load-bearing word:
+two further prescriptions (:mod:`.alignment_prescription`,
+:mod:`.topology_prescription`) never reach this module at all, because they
+arrive as request-body keys at session open and are judged there (#2773).  A round takes AN instruction, and two
 slots would be two things to keep consistent, two things Undo has to remember,
 and an ordering question ("which wins?") nothing in this design answers.  The
 envelope therefore names its document's class in :data:`ENVELOPE_KIND_FIELD`,

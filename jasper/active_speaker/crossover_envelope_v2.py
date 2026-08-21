@@ -412,8 +412,23 @@ def _candidate_review_payload(
     polarity = alignment.get("polarity")
     polarity_str = polarity if isinstance(polarity, str) and polarity.strip() else None
 
+    crossover = _mapping(candidate.get("crossover"))
     payload: dict[str, Any] = {
         "trims": trims,
+        # WHERE the reviewed graph crosses, and whether an operator PINNED it
+        # there. Carried as values rather than pre-rendered prose, matching
+        # every other row here — and the two travel together because the
+        # renderer's rule is the polarity row's rule: a pinned number is worded
+        # "(pinned for this round)" and never as something the round measured.
+        "crossover": (
+            {
+                "fc_hz": _finite(crossover.get("fc_hz")),
+                "order": crossover.get("order"),
+                "slope_db_per_octave": _finite(crossover.get("slope_db_per_octave")),
+            }
+            if _finite(crossover.get("fc_hz")) is not None else None
+        ),
+        "crossover_pinned": bool(candidate.get("crossover_pinned")),
         "delay": delay,
         "polarity": polarity_str,
         # WHERE the polarity above came from (#2607 S3). The renderer needs it

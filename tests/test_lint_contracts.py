@@ -800,7 +800,9 @@ MAX_LINES_BY_PATH = {
     # answer rather than one; it learned nothing about linearization.
     # 2026-08-20 basin pin: 13,225 -> 13,232. Argued in the dated block at the
     # end of this dict, beside the `program_analysis` bump it moves with.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_232,
+    # 2026-08-21 topology pin: 13,232 -> 13,282. Argued in the dated block at
+    # the end of this dict, with the two files it moves with.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_282,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1161,7 +1163,12 @@ MAX_LINES_BY_PATH = {
     # Trimmed to this after a first pass measured +144: the incident narrative
     # and the fail-soft contract now live once, in the new module, and this
     # file points at them rather than restating them.
-    "jasper/web/correction_crossover_v2.py": 9_182,
+    # 2026-08-21 topology pin: 9,182 -> 9,350. Stacked on the capture-provenance
+    # base directly above rather than re-based from 9,083: the two changes are
+    # independent and both are in this file, so the ceiling owes room for each.
+    # The largest of the three this pin moves, and the one the relocation pass
+    # already shrank — argued in the dated block at the end of this dict.
+    "jasper/web/correction_crossover_v2.py": 9_350,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1251,7 +1258,9 @@ MAX_LINES_BY_PATH = {
     # other way.
     # 2026-08-20 basin pin (gate fix round SF1): 4,158 -> 4,165. Argued in the
     # dated block at the end of this dict, with the two files it moves with.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_165,
+    # 2026-08-21 topology pin: 4,165 -> 4,180. Same dated block, same shape of
+    # payment as the basin pin one line up.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_180,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`
@@ -1378,6 +1387,58 @@ MAX_LINES_BY_PATH = {
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
     "jasper/audio_measurement/program_analysis.py": 7_374,
+    #
+    # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
+    # over: a request-time prescription that names a crossover corner AND its
+    # order, so a pre-registered Fc/slope tournament can measure a chosen arm.
+    # Three at-cap files move, and the seam was cut FIRST rather than argued
+    # around: the shapes the pin owns live in the new, uncapped
+    # `crossover_v2/topology_prescription.py` (the gate, the value object, both
+    # readers, the #2773 contract block) and the web host keeps only what a
+    # host owns — gathering this speaker's declarations, translating a refusal
+    # into the household's own refusal type, and persisting. Two blocks were
+    # relocated out of the host during the gate's fix round for exactly that
+    # reason (`candidate_topology`, which reads a candidate's own corner, and
+    # `apply_topology_pin`, which was the SAME twelve lines in both stages),
+    # taking the host's cost from +201 to +168.
+    #
+    #  * `correction_crossover_v2` 9,182 -> 9,350. 177 added, 9 removed, +168
+    #    net; of the 177, 74 are comment and 4 blank, so 99 lines of code.
+    #    Counted, not estimated. This is an untrusted-input boundary, and every
+    #    one of those 99 is boundary work the module cannot do for itself —
+    #    reading five DECLARATIONS off this speaker's context
+    #    (two role bands, the intersected search band, the protected role's
+    #    slope, the ka onset), short-circuiting when the request carries no pin
+    #    so an ordinary round never depends on declarations it is not using,
+    #    translating `TopologyPrescriptionRefused` into `CrossoverV2Refused` at
+    #    the tap, persisting the record, and reading it back. It lands TWICE
+    #    because there are two stages and both must open at the pin: stage 2
+    #    re-opens the grading session there or VERIFY grades an applied graph
+    #    for not being the crossover it deliberately replaced. The comment
+    #    weight is concentrated in two places a reader cannot re-derive — WHY
+    #    the topology gate is read before the delay gate (the delay bound is a
+    #    half-period AT the corner, so the other order bounds a 4,000 Hz round
+    #    by the incumbent's 303 us lobe instead of its own 125 us), and WHY the
+    #    capture spec takes the round's corner rather than the context's (the
+    #    announced program is fc-dependent twice over; see that comment).
+    #  * `crossover_v2_flow` 13,232 -> 13,282. 51 added, 1 removed, +50 net; of
+    #    the 51, 19 are comment and 3 blank, so 29 lines of code — and the
+    #    shape is the #2354 door rule holding —
+    #    a type-only import, ONE ctor argument, one field, two port arguments
+    #    (`topology_pinned` to the candidate set and to the adjudication), one
+    #    `RoundEvidence` field, and one null-guard. The only new property is
+    #    `topology_prescription_record`, the exact twin of the two prescription
+    #    records already beside it. No logic landed here; the file learned that
+    #    a session MAY be pinned, which is a fact about the session, and
+    #    nothing about crossovers.
+    #  * `crossover_envelope_v2` 4,165 -> 4,180. +15, of which 5 are comment:
+    #    10 execute, and they are the payload keys the browser reads by name
+    #    (`crossover` — corner, order, derived slope — plus `crossover_pinned`).
+    #    The 5 comment lines are the ruling the basin pin's own entry made one
+    #    round earlier, applied one axis over: a pinned number is worded
+    #    "(pinned for this round)" and never as something the round measured.
+    #    This file is a pure `status -> envelope` renderer, so a key it does not
+    #    project is a key the browser cannot render.
 }
 
 

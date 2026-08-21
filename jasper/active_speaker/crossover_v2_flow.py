@@ -145,6 +145,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.driver_prescription import (
         DriverPrescription,
     )
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TopologyPrescription,
+    )
     from jasper.active_speaker.crossover_v2.round_evidence import (
         EntryBaseline,
         MeasuredResponse,
@@ -5056,6 +5059,7 @@ class CrossoverV2Session:
         tuning_attempt_id: str = "",
         sound_design_revision: int | None = None,
         alignment_prescription: "AlignmentPrescription | None" = None,
+        topology_prescription: "TopologyPrescription | None" = None,
         blend_prescription: "BlendPrescription | None" = None,
         blend_prescription_sha256: str = "",
         driver_prescription: "DriverPrescription | None" = None,
@@ -5083,6 +5087,16 @@ class CrossoverV2Session:
         # the record rather than the bare float so the round receipt can name
         # the measured basis without a second copy of it living anywhere.
         self._alignment_prescription = alignment_prescription
+        # The topology twin of the line above, held on identical terms —
+        # validated by the request boundary that accepted it, never re-judged
+        # here. It differs from its siblings in WHERE it already took effect:
+        # the boundary opened this session AT the pinned corner and order (see
+        # ``fc_sweep.recornered_preset``), so ``self._fc_hz`` and
+        # ``self._preset`` above are already the pin. What the session still
+        # needs the record for is to know it is pinned at all — the two ports
+        # below close the search and suppress the selector — and to bank the
+        # provenance on the round's receipt.
+        self._topology_prescription = topology_prescription
         # A9. The blend-region twin of the line above, and held on the same
         # terms: already validated by the boundary that took it out of the
         # spool, re-validated there against the region it was checked against,
@@ -6018,6 +6032,7 @@ class CrossoverV2Session:
             lower_driver_diameter_mm=self._radiating_diameter_mm_by_role.get(
                 self._woofer.role
             ),
+            topology_pinned=self._topology_prescription is not None,
         )
 
     # --- journey delegation --------------------------------------------------
@@ -6314,6 +6329,28 @@ class CrossoverV2Session:
         if self._alignment_prescription is None:
             return None
         return self._alignment_prescription.to_dict()
+
+    @property
+    def topology_prescription_record(self) -> dict[str, Any] | None:
+        """This session's crossover pin as the receipt banks it.
+
+        The sibling of :attr:`alignment_prescription_record` in every respect,
+        including the ``None``-means-the-automatic-path rule, so a series read
+        back later can tell a round whose corner and order were PINNED from one
+        that ran the speaker's commissioned crossover — which is the whole
+        attribution a pre-registered Fc/slope tournament is made of.
+
+        Exactly ``to_dict()``, with nothing added, for
+        :attr:`blend_prescription_record`'s reason: the record has to survive a
+        round trip through
+        :func:`~.crossover_v2.topology_prescription.topology_prescription_from_mapping`
+        for the grading stage to rehydrate it, and that reader refuses an
+        unknown field rather than ignoring it — so one extra key would make the
+        whole record unreadable.
+        """
+        if self._topology_prescription is None:
+            return None
+        return self._topology_prescription.to_dict()
 
     @property
     def blend_prescription_record(self) -> dict[str, Any] | None:
@@ -8007,6 +8044,7 @@ class CrossoverV2Session:
             select=select_fc,
             candidate_set_of=self._fc_candidate_set,
             configured_fc_hz=self._fc_hz,
+            topology_pinned=self._topology_prescription is not None,
         )
         self._fc_selection = adjudication.selection
         # Gated on the RECOMMENDATION, not on the match: a verdict that names a
@@ -8015,7 +8053,13 @@ class CrossoverV2Session:
         # cannot arise today (nothing else writes this field before the close),
         # and pinning the legacy condition costs one line rather than a trace
         # argument about why it cannot.
-        if adjudication.selection.recommended_hz is not None:
+        #
+        # ``is not None`` on the selection itself is the topology-pinned round,
+        # where there is no verdict to read a recommendation off — see
+        # ``fc_sweep.adjudicate``. It reads as a null-guard and it is one; the
+        # decision it guards was taken in the organ.
+        if (adjudication.selection is not None
+                and adjudication.selection.recommended_hz is not None):
             self._fc_selected_evaluation = adjudication.selected_evaluation
         self._journal_linearization(adjudication.record)
 
@@ -10072,6 +10116,12 @@ class CrossoverV2Session:
                 # same route, because an arm's provenance without its outcome
                 # is a receipt that can credit a round the arm never ran.
                 alignment_objective=self._measure_alignment_objective,
+                # The crossover pin, rehydrated on the identical route and for
+                # the identical reason. It needs no companion outcome field:
+                # the boundary opened both stages at the pinned topology, so
+                # this receipt's numbers were measured there by construction —
+                # see ``coordinator._round_measurements``.
+                topology_prescription=self._topology_prescription,
                 # WHAT THIS ROUND PROPOSED (#2392), preferred over what it
                 # applied. The fingerprint travelled here from the committing
                 # stage through durable ``verify_priors``, exactly as the

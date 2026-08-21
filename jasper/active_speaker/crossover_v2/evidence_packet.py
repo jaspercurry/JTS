@@ -71,6 +71,7 @@ from jasper.audio_measurement.evidence_identity import (
 )
 
 from .blend_prescription import prescription_response_format
+from .topology_prescription import topology_prescription_response_format
 from .driver_prescription import (
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
@@ -774,6 +775,17 @@ def build_crossover_evidence_packet(
         # an owner that is neither gate.
         "response_format": prescription_response_format(),
         "driver_response_format": driver_prescription_response_format(),
+        # …and the doors this one does NOT open (#2773). A reader who found
+        # only the two contracts above would conclude that two things can be
+        # prescribed for a round, when four can — the other two arrive as
+        # request-body keys at session open and refuse the whole session rather
+        # than just the staging. Named apart from the two above rather than
+        # listed beside them precisely because they are not stageable: a
+        # document of this class handed to ``stage`` is refused by the class
+        # gate, and the block says where it belongs instead.
+        "request_time_prescriptions": {
+            "topology": topology_prescription_response_format(),
+        },
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

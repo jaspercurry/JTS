@@ -12035,3 +12035,521 @@ def test_a_persist_after_a_rollback_cannot_resurrect_applied(
     assert conductor.applied is False
     v2host.persist_conductor_state(conductor, failure_code=None)
     assert (v2host.load_v2_state() or {})["applied"] is False
+
+
+# --- the request-time topology pin: ONE corner + order, for ONE round --------
+#
+# ``jasper/active_speaker/crossover_v2/topology_prescription.py`` owns the gate
+# and every bound it applies; that module's own suite owns those. What is
+# pinned HERE is the DOOR the gate is bolted to — the request boundary
+# ``prepare_v2_session`` is, and the durable read-back ``prepare_v2_verify``
+# re-opens from:
+#
+#   1. the ORDER the boundary reads its two request-body prescriptions in,
+#      because the delay gate's bound is a half-period AT the corner the
+#      topology gate has just moved;
+#   2. that a pin is per-round and NEVER inherited, unlike the tier beside it;
+#   3. that the accepted record survives the persist → read-back round trip
+#      losslessly, which the grading stage re-opens its session from;
+#   4. that an inadmissible pin refuses AT THE TAP, before any side effect.
+
+
+class _StoppedAtTheTap(Exception):
+    """Cut the preparer off INSIDE the gate under test.
+
+    Raised from a patched prescription gate so a test never runs a line past
+    the fact it is about: no evidence bundle, no capture-source probe, no
+    durable write. Deliberately not ``pytest.fail`` (a ``BaseException``, which
+    a ``pytest.raises`` cannot usefully name) and deliberately not
+    ``contextlib.suppress(Exception)`` — a bare suppress would swallow a
+    genuine refusal raised BEFORE the tap and let a recorder assertion pass on
+    a preparer that never reached the gate at all.
+    """
+
+
+#: The pinned arm. Legal for the fixture speaker's declarations below and
+#: nowhere near ``FC_HZ`` (1600.0, the corner it is commissioned at), so
+#: "the pin took effect" and "the incumbent answered" can never tie.
+_PIN_FC_HZ = 2400.0
+
+#: Order 4 is 24 dB/octave, which exactly MEETS the tweeter's declared
+#: protective minimum below. Exactness is legal in this repository's gates, so
+#: an arm on the edge is the honest default for a fixture.
+_PIN_ORDER = 4
+
+#: The fixture speaker's own declarations, quoted once. ``_roles()`` supplies
+#: the two role bands (woofer 150-6000 Hz, tweeter 300-20000 Hz), so the gate's
+#: declared floor is 300.0 and its lower-driver ceiling is 6000.0; these three
+#: are the declarations ``_roles()`` does not carry. The two search bands
+#: intersect to 1000-4000 Hz, which is what makes 2400.0 admissible and 5500.0
+#: — still inside BOTH role bands — refusable for the search band alone.
+_DECLARED_SEARCH_BAND_BY_ROLE = {
+    "woofer": (800.0, 4000.0),
+    "tweeter": (1000.0, 4000.0),
+}
+_DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 24.0
+_DECLARED_WOOFER_DIAMETER_MM = 114.0
+
+_PIN_SAFETY_PROFILE = {
+    "targets": [
+        {
+            "role": "woofer",
+            "target_fingerprint": "fp-woofer",
+            "required_protection_filters": [{
+                "kind": "lowpass",
+                "cutoff_hz": 6000.0,
+                "minimum_slope_db_per_octave": 24.0,
+            }],
+        },
+        {
+            "role": "tweeter",
+            "target_fingerprint": "fp-tweeter",
+            "required_protection_filters": [{
+                "kind": "highpass",
+                "cutoff_hz": 300.0,
+                "minimum_slope_db_per_octave":
+                    _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
+            }],
+        },
+    ],
+}
+
+
+def _topology_pin(**overrides: Any) -> dict[str, Any]:
+    """One well-formed ``topology_prescription`` request block.
+
+    Overrides change ONE field, so a test that means "this corner is
+    inadmissible" cannot accidentally also be testing a missing provenance.
+    """
+    body: dict[str, Any] = {
+        "fc_hz": _PIN_FC_HZ,
+        "order": _PIN_ORDER,
+        "basis_artifacts": ["captures/offline-fc-search/arm-2.json"],
+        "basis_note": "arm 2 of a pre-registered Fc/slope tournament",
+    }
+    body.update(overrides)
+    return body
+
+
+def _pinnable_context() -> SimpleNamespace:
+    """A conductor context whose DECLARATIONS admit ``_topology_pin()``.
+
+    Stubbed rather than resolved from a live topology for the reason
+    ``test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle``
+    above stubs the same seam: the resolver's own wiring has its own suite
+    (``tests/test_correction_crossover_v2_conductor_context.py``), and what
+    these tests are about is what the preparer DOES with a context, not how it
+    obtains one. Every field below is one the preparer reads before its two
+    prescription gates answer.
+    """
+    return SimpleNamespace(
+        preset=_preset(),
+        # The corner this speaker is commissioned at — the answer a pinned
+        # round must NOT get, and the answer an unpinned one must.
+        fc_hz=FC_HZ,
+        roles_bands=tuple(_roles()),
+        radiating_diameter_mm_by_role={"woofer": _DECLARED_WOOFER_DIAMETER_MM},
+        crossover_search_band_hz_by_role=dict(_DECLARED_SEARCH_BAND_BY_ROLE),
+        safety_profile=_PIN_SAFETY_PROFILE,
+        role_targets={"woofer": "fp-woofer", "tweeter": "fp-tweeter"},
+        driver_caps_dbfs=dict(CAPS),
+        session_volume_db=SESSION_VOLUME_DB,
+        topology=SimpleNamespace(topology_id="t-pin"),
+    )
+
+
+def _arm_stage_1(monkeypatch) -> None:
+    """Everything ``prepare_v2_session`` needs BEFORE its prescription gates.
+
+    The evidence store is armed to fail rather than stubbed: every test here
+    asserts about a decision the preparer takes before any bundle is opened, so
+    a bundle opening at all is the failure, not a fixture gap.
+    """
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(
+        v2host, "reconcile_session_volume_for_new_session", lambda *_a: None,
+    )
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
+    )
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store",
+        lambda *_a: pytest.fail(
+            "the evidence bundle opened before the prescription gates answered"
+        ),
+    )
+
+
+def _stage_1_prescription_taps(monkeypatch, body: Any) -> dict[str, Any]:
+    """Drive the REAL preparer and report what each prescription gate was asked.
+
+    The topology gate runs FOR REAL (recorded, not replaced), so a refusal is
+    still the production refusal. The delay gate is the stopping point: it
+    records its arguments and raises :class:`_StoppedAtTheTap`, which is what
+    makes the recorded corner evidence about the ORDER of the two reads rather
+    than about whatever a later stage happened to do with it.
+
+    Both gates are patched on the modules that OWN them, never on the web
+    module: ``prepare_v2_session`` imports each name inside its own body, so a
+    name patched on the importer is a name the preparer never looks at.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import (
+        alignment_prescription as alignment_mod,
+    )
+    from jasper.active_speaker.crossover_v2 import (
+        topology_prescription as topology_mod,
+    )
+
+    _arm_stage_1(monkeypatch)
+    seen: dict[str, Any] = {}
+    real_shape = flow_mod.resolve_plan_shape
+    real_topology_gate = topology_mod.read_topology_prescription
+
+    def _shape(tier=None, **kwargs):
+        seen["tier"] = tier
+        return real_shape(tier, **kwargs)
+
+    def _topology(raw, **kwargs):
+        seen["topology_raw"] = raw
+        seen["topology"] = real_topology_gate(raw, **kwargs)
+        return seen["topology"]
+
+    def _alignment(raw, *, fc_hz, declared_bounds_us):
+        seen["alignment_raw"] = raw
+        seen["alignment_fc_hz"] = fc_hz
+        seen["alignment_bounds_us"] = declared_bounds_us
+        raise _StoppedAtTheTap("the delay gate was reached")
+
+    monkeypatch.setattr(flow_mod, "resolve_plan_shape", _shape)
+    monkeypatch.setattr(topology_mod, "read_topology_prescription", _topology)
+    monkeypatch.setattr(alignment_mod, "read_alignment_prescription", _alignment)
+
+    with pytest.raises(_StoppedAtTheTap):
+        v2host.prepare_v2_session(
+            body, status={}, run_async=None, camilla_factory=None,
+        )
+    return seen
+
+
+def test_a_pinned_round_bounds_its_delay_at_the_pinned_corner_not_the_incumbent(
+    monkeypatch,
+):
+    """The ordering pin, and it is the load-bearing one in this group.
+
+    ``read_alignment_prescription``'s bound is a HALF-PERIOD of the crossover
+    corner: half a cycle at 1600 Hz is 312.5 us and half a cycle at 2400 Hz is
+    208.3 us, so the two corners do not merely disagree about a label — they
+    admit different delays. A boundary that read the delay prescription first,
+    or that kept handing it ``context.fc_hz`` after the topology pin moved the
+    round, would gate a 2400 Hz arm against the 1600 Hz lobe: a gate that
+    passes commitments the round it is gating cannot support, with the arm's
+    own name on the receipt.
+
+    So the corner the delay gate is HANDED is asserted, at the gate, rather
+    than a later symptom of it. Both prescriptions ride the same request,
+    because "both were sent" is the premise the ordering question only exists
+    under — a body carrying one of them could not tell a correct order from an
+    accidental one.
+    """
+    seen = _stage_1_prescription_taps(monkeypatch, {
+        "topology_prescription": _topology_pin(),
+        "alignment_prescription": {"delay_us": 120.0, "basis": "offline"},
+    })
+
+    # The premise: both request blocks really reached their own gate.
+    assert seen["topology_raw"] == _topology_pin()
+    assert seen["alignment_raw"] == {"delay_us": 120.0, "basis": "offline"}
+    # The topology gate accepted the pin, so this round's corner IS 2400 Hz...
+    assert seen["topology"] is not None
+    assert seen["topology"].fc_hz == _PIN_FC_HZ
+    # ...and that is the corner the delay bound was derived from.
+    assert seen["alignment_fc_hz"] == _PIN_FC_HZ
+    # Stated as its own assertion rather than left implied by the line above:
+    # the incumbent corner is a real, reachable, DIFFERENT number, which is
+    # what makes the equality above a decision instead of a coincidence.
+    assert FC_HZ != _PIN_FC_HZ
+    assert seen["alignment_fc_hz"] != FC_HZ
+
+
+def test_a_topology_pin_is_never_inherited_the_way_the_tier_deliberately_is(
+    monkeypatch,
+):
+    """A pin is one round's explicit instruction; the tier is an instrument.
+
+    ``prepare_v2_session`` reads the LAPSED session's tier out of durable state
+    when the body names none (#2639 — every "measure again" action the envelope
+    mints posts ``{}``, and a REMOTE session's own retry was silently minting
+    ``full``; pinned by
+    ``tests/test_crossover_v2_remote_tier.py::test_a_re_measure_with_no_tier_inherits_the_lapsed_sessions``).
+    A prescription must NOT travel that road. "Measure again" would then re-run
+    a tournament arm nobody asked for, at a corner the speaker is not
+    commissioned for, and bank a receipt carrying that arm's name — the same
+    class of dishonesty as clamping an inadmissible pin to a legal one.
+
+    Both facts are read out of ONE durable state in one run, so the test cannot
+    pass by the state being unreadable: the tier IS inherited from it, the
+    banked pin is proven rehydratable from it, and the gate is still never
+    reached.
+
+    "Never reached" rather than "handed ``None``" because the boundary
+    short-circuits on the request key's absence — it derives the declarations
+    only for a request that will be judged against them, so an unpinned round
+    does not consult the topology gate at all. That is the stronger form of the
+    same claim: no pin was read from anywhere.
+    """
+    v2host.save_v2_state({
+        "session_id": "cap_lapsed_pinned_round",
+        "tier": TIER_EXPRESS,
+        "verify_priors": {"topology_prescription": _topology_pin()},
+    })
+    state = v2host.load_v2_state()
+    # The durable pin is READABLE — so "the gate saw nothing" below is a
+    # decision the boundary took, never a record it failed to parse.
+    banked = v2host.topology_prescription_prior_from_state(state)
+    assert banked is not None and banked.fc_hz == _PIN_FC_HZ
+
+    seen = _stage_1_prescription_taps(monkeypatch, {})
+
+    # Not inherited: the topology gate is never consulted at all, so there is
+    # no route by which the banked arm could have reached this round.
+    assert "topology_raw" not in seen
+    assert "topology" not in seen
+    # ...so the round really is unpinned end to end — the delay bound comes off
+    # the speaker's commissioned corner, not off the banked arm's.
+    assert seen["alignment_fc_hz"] == FC_HZ
+    # The contrast, from the same state file in the same run: the tier IS
+    # inherited. Without this the test would also pass on a preparer that had
+    # simply stopped reading durable state at all.
+    assert seen["tier"] == TIER_EXPRESS
+
+
+def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
+    monkeypatch,
+):
+    """Stage 2 re-opens AT this record, so a lossy round trip is not cosmetic.
+
+    ``prepare_v2_verify`` reads the pin back out of ``verify_priors`` and
+    re-points its own preset and corner from it. A record that failed to
+    rehydrate would grade a 2400 Hz round's VERIFY against the incumbent
+    corner's design target — the applied graph judged for not being the
+    crossover it deliberately replaced.
+
+    The round trip is asserted LOSSLESS (``to_dict()`` on both sides) rather
+    than merely present, because
+    ``topology_prescription_from_mapping`` REFUSES an unknown field instead of
+    ignoring it: one extra key anywhere in the banked block turns the whole
+    record into ``None``, and a "is not None" assertion would not see a gate
+    stamp quietly dropped on the way through. The record is taken from the REAL
+    request gate rather than hand-built, so the five ``checked_against_*``
+    stamps and the beaming disclosure the gate writes are all in the block being
+    round-tripped.
+    """
+    accepted = _stage_1_prescription_taps(
+        monkeypatch, {"topology_prescription": _topology_pin()},
+    )["topology"]
+    # The gate's own stamps are present, which is what makes the round trip
+    # below a demanding one rather than four fields wide.
+    assert accepted.checked_against_search_band_hz == (1000.0, 4000.0)
+    assert accepted.checked_against_slope_db_per_octave == (
+        _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
+    )
+    # The ka onset is DISCLOSED as a number, never enforced (#1675): this
+    # arm is above it and the receipt says so rather than refusing.
+    assert accepted.beaming_ceiling_hz is not None
+    assert accepted.fc_hz > accepted.beaming_ceiling_hz
+
+    conductor = _rearm_conductor_for_persist(
+        "cap_pinned_round", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
+        topology_prescription=accepted,
+    )
+    v2host.persist_conductor_state(conductor, failure_code=None)
+
+    state = v2host.load_v2_state()
+    assert state["verify_priors"]["topology_prescription"] == accepted.to_dict()
+    rehydrated = v2host.topology_prescription_prior_from_state(state)
+    assert rehydrated is not None
+    assert rehydrated.to_dict() == accepted.to_dict()
+    # ...and an ordinary round still banks nothing, so a reader can tell a
+    # pinned arm from the speaker's commissioned crossover.
+    v2host.persist_conductor_state(
+        _rearm_conductor_for_persist("cap_ordinary_round", {1: PHASE_VERIFY}),
+        failure_code=None,
+    )
+    assert v2host.topology_prescription_prior_from_state(
+        v2host.load_v2_state()
+    ) is None
+
+
+def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
+    monkeypatch,
+):
+    """Fail-closed, at the untrusted-input boundary, costing nothing.
+
+    5500 Hz is inside BOTH role bands (the tweeter declares from 300 Hz, the
+    woofer to 6000 Hz) and outside the 1000-4000 Hz band the two declared
+    search bands intersect to, so the SEARCH BAND is the only bound that can
+    refuse it — a one-reason fixture, asserted on the reason CONSTANT rather
+    than on wording no test owns.
+
+    "At the tap" is the half that matters operationally: an operator walking a
+    tournament must learn at the request, not after a ten-minute measurement
+    with a burned relay link behind it. So the refusal is asserted TOGETHER
+    with the absence of every side effect the preparer would otherwise leave —
+    no evidence bundle (armed to fail in ``_arm_stage_1``, and reachable from
+    here: nothing is stopping this run at an earlier tap), and no durable
+    session state.
+
+    The pin is otherwise perfectly well-formed — supported order, named
+    provenance — so a refusal can only be the corner.
+    """
+    from jasper.active_speaker.crossover_v2.fc_sweep import (
+        FC_REJECT_OUTSIDE_SEARCH_BAND,
+    )
+
+    _arm_stage_1(monkeypatch)
+    assert v2host.load_v2_state() is None
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.prepare_v2_session(
+            {"topology_prescription": _topology_pin(fc_hz=5500.0)},
+            status={}, run_async=None, camilla_factory=None,
+        )
+
+    assert FC_REJECT_OUTSIDE_SEARCH_BAND in str(excinfo.value)
+    # Never clamped to the nearest legal corner and quietly measured: the
+    # operator asked for an arm, and a silently different arm is worse than no
+    # arm because its receipt would carry the arm's name.
+    assert "5500" in str(excinfo.value)
+    assert v2host.load_v2_state() is None
+
+
+def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
+    """The grading stage must re-point too, and this is the half that matters.
+
+    Stage 2 GRADES the applied graph. A pinned round applied a crossover the
+    saved declaration does not name, so a stage 2 that opened at the incumbent
+    corner would hand VERIFY the wrong design target (R18's absolute claim) and
+    the wrong overlap band — the round would be graded for not being the
+    crossover it deliberately replaced, and every number would look like a
+    realization defect.
+
+    Tapped at ``apply_topology_pin`` because that call IS the re-point — the
+    one decision both stages take, owned by the module that owns the pin. The
+    rehydration test above proves the record survives the round trip; this
+    proves the record is then USED, which is a different claim and the one a
+    lossless-but-ignored record would still pass.
+    """
+    from jasper.active_speaker.crossover_v2 import (
+        topology_prescription as topology_mod,
+    )
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
+    )
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+    )
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store",
+        lambda *_a: (SimpleNamespace(), "bundle-stage2-pin"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_applied_pinned_round",
+        "applied": True,
+        "tier": "",
+        "verify_priors": {"topology_prescription": _topology_pin()},
+    })
+
+    seen: dict[str, Any] = {}
+    real = topology_mod.apply_topology_pin
+
+    def _apply(prescription, *, preset, fc_hz):
+        # Run the REAL helper first, so a pin it refused to move would be
+        # caught here rather than masked by the sentinel.
+        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
+        region = moved_preset.crossover_regions[0]
+        seen["fc_hz"], seen["order"] = moved_fc, region.order
+        seen["region_fc_hz"] = region.fc_hz
+        raise _StoppedAtTheTap("stage 2 re-pointed at the pin")
+
+    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
+
+    with pytest.raises(_StoppedAtTheTap):
+        v2host.prepare_v2_verify(
+            {}, status={}, run_async=None, camilla_factory=None,
+        )
+
+    assert seen["fc_hz"] == _PIN_FC_HZ
+    # The PRESET moved too, not just the scalar: the graph VERIFY grades is
+    # this topology's, corner and order both.
+    assert seen["region_fc_hz"] == _PIN_FC_HZ
+    assert seen["order"] == _PIN_ORDER
+    # …and the incumbent is a different number, so this cannot pass by accident.
+    assert FC_HZ != _PIN_FC_HZ
+
+
+def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
+    """The control for the test above, and the reason its tap is honest.
+
+    An ordinary round's stage 2 must open at the speaker's own commissioned
+    corner, exactly as it always has. Without this, a stage 2 that re-cornered
+    unconditionally would still pass the pinned assertion above while quietly
+    rewriting every ordinary round's preset.
+
+    Asserted on what the helper RETURNS rather than on whether it was called:
+    ``apply_topology_pin`` is called on every round by design — it is the one
+    place absence is turned into "change nothing" — so "was it called" would be
+    a test of the wiring's shape instead of its answer.
+    """
+    from jasper.active_speaker.crossover_v2 import (
+        topology_prescription as topology_mod,
+    )
+
+    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(
+        v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
+    )
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+    )
+    # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
+    # ``prepare_v2_verify``, so arming it to fail would stop this run short of
+    # the seam it is about.
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store",
+        lambda *_a: (SimpleNamespace(), "bundle-stage2-ordinary"),
+    )
+    v2host.save_v2_state({
+        "session_id": "cap_applied_ordinary_round",
+        "applied": True,
+        "tier": "",
+        "verify_priors": {},
+    })
+
+    seen: dict[str, Any] = {}
+    real = topology_mod.apply_topology_pin
+
+    def _apply(prescription, *, preset, fc_hz):
+        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
+        seen["prescription"] = prescription
+        seen["preset_unchanged"] = moved_preset is preset
+        seen["fc_hz"] = moved_fc
+        raise _StoppedAtTheTap("stage 2 resolved its topology")
+
+    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
+
+    with pytest.raises(_StoppedAtTheTap):
+        v2host.prepare_v2_verify(
+            {}, status={}, run_async=None, camilla_factory=None,
+        )
+
+    assert seen["prescription"] is None
+    # The SAME preset object back, not an equal copy: an unpinned round does
+    # not rebuild its crossover regions at all.
+    assert seen["preset_unchanged"] is True
+    assert seen["fc_hz"] == FC_HZ
