@@ -29,6 +29,33 @@ module does not model exactly is a refusal, not a no-op, because a skipped
 attenuator would under-report a branch peak and that is the one direction that
 raises a ceiling unsafely.
 
+**Why a model, when a byte-exact renderer already ships.** The repo can render a
+config through the REAL pinned camilladsp — ``jasper-active-speaker-emit-bench``
+(:func:`jasper.active_speaker.bench.derivation.derive_offline_render_config`)
+hands a derived WavFile-capture config to
+:func:`jasper.bass_extension.bench.render.render_config`, and
+``analysis.sample_peak_dbfs`` reads the peak straight off the output. That is a
+strictly more faithful instrument and it was weighed here rather than missed.
+It is not what this path wants, for three reasons:
+
+* **The ramp is not a bench.** Deriving a branch peak sits inside
+  ``jasper-seat-level``'s pre-flight, before a note is played. The bench route
+  needs a subprocess per render, a materialised WavFile capture of the whole
+  stimulus, and a materialised F64 output of the whole render — file I/O
+  proportional to the program, on a 1 GB Pi, to answer one scalar per driver.
+* **Fidelity is not the binding constraint; refusing is.** The number this
+  feeds is a SAFETY bound, so what matters is that an unmodellable graph can
+  never be silently mis-modelled. That is the refusal rails' job, and they are
+  mutation-tested. A byte-exact renderer would not remove a single one of them.
+* **The gap is measured, not assumed.** Against an independent time-domain
+  renderer the model agrees to 0.000171 dB worst case
+  (``tests/test_active_speaker_branch_peak.py``, the cross-check block), across
+  noise, sweeps, click trains, and Q-100 resonances.
+
+The bench path remains the byte-exact instrument for bench work; this is the
+in-process model for a pre-flight bound. If the two ever need to agree on one
+number, the cross-check test is where that contract already lives.
+
 **One biquad evaluator, and this is not a second one.**
 :func:`jasper.active_speaker.branch_chain.chain_response` and
 :func:`~jasper.active_speaker.branch_chain.crossover_response_complex` — which
@@ -48,6 +75,13 @@ derived without it, so the walk below reads the config mapping directly.
 prewarps at :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`, so a graph or a
 stimulus at any other rate is refused rather than modelled at the wrong corner
 frequencies.
+
+**"Peak" here is the SAMPLE peak**, the largest absolute output sample — the
+same quantity ``program_admission``'s ``effective_true_peak_dbfs`` and
+``seat_level.stimulus_peak_dbfs`` use, so the ledger compares like with like.
+Inter-sample (true-peak) overshoot between samples is not modelled by any of
+them. That is a repo-wide convention rather than a gap this module opens, and it
+is stated here because the word "true peak" appears in the names around it.
 """
 
 from __future__ import annotations
@@ -56,6 +90,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from jasper.bass_extension.bench.derivation import ALLOWED_FILTER_TYPES
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 # Overlap-save geometry. The block is what the shared evaluator is sampled
@@ -64,22 +99,44 @@ from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 # therefore also the longest branch delay + filter ringing this render can model
 # without wraparound. 683 ms and 171 ms at 48 kHz: an LR4 rings for a few
 # milliseconds and a driver alignment delay is well under one, so both are
-# generous by orders of magnitude — and a graph that exceeds the overlap is
-# refused below rather than modelled wrong.
+# generous by orders of magnitude — and a graph whose accumulated branch delay
+# exceeds the overlap is refused below rather than modelled wrong.
+#
+# The ringing half of that claim is measured, not assumed: against an
+# independent time-domain renderer, a click train through a Q-100 peaking
+# resonance — the longest tail a biquad can have, excited as hard as a signal
+# can excite it — disagreed by 0.000064 dB, and the worst case across every
+# cross-checked signal and Q was 0.000171 dB. See
+# ``tests/test_active_speaker_branch_peak.py``'s cross-check block.
 _BLOCK_SAMPLES = 32768
 _OVERLAP_SAMPLES = 8192
 
-# The longest stimulus this will render, and the one place peak memory is
-# bounded. A seat-leveling stimulus is SECONDS long — it is a continuous program
-# the ramp loops while it climbs — so 60 s is already an order of magnitude of
-# slack, and it is what keeps the decoded float64 copy small: 60 s x 48 kHz x
-# 2 ch x 8 B = 46 MB, on a box whose whole budget is 1 GB. Everything after the
-# decode is per-BLOCK, so that copy is the high-water mark. Over this bound the
-# render refuses and the caller falls back to the conservative full-band bound.
+# The longest stimulus this will render, in FRAMES, and the one place peak
+# memory is bounded. Checked against the WAV's own decoded shape BEFORE the
+# float64 conversion, because a bound enforced after the allocation it exists to
+# prevent has already failed.
+#
+# The arithmetic, so the claim is checkable rather than asserted. Transient
+# bytes ≈ frames × channels × (2 for the int16 read + 8 for the float64 copy);
+# both are live at once across ``astype``. At this bound, 2 channels:
+#
+#     2_880_000 × 2 × 10 B ≈ 55 MiB
+#
+# on a box whose whole budget is 1 GB, and everything after the decode is
+# per-BLOCK rather than per-stimulus. A seat-leveling stimulus is SECONDS long —
+# it is a continuous program the ramp loops while it climbs — so 60 s is already
+# an order of magnitude of slack. Over the bound the render refuses and the
+# caller falls back to the conservative full-band bound.
 _MAX_STIMULUS_SAMPLES = 48_000 * 60
 
 # CamillaDSP filter types this module models EXACTLY. Anything else refuses.
-_MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Gain", "Delay", "Limiter"})
+#
+# DERIVED from the offline-render allowlist rather than restated, so a future
+# stage type admitted there cannot silently strand seat-level on the
+# conservative bound. ``Conv`` is the one deliberate subtraction: the bench path
+# runs the real binary and can convolve a shipped FIR, while this module models
+# filters from the config text alone and an FIR's coefficients are not in it.
+_MODELLED_FILTER_TYPES = ALLOWED_FILTER_TYPES - {"Conv"}
 
 # Biquad shapes the shared RBJ evaluator implements (jasper.sound.profile.
 # _biquad_coeffs). A shape outside this set would fall through that function's
@@ -130,6 +187,11 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
     :func:`jasper.cli.seat_level.stimulus_peak_dbfs` uses, so a branch peak and
     the full-band peak it is compared against are on one scale by construction
     rather than by coincidence.
+
+    The length bound is enforced against the DECODED SHAPE, before the float64
+    conversion. Checking it afterwards would let the very allocation the bound
+    exists to prevent happen first — the widest copy is live at exactly the
+    moment the guard was supposed to have already refused.
     """
     import numpy as np
     from scipy.io import wavfile
@@ -140,14 +202,14 @@ def read_stimulus_samples(wav_path: str | Path) -> tuple[Any, int]:
         array = array[:, None]
     if array.ndim != 2:
         raise BranchPeakError(f"{wav_path} is not a mono or multichannel WAV")
+    if array.shape[0] > _MAX_STIMULUS_SAMPLES:
+        raise BranchPeakError(
+            f"{wav_path} carries {array.shape[0]} frames, past the "
+            f"{_MAX_STIMULUS_SAMPLES}-frame render bound"
+        )
     samples = array.astype(np.float64)
     if np.issubdtype(array.dtype, np.integer):
         samples = samples / float(np.iinfo(array.dtype).max)
-    if samples.shape[0] > _MAX_STIMULUS_SAMPLES:
-        raise BranchPeakError(
-            f"{wav_path} carries {samples.shape[0]} frames, past the "
-            f"{_MAX_STIMULUS_SAMPLES}-frame render bound"
-        )
     if not samples.size:
         raise BranchPeakError(f"{wav_path} carries no frames")
     return samples, int(rate)
@@ -222,8 +284,16 @@ def _filter_records(
             if combo not in _MODELLED_COMBO_TYPES:
                 raise BranchPeakError(f"filter {name!r} is a {combo!r} combo")
             order = params.get("order")
-            if isinstance(order, bool) or not isinstance(order, int) or order < 1:
+            if isinstance(order, bool) or not isinstance(order, int) or order < 2:
                 raise BranchPeakError(f"filter {name!r} has order {order!r}")
+            if order % 2:
+                # A Linkwitz-Riley of order N is two cascaded Butterworths of
+                # N/2, which is what the crossover evaluator builds. An odd N
+                # has no such pair, so it would be modelled as the wrong slope
+                # rather than refused.
+                raise BranchPeakError(
+                    f"filter {name!r} has odd Linkwitz-Riley order {order}"
+                )
             sections.append(
                 CrossoverSection(
                     fc_hz=_finite(params.get("freq"), f"filter {name!r} freq"),
@@ -236,11 +306,26 @@ def _filter_records(
         shape = str(params.get("type") or "")
         if shape not in _MODELLED_BIQUAD_TYPES:
             raise BranchPeakError(f"filter {name!r} is a {shape!r} biquad")
+        # CamillaDSP lets a shelf or bell state its width as ``bandwidth`` or
+        # ``slope`` instead of ``q``. Those spellings are REAL on boxes not
+        # re-applied since 2026-07-27, and reading the absent ``q`` as the
+        # evaluator's 1.0 default models a different filter — measured up to
+        # 2.4 dB shallower, which UNDER-reports the branch peak and so RAISES
+        # the ceiling. Same hazard class as the LinkwitzTransform refusal
+        # above, so the same answer: refuse and let the caller fall back.
+        if not isinstance(params.get("q"), (int, float)) or isinstance(
+            params.get("q"), bool
+        ):
+            raise BranchPeakError(
+                f"filter {name!r} is a {shape} biquad with no numeric q "
+                f"(got {params.get('q')!r}); a bandwidth/slope width is not "
+                "modelled"
+            )
         biquads.append(
             {
                 "biquad_type": shape,
                 "freq": _finite(params.get("freq"), f"filter {name!r} freq"),
-                "q": float(params.get("q") or 0.0),
+                "q": _finite(params.get("q"), f"filter {name!r} q"),
                 "gain": float(params.get("gain") or 0.0),
             }
         )
@@ -249,8 +334,13 @@ def _filter_records(
 
 def _step_transfer(
     names: Sequence[str], filters: Mapping[str, Any], freqs: Any
-) -> Any:
-    """The complex response one pipeline step applies across ``freqs``."""
+) -> tuple[Any, float]:
+    """``(complex response across freqs, seconds of delay it adds)``.
+
+    The delay is returned rather than checked here: the render overlap bounds
+    what a whole BRANCH may delay, and a branch is a chain of steps. See
+    :func:`_pipeline_operations`, which accumulates it per channel.
+    """
     import numpy as np
 
     from jasper.active_speaker.branch_chain import (
@@ -259,11 +349,6 @@ def _step_transfer(
     )
 
     biquads, sections, scale, delay_s = _filter_records(names, filters)
-    if delay_s * RESPONSE_SAMPLE_RATE_HZ > _OVERLAP_SAMPLES:
-        raise BranchPeakError(
-            f"a step delays {delay_s * 1e3:.1f} ms, past the "
-            f"{_OVERLAP_SAMPLES / RESPONSE_SAMPLE_RATE_HZ * 1e3:.1f} ms render overlap"
-        )
     response = np.full(freqs.shape, scale, dtype=np.complex128)
     if biquads:
         response = response * chain_response(biquads, freqs)
@@ -271,7 +356,23 @@ def _step_transfer(
         response = response * crossover_response_complex(freqs, sections)
     if delay_s:
         response = response * np.exp(-2j * np.pi * freqs * delay_s)
-    return response
+    return response, delay_s
+
+
+def _guard_branch_delay(delays: Sequence[float]) -> None:
+    """Refuse once ANY branch's ACCUMULATED delay passes the render overlap.
+
+    Cumulative, not per step, because the overlap is what the render discards
+    per block and a branch spends it across every delay in its chain. Three
+    80 ms steps are a 240 ms branch and wrap exactly as one 240 ms step would;
+    checking each step alone would wave them through.
+    """
+    worst = max(delays, default=0.0)
+    if worst * RESPONSE_SAMPLE_RATE_HZ > _OVERLAP_SAMPLES:
+        raise BranchPeakError(
+            f"a branch delays {worst * 1e3:.1f} ms in total, past the "
+            f"{_OVERLAP_SAMPLES / RESPONSE_SAMPLE_RATE_HZ * 1e3:.1f} ms render overlap"
+        )
 
 
 def _pipeline_operations(
@@ -292,6 +393,9 @@ def _pipeline_operations(
 
     operations: list[tuple[str, Any]] = []
     width = int(capture_channels)
+    # Delay accumulated on each CURRENT channel, so the overlap guard bounds a
+    # whole branch rather than any one step of it.
+    delays = [0.0] * width
     for index, step in enumerate(pipeline):
         if not isinstance(step, Mapping):
             raise BranchPeakError(f"pipeline step {index} is not a mapping")
@@ -306,9 +410,11 @@ def _pipeline_operations(
             names = [str(name) for name in step.get("names") or [] if name is not None]
             if not names:
                 continue
-            operations.append(
-                ("filter", (channels, _step_transfer(names, filters, freqs)))
-            )
+            response, delay_s = _step_transfer(names, filters, freqs)
+            for channel in channels:
+                delays[channel] += delay_s
+            _guard_branch_delay(delays)
+            operations.append(("filter", (channels, response)))
             continue
         if kind == "Mixer":
             name = str(step.get("name") or "")
@@ -316,6 +422,14 @@ def _pipeline_operations(
             if not isinstance(mixer, Mapping):
                 raise BranchPeakError(f"pipeline step {index} names mixer {name!r}")
             width, mapping = _mixer_mapping(mixer, width, name)
+            # A dest inherits the WORST delay among the sources it sums, which
+            # is what its own downstream chain then adds to.
+            carried = [0.0] * width
+            for dest, sources in mapping:
+                for source, _gain in sources:
+                    carried[dest] = max(carried[dest], delays[source])
+            delays = carried
+            _guard_branch_delay(delays)
             operations.append(("mixer", (width, mapping)))
             continue
         raise BranchPeakError(f"pipeline step {index} is a {kind or 'typeless'} step")
@@ -463,6 +577,17 @@ def stimulus_branch_peaks_dbfs(
 
     if not output_channels:
         raise BranchPeakError("no output channels were requested")
+    # The applied graph arrives from ``yaml.safe_load``, whose result for an
+    # EMPTY file is None, for a list document a list, and for a scalar document
+    # a str/int — none of which carry ``.get``. Typed here rather than left to
+    # an AttributeError two frames down, because only a BranchPeakError reaches
+    # the caller's conservative fallback; anything else escapes as a crash.
+    if not isinstance(config, Mapping):
+        raise BranchPeakError(
+            "the applied config is not a mapping "
+            f"(read a {type(config).__name__}); an empty, list, or scalar "
+            "YAML document cannot be a CamillaDSP graph"
+        )
     samples, rate = read_stimulus_samples(wav_path)
     if rate != RESPONSE_SAMPLE_RATE_HZ:
         raise BranchPeakError(

@@ -2476,7 +2476,14 @@ way a composed program's per-segment gains do. Given the applied graph as well,
 [`branch_peak.py`](../jasper/active_speaker/branch_peak.py) RENDERS the stimulus
 through it — input split mixer, crossover passes, shelves and peaks, per-driver
 gain and delay — and the same per-driver caps bind against what each branch
-actually receives: `min(cap − that driver's branch peak)`. On a two-way that is
+actually receives: `min(cap − that driver's branch peak)`. That render is an
+in-process model, deliberately not the byte-exact
+`jasper-active-speaker-emit-bench` path (which needs a subprocess and a
+materialised WavFile capture plus F64 output per render — wrong shape for a
+pre-flight bound); it is cross-checked in-tree against
+[`tests/_fake_camilladsp.py`](../tests/_fake_camilladsp.py), an independent
+time-domain scipy renderer, agreeing to **0.000171 dB** worst case across noise,
+sweeps, click trains, and Q-100 resonances. On a two-way that is
 worth double figures, because a crossed-over driver never receives the full-band
 peak. It is not a one-way loosening: a branch whose chain sits above unity
 reports a peak ABOVE the full-band figure and binds tighter. The claim is
@@ -2485,10 +2492,18 @@ or the same one after the graph is re-applied, is re-rendered.
 
 The render **refuses rather than approximates**, and every refusal falls back to
 the full-band bound, so an unmodelled graph makes the speaker quieter and never
-louder. A filter type it does not model exactly, a bypassed pipeline step, a
-graph or stimulus at a rate other than 48 kHz (the shared RBJ evaluator's
-prewarp), a channel-count mismatch, or a branch peak missing for any one active
-driver all take that path. Which bound was used is in the journal —
+louder. All of these take that path: a filter type outside the shared
+offline-render allowlist (`bass_extension.bench.derivation.ALLOWED_FILTER_TYPES`
+less `Conv`, which the config text cannot carry the coefficients for); a biquad
+shape or a Linkwitz-Riley order the evaluator does not realise, including a
+shelf that states its width as `slope`/`bandwidth` rather than a numeric `q`
+(reading the absent `q` as 1.0 would model a shallower filter and *raise* the
+ceiling); a bypassed pipeline step; a graph or stimulus at a rate other than
+48 kHz (the shared RBJ evaluator's prewarp); a channel-count mismatch; an
+accumulated per-branch delay past the render overlap; a statefile that is not a
+YAML mapping (empty, list, or scalar — the shapes a truncated write leaves); a
+stimulus past the 60-second frame bound; or a branch peak missing for any one
+active driver. Which bound was used is in the journal —
 `event=active_speaker.unsegmented_ceiling_bound` names `bound=per_branch` or
 `bound=full_band` plus each driver's cap and branch peak, and
 `event=active_speaker.seat_level_branch_peaks_unavailable` carries the reason a

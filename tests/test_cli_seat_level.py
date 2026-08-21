@@ -362,6 +362,44 @@ def test_an_unreadable_applied_graph_falls_back_to_the_conservative_bound(
     assert "seat_level_branch_peaks_unavailable" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "document, shape",
+    [
+        ("", "an empty statefile"),
+        ("[]", "a list document"),
+        ("- one\n- two", "a populated list document"),
+        ("just a string", "a scalar string document"),
+        ("42", "a scalar int document"),
+        ("{{{ not yaml", "an unparseable document"),
+    ],
+)
+def test_an_unreadable_graph_DOCUMENT_still_reaches_the_conservative_fallback(
+    tmp_path, monkeypatch, caplog, document, shape
+):
+    """The fallback has to survive the shapes a half-written statefile takes.
+
+    ``yaml.safe_load`` answers an empty file with None, a list document with a
+    list, and a scalar document with a str/int — none of which carry ``.get``.
+    Reaching the render with one of those raised an AttributeError that the
+    catch tuple here does not name, so the conservative fallback was skipped
+    and the verb crashed instead of quietly bounding by the full-band peak.
+    Every one of these must come back ``None``, logged.
+    """
+    stimulus = _stereo_wav(tmp_path / "s.wav")
+    graph = tmp_path / "applied.yml"
+    graph.write_text(document, encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.active_speaker.environment.read_camilla_statefile_config_path",
+        lambda *a, **k: str(graph),
+    )
+    with caplog.at_level("INFO", logger="jasper.cli.seat_level"):
+        peaks = seat_level._applied_branch_peaks(
+            stimulus, [{"target_fingerprint": "fp", "output_index": 0}]
+        )
+    assert peaks is None, shape
+    assert "event=active_speaker.seat_level_branch_peaks_unavailable" in caplog.text
+
+
 def _jts3_shaped_graph(*, woofer_channel: int, tweeter_channel: int, fc_hz=1648.7):
     """A basin-2-shaped two-way: mono-sum split, an LR4 pair, and the tweeter's
     own inverted trim / shelf / peaking chain.
