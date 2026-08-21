@@ -90,9 +90,15 @@ place only by naming the component-damage mechanism it guards against —
   [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 - Evidence packet — one document per round a reader (human or LLM) can
   answer from: `jasper/active_speaker/crossover_v2/evidence_packet.py`.
-- Multiple DSP configs measured per mic position, so one mic movement
-  answers more questions — lands on the round runner above
-  (`scripts/run-crossover-round.py`); in flight as of this doc's date.
+- More than one capture per mic position, so one mic movement answers more
+  questions (§1.4) — `--per-position N` on the round runner above, plus the
+  derived `position_cycle.json` that says which pose each take was measured
+  at. Multiple DSP *configs* per position is the half that did NOT land: the
+  apply endpoint reaches only the candidate currently published in durable v2
+  state, so a runner has no door to put a named prior config on the speaker
+  between takes. Changing that is a speaker-side design, not a runner flag —
+  and the `awaiting_apply` hold is explicitly not it (its own vocabulary says
+  "no new design may depend on it").
 
 ---
 

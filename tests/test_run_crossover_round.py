@@ -660,7 +660,14 @@ def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
     _REGIME_STOPS[regime]``, so ``both`` is TWO stops per token — and the
     ``--complete-after`` floor, which counts tokens, would then be exactly half
     the real stop count. Refused rather than multiplied: a multiplier here would
-    be this file's second opinion about another tool's composition rule."""
+    be this file's second opinion about another tool's composition rule.
+
+    What is declined is the FLAG, never the experiment — measurement-loop
+    doctrine §4. The refusal has to say so and name the way through, because a
+    message that only said "no" would be the nanny gate that doctrine forbids:
+    the repeat was always the seam's own shape, so a hand-written staged list
+    takes N captures per pose at any regime.
+    """
     proc, ssh_lines, bank_lines = _run(
         checkout, wizard,
         ["--campaign", str(tmp_path / "camp"), "--label", "r1",
@@ -670,7 +677,29 @@ def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
 
     assert proc.returncode == 2
     assert "--regime both" in proc.stderr and "per_driver" in proc.stderr
+    assert "0,0,0,7,7,7" in proc.stderr  # the way through, not just the "no"
     assert ssh_lines == [] and bank_lines == [] and wizard.seen().requests == ()
+
+
+def test_a_hand_staged_repeat_list_is_taken_at_any_regime(
+    checkout, wizard, tmp_path
+):
+    """The escape hatch the refusal above points at, exercised.
+
+    ``--regime both`` with the repeats written out reaches the seam unchanged —
+    this runner counts nothing on the operator's behalf, so nothing of its
+    arithmetic is in the way.
+    """
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--angles", "0,0,0,7,7,7", "--attest-rig-clear",
+         "--regime", "both", "--complete-after", "12"],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    stage_cmd = next(line for line in ssh_lines if "jasper-angle-capture" in line)
+    assert "--angles 0,0,0,7,7,7" in stage_cmd and "--regime both" in stage_cmd
 
 
 def test_takes_are_refused_on_the_verify_stage_which_serves_its_own_poses(

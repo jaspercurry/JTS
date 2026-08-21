@@ -1205,12 +1205,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         # would then be half the real stop count — and the --complete-after floor
         # below is only as honest as that number. Refused rather than multiplied:
         # a multiplier here would be this file's second opinion about another
-        # tool's composition rule, and the walk shape it implies has never run.
+        # tool's composition rule.
+        #
+        # NOT a nanny gate (measurement-loop doctrine §4): what is declined is
+        # this FLAG, whose own arithmetic is unsound for the regime — a named
+        # mechanism, not a forecast that the experiment will disappoint. The
+        # experiment itself stays available and the message says how: a staged
+        # list written out by hand takes N captures per pose at any regime,
+        # because the repeat was always the seam's shape rather than this flag's
+        # invention.
         parser.error(
             f"--per-position counts one stop per angle, which is only true for "
             f"--regime {REGIME_PER_DRIVER}; --regime {args.regime} stages more "
             f"than one stop per angle, so the --complete-after floor below "
-            f"would be short"
+            f"would be short. The WALK is not refused — stage the repeats "
+            f"yourself (--angles 0,0,0,7,7,7) and this runner counts nothing "
+            f"on your behalf"
         )
     elif args.angles and not args.attest_rig_clear:
         # A staged walk is an ARM walk, and without the attestation no arm walk
