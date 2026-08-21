@@ -161,10 +161,14 @@ class VolumeRoutes(ControlHandlerMixin):
         # AUTHORITATIVE writes (no `source`: management UI, HID accessory,
         # voice "louder") stay allowed on purpose: those are a human at the
         # speaker, and this is not a nanny.
-        # ONE locked read answers both "is it held?" and "by whom?", so the
-        # log line cannot name an owner that lapsed between two reads.
-        hold_owner = measurement_hold.owner() if source_name else None
-        if hold_owner is not None:
+        # ONE locked read answers "is it held?", "by whom?", and "is this the
+        # first decline?" together, so the log line cannot name an owner that
+        # lapsed between two reads or mis-rank itself against a stale count.
+        declined = (
+            measurement_hold.record_declined_observation() if source_name else None
+        )
+        if declined is not None:
+            hold_owner, first_decline = declined
             _server.log_event(
                 _server.logger,
                 "volume.observation_declined",
@@ -172,8 +176,25 @@ class VolumeRoutes(ControlHandlerMixin):
                 owner=hold_owner,
                 requested_pct=target_pct,
                 client=self.address_string(),
+                # The TRANSITION is the signal; the repetition is not. The USB
+                # bridge re-presents the host slider on its backoff schedule for
+                # as long as the decline lasts (~720/hour at its 5 s ceiling,
+                # ~360 lines in one 30-minute measurement — this feature's
+                # ORDINARY case), so INFO on every one would re-create the exact
+                # journal spam #2791 removed one commit earlier. The suppressed
+                # count is reported once by event=measurement.hold_released /
+                # _expired as declined_observations.
+                level=logging.INFO if first_decline else logging.DEBUG,
             )
-            state = _server.asyncio.run(self._get_op())
+            try:
+                state = _server.asyncio.run(self._get_op())
+            except Exception as e:  # noqa: BLE001
+                # Same shape as _get_volume's guard: this reads the persisted
+                # projection, and a read failure is a 502, not a silent 200
+                # carrying whatever a half-built payload would have said.
+                _server.logger.exception("declined observation state read failed")
+                self._send_json({"error": str(e)}, status=502)
+                return
             payload = self._volume_payload(state)
             payload["observation_applied"] = False
             self._send_json(payload)

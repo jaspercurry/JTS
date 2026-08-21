@@ -374,8 +374,9 @@ the eight routes gated **at that date**, the *only*
 clients missing the token are (a) this landing-page button and (b) the M2M
 grouping path (§6). Routes gated since have not been re-audited against this
 list, so treat the conclusion as dated rather than as covering the current
-`_TOKEN_GATED_ROUTES`. One of them is worth naming because its client is a new
-shape: `/measurement/hold` and `/measurement/release` are called by
+`_TOKEN_GATED_ROUTES`. Two of them are worth naming because they share a client
+shape this section had not seen before: `/measurement/hold` and
+`/measurement/release` are called by
 `measurement_window()` from jasper-correction-web and from CLIs such as
 `jasper-seat-level`, which read the token from **this box's own**
 `control_token.current_token()` and present it over loopback — the

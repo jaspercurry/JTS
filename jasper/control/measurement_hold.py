@@ -67,6 +67,7 @@ __all__ = [
     "acquire",
     "held",
     "read_measurement_hold",
+    "record_declined_observation",
     "release",
     "reset_for_tests",
     "snapshot",
@@ -130,13 +131,24 @@ class MeasurementHold:
         self._mode: str | None = None
         self._acquired_at: float = 0.0
         self._expires_at: float = 0.0
+        # Declined source-observed volume writes against the CURRENT hold. Only
+        # its first-or-not-ness is used (see record_declined_observation), and
+        # it belongs here rather than in the HTTP handler because "the current
+        # hold" is this object's lifecycle: it resets on a fresh acquire and on
+        # every path that drops the hold, and a handler is per-request.
+        self._declines: int = 0
 
     def reset_for_tests(self) -> None:
         with self._lock:
-            self._owner = None
-            self._mode = None
-            self._acquired_at = 0.0
-            self._expires_at = 0.0
+            self._clear_locked()
+
+    def _clear_locked(self) -> None:
+        """Drop the hold and everything scoped to it. Caller holds the lock."""
+        self._owner = None
+        self._mode = None
+        self._acquired_at = 0.0
+        self._expires_at = 0.0
+        self._declines = 0
 
     # -- internals -------------------------------------------------------
 
@@ -152,13 +164,12 @@ class MeasurementHold:
         expired_owner = self._owner
         expired_mode = self._mode
         held_for = now - self._acquired_at
-        self._owner = None
-        self._mode = None
-        self._acquired_at = 0.0
-        self._expires_at = 0.0
+        declines = self._declines
+        self._clear_locked()
         log_event(
             logger,
             "measurement.hold_expired",
+            declined_observations=declines,
             owner=expired_owner,
             mode=expired_mode,
             held_for_s=f"{held_for:.1f}",
@@ -213,6 +224,15 @@ class MeasurementHold:
             renewed = self._owner == owner
             if not renewed:
                 self._acquired_at = now
+                # `_declines` deliberately is NOT reset here. It cannot be
+                # non-zero at this point: it only counts while a hold is live,
+                # a fresh acquire only happens when `_owner is None`, and EVERY
+                # path that clears `_owner` goes through `_clear_locked`, which
+                # zeroes it. Resetting again would be an unreachable line that
+                # reads like a guard. What must never reset it is a RENEWAL — a
+                # 30-minute session renews ~30 times and is still one hold, so
+                # exactly one INFO line — and that falls out of this branch not
+                # running.
             self._owner = owner
             self._mode = mode
             self._expires_at = now + self._ttl_s
@@ -248,10 +268,8 @@ class MeasurementHold:
                 raise MeasurementHoldConflict(self._owner)
             mode = self._mode
             held_for = now - self._acquired_at
-            self._owner = None
-            self._mode = None
-            self._acquired_at = 0.0
-            self._expires_at = 0.0
+            declines = self._declines
+            self._clear_locked()
             state = self._snapshot_locked(now)
         log_event(
             logger,
@@ -259,6 +277,10 @@ class MeasurementHold:
             owner=owner,
             mode=mode,
             held_for_s=f"{held_for:.1f}",
+            # The count the per-hold DEBUG demotion below suppressed, reported
+            # once at the end so the volume the journal did NOT carry is still
+            # a number an operator can see.
+            declined_observations=declines,
         )
         return state
 
@@ -277,6 +299,33 @@ class MeasurementHold:
     def held(self) -> bool:
         """True while an unexpired hold is live."""
         return self.owner() is not None
+
+    def record_declined_observation(self) -> tuple[str, bool] | None:
+        """Count one declined source-observed volume write against this hold.
+
+        Returns ``(owner, is_first)`` while a hold is live, or ``None`` when
+        nothing is held — so the caller's "should I decline?" and "how loudly
+        should I say so?" are answered by ONE locked read. Deliberately a
+        command and a query at once: the two must not be separable, or a hold
+        that lapsed between them would name a stale owner or mis-rank the line.
+
+        ``is_first`` exists because the transition is the signal and the
+        repetition is not. The declined caller is the USB volume bridge, which
+        re-presents the host's slider on a backoff schedule for as long as the
+        decline lasts — up to ~720 posts/hour against the bridge's 5 s ceiling
+        (``usbsink.volume_bridge.POST_RETRY_CEILING_SEC``), i.e. ~360 lines in
+        one 30-minute measurement, which is this feature's ORDINARY case rather
+        than an edge one. Logging every one at INFO would re-create the journal
+        spam #2791 removed one commit earlier. The count is not lost: the
+        release/expiry lines report it as ``declined_observations``.
+        """
+        with self._lock:
+            now = self._clock()
+            self._expire_locked(now)
+            if self._owner is None:
+                return None
+            self._declines += 1
+            return self._owner, self._declines == 1
 
     def snapshot(self) -> dict[str, Any]:
         """The ``/state.measurement`` projection."""
@@ -306,6 +355,10 @@ def held() -> bool:
 
 def owner() -> str | None:
     return _hold.owner()
+
+
+def record_declined_observation() -> tuple[str, bool] | None:
+    return _hold.record_declined_observation()
 
 
 def snapshot() -> dict[str, Any]:

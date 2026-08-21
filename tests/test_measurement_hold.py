@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
@@ -365,6 +366,118 @@ def test_a_held_measurement_declines_source_observed_volume(control_server):
     assert all(call[0] != "set" for call in fake.calls), fake.calls
 
 
+def _decline_records(caplog) -> list[logging.LogRecord]:
+    return [
+        r for r in caplog.records
+        if "event=volume.observation_declined" in r.getMessage()
+    ]
+
+
+def test_repeated_declines_log_once_at_info_then_debug(control_server, caplog):
+    """The transition is the signal; the repetition is journal spam.
+
+    The declined caller is the USB volume bridge, which re-presents the host's
+    slider on a backoff schedule for as long as the decline lasts — ~720/hour
+    at its 5 s ceiling, so ~360 lines in one 30-minute measurement. That is
+    this feature's ORDINARY case, and INFO on every one would re-create exactly
+    the journal spam #2791 removed one commit earlier (whose own log-level test
+    is structurally blind to this path, because this path returns before
+    reaching event=volume.set).
+
+    Mutation-verified: dropping the `level=` argument (back to the default
+    INFO) makes the level sequence assertion fail.
+    """
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        for _ in range(5):
+            status, body = _post(
+                f"{base}/volume/set", {"percent": 91, "source": "usbsink"},
+            )
+            assert status == 200
+            assert body["observation_applied"] is False
+
+    records = _decline_records(caplog)
+    assert len(records) == 5, "every decline is still recorded, just not at INFO"
+    assert [r.levelno for r in records] == [logging.INFO] + [logging.DEBUG] * 4
+
+
+def test_a_new_hold_gets_its_own_info_line(control_server, caplog):
+    """Per HOLD, not per process: the next measurement announces itself again."""
+    base, _ = control_server
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        for owner in ("seat-level", "correction-measurement"):
+            _post(f"{base}/measurement/hold", {"owner": owner})
+            _post(f"{base}/volume/set", {"percent": 91, "source": "usbsink"})
+            _post(f"{base}/volume/set", {"percent": 92, "source": "usbsink"})
+            _post(f"{base}/measurement/release", {"owner": owner})
+
+    records = _decline_records(caplog)
+    assert [r.levelno for r in records] == [
+        logging.INFO, logging.DEBUG,   # seat-level's hold
+        logging.INFO, logging.DEBUG,   # a genuinely new hold
+    ]
+
+
+def test_a_renewal_does_not_re_announce(control_server, caplog):
+    """A 30-minute session renews ~30 times and is still ONE hold."""
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        _post(f"{base}/volume/set", {"percent": 91, "source": "usbsink"})
+        _post(f"{base}/measurement/hold", {"owner": "seat-level"})  # renewal
+        _post(f"{base}/volume/set", {"percent": 92, "source": "usbsink"})
+
+    assert [r.levelno for r in _decline_records(caplog)] == [
+        logging.INFO, logging.DEBUG,
+    ]
+
+
+def test_the_release_line_reports_what_the_demotion_suppressed(control_server, caplog):
+    """The suppressed volume is not lost — it is a number on the way out."""
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+    for _ in range(4):
+        _post(f"{base}/volume/set", {"percent": 91, "source": "usbsink"})
+
+    with caplog.at_level(
+        logging.DEBUG, logger="jasper.control.measurement_hold",
+    ):
+        _post(f"{base}/measurement/release", {"owner": "seat-level"})
+
+    released = [
+        r for r in caplog.records
+        if "event=measurement.hold_released" in r.getMessage()
+    ]
+    assert len(released) == 1
+    assert "declined_observations=4" in released[0].getMessage()
+
+
+def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):
+    """Nit: guard the decline path's asyncio.run like its sibling _get_volume.
+
+    A read failure must not return 200 carrying a half-built payload.
+    """
+    import jasper.control.server as srv_mod
+
+    base, _ = control_server
+    _post(f"{base}/measurement/hold", {"owner": "seat-level"})
+
+    def exploding_read():
+        raise RuntimeError("persistence unreadable")
+
+    monkeypatch.setattr(srv_mod, "_read_volume_state", exploding_read)
+
+    status, body = _post(
+        f"{base}/volume/set", {"percent": 91, "source": "usbsink"},
+    )
+    assert status == 502
+    assert "persistence unreadable" in body["error"]
+
+
 def test_an_authoritative_write_still_lands_while_held(control_server):
     """A human at the speaker is not locked out. This is isolation, not a lockout."""
     base, fake = control_server
@@ -539,8 +652,10 @@ async def test_an_unreachable_jasper_control_is_fail_soft(monkeypatch, caplog):
         ran = True
 
     assert ran is True, "an unreachable jasper-control must not refuse the window"
-    # No release attempt: we never held it.
-    assert calls == ["/measurement/hold"]
+    # No release attempt: nothing was ever taken, so there is nothing to give
+    # back. (The retry loop below may add further ACQUIRE attempts on a longer
+    # window; what must never appear here is a release.)
+    assert "/measurement/release" not in calls
 
 
 async def test_a_non_409_refusal_is_fail_soft_too(monkeypatch):
@@ -557,7 +672,108 @@ async def test_a_non_409_refusal_is_fail_soft_too(monkeypatch):
         ran = True
 
     assert ran is True
-    assert [path for path, _ in calls] == ["/measurement/hold"]
+    assert "/measurement/release" not in [path for path, _ in calls]
+
+
+async def test_a_failed_first_acquire_is_retried_until_it_lands(monkeypatch):
+    """The refresh task is armed even when the FIRST acquire never landed.
+
+    jasper-control is restarted by every deploy and is not socket-activated, so
+    one connection-refused at the top of a window is an ordinary event. Gating
+    the refresh task on that single attempt would let a window run for up to
+    MAX_WALL_CLOCK_CEILING_S with the hold never taken — /state.measurement
+    reporting nothing, the doctor seeing nothing, and no cross-process mutex —
+    off ONE lost round trip against a daemon that came back seconds later.
+
+    Mutation-verified: restoring `if hold_acquired:` around the
+    `asyncio.create_task(_refresh_measurement_hold())` makes this time out on
+    `landed`, and the release assertion fails with it.
+    """
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.01)
+    calls: list[tuple[str, dict]] = []
+    landed = asyncio.Event()
+
+    async def restarting_daemon(path: str, body: dict) -> tuple[int, dict]:
+        calls.append((path, body))
+        acquires = [p for p, _ in calls if p == "/measurement/hold"]
+        if path == "/measurement/hold" and len(acquires) == 1:
+            raise OSError("connection refused")  # jasper-control mid-restart
+        if path == "/measurement/hold":
+            landed.set()
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    monkeypatch.setattr(
+        coordinator, "_measurement_hold_command", restarting_daemon,
+    )
+
+    async with measurement_window(
+        skip_voice_pause=True, skip_music_isolation=True, gate_owner="seat-level",
+    ):
+        await wait_signalled(landed, "measurement hold taken on retry")
+
+    # The retry took cleanup responsibility with it, so the window gives the
+    # hold back rather than leaving it to lapse on its TTL.
+    assert calls[-1] == ("/measurement/release", {"owner": "seat-level"})
+
+
+async def test_a_soft_renewal_failure_keeps_cleanup_responsibility(monkeypatch):
+    """A lost renewal response may still have landed, so we still release.
+
+    The same rule ``measurement_gate_cleanup_required`` follows: responsibility,
+    once taken, is not dropped by a failure that cannot prove the hold is gone.
+    Only a 409 — which proves a DIFFERENT owner has it — drops it.
+    """
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_RETRY_SEC", 0.01)
+    calls: list[tuple[str, dict]] = []
+    failed_twice = asyncio.Event()
+
+    async def renewals_fail(path: str, body: dict) -> tuple[int, dict]:
+        calls.append((path, body))
+        acquires = [p for p, _ in calls if p == "/measurement/hold"]
+        if path == "/measurement/hold" and len(acquires) > 1:
+            if len(acquires) >= 3:
+                failed_twice.set()
+            raise OSError("connection reset")
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", renewals_fail)
+
+    async with measurement_window(
+        skip_voice_pause=True, skip_music_isolation=True, gate_owner="seat-level",
+    ):
+        await wait_signalled(failed_twice, "two renewals failed softly")
+
+    assert calls[-1] == ("/measurement/release", {"owner": "seat-level"})
+
+
+async def test_a_409_during_renewal_drops_cleanup_responsibility(monkeypatch):
+    """Our lease lapsed and somebody else took it — releasing would un-gate them."""
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+    calls: list[tuple[str, dict]] = []
+    stolen = asyncio.Event()
+
+    async def stolen_on_renewal(path: str, body: dict) -> tuple[int, dict]:
+        calls.append((path, body))
+        acquires = [p for p, _ in calls if p == "/measurement/hold"]
+        if path == "/measurement/hold" and len(acquires) > 1:
+            stolen.set()
+            return 409, {"error": "a measurement is already in progress "
+                                  "(owner=correction-measurement)"}
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    monkeypatch.setattr(
+        coordinator, "_measurement_hold_command", stolen_on_renewal,
+    )
+
+    async with measurement_window(
+        skip_voice_pause=True, skip_music_isolation=True, gate_owner="seat-level",
+    ):
+        await wait_signalled(stolen, "the hold was taken by another owner")
+        # Let the refresh task run its post-409 teardown before we exit.
+        await asyncio.sleep(0)
+
+    assert "/measurement/release" not in [path for path, _ in calls]
 
 
 async def test_the_window_renews_the_hold_on_the_shared_cadence(monkeypatch):

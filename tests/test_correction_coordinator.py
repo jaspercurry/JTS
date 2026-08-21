@@ -485,14 +485,34 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
     the test host is. Every acquire after the entering one burns the next
     cost from ``acquire_costs`` (cycled) and then fails, which is how a mux
     round trip that consumes part or all of its deadline is expressed.
+
+    **Only the GATE ladder's sleeps may move that clock.** One modelled clock
+    is shared by every task in the process, so a concurrent lease's ordinary
+    ``sleep`` would be *added* to the ladder's timeline and shift the very
+    decision point being measured — real sleeps overlap, this harness's single
+    counter makes them additive. The volume-hold lease renews on its own
+    schedule and is deliberately un-gated on its first acquire (a window must
+    keep retrying a restarting jasper-control), so it always has a live task
+    here. It is excluded by identifying its coroutine at creation; if that
+    coroutine is ever renamed, ``hold_task`` stays empty and the assertion
+    below fails loudly rather than the ladder silently mis-measuring.
     """
 
     clock = {"t": 0.0}
     aborted: list[float] = []
     real_sleep = asyncio.sleep
+    real_create_task = asyncio.create_task
+    hold_task: list[asyncio.Task] = []
+
+    def tracking_create_task(coro, **kwargs):
+        task = real_create_task(coro, **kwargs)
+        if getattr(coro, "__name__", "") == "_refresh_measurement_hold":
+            hold_task.append(task)
+        return task
 
     async def fake_sleep(delay, *args, **kwargs):
-        clock["t"] += float(delay)
+        if not hold_task or asyncio.current_task() is not hold_task[0]:
+            clock["t"] += float(delay)
         await real_sleep(0)  # yield without advancing the modelled clock
 
     class _Clock:
@@ -518,11 +538,9 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
             super().abort(fallback)
 
     async def hold_unavailable(path: str, body: dict) -> tuple[int, dict]:
-        # No volume hold in THIS simulation, so no hold-renewal task exists.
-        # `fake_sleep` advances one shared modelled clock, so any concurrent
-        # task's sleep would be added to the gate ladder's own timeline and
-        # move the very decision point being measured. Real sleeps run
-        # concurrently; only this harness's single clock makes them additive.
+        # This simulation is about the MUX ladder; the volume hold is not part
+        # of it. Its task still exists and still sleeps (see the docstring) —
+        # `fake_sleep` is what keeps those sleeps off the ladder's clock.
         raise OSError("jasper-control not reachable in this simulation")
 
     monkeypatch.setattr(
@@ -532,6 +550,7 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
     monkeypatch.setattr(coordinator, "time", _Clock)
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(asyncio, "create_task", tracking_create_task)
 
     async def drive() -> None:
         never = asyncio.Event()  # only the abort ends the body
@@ -543,6 +562,10 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
     with pytest.raises((MeasurementWindowError, asyncio.CancelledError)):
         asyncio.run(drive())
 
+    assert hold_task, (
+        "the volume-hold refresh coroutine was not recognised, so its sleeps "
+        "were charged to the gate ladder's clock — rename in coordinator.py?"
+    )
     assert aborted, "the ladder never aborted"
     return aborted[0]
 

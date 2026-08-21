@@ -2360,12 +2360,21 @@ The HTTP coordinator at `jasper/correction/coordinator.py` is an
 async context manager:
 ```python
 async with measurement_window():
-    # 1. mux TEST_SELECT correction correction-measurement; require owner + gate
-    # 2. UDS MEASURE_PAUSE → voice_daemon
-    # 3. renew the mux lease and the voice lease while healthy
-    # 4. yield (caller does the sweep + analysis + filter design)
-    # 5. UDS MEASURE_RESUME + verified owner-scoped TEST_RELEASE (finally)
+    # 1. POST /measurement/hold → jasper-control; 409 = another measurement
+    #    owns the speaker (the cross-process mutex), so this refuses
+    # 2. mux TEST_SELECT correction correction-measurement; require owner + gate
+    # 3. UDS MEASURE_PAUSE → voice_daemon
+    # 4. renew all three leases while healthy
+    # 5. yield (caller does the sweep + analysis + filter design)
+    # 6. UDS MEASURE_RESUME, verified owner-scoped TEST_RELEASE, then
+    #    POST /measurement/release — LIFO, all in finally
 ```
+
+The volume hold is what stops jasper-control applying **source-observed**
+volume writes (a host moving its USB slider) into the fader a measurement is
+holding; authoritative writes stay allowed. It is taken first and released
+last, and like the other two it self-expires
+(`measurement_hold.MEASUREMENT_HOLD_TTL_SEC`) if the holder dies.
 
 **Why not a new `jasper-coordinator` daemon?** The patterns we
 need already exist:
@@ -2719,10 +2728,13 @@ sees a chart, taps "Apply," next song plays through corrected DSP.
 
 Concrete changes:
 - `jasper/correction/coordinator.py`: `measurement_window()` async
-  context manager. Acquires mux's owner-scoped, leased correction gate, which
+  context manager. Takes jasper-control's volume-observation hold (the
+  cross-process mutex; a 409 means another measurement owns the speaker), then
+  mux's owner-scoped, leased correction gate, which
   excludes all music lanes without stopping their daemons. Sends
   `MEASURE_PAUSE` over UDS to voice_daemon. On exit (including exceptions):
-  sends `MEASURE_RESUME` and strictly releases its own mux gate.
+  sends `MEASURE_RESUME`, strictly releases its own mux gate, and releases the
+  volume hold last.
 - `jasper/voice_daemon.py`: handle `MEASURE_PAUSE` / `MEASURE_RESUME`
   in `_handle_command()`. Set `self._measurement_active = asyncio.Event()`.
   WakeLoop's main loop awaits `not self._measurement_active.is_set()`
