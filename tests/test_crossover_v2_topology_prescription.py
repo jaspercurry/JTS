@@ -21,6 +21,7 @@ reached.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +47,8 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
     TopologyPrescription,
     TopologyPrescriptionRefused,
+    apply_topology_pin,
+    candidate_topology,
     read_topology_prescription,
     topology_prescription_from_mapping,
     topology_prescription_response_format,
@@ -801,17 +804,145 @@ def test_the_order_2_arm_would_still_be_refused_at_a_legal_corner():
     assert excinfo.value.reason == TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT
 
 
+def test_a_candidates_topology_is_read_off_its_own_preset():
+    """The household surface reports what the CANDIDATE crosses at.
+
+    Not what a session believes it asked for. On a pinned round the two agree
+    by construction, and this is the reading that keeps saying so rather than
+    assuming it — a candidate built at one corner and labelled with another is
+    the incoherence the whole pin exists to prevent, so the label comes off the
+    graph.
+    """
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class _Preset:
+        crossover_regions: tuple
+
+    @dataclasses.dataclass(frozen=True)
+    class _Frozen:
+        id: str
+        fc_hz: float
+        order: int
+        lower_driver: str = "woofer"
+        upper_driver: str = "tweeter"
+
+    candidate = SimpleNamespace(
+        source_preset=_Preset((_Frozen("woofer_tweeter_2200hz", 2200.0, 8),)),
+    )
+    assert candidate_topology(candidate) == {
+        "fc_hz": 2200.0,
+        "order": 8,
+        # Derived from THIS candidate's order, never a constant: order 8 is 48
+        # dB/octave, and a reader that hardcoded the common order-4 answer would
+        # tell a household its 48 dB/octave crossover was 24.
+        "slope_db_per_octave": 48.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "regions",
+    [
+        (),
+        None,
+    ],
+)
+def test_a_candidate_with_no_crossover_region_names_no_corner(regions):
+    """``sections_by_role`` already reads an absent region as "this role runs
+    full range". There is no corner to name, and inventing one would be the
+    guess that function refuses to make."""
+    candidate = SimpleNamespace(
+        source_preset=SimpleNamespace(crossover_regions=regions),
+    )
+    assert candidate_topology(candidate) is None
+
+
+def test_a_candidate_with_no_preset_at_all_names_no_corner():
+    """The duck-typed read must not raise on a stand-in that carries none — a
+    ``/state`` projection is fail-soft, and a missing corner is honestly absent
+    rather than an exception on a snapshot path."""
+    assert candidate_topology(SimpleNamespace()) is None
+    assert candidate_topology(None) is None
+
+
+@pytest.mark.parametrize("order", ["4", 4.0, True, None])
+def test_a_candidate_whose_order_is_unreadable_names_no_corner(order):
+    """Half a topology is worse than none on a household surface: a corner with
+    no trustworthy slope would render a number nobody can check."""
+    candidate = SimpleNamespace(
+        source_preset=SimpleNamespace(
+            crossover_regions=(SimpleNamespace(fc_hz=2200.0, order=order),),
+        ),
+    )
+    assert candidate_topology(candidate) is None
+
+
+def test_applying_no_pin_returns_the_very_same_preset():
+    """The automatic path must not rebuild its own crossover regions.
+
+    ``is`` and not ``==``: an equal copy would still be a new object every
+    ordinary round, and the cheapest way to be sure nothing was re-cornered is
+    to be handed the same object back.
+    """
+    preset = SimpleNamespace(crossover_regions=())
+    assert apply_topology_pin(None, preset=preset, fc_hz=INCUMBENT_HZ) == (
+        preset, INCUMBENT_HZ,
+    )
+    assert apply_topology_pin(None, preset=preset, fc_hz=INCUMBENT_HZ)[0] is preset
+
+
+def test_applying_a_pin_moves_the_preset_and_the_corner_together():
+    """One decision, both halves — the thing two hand-written call sites drifted
+    apart on before this function existed."""
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class _Preset:
+        crossover_regions: tuple
+
+    @dataclasses.dataclass(frozen=True)
+    class _Frozen:
+        id: str
+        fc_hz: float
+        order: int
+        lower_driver: str = "woofer"
+        upper_driver: str = "tweeter"
+
+    pinned = _read(_pin(2200.0, order=8))
+    assert pinned is not None
+    preset = _Preset((_Frozen("woofer_tweeter_1649hz", INCUMBENT_HZ, 4),))
+    moved, corner = apply_topology_pin(
+        pinned, preset=preset, fc_hz=INCUMBENT_HZ,
+    )
+    assert corner == 2200.0
+    region = moved.crossover_regions[0]
+    assert (region.fc_hz, region.order) == (2200.0, 8)
+    assert region.id == "woofer_tweeter_2200hz"
+    # …and the corner the caller gets back is the region's own, so a session
+    # opened from this pair cannot hold two crossovers.
+    assert corner == region.fc_hz
+
+
 def test_the_announced_capture_program_follows_the_corner_it_is_built_at():
     """WHY a pinned round's capture plan must be built at the pinned corner.
 
     The session and the capture spec are built from what used to be one number,
     and a pin that moved only the session would leave two corners in one round.
-    That is not cosmetic below 300 Hz: ``build_verify_program`` takes the summed
-    sweep's low bound from ``min(VERIFY_F_LO_HZ, fc / 2)``, and the
-    entry-baseline program the plan announces is stage 2's own anchor — the pair
-    ``program_for_phase`` compares. Above 300 Hz the divergence is inert, which
-    is exactly why it would have survived unnoticed, so the dependence is
-    pinned here rather than argued about.
+    The entry-baseline program the plan announces is stage 2's own anchor — the
+    pair ``program_for_phase`` compares — and ``build_verify_program`` is
+    fc-dependent in TWO places:
+
+    * the summed sweep's low bound, ``min(VERIFY_F_LO_HZ, fc / 2)``, live below
+      fc = 300 Hz;
+    * the leading pilot's high bound,
+      ``min(VERIFY_PILOT_F_HI_HZ, fc / VERIFY_PILOT_FC_CLEARANCE_RATIO)``, live
+      below fc = **2000 Hz**.
+
+    The second is the one that matters, and an earlier version of this test
+    missed it: it covers most of a two-way's legal pin band — all of jts3's
+    1600-2500 Hz up to 2000 — so the two-corner bug was live on the very rounds
+    this door exists to run, not the sub-300 Hz curiosity the first reading
+    called it. Both are pinned here so neither can be argued away again.
 
     The web boundary now passes its own ``session_fc_hz`` / ``verify_fc_hz`` to
     both spec builders. That WIRING is not covered by a test: the builders sit
@@ -821,17 +952,37 @@ def test_the_announced_capture_program_follows_the_corner_it_is_built_at():
     """
     from jasper.audio_measurement.program import (
         VERIFY_F_LO_HZ,
+        VERIFY_PILOT_F_HI_HZ,
+        VERIFY_PILOT_FC_CLEARANCE_RATIO,
         build_verify_program,
     )
 
-    # Above 2 * VERIFY_F_LO_HZ the corner does not move the bound…
-    high = build_verify_program(2400.0).segment("sweep_verify")
-    assert high.f1_hz == VERIFY_F_LO_HZ
-    # …and below it, it does — which is the case the two-corner bug would have
-    # shipped a wrong program for.
-    low = build_verify_program(250.0).segment("sweep_verify")
-    assert low.f1_hz == 125.0
-    assert low.f1_hz != high.f1_hz
+    def _pilot_hi(fc_hz: float) -> float:
+        program = build_verify_program(fc_hz, leading_pilot_gains_db=(-30.0, -20.0))
+        pilots = [
+            seg for seg in program.segments
+            if seg.f2_hz is not None and seg.segment_id != "sweep_verify"
+        ]
+        assert pilots, "the verify program announces no leading pilot"
+        return float(pilots[0].f2_hz)
+
+    # THE SWEEP's low bound: inert above 300 Hz, live below it.
+    assert build_verify_program(2400.0).segment("sweep_verify").f1_hz == VERIFY_F_LO_HZ
+    assert build_verify_program(250.0).segment("sweep_verify").f1_hz == 125.0
+
+    # THE PILOT's high bound: live all the way to 2000 Hz, which is what puts
+    # the divergence inside jts3's own declared 1600-2500 Hz pin band.
+    clamped_at = VERIFY_PILOT_F_HI_HZ * VERIFY_PILOT_FC_CLEARANCE_RATIO
+    assert clamped_at == 2000.0
+    assert _pilot_hi(SEARCH_BAND_HZ[0]) == 640.0
+    assert _pilot_hi(INCUMBENT_HZ) == INCUMBENT_HZ / VERIFY_PILOT_FC_CLEARANCE_RATIO
+    assert _pilot_hi(1800.0) == 720.0
+    # …and only from 2000 Hz up does it stop moving.
+    assert _pilot_hi(2000.0) == VERIFY_PILOT_F_HI_HZ
+    assert _pilot_hi(SEARCH_BAND_HZ[1]) == VERIFY_PILOT_F_HI_HZ
+    # The incumbent and a legal pin inside the same band announce DIFFERENT
+    # programs — the whole reason the spec must take the round's own corner.
+    assert _pilot_hi(INCUMBENT_HZ) != _pilot_hi(1800.0)
 
 
 def test_an_arm_inside_the_declared_band_at_a_declared_slope_is_admitted():

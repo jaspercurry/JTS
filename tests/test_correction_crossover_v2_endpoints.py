@@ -12435,13 +12435,15 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
     crossover it deliberately replaced, and every number would look like a
     realization defect.
 
-    Tapped at ``recornered_preset`` because that call IS the re-point: a stage 2
-    that skipped it would simply never reach this seam. The rehydration test
-    above proves the record survives the round trip; this proves the record is
-    then USED, which is a different claim and the one a lossless-but-ignored
-    record would still pass.
+    Tapped at ``apply_topology_pin`` because that call IS the re-point — the
+    one decision both stages take, owned by the module that owns the pin. The
+    rehydration test above proves the record survives the round trip; this
+    proves the record is then USED, which is a different claim and the one a
+    lossless-but-ignored record would still pass.
     """
-    from jasper.active_speaker.crossover_v2 import fc_sweep as fc_sweep_mod
+    from jasper.active_speaker.crossover_v2 import (
+        topology_prescription as topology_mod,
+    )
 
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
@@ -12463,14 +12465,18 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
     })
 
     seen: dict[str, Any] = {}
-    real = fc_sweep_mod.recornered_preset
+    real = topology_mod.apply_topology_pin
 
-    def _recorner(preset, *, fc_hz, order=None):
-        seen["fc_hz"], seen["order"] = fc_hz, order
-        real(preset, fc_hz=fc_hz, order=order)
+    def _apply(prescription, *, preset, fc_hz):
+        # Run the REAL helper first, so a pin it refused to move would be
+        # caught here rather than masked by the sentinel.
+        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
+        region = moved_preset.crossover_regions[0]
+        seen["fc_hz"], seen["order"] = moved_fc, region.order
+        seen["region_fc_hz"] = region.fc_hz
         raise _StoppedAtTheTap("stage 2 re-pointed at the pin")
 
-    monkeypatch.setattr(fc_sweep_mod, "recornered_preset", _recorner)
+    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
 
     with pytest.raises(_StoppedAtTheTap):
         v2host.prepare_v2_verify(
@@ -12478,6 +12484,9 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
         )
 
     assert seen["fc_hz"] == _PIN_FC_HZ
+    # The PRESET moved too, not just the scalar: the graph VERIFY grades is
+    # this topology's, corner and order both.
+    assert seen["region_fc_hz"] == _PIN_FC_HZ
     assert seen["order"] == _PIN_ORDER
     # …and the incumbent is a different number, so this cannot pass by accident.
     assert FC_HZ != _PIN_FC_HZ
@@ -12486,12 +12495,19 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
 def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
     """The control for the test above, and the reason its tap is honest.
 
-    An ordinary round's stage 2 must never touch ``recornered_preset`` — it
-    opens at the speaker's own commissioned corner, exactly as it always has.
-    Without this, a stage 2 that re-cornered unconditionally would still pass
-    the pinned assertion while quietly rewriting every ordinary round's preset.
+    An ordinary round's stage 2 must open at the speaker's own commissioned
+    corner, exactly as it always has. Without this, a stage 2 that re-cornered
+    unconditionally would still pass the pinned assertion above while quietly
+    rewriting every ordinary round's preset.
+
+    Asserted on what the helper RETURNS rather than on whether it was called:
+    ``apply_topology_pin`` is called on every round by design — it is the one
+    place absence is turned into "change nothing" — so "was it called" would be
+    a test of the wiring's shape instead of its answer.
     """
-    from jasper.active_speaker.crossover_v2 import fc_sweep as fc_sweep_mod
+    from jasper.active_speaker.crossover_v2 import (
+        topology_prescription as topology_mod,
+    )
 
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
@@ -12501,9 +12517,12 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
     monkeypatch.setattr(
         v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
     )
+    # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
+    # ``prepare_v2_verify``, so arming it to fail would stop this run short of
+    # the seam it is about.
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
-        lambda *_a: pytest.fail("reached the bundle; the tap should fire first"),
+        lambda *_a: (SimpleNamespace(), "bundle-stage2-ordinary"),
     )
     v2host.save_v2_state({
         "session_id": "cap_applied_ordinary_round",
@@ -12512,14 +12531,25 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
         "verify_priors": {},
     })
 
-    def _recorner(*_a, **_kw):
-        pytest.fail("an unpinned round re-cornered its own preset")
+    seen: dict[str, Any] = {}
+    real = topology_mod.apply_topology_pin
 
-    monkeypatch.setattr(fc_sweep_mod, "recornered_preset", _recorner)
+    def _apply(prescription, *, preset, fc_hz):
+        moved_preset, moved_fc = real(prescription, preset=preset, fc_hz=fc_hz)
+        seen["prescription"] = prescription
+        seen["preset_unchanged"] = moved_preset is preset
+        seen["fc_hz"] = moved_fc
+        raise _StoppedAtTheTap("stage 2 resolved its topology")
 
-    # The bundle-open fail-arm is what stops this run; reaching it proves the
-    # preparer walked past the re-point without taking it.
-    with pytest.raises(BaseException):
+    monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
+
+    with pytest.raises(_StoppedAtTheTap):
         v2host.prepare_v2_verify(
             {}, status={}, run_async=None, camilla_factory=None,
         )
+
+    assert seen["prescription"] is None
+    # The SAME preset object back, not an equal copy: an unpinned round does
+    # not rebuild its crossover regions at all.
+    assert seen["preset_unchanged"] is True
+    assert seen["fc_hz"] == FC_HZ

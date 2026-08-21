@@ -109,6 +109,9 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_WIRED,
 )
 from jasper.active_speaker.crossover_v2.fc_sweep import fc_sweep_result_wait_s
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    candidate_topology,
+)
 from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
@@ -3302,35 +3305,6 @@ def _candidate_octave_reasons(
     return out
 
 
-def _candidate_crossover(candidate: Any) -> dict[str, Any] | None:
-    """WHERE this candidate crosses, read off the candidate's OWN preset.
-
-    Not off the session's ``fc_hz``, and the difference is the whole point: a
-    candidate carries the preset it was realized with, so this reports the
-    crossover the reviewed graph actually contains rather than the one the
-    session believes it asked for.  On a topology-pinned round those agree by
-    construction (the request boundary opened the session at the pin), and this
-    is the reading that keeps saying so rather than assuming it.
-
-    ``None`` when the candidate declares no crossover region, which
-    ``branch_chain.sections_by_role`` already treats as "this role runs full
-    range" — there is no corner to name, and inventing one would be the same
-    guess that function refuses to make.
-    """
-    regions = getattr(getattr(candidate, "source_preset", None), "crossover_regions", ())
-    region = next(iter(regions or ()), None)
-    if region is None:
-        return None
-    fc_hz, order = _finite(getattr(region, "fc_hz", None)), getattr(region, "order", None)
-    if fc_hz is None or not isinstance(order, int) or isinstance(order, bool):
-        return None
-    # The slope is DERIVED here rather than sent as a second number, on the
-    # ``order * 6`` relation ``confirmed_protection_sections`` and
-    # ``TopologyPrescription.slope_db_per_octave`` already share: one fact, and
-    # the browser renders whichever of the two words a household reads better.
-    return {"fc_hz": fc_hz, "order": order, "slope_db_per_octave": order * 6.0}
-
-
 def _candidate_summary(
     candidate: Any, *, topology_pinned: bool = False,
 ) -> dict[str, Any] | None:
@@ -3351,11 +3325,11 @@ def _candidate_summary(
         "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
         # WHERE this candidate crosses, and whether the round was PINNED there.
-        # The corner comes off the candidate; the bit comes from the session,
-        # because a corner cannot say who chose it — and the household copy
-        # must never word a pinned corner as a measured result, the same rule
-        # ``polarity_pinned`` below carries for the same reason.
-        "crossover": _candidate_crossover(candidate),
+        # The corner comes off the candidate, read by the module that owns the
+        # shape; the bit comes from the session, because a corner cannot say
+        # who chose it — and the household copy must never word a pinned corner
+        # as a measured result, the same rule ``polarity_pinned`` below carries.
+        "crossover": candidate_topology(candidate),
         "crossover_pinned": bool(topology_pinned),
         "alignment": candidate.alignment.to_dict(),
         # Threaded through for the conductor's own trust gate
@@ -7343,12 +7317,12 @@ def prepare_v2_session(
         read_alignment_prescription,
     )
     from jasper.active_speaker.crossover_v2.fc_sweep import (
-        recornered_preset,
         resolve_fc_search_band,
     )
     from jasper.active_speaker.crossover_v2.topology_prescription import (
         TOPOLOGY_PRESCRIPTION_KEY,
         TopologyPrescriptionRefused,
+        apply_topology_pin,
         read_topology_prescription,
     )
     from jasper.active_speaker.excitation_safety_plan import (
@@ -7482,19 +7456,11 @@ def prepare_v2_session(
                 "the topology prescription was refused "
                 f"({exc.reason}): {exc.detail}"
             ) from exc
-    # What this round actually runs at. A pinned session is opened AT the pin —
-    # preset and corner both — so the fit, the §4.2 de-embedding, the predicted
-    # sum, the emitted graph and VERIFY's design target are all that topology's,
-    # rather than the pin being a label on an incumbent-corner answer. ``None``
-    # leaves both exactly as the context resolved them.
-    session_preset, session_fc_hz = context.preset, context.fc_hz
-    if topology_prescription is not None:
-        session_preset = recornered_preset(
-            context.preset,
-            fc_hz=topology_prescription.fc_hz,
-            order=topology_prescription.order,
-        )
-        session_fc_hz = topology_prescription.fc_hz
+    # What this round actually runs at — one decision, made by the module that
+    # owns the pin and taken identically by the grading stage below.
+    session_preset, session_fc_hz = apply_topology_pin(
+        topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
+    )
     try:
         alignment_prescription = read_alignment_prescription(
             (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
@@ -7617,12 +7583,16 @@ def prepare_v2_session(
         spec = build_v2_session_spec(
             context.roles_bands,
             # THIS round's corner, the same one the conductor above was opened
-            # at. The plan's summed-sweep programs take their low bound from
-            # ``min(VERIFY_F_LO_HZ, fc/2)``, and the entry-baseline program it
-            # announces is stage 2's own anchor — so a plan built at the
-            # incumbent corner while the session solves at a pinned one is two
-            # corners for one round. Inert for any corner above 300 Hz and not
-            # left to be inert.
+            # at. The entry-baseline program this plan announces is stage 2's
+            # own anchor, and ``build_verify_program`` is fc-dependent TWICE:
+            # the sweep's low bound is ``min(VERIFY_F_LO_HZ=150, fc/2)`` (live
+            # below fc = 300) and the leading pilot's high bound is
+            # ``min(VERIFY_PILOT_F_HI_HZ=800, fc/VERIFY_PILOT_FC_CLEARANCE_RATIO
+            # =2.5)`` (live below fc = 2000). So a plan built at the incumbent
+            # corner while the session solves at a pinned one announces a
+            # DIFFERENT program at every corner under 2000 Hz — which is most
+            # of a two-way's legal pin band, jts3's 1600-2500 included, not the
+            # sub-300 Hz curiosity an earlier version of this comment claimed.
             session_fc_hz,
             acknowledgement_binding=acknowledgement_binding,
             plan_shape=plan_shape,
@@ -7908,7 +7878,9 @@ def prepare_v2_verify(
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
-    from jasper.active_speaker.crossover_v2.fc_sweep import recornered_preset
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        apply_topology_pin,
+    )
 
     if session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
@@ -7997,14 +7969,9 @@ def prepare_v2_verify(
     # for not being the crossover it deliberately replaced. Resolved before the
     # session below for the same one-decision reason stage 1 resolves it.
     topology_prescription = topology_prescription_prior_from_state(state)
-    verify_preset, verify_fc_hz = context.preset, context.fc_hz
-    if topology_prescription is not None:
-        verify_preset = recornered_preset(
-            context.preset,
-            fc_hz=topology_prescription.fc_hz,
-            order=topology_prescription.order,
-        )
-        verify_fc_hz = topology_prescription.fc_hz
+    verify_preset, verify_fc_hz = apply_topology_pin(
+        topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
+    )
     # A9, on the line above's route and for its reason, sharpened by one fact
     # that arm did not have to face: ``verify_priors`` is REBUILT from the
     # conductor on every persist, so this is not merely how stage 2 learns what

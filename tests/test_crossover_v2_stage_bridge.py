@@ -493,8 +493,8 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_persisted_verify_priors_carries_exactly_the_thirteen_bridge_keys(monkeypatch):
-    """The write side of the bridge: ``verify_priors`` has THIRTEEN keys.
+def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkeypatch):
+    """The write side of the bridge: ``verify_priors`` has FOURTEEN keys.
 
     Named exhaustively rather than checked for presence, because a new key is a
     deliberate widening of the contract and not an incidental one.
@@ -569,7 +569,17 @@ def test_persisted_verify_priors_carries_exactly_the_thirteen_bridge_keys(monkey
     ignoring it, so a digest nested inside made the whole record unreadable.
     ``""`` on every ordinary round.
 
-    The top-level payload is unchanged by all nine widenings — each new key is
+    **Deliberate widening (topology pin): ``topology_prescription``.** The
+    fourteenth, and the one that carries the most weight per byte: stage 2
+    RE-OPENS its grading session at the topology this names. Without it a
+    pinned round's VERIFY would be graded against the incumbent corner's design
+    target and its overlap band — the applied graph judged for not being the
+    crossover it deliberately replaced. Like the eleventh it must survive a
+    round trip through a reader that refuses unknown fields, which is why it is
+    exactly ``to_dict()`` and why it gets its own key rather than nesting.
+    ``None`` on every ordinary round.
+
+    The top-level payload is unchanged by all ten widenings — each new key is
     nested inside ``verify_priors``, so
     ``test_persisted_payload_top_level_keys_are_the_whole_bridge`` below still
     pins the same set.
@@ -590,6 +600,7 @@ def test_persisted_verify_priors_carries_exactly_the_thirteen_bridge_keys(monkey
         "alignment_objective",
         "blend_prescription",
         "blend_prescription_sha256",
+        "topology_prescription",
     }
 
 

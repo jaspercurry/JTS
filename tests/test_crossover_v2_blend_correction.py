@@ -1200,6 +1200,11 @@ def _blend_record(result: bc.BlendCorrection) -> dict:
     evaluation = SimpleNamespace(blend=result, region_benefit=None)
     evidence = SimpleNamespace(
         delta_probe=None, position_residuals=(), alignment_prescription=None,
+        # Stated rather than left to a ``getattr`` in the reader: the
+        # coordinator reads both provenance records as plain attributes, and
+        # making only the newer one lenient would buy a stand-in's
+        # convenience with an asymmetry in the code under test.
+        topology_prescription=None,
     )
     return coordinator._round_measurements(evidence, evaluation)
 

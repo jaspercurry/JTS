@@ -70,21 +70,20 @@ record instead, so a receipt can say the arm was above it.
 the measurement frame.  A second door onto the same knob is how two halves of
 one decision enter by two paths and disagree; :data:`_PRESCRIPTION_FIELDS`
 refuses the word outright rather than ignoring it, so a prescriber that put it
-here learns at the tap instead of running an arm whose basin nobody pinned.
+here learns at the tap.
 
-**Fail-closed, never clamped.**  Every refusal below names its reason and
-raises.  An unfittable or inadmissible pin is not pulled to the nearest legal
-corner and run: the operator asked for an arm, and a silently different arm is
-worse than no arm, because its receipt would carry the arm's name.
-
-**Absence is the automatic path, and it is never inherited.**  ``None`` from
-:func:`read_topology_prescription` means no pin was made, and every byte of the
-ordinary selection is unchanged.  Unlike the session tier — which a re-measure
-deliberately inherits from the lapsed session (#2639) — a prescription is
-per-round and explicit.  Inheriting one would let an operator's "measure again"
-silently re-run an arm they did not ask for, which is the same class of
-dishonesty as clamping, and here it would re-run it at a corner the speaker is
-not commissioned for.
+**Fail-closed, never clamped, never inherited — one rule, three edges.**  The
+operator asked for a NAMED arm, so a silently different arm is worse than no
+arm: its receipt would carry the name of an arm that did not run.  That single
+sentence is the reason for all three of these, and they are stated together so
+it is not restated three times.  An inadmissible pin raises rather than being
+pulled to the nearest legal corner (every refusal below names its reason).  An
+unfittable one refuses rather than degrading.  And ``None`` from
+:func:`read_topology_prescription` is the automatic path with every byte of the
+ordinary selection unchanged — never a value inherited from a lapsed session's
+durable state the way the session tier deliberately is (#2639), because a
+"measure again" that re-ran an arm nobody asked for would put that arm's name
+on a round at a corner this speaker is not commissioned for.
 
 **One parser, two gate policies.**  :func:`read_topology_prescription` is the
 REQUEST gate — shape, provenance, and every bound — and it is the only place a
@@ -123,6 +122,7 @@ from .fc_sweep import (
     FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_OUTSIDE_SEARCH_BAND,
     _fc_rejection,
+    recornered_preset,
 )
 
 __all__ = [
@@ -131,6 +131,8 @@ __all__ = [
     "TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS",
     "TopologyPrescription",
     "TopologyPrescriptionRefused",
+    "apply_topology_pin",
+    "candidate_topology",
     "read_topology_prescription",
     "topology_prescription_from_mapping",
     "topology_prescription_response_format",
@@ -702,6 +704,72 @@ def topology_prescription_from_mapping(raw: Any) -> TopologyPrescription | None:
             detail=exc.detail,
         )
         return None
+
+
+def apply_topology_pin(
+    prescription: TopologyPrescription | None, *, preset: Any, fc_hz: float,
+) -> tuple[Any, float]:
+    """What a pin DOES to a session's topology: ``(preset, fc_hz)``.
+
+    ``(preset, fc_hz)`` unchanged when there is no pin — the automatic path.
+    Otherwise the same preset re-cornered at the pinned corner and order
+    (:func:`~.fc_sweep.recornered_preset`) and the pinned corner itself.
+
+    **Both stages call this, and that is the whole reason it exists here rather
+    than at the boundary.**  Stage 1 opens the measuring session at the pin;
+    stage 2 re-opens the GRADING session at the same pin, or it hands VERIFY
+    the incumbent design target and grades an applied graph for not being the
+    crossover it deliberately replaced.  Those are two call sites for one
+    decision, and a decision spelled twice is one that drifts — the two would
+    not have to disagree by much before a round was measured at one corner and
+    graded at another.
+
+    Returned as a pair rather than mutating a context because the caller's
+    context is the web host's shape and this module may not know it.
+    """
+    if prescription is None:
+        return preset, float(fc_hz)
+    return (
+        recornered_preset(
+            preset, fc_hz=prescription.fc_hz, order=prescription.order,
+        ),
+        prescription.fc_hz,
+    )
+
+
+def candidate_topology(candidate: Any) -> dict[str, Any] | None:
+    """WHERE one built candidate crosses, read off the candidate's OWN preset.
+
+    Not off any session's ``fc_hz``, and the difference is the point: a
+    candidate carries the preset it was realized with, so this reports the
+    crossover the reviewed graph actually contains rather than the one a caller
+    believes it asked for.  On a pinned round the two agree by construction; this
+    is the reading that keeps saying so rather than assuming it.
+
+    ``None`` when the candidate declares no crossover region, which
+    :func:`~jasper.active_speaker.branch_chain.sections_by_role` already treats
+    as "this role runs full range" — there is no corner to name, and inventing
+    one would be the guess that function refuses to make.
+
+    The slope is DERIVED rather than carried as a second number, on the
+    ``order * 6`` relation :attr:`TopologyPrescription.slope_db_per_octave`
+    already owns, so a household surface can render whichever of the two words
+    reads better without a second source for the same fact.
+
+    Duck-typed on ``source_preset.crossover_regions``: this module does not
+    import the candidate type, exactly as it does not import the preset schema.
+    """
+    regions = getattr(
+        getattr(candidate, "source_preset", None), "crossover_regions", (),
+    )
+    region = next(iter(regions or ()), None)
+    if region is None:
+        return None
+    fc_hz = _optional_number(getattr(region, "fc_hz", None))
+    order = getattr(region, "order", None)
+    if fc_hz is None or isinstance(order, bool) or not isinstance(order, int):
+        return None
+    return {"fc_hz": fc_hz, "order": order, "slope_db_per_octave": order * 6.0}
 
 
 def topology_prescription_response_format() -> dict[str, Any]:
