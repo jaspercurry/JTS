@@ -249,15 +249,16 @@ worked example of getting this wrong and repairing it.
 - **Quote, don't paraphrase.** A claim about what another document,
   module docstring, or recorded ruling says is written by re-reading
   that source at writing time and citing it — never from memory.
-  Every finding in the 2026-08-21 master-plan gate rounds was a
-  paraphrase drifting from its source; not one was a code-symbol
-  claim.
-- **Every write needs a reader.** A field, artifact, or sidecar that
-  production code writes must have a production reader or a ticket
-  naming the intended one. Computed-then-dropped values and
-  write-only stores hide evidence and rot silently (the 7-of-26-key
-  verdict truncation and the write-only position sidecars both hid
-  data the tuning loop needed).
+  Nine of the ten findings across the 2026-08-21 master-plan gate
+  rounds were paraphrases drifting from their sources; no named code
+  symbol was ever wrong.
+- **Every write needs a reader.** A **new** field, artifact, or
+  sidecar ships with its production reader in the same change (the
+  adversarial gate blocks an orphan field); an **existing** orphan
+  write gets a deletion or a ticket naming the intended reader.
+  Write-only stores hide evidence and rot silently (the write-only
+  ambient-report fields and position sidecars both orphaned data the
+  tuning loop needed).
 - **Verify at the user's surface, not at upstream config.** When
   the user references what they observe (a wizard, dashboard,
   HTTP response), verify by hitting that URL or reading the

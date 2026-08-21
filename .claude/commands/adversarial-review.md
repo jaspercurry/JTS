@@ -98,8 +98,8 @@ Simpler-but-hacky is not a simplification.
   named code, not the sentence about it. A claim nothing can pin is itself the
   finding — either it earns a test or it goes. The same rule covers claims
   *about other documents and rulings*: re-derive them from the source text,
-  never from the diff author's paraphrase — every 2026-08-21 master-plan gate
-  finding was a paraphrase drifting from its source.
+  never from the diff author's paraphrase (AGENTS.md "Quote, don't
+  paraphrase").
 
 ## Gate 0 — necessity and complexity (run before detailed correctness)
 
