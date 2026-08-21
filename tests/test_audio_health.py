@@ -444,8 +444,28 @@ def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
     assert "FIRST-ARM waypoint" in note
     assert DEFAULT_OUTPUTD_RING_PATH in note
     assert DEFAULT_OUTPUTD_ACTIVE_RING_PATH in note
-    health = _compose(transport=state)
-    assert health["signal_path"]["headline"] != _PARKED_HEADLINE
+
+    # The note itself moves NOTHING on the card. Pinned as the exact headline
+    # rather than as "not parked": an inequality passes for every wrong headline
+    # too, including a regression that swapped one alarm for another.
+    assert _compose(transport=state)["signal_path"]["headline"] == "Signal path clean"
+
+    # ...and THE REAL WAYPOINT STATE, which the read above does not model.
+    # outputd refuses the crossed pair at startup and parks
+    # (RestartPreventExitStatus=78), so on a box actually sitting here it is not
+    # reporting health at all. That is what the household sees, and it is loud —
+    # the card is not quietly green while the speaker is silent. The note is the
+    # explanation printed beside it, not the alarm.
+    waypoint = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(transport=state),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    assert waypoint["signal_path"]["headline"] == "Final output unavailable"
+    assert waypoint["overall"]["headline"] == "Final output unavailable"
+    assert waypoint["signal_path"]["headline"] != _PARKED_HEADLINE
 
 
 def test_audio_health_reads_the_coupling_doctor_reads(monkeypatch, tmp_path) -> None:

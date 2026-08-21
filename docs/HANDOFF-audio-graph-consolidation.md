@@ -1023,6 +1023,30 @@ next pass instead of sticking. Either half can move first; one pass of the
 path's writer converges the other, and it logs
 `event=fanin.coupling_reconcile result=ring_path_converged`.
 
+**That convergence is ownership-independent, and it has to be.** The auto
+pass returns at step 1 on an operator-pinned box, before `reconcile_coupling`
+— the ring path's only writer — so a pinned box never ran the projection's
+writer at all and a crossed pair was PERMANENT there in both directions.
+That is not a corner: **every armed box on the fleet is pinned** (see step
+1's own note above), so it was the ordinary case, and "one pass from healed"
+was false for exactly the boxes it mattered on. `_converge_outputd_ring_projection`
+now runs on the pinned branch too. It is scoped hard — one key, only under
+the `shm_ring` coupling, no daemon bounced — because the operator marker
+freezes the transport-topology CHOICE while the ring path is derived state
+with exactly one legal value per marker, so converging it overrides nothing
+the operator picked. Under `loopback` outputd runs the `direct` bridge and
+its ring-path allowlist never executes, so the key is inert there and is
+deliberately left alone rather than rewritten.
+
+The waypoint has an owning doctor check: `check_active_ring_path_projection`
+FAILs with the runnable remedy whenever the ring path disagrees with its
+marker under the ring coupling. It reads persisted evidence, not outputd's
+live STATUS, because in its own target state outputd has refused to start —
+`check_outputd_service` returns that systemd failure long before reaching its
+transport comparison, which is why the finding needed an owner of its own.
+It and `check_active_ring_split_transport` partition the coupling space, so
+neither rung of the ladder is unowned and neither is double-reported.
+
 **A refused reconcile leaves the box running exactly as before.** When
 `jasper-audio-hardware-reconcile` rejects a staged `outputd.env` it logs
 `outputd_env_invalid … preserved=1`, then

@@ -2159,3 +2159,63 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
         )
         == ()
     )
+
+
+@pytest.mark.parametrize(
+    "marker,expected_shape",
+    [
+        ("", "shm_ring"),         # the full-range stereo Ring B shape
+        ("1", "shm_ring_active"), # the roleful ACTIVE-ring shape
+    ],
+)
+@pytest.mark.parametrize(
+    "bridge_lines,reported",
+    [
+        # ABSENT resolves to outputd's own default, `direct` — the shape a box
+        # takes when the ring keys were swept but the coupling line was not.
+        ({}, "direct"),
+        # ...and stated explicitly, which is what the loopback branch of
+        # `_outputd_actions` leaves behind mid-flip.
+        ({"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}, "direct"),
+    ],
+)
+def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
+    marker, expected_shape, bridge_lines, reported
+):
+    """Ring A and the post-DSP ring are ONE coupling and must move together.
+
+    The half-flipped box this catches: fan-in is told to write Ring A while
+    outputd is still on its ALSA content lane, so CamillaDSP's capture side and
+    outputd's read side are on different transports and nothing crosses. It is
+    an ERROR under BOTH ring shapes, which is why the marker is parametrized —
+    the guard sits outside the shape branch, and a test pinned to one shape would
+    pass while the other silently lost its guard.
+
+    Kept distinct from the ring-path waypoint deliberately: this is not a
+    projection lagging its source. The bridge is a transport CHOICE with its own
+    writer, no derivation makes it converge, and no ladder rung creates this
+    state — so it refuses rather than notes.
+    """
+    outputd_env = {
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": marker,
+        "JASPER_OUTPUTD_SHM_RING_PATH": (
+            "/dev/shm/jts-ring/active-content.ring"
+            if marker
+            else "/dev/shm/jts-ring/content.ring"
+        ),
+        **bridge_lines,
+    }
+
+    report = audio_plan.transport_coherence_report(
+        coupling="shm_ring", outputd_env=outputd_env
+    )
+
+    assert report.notes == (), report
+    bridge_errors = [e for e in report.errors if "must move together" in e]
+    assert len(bridge_errors) == 1, report.errors
+    assert f"JASPER_OUTPUTD_CONTENT_BRIDGE={reported}" in bridge_errors[0]
+    # The message names the plan the box is actually on, so an operator reading
+    # it knows which half to move.
+    assert audio_plan.transport_topology_for_coupling(
+        "shm_ring", outputd_env=outputd_env
+    ).name == expected_shape

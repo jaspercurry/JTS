@@ -1806,10 +1806,25 @@ def reconcile_auto(
             active_leader_check=active_leader_check,
         )
     else:
+        # An operator-pinned box still converges its ring-path PROJECTION.
+        # `reconcile_coupling` is the projection's only writer, and step 1
+        # returns before it, so without this a pinned box never runs that writer
+        # at all — a crossed marker/path pair is PERMANENT there, in either
+        # direction. That is not a corner: every armed box on the fleet is
+        # pinned (see step 1's note above), so it is the ordinary case.
+        #
+        # The pin freezes the transport-topology CHOICE. This key is not a
+        # choice: outputd's allowlist admits exactly one value for a given
+        # marker, so the path is derived state and converging it overrides
+        # nothing the operator picked — the coupling line, the bridge, and every
+        # daemon are untouched here.
+        projection_converged = _converge_outputd_ring_projection(
+            outputd_env_path, decision.coupling, reason=reason
+        )
         coupling_result = CouplingResult(
             ok=True,
             desired=decision.coupling,
-            changed=False,
+            changed=projection_converged,
             direction="confirm",
         )
 
@@ -5102,6 +5117,79 @@ def _outputd_ring_path_for(outputd_text: str) -> str:
     if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
         return DEFAULT_OUTPUTD_RING_PATH
     return carried
+
+
+def _converge_outputd_ring_projection(
+    outputd_env_path: str | os.PathLike,
+    coupling: str,
+    *,
+    reason: str,
+) -> bool:
+    """Converge the ring-path projection ALONE, ownership-independent.
+
+    The full :func:`_outputd_actions` set is owned-gated because most of it moves
+    the transport: the content bridge, the ring slots, the legacy sweep. The ring
+    PATH is the one member that is not a choice at all — outputd's allowlist
+    admits exactly one value for a given endpoint marker, so
+    :func:`_outputd_ring_path_for` derives it and nothing chooses it. This writes
+    that one key and nothing else, so an operator-frozen box converges its
+    projection without its frozen coupling ever being re-litigated.
+
+    Scoped to :data:`COUPLING_SHM_RING` on purpose. Under ``loopback`` outputd's
+    bridge is ``direct`` and its ring-path allowlist does not run at all
+    (``Config::from_env``, ``rust/jasper-outputd/src/config.rs`` — the check is
+    inside ``if content_bridge_mode == ContentBridgeMode::ShmRing``), so a stale
+    ring path there is inert: there is no crossed pair to heal, and clearing the
+    key would be a transport write on a box whose transport is frozen.
+
+    Writes only; bounces nothing. A moved projection means outputd is not
+    currently running that value — it either refused the crossed pair (exit 78,
+    ``RestartPreventExitStatus``) or has not read it yet — so the durable fix is
+    the file, and every existing trigger (deploy, boot, a sound-card udev event,
+    ``jasper-camilla-recover``'s OnFailure pass, an operator restart) now finds a
+    coherent pair where it used to find a permanently crossed one. Restarting the
+    final output owner from an unattended pass would buy nothing the file has not
+    already bought.
+
+    Returns True when the key moved. Fail-soft: a write error is logged and
+    reported as "did not move" rather than aborting the surrounding auto pass.
+    """
+    if coupling != COUPLING_SHM_RING:
+        return False
+    path = Path(outputd_env_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    derived = _outputd_ring_path_for(text)
+    if resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)) == derived:
+        return False
+    new_text, moved = upsert(text, OUTPUTD_RING_PATH_ENV_VAR, derived)
+    if not moved:
+        return False
+    try:
+        _write_env_text(path, new_text)
+    except OSError as e:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="ring_path_converge_failed",
+            reason=reason,
+            error=e,
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result="ring_path_converged",
+        desired=coupling,
+        reason=reason,
+        was=resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)),
+        now=derived,
+        owned=False,
+    )
+    return True
 
 
 def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction, ...]:

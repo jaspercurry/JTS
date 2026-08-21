@@ -1312,3 +1312,124 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "config.rs DEFAULT_CUSHION_DECAY_FLOOR_FRAMES must stay 576 — the "
         "hardware-validated floor the measurement doc §2 table ships"
     )
+
+
+@pytest.mark.parametrize(
+    "marker,carried,converged",
+    [
+        # ARM — the jts.local shape: the hardware reconciler armed the marker,
+        # the projection is still Ring B's file.
+        ("1", "/dev/shm/jts-ring/content.ring", "/dev/shm/jts-ring/active-content.ring"),
+        # DISARM — the marker was cleared (the active-lane decision losing its
+        # hardware proof) while the coupling stayed shm_ring.
+        ("", "/dev/shm/jts-ring/active-content.ring", "/dev/shm/jts-ring/content.ring"),
+    ],
+)
+def test_an_operator_pinned_box_still_converges_its_ring_path_projection(
+    tmp_path, monkeypatch, marker, carried, converged
+):
+    """A pinned box is the ORDINARY armed box, and it must still self-heal.
+
+    ``reconcile_coupling`` is the ring path's only writer, and step 1 returns
+    before it on an operator-frozen box — so a crossed marker/path pair was
+    PERMANENT there, in both directions, and every armed box on the fleet is
+    pinned (step 1's own note). Every claim that the pair is "one pass from
+    healed" was false for exactly the boxes it mattered on.
+
+    The pin freezes the transport CHOICE; the ring path is not a choice. So the
+    projection converges and NOTHING else moves: the coupling owner is still
+    never called, the coupling line is untouched, and no daemon is bounced.
+    """
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    fanin.write_text(
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
+        f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_SHM_RING}\n"
+        # Combo keys already at their gadget-less answer, so the USB half of the
+        # pass writes nothing and the ONLY thing that could move a daemon here is
+        # the projection converge under test.
+        f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
+        f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
+    )
+    outputd.write_text(
+        "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+        f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
+        f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
+    )
+    _stub_ring_gates(monkeypatch, eligible=True)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+    )
+    restarts: list[str] = []
+
+    result = _auto(fanin, outputd, gadget=False, restarts=restarts)
+
+    assert result.owned is False
+    assert result.ok is True
+    assert f"JASPER_OUTPUTD_SHM_RING_PATH={converged}" in outputd.read_text()
+    # The coupling owner stayed bypassed — the heal did not smuggle in a flip.
+    assert called["n"] == 0
+    assert f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_SHM_RING}" in fanin.read_text()
+    assert "JASPER_FANIN_COUPLING_CHOICE=operator" in fanin.read_text()
+    # Writes only. A moved projection means outputd is not running that value
+    # anyway, so an unattended pass does not bounce the final output owner.
+    assert restarts == [], restarts
+    # The bridge is a transport key and stays exactly as the box had it.
+    assert "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" in outputd.read_text()
+
+
+def test_a_pinned_loopback_box_keeps_its_coupling_when_the_marker_is_hand_armed(
+    tmp_path, monkeypatch
+):
+    """The override test: a hand-armed marker must never move a frozen coupling.
+
+    The state: the operator deliberately chose ``loopback``, and something armed
+    the endpoint marker anyway (a hand-edit, or a hardware reconcile whose
+    active-lane decision passed while the transport stayed frozen). What it
+    MEANS: outputd is on its ALSA lane under the ``direct`` bridge, and its
+    ring-path allowlist lives inside ``if content_bridge_mode ==
+    ContentBridgeMode::ShmRing`` (``rust/jasper-outputd/src/config.rs``), so it
+    never reads the ring path at all. There is no crossed pair to heal here —
+    the key is inert — and the safe outcome is that the operator's ``loopback``
+    survives untouched.
+
+    That is why the projection converger is scoped to the ring coupling: on this
+    box, writing the ring path would be a transport write on a box whose
+    transport the operator froze, for zero safety gain.
+    """
+    fanin = tmp_path / "fanin.env"
+    outputd = tmp_path / "outputd.env"
+    fanin.write_text(
+        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
+        f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_LOOPBACK}\n"
+        f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
+        f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
+        f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
+    )
+    outputd.write_text(
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+        "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
+    )
+    _stub_ring_gates(monkeypatch, eligible=True)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
+    )
+    restarts: list[str] = []
+
+    result = _auto(fanin, outputd, gadget=False, restarts=restarts)
+
+    # THE assertion: the operator's transport choice is never overridden.
+    assert result.owned is False
+    assert result.coupling == COUPLING_LOOPBACK
+    assert f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_LOOPBACK}" in fanin.read_text()
+    assert called["n"] == 0
+    assert restarts == [], restarts
+    # ...and the inert key is left alone rather than "helpfully" rewritten.
+    assert (
+        "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring"
+        in outputd.read_text()
+    )
+    assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in outputd.read_text()

@@ -1950,6 +1950,84 @@ def check_active_ring_split_transport() -> CheckResult:
     )
 
 
+@doctor_check(order=51.73, group="audio")
+def check_active_ring_path_projection() -> CheckResult:
+    """A ring PATH that lags its endpoint marker is SILENT — outputd refuses it.
+
+    The complement of :func:`check_active_ring_split_transport`, and the two
+    partition the coupling space: that one owns the ``loopback`` side and returns
+    ok the moment the coupling is ``shm_ring``, which is exactly where this one
+    starts. Between them the ACTIVE-ring arm ladder has no unowned rung.
+
+    The state this catches: under the ``shm_ring`` coupling, outputd's ring PATH
+    disagrees with its endpoint MARKER. outputd enforces a biconditional — the
+    active ring file may be read only by an armed active endpoint, and an armed
+    active endpoint may read only that file — so it bails at startup on the
+    crossed pair, with ``RestartPreventExitStatus=78`` parking the unit rather
+    than looping. The speaker is silent, and the daemon that would have explained
+    it is not running.
+
+    WHY IT CANNOT LIVE IN ``check_outputd_service``. That check reports the same
+    contradiction from ``transport_coherence_report``, but only after
+    ``_outputd_service_state_failure()`` and the STATUS read — and at this exact
+    state outputd is NOT active, so it returns the systemd failure first and the
+    transport finding is never reached. A check whose whole target state makes
+    the daemon refuse to start cannot depend on that daemon's live surface, so
+    this one reads persisted evidence only: the coupling and outputd's own env.
+
+    BOTH DIRECTIONS, one question. The path is a projection of the marker with a
+    single derivation (``_outputd_ring_path_for``), so "is the projection
+    current?" is one predicate covering the arm lag (marker armed, path still
+    Ring B) and the disarm lag (marker cleared, path still the active ring).
+
+    KNOWN TRANSIENT, like its sibling. The marker's writer runs first and the
+    path's writer follows, so a doctor run taken between those two rungs FAILs
+    here for the seconds between them. That is the ladder working. The remedy is
+    the same pass the ladder's own next step runs.
+    """
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
+    from jasper.fanin.coupling_reconcile import (
+        _outputd_ring_path_for,
+        read_persisted_coupling,
+    )
+    from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
+        OUTPUTD_RING_PATH_ENV_VAR,
+        resolve_outputd_ring_path,
+    )
+    from jasper.env_file import read_value
+
+    label = "active ring path projection"
+    coupling = read_persisted_coupling()
+    if coupling != COUPLING_SHM_RING:
+        # Under loopback outputd runs the `direct` bridge and its ring-path
+        # allowlist does not run at all, so the key is inert. The split that DOES
+        # matter on that side is the sibling check's.
+        return CheckResult(label, "ok", f"coupling={coupling}; no ring path to read")
+    try:
+        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+    except OSError:
+        outputd_env = ""
+    carried = resolve_outputd_ring_path(
+        read_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
+    )
+    derived = _outputd_ring_path_for(outputd_env)
+    if carried == derived:
+        return CheckResult(label, "ok", f"{OUTPUTD_RING_PATH_ENV_VAR}={carried}")
+    return CheckResult(
+        label,
+        "fail",
+        f"RING PATH LAGS ITS MARKER: {OUTPUTD_RING_PATH_ENV_VAR}={carried} but "
+        f"this box's endpoint marker derives {derived}. outputd may read the "
+        "active ring file only from an armed active endpoint and vice versa, so "
+        "it refuses the pair at startup (exit 78, no restart) — this speaker is "
+        "SILENT. Converge the pair: sudo /opt/jasper/.venv/bin/"
+        "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if an "
+        "arm ladder is running right now; the ladder's own final doctor pass is "
+        "the authoritative read.)",
+    )
+
+
 @doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
 def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present and the
@@ -3247,14 +3325,22 @@ def _outputd_transport_health(
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
             )
         # NOTES ARE DELIBERATELY NOT ELEVATED HERE — do not re-add the WARN.
-        # Today's only note, the ACTIVE-ring arm waypoint, is exactly the state
-        # :func:`check_active_ring_split_transport` FAILs on, from the same two
-        # terms (a graph naming the ACTIVE ring under a non-ring coupling). That
-        # check owns the finding and carries the runnable remedy; elevating the
-        # same fact to a WARN under a second check name made one problem read as
-        # two. The earlier "nothing else here would flag" rationale predated
-        # that check and was never reconciled when it landed. Errors above still
-        # FAIL here, because those are outputd's own coherence, not the split.
+        # Every note has an OWNING check that FAILs on the same state and
+        # carries the runnable remedy, so elevating the same fact to a WARN
+        # under this check's name would make one problem read as two. The two
+        # notes and their owners, which between them cover both rungs of the
+        # ACTIVE-ring arm ladder and partition the coupling space:
+        #
+        #   graph rung (a graph naming the ACTIVE ring under a non-ring
+        #     coupling) -> :func:`check_active_ring_split_transport`
+        #   endpoint rung (the ring PATH lagging its endpoint marker under the
+        #     ring coupling) -> :func:`check_active_ring_path_projection`
+        #
+        # Both owners read PERSISTED evidence rather than outputd's live STATUS,
+        # which is what lets them fire at all: at the endpoint rung outputd has
+        # refused to start, so this function returns its systemd failure long
+        # before reaching here. Errors above still FAIL here, because those are
+        # outputd's own coherence, not a ladder rung.
     local_pipe_detail = f"content_source={actual_content_source}"
     # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
     # content PCM exists at all is which bridge outputd runs, and only the
