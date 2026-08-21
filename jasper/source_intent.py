@@ -172,9 +172,15 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # wait for their full Type=oneshot activation. Bluetooth deliberately starts
 # the accessory owner twice (old-pass barrier + guaranteed-fresh pass); USB
 # starts coupling once. Their 5-second margin includes broker/client overhead.
+# Each value mirrors its target's shipped TimeoutStartSec and is pinned to it by
+# tests/test_source_intent_systemd.py: the coupling entry read 125.0 against a
+# target raised to 210 s in #2651, so a client could report timeout with 85 s of
+# the owner's activation still legally left to run. That target is now derived
+# (jasper.fanin.coupling_reconcile.COUPLING_AUTO_TIMEOUT_START_SEC) from the
+# pass it actually has to outlast.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
-    _USB_COUPLING_UNIT: 125.0,  # target TimeoutStartSec=120
+    _USB_COUPLING_UNIT: 605.0,  # target TimeoutStartSec=600
 }
 
 

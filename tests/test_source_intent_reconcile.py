@@ -471,7 +471,12 @@ def test_blocking_unit_waits_match_owner_oneshot_timeouts(monkeypatch):
             ["systemctl", "start", source_intent._ACCESSORY_RECONCILE_UNIT],
             65.0,
         ),
-        (["systemctl", "start", source_intent._USB_COUPLING_UNIT], 125.0),
+        (
+            ["systemctl", "start", source_intent._USB_COUPLING_UNIT],
+            source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC[
+                source_intent._USB_COUPLING_UNIT
+            ],
+        ),
     ]
 
 

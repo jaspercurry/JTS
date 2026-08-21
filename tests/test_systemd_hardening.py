@@ -25,6 +25,7 @@ import pytest
 
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
+from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,14 +59,13 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     # (no trap, persistent voice-input-absent marker). The derivation itself is
     # pinned by tests/test_aec_init.py against the aec_init constants.
     "jasper-aec-reconcile": "120",
-    # Re-tallied for the #2285 P7 ACTIVE-endpoint convergence step: the pass now
-    # carries a graph move (staged-anchor lock + camilladsp --check + a
-    # hardware-reconcile kick) ahead of the ordered arm. The UNIT'S OWN COMMENT
-    # owns that arithmetic and shows it term by term; this value is that bound
-    # plus the established ~30% headroom. Deliberately no sum restated here:
-    # a second copy of a derived number is a drift site, and this comment had
-    # already drifted from the unit's total once before it was cited instead.
-    "jasper-fanin-coupling-auto": "210",
+    # The arithmetic now lives in code, as
+    # jasper.fanin.coupling_reconcile.COUPLING_AUTO_ENUMERATED_WORST_SEC, and the
+    # unit ships that plus a stated headroom. The unit's hand-kept tally drifted
+    # twice before it was derived; cite the constant, never a second copy.
+    "jasper-fanin-coupling-auto": str(
+        int(coupling_reconcile.COUPLING_AUTO_TIMEOUT_START_SEC)
+    ),
     "jasper-grouping-reconcile": str(
         int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)
     ),

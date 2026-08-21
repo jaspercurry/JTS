@@ -441,6 +441,23 @@ def test_gadget_phase_model_matches_its_shipped_command_count() -> None:
     )
 
 
+def test_owner_client_bounds_mirror_their_shipped_unit_ceilings() -> None:
+    """An owner client must outlast the whole oneshot activation it joins.
+
+    These are mirrors of shipped `TimeoutStartSec` values plus the stated
+    five-second margin, and nothing pinned them: the coupling entry read 125.0
+    against a target #2651 had raised to 210 s, so a synchronous start could
+    report timeout with 85 s of legal activation still to run — the same class
+    of false timeout #2790 removed from the gadget restart.
+    """
+
+    for unit, client in source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC.items():
+        directives = _service_directives(ROOT / "deploy/systemd" / unit)
+        assert directives["Type"] == "oneshot", unit
+        declared = _seconds(directives["TimeoutStartSec"])
+        assert client == declared + 5.0, (unit, client, declared)
+
+
 def test_failed_usb_on_cleanup_budget_matches_its_enumerated_waits() -> None:
     """The rollback budget is its own blocking waits, not a hand-picked floor."""
 

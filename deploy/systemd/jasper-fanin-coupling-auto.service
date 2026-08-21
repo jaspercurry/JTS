@@ -38,45 +38,43 @@ Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 # arm failure (rolled back to loopback) also exits 1 and would retry-loop.
 [Service]
 Type=oneshot
-# Worst-case pass under the entry lock, RE-TALLIED for the #2285 P7
-# ACTIVE-endpoint convergence step (previous tallies: review #1252, then the
-# #2175 start-budget resets). Every term below is a hard timeout CEILING in
-# code, not an observed duration, WITH ONE EXCEPTION named so a re-deriving
-# reader does not go hunting: the 4s reads line has no constant behind it. It
-# is a deliberate allowance over bounded file I/O — those steps read env files,
-# the topology and the loaded graph and shell out to nothing — where every
-# other line cites a named timeout. Normal cost is milliseconds. Two line
-# items in the prior tally were
-# stale and are corrected here: it charged a "usbsink restart 8s" the reconciler
-# does not perform, and it charged the ARM path a 15s hardware-reconcile kick
-# when the arm's kick is _ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60s (the 15s
-# one is the DISARM floor re-emit, a different and mutually exclusive path).
+# Worst-case pass under the entry lock. The tally is NOT duplicated here: it is
+# derived in code as jasper.fanin.coupling_reconcile.COUPLING_AUTO_ENUMERATED_WORST_SEC
+# and this value is COUPLING_AUTO_TIMEOUT_START_SEC, which is that plus a stated
+# headroom. tests/test_fanin_coupling_reconcile.py fails if the two drift; the
+# previous hand-kept tallies here (review #1252, #2175, #2285 P7) drifted twice
+# and are what the derivation replaces.
 #
-#   entry lock wait                                              10s
-#   ACTIVE-endpoint convergence (jasper/fanin/converge.py):
-#     gate / graph / applied-record reads (ESTIMATE, see above)    4s
-#     re-emit, ANCHOR branch (the slower of the two):            25s
-#       staged-anchor lock 15s + camilladsp --check 10s
-#     audio-hardware-reconcile kick                              15s
-#                                              convergence =     44s
-#   the ordered ARM:
-#     content-format converge kick                               60s
-#     outputd  reset-failed 5s + restart 8s                      13s
-#     fan-in   reset-failed 5s + restart 8s                      13s
-#     camilla reconcile: dsp_writer_lock 10s + --check 10s       20s
-#                                                      arm =    106s
-#                                                    TOTAL =    160s
+# What the old tallies omitted, and the reason this ceiling moved: every daemon
+# op costs a blocking reset-failed preamble on a crash-budget unit, and the combo
+# half and the coupling-flip half are ADDITIVE (reconcile_auto runs the
+# coordinated restart, then delegates the flip at "Step 4") where the old tally
+# treated them as alternatives. Fan-in is restarted three times on that path.
 #
-# The other fork is cheaper and NOT additive: a pass that refuses to converge
-# takes the loopback confirm/disarm (61s) instead of the 106s arm. 160s is the
-# bound.
+# THIS CEILING IS SIZED FOR A LIVE BROKER — a decision, not an oversight. A dead
+# broker makes each op retry through direct systemctl, which would push the pass
+# to COUPLING_AUTO_BROKER_DEAD_WORST_SEC, but a dead jasper-control broker is an
+# independently loud, already-degraded mode (dashboard and /state down, doctor
+# red), not the legal operating envelope. The failure semantics differ in the way
+# that matters: a client bound shorter than a succeeding operation LIES and fires
+# a destructive rollback, while a ceiling kill of an already-degraded slow pass
+# TELLS THE TRUTH — unit visibly failed, journal explicit, next trigger retries.
+# Stretching this to cover the broker-dead worst would hide every real wedge for
+# the length of the ceiling, which is blindness, not conservatism.
 #
-# 210s keeps the established ~30% headroom (50s) over it, and erring LONG is
-# the safe direction: a systemd kill mid-sequence between camilla-stop and
-# camilla-start leaves CamillaDSP cleanly stopped, which
-# OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed) — so
-# the timeout must outlast the pass.
-TimeoutStartSec=210
+# TWO RESIDUALS, stated rather than hidden:
+#   * under sustained broker death AND maximally slow hardware a pass may be
+#     killed here mid-heal; it retries, full recovery expects the broker back,
+#     and the fail-closed usbsink rollback can recur in that window — acceptable
+#     because the mode already demands operator attention;
+#   * a pass can run _reconcile_camilla up to twice, and that calls
+#     asyncio.run(reconcile_current_dsp()) with no timeout of its own, so no
+#     finite ceiling covers it. Bounding that call is tracked separately.
+#
+# Erring LONG stays the safe direction within the live-broker envelope: a systemd
+# kill between camilla-stop and camilla-start leaves CamillaDSP cleanly stopped,
+# which OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed).
+TimeoutStartSec=600
 # The CLI hydrates the trusted base and reconciler-owned fanin env internally.
 # Do not inject the group-writable fanin.env into this root Python process:
 # values such as PYTHONPATH/LD_PRELOAD must never cross the privilege boundary.
