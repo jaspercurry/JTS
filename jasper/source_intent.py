@@ -115,25 +115,58 @@ _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
 _CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC: dict[str, tuple[float, float]] = {
     _BLUETOOTH_SERVICE: (10.0, 10.0),
 }
-# The hardware-role reconciler the USB gadget orders its start half after. It is
-# a Type=oneshot with RemainAfterExit=no, so it returns to inactive after every
-# run: the gadget's Wants= re-queues it on every gadget start, and PID 1 holds
-# the gadget's start job until that oneshot reports terminal. Its own
-# TimeoutStartSec is therefore part of any gadget start/restart the client waits
-# on. Pinned to the shipped unit by tests/test_source_intent_systemd.py.
-_USB_GADGET_ROLE_DEPENDENCY_UNIT = "jasper-audio-hardware-reconcile.service"
-_USB_GADGET_ROLE_DEPENDENCY_START_SEC = 50.0
+# A unit's declared TimeoutStartSec is not always the bound PID 1 enforces on
+# the whole start phase. Measured on jts4 across all 13 gadget starts since its
+# 2026-08-17 boot: every one ran past the declared TimeoutStartSec=5s without
+# being terminated (6.48 s to 25.51 s), with no drop-in and `systemctl show`
+# still reporting TimeoutStartUSec=5s. systemd 257's systemd.service(5)
+# describes TimeoutStartSec= only as "the time to wait for start-up" and does
+# not state how it applies to a Type=oneshot running several Exec* commands, so
+# the mechanism is not quotable from the shipped documentation; what the
+# measurements track is one declared ceiling per command. Model it per command:
+# that is the conservative reading whichever way PID 1 actually arms the timer,
+# and a command-count contract test forces a re-derivation when a command is
+# added or removed. Units absent here keep their declared ceiling: the gadget is
+# the only one whose phases have been measured, and the only one that has
+# produced a false client timeout, so widening the model past it would be
+# guessing rather than reading a measurement.
+_UNIT_PHASE_COMMAND_COUNTS: dict[str, tuple[int, int]] = {
+    # unit: (start-phase Exec* commands, stop-phase Exec* commands)
+    # ExecCondition + 2 ExecStartPre + ExecStart + ExecStartPost; 2 ExecStop +
+    # 5 ExecStopPost.
+    "jasper-usbgadget.service": (5, 7),
+}
+# The manager's DefaultTimeoutStartSec, which governs a pulled dependency whose
+# own unit declares no TimeoutStartSec= override.
+_SYSTEMD_DEFAULT_TIMEOUT_START_SEC = 90.0
+_FANIN_RESTART_BACKOFF_SEC = 5.0
+# jasper-usbgadget.service orders its start half After= three units it also
+# pulls with Requires=/Wants=, so PID 1 can legally hold a gadget start until
+# all three report terminal, before the gadget's own start phase begins.
+# jasper-audio-hardware-reconcile is a Type=oneshot with RemainAfterExit=no, so
+# it is inactive between runs and every gadget start re-queues it. jasper-fanin
+# declares no start override and so takes the manager default, plus its
+# RestartSec when it is in restart backoff — reachable, because the failed-On
+# rollback recomposes the gadget on the same path the coupling owner restarts
+# fan-in on. Summed rather than maxed: the three are mutually unordered and
+# normally start concurrently, so this is a ceiling, not an expected wait.
+_USB_GADGET_START_DEPENDENCY_SEC: dict[str, float] = {
+    "jasper-usb-network-plan.service": 10.0,
+    "jasper-audio-hardware-reconcile.service": 50.0,
+    "jasper-fanin.service": (
+        _SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _FANIN_RESTART_BACKOFF_SEC
+    ),
+}
 # A synchronous start waits for the whole required dependency transaction, not
 # just the named service. AirPlay's packaged unit Requires=/After= our nqptp
 # timing service, so a cold start legally consumes both start ceilings. The USB
-# gadget pays the same way for the hardware-role oneshot above: that oneshot is
-# inactive between runs, so every gadget start re-queues it.
+# gadget pays the same way for the three units above.
 _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
     "shairport-sync.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC["nqptp.service"][0],
     "jasper-usbsink.service": _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[
         "jasper-usbsink-volume.service"
     ][0],
-    "jasper-usbgadget.service": _USB_GADGET_ROLE_DEPENDENCY_START_SEC,
+    "jasper-usbgadget.service": sum(_USB_GADGET_START_DEPENDENCY_SEC.values()),
 }
 # Owner oneshots are different: a synchronous ``systemctl start`` may join and
 # wait for their full Type=oneshot activation. Bluetooth deliberately starts
@@ -157,7 +190,10 @@ def _unit_action_timeout_sec(unit: str, verb: str) -> float:
     ) or _CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC.get(unit)
     if bounds is None or verb not in {"start", "stop", "restart"}:
         return _DEFAULT_UNIT_ACTION_TIMEOUT_SEC
-    start_timeout, stop_timeout = bounds
+    declared_start, declared_stop = bounds
+    start_commands, stop_commands = _UNIT_PHASE_COMMAND_COUNTS.get(unit, (1, 1))
+    start_timeout = declared_start * start_commands
+    stop_timeout = declared_stop * stop_commands
     dependency_timeout = _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC.get(unit, 0.0)
     service_timeout = {
         "start": start_timeout + dependency_timeout,
@@ -222,12 +258,23 @@ _USB_DIRECT_WAIT_BUDGET_SEC = (
     _USB_DIRECT_SETTLE_ATTEMPTS * 0.5
     + (_USB_DIRECT_SETTLE_ATTEMPTS - 1) * _USB_DIRECT_SETTLE_SECONDS
 )
-# The failed-On rollback stops and disables the derived unit, recomposes the
-# gadget to NCM-only, stops the gadget if audio survived that, and disarms the
-# coupling owner. Its three blocking systemd waits are one gadget restart, one
-# gadget stop, and one coupling start; the remainder is enablement and
-# state-probe overhead.
-_USB_FAILED_ON_CLEANUP_BUDGET_SEC = 215.0
+# The failed-On rollback, enumerated in the call order the except-branch of the
+# USB applier runs them: stop the derived unit through _ensure_active (an active
+# probe either side of the stop action, then one failed-state reset sequence),
+# disable it through _ensure_enabled (an enablement probe either side of the
+# disable action), recompose the gadget to NCM-only, stop the gadget when audio
+# survived that recompose, and start the coupling owner to disarm the direct
+# lane. The live-state probes between those steps are not systemd waits and are
+# carried by the non-systemd budget instead.
+_USB_FAILED_ON_CLEANUP_BUDGET_SEC = (
+    2 * _UNIT_STATE_QUERY_TIMEOUT_SEC
+    + _unit_action_timeout_sec("jasper-usbsink.service", "stop")
+    + (2 * _UNIT_STATE_QUERY_TIMEOUT_SEC + _RESET_FAILED_ACTION_TIMEOUT_SEC)
+    + _ENABLEMENT_TRANSITION_BUDGET_SEC
+    + _unit_action_timeout_sec("jasper-usbgadget.service", "restart")
+    + _unit_action_timeout_sec("jasper-usbgadget.service", "stop")
+    + _OWNER_UNIT_ACTION_TIMEOUT_SEC[_USB_COUPLING_UNIT]
+)
 _RECONCILE_TIMEOUT_MARGIN_SEC = 21.25
 _NON_OWNER_RECONCILE_BUDGET_SEC = (
     _NON_SYSTEMD_RECONCILE_BUDGET_SEC

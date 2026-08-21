@@ -234,8 +234,8 @@ together; a wedged or unreachable broker still fails soft as described below.
 
 Broker calls retain a hard 120-second execution ceiling except for one exact
 request shape: blocking `start` of only
-`jasper-source-intent-reconcile.service` may use 943 seconds. That fixed
-start-only coordinator has a finite 933-second systemd limit because one pass
+`jasper-source-intent-reconcile.service` may use 1443 seconds. That fixed
+start-only coordinator has a finite 1433-second systemd limit because one pass
 visits all four sources and may wait through bounded source actions and
 failed-unit resets, two accessory barriers, the fan-in coupling owner, and
 fail-closed USB cleanup. The
@@ -1092,7 +1092,7 @@ as primary group `jasper` plus supplementary `audio`, with no inherited
 polkit path rechecked as
 `reset-failed` + inactive-capable `restart`, with final unit ExecConditions
 preserving concurrent Off/role parking; source-intent fixed-helper boundary
-and its exact-shape 943-second broker exception rechecked against
+and its exact-shape broker exception rechecked against
 `jasper.source_intent`, the
 restart-broker start-only grant, and boot/deploy wiring; lifecycle behavior
 moved to HANDOFF-source-lifecycle.md. Prior

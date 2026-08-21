@@ -1154,7 +1154,7 @@ reapply_source_intent() {
     # baseline: the coordinator is the only writer of source enablement and the
     # only path that starts a desired-on source, including Bluetooth RF-kill.
     # install.sh runs as root and invokes the same reconciler directly. Keep a
-    # process-level bound beyond the unit's 933-second contract so a
+    # process-level bound beyond the unit's 1433-second contract so a
     # manual/stale lock holder or child regression cannot pin deploy forever.
     # The reconciler is the single authority for the source allowlist and
     # runtime ordering. A failed apply WARNs; boot or the next toggle retries.
@@ -1191,10 +1191,10 @@ PY
     fi
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
-    # pass (bounded by the unit's 933 s ceiling); a failed/timeout path removes
+    # pass (bounded by the unit's 1433 s ceiling); a failed/timeout path removes
     # the file once more so deploy health cannot accept an older generation.
     rm -f /run/jasper-source-intent/status.json
-    if ! /usr/bin/timeout --foreground --kill-after=5s 943s \
+    if ! /usr/bin/timeout --foreground --kill-after=5s 1443s \
         /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
             --reason install --invalidate-status-before; then
         rm -f /run/jasper-source-intent/status.json
