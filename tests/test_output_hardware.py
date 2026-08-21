@@ -709,3 +709,469 @@ def test_classify_more_than_two_apple_dacs_is_not_auto_promoted() -> None:
     assert state.profile_id == "unknown"
     assert state.status == "partial"
     assert "too_many_apple_dacs" in {issue["code"] for issue in state.issues}
+
+
+def test_topology_path_resolves_identically_to_the_topology_module(
+    monkeypatch,
+) -> None:
+    """Two modules spell the same topology path; the park needs them equal.
+
+    `output_hardware` keeps its own literal on purpose — importing
+    `output_topology` for a constant would cost the import-cheapness this
+    module advertises, and that trade is the right one. What the trade buys is
+    a drift risk that nothing pinned until the park arm existed:
+    `_read_topology_hardware` reads the file through one resolver while
+    `_saved_topology_requires_roleful_graph` classifies it through the other,
+    so a divergence would not raise — the rolefulness lookup would simply find
+    no topology, report "not roleful", and the box would quietly stop parking.
+
+    Asserting the resolvers rather than only the literals also pins the env-var
+    name, which is the other half of "these two name one file".
+    """
+
+    from jasper import output_topology
+
+    monkeypatch.delenv("JASPER_OUTPUT_TOPOLOGY_PATH", raising=False)
+    assert (
+        output_hardware.DEFAULT_TOPOLOGY_PATH
+        == output_topology.OUTPUT_TOPOLOGY_PATH
+    )
+    assert output_hardware._topology_path() == output_topology.topology_path()
+
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", "/tmp/jts-elsewhere.json")
+    assert output_hardware._topology_path() == output_topology.topology_path()
+
+
+def _apple_child(card_id: str, serial: str, usb_path: str) -> OutputCardFact:
+    return OutputCardFact(
+        card_id=card_id,
+        device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        serial=serial,
+        usb_path=usb_path,
+        busnum="1",
+        controller="xhci-hcd.0",
+        endpoint_sync="SYNC",
+        pcm=f"hw:CARD={card_id},DEV=0",
+    )
+
+
+def _saved_topology(tmp_path: Path, base, hardware: dict) -> Path:
+    """Save ``base``'s speaker groups under ``hardware``.
+
+    The groups come from the runtime-contract suite's own fixtures, so
+    "roleful" and "passive" here mean exactly what ``classify_output_contract``
+    means by them rather than a shape hand-written in this file — which is the
+    whole point, since rolefulness is now what gates the park.
+    """
+    raw = base.to_dict()
+    raw["hardware"] = hardware
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text(json.dumps(raw), encoding="utf-8")
+    return topology_path
+
+
+def _assert_saved_rolefulness(topology_path: Path, expected: bool) -> None:
+    """Prove the fixture is what its name claims before a test relies on it.
+
+    Not ceremony: an invalid topology loads soft to an empty draft, which is
+    NOT roleful, so a malformed fixture silently turns a park test into a
+    no-op that still passes for the wrong reason. That happened once here —
+    `"outputs": []` against `physical_output_count: 4` failed validation, and
+    the tests only caught it because the park assertions were downstream.
+
+    The group check is the other half, and it is the half that matters on the
+    `expected=False` side: an empty draft is not roleful either, so asserting
+    "not roleful" alone would pass for the very malformation this guard exists
+    to catch — leaving the passive fixture, which is what pins the SF-1 carve
+    out, unprotected.
+    """
+
+    from jasper.output_topology import load_output_topology
+
+    topology = load_output_topology(topology_path)
+    assert topology.speaker_groups, (
+        f"{topology_path} loaded with no speaker groups — the fixture is "
+        "malformed and soft-loaded to an empty draft"
+    )
+    assert output_hardware._saved_topology_requires_roleful_graph(
+        topology_path
+    ) is expected
+
+
+def _roleful_composite_topology(tmp_path: Path) -> Path:
+    """A commissioned active 2-way across both children — needs per-driver DSP."""
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    path = _saved_topology(
+        tmp_path,
+        _active_topology("stereo", "active_2_way"),
+        _saved_composite_hardware(),
+    )
+    _assert_saved_rolefulness(path, True)
+    return path
+
+
+def _passive_composite_topology(tmp_path: Path) -> Path:
+    """A composite whose declared speakers all sit on child A's outputs.
+
+    The live jts.local shape: `kind == "composite"` but full-range passive, so
+    `requires_roleful_graph` is False and child B carries no declared channel.
+    Unplugging B must not park a working stereo.
+    """
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    path = _saved_topology(
+        tmp_path,
+        _full_range_stereo(),
+        _saved_composite_hardware(),
+    )
+    _assert_saved_rolefulness(path, False)
+    return path
+
+
+def _saved_composite_hardware() -> dict:
+    return {
+        "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+        "child_devices": [
+            {
+                "child_id": "left",
+                "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "left",
+                "physical_output_indexes": [0, 1],
+            },
+            {
+                "child_id": "right",
+                "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+                "device_label": "Apple USB-C audio adapter",
+                "serial": "right",
+                "physical_output_indexes": [2, 3],
+            },
+        ],
+    }
+
+
+def test_saved_composite_with_one_child_present_is_never_ready(
+    tmp_path: Path,
+) -> None:
+    """A declared composite missing a child must not read as a stereo DAC.
+
+    The surviving dongle classifies on its own as an ordinary full-range
+    two-output device, and ``ready`` is the one word every consumer reads as
+    "safe to drive this speaker with". Downstream layers do refuse a flat
+    full-range graph on a roleful topology, so today's outcome is quiet rather
+    than dangerous — but nothing states a reason. The record has to fail closed
+    and name the child that is gone.
+    """
+
+    topology_path = _roleful_composite_topology(tmp_path)
+    cards = [_apple_child("A", "left", "1-1")]
+    observed = classify_output_cards(cards)
+    assert observed.status == "ready"
+    assert observed.profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    assert state.status == "partial"
+    assert state.profile_id == APPLE_USB_C_DONGLE_DEVICE_ID
+    blockers = [
+        issue for issue in state.issues if issue["severity"] == "blocker"
+    ]
+    assert [issue["code"] for issue in blockers] == [
+        "saved_composite_partially_present"
+    ]
+    # The reason names the child that is gone, not just that something is.
+    assert "right" in blockers[0]["message"]
+    assert "left" not in blockers[0]["message"]
+    # `/state` and the wizard's adopt affordance both read this record.
+    assert output_hardware.detected_hardware_adoption_precondition(
+        state
+    )["allowed"] is False
+
+
+def test_saved_passive_composite_missing_a_child_still_plays(
+    tmp_path: Path,
+) -> None:
+    """`kind == "composite"` is not permission to park a working stereo.
+
+    A passive composite can put every declared speaker on one child's outputs,
+    which is the live jts.local shape. The other child carries no declared
+    channel, so losing it costs the household nothing — and `jasper-doctor`
+    already calibrates exactly this mismatch as warn rather than fail
+    (`check_active_speaker_output_hardware`). Rolefulness, not compositeness,
+    is the gate.
+    """
+
+    topology_path = _passive_composite_topology(tmp_path)
+    cards = [_apple_child("A", "left", "1-1")]
+    observed = classify_output_cards(cards)
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.status == "ready"
+    assert state.issues == ()
+
+
+def test_saved_composite_with_both_children_present_is_untouched(
+    tmp_path: Path,
+) -> None:
+    topology_path = _roleful_composite_topology(tmp_path)
+    cards = [
+        _apple_child("A", "left", "1-1"),
+        _apple_child("A_1", "right", "1-2"),
+    ]
+    observed = classify_output_cards(cards)
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+    assert state.status == "ready"
+
+
+def _saved_single_hardware() -> dict:
+    return {
+        "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+        "device_label": "Apple USB-C audio adapter",
+        "physical_output_count": 2,
+        "card_id": "A",
+    }
+
+
+def test_saved_single_topology_keeps_full_range_stereo_ready(
+    tmp_path: Path,
+) -> None:
+    """Full-range stereo is a legal shape for a saved passive/solo speaker."""
+
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    topology_path = _saved_topology(
+        tmp_path, _full_range_stereo(), _saved_single_hardware()
+    )
+    cards = [_apple_child("A", "left", "1-1")]
+    observed = classify_output_cards(cards)
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.status == "ready"
+
+
+def test_saved_single_topology_is_untouched_when_the_observed_dac_differs(
+    tmp_path: Path,
+) -> None:
+    """A ROLEFUL saved single whose hardware was swapped is still not ours.
+
+    The sibling test above saves and observes the same profile, so it would
+    pass even without the composite guard. This one mismatches a roleful saved
+    topology against a different DAC — the case that makes the guard
+    load-bearing. Saved/attached mismatch on a non-composite is
+    `jasper-doctor`'s to report, not this policy's to park.
+
+    The topology must be **roleful and valid** or this test proves nothing: a
+    mono active 2-way fits the dongle's two outputs, where a stereo one would
+    not, and an over-wide topology loads soft to a non-roleful empty draft that
+    the rolefulness gate would catch instead of the composite guard.
+    """
+
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology_path = _saved_topology(
+        tmp_path, _active_topology("mono", "active_2_way"), _saved_single_hardware()
+    )
+    _assert_saved_rolefulness(topology_path, True)
+    cards = [
+        OutputCardFact(
+            card_id="DAC8",
+            device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+            label="HiFiBerry DAC8x",
+            pcm="hw:CARD=DAC8,DEV=0",
+        )
+    ]
+    observed = classify_output_cards(cards)
+    assert observed.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    assert state == observed
+    assert state.issues == ()
+
+
+def test_unsaved_topology_keeps_todays_classification(tmp_path: Path) -> None:
+    """A speaker with no saved topology yet still adopts what it sees."""
+
+    cards = [_apple_child("A", "left", "1-1")]
+    observed = classify_output_cards(cards)
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=tmp_path / "output_topology.json",
+    )
+
+    assert state == observed
+    assert state.status == "ready"
+
+
+def test_saved_composite_with_no_output_hardware_keeps_missing_status(
+    tmp_path: Path,
+) -> None:
+    """Both children gone already parks; it gains the reason, not a new status.
+
+    ``missing`` is a truer word than ``partial`` for "no output hardware at
+    all", so the policy only downgrades a ``ready`` observation.
+    """
+
+    topology_path = _roleful_composite_topology(tmp_path)
+    observed = classify_output_cards([])
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        [],
+        topology_path=topology_path,
+    )
+
+    assert state.status == "missing"
+    codes = [issue["code"] for issue in state.issues]
+    assert codes == ["saved_composite_partially_present"]
+    assert "left" in state.issues[0]["message"]
+    assert "right" in state.issues[0]["message"]
+
+
+def test_reason_never_names_a_child_that_is_physically_present(
+    tmp_path: Path,
+) -> None:
+    """The diagnosis is diffed against observed CARDS, not the record's children.
+
+    Attach a registered single DAC beside both dongles and the classified
+    record's `child_devices` is that DAC alone — diffing against it would
+    report both Apple children missing while they are plugged in. The one
+    surface this policy exists to produce must not misname hardware.
+    """
+
+    topology_path = _roleful_composite_topology(tmp_path)
+    cards = [
+        _apple_child("A", "left", "1-1"),
+        _apple_child("A_1", "right", "1-2"),
+        OutputCardFact(
+            card_id="DAC8",
+            device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+            label="HiFiBerry DAC8x",
+            pcm="hw:CARD=DAC8,DEV=0",
+        ),
+    ]
+    observed = classify_output_cards(cards)
+    # The third DAC wins classification, so the record's children are not the
+    # Apple pair at all — the exact shape that produced the false diagnosis.
+    assert observed.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
+    assert [child.card_id for child in observed.child_devices] == ["DAC8"]
+
+    state = output_hardware.apply_saved_topology_policy(
+        observed,
+        cards,
+        topology_path=topology_path,
+    )
+
+    blockers = [
+        issue for issue in state.issues
+        if issue["code"] == "saved_composite_partially_present"
+    ]
+    assert len(blockers) == 1
+    message = blockers[0]["message"]
+    # Pin the TRUE sentence for this shape. Both children are attached, so the
+    # remediation is to remove the interloper — NOT to reconnect anything, and
+    # certainly not the inverse claim that nothing could be matched.
+    assert "every declared child device is attached" in message
+    assert "detach it" in message
+    assert "missing child devices" not in message
+    assert "no saved child device could be matched" not in message
+    assert "left" not in message
+    assert "right" not in message
+
+
+def test_reason_says_so_when_the_topology_declares_no_children(
+    tmp_path: Path,
+) -> None:
+    """A roleful composite with no declared children is its own sentence.
+
+    Reachable: a composite `hardware` block with `child_devices` absent or
+    empty still loads and is still roleful, so the park arm runs with nothing
+    to diff. "No child matched" would be vacuously true here and actively
+    misleading in the sibling shape above, which is why they are separate.
+    """
+
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    hardware = _saved_composite_hardware()
+    del hardware["child_devices"]
+    topology_path = _saved_topology(
+        tmp_path, _active_topology("stereo", "active_2_way"), hardware
+    )
+    _assert_saved_rolefulness(topology_path, True)
+    cards = [_apple_child("A", "left", "1-1")]
+
+    state = output_hardware.apply_saved_topology_policy(
+        classify_output_cards(cards),
+        cards,
+        topology_path=topology_path,
+    )
+
+    message = state.issues[-1]["message"]
+    assert "declares no child devices" in message
+    assert "missing child devices" not in message
+    assert "every declared child device is attached" not in message
+
+
+def test_published_record_carries_the_partial_composite_reason(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """`python -m jasper.output_hardware --write` is the record's one writer.
+
+    The reconciler and `/state` both read what this publishes, so the policy
+    has to be applied here rather than by each consumer.
+    """
+
+    topology_path = _roleful_composite_topology(tmp_path)
+    state_file = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
+    monkeypatch.setattr(
+        output_hardware,
+        "probe_system_cards",
+        lambda **_kwargs: (_apple_child("A", "left", "1-1"),),
+    )
+
+    assert output_hardware.main(["--write"]) == 0
+
+    capsys.readouterr()
+    published = json.loads(state_file.read_text(encoding="utf-8"))
+    assert published["status"] == "partial"
+    assert published["profile_id"] == APPLE_USB_C_DONGLE_DEVICE_ID
+    assert [issue["code"] for issue in published["issues"]] == [
+        "saved_composite_partially_present"
+    ]
