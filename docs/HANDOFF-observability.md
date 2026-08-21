@@ -363,11 +363,16 @@ health reads that graph from the persisted Camilla statefile, and `/state`, the
 dashboard, and `jasper-doctor` surface its contract-owned next action. The
 fallback contract — including what counts as intentional silence versus a
 failure — is owned by the [speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
-Its `notes` — coherent-but-transient states, today just the
-ACTIVE-ring arm waypoint — are published as `coherence_notes` for whoever reads
-`/state` and deliberately do NOT trip the household card: it is a rung of an
+Its `notes` — coherent-but-transient states, today the two rungs of the
+ACTIVE-ring arm ladder (the graph rung under a `loopback` plan, and the
+first-arm endpoint rung where the ring PATH still lags its marker) — are
+published as `coherence_notes` for whoever reads
+`/state` and deliberately do NOT trip the household card: they are rungs of an
 operator-only ladder the household cannot act on, so `jasper-doctor` is the loud
-surface for it (it warns). When the cause is a saved layout the
+surface (it warns on the graph rung; on the endpoint rung outputd refuses to
+attach the lagging pair, so the loud signal is the `jasper-outputd` check
+failing on a daemon that is not running, and the note is the explanation
+beside it). When the cause is a saved layout the
 DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
 because no reconcile or restart can clear that one. A CamillaDSP that is simply
 *stopped* is read off the same cached systemd snapshot and reported the same

@@ -1199,6 +1199,21 @@ def _reconcile_coupling_inner(
     outputd_new_text, outputd_changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(desired, outputd_snapshot.text)
     )
+    # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
+    # values so first-writing an absent key (which resolves to the same default)
+    # is not mistaken for a heal — only a real move counts. The pair is crossed
+    # for a bounded window by construction (its two halves have two writers), so
+    # the heal is the normal end of an arm or a disarm; logging it is what keeps
+    # that window observable instead of silent, and what tells an operator
+    # reading the journal that a box which had been refusing outputd's attach
+    # just stopped.
+    ring_path_before = resolve_outputd_ring_path(
+        read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
+    )
+    ring_path_converged = (
+        desired == COUPLING_SHM_RING
+        and _outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
+    )
     # ``changed`` = should we rewrite either file. ``coupling_moved`` = did the
     # actual coupling topology move (gates the transition vs the confirm path).
     changed = fanin_changed or outputd_changed
@@ -1232,6 +1247,17 @@ def _reconcile_coupling_inner(
                 direction="error",
                 detail=str(e),
             )
+
+    if ring_path_converged:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="ring_path_converged",
+            desired=desired,
+            reason=reason,
+            was=ring_path_before,
+            now=_outputd_ring_path_for(outputd_new_text),
+        )
 
     _sync_process_env_for_emit(desired, outputd_new_text)
 
@@ -1780,10 +1806,25 @@ def reconcile_auto(
             active_leader_check=active_leader_check,
         )
     else:
+        # An operator-pinned box still converges its ring-path PROJECTION.
+        # `reconcile_coupling` is the projection's only writer, and step 1
+        # returns before it, so without this a pinned box never runs that writer
+        # at all — a crossed marker/path pair is PERMANENT there, in either
+        # direction. That is not a corner: every armed box on the fleet is
+        # pinned (see step 1's note above), so it is the ordinary case.
+        #
+        # The pin freezes the transport-topology CHOICE. This key is not a
+        # choice: outputd's allowlist admits exactly one value for a given
+        # marker, so the path is derived state and converging it overrides
+        # nothing the operator picked — the coupling line, the bridge, and every
+        # daemon are untouched here.
+        projection_converged = _converge_outputd_ring_projection(
+            outputd_env_path, decision.coupling, reason=reason
+        )
         coupling_result = CouplingResult(
             ok=True,
             desired=decision.coupling,
-            changed=False,
+            changed=projection_converged,
             direction="confirm",
         )
 
@@ -5040,9 +5081,22 @@ def _outputd_ring_path_for(outputd_text: str) -> str:
     one legal active-ring file — outputd's allowlist compares against that named
     constant — so "preserving" a custom value there would only ever produce the
     crossed pair the allowlist refuses.
+
+    TOTAL INTO THE LEGAL SET, in BOTH directions. The armed branch discards
+    whatever the key held; the unarmed branch must equally refuse to CARRY
+    FORWARD the active ring's own file, because the allowlist is a biconditional
+    — that file may be read only by an armed endpoint, exactly as an armed
+    endpoint may read only that file. Preserve-anything on the unarmed side made
+    the disarm direction STICKY: a box whose marker was cleared while the
+    coupling stayed ``shm_ring`` (the active-lane decision losing its hardware
+    proof) kept pointing outputd at a ring whose only writer had just been
+    stood down, and every later pass preserved it again, so the projection
+    never caught up with its source. Falling back to the stereo default here is
+    what makes every crossed pair one pass from healed, whichever half moved.
     """
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
         ring_active_endpoint_armed,
     )
@@ -5057,7 +5111,85 @@ def _outputd_ring_path_for(outputd_text: str) -> str:
     )
     if armed:
         return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-    return resolve_outputd_ring_path(read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR))
+    carried = resolve_outputd_ring_path(
+        read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
+    )
+    if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
+        return DEFAULT_OUTPUTD_RING_PATH
+    return carried
+
+
+def _converge_outputd_ring_projection(
+    outputd_env_path: str | os.PathLike,
+    coupling: str,
+    *,
+    reason: str,
+) -> bool:
+    """Converge the ring-path projection ALONE, ownership-independent.
+
+    The full :func:`_outputd_actions` set is owned-gated because most of it moves
+    the transport: the content bridge, the ring slots, the legacy sweep. The ring
+    PATH is the one member that is not a choice at all — outputd's allowlist
+    admits exactly one value for a given endpoint marker, so
+    :func:`_outputd_ring_path_for` derives it and nothing chooses it. This writes
+    that one key and nothing else, so an operator-frozen box converges its
+    projection without its frozen coupling ever being re-litigated.
+
+    Scoped to :data:`COUPLING_SHM_RING` on purpose. Under ``loopback`` outputd's
+    bridge is ``direct`` and its ring-path allowlist does not run at all
+    (``Config::from_env``, ``rust/jasper-outputd/src/config.rs`` — the check is
+    inside ``if content_bridge_mode == ContentBridgeMode::ShmRing``), so a stale
+    ring path there is inert: there is no crossed pair to heal, and clearing the
+    key would be a transport write on a box whose transport is frozen.
+
+    Writes only; bounces nothing. A moved projection means outputd is not
+    currently running that value — it either refused the crossed pair (exit 78,
+    ``RestartPreventExitStatus``) or has not read it yet — so the durable fix is
+    the file, and every existing trigger (deploy, boot, a sound-card udev event,
+    ``jasper-camilla-recover``'s OnFailure pass, an operator restart) now finds a
+    coherent pair where it used to find a permanently crossed one. Restarting the
+    final output owner from an unattended pass would buy nothing the file has not
+    already bought.
+
+    Returns True when the key moved. Fail-soft: a write error is logged and
+    reported as "did not move" rather than aborting the surrounding auto pass.
+    """
+    if coupling != COUPLING_SHM_RING:
+        return False
+    path = Path(outputd_env_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    derived = _outputd_ring_path_for(text)
+    if resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)) == derived:
+        return False
+    new_text, moved = upsert(text, OUTPUTD_RING_PATH_ENV_VAR, derived)
+    if not moved:
+        return False
+    try:
+        _write_env_text(path, new_text)
+    except OSError as e:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="ring_path_converge_failed",
+            reason=reason,
+            error=e,
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result="ring_path_converged",
+        desired=coupling,
+        reason=reason,
+        was=resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)),
+        now=derived,
+        owned=False,
+    )
+    return True
 
 
 def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
@@ -5084,14 +5216,25 @@ def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     outputd enforces a biconditional between the two — the active ring file may
     be read only by an armed active endpoint, and an armed active endpoint may
-    read only that file — so path and marker are ONE pairing with two writers,
-    and this is the writer of the path half. Deriving it here means the pair is
-    coherent by construction: a preserve-else-stereo default would write the
-    full-range Ring B path onto an armed box and the arm would ADMIT and then
-    park at exit 78, with the only workaround being a hand-edited half of a
-    safety pair. The marker is read from ``outputd_text`` — the same file this
-    call is reconciling, already carrying the hardware reconciler's answer,
-    because the arm ladder runs that reconciler before this step.
+    read only that file. The marker is the FACT (written by
+    ``jasper-audio-hardware-reconcile`` from the accepted active-lane decision)
+    and the path is its PROJECTION, derived here by
+    :func:`_outputd_ring_path_for`. Deriving rather than preserving is what makes
+    the pair coherent by construction: a preserve-else-stereo default would write
+    the full-range Ring B path onto an armed box, and outputd would then refuse
+    the pair at startup.
+
+    THIS RUNS ON EVERY PASS, before the transition-vs-confirm split, so it is
+    also the pair's RECOVERY: whichever half moved last, one pass of this
+    reconciler converges the other. That matters because the two halves have
+    different writers and cannot move in one write — the marker's writer runs
+    first (``jasper-audio-hardware-reconcile``, ``Before=jasper-outputd``) and
+    kicks ``jasper-fanin-coupling-auto.service``, which runs this. Between those
+    two the pair is legitimately crossed;
+    :func:`jasper.audio_runtime_plan.transport_coherence_report` reports that
+    window as the first-arm waypoint (a note) rather than a contradiction,
+    because a refusal there can only fire while the projection is stale and
+    would block the writer that converges it.
     """
     if coupling == COUPLING_SHM_RING:
         return (

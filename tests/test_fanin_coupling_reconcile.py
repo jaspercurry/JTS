@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -4068,3 +4069,78 @@ def test_the_default_voice_restart_wiring_is_not_reached_without_a_transition(
     assert voice_calls == [], (
         f"a narrow box's assistant width never moved; got {broker_calls}"
     )
+
+
+def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
+    tmp_path, monkeypatch, caplog
+):
+    """RECOVERY for the marker/path pair: one pass, either direction, observable.
+
+    The pair's two halves have two writers and cannot move in one write — the
+    marker's writer (``jasper-audio-hardware-reconcile``) runs first and kicks
+    this one. So a crossed pair is a normal bounded window, not a wreck, and what
+    makes it bounded is that ``_outputd_actions`` derives the path from the
+    marker on EVERY pass, before the transition-vs-confirm split.
+
+    Both directions are walked, because each was a separate stall:
+
+    * ARM (jts.local, 2026-08-21) — marker armed, path still Ring B. The
+      validator refused this, so the pass that would converge it never ran.
+    * DISARM — marker cleared while the coupling stayed ``shm_ring``. The
+      unarmed derivation used to preserve whatever the key held, so the active
+      ring's path survived every later pass and nothing ever converged.
+
+    The heal is logged rather than silent: a box that had been refusing outputd's
+    attach has just stopped, and the journal has to say when.
+    """
+    from jasper.fanin_coupling import (
+        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+        DEFAULT_OUTPUTD_RING_PATH,
+        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+        OUTPUTD_RING_PATH_ENV_VAR,
+    )
+
+    def _pass(marker: str, ring_path: str) -> tuple[str, str]:
+        # monkeypatch.setenv first so the reconciler's in-process env sync is
+        # unwound at teardown rather than leaking into the next test.
+        monkeypatch.setenv(OUTPUTD_RING_PATH_ENV_VAR, ring_path)
+        fanin_env = _write(
+            tmp_path / "fanin.env", f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
+        )
+        outputd_env = _write(
+            tmp_path / "outputd.env",
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n"
+            f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n"
+            f"{OUTPUTD_RING_PATH_ENV_VAR}={ring_path}\n",
+        )
+        _calls, ro, rf, rc = _recorder()
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            _reconcile(
+                COUPLING_SHM_RING,
+                fanin_env=fanin_env,
+                outputd_env=outputd_env,
+                restart_outputd=ro,
+                restart_fanin=rf,
+                reconcile_camilla=rc,
+                apply=False,
+            )
+        return outputd_env.read_text(encoding="utf-8"), caplog.text
+
+    armed_text, armed_log = _pass("1", DEFAULT_OUTPUTD_RING_PATH)
+    assert (
+        f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_ACTIVE_RING_PATH}" in armed_text
+    ), armed_text
+    assert "result=ring_path_converged" in armed_log, armed_log
+    assert DEFAULT_OUTPUTD_RING_PATH in armed_log, armed_log
+
+    cleared_text, cleared_log = _pass("", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
+    assert (
+        f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}" in cleared_text
+    ), cleared_text
+    assert "result=ring_path_converged" in cleared_log, cleared_log
+
+    # ...and an already-converged box does NOT claim a heal. Without this the
+    # event would fire on every pass and mean nothing.
+    _steady_text, steady_log = _pass("1", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
+    assert "result=ring_path_converged" not in steady_log, steady_log

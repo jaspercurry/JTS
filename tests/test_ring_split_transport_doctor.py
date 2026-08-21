@@ -233,3 +233,113 @@ def test_camilla2_evidence_still_respects_the_coupling_term(
     )
 
     assert ar.check_active_ring_split_transport().status == "ok"
+
+
+# ---------------------------------------------------------------------------
+# The ENDPOINT rung — check_active_ring_path_projection.
+#
+# The sibling above owns the graph rung and returns ok the moment the coupling
+# is `shm_ring`. These pin the other side of that partition: under the ring
+# coupling, the ring PATH lagging its endpoint MARKER.
+# ---------------------------------------------------------------------------
+
+
+def _arrange_projection(monkeypatch, tmp_path, *, coupling: str, env_lines: str):
+    """Put outputd.env and the persisted coupling on disk for the projection check.
+
+    A real file, not a stubbed mapping: the check reads persisted evidence
+    precisely BECAUSE outputd is not running in its target state, so what is
+    under test includes the read itself.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: coupling,
+    )
+    env = tmp_path / "outputd.env"
+    env.write_text(env_lines, encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env)
+    )
+
+
+@pytest.mark.parametrize(
+    "marker,carried,derived",
+    [
+        # The first-arm lag (jts.local, 2026-08-21): marker armed, path Ring B.
+        ("1", "/dev/shm/jts-ring/content.ring", "/dev/shm/jts-ring/active-content.ring"),
+        # The disarm lag: marker cleared, path still the active ring.
+        ("", "/dev/shm/jts-ring/active-content.ring", "/dev/shm/jts-ring/content.ring"),
+    ],
+)
+def test_a_ring_path_lagging_its_marker_fails_with_the_runnable_remedy(
+    monkeypatch, tmp_path, marker, carried, derived
+) -> None:
+    """The waypoint must produce a doctor line, and it must be actionable.
+
+    This is the state ``check_outputd_service`` structurally cannot report:
+    outputd refuses the crossed pair at startup, so that check returns its
+    systemd failure before ever reaching the transport comparison. Nothing owned
+    the finding, and the operator got "the unit is not running" with no cause.
+    """
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=SHM_RING,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
+            f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
+        ),
+    )
+
+    result = ar.check_active_ring_path_projection()
+
+    assert result.status == "fail", result
+    assert carried in result.detail
+    assert derived in result.detail
+    # Runnable, and the same pass the ladder's own next step runs.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+
+
+def test_a_converged_ring_pair_is_ok(monkeypatch, tmp_path) -> None:
+    """The negative control: an armed box on the active ring must not red."""
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=SHM_RING,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring\n"
+        ),
+    )
+
+    assert ar.check_active_ring_path_projection().status == "ok"
+
+
+def test_the_two_ladder_checks_partition_the_coupling_space(
+    monkeypatch, tmp_path
+) -> None:
+    """Neither rung is unowned, and neither is double-reported.
+
+    The split check returns ok as soon as the coupling is ``shm_ring``; the
+    projection check returns ok as soon as it is not. Pinning the handoff means a
+    later edit cannot leave a coupling value that both checks ignore — the gap
+    that let the endpoint rung go unowned in the first place.
+    """
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=LOOPBACK,
+        env_lines=(
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
+        ),
+    )
+    # Under loopback outputd runs the `direct` bridge and never reads the ring
+    # path, so the projection check stands down — and the split check is the one
+    # that owns anything wrong on this side.
+    assert ar.check_active_ring_path_projection().status == "ok"
+
+    _arrange(monkeypatch, tmp_path, coupling=SHM_RING, playback_device=RING_PLAYBACK_DEVICE)
+    assert ar.check_active_ring_split_transport().status == "ok"

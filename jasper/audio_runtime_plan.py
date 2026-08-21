@@ -1764,12 +1764,13 @@ class TransportCoherenceReport:
     """One transport comparison's contradictions AND its non-error observations.
 
     ``errors`` are contradictions: a caller that reports them refuses, parks, or
-    fails. ``notes`` are states that are coherent but not steady — today exactly
-    one, the ACTIVE-ring arm waypoint — so a caller PROCEEDS while still saying
-    what the box is sitting in. The split exists because those two need opposite
-    dispositions from the same comparison, and the box that motivated it (jts3,
-    2026-08-11) proved that collapsing them into ``errors`` deadlocks the
-    documented arm ladder.
+    fails. ``notes`` are states that are coherent but not steady — the two rungs
+    of the ACTIVE-ring arm ladder — so a caller PROCEEDS while still saying what
+    the box is sitting in. The split exists because those two need opposite
+    dispositions from the same comparison, and two boxes proved that collapsing
+    them into ``errors`` deadlocks the documented arm ladder: jts3 2026-08-11
+    (the graph rung, on a loopback plan) and jts.local 2026-08-21 (the endpoint
+    rung, on a plan already ``shm_ring``).
 
     Notes are not "soft errors". A note means the state is safe-by-construction
     at this instant and has a documented next step, not that a contradiction was
@@ -1864,22 +1865,60 @@ def transport_coherence_report(
             topology.camilla_to_outputd.get("camilla_playback_device") or ""
         )
         if normalized == TRANSPORT_SHM_RING_ACTIVE:
-            # The armed active endpoint may read ONLY the active ring file. The
-            # Rust side enforces the same pairing as a biconditional at startup;
-            # catching it here means the reconciler refuses to commit a crossed
-            # pair rather than the daemon parking at exit 78 after the flip.
+            # The armed active endpoint may read ONLY the active ring file, and
+            # outputd enforces that pairing as a biconditional at its own
+            # startup. This layer reports the pair; it does not gate on it.
+            #
+            # WHY A NOTE AND NOT AN ERROR. The two halves are not two facts. The
+            # MARKER is the fact — jasper-audio-hardware-reconcile writes it from
+            # the accepted active-lane decision — and the PATH is its projection,
+            # with exactly one derivation and one writer
+            # (jasper.fanin.coupling_reconcile's `_outputd_ring_path_for`, applied
+            # by `_outputd_actions` on every pass). A crossed pair is therefore
+            # always a projection that is one pass behind its source, never a
+            # disagreement between two independent observations.
+            #
+            # Refusing on that lag was a DEADLOCK, and this is the second box
+            # class to hit it. The marker's writer validates its own candidate
+            # here, before the path's writer has run: on a box whose persisted
+            # coupling is ALREADY `shm_ring` (a previously-passive composite that
+            # ran the stereo ring), arming the marker resolves this shape
+            # immediately while the path key still carries the stereo ring — so
+            # the marker could not be written until the path moved, and the path
+            # is derived FROM the marker. Neither could move first, the refusal
+            # exited 78, and `jasper-camilla`'s `Requires=` on that unit took the
+            # DSP graph down and disabled its own rollback. Observed on
+            # jts.local, 2026-08-21, first arm of a dual-Apple composite. The
+            # sibling waypoint below is the same shape on the loopback plan
+            # (jts3, 2026-08-11).
+            #
+            # Safe by construction rather than by permission, on three counts:
+            # outputd REFUSES the crossed pair, so the waypoint is silence and
+            # never wrong audio; the pair's own writer converges it on its next
+            # pass, which the marker's writer kicks
+            # (`jasper-fanin-coupling-auto`); and this note never stands alone on
+            # a wrecked box, because the device / bridge / format / channel
+            # comparisons in this same branch still return ERRORS for a graph
+            # that is not actually on the active ring, and the caller refuses on
+            # those.
             from jasper.fanin_coupling import DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
             observed_ring_path = str(
                 topology.camilla_to_outputd.get("path") or ""
             )
             if observed_ring_path != DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
-                errors.append(
-                    f"transport plan is {TRANSPORT_SHM_RING_ACTIVE} but "
-                    f"{OUTPUTD_RING_PATH_KEY}={observed_ring_path!r}; an armed "
-                    f"active endpoint may read only "
-                    f"{DEFAULT_OUTPUTD_ACTIVE_RING_PATH!r} (outputd bails on the "
-                    "crossed pair at startup)"
+                notes.append(
+                    f"{OUTPUTD_RING_PATH_KEY}={observed_ring_path!r} under an "
+                    f"armed active endpoint is the FIRST-ARM waypoint: the "
+                    f"endpoint marker has moved and its ring-path projection has "
+                    f"not. An armed active endpoint may read only "
+                    f"{DEFAULT_OUTPUTD_ACTIVE_RING_PATH!r}, so outputd refuses "
+                    "the pair and this box is silent — never wrong audio — until "
+                    "the path's single writer converges it. Complete it with "
+                    "`jasper-fanin-coupling-reconcile shm_ring` (the audio-"
+                    "hardware reconciler also starts "
+                    "jasper-fanin-coupling-auto.service, which runs the same "
+                    "pass)."
                 )
         if raw_bridge != COUPLING_SHM_RING:
             errors.append(
