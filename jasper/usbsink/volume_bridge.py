@@ -58,11 +58,21 @@ logger = logging.getLogger(__name__)
 # Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
 # perceptible lag.
 POLL_INTERVAL_SEC = 0.25
-# When jasper-control declines an observation because USB is not the active
-# source yet, retry at a bounded cadence. This closes the boot/deploy race where
-# the first mixer read arrived before source activation and was then cached
-# forever. A changed host value bypasses the delay and publishes immediately.
+# When jasper-control declines an observation (USB not the active source yet,
+# a measurement hold, etc.), retry with a capped exponential backoff rather
+# than hammering /volume/set at the poll cadence forever. POST_RETRY_INTERVAL_SEC
+# is the starting delay — short enough to close the boot/deploy race where the
+# first mixer read arrives before source activation — and each consecutive
+# decline of the SAME value doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to
+# POST_RETRY_CEILING_SEC. Measured on the jts3 lab Pi (2026-08-20): the
+# un-backed-off bridge posted ~3,200 times/hour to report an unchanged slider
+# while USB was idle all day; a 30 s ceiling bounds that to ~120/hour. A changed
+# host value, or an accepted post, resets the backoff to the base interval, so
+# once jasper-control starts accepting again the current slider position lands
+# within one ceiling-length window rather than waiting out the full backoff.
 POST_RETRY_INTERVAL_SEC = 1.0
+POST_RETRY_BACKOFF_FACTOR = 2.0
+POST_RETRY_CEILING_SEC = 30.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -144,10 +154,12 @@ class VolumeBridge:
         bridge.run()  # async, blocks until cancelled
 
     The bridge does NOT cache jasper-control state. Every observed
-    mixer change triggers one POST; a value declined because USB is
-    not active yet is retried at a bounded cadence until the controller
-    acknowledges it. Accepted values are deduplicated locally, while
-    the coordinator owns source and echo policy.
+    mixer change triggers one POST; a declined value (USB not the
+    active source, a measurement hold, etc.) is retried with a capped
+    exponential backoff until the controller acknowledges it, so a
+    long-lived decline costs one POST every POST_RETRY_CEILING_SEC
+    rather than one per poll. Accepted values are deduplicated
+    locally, while the coordinator owns source and echo policy.
     """
 
     def __init__(
@@ -186,6 +198,10 @@ class VolumeBridge:
         self._last_published_pct: Optional[int] = None
         self._last_attempted_pct: Optional[int] = None
         self._retry_not_before: float = 0.0
+        # Current backoff step for a repeated decline of _last_attempted_pct.
+        # Starts at (and resets to) the base interval; see the constants'
+        # comment above for the growth/reset rules.
+        self._retry_backoff_sec: float = POST_RETRY_INTERVAL_SEC
         # First mixer snapshot after bridge startup is state discovery, not
         # proof of a new host action. Keep its identity through bounded retries
         # so a restarted bridge cannot erase a mute asserted by another surface.
@@ -352,11 +368,16 @@ class VolumeBridge:
         if pct == self._last_published_pct:
             return
         now = time.monotonic()
-        if (
-            pct == self._last_attempted_pct
-            and now < self._retry_not_before
-        ):
-            return
+        if pct == self._last_attempted_pct:
+            if now < self._retry_not_before:
+                return
+        else:
+            # The target value changed since our last attempt (a fresh
+            # slider move, possibly while we were backing off a previous
+            # decline) — always attempt immediately, and reset the backoff
+            # so this new value isn't delayed by the old one's decline
+            # history.
+            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
         self._last_attempted_pct = pct
         accepted = await self._post(
             pct,
@@ -368,8 +389,13 @@ class VolumeBridge:
         if accepted:
             self._last_published_pct = pct
             self._retry_not_before = 0.0
+            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
         else:
-            self._retry_not_before = now + POST_RETRY_INTERVAL_SEC
+            self._retry_not_before = now + self._retry_backoff_sec
+            self._retry_backoff_sec = min(
+                self._retry_backoff_sec * POST_RETRY_BACKOFF_FACTOR,
+                POST_RETRY_CEILING_SEC,
+            )
 
     def _raw_to_pct(self, raw: int) -> int:
         """THE volume curve: raw mixer STEP INDEX -> JTS 0-100 percent.

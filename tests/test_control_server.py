@@ -3059,6 +3059,63 @@ def test_volume_set_rejects_non_boolean_initial_metadata(server_with_coordinator
     assert all(call[0] != "observe" for call in fake.calls)
 
 
+def test_volume_set_event_log_level_tracks_state_change(
+    server_with_coordinator, caplog,
+):
+    """event=volume.set stays INFO for anything that actually changes state
+    (an authoritative set, or an applied observation) and drops to DEBUG for
+    a declined observation — a no-op that the usbsink volume bridge can
+    retry for hours (jasper/usbsink/volume_bridge.py), which would otherwise
+    spam the journal at INFO for something that changed nothing. Only the
+    level changes; the fields (new_pct, source, observation_applied,
+    client) stay identical across all three call shapes."""
+    import logging
+
+    base, fake = server_with_coordinator
+
+    # Applied observation -> INFO (state changed: the coordinator adopted
+    # the observed value).
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        status, body = _post(
+            f"{base}/volume/set", {"percent": 42, "source": "usbsink"},
+        )
+    assert status == 200
+    assert body["observation_applied"] is True
+    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    caplog.clear()
+
+    # Declined observation -> DEBUG (no-op: source inactive, echo window,
+    # measurement hold, etc. — nothing about the speaker's state changed).
+    async def _decline(source, percent, *, initial=False):
+        return False
+
+    fake.observe_source_volume = _decline
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        status, body = _post(
+            f"{base}/volume/set", {"percent": 43, "source": "usbsink"},
+        )
+    assert status == 200
+    assert body["observation_applied"] is False
+    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert "new_pct=" in records[0].getMessage()
+    assert "source=usbsink" in records[0].getMessage()
+    assert "observation_applied=false" in records[0].getMessage()
+    caplog.clear()
+
+    # Authoritative set (no `source`, observation_applied stays None) ->
+    # INFO — always a real state change.
+    with caplog.at_level(logging.DEBUG, logger="jasper.control.server"):
+        status, body = _post(f"{base}/volume/set", {"percent": 50})
+    assert status == 200
+    records = [r for r in caplog.records if "event=volume.set" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+
+
 def test_volume_set_with_unknown_source_falls_back_to_set(server_with_coordinator):
     """Unknown source names go through the authoritative set path so a
     future client that posts a fresh source name doesn't silently

@@ -12,6 +12,7 @@ controls.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import subprocess
 from pathlib import Path
@@ -20,6 +21,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jasper.usbsink.volume_bridge import (
+    POLL_INTERVAL_SEC,
+    POST_RETRY_INTERVAL_SEC,
     USBSINK_VOLUME_DB_MAX,
     USBSINK_VOLUME_DB_MIN,
     USBSINK_VOLUME_STEP_DB,
@@ -550,6 +553,172 @@ async def test_tick_retries_observation_declined_before_source_activation(
 
     assert posted == [64, 64]
     assert bridge._last_published_pct == 64
+
+
+# ----------------------------------------------------------------------
+# Bounded backoff for declined observations (jts3, 2026-08-20): jasper-control
+# can decline an observation for a long stretch — not just the boot/deploy
+# race above, but hours of USB being idle, or a measurement hold owned by
+# another in-flight subsystem. Retrying at the flat base cadence forever
+# measured ~3,200 POSTs/hour reporting an unchanged slider. These tests pin
+# the capped-exponential-backoff fix: bounded retries, reset on value change,
+# reset on acceptance.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog):
+    """A value jasper-control keeps declining must not be retried at the base
+    poll cadence forever. Simulate a 10 simulated-minute window (via a
+    controllable fake clock, so the test runs instantly) of a constant,
+    always-declined slider value and assert BOTH the POST count and the
+    matching DEBUG journal-line count stay far under the flat-cadence
+    baseline (~2,400 over the same window at the 4 Hz poll rate, ~600 at the
+    old flat 1 Hz retry cadence)."""
+    bridge = VolumeBridge()
+    bridge._vol_numid = 1
+    bridge._switch_numid = None
+    _set_range(bridge)
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)  # steady pct 64
+
+    class _FakeDeclineResponse:
+        ok = True
+        status = 200
+
+        def __init__(self, pct: int) -> None:
+            self._pct = pct
+
+        def json(self):
+            return {"percent": self._pct, "observation_applied": False}
+
+    class _FakeDeclineControl:
+        """Stands in for AsyncControlClient: every observation is declined,
+        exercising the real _post() so its DEBUG log line is exercised too."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def set_volume(self, pct, *, source, observation_initial=False):
+            self.calls += 1
+            return _FakeDeclineResponse(pct)
+
+    fake_control = _FakeDeclineControl()
+    bridge._control = fake_control
+
+    fake_now = [0.0]
+    monkeypatch.setattr(
+        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
+    )
+
+    simulated_seconds = 600.0  # 10 simulated minutes
+    ticks = int(simulated_seconds / POLL_INTERVAL_SEC)
+
+    with caplog.at_level(logging.DEBUG, logger="jasper.usbsink.volume_bridge"):
+        for _ in range(ticks):
+            await bridge._tick()
+            fake_now[0] += POLL_INTERVAL_SEC
+
+    deferred_lines = [
+        r for r in caplog.records
+        if "event=usbsink.volume_observation_deferred" in r.getMessage()
+    ]
+
+    # A flat 1 Hz retry (the pre-fix behavior) would produce ~600 POSTs in
+    # this window; a naive per-poll retry would produce ~2,400. The capped
+    # backoff must land far below either baseline.
+    assert 0 < fake_control.calls < 40
+    # Every declined POST logs exactly one DEBUG deferral line — bounding the
+    # POSTs bounds the journal lines the same way.
+    assert len(deferred_lines) == fake_control.calls
+
+
+@pytest.mark.asyncio
+async def test_tick_value_change_resets_backoff(monkeypatch):
+    """A fresh slider move must not inherit the backoff accumulated while
+    retrying a different, now-stale value — it always gets an immediate
+    attempt, scheduled at the BASE retry interval rather than whatever
+    stretched-out interval the old value had reached."""
+    bridge = VolumeBridge()
+    bridge._vol_numid = 1
+    bridge._switch_numid = None
+    _set_range(bridge)
+
+    raw = {"value": 40}  # -> pct 64
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: raw["value"])
+
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+        return False  # always declined
+
+    monkeypatch.setattr(bridge, "_post", _fake_post)
+
+    fake_now = [0.0]
+    monkeypatch.setattr(
+        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
+    )
+
+    # Grind the backoff up past the base interval with several declines of
+    # the SAME value, each tick advancing the clock to the next eligible
+    # retry so every call actually attempts (rather than being gated).
+    await bridge._tick()
+    fake_now[0] = bridge._retry_not_before
+    await bridge._tick()
+    fake_now[0] = bridge._retry_not_before
+    await bridge._tick()
+    assert bridge._retry_backoff_sec > POST_RETRY_INTERVAL_SEC
+
+    # The slider moves to a new value well before the next scheduled retry
+    # for the OLD value.
+    assert fake_now[0] + 0.25 < bridge._retry_not_before
+    raw["value"] = 25  # -> pct 25
+    fake_now[0] += 0.25
+    await bridge._tick()
+
+    # The new value got an immediate attempt (not gated by the old, larger
+    # retry_not_before) and rescheduled its own retry at the BASE interval —
+    # proof the backoff was reset, not inherited.
+    assert bridge._last_attempted_pct == 25
+    assert bridge._retry_not_before == pytest.approx(
+        fake_now[0] + POST_RETRY_INTERVAL_SEC,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tick_accepted_post_resets_backoff(monkeypatch):
+    """An accepted post must drop the backoff back to the base interval, not
+    leave it at whatever step the decline ramp had reached. Otherwise a
+    value that later flips accepted -> declined again (e.g. USB loses the
+    active source a second time) would inherit a stale, already-capped
+    backoff instead of starting the ramp over from a fresh, fast retry."""
+    bridge = VolumeBridge()
+    bridge._vol_numid = 1
+    bridge._switch_numid = None
+    _set_range(bridge)
+    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)  # pct 64
+
+    outcomes = iter([False, False, False, True])  # decline x3, then accept
+
+    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+        return next(outcomes)
+
+    monkeypatch.setattr(bridge, "_post", _fake_post)
+
+    fake_now = [0.0]
+    monkeypatch.setattr(
+        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
+    )
+
+    await bridge._tick()
+    fake_now[0] = bridge._retry_not_before
+    await bridge._tick()
+    fake_now[0] = bridge._retry_not_before
+    await bridge._tick()
+    assert bridge._retry_backoff_sec > POST_RETRY_INTERVAL_SEC
+    fake_now[0] = bridge._retry_not_before
+    await bridge._tick()  # accepted this time
+
+    assert bridge._last_published_pct == 64
+    assert bridge._retry_backoff_sec == POST_RETRY_INTERVAL_SEC
+    assert bridge._retry_not_before == 0.0
 
 
 @pytest.mark.asyncio
