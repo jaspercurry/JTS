@@ -227,13 +227,14 @@ revisited when evidence demands it.
   cannot do.
 - **Frequency-dependent windowing**: genuinely disputed in the field; the
   gating SSOT stays a fixed, versioned window.
-- **Window-shape variation as an artifact probe**: the classifier's C0–C3
-  injected-control suite is the instrument self-test; a shape-variation
-  probe adds little over it.
+- **Window-shape variation as an artifact probe**: the classifier's control
+  suite (C0–C3 injected controls plus the C4 pair scale) is the instrument
+  self-test; a shape-variation probe adds little over it.
 - **Ground-plane and two-distance regimes; air absorption modeling.**
 - **Calibration phase application and incidence-aware math**: the cal
-  file's phase column is parsed and documented as unapplied; orientation
-  routes the vendor fetch only.
+  file's phase column is parsed but never applied (this ledger entry is the
+  record; 2.14 adds the in-file note); orientation routes the vendor fetch
+  only.
 - **Bespoke mechanism detectors** (port resonance, cone breakup, room mode,
   panel resonance, rattle/impulsive defects, amplifier-clipping
   heuristics): the per-feature evidence record carries the discriminating
@@ -261,12 +262,13 @@ the ruling and those documents are stale.
 
 - `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
   previous program-wide roadmap for the identical scope. Replaced whole.
-- `docs/crossover-linearization-80-20-plan.md` future-work sections and
-  `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
+- `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
-  a machine-RECOMMENDED Fc) is cancelled** by invariant 2. The campaign's
-  landed R14–R20 record remains historical truth; the governance table's
-  "future contracts and campaign ordering" authority transfers here.
+  a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
+  document's campaign-ordering authority ("what supersedes what")
+  transfers here. R21 lives only in that document; the 80-20 plan's landed
+  R14–R20 record remains historical truth and is **not** superseded (it
+  stands in the compatible list below).
 - `docs/llm-native-tuning-workbench-plan.md` — its planning-authority claim
   and its §5.5 "experiment workspace is the one new mutation owner" are
   superseded: `play_program` is the single activation door (invariant 5),
@@ -282,8 +284,11 @@ the ruling and those documents are stale.
   a parallel system.
 
 **Standing, compatible (no action):** the `flat-linearization-*` trio
-(foundational, absorbed into Loop B), `gating-v2-plan.md` (feeds the
-kernel), `HANDOFF-bass-extension-plan.md` (parked; converges at 4.4),
+(foundational, absorbed into Loop B),
+`crossover-linearization-80-20-plan.md` (its R14–R20 record is historical
+truth; 2.4 names the R17 deliverable it retires), `gating-v2-plan.md`
+(feeds the kernel), `HANDOFF-bass-extension-plan.md` (parked; converges at
+4.4),
 `room-correction-regime-plan.md` (parked under the Loop C pin),
 `crossover-measurement-productization-design.md`,
 `two-stage-commission-flow-plan.md`, the information-design docs, and the
@@ -348,7 +353,8 @@ vocabulary; update `docs/doc-map.toml` routing; update
 `HANDOFF-crossover-measurement-v2.md`'s file-map rows; strike the doctrine's
 deviation rows as they close.
 2.1 Layers-doc P2 amendment + pointer to this plan (lands with/after 2.2–2.4
-    so prose states what is).
+    so prose states what is); also trues up the Measurement Program v2
+    section's ×3 anchor-repeat count to the adopted ×4.
 2.2 Delete `search.py`, `objective.py`, `candidate_space.py`; fold
     `XoverCandidate` into `forward_model.py`; PR body records the
     #2811/#2815 write-off as a decision. (M)
@@ -393,13 +399,15 @@ deviation rows as they close.
     already unified in `quality_model`; unify the *words* across the six
     verdict sets (`quality.Severity`, `runtime_integrity.Severity`,
     `browser_audio`'s two scales, `acoustic_quality`'s summary,
-    `snr_policy`'s rank); classifier confidence `med` → `medium`; remove
-    `correction/envelope.py`'s `surface_quality_gated` — a verdict member
-    the owning acceptance module never emits. (S–M)
+    `snr_policy`'s rank); classifier confidence `med` → `medium`; rename
+    `correction/envelope.py`'s synthetic `surface_quality_gated` copy key
+    so it cannot read as a `Verdict` member — it is deliberately never one,
+    and its quality-gated household copy (#2058 B1) is correct and stays. (S–M)
 2.11 `setup_status.py`'s private statefile reader (duplicate env-var name,
     literal path, and regex parse) folds onto
-    `active_speaker/environment.py` — one owner for
-    `JASPER_CAMILLA_STATEFILE`. (S)
+    `active_speaker/environment.py`. Scope is that one duplicate — the
+    other readers of `JASPER_CAMILLA_STATEFILE` keep their documented
+    reasons. (S)
 2.12 Rename the two `vocabulary.py` modules (attribution's taxonomy vs
     crossover_v2's household refusal copy) so the names say which is
     which. (S)
@@ -407,10 +415,11 @@ deviation rows as they close.
     `pending_signal_boundary`/`controlled_pre_sweep` fields or wire the
     analyzer they awaited. (S)
 2.14 Docs true-up (the Supersessions section): historical tags/banners on
-    `audio-commissioning-roadmap.md`, the 80-20 plan's future sections,
-    `HANDOFF-correction-revision-plan.md`'s next_mission,
-    `llm-native-tuning-workbench-plan.md`, `attribution-stage-plan.md`;
-    doctrine deviation-table rows (a)/(b). (S–M)
+    `audio-commissioning-roadmap.md`, `llm-native-tuning-workbench-plan.md`,
+    and `attribution-stage-plan.md`;
+    `HANDOFF-correction-revision-plan.md`'s next_mission cancellation +
+    ordering-authority transfer note; doctrine deviation-table rows
+    (a)/(b); a one-line unapplied-phase note in `calibration.py`. (S–M)
 
 **Wave 3 — the tournament (M–L overall):**
 3.1 Harden `play_program`: prove-at-quiet-floor before mutation, read-back
