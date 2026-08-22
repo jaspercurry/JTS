@@ -931,7 +931,13 @@ def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
     assert ac.MOVER_MAX_ANGLE_DEG[ac.MOVER_ARM] == ac.ARM_ENVELOPE_DEG == 45
     reach = ac.per_driver_at([80, -80], mover=ac.MOVER_HUMAN)
     prompts = ac.session_lateral_walk(
-        reach, externally_positioned=False, base_entries=3,
+        reach,
+        # The hand-released shape's OWN answer, not a literal: what makes a
+        # person's walk admissible is that a gated session still advances by
+        # tap, and a regression that gave it the countdown would refuse this
+        # walk rather than quietly measuring through it.
+        externally_positioned=_hand_released().externally_positioned,
+        base_entries=3,
         plans_cloud_group=False,
     )
     assert [position_angle_deg(p) for p in prompts] == [80, -80]

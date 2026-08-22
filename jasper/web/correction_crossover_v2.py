@@ -6361,7 +6361,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# the remote tier's position gate
+# the position gate — the arm's, and the hand-released round's
 # --------------------------------------------------------------------------- #
 
 #: How long ONE position hold waits for its external driver before the session
@@ -6713,9 +6713,11 @@ class V2PreparedSession:
     open: Callable[..., Any]
     run_and_consume: Callable[[Any, Any], Any]
     request_stop: Callable[[], None]
-    #: The remote tier's position gate, or ``None`` for a hand-walked session.
+    #: This session's position gate, or ``None`` for a tap-paced one. Built for
+    #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
+    #: and a hand-walked round on the wired source.
     #: ``correction_setup`` reads :meth:`PositionGate.pending` into the relay
-    #: block the envelope renders, and routes the driver's POST to
+    #: block the envelope renders, and routes the release POST to
     #: :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
     #: Which capture source this session opened on (#2662):

@@ -155,7 +155,8 @@ _loop_thread: threading.Thread | None = None
 # _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
 _relay_stop_request: Callable[[], None] | None = None
-# The active session's position gate (the remote commission tier), or None.
+# The active session's position gate, or None — set for either GATED shape
+# (the remote commission tier, and a hand-walked round on the wired source).
 # Same lifecycle as ``_relay_stop_request``: set when the slot is claimed,
 # dropped the moment the slot leaves an in-flight status — which is what stops a
 # finished session from still advertising a position it is waiting for, and
@@ -6042,14 +6043,16 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
 def _handle_crossover_v2_position_ready(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/position-ready — the remote tier's position release.
+    """POST /crossover/v2/position-ready — a GATED session's position release.
 
-    The external driver read ``relay.position_pending`` off the envelope, moved
-    its positioner to the stated angle, waited its own settle time, and is now
-    saying so. Releasing admits the held ``begin_capture`` the capture page has
-    been re-posting, and the capture starts.
+    Whoever moved the microphone read ``relay.position_pending`` off the
+    envelope, went to the stated angle, waited their own settle time, and is now
+    saying so. Releasing admits the held ``begin_capture`` and the capture
+    starts. Two shapes reach here and the verb does not care which: the remote
+    tier's external driver, and the person holding the tape on a hand-walked
+    wired round (#2879).
 
-    ``index`` is REQUIRED and checked against what is actually pending: a driver
+    ``index`` is REQUIRED and checked against what is actually pending: a caller
     retrying this POST after its capture already started must not release the
     NEXT position, which is the one way an untargeted release could quietly
     measure a pose the microphone never reached. A retry that still names the

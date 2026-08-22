@@ -521,8 +521,9 @@ def test_known_post_routes_reach_csrf_guard():
         # household takes, so CSRF-guarded like every other mutating route
         # even though it changes nothing on the speaker.
         "/crossover/v2/decline",
-        # The remote tier's position release — an external driver's POST, and
-        # CSRF-guarded exactly like every other mutating route here.
+        # A gated session's position release — an external driver's POST, or a
+        # person's on a hand-walked wired round, and CSRF-guarded exactly like
+        # every other mutating route here.
         "/crossover/v2/position-ready",
         # The wired session's all-spots-measured confirmation (#2662 W2b) —
         # same driver-facing shape as position-ready, same CSRF guard.

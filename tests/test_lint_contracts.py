@@ -544,7 +544,7 @@ MAX_LINES_BY_PATH = {
     #    reader learns that `externally_positioned` is the ADVANCE axis while
     #    `positions_gated` is the pose-statement one. Three consumers moved from
     #    one to the other and cost no lines at all.
-    #  * `correction_crossover_v2` 9,386 -> 9,388. Net two, and not for want of
+    #  * `correction_crossover_v2` 9,386 -> 9,390. Net four, and not for want of
     #    additions: `_hand_released_plan_shape`, `PositionGate.abandon_hold`, and
     #    the retake seam all landed here, against deletions the same day. The
     #    room that IS spent is `abandon_hold`'s own paragraph, which records the
@@ -1285,7 +1285,7 @@ MAX_LINES_BY_PATH = {
     # result wait went with the sweep whose compute ceiling it published — see
     # `_mint_source_session`, which now states why the page's own 90 s floor
     # governs instead.
-    "jasper/web/correction_crossover_v2.py": 9_388,
+    "jasper/web/correction_crossover_v2.py": 9_390,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
