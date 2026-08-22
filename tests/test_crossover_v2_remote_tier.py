@@ -860,6 +860,67 @@ def test_both_preparers_build_the_gate_from_the_shapes_own_answer():
     assert "PositionGate() if plan_shape.externally_positioned" not in source
 
 
+def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
+    caplog, monkeypatch,
+):
+    """The acceptance criterion, through the REAL preparer.
+
+    A wired round has no capture page, so nothing there taps: without a hold
+    the local runner fires every capture back to back while the household is
+    still walking. So a hand-walked shape on the wired source opens gated,
+    announces WHO releases the holds, and carries the local retake seam — and
+    the same tier on the relay opens exactly as it always has.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    prepared = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.capture_source == v2host.SOURCE_WIRED
+    assert prepared.position_gate is not None
+    assert prepared.request_retake is not None
+    assert prepared.request_complete is not None
+    opens = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+    assert len(opens) == 1, opens
+    assert f"tier={TIER_FULL}" in opens[0] and "hand_released=true" in opens[0]
+
+
+def test_a_hand_walked_relay_round_still_opens_with_no_gate(caplog, monkeypatch):
+    """The control for the pin above: the SOURCE is what changed, not the tier.
+
+    A relay round is paced by the page's own tap, so it carries no gate, no
+    local completion signal, and no local retake — byte-identical to what
+    every hand-walked session has always opened with.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_RELAY, None),
+    )
+    prepared = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.position_gate is None
+    assert prepared.request_retake is None
+    assert prepared.request_complete is None
+    assert not [
+        r for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+
+
 def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
     """±80° is the GEOMETRY's ceiling and the person's reach; ±45° is the
     arm's own travel. A walk stated for a person is judged against the
