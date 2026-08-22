@@ -227,7 +227,8 @@ def bind_measure_capture(
     # Which vocabulary matters even though it cannot be seen: the STIMULUS
     # phases carry the same word (``program.PROGRAM_PHASE_MEASURE`` is also
     # ``"measure"``, which is why #2868 gave them a prefix), so a literal is
-    # right by coincidence and a wrong import would be silently right today.
+    # right only by coincidence and a wrong import stays silently right for
+    # exactly as long as that coincidence holds.
     # ``harmonic_evidence._scope_captures`` gates the same sidecars on the same
     # field with this same constant.
     from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
