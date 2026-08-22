@@ -4,7 +4,7 @@
 > This document is the planning authority for the measurement/tuning program;
 > the prior plans it supersedes are listed in "Supersessions and standing
 > docs" below. Wave 0 landed 2026-08-21 (all five PRs merged); Waves 1–2 are
-> underway (tracking: epics #2824/#2825 carry per-ticket state — not
+> underway (tracking: epics #2824/#2825/#2826 carry per-ticket state — not
 > enumerated here; one planning authority, one tracker). The 2026-08-21
 > adversarial gate review of this document returned 1 blocker and 7
 > should-fixes, all folded into this revision (see Provenance).
