@@ -426,10 +426,9 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #: 2. :func:`_check_composed` refuses any role whose evaluated cascade peak
 #:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by more than
 #:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an ACCEPTED document has
-#:    ``peak <= 12.0 + 1e-9`` on the gate's own reading. The tolerance is
-#:    carried through the rest of this derivation rather than dropped: it
-#:    lands on the bound as 13.000000001 dB, which is 13.0 at every digit
-#:    anything here publishes.
+#:    ``peak <= 12.0 + 1e-9`` on the gate's own reading. That tolerance is
+#:    carried rather than dropped; where it lands is stated after step 4,
+#:    because step 4 contributes a second term to the same sum.
 #: 3. **The span clause** — the step the whole proof rests on. That reading is
 #:    taken on :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
 #:    IMPORTED (the charge's own span) unioned with a dense sweep of the role's
@@ -459,7 +458,11 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #:      same base. A maximum over a subset cannot exceed the maximum over the
 #:      superset.
 #:
-#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision.
+#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision. Carrying
+#: both tolerances instead of dropping them, the true ceiling is step 2's 1e-9
+#: plus step 4's 1e-8 section allowance: ``13.000000011`` dB. Both are stated
+#: here, after the step that contributes the second one, rather than in step 2
+#: where the sum was not yet known.
 #:
 #: **The bound is ATTAINED, not approached**: one filter at
 #: :data:`DRIVER_MAX_FILTER_BOOST_DB`, at any Q, composes to exactly 12.000000

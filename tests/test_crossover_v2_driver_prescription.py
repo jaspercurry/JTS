@@ -1744,7 +1744,9 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     it GROWS sharply as the corner drops toward ~20 Hz. On THIS test's grid the
     worst over the corners below is **+1.1654e-09 dB at LR8 / 20 Hz lowpass**,
     and a 200-corner sweep over 10 Hz-20 kHz peaks at +1.0790e-09 near 18.4 Hz.
-    Below that it turns negative again (-1.94e-09 at 15 Hz).
+    Below that the LR8 lowpass curve turns negative again (-1.94e-09 at 15 Hz);
+    that is a fact about THAT curve, not the family — at 15 Hz the family
+    maximum is still positive (+9.37e-13, LR8 highpass).
 
     **The bar moved 1e-9 -> 1e-8, and the reason is worth stating rather than
     burying.** 20 Hz and 40 Hz corners were added because this pin's lowest was
