@@ -16,7 +16,11 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.quality_model import Severity, TrustLevel
+from jasper.audio_measurement.quality_model import (
+    TRUST_UNAVAILABLE,
+    Severity,
+    TrustLevel,
+)
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from . import spatial
@@ -251,7 +255,7 @@ def _strategy_gates(
         assertive_reasons.append("capture SNR is low")
     if browser_processing_warning:
         assertive_reasons.append("browser reported audio processing")
-    if repeatability_level in {None, "", "unavailable"}:
+    if repeatability_level in {None, "", TRUST_UNAVAILABLE}:
         assertive_reasons.append("same-position repeatability is unavailable")
     elif repeatability_level == "low":
         assertive_reasons.append("same-position repeatability is low")
@@ -637,7 +641,7 @@ def build_confidence_report(
     repeatability_level = None
     if isinstance(repeatability_report, dict):
         repeatability_level = str(
-            repeatability_report.get("level") or "unavailable"
+            repeatability_report.get("level") or TRUST_UNAVAILABLE
         )
         if repeatability_level == "low":
             score -= 20
@@ -653,7 +657,7 @@ def build_confidence_report(
                 severity="info",
                 message="same-position repeatability is usable but not high",
             ))
-        elif repeatability_level == "unavailable":
+        elif repeatability_level == TRUST_UNAVAILABLE:
             score -= 5
             findings.append(ConfidenceFinding(
                 code="repeatability_unavailable",

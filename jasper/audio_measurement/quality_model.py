@@ -75,7 +75,7 @@ from typing import Literal
 #
 #   Severity    — "how bad is this ONE finding?"      info < warn < fail
 #   ReportLevel — "how does the WHOLE report roll up?"  ok < warn < fail
-#   TrustLevel  — "how much do I trust this NUMBER?"  low < medium < high
+#   TrustLevel  — "how much do I trust this READING?" low < medium < high
 #
 # Severity and ReportLevel share two of three words and are still distinct: a
 # report with no findings rolls up ``ok``, which is not a severity any single
@@ -100,8 +100,9 @@ Severity = Literal["info", "warn", "fail"]
 #: How a WHOLE report rolls up, once its findings are reduced.
 ReportLevel = Literal["ok", "warn", "fail"]
 
-#: How much a reported NUMBER can be trusted. ``medium`` is spelled in full —
-#: see the ``med`` incident above.
+#: How much a reported READING can be trusted — a measured number, but also a
+#: classifier's verdict about one. ``medium`` is spelled in full — see the
+#: ``med`` incident above.
 TrustLevel = Literal["high", "medium", "low"]
 
 #: The no-evidence slot beside :data:`TrustLevel`. Deliberately not a member
