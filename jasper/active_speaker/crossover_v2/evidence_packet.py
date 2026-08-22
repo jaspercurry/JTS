@@ -1311,8 +1311,12 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
             "reason": reason,
             "n_roles": 0,
         }
-    roles = raw.get("roles")
-    roles = [role for role in roles if isinstance(role, dict)] if isinstance(roles, list) else []
+    banked_roles = raw.get("roles")
+    roles = (
+        [role for role in banked_roles if isinstance(role, dict)]
+        if isinstance(banked_roles, list)
+        else []
+    )
     if not roles:
         return {
             "available": False,

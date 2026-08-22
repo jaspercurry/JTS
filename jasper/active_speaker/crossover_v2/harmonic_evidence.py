@@ -342,7 +342,9 @@ def _crossover_fc_hz(state: Mapping[str, Any]) -> float:
     per-driver expectations without moving anything a reader could see.
     """
     profile = state.get("pre_apply_profile")
-    snapshot = profile.get("recomposition_snapshot") if isinstance(profile, Mapping) else None
+    snapshot = (
+        profile.get("recomposition_snapshot") if isinstance(profile, Mapping) else None
+    )
     preset = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
     regions = preset.get("crossover_regions") if isinstance(preset, Mapping) else None
     first = regions[0] if isinstance(regions, list) and regions else None
@@ -372,7 +374,9 @@ def _crossover_fc_hz(state: Mapping[str, Any]) -> float:
     return fc
 
 
-def _bind_measure_captures(dumps_dir: Path, session_id: str | None) -> list[dict[str, Any]]:
+def _bind_measure_captures(
+    dumps_dir: Path, session_id: str | None
+) -> list[dict[str, Any]]:
     """Every MEASURE capture in the ring, bound to its sidecar by content.
 
     Found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` and paired with the WAV

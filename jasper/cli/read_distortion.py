@@ -251,7 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     if args.json:
-        json.dump({"ok": True, "path": str(destination), **artifact}, sys.stdout, indent=1)
+        json.dump(
+            {"ok": True, "path": str(destination), **artifact}, sys.stdout, indent=1
+        )
         sys.stdout.write("\n")
     return EXIT_OK
 
