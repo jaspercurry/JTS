@@ -7780,7 +7780,16 @@ def prepare_v2_session(
             complete_event.set if capture_source == SOURCE_WIRED else None
         ),
         request_retake=(
-            retake_event.set if capture_source == SOURCE_WIRED else None
+            # Carried only by a walk that can ever WAIT for a person, which is
+            # the same question the gate answers: the retake is served at a
+            # HELD BEGIN or in the held-set window, and a gateless walk reaches
+            # neither — the recovery re-arm is one sweep at the mark with no
+            # group to hold open. Carrying it there would answer a household's
+            # POST with ok:true and then do nothing at all, which is the one
+            # shape a signal seam must never have.
+            retake_event.set
+            if capture_source == SOURCE_WIRED and position_gate is not None
+            else None
         ),
     )
 
@@ -8190,7 +8199,16 @@ def prepare_v2_verify(
             complete_event.set if capture_source == SOURCE_WIRED else None
         ),
         request_retake=(
-            retake_event.set if capture_source == SOURCE_WIRED else None
+            # Carried only by a walk that can ever WAIT for a person, which is
+            # the same question the gate answers: the retake is served at a
+            # HELD BEGIN or in the held-set window, and a gateless walk reaches
+            # neither — the recovery re-arm is one sweep at the mark with no
+            # group to hold open. Carrying it there would answer a household's
+            # POST with ok:true and then do nothing at all, which is the one
+            # shape a signal seam must never have.
+            retake_event.set
+            if capture_source == SOURCE_WIRED and position_gate is not None
+            else None
         ),
     )
 

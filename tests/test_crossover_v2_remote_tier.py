@@ -1031,6 +1031,47 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
     assert "stage=2" in opens[0] and "hand_released=true" in opens[0]
 
 
+def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatch):
+    """The one-sweep recovery re-verify has no gate and no group (#2879 gate N6).
+
+    So it reaches neither retake window, and carrying the seam would answer a
+    household's POST with ``ok: true`` and then do nothing — a signal that
+    reports success and serves nobody. The route's own 409 ("no wired
+    measurement is waiting to re-take a spot") becomes the honest answer.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    prepared = v2host.prepare_v2_verify(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert prepared.position_gate is None      # the recovery shape
+    assert prepared.request_retake is None
+    # ...and the completion signal is untouched: it has a real reader.
+    assert prepared.request_complete is not None
+
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:verify",
+        request_complete=prepared.request_complete,
+        request_retake=prepared.request_retake,
+    )
+    try:
+        with pytest.raises(ValueError, match="no wired measurement"):
+            correction_setup._handle_crossover_v2_retake(
+                SimpleNamespace(
+                    headers={"Content-Length": "2"}, rfile=io.BytesIO(b"{}"),
+                )
+            )
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
 def test_a_hand_walked_relay_round_still_opens_with_no_gate(caplog, monkeypatch):
     """The control for the pin above: the SOURCE is what changed, not the tier.
 

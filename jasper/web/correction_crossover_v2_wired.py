@@ -467,6 +467,18 @@ def build_v2_wired_run_and_consume(
             deliberately: two taps before the walk next looks are ONE retake,
             which is what a household means by them. Cleared here so the same
             ask can never serve two slots.
+
+            **An ask that arrives while a capture is IN FLIGHT is served at the
+            next hold, and by then "the slot that just completed" may not be
+            the capture they were watching.** If that in-flight capture is
+            REJECTED, ``accepted`` never advanced, so the retake re-opens the
+            slot accepted BEFORE it. That is faithful to the relay rule this
+            mirrors — a retake names ``accepted_count``, and a rejected capture
+            does not change it — and it is also not obviously what a person
+            tapping mid-capture meant. It is written down rather than guessed
+            at: the affordance that decides whether the ask is even offered
+            mid-capture is the wizard's, and belongs to that ticket rather than
+            to a second interpretation of the count here.
             """
             if retake_event is None or not retake_event.is_set():
                 return False
