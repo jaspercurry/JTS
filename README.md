@@ -987,6 +987,17 @@ reference. Currently:
   measurement substrate. Carries the product invariants, the post-review
   decision register, the doc supersessions, and the owner-researched
   measurement-program constants.
+- [`llm-operator-runbook.md`](docs/llm-operator-runbook.md) —
+  **Operational map for the LLM operator driving the tuning loop over SSH.**
+  The tool menu with its authority tiers, the happy path end to end, the four
+  prescription doors and their refusal counts, the exit-code vocabularies (and
+  the three traps in branching on them), the untrusted-operator-notes rule, the
+  program menu as it exists today, the mechanism-signature table the LLM
+  interprets per-feature evidence with, and how to read σ honestly before E2
+  has run. A map, not a script: it points at
+  [`measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md) for the
+  rules and [`tuning-master-plan.md`](docs/tuning-master-plan.md) for the
+  direction rather than restating either.
 - [`flat-linearization-plan.md`](docs/flat-linearization-plan.md)
   — **Adopted plan (2026-07-25): the flat-linearization program** — why the
   speaker layer's measurement instrument moves from a single-point gated

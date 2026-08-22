@@ -881,6 +881,11 @@ docs = [
   "docs/attribution-stage-plan.md",
   # Planning authority for the measurement/tuning program (supersessions listed in-doc).
   "docs/tuning-master-plan.md",
+  # Operator-facing map for the LLM driving the tuning loop over SSH: tool menu,
+  # door refusal counts, exit-code vocabularies, program menu, mechanism
+  # signatures. Scan it when a prescriber/round-runner/arm-walk CLI surface,
+  # a door's refusal vocabulary, or an exit-code contract changes.
+  "docs/llm-operator-runbook.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
