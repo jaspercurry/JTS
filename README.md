@@ -977,6 +977,16 @@ reference. Currently:
   not built): the capture schema, its two stimulus regimes, the degrees-
   everywhere position set, and the position-major schedule. The handoff doc
   for the implementing session.
+- [`tuning-master-plan.md`](docs/tuning-master-plan.md) —
+  **Ratified plan (2026-08-21): declared-design executor, linearization
+  tournaments, LLM operator.** The decision record and wave-by-wave work plan
+  that supersedes the stage-P2 *search* framing: crossover corners are
+  declared and executed (never measured-searched), driver linearization runs
+  as measured candidate tournaments driven by an LLM over SSH through the
+  prescription doors, and room correction stays pinned on the shared
+  measurement substrate. Carries the product invariants, the post-review
+  decision register, the doc supersessions, and the owner-researched
+  measurement-program constants.
 - [`flat-linearization-plan.md`](docs/flat-linearization-plan.md)
   — **Adopted plan (2026-07-25): the flat-linearization program** — why the
   speaker layer's measurement instrument moves from a single-point gated

@@ -96,7 +96,10 @@ Simpler-but-hacky is not a simplification.
   wrong place with confidence: `9b27f2716` shipped three such sentences AND its
   own title asserting the opposite of what the same commit's code did. Read the
   named code, not the sentence about it. A claim nothing can pin is itself the
-  finding — either it earns a test or it goes.
+  finding — either it earns a test or it goes. The same rule covers claims
+  *about other documents and rulings*: re-derive them from the source text,
+  never from the diff author's paraphrase (AGENTS.md "Quote, don't
+  paraphrase").
 
 ## Gate 0 — necessity and complexity (run before detailed correctness)
 
@@ -190,6 +193,12 @@ one explicit "No issue — N/A" line, not an investigation.
   findings.
 - **Secrets/config:** env ownership (right file, single writer), file modes,
   redaction, no API keys/PSKs/tokens in logs, UI, diagnostics, or fixtures.
+- **Vocabulary & naming:** any new closed string-set (verdict, status,
+  confidence, refusal, phase) or new module/public-constant name is checked
+  against the tree for an existing set answering the same question or an
+  existing identical name — two vocabularies for one question, or one name
+  for two concepts, is a should-fix (AGENTS.md "One vocabulary per
+  question").
 - **Tests:** every behavior change pinned by targeted hardware-free pytest in
   the same change; documented promises get guard tests; a stated hardware/Pi
   validation plan where code can't be verified off-device; paid voice-eval only
