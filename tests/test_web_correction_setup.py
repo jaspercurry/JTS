@@ -527,6 +527,8 @@ def test_known_post_routes_reach_csrf_guard():
         # The wired session's all-spots-measured confirmation (#2662 W2b) —
         # same driver-facing shape as position-ready, same CSRF guard.
         "/crossover/v2/complete",
+        # The wired session's per-take retake (#2879) — same shape again.
+        "/crossover/v2/retake",
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }

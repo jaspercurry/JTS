@@ -1405,6 +1405,61 @@ def test_the_completion_signal_drops_with_the_slot():
         correction_setup._set_relay_capture(None)
 
 
+def test_retake_endpoint_conflicts_when_nothing_is_waiting():
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(ValueError, match="no wired measurement"):
+        correction_setup._handle_crossover_v2_retake(_fake_handler())
+
+
+def test_retake_endpoint_fires_the_wired_sessions_signal():
+    from jasper.web import correction_setup
+
+    fired = []
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:session",
+        request_retake=lambda: fired.append(True),
+    )
+    try:
+        result = correction_setup._handle_crossover_v2_retake(_fake_handler())
+    finally:
+        correction_setup._set_relay_capture(None)
+    assert result == {"ok": True}
+    assert fired == [True]
+
+
+def test_the_retake_signal_drops_with_the_slot():
+    """A POST arriving after the walk must not re-open a slot nothing holds."""
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:session", request_retake=lambda: None,
+    )
+    correction_setup._set_relay_capture(
+        {"status": "complete", "kind": "crossover_v2:session"}
+    )
+    try:
+        with pytest.raises(ValueError, match="no wired measurement"):
+            correction_setup._handle_crossover_v2_retake(_fake_handler())
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_a_relay_session_offers_no_local_retake_signal():
+    """The relay's retake rides the phone's own begin, so a relay session
+    leaves the local seam unset and the route 409s rather than half-serving
+    a verb whose walk would never look at it."""
+    prepared = v2host.V2PreparedSession(
+        label="x", open=lambda *a: None,
+        run_and_consume=lambda c, s: None, request_stop=lambda: None,
+    )
+    assert prepared.request_retake is None
+    assert prepared.request_complete is None
+
+
 def test_prepared_session_defaults_to_the_relay_source():
     """The dataclass default keeps every existing constructor call an
     unchanged relay session."""

@@ -2160,10 +2160,13 @@ POST /crossover/v2/decline   v2 conductor: the review screen's "Keep current
                              stays reviewable until a newer measurement
                              replaces it
 POST /crossover/v2/position-ready
-                             v2 conductor, REMOTE tier only: an external mic
-                             positioner's driver reporting the microphone has
-                             reached the angle `relay.position_pending` named,
-                             which releases the held begin. `{"index": N}` is
+                             v2 conductor, GATED shapes only: whoever moved
+                             the microphone reporting it has reached the angle
+                             `relay.position_pending` named, which releases
+                             the held begin. Two shapes are gated — the REMOTE
+                             tier, released by its driver, and a hand-walked
+                             round on the WIRED source, released by the person
+                             holding the tape (#2879). `{"index": N}` is
                              checked against what is actually pending, so a
                              retry that crossed a capture starting is refused
                              (409) rather than releasing the NEXT position
@@ -2172,6 +2175,16 @@ POST /crossover/v2/complete  v2 conductor, WIRED source only (#2662 W2b): the
                              held pre-apply group — the local stand-in for the
                              phone's authenticated completion event. Empty
                              body; 409 when no wired session is waiting
+POST /crossover/v2/retake    v2 conductor, WIRED source only (#2879): re-open
+                             the take that JUST COMPLETED, the local stand-in
+                             for the phone's `begin_capture {retake: true}`.
+                             Served the next time the walk is waiting on a
+                             person — a held begin, or the held-set window —
+                             and it spends one ordinary attempt, never
+                             advances the accepted count, and leaves the
+                             original standing if the replacement is rejected.
+                             Empty body (WHICH slot is the walk's own fact);
+                             409 when no wired session is waiting
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 
