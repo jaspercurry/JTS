@@ -49,6 +49,8 @@ artifact is missing.
 3. **Re-run the deterministic views** as needed:
    `jasper-classify-features <bundle-dir> --dumps <ring>` files
    `feature_classification.json` into the round dir;
+   `jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
+   files `harmonic_distortion.json` beside it;
    `jasper-round-views frozen | per-seat | repeat | agreement` grades it.
 4. **Propose.** Author the prescription JSON yourself, then
    `jasper-crossover-prescriber propose --prescription -` — a true dry run
@@ -115,6 +117,7 @@ changes nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-crossover-prescriber stage` | place **one** accepted prescription for the next round | mutating | `_cmd_stage` |
 | `jasper-round-views frozen\|per-seat\|repeat\|agreement` | per-seat curves, pooled stats, session-to-session spread, per-feature testimony | advisory | `jasper/cli/round_views.py` |
 | `jasper-classify-features` | classify a round's features; file the verdict | advisory | `jasper/cli/classify_features.py` |
+| `jasper-read-distortion` | read a round's H2/H3 out of its banked MEASURE captures; file the reading | advisory | `jasper/cli/read_distortion.py` |
 | **alignment door** | pin delay / polarity | mutating-with-gates | session-open key `alignment_prescription` |
 | **topology door** | pin Fc / order | mutating-with-gates | session-open key `topology_prescription` |
 | **blend door** | cuts in the summed blend region | mutating-with-gates | spool |
@@ -332,15 +335,82 @@ let the next measurement dispose of it; a heuristic never vetoes an experiment.
 
 ### Evidence the record does not carry yet
 
-Two discriminating fields are unavailable, and knowing which is part of
-reading the rest honestly:
-
-- **Harmonics by order (H2/H3).** Computable from banked captures, but no round
-  writes them; the packet's own `not_evaluated` block says exactly that. So the
-  last heuristic row above is currently untestable. Ticket 1.4.
 - **Level dependence.** Needs the escalation level, which fires on anomaly
   rather than by default. `delta_probe`'s `level_dependent_shortfall` verdict is
-  both the trigger and the grading currency.
+  both the trigger and the grading currency. Until it runs, the last heuristic
+  row above is only half testable: you can see an H2/H3 rise, but not that it is
+  present *only* at the higher drive.
+
+### Reading harmonics honestly
+
+`jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>` files
+`harmonic_distortion.json` into the round dir, and the packet's `harmonics`
+block carries it. Absent that run the block refuses and `not_evaluated` names
+it — so an empty block means nobody read the round, not that the round is clean.
+
+**Which captures it read, and why that is published.** The drive levels below
+come from the rebuilt program, not from each capture, so a capture from a
+neighbouring round would be published with this round's level — silently, and
+wrongly by several dB. `captures.scope` in the artifact says which session the
+reading was scoped to and how many captures the ring held to choose from. The
+tool scopes by the bundle's `session_id`; a ring it cannot scope (no session id
+in `info.json`, and captures from more than one session in the ring) is
+**refused** by name (`ring_not_scoped_to_one_session`, exit 2) rather than
+pooled. If you see that refusal, the bundle is missing its session id — it is
+not telling you the captures are bad.
+
+**The counterweight, because that scoping is not a proof of correctness.** The
+tool trusts that the `--state` you passed describes the same round the bundle
+scopes to, and nothing checks it. Point it at one round's bundle and another
+round's state and the drive comes out several dB wrong with **5/5 fidelity,
+zero refusals, and a scope block that looks authoritative** — the two ids live
+in different namespaces (the state's is a relay id, the ring's is a bundle id)
+and no banked artifact maps between them. So: pass the `--state` from the same
+round as the `<bundle-dir>`, and if a drive figure looks wrong for the box,
+check `program.state_relay_session_id` in the artifact against the round you
+meant — it is recorded precisely so a mis-scoped read is auditable after the
+fact, since it cannot be refused at the time.
+
+**What the number is.** `h2_below_fundamental_db` is that order's level **minus
+the fundamental's at the same excitation frequency** — the conventional "HD2 is
+46 dB down" reading, negative for a well-behaved driver. More negative is
+cleaner.
+
+**What it is not.** It is not an absolute level, and there is no SPL anywhere in
+this corpus. Distortion is a function of drive, so each role block carries the
+`drive` it was read at in dBFS; a figure quoted without that names nothing.
+It also is not calibration-invariant: the ratio inherits `C(N·f) − C(f)`, the
+microphone curve's own slope across an octave, which is a systematic error the
+block declares beside the reading and does not publish a bound for.
+
+**When to trust it.** Three checks, in order:
+
+1. **`h{N}_floor_limited`.** True means the point is within 6 dB of the measured
+   floor — it describes the instrument, not the driver, and the reading is real
+   only as an upper bound. `worst` refuses outright (`null`) when nothing in an
+   order clears its floor, which is the ordinary answer for a tweeter at a low
+   drive. A `floor_limited_fraction` near 1.0 means the whole order was buried.
+2. **`fundamental_re_band_median_db`.** Every ratio divides by the fundamental,
+   so a dip at that excitation frequency inflates the row's ratios with **no
+   change in harmonic energy**. Read a ratio peak against this column before
+   believing it.
+3. **`images_clean` / `worst_clearance_s`.** Negative clearance means an order's
+   analysis window reached back into the previous segment's audio. The read is
+   still returned — the window's taper is near zero at that edge — but it is no
+   longer clean.
+
+**Rows are per (capture, role), and are deliberately not merged.** A MEASURE
+capture is one pose, so two captures give two blocks. That is what lets
+`h{N}_repeat_spread_db` be labelled `random` rather than `unseparated`: it is
+taken over sweep repeats *inside one capture*, which never left one pose, so
+there is no position term in it to be unseparated from. Merging the blocks
+yourself re-creates exactly the pooling the σ section below warns about.
+
+**Band edges are real and are published.** An order is only measurable while
+`N·f ≤ f2` — the deconvolution's passband, not Nyquist — so H3 on a
+150–4000 Hz woofer sweep ends at 1333 Hz. Past an order's edge the columns are
+`null`, never a number: a value there would read as a preternaturally clean
+driver exactly where nothing was measured.
 
 **Angle is now surfaced, and it is not the field you might reach for.** The
 packet's `lateral_poses` block carries the signed whole-degree `position_deg`
@@ -373,8 +443,10 @@ Three different spreads, three different meanings, and they must never pool:
 | `sigma_db` / `max_sigma_db` | cross-**position** spread, two figures **per octave band** — that band's power level, and its worst single bin | `audio_measurement/spatial_combine.py` |
 | `per_bin_sigma_db` | cross-**seat** spread, one value **per grid bin** across the whole curve | the packet's `positions.cross_seat_sigma` |
 
-The third is the one you will actually read, and it is the only one that
-reaches a packet. The combiner computes the same estimator per bin and never
+The third is the one you will actually read, and it is the only one of the
+three that reaches a packet — the packet carries other spread figures, notably
+the classification block's `nbhd_sd_us` and `excursion_sd_us`, both declared
+`random`. The combiner computes the same estimator per bin and never
 publishes the array — it reduces it to two figures per octave band, and those
 reach exactly one banked artifact, `candidate.json`'s `exclusion_evidence`,
 which describes the `cloud_measure` group and is empty when no cloud evidence
