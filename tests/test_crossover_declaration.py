@@ -299,12 +299,13 @@ def test_the_record_carries_kind_and_schema_version():
 def test_a_record_missing_any_field_reads_as_no_change_to_reverse(missing):
     """Strict on purpose, and it costs nothing.
 
-    No shipped build ever wrote one of these records (the accept branch was
-    unreachable), so there is no older shape to be tolerant of — and a partial
-    record completed with a default would put a crossover into ``/sound`` that
-    no accept chose. ``kind`` and ``artifact_schema_version`` are on the same
-    terms as the seven fields beside them: the envelope is part of the shape,
-    not a decoration on top of it.
+    A partial record completed with a default would put a crossover into
+    ``/sound`` that no accept chose. ``kind`` and ``artifact_schema_version``
+    are on the same terms as the seven fields beside them here — missing ONE
+    of the two, with the other present, is not the wholly-absent legacy shape
+    (see ``test_a_pre_envelope_record_round_trips_instead_of_stranding_the_
+    declaration`` for that one) and reads as ``None`` exactly like any other
+    incomplete record.
     """
     change = declaration_change_for_candidate(
         source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
@@ -325,24 +326,66 @@ def test_a_record_naming_an_unsupported_schema_version_reads_as_no_change():
     assert change_from_record(record) is None
 
 
-def test_a_pre_envelope_record_reads_as_no_change_to_reverse_not_a_crash():
-    """The tolerant-read rule the family's request gates share.
+def test_a_pre_envelope_record_round_trips_instead_of_stranding_the_declaration():
+    """The retrofit contract, and the reason it exists.
 
-    A record banked before ``kind``/``artifact_schema_version`` existed on
-    this seam — the exact shape :func:`change_to_record` wrote prior to this
-    envelope — degrades to "no change to reverse" rather than raising, the
-    same answer :func:`~jasper.active_speaker.crossover_v2.driver_prescription.
-    driver_prescription_from_mapping` gives a pre-version document.
+    #2743 shipped :func:`change_to_record` three days before this envelope,
+    and ``sound_declaration_undo`` is carried UNCONDITIONALLY across a deploy
+    for as long as the applied graph is
+    (``correction_crossover_v2.observe_apply_success`` /
+    ``persist_conductor_state``) — so a record on a live speaker RIGHT NOW can
+    be exactly this pre-envelope shape. Refusing it outright would silently
+    strand ``/sound``'s declaration against a graph the speaker is no longer
+    playing the next time Undo tries to read it back, the exact P0
+    :func:`~jasper.web.correction_crossover_v2._restore_sound_declaration`'s
+    own docstring names.
+
+    Generated from the CURRENT :func:`change_to_record` output with the two
+    envelope keys removed, not hand-typed, so this is exactly the shape the
+    merge-base wrote rather than a guess at it.
     """
-    pre_envelope_record = {
-        "between_roles": ["woofer", "tweeter"],
-        "applied_hz": 2750.0, "previous_hz": 2500.0,
-        "applied_filter_type": "Linkwitz-Riley",
-        "previous_filter_type": "Linkwitz-Riley",
-        "applied_slope_db_per_octave": 24.0,
-        "previous_slope_db_per_octave": 24.0,
-    }
-    assert change_from_record(pre_envelope_record) is None
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0, order=2)), design_draft=_draft()
+    )
+    assert change is not None
+    pre_envelope_record = change_to_record(change)
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+    assert change_from_record(pre_envelope_record) == change
+
+
+@pytest.mark.parametrize("mutation", [
+    {"kind": "nope"},
+    {"artifact_schema_version": 2},
+    {"kind": "nope", "artifact_schema_version": 2},
+])
+def test_a_record_naming_a_wrong_envelope_field_still_refuses(mutation):
+    """A record that TRIED to speak the envelope and got it wrong is not the
+    legacy shape, and is refused exactly like any other malformed field —
+    the future-version case (an as-yet-unbuilt schema bump) included."""
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = {**change_to_record(change), **mutation}
+    assert change_from_record(record) is None
+
+
+@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
+def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
+    """EITHER field present, even correctly, with the other missing, is not
+    the wholly-absent shape the retrofit tolerates."""
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = change_to_record(change)
+    other = "artifact_schema_version" if keep == "kind" else "kind"
+    del record[other]
+    assert change_from_record(record) is None
+
+
+def test_a_mangled_or_absent_record_still_reads_as_no_change():
     assert change_from_record({}) is None
     assert change_from_record({"kind": "nope"}) is None
     assert change_from_record(None) is None

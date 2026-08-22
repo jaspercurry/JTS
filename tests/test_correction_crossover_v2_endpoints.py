@@ -12400,6 +12400,79 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     ) is None
 
 
+def test_a_pre_envelope_alignment_record_round_trips_through_the_prior(caplog):
+    """The retrofit contract, end to end through the real wrapper.
+
+    ``verify_priors.alignment_prescription`` is carried unconditionally
+    across a deploy (``persist_conductor_state``), and #2662/#2773 shipped
+    writing it days before the version+kind envelope existed, so a live
+    speaker can already hold a record naming neither field. Built through the
+    dataclass's own ``to_dict()`` with the two envelope keys removed, not
+    hand-typed, so this is exactly the shape a prior build wrote.
+    """
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (
+        AlignmentPrescription,
+    )
+
+    prescription = AlignmentPrescription(
+        delay_us=-450.0, basis_delay_us=-405.7,
+        basis_artifacts=("captures/xover-series2/landscape.json",),
+        basis_note="direct arrival gap, n=33",
+        checked_at_fc_hz=FC_HZ, lobe_us=200.0,
+    )
+    pre_envelope_record = prescription.to_dict()
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+
+    v2host.save_v2_state({
+        "session_id": "cap_pre_envelope_alignment",
+        "verify_priors": {"alignment_prescription": pre_envelope_record},
+    })
+    with caplog.at_level(logging.WARNING):
+        rehydrated = v2host.alignment_prescription_prior_from_state(
+            v2host.load_v2_state()
+        )
+    assert rehydrated is not None
+    assert rehydrated.delay_us == -450.0
+    assert rehydrated.basis_delay_us == -405.7
+    # Tolerated, not merely swallowed: no "unreadable" WARNING for the legacy
+    # shape, which is what separates "read as absent" from "read as this
+    # build's own kind and version 1."
+    assert "alignment_prescription_unreadable" not in caplog.text
+
+
+def test_a_pre_envelope_topology_record_round_trips_through_the_prior(caplog):
+    """The topology mirror of the test above — same retrofit, same wrapper
+    shape, same reason: ``verify_priors.topology_prescription`` predates this
+    envelope by the same three days."""
+    from jasper.active_speaker.crossover_v2.topology_prescription import (
+        TopologyPrescription,
+    )
+
+    pinned = TopologyPrescription(
+        fc_hz=2400.0, order=4,
+        basis_artifacts=("armloop-first-drive-2026-08/offline-fc-search",),
+        basis_note="offline candidate search",
+        authority="operator_pinned_no_measured_ranking",
+    )
+    pre_envelope_record = pinned.to_dict()
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+
+    v2host.save_v2_state({
+        "session_id": "cap_pre_envelope_topology",
+        "verify_priors": {"topology_prescription": pre_envelope_record},
+    })
+    with caplog.at_level(logging.WARNING):
+        rehydrated = v2host.topology_prescription_prior_from_state(
+            v2host.load_v2_state()
+        )
+    assert rehydrated is not None
+    assert rehydrated.fc_hz == 2400.0
+    assert rehydrated.order == 4
+    assert "crossover_v2_topology_prescription_unreadable" not in caplog.text
+
+
 def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
     monkeypatch,
 ):

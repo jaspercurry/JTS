@@ -625,17 +625,72 @@ def test_the_read_back_still_refuses_a_mangled_shape_and_says_so(caplog):
 
 
 def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    """The tolerant-read rule every door in this family shares.
+    """The tolerant-read rule every door in this family shares, for a record
+    that is genuinely unreadable rather than merely pre-envelope.
 
     Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
     ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
     prescription``: ``None``, an unrecognised ``kind``, and a totally empty
-    mapping — the exact shape a pre-envelope record left behind — all read as
-    ``None`` rather than raising.
+    mapping (missing ``fc_hz``/``order`` too, so this is not the retrofit
+    case) all read as ``None`` rather than raising. See
+    ``test_a_pre_envelope_record_round_trips_through_the_read_back`` for the
+    shape that DOES carry a real pin and DOES round-trip.
     """
     assert topology_prescription_from_mapping(None) is None
     assert topology_prescription_from_mapping({"kind": "nope"}) is None
     assert topology_prescription_from_mapping({}) is None
+
+
+def test_a_pre_envelope_record_round_trips_through_the_read_back():
+    """The retrofit contract: durable state predates this envelope.
+
+    ``verify_priors.topology_prescription`` is carried unconditionally across
+    a deploy (``correction_crossover_v2.persist_conductor_state``), and
+    #2662/#2773 shipped writing it days before this envelope existed, so a
+    live speaker can already hold a record naming neither ``kind`` nor
+    ``artifact_schema_version``. Refusing it would silently grade a pinned
+    round's VERIFY against the crossover the speaker used to run — see
+    :func:`~jasper.active_speaker.crossover_v2.topology_prescription.
+    _parse_prescription`'s ``read_back`` paragraph.
+
+    Generated from a REAL pinned prescription's own ``to_dict()`` with the
+    two envelope keys removed, not hand-typed, so this is exactly the shape a
+    prior build wrote rather than a guess at it.
+    """
+    pinned = _read(_pin(2400.0))
+    assert pinned is not None
+    pre_envelope_record = pinned.to_dict()
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+    recovered = topology_prescription_from_mapping(pre_envelope_record)
+    assert recovered is not None
+    assert recovered.fc_hz == pinned.fc_hz
+    assert recovered.order == pinned.order
+    assert recovered.basis_artifacts == pinned.basis_artifacts
+
+
+@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
+def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
+    """EITHER field present, even correctly, with the other missing, is not
+    the wholly-absent shape the retrofit tolerates — it tried to speak the
+    envelope and got it wrong."""
+    pinned = _read(_pin(2400.0))
+    assert pinned is not None
+    record = pinned.to_dict()
+    other = "artifact_schema_version" if keep == "kind" else "kind"
+    del record[other]
+    assert topology_prescription_from_mapping(record) is None
+
+
+def test_a_future_schema_version_still_refuses_even_on_read_back():
+    """The retrofit posture tolerates a wholly-absent envelope, never a
+    present-but-wrong one — a document naming a version this build does not
+    speak is refused under both the request gate and the durable read-back."""
+    pinned = _read(_pin(2400.0))
+    assert pinned is not None
+    record = pinned.to_dict()
+    record["artifact_schema_version"] = 2
+    assert topology_prescription_from_mapping(record) is None
 
 
 def test_the_read_back_of_nothing_is_nothing_and_is_silent(caplog):

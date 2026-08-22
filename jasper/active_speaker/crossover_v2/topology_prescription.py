@@ -442,12 +442,30 @@ def _optional_band(value: Any) -> tuple[float, float] | None:
     return (lo, hi)
 
 
-def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
+def _parse_prescription(
+    raw: Mapping[str, Any], *, read_back: bool = False,
+) -> TopologyPrescription:
     """The shape and the provenance, and NOT the bounds.
 
     Shared whole between the request gate and the durable read-back, so the
     only thing that differs between those two is their gate policy — which is
     the only thing that should.
+
+    ``read_back`` is that one difference for the envelope specifically, and
+    mirrors :func:`~.alignment_prescription._parse_prescription`'s own
+    parameter for the identical reason. ``False`` (the request gate,
+    :func:`read_topology_prescription`) judges a freshly-authored pin: a
+    missing or wrong ``kind``/``artifact_schema_version`` is a malformed
+    document and refuses at the tap. ``True`` (the durable read-back,
+    :func:`topology_prescription_from_mapping`, and
+    ``correction_crossover_v2.topology_prescription_prior_from_state``'s
+    ``verify_priors`` rehydration) judges a document THIS repository already
+    wrote — ``verify_priors.topology_prescription`` is carried unconditionally
+    across deploys, and predates this envelope by three days (#2662/#2773
+    landed before it). A record naming NEITHER field is exactly that
+    pre-envelope shape and reads as this build's own kind and version 1,
+    never a raise; a record naming EITHER field, even if the other is missing
+    or wrong, is refused under both postures.
     """
     if not isinstance(raw, Mapping):
         raise TopologyPrescriptionRefused(
@@ -460,19 +478,23 @@ def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
             TOPOLOGY_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
-    if raw.get("kind") != TOPOLOGY_PRESCRIPTION_KIND:
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_MALFORMED,
-            f"a prescription must name kind={TOPOLOGY_PRESCRIPTION_KIND!r}, "
-            f"got {raw.get('kind')!r}",
-        )
-    version = raw.get("artifact_schema_version")
-    if version != TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION:
-        raise TopologyPrescriptionRefused(
-            TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-            f"this build speaks topology-prescription schema "
-            f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
-        )
+    pre_envelope = (
+        read_back and "kind" not in raw and "artifact_schema_version" not in raw
+    )
+    if not pre_envelope:
+        if raw.get("kind") != TOPOLOGY_PRESCRIPTION_KIND:
+            raise TopologyPrescriptionRefused(
+                TOPOLOGY_MALFORMED,
+                f"a prescription must name kind={TOPOLOGY_PRESCRIPTION_KIND!r}, "
+                f"got {raw.get('kind')!r}",
+            )
+        version = raw.get("artifact_schema_version")
+        if version != TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION:
+            raise TopologyPrescriptionRefused(
+                TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+                f"this build speaks topology-prescription schema "
+                f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
+            )
     if "fc_hz" not in raw:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_FC_INVALID, "a prescription must state fc_hz",
@@ -726,11 +748,18 @@ def topology_prescription_from_mapping(raw: Any) -> TopologyPrescription | None:
     round graded with no provenance.  Anything unreadable is ``None`` plus one
     WARNING, so an empty slot on a receipt is always distinguishable from a
     silently mangled one.
+
+    ``read_back=True`` on the shared parser: a record naming neither ``kind``
+    nor ``artifact_schema_version`` is the shape this build's own prior
+    releases wrote, before this envelope existed, and reads as that build's
+    own kind and version 1 rather than refusing — see
+    :func:`_parse_prescription`'s docstring for why. A record naming either
+    field, even if the other is missing or wrong, is still refused.
     """
     if raw is None:
         return None
     try:
-        return _parse_prescription(raw)
+        return _parse_prescription(raw, read_back=True)
     except TopologyPrescriptionRefused as exc:
         log_event(
             logger,

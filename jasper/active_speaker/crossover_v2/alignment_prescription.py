@@ -137,6 +137,7 @@ __all__ = [
     "AlignmentPrescription",
     "AlignmentPrescriptionRefused",
     "alignment_prescription_from_mapping",
+    "alignment_prescription_response_format",
     "read_alignment_prescription",
 ]
 
@@ -364,12 +365,34 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
     return number
 
 
-def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
+def _parse_prescription(
+    raw: Mapping[str, Any], *, read_back: bool = False,
+) -> AlignmentPrescription:
     """The shape and the provenance, and NOT the bound.
 
     Shared whole between the request gate and the durable read-back, so the
     only thing that differs between those two is their gate policy — which is
     the only thing that should.
+
+    ``read_back`` is that one difference for the envelope specifically.
+    ``False`` (the request gate, :func:`read_alignment_prescription`) judges a
+    freshly-authored document an operator or LLM is about to hand the
+    machinery: a missing or wrong ``kind``/``artifact_schema_version`` is a
+    malformed document and refuses at the tap, exactly like every other field
+    here. ``True`` (the durable read-back,
+    :func:`alignment_prescription_from_mapping`, and
+    ``correction_crossover_v2.alignment_prescription_prior_from_state``'s
+    ``verify_priors`` rehydration) judges a document THIS repository already
+    wrote and persisted — and durable state on a live speaker predates this
+    envelope: ``verify_priors.alignment_prescription`` has been carried
+    unconditionally across deploys since #2662/#2773, three days before this
+    envelope existed. A record naming NEITHER field is exactly the shape this
+    build's own prior releases wrote, and refusing it would silently mis-grade
+    a round already in flight on real hardware — so under ``read_back`` that
+    one shape reads as this build's own kind and version 1, never as a raise.
+    A record naming EITHER field, even if the other is missing or wrong, is
+    NOT that legacy shape — it tried to speak the envelope and got it wrong —
+    and is refused normally under both postures.
     """
     if not isinstance(raw, Mapping):
         raise AlignmentPrescriptionRefused(
@@ -382,19 +405,23 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
             ALIGNMENT_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
-    if raw.get("kind") != ALIGNMENT_PRESCRIPTION_KIND:
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_MALFORMED,
-            f"a prescription must name kind={ALIGNMENT_PRESCRIPTION_KIND!r}, "
-            f"got {raw.get('kind')!r}",
-        )
-    version = raw.get("artifact_schema_version")
-    if version != ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION:
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-            f"this build speaks alignment-prescription schema "
-            f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
-        )
+    pre_envelope = (
+        read_back and "kind" not in raw and "artifact_schema_version" not in raw
+    )
+    if not pre_envelope:
+        if raw.get("kind") != ALIGNMENT_PRESCRIPTION_KIND:
+            raise AlignmentPrescriptionRefused(
+                ALIGNMENT_PRESCRIPTION_MALFORMED,
+                f"a prescription must name kind={ALIGNMENT_PRESCRIPTION_KIND!r}, "
+                f"got {raw.get('kind')!r}",
+            )
+        version = raw.get("artifact_schema_version")
+        if version != ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION:
+            raise AlignmentPrescriptionRefused(
+                ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+                f"this build speaks alignment-prescription schema "
+                f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
+            )
     if "delay_us" not in raw:
         raise AlignmentPrescriptionRefused(
             PRESCRIPTION_DELAY_INVALID, "a prescription must state delay_us",
@@ -582,11 +609,18 @@ def alignment_prescription_from_mapping(
     claiming provenance it does not have.  Anything unreadable is ``None`` plus
     one WARNING, so an empty provenance slot on a receipt is always
     distinguishable from a silently mangled one.
+
+    ``read_back=True`` on the shared parser: a record naming neither ``kind``
+    nor ``artifact_schema_version`` is the shape this build's own prior
+    releases wrote, before this envelope existed, and reads as that build's
+    own kind and version 1 rather than refusing — see
+    :func:`_parse_prescription`'s docstring for why. A record naming either
+    field, even if the other is missing or wrong, is still refused.
     """
     if raw is None:
         return None
     try:
-        return _parse_prescription(raw)
+        return _parse_prescription(raw, read_back=True)
     except AlignmentPrescriptionRefused as exc:
         log_event(
             logger,
@@ -629,3 +663,64 @@ def _read_artifacts(value: Any) -> tuple[str, ...]:
             "a prescription must name at least one basis artifact",
         )
     return tuple(artifacts)
+
+
+def alignment_prescription_response_format() -> dict[str, Any]:
+    """What a prescriber must send to pin the inter-driver delay, and where to
+    send it.
+
+    The fourth of the evidence packet's contract blocks, beside
+    :func:`~.blend_prescription.prescription_response_format`,
+    :func:`~.driver_prescription.driver_prescription_response_format`, and
+    :func:`~.topology_prescription.topology_prescription_response_format` —
+    the same #2773 reason topology's own docstring gives: this and the
+    topology pin enter as REQUEST-BODY KEYS on the session-open call rather
+    than through the prescriber CLI's stage step, and a reader who found only
+    the two staged contracts would never learn the request-time doors exist.
+    """
+    return {
+        "key": ALIGNMENT_PRESCRIPTION_KEY,
+        "entry": "request_body",
+        "entry_detail": (
+            "sent as the '" + ALIGNMENT_PRESCRIPTION_KEY + "' key on "
+            "POST /crossover/v2/session, not staged through "
+            "jasper-crossover-prescriber"
+        ),
+        "severity": (
+            "a refused prescription refuses the whole session at the tap; it "
+            "is never clamped to the nearest legal delay and never partially "
+            "applied"
+        ),
+        "fields": {
+            "kind": f"required, must be exactly {ALIGNMENT_PRESCRIPTION_KIND!r}",
+            "artifact_schema_version": (
+                "required, must be exactly "
+                f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}"
+            ),
+            "delay_us": (
+                "required number, signed (D_woofer - D_tweeter): positive "
+                "delays the tweeter, negative delays the woofer"
+            ),
+            "basis_delay_us": (
+                "required number, the delay the named measurement says would "
+                "leave the drivers coincident"
+            ),
+            "basis_artifacts": (
+                "required non-empty list of names — what this delay was "
+                "measured from"
+            ),
+            "basis_note": "optional human line beside the artifacts",
+            "polarity": (
+                "optional, one of "
+                + ", ".join(sorted(_PINNABLE_POLARITIES))
+                + " — pins the basin the automatic objective would otherwise "
+                "solve; absent leaves it to the objective"
+            ),
+        },
+        "bound": (
+            "delay_us may not leave the drivers more than one half-period at "
+            "the crossover corner away from basis_delay_us — the comb lobe, "
+            "checked at the tap against the corner this round is measured at"
+        ),
+        "refusals": sorted(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
+    }

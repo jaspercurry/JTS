@@ -326,22 +326,38 @@ def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
 
     Every field is required, and a record missing any of them reads as ``None``
     — "there is no declaration write to reverse" — rather than as a partial
-    change completed with a guess. Nothing is lost by that strictness: no
-    shipped build ever wrote a record at all (the accept branch this feeds was
-    unreachable until this seam existed), so there is no older shape to be
-    tolerant of, and inventing a slope to write into ``/sound`` would be a
-    number no accept ever chose.
+    change completed with a guess, and inventing a slope to write into
+    ``/sound`` would be a number no accept ever chose. That strictness DOES
+    have an older shape to be tolerant of, though: the accept branch that
+    writes this record shipped in the same PR as this module (#2743) and has
+    been live for days, so a currently-applied speaker can already hold a
+    ``sound_declaration_undo`` record from before ``kind``/
+    ``artifact_schema_version`` existed — see the envelope paragraph below for
+    how that shape is read.
 
     ``kind`` and ``artifact_schema_version`` are checked on the same terms as
-    every other field: a record from before this envelope existed, or one
-    naming a version this build does not speak, reads as ``None`` — the family
-    tolerant-read rule :mod:`.crossover_v2.driver_prescription` follows, and no
-    migration is owed because the read-back was already unconditionally strict.
+    every other field, with ONE exception: a record naming NEITHER is exactly
+    the pre-envelope shape #2743's own shipped builds wrote, and
+    ``sound_declaration_undo`` is carried unconditionally across a deploy for
+    as long as the applied graph is (``correction_crossover_v2.
+    observe_apply_success`` / ``persist_conductor_state``) — so refusing it
+    outright would silently strand ``/sound``'s declaration against a graph
+    the speaker is no longer playing the next time Undo tries to read it back,
+    which is the exact P0
+    :func:`~jasper.web.correction_crossover_v2._restore_sound_declaration`'s
+    own docstring names. That one shape reads as this module's own kind and
+    version 1 rather than raising. A record naming EITHER field, even if the
+    other is missing or wrong, is NOT that legacy shape — it tried to speak
+    the envelope and got it wrong — and reads as ``None`` under both postures,
+    exactly like the seven fields beside it.
     """
 
     if not isinstance(record, Mapping):
         return None
-    if (
+    pre_envelope = (
+        "kind" not in record and "artifact_schema_version" not in record
+    )
+    if not pre_envelope and (
         record.get("kind") != CROSSOVER_DECLARATION_CHANGE_KIND
         or record.get("artifact_schema_version")
         != CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION

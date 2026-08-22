@@ -70,6 +70,7 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 
+from .alignment_prescription import alignment_prescription_response_format
 from .blend_prescription import prescription_response_format
 from .topology_prescription import topology_prescription_response_format
 from .driver_prescription import (
@@ -798,6 +799,7 @@ def build_crossover_evidence_packet(
         # document of this class handed to ``stage`` is refused by the class
         # gate, and the block says where it belongs instead.
         "request_time_prescriptions": {
+            "alignment": alignment_prescription_response_format(),
             "topology": topology_prescription_response_format(),
         },
     }

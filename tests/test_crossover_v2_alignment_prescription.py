@@ -44,6 +44,7 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import (
     AlignmentPrescription,
     AlignmentPrescriptionRefused,
     alignment_prescription_from_mapping,
+    alignment_prescription_response_format,
     read_alignment_prescription,
 )
 from jasper.active_speaker.crossover_v2.planning import alignment_to_candidate_fields
@@ -618,18 +619,112 @@ def test_the_receipt_carries_kind_and_schema_version():
 
 
 def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
-    """The tolerant-read rule every door in this family shares.
+    """The tolerant-read rule every door in this family shares, for a record
+    that is genuinely unreadable rather than merely pre-envelope.
 
     Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
     ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
     prescription``: ``None``, an unrecognised ``kind``, and a totally empty
-    mapping — the exact shape a pre-envelope record left behind — all read as
-    ``None`` rather than raising. No migration is owed for a record banked
-    before this envelope existed; it simply reads as absent.
+    mapping (missing ``delay_us``/``basis_delay_us`` too, so this is not the
+    retrofit case) all read as ``None`` rather than raising. See
+    ``test_a_pre_envelope_record_round_trips_through_the_read_back`` for the
+    shape that DOES carry a real prescription and DOES round-trip.
     """
     assert alignment_prescription_from_mapping(None) is None
     assert alignment_prescription_from_mapping({"kind": "nope"}) is None
     assert alignment_prescription_from_mapping({}) is None
+
+
+def test_a_pre_envelope_record_round_trips_through_the_read_back():
+    """The retrofit contract: durable state predates this envelope.
+
+    ``verify_priors.alignment_prescription`` is carried unconditionally
+    across a deploy (``correction_crossover_v2.persist_conductor_state``),
+    and #2662/#2773 shipped writing it days before this envelope existed, so
+    a live speaker can already hold a record naming neither ``kind`` nor
+    ``artifact_schema_version``. Refusing it would silently mis-grade a round
+    already in flight — see :func:`~jasper.active_speaker.crossover_v2.
+    alignment_prescription._parse_prescription`'s ``read_back`` paragraph.
+
+    Generated from a REAL accepted prescription's own ``to_dict()`` with the
+    two envelope keys removed, not hand-typed, so this is exactly the shape a
+    prior build wrote rather than a guess at it.
+    """
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    pre_envelope_record = prescription.to_dict()
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+    recovered = alignment_prescription_from_mapping(pre_envelope_record)
+    assert recovered is not None
+    assert recovered.delay_us == prescription.delay_us
+    assert recovered.basis_delay_us == prescription.basis_delay_us
+    assert recovered.basis_artifacts == prescription.basis_artifacts
+
+
+@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
+def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
+    """EITHER field present, even correctly, with the other missing, is not
+    the wholly-absent shape the retrofit tolerates — it tried to speak the
+    envelope and got it wrong."""
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    record = prescription.to_dict()
+    other = "artifact_schema_version" if keep == "kind" else "kind"
+    del record[other]
+    assert alignment_prescription_from_mapping(record) is None
+
+
+def test_a_future_schema_version_still_refuses_even_on_read_back():
+    """The retrofit posture tolerates a wholly-absent envelope, never a
+    present-but-wrong one — a document naming a version this build does not
+    speak is refused under both the request gate and the durable read-back."""
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    record = prescription.to_dict()
+    record["artifact_schema_version"] = 2
+    assert alignment_prescription_from_mapping(record) is None
+
+
+def test_the_response_format_advertises_exactly_the_refusals_that_exist():
+    """#2773's discoverability, kept honest, mirroring
+    ``test_crossover_v2_topology_prescription.py``'s own test of the same
+    name: a prescriber reading the contract block learns the same vocabulary
+    the gate actually raises."""
+    advertised = alignment_prescription_response_format()["refusals"]
+    assert set(advertised) == set(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS)
+
+
+def test_the_response_format_names_the_request_time_door_and_its_severity():
+    """The other two prescription classes stage through the prescriber CLI;
+    this one and the topology pin are request-body keys whose refusal takes
+    the whole session. Before this test the alignment door had NO discovery
+    surface at all — a prescriber could only learn its shape by reading the
+    module source."""
+    block = alignment_prescription_response_format()
+    assert block["key"] == ALIGNMENT_PRESCRIPTION_KEY
+    assert block["entry"] == "request_body"
+    assert "jasper-crossover-prescriber" in block["entry_detail"]
+    assert "refuses the whole session" in block["severity"]
+    # The envelope is discoverable in the same block a prescriber reads for
+    # every other field, not left to be learned by a refusal.
+    assert str(ALIGNMENT_PRESCRIPTION_KIND) in block["fields"]["kind"]
+    assert str(ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION) in (
+        block["fields"]["artifact_schema_version"]
+    )
+
+
+def test_the_response_format_reaches_the_evidence_packet(tmp_path):
+    """Wired beside topology's own block (#2773's shape), so a reader of the
+    packet — not just of the module — learns this door exists."""
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        build_crossover_evidence_packet,
+    )
+
+    from tests.test_crossover_v2_blend_prescription import _bundle
+
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(session)
+    doors = packet["request_time_prescriptions"]
+    assert doors["alignment"] == alignment_prescription_response_format()
+    assert doors["topology"]["key"] == "topology_prescription"
 
 
 def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
