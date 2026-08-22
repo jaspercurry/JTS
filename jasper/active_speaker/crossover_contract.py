@@ -95,9 +95,11 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
         "sweep_peak_dbfs": sweep_peak,
         "commissioning_gain_db": commissioning_gain,
         "effective_peak_dbfs": canonical_effective,
-        # Deconvolution removes sweep amplitude. Replay removes only this
-        # scalar role/main-volume gain; the applied electrical crossover,
-        # protection, and filter response remain in the measured response.
+        # Deconvolution removes sweep amplitude; this is the remaining
+        # attenuation-only scalar (role commissioning gain plus locked main
+        # volume) between the played excitation and the measured response,
+        # which still contains the applied electrical crossover, protection,
+        # and filter response.
         "scalar_playback_gain_db": scalar_playback_gain,
         **{
             name: value[name]
