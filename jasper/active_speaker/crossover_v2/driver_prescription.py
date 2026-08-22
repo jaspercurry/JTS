@@ -1365,8 +1365,8 @@ def _check_classification(
 
     **What clearing this bar does and does not mean.** It means the feature is
     not one a cut is structurally the wrong tool for. It does NOT mean a cut
-    will help: run-log §9.2 says so in as many words, and every EQ arm played
-    that night measured worse against the frozen reference. The round that
+    will help: run-log §9.2 says so in as many words, and every EQ candidate
+    played that night measured worse against the frozen reference. The round that
     follows is what answers the second question, and it answers it by measuring.
     """
     if not filters:
@@ -2153,7 +2153,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
             "match_tolerance_octaves": VERDICT_MATCH_TOLERANCE_OCTAVES,
             "necessary_not_sufficient": (
                 "a defect verdict says EQ is not structurally BARRED. It does "
-                "not say EQ will help — every EQ arm played on 2026-08-19 "
+                "not say EQ will help — every EQ candidate played on 2026-08-19 "
                 "measured worse against the frozen reference. The round that "
                 "follows is what answers that, by measuring"
             ),
