@@ -373,15 +373,26 @@ def build_v2_wired_run_and_consume(
     ``session_ceiling_expired``, never a transport claim.
 
     **A per-take RETAKE (``retake_event``, the host's ``request_retake`` seam)
-    is honoured in that same window, and only there** — the window the phone
-    offers its own retake in, since it is exactly the span in which the last
-    prompted position can still be replaced before the set is confirmed. It
-    re-authorizes and re-captures the SAME index, spending an ordinary attempt
-    against the plan's ``max_attempts`` and the conductor's own per-slot extras
-    ledger, so an accepted take REPLACES the retained position and a rejected
-    one leaves the original standing. Both takes stay banked; the fit reads the
-    retained one. ``complete_event`` wins a tie: a household that said "done"
-    is not asked to say it twice.
+    is honoured wherever the walk is WAITING ON A PERSON**, which is the
+    relay's own window ("only while the begin for the next entry has not been
+    seen yet") expressed locally: a HELD BEGIN, and the held-set window above.
+    Nowhere else — between an accepted capture and the next begin nothing here
+    pauses, so there is no moment to interject in that a hold does not already
+    cover.
+
+    It re-authorizes and re-captures the slot that JUST COMPLETED (``index ==
+    accepted``, never ``accepted + 1``), spending an ordinary attempt against
+    the plan's ``max_attempts`` and the conductor's own per-slot extras ledger.
+    ``accepted`` is never advanced by one: the slot was counted once and stays
+    counted. An accepted take REPLACES the retained position (the conductor's
+    retention is per-index idempotent) and a rejected one leaves the original
+    standing — nothing was dropped on its behalf. Both takes stay banked under
+    their own attempt; the fit reads the retained one. ``complete_event`` wins
+    a tie: a household that said "done" is not asked to say it twice.
+
+    Leaving a held begin for a retake tells the gate so
+    (:meth:`PositionGate.abandon_hold`), because a hold nobody is running any
+    more must stop being the position the envelope advertises.
     """
 
     poll_s = WIRED_HOLD_POLL_S if poll_interval_s is None else float(poll_interval_s)
