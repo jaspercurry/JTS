@@ -1621,7 +1621,7 @@ hard floor**.
 audio (1,649 of 2,776 s) and the largest retake source (9 of 13 rejected
 captures), it never changed an outcome (8 of 8 committed the configured Fc),
 and the max-over-poses scalar it feeds adjudicates below its own noise —
-3.54 dB same-arm repeat noise against rank-1-to-rank-2 gaps of 0.004–2.13 dB,
+3.54 dB same-candidate repeat noise against rank-1-to-rank-2 gaps of 0.004–2.13 dB,
 with the closing at-mark repeat frequently carrying the argmax in 4 of the 8.
 The pose measurements are sound (inter-driver drift 0.6–1.9 dB against a
 0.09–0.32 dB mark-return floor; ±40 cm ~2.2× the ±12 cm pair in 8 of 8), so

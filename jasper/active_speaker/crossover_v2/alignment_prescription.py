@@ -77,8 +77,8 @@ the declared measured basis, not from the delay the speaker currently plays.
 A step-size bound anchored on the incumbent would forbid exactly the correction
 a lobe-hopped incumbent needs: on the series-2 speaker the incumbent sat
 +501.7 µs from the physically-coincident answer — **1.65 half-period lobes**
-(0.83 of a period at Fc = 1648.7 Hz, whose lobe is 303.27 µs) — so every arm
-that could fix it would be refused, the only admissible prescription would be
+(0.83 of a period at Fc = 1648.7 Hz, whose lobe is 303.27 µs) — so every
+candidate that could fix it would be refused, the only admissible prescription would be
 one that changed almost nothing, and the bound would be widened by hand at the
 first bench session, which is how a fail-closed guard becomes decorative.  Anchoring on the basis asks the question that is actually
 worth asking: *does this prescription leave the drivers within one lobe of
@@ -89,15 +89,15 @@ commitment leaves it.
 
 **Fail-closed, never clamped.**  Every refusal below names its reason and
 raises.  A prescription that is out of bounds is not pulled to the boundary and
-run: the operator asked for an arm, and a silently different arm is worse than
-no arm, because its receipt would carry the arm's name.
+run: the operator asked for a candidate, and a silently different candidate is
+worse than none, because its receipt would carry the candidate's name.
 
 **Absence is the automatic path, and it is never inherited.**  ``None`` from
 :func:`read_alignment_prescription` means no prescription was made, and every
 byte of the automatic selection is unchanged.  Unlike the session tier — which
 a re-measure deliberately inherits from the lapsed session (#2639) — a
 prescription is per-round and explicit.  Inheriting one would let an operator's
-"measure again" silently re-run an arm they did not ask for, which is the same
+"measure again" silently re-run a candidate they did not ask for, which is the same
 class of dishonesty as clamping.
 
 **One parser, two gate policies.**  :func:`read_alignment_prescription` is the
@@ -186,7 +186,7 @@ PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: does not depend on a number the operator supplied. It has always existed
 #: (``crossover_v2_flow.alignment_delay_plausible``, the Fix-3 screen) but it
 #: fired ten minutes into a session, at a MEASURE screen whose household copy
-#: asks the user to move the microphone; on a prescribed arm that copy is a lie
+#: asks the user to move the microphone; on a prescribed candidate that copy is a lie
 #: about a number the request could have been refused for at the tap. Its own
 #: reason, never that screen's.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
@@ -322,7 +322,7 @@ class AlignmentPrescription:
         """How far this prescription leaves the drivers from the basis's answer.
 
         The quantity the bound is expressed in, and the one the series-2
-        diagnosis tabulates its arms by: ``0.0`` prescribes exactly what the
+        diagnosis tabulates its candidates by: ``0.0`` prescribes exactly what the
         measurement says, and the sign says which driver is left early.
         """
         return self.delay_us - self.basis_delay_us

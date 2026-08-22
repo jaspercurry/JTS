@@ -335,7 +335,7 @@ def max_q_for_gain(gain_db: float) -> float:
     from, so a filter can never be a cut for the class receipt and a boost for
     its Q bound. A zero-gain filter is inert whatever its Q, and giving it the
     wider ceiling keeps the rule "positive gain is the special case" rather
-    than adding a third arm nothing measures.
+    than adding a third case nothing measures.
     """
     return PRESCRIPTION_MAX_BOOST_Q if gain_db > 0.0 else PRESCRIPTION_MAX_CUT_Q
 

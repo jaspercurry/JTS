@@ -574,8 +574,8 @@ ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
 #: is load-bearing rather than decorative: a prescription alone records only
 #: what a round ASKED for, and there is a reachable rail — an ``ALIGNMENT_OK``
 #: estimate whose band holds no scorable bin, so :func:`_select_alignment_pair`
-#: returns ``None`` and the seed is committed — on which a round can carry an
-#: arm's name while having measured the estimator's own answer instead.
+#: returns ``None`` and the seed is committed — on which a round can carry a
+#: candidate's name while having measured the estimator's own answer instead.
 ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
@@ -4381,7 +4381,7 @@ def _select_alignment_pair(
 
     Deliberately NOT an anchor substitute. Re-centring the search on the
     prescription would let the objective wander off the prescribed value, and
-    the arm measured would then not be the arm asked for — the one property a
+    the candidate measured would then not be the one asked for — the one property a
     delay-sweep harness cannot give up. The seed pair is still scored, so the
     record always shows what the prescription displaced.
 
@@ -4494,7 +4494,7 @@ def _select_alignment_pair(
     # too (the `signs` line below). The seed is NOT appended here (it is
     # everywhere else): appending it would let the search return the seed's
     # delay whenever the seed happened to score within the flat-minimum
-    # epsilon, and an arm that silently measures the estimator's answer instead
+    # epsilon, and a candidate that silently measures the estimator's answer instead
     # of the prescribed one is the failure this whole path exists to remove.
     # `seed_ripple_db` above already scored the seed, so the record still shows
     # what was displaced.
@@ -6662,8 +6662,8 @@ def _build_candidate(
             left_anchor_lobe=selection.left_anchor_lobe,
         )
     # A prescription that never reached a commitment is the one failure a delay
-    # sweep must not absorb quietly: the operator asked for an arm and the round
-    # would otherwise measure a fallback under that arm's name. The aligner's
+    # sweep must not absorb quietly: the operator asked for a candidate and the
+    # round would otherwise measure a fallback under that candidate's name. The aligner's
     # own refusals are still respected — a railed delay search leaves the branch
     # pair in an unknown frame, and an unscorable band leaves the estimator's
     # seed standing — what changes is that the round SAYS SO, here, rather than
@@ -6869,7 +6869,7 @@ def _build_candidate(
         # selection means the seed shipped, and correlation's answer is a
         # measurement — so this is honestly ``False`` even on a round that ASKED
         # for a basin (the `alignment_prescription_not_committed` warning is
-        # where that round learns its arm did not run).
+        # where that round learns its candidate did not run).
         polarity_pinned=bool(selection is not None and selection.polarity_pinned),
     )
     return candidate, (freqs, predicted_db)
