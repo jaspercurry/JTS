@@ -1,10 +1,23 @@
 # LLM-native tuning workbench — design and execution plan
 
-> **Status: proposed direction (2026-07-28).** This is the current planning
-> authority for the agent-assisted tuning workbench. It supersedes the
+> **Status: historical.** Snapshot as of **2026-08-22**, its last substantive
+> revision (#2837, hours before this tag) — not its proposal date: it was
+> proposed 2026-07-28 and kept taking amendments after that (a callout below
+> is marked "Partly built, 2026-08-18" and records owner rulings through
+> 2026-08-21). Tagged historical the same day, superseded by
+> [`tuning-master-plan.md`](tuning-master-plan.md) — "its
+> planning-authority claim and its §5.5 'experiment workspace is the one new
+> mutation owner' are superseded: `play_program` is the single activation door
+> (invariant 5), and the SSH-operator + runbook model (R4/R11) replaces the
+> workbench direction. Its deferred embedded-agent appendix stays deferred"
+> (that plan's Supersessions section). Preserved for primary-source
+> archaeology — specific facts (seams, symbol names, the §5/§9 repository
+> claims) will drift over time. Read this for the narrative, not for current
+> state. That supersession still holds: this document replaced the
 > prescriptive schema/lexicon approach in
 > [`tuning-bench-design.md`](tuning-bench-design.md) and
-> [`tuning-bench-execution-plan.md`](tuning-bench-execution-plan.md).
+> [`tuning-bench-execution-plan.md`](tuning-bench-execution-plan.md), and
+> neither comes back.
 > No implementation ships from this document.
 >
 > Amended and adversarially re-reviewed 2026-07-28 with a verified-seam

@@ -5,7 +5,9 @@
 > primary-source archaeology — specific contracts below are not current
 > planning authority. Read this for the investigation and original rationale;
 > current direction lives in
-> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md).
+> [`tuning-master-plan.md`](tuning-master-plan.md) (it superseded
+> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
+> which replaced this design, on 2026-08-21).
 > Durable evidence this design reasoned from is laptop-side and gitignored:
 > `captures/iloud-comparison-20260727/`.
 

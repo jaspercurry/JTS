@@ -235,8 +235,8 @@ revisited when evidence demands it.
 - **Ground-plane and two-distance regimes; air absorption modeling.**
 - **Calibration phase application and incidence-aware math**: the cal
   file's phase column is parsed but never applied (this ledger entry is the
-  record; 2.14 adds the in-file note); orientation routes the vendor fetch
-  only.
+  record, and `CalibrationCurve.phase_deg` carries the in-file note);
+  orientation routes the vendor fetch only.
 - **Bespoke mechanism detectors** (port resonance, cone breakup, room mode,
   panel resonance, rattle/impulsive defects, amplifier-clipping
   heuristics): the per-feature evidence record carries the discriminating
@@ -257,13 +257,17 @@ revisited when evidence demands it.
 ## Supersessions and standing docs
 
 This plan is the planning authority for the measurement/tuning program.
-Ticket 2.14 applies the banners/tags below; until it lands, this section is
-the ruling and those documents are stale.
+Ticket 2.14 applied the banners/tags below on 2026-08-22; this section stays
+the ruling those banners point back to.
 
 **Superseded (historical-tag or banner + pointer here):**
 
 - `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
-  previous program-wide roadmap for the identical scope. Replaced whole.
+  previous program-wide roadmap for the identical scope. Replaced whole,
+  except the Ethos section — "least bad is still the overall guiding
+  principle", owner re-affirmed 2026-08-22, and three production sites cite
+  that section as their governing rule; migration into this plan is tracked
+  as #2865.
 - `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
   a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that

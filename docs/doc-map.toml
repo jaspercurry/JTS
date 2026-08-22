@@ -28,8 +28,10 @@ session_artifacts = [
   # what was exercised and the UX findings; the synthesized plan those findings
   # fed lives in docs/crossover-measurement-productization-design.md.
   "docs/crossover-room-e2e-validation-log.md",
-  # Superseded 2026-07-27 tuning-workbench design/execution snapshots. Current
-  # planning authority lives in docs/llm-native-tuning-workbench-plan.md.
+  # Superseded 2026-07-27 tuning-workbench design/execution snapshots. They
+  # were superseded by docs/llm-native-tuning-workbench-plan.md, itself
+  # historical since 2026-08-21; the planning authority for the
+  # measurement/tuning program is docs/tuning-master-plan.md.
   "docs/tuning-bench-design.md",
   "docs/tuning-bench-execution-plan.md",
   # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
@@ -38,8 +40,9 @@ session_artifacts = [
   # HANDOFF-multiroom.md / HANDOFF-distributed-active.md / dumb-endpoint-bringup.md
   # (see docs/doc-map.toml's multiroom-grouping subsystem). Tracked by #1852.
   "docs/multiroom-pairing-reliability-plan.md",
-  # Live working roadmap (sequence + rationale) for the audio commissioning
-  # program. Deliberately not a scan target: it defers every definition and
+  # Historical roadmap (sequence + rationale) for the audio commissioning
+  # program, replaced whole 2026-08-21 by docs/tuning-master-plan.md.
+  # Deliberately not a scan target: it defers every definition and
   # every state claim to its owning docs (gating-v2-plan.md,
   # room-correction-regime-plan.md, HANDOFF-correction-revision-plan.md,
   # HANDOFF-crossover-measurement-v2.md), so routing a code change here

@@ -1,4 +1,28 @@
-# Audio commissioning roadmap (working document)
+# Audio commissioning roadmap
+
+> **Status: historical.** Snapshot as of **2026-08-20**, its last substantive
+> revision — not its ratification date: the roadmap was owner-ratified
+> 2026-08-14 and kept taking rulings after that (its Ethos heading below is
+> marked "extended 2026-08-16"). Tagged historical 2026-08-22, superseded by
+> [`tuning-master-plan.md`](tuning-master-plan.md) — "the previous
+> program-wide roadmap for the identical scope" (that plan's Supersessions
+> section, which states the one exception below), now the planning authority
+> for the measurement/tuning program.
+>
+> **One carve-out — the
+> [Ethos](#ethos-owner-ratified-2026-08-14-extended-2026-08-16) section below
+> is not historical.** "Least-bad measured, honed in bites" — and with it
+> tinker-first and the reserved-rollback rule — remains the program's live
+> overall guiding principle, owner re-affirmed 2026-08-22, and that section is
+> what production code cites this file for
+> (`crossover_v2/verification.py` reads its "only the round budget, the
+> plateau, and the safety class end a series" rule;
+> `audio_measurement/program_analysis.py` reads its best-available rule).
+> Migrating the section into the live planning authority is tracked as
+> #2865. Everything else is preserved for primary-source archaeology —
+> specific facts (sequencing, wave contents, ratification-pending lists,
+> measurement snapshots) will drift over time. Read the rest for the
+> narrative, not for current state.
 
 The cross-subsystem working roadmap for the audio commissioning program —
 the measurement substrate, crossover and linearization commissioning, and

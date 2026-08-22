@@ -101,6 +101,8 @@ def supported_model_options() -> tuple[dict[str, Any], ...]:
 class CalibrationCurve:
     freqs_hz: list[float]
     correction_db: list[float]
+    # Parsed and stored but never applied — `apply_calibration_curve` is
+    # magnitude-only; a deliberate skip in docs/tuning-master-plan.md.
     phase_deg: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:

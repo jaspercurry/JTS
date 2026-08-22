@@ -1042,16 +1042,21 @@ reference. Currently:
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
 - [`llm-native-tuning-workbench-plan.md`](docs/llm-native-tuning-workbench-plan.md)
-  — **Current design and execution direction (2026-07-28)** for the
-  agent-assisted tuning workbench: expose existing measurements and DSP
-  capabilities through a factual context packet, linked domain-owned
-  evidence, and a reversible cross-layer experiment workspace. The host owns
-  dispatch, validation, safety, and restoration; the LLM owns natural-language
-  interpretation, hypotheses, tool choice, and experimental reasoning.
+  — **Historical design plan (proposed 2026-07-28)**, superseded 2026-08-21 by
+  `tuning-master-plan.md` above, for the agent-assisted tuning workbench:
+  expose existing measurements and DSP capabilities through a factual context
+  packet, linked domain-owned evidence, and a reversible cross-layer
+  experiment workspace. The host owns dispatch, validation, safety, and
+  restoration; the LLM owns natural-language interpretation, hypotheses, tool
+  choice, and experimental reasoning. Its §5.5 "experiment workspace is the
+  one new mutation owner" claim is superseded — `play_program` is the single
+  activation door — and the SSH-operator + runbook model replaced the
+  workbench direction. Read for the design archaeology.
 - [`tuning-bench-design.md`](docs/tuning-bench-design.md)
   — **Historical design snapshot (2026-07-27)** for the original
   prescriptive tuning-bench shape. Retained for the iLoud-session rationale
-  and audit archaeology; superseded by the LLM-native workbench plan above.
+  and audit archaeology; superseded by the LLM-native workbench plan above —
+  itself superseded; current direction lives in `tuning-master-plan.md`.
 - [`tuning-bench-execution-plan.md`](docs/tuning-bench-execution-plan.md)
   — **Historical execution snapshot (2026-07-27)** for the superseded
   PR-B1..B4 ladder. Retained for repository seams and implementation traps
@@ -1084,7 +1089,9 @@ reference. Currently:
   with Undo primary, and the phone gains an orientation/pattern preview
   plus honest time-budget and CHECK copy.
 - [`attribution-stage-plan.md`](docs/attribution-stage-plan.md)
-  — **Adopted work order (2026-07-29, issue #1866)** for the
+  — **Historical work order (2026-07-29, issue #1866)**, its open work orders
+  absorbed 2026-08-21 into `tuning-master-plan.md`'s waves while the shipped
+  `jasper/attribution/` findings/promotion code stands as substrate, for the
   measure → diagnose → prescribe attribution stage: findings as
   persisted artifacts, an observed-first mechanism registry, the
   discriminating-probe primitives (reverse-null, rotation,
@@ -1120,9 +1127,11 @@ reference. Currently:
   returning-user state, one phone handoff, target/headroom/latency promises,
   mandatory proof, acceptance authority, and ownership boundaries.
 - [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
-  **The correction/measurement program's roadmap spine (current planning
-  authority), plus the historical P-track plan as its appendix.** The spine
-  holds the machine charter, the P0–P4 ladder with per-rung ratification status
+  **The correction/measurement program's roadmap spine, plus the historical
+  P-track plan as its appendix.** Program ordering — what supersedes what and
+  what runs next — moved to `tuning-master-plan.md` above on 2026-08-21. The
+  spine holds the machine charter, the P0–P4 ladder with per-rung
+  ratification status
   and its reconciliation against the attribution work orders, the campaign
   rounds (code-locality territories with exit criteria), the research index,
   the phase→issue index, and the CURRENT POSITION marker that closing rounds
@@ -1130,7 +1139,10 @@ reference. Currently:
   campaign: H1 carries into the Room hardware track; the rest is rationale and
   archaeology, not current behavior.
 - [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
-  — **Working roadmap (owner-ratified 2026-08-14)** for the audio
+  — **Historical roadmap (owner-ratified 2026-08-14)**, replaced whole
+  2026-08-21 by `tuning-master-plan.md` above **except its Ethos section,
+  which stays the program's live guiding principle** (owner re-affirmed
+  2026-08-22; migration tracked as #2865), for the audio
   commissioning program: the ethos rulings (tinker-first/never-nanny,
   rollback reserved for measured regression, probabilistic posture with
   80/20 execution, substrate-over-intervention investment), the pre-run
