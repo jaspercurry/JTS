@@ -85,19 +85,29 @@ their owners' own names, as the deciding value on this runner's own per-phase
 exit code. A failing walk stops the round before it banks: the walk's rc is
 the verdict, and a bank on top of it would be a second one.
 
+**The examples below pass no ``--complete-after``, and that is the recipe.**
+The session closes ITSELF when it has served every hold it planned, and the walk
+reads that terminal status through its own session latch — the two closes are
+exclusive, so nothing is left un-posted. A laptop-side number cannot be the
+honest one: ``--complete-after`` counts RELEASES, the staged stop count is only
+a FLOOR (the session's own non-walk captures are gated holds too, and how many
+there are is the tier's, decided on the speaker), so a walk told to complete at
+its own stop count can close the group before the session is done. Pass it when
+a WALK has to close a wired stage's held set, which is the case it exists for.
+
 Usage::
 
     # measure (stage 1), with the lab arm walking five angles
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
         --campaign captures/my-night --label r1 --tier remote \\
         --angles 0,7,-7,22,-22 --regime per_driver \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+        --attest-rig-clear --expect-angles 7,-7,22,-22
 
     # the same five angles, three takes at each — one walk, fifteen stops
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
         --campaign captures/my-night --label r2 --tier remote \\
         --angles 0,7,-7,22,-22 --per-position 3 --regime per_driver \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 15
+        --attest-rig-clear --expect-angles 7,-7,22,-22
 
     # …read the printed candidate, decide, THEN apply it by name
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fp>
@@ -105,7 +115,7 @@ Usage::
     # the post-apply check (stage 2)
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
         --campaign captures/my-night --label r1-verify --stage verify \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+        --attest-rig-clear --expect-angles 7,-7,22,-22
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
 wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s

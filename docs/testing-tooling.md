@@ -2520,13 +2520,13 @@ POST the open, grep a log for `released index=N`, sleep again, bank.
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
     --campaign captures/my-night --label r1 --tier remote \
     --angles 0,7,-7,22,-22 --regime per_driver \
-    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+    --attest-rig-clear --expect-angles 7,-7,22,-22
 
 # the same five angles, three takes at each — one walk, fifteen stops
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
     --campaign captures/my-night --label r2 --tier remote \
     --angles 0,7,-7,22,-22 --per-position 3 --regime per_driver \
-    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 15
+    --attest-rig-clear --expect-angles 7,-7,22,-22
 
 # …read the candidate it printed, decide, THEN apply it BY NAME
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fingerprint>
@@ -2534,8 +2534,17 @@ PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fing
 # the post-apply check (stage 2)
 PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \
     --campaign captures/my-night --label r1-verify --stage verify \
-    --attest-rig-clear --expect-angles 7,-7,22,-22 --complete-after 5
+    --attest-rig-clear --expect-angles 7,-7,22,-22
 ```
+
+**No `--complete-after` in those, and that is the recipe.** The session closes
+ITSELF once it has served every hold it planned, and the walk reads that
+terminal status through its own session latch; the two closes are exclusive, so
+nothing is left un-posted. A laptop-side number cannot be the honest one — the
+flag counts RELEASES and the staged stop count is only a floor (see the refused
+configurations below) — so a walk told to complete at its own stop count can
+close the group before the session is done. Pass it when a WALK has to close a
+wired stage's held set, which is the case it exists for.
 
 **The apply gate is why the file exists.** The chained scripts had none, and a
 round applied a candidate nobody had sanctioned — one measured round, lost. So

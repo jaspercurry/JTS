@@ -215,12 +215,36 @@ _DRIVER_ROW_FIELDS = ("target_id", "role", "notes")
 
 _CONTEXT_ROW_FIELDS = ("target_id", "operator_notes")
 
+#: The prose-shape NAME test, spelled once. Both the scan and the derivation
+#: below ask it, so "what counts as prose-shaped" cannot come to have two
+#: answers in one module.
+def _is_prose_key(name: str) -> bool:
+    return name == "notes" or name.endswith("_notes")
+
+
+_RESEARCH_DRIVER_PREFIX = "driver_research.drivers[]."
+
 #: Prose-shaped keys on ``driver_research.drivers[]`` that :data:`EXCLUDED_PROSE`
 #: already accounts for. This artifact carries none of that record, so nothing
 #: here is a carrier — the tuple exists so the scan can tell "deliberately not
 #: gathered" from "nobody noticed", which are the two things ``redacted_fields``
 #: must never merge.
-_RESEARCH_DRIVER_CLAIMED = ("notes",)
+#:
+#: DERIVED from the exclusions rather than listed beside them, because the two
+#: directions of error are not symmetric. Emptying it makes the scan re-report a
+#: stated decision, which a test catches by going red. Widening it silences the
+#: tripwire for a key no exclusion row names — the scan simply stops reporting,
+#: and nothing goes red. Reading the rows means a key can only be claimed here
+#: by first being named there, so that edit has nowhere to land.
+_RESEARCH_DRIVER_CLAIMED = tuple(sorted(
+    leaf
+    for leaf in (
+        key[len(_RESEARCH_DRIVER_PREFIX):]
+        for key in EXCLUDED_PROSE
+        if key.startswith(_RESEARCH_DRIVER_PREFIX)
+    )
+    if _is_prose_key(leaf)
+))
 
 
 def _prose(value: Any) -> str | None:
@@ -251,11 +275,7 @@ def _prose_keys(raw: Any) -> set[str]:
     """
     if not isinstance(raw, Mapping):
         return set()
-    return {
-        str(key)
-        for key in raw
-        if str(key) == "notes" or str(key).endswith("_notes")
-    }
+    return {str(key) for key in raw if _is_prose_key(str(key))}
 
 
 def _scan_prose_keys(records: Any, path: str, claimed: tuple[str, ...]) -> set[str]:

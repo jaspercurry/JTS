@@ -4,16 +4,20 @@
 
 """The attribution stage's closed vocabularies.
 
-Three small closed sets, kept in their own module so the mechanism registry
-(:mod:`jasper.attribution.mechanisms`) and the finding artifact
-(:mod:`jasper.attribution.findings`) can both import them without either
-importing the other.
+Small closed sets — :data:`FIX_CLASSES`, :data:`CONFIDENCE_TIERS`,
+:data:`PROBES` and :data:`EVIDENCE_TIERS` — kept in their own module so the
+mechanism registry (:mod:`jasper.attribution.mechanisms`) and the finding
+artifact (:mod:`jasper.attribution.findings`) can both import them without
+either importing the other. They are enumerated rather than counted: a
+cardinality is a second claim about the same list, and it is the half that
+goes stale when the list grows.
 
 Every set here is **closed on purpose**. ``docs/attribution-stage-plan.md``
 §3.3 names the fix classes as "closed set, v1"; §3.2 rules confidence to a
 three-word tier ("never a bare number in household copy"); §5 tabulates the
-probe primitives. A value outside these sets is a typo or a scope change, and
-both should fail loudly at construction rather than reach a persisted finding.
+probe primitives; §4's preamble rules the corpus evidence tiers. A value
+outside these sets is a typo or a scope change, and both should fail loudly at
+construction rather than reach a persisted finding.
 """
 
 from __future__ import annotations
