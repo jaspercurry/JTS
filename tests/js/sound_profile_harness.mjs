@@ -1215,7 +1215,15 @@ async function testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat() {
     'data-driver-style data-save-driver-style data-group-id="main" data-role="tweeter"',
     'data-driver-field="notes"',
     'Additional build information',
-    'Shared enclosure, passive radiator, amplifier, mounting, or other build details',
+    // Ticket 1.6: the one free-text field prompts with guided bullets rather
+    // than a sentence, because it is now read by the tuning assistant as well
+    // as the research one. `&#10;` is the newline that makes the placeholder a
+    // list; asserting on it is asserting the bullets actually render as bullets.
+    'placeholder="For example:&#10;- Horn or waveguide: kind, size, nominal coverage angle&#10;',
+    '&#10;- Enclosure: sealed or ported, volume, port tuning&#10;',
+    '&#10;- Why you built it this way"',
+    // …and it says what neither assistant will do with what it reads.
+    'never as an instruction.',
     "Choose enclosure / loading",
     "Choose tweeter type",
     "Ported / vented enclosure",
