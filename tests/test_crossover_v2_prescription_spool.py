@@ -65,7 +65,6 @@ from jasper.active_speaker.linearization_fit import (
     linearization_filters_by_role,
     worst_headroom_cost_db,
 )
-from jasper.capture_relay.session import CaptureBeginRefused
 from jasper.cli import crossover_prescriber as cli
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -2123,10 +2122,13 @@ def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
     This fixture is the one the gate measured: the document replaces a working
     tweeter fit with a single narrow high-Q cut, and the predicted pooled
     improvement is 0.152 dB. Against the FITTED bar
-    (``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`` = 0.5) that refuses — and would
-    refuse essentially every per-driver prescription, because a pooled-RMS
-    figure is the wrong instrument for a narrow cut: the class would be blocked
-    before its first hardware exercise rather than judged.
+    (``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`` = 0.5) that falls short — as
+    would essentially every per-driver prescription, because a pooled-RMS
+    figure is the wrong instrument for a narrow cut: the whole class would be
+    written down as no improvement before its first hardware exercise rather
+    than judged. (It was a REFUSAL when the ruling was made; the nanny
+    burn-down turned both bars into ledger boundaries, and the ruling about
+    which bar the class is measured against is what this test pins.)
 
     So a candidate carrying prescribed branches is asked only not to make the
     speaker WORSE. It arrives already carrying its own admission evidence — the
@@ -2161,20 +2163,28 @@ def test_a_narrow_prescribed_cut_clears_the_prescribed_classs_own_bar(
     assert flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == 0.5
 
 
-def test_a_prescription_predicted_to_worsen_still_refuses_and_says_whose_it_was(
+def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(
     tmp_path, monkeypatch, caplog,
 ):
-    """The floor under the ruling, and the copy that goes with it.
+    """The floor under the ruling, after the nanny burn-down.
 
-    Non-worsening is a real gate, not a waiver: a model cannot settle whether a
+    This used to REFUSE, on the reasoning that "a model cannot settle whether a
     narrow cut helps, but it CAN settle that a proposal makes the prediction
-    worse, and spending the household's speaker on that is worth refusing before
-    measuring. Reached here with a deep cut on a role the fit was correcting.
+    worse, and spending the household's speaker on that is worth refusing
+    before measuring." That is the exact argument
+    ``docs/measurement-loop-doctrine.md`` overrules — a prediction proposes and
+    a measurement disposes — and on 2026-08-22 this refusal, in this shape,
+    stopped jts3's first prescribed-boost round at ``improvement_db=-0.703``
+    one line after the same gate disclosed its own level estimators 11.635 dB
+    apart. A model that cannot trust its inputs has not settled anything.
 
-    The sentence is the other half. The refused tuning is a document an operator
-    wrote, so the household must not be told "the tuning JTS worked out" and
-    must not be sent to re-check driver details that are not what is wrong — the
-    one action that changes the outcome is naming the prescription.
+    So the non-worsening bar survives as a LEDGER boundary and the round
+    proceeds to the measurement that decides. Both halves are asserted: the
+    verdict is banked under the prescribed bar (``required_db=0.0``, which is
+    what says WHICH bar judged it), and the candidate the round measures exists.
+
+    **Mutation guard.** Restoring the refusal raises ``CaptureBeginRefused``
+    out of ``_walked_round`` and fails this test at the walk.
     """
     _stage_driver(
         tmp_path, ordinal=9,
@@ -2185,21 +2195,22 @@ def test_a_prescription_predicted_to_worsen_still_refuses_and_says_whose_it_was(
     ).prescription
 
     with caplog.at_level(
-        logging.ERROR, logger="jasper.active_speaker.crossover_v2_flow"
+        logging.WARNING, logger="jasper.active_speaker.crossover_v2_flow"
     ):
-        with pytest.raises(CaptureBeginRefused) as excinfo:
-            _walked_round(monkeypatch, taken)
+        built = _walked_round(monkeypatch, taken)
 
-    said = str(excinfo.value)
-    assert "prescribed tuning that was staged for this round" in said
-    assert "Revise or withdraw the prescription" in said
-    # The misattribution this replaced, absent in both of its halves.
-    assert "tuning JTS worked out" not in said
-    assert "driver details" not in said
-    # …and the deciding number on the wire says WHICH bar refused it.
-    assert "required_db=0.0" in caplog.text
-    # The control: the same session with no document is accepted, so this is the
-    # DOCUMENT being refused rather than the fixture failing its own gate.
+    assert built.conductor.candidate is not None
+    gate = [
+        line for line in caplog.text.splitlines()
+        if "event=correction.crossover_v2_prediction_gate" in line
+    ]
+    assert gate, caplog.text
+    assert "reason=not_an_improvement" in gate[-1]
+    # The deciding number on the wire says WHICH bar judged it — the prescribed
+    # class's non-worsening floor, not the fitted class's 0.5 dB.
+    assert "required_db=0.0" in gate[-1]
+    # The control: the same session with no document also proceeds, so the
+    # ledger line above is about the DOCUMENT rather than the fixture.
     assert _walked_round(monkeypatch, None).conductor.candidate is not None
 
 

@@ -2201,7 +2201,7 @@ def test_a_kept_previous_result_is_disclosed_on_the_green_line(monkeypatch):
         verify_priors={
             "predicted_spec": {
                 "comparison": {
-                    "reason": "correction_not_an_improvement",
+                    "reason": "not_an_improvement",
                     "improvement_db": 0.1,
                     "required_db": 0.5,
                 },

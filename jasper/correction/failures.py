@@ -22,7 +22,6 @@ PHONE_CAPTURE_UNAVAILABLE = "phone_capture_unavailable"
 MEASUREMENT_STOPPED = "measurement_stopped"
 TEST_SIGNAL_UNAVAILABLE = "test_signal_unavailable"
 MEASUREMENT_ANALYSIS_FAILED = "measurement_analysis_failed"
-MEASUREMENT_EVIDENCE_UNSAFE = "measurement_evidence_unsafe"
 CORRECTION_UPDATE_FAILED = "correction_update_failed"
 CORRECTION_RESTORE_FAILED = "correction_restore_failed"
 CORRECTION_AUTO_REVERT_FAILED = "correction_auto_revert_failed"
@@ -70,10 +69,6 @@ _FAILURE_COPY: dict[str, tuple[str, bool]] = {
     ),
     MEASUREMENT_ANALYSIS_FAILED: (
         "The speaker could not finish this measurement. Try measuring again.",
-        True,
-    ),
-    MEASUREMENT_EVIDENCE_UNSAFE: (
-        "This measurement did not pass its safety checks. Measure again.",
         True,
     ),
     CORRECTION_UPDATE_FAILED: (
@@ -190,20 +185,3 @@ def session_failure(diagnostic: Any) -> dict[str, Any]:
     else:
         code = UNKNOWN_FAILURE
     return public_failure(code)
-
-
-def measurement_evidence_failure(
-    confidence_report: Any,
-) -> dict[str, Any] | None:
-    """Return the typed apply blocker for failed confidence evidence."""
-    findings = (
-        confidence_report.get("findings")
-        if isinstance(confidence_report, Mapping)
-        else None
-    )
-    if not isinstance(findings, list) or not any(
-        isinstance(finding, Mapping) and finding.get("severity") == "fail"
-        for finding in findings
-    ):
-        return None
-    return public_failure(MEASUREMENT_EVIDENCE_UNSAFE)

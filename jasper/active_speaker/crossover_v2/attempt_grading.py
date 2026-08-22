@@ -98,14 +98,21 @@ __all__ = [
 ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 
 # How much the correction must improve ITS OWN two-branch model before a
-# spec-failing prediction is allowed onto the speaker (linearization-integrity
-# PR-L4 item 2). Both numbers are the pooled spec residual
-# (`flat_spec.spec_convergence_residual`) of the RAW pre-fit and the LINEARIZED
-# predicted sum, graded through the identical evaluator, in dB.
+# spec-failing prediction is recorded as a material improvement
+# (linearization-integrity PR-L4 item 2). Both numbers are the pooled spec
+# residual (`flat_spec.spec_convergence_residual`) of the RAW pre-fit and the
+# LINEARIZED predicted sum, graded through the identical evaluator, in dB.
 #
-# The gate only bites when the prediction ALREADY fails the spec — a prediction
-# that meets it needs no improvement argument, and gating an in-spec result on
-# "how much did it improve" would refuse the flattest speakers hardest. So the
+# **It decides a LEDGER value, not an apply.** Until the nanny burn-down
+# (docs/measurement-loop-doctrine.md deviation (c)) falling short of this
+# number REFUSED the round at the confirm seam; now it chooses between
+# `accountability.LEDGER_IMPROVED` and `LEDGER_NOT_AN_IMPROVEMENT`, and the
+# measured round decides what happens next. Every derivation below is
+# unchanged by that — the question the number answers is the same one.
+#
+# It only bites when the prediction ALREADY fails the spec — a prediction
+# that meets it needs no improvement argument, and judging an in-spec result on
+# "how much did it improve" would read the flattest speakers worst. So the
 # question this threshold answers is narrow: *we can already see this will not
 # reach spec — is it at least clearly moving the right way?*
 #
@@ -124,7 +131,7 @@ ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 # VERIFY summation to ~0.5 dB on JTS3 (the zero-phase model it replaced
 # mistracked by ~2.0 dB). An improvement smaller than the gap between what we
 # model and what the hardware realizes is not an improvement we can honestly
-# claim, so it does not earn an apply.
+# claim, so it is not recorded as one.
 PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
 
 

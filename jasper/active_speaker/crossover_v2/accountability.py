@@ -5,18 +5,37 @@
 """Whether a built candidate may be PROPOSED at all (#2291 Phase 5a-v).
 
 The gate that runs after a candidate is built and before anything downstream
-can apply it.  Two refusals and one disclosure, most-specific-first: whether
+can apply it.  One refusal and two disclosures, most-specific-first: whether
 the two per-driver level estimates agree with each other (banked, never
-refusing), then PR-L4's item 1 (the realized inter-driver level) and item 2
-(the spec-graded prediction).  Refusing here means no candidate is ever stashed or
-published, so the review screen has nothing to offer and the household is
-never asked to decide about a correction JTS cannot stand behind.
+refusing), then PR-L4's item 1 (the realized inter-driver level, the one
+refusal left) and item 2 (the spec-graded prediction, banked and never
+refusing since the nanny burn-down below).  Refusing here means no candidate is
+ever stashed or published, so the review screen has nothing to offer and the
+household is never asked to decide about a correction JTS cannot stand behind.
+
+**Item 2 stopped refusing (docs/measurement-loop-doctrine.md deviation (c)).**
+Until that burn-down it raised ``correction_not_an_improvement`` — a forecast
+vetoing the measurement that would have settled the question, which is the
+authority model exactly inverted: "Predictions and heuristics PROPOSE… They
+never veto an in-band experiment.  Measurements DISPOSE."  It fired in the
+field on 2026-08-22 against jts3's first prescribed-boost round
+(``improvement_db=-0.703`` against ``required_db=0.0``), and the log line one
+above it was this module's own estimator-consistency finding reporting the
+forecast's inputs 11.635 dB apart against a 3.0 dB tolerance — a prediction
+refusing an experiment on numbers it had already disclosed it could not trust.
+Item 2 now settles under :data:`LEDGER_NOT_AN_IMPROVEMENT` and the round
+proceeds.  Every number it computed still rides, in the same three places it
+always did: the :data:`EVENT_PREDICTION_GATE` journal line, the
+``spec_report["comparison"]`` block the session stashes, and — through that
+stash — the durable ``verify_priors.predicted_spec`` the wire serves
+(``jasper.web.correction_crossover_v2._predicted_spec_prior``).  What the
+burn-down removed is the refusal, not one field of the account.
 
 **This module DECIDES; it does not act.**  That split is the whole reason it
 is a module rather than a method, and it is the completion of the #2291
 "return accountability as data" principle that Phase 2b started one layer
-down.  :func:`assess_accountability` computes which refusal fires, what gets
-said, and what gets banked, and hands all three back as an
+down.  :func:`assess_accountability` computes whether the one refusal fires,
+what gets said, and what gets banked, and hands all three back as an
 :class:`AccountabilityDecision`.  The session owns every irreversible half:
 the logger and the ``session_id``, the ``CaptureBeginRefused`` construction
 that stamps ``_last_failure_code``, and the stash the host later persists.
@@ -32,18 +51,22 @@ module should own and are deliberately not:
   reader in the prediction ledger's ``required_db`` field.  Moving the constant
   here while that reader stays there would create exactly the cross-module twin
   5a-v just closed for the candidate-required band.  It moves when its other
-  reader does.  (There used to be a second: the level-frame agreement
-  tolerance.  The single-datum-owner migration deleted the arbitration it
-  gated; the surviving estimator-consistency tolerance is owned once, by
+  reader does.  It still arrives even though it no longer decides a refusal:
+  it decides ``improved`` against :data:`LEDGER_NOT_AN_IMPROVEMENT`, and its
+  value is what tells the fitted and prescribed bars apart on the wire.  (There
+  used to be a second: the level-frame agreement tolerance.  The
+  single-datum-owner migration deleted the arbitration it gated; the surviving
+  estimator-consistency tolerance is owned once, by
   :data:`~.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`, and rides the verdict
   this gate reads rather than being passed alongside it.)
-* **The two household reason codes.**  They are opaque tokens here: this
-  module never renders one, never branches on one, and only routes the one it
-  was handed — into a journal payload and into
+* **The household reason code.**  It is an opaque token here: this module never
+  renders it, never branches on it, and only routes the one it was handed — into
+  a journal payload and into
   :attr:`AccountabilityDecision.refusal_reason`.  :mod:`.spatial` returns
   refusal KINDS and lets the flow map them, which is the better shape when a
-  refusal is only *selected*; it does not fit here, because these codes appear
-  as VALUES inside log lines whose bytes are pinned.
+  refusal is only *selected*; it does not fit here, because the code appears
+  as a VALUE inside a log line whose bytes are pinned.  It used to be a pair —
+  item 2's second code went with item 2's refusal.
 
 **Order is the decision.**  Each step is a narrower diagnosis of the one after
 it, so when more than one is true the earliest cause is the one named — more
@@ -70,6 +93,7 @@ __all__ = [
     "EVENT_PREDICTION_UNGRADEABLE",
     "LEDGER_BASELINE_UNGRADEABLE",
     "LEDGER_IMPROVED",
+    "LEDGER_NOT_AN_IMPROVEMENT",
     "LEDGER_NO_LINEARIZATION",
     "LEDGER_PREDICTED_IN_SPEC",
     "LEDGER_PREDICTION_UNGRADEABLE",
@@ -99,15 +123,24 @@ EVENT_PREDICTION_UNGRADEABLE = "correction.crossover_v2_prediction_ungradeable"
 EVENT_PREDICTION_GATE = "correction.crossover_v2_prediction_gate"
 
 #: Item 2's ledger vocabulary — one value per path the gate can take, so
-#: "it passed" and "it never ran" never look the same in the journal. The
-#: refusing path carries the household reason code instead, which is why there
-#: is no ``LEDGER_NOT_AN_IMPROVEMENT`` here.
+#: "it passed" and "it never ran" never look the same in the journal. Every
+#: path now settles into one of these: the burn-down that stopped item 2
+#: refusing is what gave the last one, :data:`LEDGER_NOT_AN_IMPROVEMENT`, a row
+#: here rather than a household reason code.
 LEDGER_NO_LINEARIZATION = "no_linearization"
 LEDGER_PREDICTION_UNGRADEABLE = "prediction_ungradeable"
 LEDGER_PREDICTED_IN_SPEC = "predicted_in_spec"
 LEDGER_BASELINE_UNGRADEABLE = "baseline_ungradeable"
 LEDGER_RESIDUAL_UNEVALUABLE = "residual_unevaluable"
 LEDGER_IMPROVED = "improved"
+#: The forecast says this correction would measure WORSE than its own pre-fit
+#: model, by more than the bar allows. One value for both bars — the fitted
+#: class's 0.5 dB and the prescribed class's non-worsening 0.0 — because the
+#: two are told apart by ``required_db`` on the same line, and the pair of
+#: codes that used to distinguish them existed only to address two different
+#: authors in two different refusal sentences. Nobody is refused now, so there
+#: is one thing to say and one value to say it under.
+LEDGER_NOT_AN_IMPROVEMENT = "not_an_improvement"
 
 
 @dataclass(frozen=True)
@@ -144,17 +177,22 @@ class AccountabilityDecision:
     """What the gate decided, and everything the caller must do about it.
 
     ``refusal_reason`` is the household code to refuse under, or ``None`` to
-    proceed.  ``finding`` is the banked record when the estimator-consistency
-    gate found the two per-driver estimates in disagreement.  That gate has no
-    refusal arm since #2609 — it always proceeds — so a ``finding`` and a
-    ``refusal_reason`` can now co-occur, where before they could not.
+    proceed.  Only item 1 ever sets it now, so it is ``None`` on every path that
+    reaches item 2's ledger.  ``finding`` is the banked record when the
+    estimator-consistency gate found the two per-driver estimates in
+    disagreement.  That gate has no refusal arm since #2609 — it always
+    proceeds — so a ``finding`` and a ``refusal_reason`` can co-occur, where
+    before they could not.
 
     **``spec_report`` and ``spec_report_written`` are two facts, not one.**
-    ``None`` with ``spec_report_written`` True means "graded, and the grader
-    refused" — the stash must be cleared.  ``None`` with it False means the
+    ``None`` with ``spec_report_written`` True means item 2 ran and produced no
+    report — no summed model to grade, or an evaluator that declined the
+    curve — so the stash must be cleared.  ``None`` with it False means the
     gate refused before item 2 ran at all and the stash must not be touched.
     Collapsing them would make a level refusal clear a stash it never reached,
-    which is a different session state than the one that happened.
+    which is a different session state than the one that happened.  (The pair
+    also used to separate "graded, and the grader refused"; item 2 has no
+    refusal arm left, so that third case is gone and this one is not.)
 
     ``journal`` is in emission order.  A caller that writes the stash first and
     then iterates produces the same journal, and the same session state, as
@@ -300,7 +338,6 @@ def assess_accountability(
     grade_prediction: Callable[[Any], Any],
     material_improvement_db: float,
     reason_levels_disagree: str,
-    reason_not_an_improvement: str,
 ) -> AccountabilityDecision:
     """The three accountability assertions, as a decision rather than an act.
 
@@ -388,6 +425,24 @@ def assess_accountability(
         finding = estimator_consistency_record(state)
     else:
         finding = None
+    # The one fact item 2's ledger borrows from this gate: were the two
+    # estimators that placed the drivers in disagreement when the forecast
+    # below was built? ``None`` when no consistency verdict exists at all,
+    # which is a third state and not a quiet "no". Same name and same tri-state
+    # as the giveback event's ``level_estimator_suspect``
+    # (:func:`~.intervention.plan_linearization`) on purpose — one vocabulary
+    # per question, so a reader greps one field name across the round.
+    # Deliberately the BOOLEAN and not the magnitude — ``worst_delta_db`` has
+    # one owner (the journal line and the banked finding directly above, both
+    # keyed to the same session), and a second copy on the prediction line is a
+    # datum that can drift. What the flag adds is the LINK: on 2026-08-22 these
+    # two lines sat one after the other in the field journal, an 11.635 dB
+    # disagreement and a -0.703 dB verdict computed on top of it, and nothing
+    # in either line said they were about the same numbers.
+    estimators_suspect = (
+        None if state.level_consistency is None
+        else bool(state.level_consistency.suspect)
+    )
 
     # --- item 1: the inter-driver realized level ---------------------
     match = state.realized_level_match
@@ -444,8 +499,8 @@ def assess_accountability(
     # place the FULL-RESOLUTION `(freqs, magnitudes)` tuple exists: what
     # survives to the durable state is `_decimate_sum`'s 512-point block
     # average (issue #1858 — a raw stride before that fix), and re-grading
-    # that later would be a DIFFERENT instrument from the one this veto
-    # refuses on — the two can disagree on a narrow band,
+    # that later would be a DIFFERENT instrument from the one this ledger
+    # reports — the two can disagree on a narrow band,
     # on the one screen whose entire purpose is the honest spec verdict. So
     # the report this gate computes is the report the host persists, and
     # the persisted curve stays what it is: a drawing, not the instrument.
@@ -483,7 +538,6 @@ def assess_accountability(
         before: Any = None,
         improvement_db: float | None = None,
         level: int = logging.INFO,
-        refusal: str | None = None,
     ) -> AccountabilityDecision:
         """One ledger line per session for item 2's gate, on EVERY path.
 
@@ -492,6 +546,10 @@ def assess_accountability(
         leaves "it passed" and "it never ran" looking identical in the
         journal — the exact ambiguity this gate exists to remove, and the
         one a field diagnosis of a dark speaker would need first.
+
+        **Every path through here proceeds.** The ``refusal`` argument went
+        with item 2's veto: there is now exactly one thing this helper does,
+        which is say what the forecast found and hand it on.
         """
         from jasper.active_speaker.flat_spec import spec_convergence_residual
 
@@ -511,6 +569,7 @@ def assess_accountability(
                 "selected_rms_db": _rms(after),
                 "improvement_db": rounded,
                 "required_db": material_improvement_db,
+                "level_estimator_suspect": estimators_suspect,
             }
         journal.append(GateRecord(
             EVENT_PREDICTION_GATE,
@@ -523,13 +582,13 @@ def assess_accountability(
                 ),
                 "improvement_db": rounded,
                 "required_db": material_improvement_db,
+                "level_estimator_suspect": estimators_suspect,
             },
             level=level,
         ))
         return AccountabilityDecision(
             journal=tuple(journal),
-            refusal_reason=refusal,
-            finding=None if refusal is not None else finding,
+            finding=finding,
             spec_report=spec_report,
             spec_report_written=True,
         )
@@ -538,9 +597,11 @@ def assess_accountability(
         # No fit ran this attempt (ineligible mic tier, or the fit failed
         # into SF2's trims-only fallback), so `predicted_sum` IS
         # `raw_predicted_sum` — the same object. Grading a thing against
-        # itself always returns "no improvement", which would refuse every
-        # trims-only candidate on the strength of arithmetic rather than
-        # evidence. Abstain, loudly — carrying the after-report the hoist
+        # itself always returns "no improvement", which would file every
+        # trims-only candidate under :data:`LEDGER_NOT_AN_IMPROVEMENT` on the
+        # strength of arithmetic rather than evidence — a false entry in the
+        # ledger even now that it is only an entry. Abstain, loudly — carrying
+        # the after-report the hoist
         # above just produced, so the ledger and the wire cannot state
         # different verdicts about one session's one prediction.
         return _settle(LEDGER_NO_LINEARIZATION)
@@ -548,8 +609,8 @@ def assess_accountability(
         return _settle(LEDGER_PREDICTION_UNGRADEABLE)
     if after.overall_passed:
         # A prediction that meets the spec on its own needs no improvement
-        # argument, and gating an in-spec result on "how much did it
-        # improve" would refuse the flattest speakers hardest.
+        # argument, and judging an in-spec result on "how much did it
+        # improve" would read the flattest speakers worst.
         return _settle(LEDGER_PREDICTED_IN_SPEC)
     before = grade_prediction(raw_predicted_sum)
     if before is None:
@@ -565,7 +626,12 @@ def assess_accountability(
         return _settle(
             LEDGER_IMPROVED, before=before, improvement_db=improvement_db,
         )
+    # The forecast says worse, and says so at WARNING — loud enough to grep
+    # for, and not ERROR, because nothing failed: a model that expects a
+    # candidate to measure worse is a prediction, and under the doctrine's
+    # authority model a prediction proposes. What settles it is the round this
+    # no longer stops.
     return _settle(
-        reason_not_an_improvement, before=before, improvement_db=improvement_db,
-        level=logging.ERROR, refusal=reason_not_an_improvement,
+        LEDGER_NOT_AN_IMPROVEMENT, before=before, improvement_db=improvement_db,
+        level=logging.WARNING,
     )

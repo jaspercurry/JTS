@@ -329,22 +329,19 @@ REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 # passband: a driver whose own band tilts while its half-band level is right is
 # the fit's problem to catch, not this assertion's.)
 REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
-# item 2 — the PREDICTED post-apply response fails the flat spec and is not
-# materially better than the measured pre-apply response. Applying it would
-# spend the household's speaker on a change we can already show does not help.
-REASON_CORRECTION_NOT_AN_IMPROVEMENT = "correction_not_an_improvement"
-# ...and the same finding about a PRESCRIBED correction (PR-B). Its own code
-# purely because of WHO the copy has to address: the refused tuning is a
-# document an operator wrote and staged, so "the tuning JTS worked out" is a
-# misattribution, and "re-check the driver details" sends a household to fix
-# something that is not what is wrong. The remedy is to revise or withdraw the
-# prescription. The gate that raises it is identical; only the bar it applied
-# and the sentence it produces differ, and the journal's ``required_db`` is
-# what tells the two bars apart on the wire.
-REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT = (
-    "prescribed_correction_not_an_improvement"
-)
-# Delta-probe verdicts (linearization-integrity PR-L5). Unlike the two above,
+# item 2 has NO reason code. It used to have two — ``correction_not_an_improvement``
+# and its prescribed-class sibling, one refusal apiece — and the nanny burn-down
+# (docs/measurement-loop-doctrine.md deviation (c)) deleted both with the refusal
+# they existed to name. Item 2 now banks
+# ``accountability.LEDGER_NOT_AN_IMPROVEMENT`` and the round proceeds to the
+# measurement that decides, so there is no household sentence left to write:
+# nobody is being told their speaker was left alone. A durable state persisted
+# before that change can still carry either literal, and every reader of one
+# already tolerates a code with no registry row — ``_failure_history_note`` in
+# ``crossover_envelope_v2`` reads the registry with ``.get`` and falls back to
+# its generic clause.
+#
+# Delta-probe verdicts (linearization-integrity PR-L5). Unlike item 1 above,
 # these fire AFTER the apply — they are what the post-apply sweep found — so
 # each one rolls the correction back before it names itself. The household is
 # left on the sound they had, and told why, which is the difference between an
@@ -372,8 +369,9 @@ REASON_CORRECTION_ROLLBACK_FAILED = "correction_rollback_failed"
 # #2291's round verdict, and the one cause no code above can carry: the
 # correction was applied, MEASURED at the same mark with the same program, and
 # the speaker is measurably worse than it was before — so it came back off.
-# Distinct from ``REASON_CORRECTION_NOT_AN_IMPROVEMENT``, whose copy says "it
-# was not applied" and which grades a PREDICTED response before the apply, and
+# This is what item 2's deleted refusal used to forecast, and the difference is
+# the whole burn-down: that one graded a PREDICTED response before the apply and
+# refused on it, where this one is a measurement of the applied graph. Also
 # distinct from the three delta-probe codes, which say the graph did not do
 # what its own filters commanded. Here the graph did exactly what it was told
 # and the room liked it less, which is a different sentence to the household
@@ -1154,34 +1152,19 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Take this one from further out and we will use it instead.",
         ),
     ),
-    # PR-L4. Both are HARD_STOP with budget 0: the defects are systematic, not
-    # transient — a second identical measurement reproduces them — and both name
-    # the one thing a household can actually act on, the declared driver details
-    # the level frame is built from. Copy names the ACTION, not the arithmetic.
+    # PR-L4 item 1, and since the nanny burn-down the only PR-L4 row here.
+    # HARD_STOP with budget 0: the defect is systematic, not transient — a
+    # second identical measurement reproduces it — and the copy names the one
+    # thing a household can actually act on, the declared driver details the
+    # level frame is built from. Copy names the ACTION, not the arithmetic.
+    # Item 2's two rows were deleted with item 2's refusal; a round whose
+    # forecast says worse now proceeds and says so in the ledger, so there is
+    # no sentence to address to anybody.
     REASON_DRIVER_LEVELS_DISAGREE: ReasonSpec(
         REASON_DRIVER_LEVELS_DISAGREE, TEMPLATE_HARD_STOP, 0, "",
         "The two drivers would not have ended up at matching levels, so JTS "
         "left your speaker alone. Re-check the driver details — sensitivity "
         "and any resistor pad — in speaker setup, then measure again.",
-    ),
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT: ReasonSpec(
-        REASON_CORRECTION_NOT_AN_IMPROVEMENT, TEMPLATE_HARD_STOP, 0, "",
-        "The tuning JTS worked out would not have made this speaker measure "
-        "better, so it was not applied. Re-check the driver details in speaker "
-        "setup, then measure again.",
-    ),
-    # The sibling above, addressed to the right author. No hardware noun and no
-    # "re-check the driver details": nothing about the speaker's description is
-    # implicated when a STAGED document is the thing that would not have helped,
-    # and sending someone to speaker setup would cost them a real change to fix
-    # a problem that is not there. The one action that changes the outcome is
-    # naming the document.
-    REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT: ReasonSpec(
-        REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT, TEMPLATE_HARD_STOP, 0, "",
-        "The prescribed tuning that was staged for this round would have made "
-        "this speaker measure worse, so it was not applied and nothing about "
-        "your sound changed. Revise or withdraw the prescription, then measure "
-        "again.",
     ),
     # PR-L5 delta-probe rollbacks. All three are TEMPLATE_HARD_STOP with no
     # retry budget: the correction has already been undone, so "try again"

@@ -54,11 +54,16 @@ read in the tree, not inferred from a name.
 - **The spec verdict is already consulted — as an exemption, not a
   bar.** The prediction gate abstains early on
   `if after.overall_passed: return`. A prediction that *fails* the spec
-  still proceeds, provided it improves its own model's residual by
-  `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5`. Both sides come from
+  is additionally compared against its own model's residual and must beat
+  it by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5` to be recorded as a
+  material improvement. Both sides come from
   the same instrument (`spec_report_for_predicted_sum`), so the room
   cancels; this is a model-vs-model comparison, never model-vs-measured.
-  That asymmetry is precisely the hole the review screen closes.
+  That asymmetry is precisely the hole the review screen closes. (Falling
+  short used to refuse the round; since the nanny burn-down it banks
+  `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds — see
+  [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md),
+  deviation (c).)
 - **`provisional` on a baseline profile means something else.** In
   [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)
   it means *"per-driver level match is an unmeasured estimate — run the

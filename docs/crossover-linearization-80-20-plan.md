@@ -280,7 +280,10 @@ there is no spatial evidence to compose, which is the accepted risk named
 above. Second, intended consequence: boost enlarges the achievable set, so a
 candidate the improvement gate previously refused as
 `correction_not_an_improvement` can now clear it on the same evidence — the
-same post-apply `VERIFY`, household listening, and Undo adjudicate it.
+same post-apply `VERIFY`, household listening, and Undo adjudicate it. (That
+gate has since stopped refusing altogether — it banks
+`LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds; see the nanny burn-down in
+[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md), deviation (c).)
 
 ### 4.4 Side evidence owns robustness, not the target
 

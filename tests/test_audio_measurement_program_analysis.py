@@ -3263,12 +3263,15 @@ def test_diagnostic_summary_alignment_snr_trio_is_distinct_from_the_magnitude_on
     assert summary["tweeter_snr_verdict"] != summary["tweeter_alignment_snr_verdict"]
 
 
-def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
-    """Drive both models through the gate that can KILL a candidate.
+def test_a_held_round_clears_the_accountability_prediction_gate():
+    """Drive both models through the gate that grades a candidate.
 
     Design constraint (#2622 panel): a predicted-vs-spec comparison leaning on
-    the UNTRUSTED anchor must not refuse a held round. The evaluator and the
-    gate are the production ones; only the curve differs.
+    the UNTRUSTED anchor must not condemn a held round. The evaluator and the
+    gate are the production ones; only the curve differs. The gate stopped
+    REFUSING with the nanny burn-down, so what separates the two curves is now
+    its ledger verdict rather than a raised refusal — the same comparison,
+    read one field over.
     """
     from jasper.active_speaker.crossover_v2 import accountability
     from jasper.active_speaker.crossover_v2.candidates import LinearizationState
@@ -3279,29 +3282,32 @@ def test_a_held_round_is_not_refused_by_the_accountability_prediction_gate():
 
     shipped, combed = _held_round_models()
 
-    def _decide(predicted):
-        # The FITTED arm — the one that can refuse. A pre-fit curve barely
-        # worse than the post-fit one is what puts the improvement comparison
-        # under its material threshold, so the verdict turns entirely on
-        # whether the post-fit curve met the spec on its own.
+    def _ledger(predicted):
+        # The FITTED arm. A pre-fit curve barely worse than the post-fit one is
+        # what puts the improvement comparison under its material threshold, so
+        # the verdict turns entirely on whether the post-fit curve met the spec
+        # on its own.
         freqs, db = predicted
         raw = (freqs, db - 0.05)
-        return accountability.assess_accountability(
+        decision = accountability.assess_accountability(
             predicted_sum=predicted,
             raw_predicted_sum=raw,
             state=LinearizationState(outcome="fitted", linearized_predicted_sum=predicted),
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
             reason_levels_disagree="driver_levels_disagree",
-            reason_not_an_improvement="correction_not_an_improvement",
         )
+        assert decision.refusal_reason is None
+        return decision.spec_report["comparison"]["reason"]
 
-    # The held round survives its own gate…
-    assert _decide(shipped).refusal_reason is None
+    # The held round clears its own gate…
+    assert _ledger(shipped) == accountability.LEDGER_PREDICTED_IN_SPEC
     # …and would NOT have, on the curve the refused anchor phased. This is the
-    # kill S-SF2 named: a correctly-aligned speaker refused by arithmetic over
-    # an anchor its own capture disowned.
-    assert _decide(combed).refusal_reason == "correction_not_an_improvement"
+    # kill S-SF2 named: a correctly-aligned speaker graded down by arithmetic
+    # over an anchor its own capture disowned. (Until the nanny burn-down this
+    # arm REFUSED under ``correction_not_an_improvement``; the arithmetic that
+    # separates the two curves is unchanged, and it is what this test is about.)
+    assert _ledger(combed) == accountability.LEDGER_NOT_AN_IMPROVEMENT
     # The evaluator's own read of the two, so the mechanism is visible and not
     # merely the verdict.
     shipped_report = spec_report_for_predicted_sum(shipped)

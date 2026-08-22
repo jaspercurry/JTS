@@ -6323,17 +6323,16 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /apply: write YAML + reload CamillaDSP. Restores
     pre-autolevel main_volume if autolevel was used."""
     sess = _get_or_create_session()
-    from jasper.correction import failures
-
-    evidence_failure = failures.measurement_evidence_failure(
-        getattr(sess, "confidence_report", None),
-    )
-    if evidence_failure is not None:
-        raise RoomRequestFailure(
-            "measurement confidence contains blocking evidence",
-            evidence_failure,
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
-        )
+    # No confidence pre-check here. Until the nanny burn-down
+    # (docs/measurement-loop-doctrine.md deviation (d)) this raised a 422
+    # before ``_camilla()`` whenever the confidence report held a
+    # ``fail``-severity finding — a prediction about how good the evidence was
+    # refusing a reversible, measurable experiment, which is not on the
+    # doctrine's closed hard-stop list. The doubt now rides to the household as
+    # a ``warn`` nudge on the envelope (``jasper.correction.envelope._nudges``)
+    # and the apply proceeds. What still bounds this path is structural and
+    # unchanged: the session state machine, the room-authority binding checked
+    # in ``prepare_guard``, and the volume restore below.
     cam = _camilla()
 
     async def _set(path: str) -> bool:
@@ -6487,16 +6486,10 @@ def _handle_propose_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     from jasper.correction import failures
 
-    evidence_failure = failures.measurement_evidence_failure(
-        getattr(sess, "confidence_report", None),
-    )
-    if evidence_failure is not None:
-        raise RoomRequestFailure(
-            "measurement confidence contains blocking evidence",
-            evidence_failure,
-            status=HTTPStatus.UNPROCESSABLE_ENTITY,
-        )
-
+    # The confidence pre-check that stood here went with the nanny burn-down,
+    # for the reason `_handle_apply` records; the doubt reaches the household
+    # as a nudge instead. The bounds below are the ones that were always
+    # load-bearing on this path, and they are untouched.
     # Re-validate schema + bounds against the ACTIVE strategy caps.
     from jasper.correction import strategy as _strategy
     strat = _strategy.resolve_correction_strategy(

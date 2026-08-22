@@ -1215,7 +1215,25 @@ def test_low_confidence_findings_map_to_nudges():
     assert env["next_action"] is not None
 
 
-def test_fail_severity_finding_is_not_softened_into_a_nudge():
+def test_a_fail_severity_finding_is_a_warn_nudge_not_a_blocker():
+    """The nanny burn-down at the envelope — doctrine deviation (d).
+
+    This used to assert the opposite of every line below: a ``fail``-severity
+    confidence finding produced NO nudge, a ``measurement_evidence_unsafe``
+    failure block, ``next_action is None``, and no tuning assistant. That
+    ``measurement_evidence_failure`` blocker refused ``/apply`` with a 422 and
+    withdrew the Apply button on a prediction about how good the evidence was
+    — not on any component-damage mechanism in the doctrine's closed hard-stop
+    list. Applying a correction is reversible and measurable, so the doubt
+    informs and the household decides.
+
+    The doubt keeps its full weight: ``warn``, the strongest nudge, naming the
+    fix. Nothing is quieter than it was; what changed is that it no longer
+    takes the decision away.
+
+    **Mutation guard.** Restoring the blocker fails the failure/next_action
+    assertions; restoring only ``_nudges``' fail-severity skip fails the first.
+    """
     sess = _FakeSession(SessionState.READY)
     sess.confidence_report = {
         "findings": [
@@ -1224,11 +1242,14 @@ def test_fail_severity_finding_is_not_softened_into_a_nudge():
         ],
     }
     env = envelope.build_envelope(sess)
-    assert env["nudges"] == []
-    assert env["failure"]["code"] == "measurement_evidence_unsafe"
-    assert env["next_action"] is None
-    assert env["tuning_llm"]["offered"] is False
-    assert "safety checks" in env["verdict_text"]
+    assert [n["code"] for n in env["nudges"]] == ["no_completed_positions"]
+    assert env["nudges"][0]["severity"] == "warn"
+    assert env["failure"] is None
+    assert env["next_action"] is not None
+    assert env["tuning_llm"]["offered"] is True
+    # The retired blocker's copy reserved "safety" for an evidence-quality
+    # doubt; the doctrine keeps that word for the hard-stop list.
+    assert "safety checks" not in env["verdict_text"]
 
     # Resetting the session to idle retires result evidence and restores the
     # fresh-measurement recovery action; a retained report cannot strand Room.
@@ -1239,6 +1260,26 @@ def test_fail_severity_finding_is_not_softened_into_a_nudge():
         "label": "Start measuring",
         "endpoint": "/start",
     }
+
+
+def test_every_fail_severity_finding_has_nudge_copy():
+    """A fail code with no ``_NUDGE_COPY`` row is dropped silently.
+
+    ``_nudges`` skips a finding whose code it has no canned sentence for, so
+    an unmapped ``fail`` code would leave a household with no failure block
+    (the burn-down removed it) AND no nudge — the doubt gone entirely, which
+    is worse than either state before. The four codes ``build_confidence_report``
+    can emit at ``fail`` are enumerated here against the copy table.
+    """
+    for code in (
+        "no_completed_positions",
+        "capture_quality_failed",
+        "browser_audio_path_failed",
+        "runtime_integrity_failed",
+    ):
+        canned = envelope._NUDGE_COPY[code]
+        assert canned["severity"] == "warn", code
+        assert canned["text"].endswith("."), code
 
 
 def test_unknown_finding_does_not_surface_raw_diagnostic_copy():

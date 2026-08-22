@@ -435,7 +435,20 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
     assert out["simulation"]["accepted"] is True
 
 
-def test_propose_apply_rejects_failed_measurement_evidence(monkeypatch):
+def test_propose_apply_proceeds_despite_failed_measurement_evidence(monkeypatch):
+    """The nanny burn-down at ``/propose/apply`` — doctrine deviation (d).
+
+    The sibling of ``/apply``'s pre-check, deleted for the same reason and on
+    the same evidence: a ``fail``-severity confidence finding is a judgement
+    about the measurement, not a component-damage mechanism, and it used to
+    raise a 422 before the proposal was even validated. The bounds that DO
+    hold this path — explicit ``confirm``, the READY state, and the active
+    strategy's caps re-checked against the proposed filters — are untouched
+    and still run below.
+
+    **Mutation guard.** Restoring the pre-check raises before ``_handle_apply``
+    is reached and fails the ``applied`` assertion.
+    """
     sess = _fake_session("ready")
     sess.confidence_report = {
         "findings": [{
@@ -445,13 +458,19 @@ def test_propose_apply_rejects_failed_measurement_evidence(monkeypatch):
         }],
     }
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(
+        correction_setup, "_handle_apply",
+        lambda handler: {
+            "session_id": sess.session_id, "state": "applied",
+            "config_path": "/x.yml",
+        },
+    )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
 
-    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
-        correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_setup._handle_propose_apply(_FakeHandler(body))
 
-    assert exc_info.value.failure["code"] == "measurement_evidence_unsafe"
-    assert "raw runtime diagnostic" not in str(exc_info.value.failure)
+    assert out["applied"] is True
+    assert out["simulation"]["accepted"] is True
 
 
 def _real_ready_session(tmp_path, *, with_target=True):

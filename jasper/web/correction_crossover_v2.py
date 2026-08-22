@@ -1816,16 +1816,14 @@ def _prediction_status(state: Any) -> dict[str, Any] | None:
        the verdict is unknown; **do not** infer one from the picture.
     3. *Neither* — no session has closed a candidate. This function returns
        ``None`` outright rather than an empty shell.
-    4. *Report, no curve* — **the refusal lane, and the least obvious of the
-       four.** The verdict is stashed by ``_assert_accountable`` BEFORE the
-       improvement gate runs, while ``_measure_predicted_sum`` is assigned only
-       after that gate returns — so a ``correction_not_an_improvement`` refusal
-       persists the report with ``predicted_sum`` still ``None`` (the
-       ``CaptureBeginRefused`` arm's terminal-failure persist). This is honest,
-       not a leak: the spec verdict genuinely evaluated that prediction, and
-       what the gate refused on was a *different* question — insufficient
-       improvement over the correction's own pre-fit model. A consumer shows
-       the verdict and has no curve to draw.
+    4. *Report, no curve* — **the least obvious of the four.**
+       ``_assert_accountable`` stashes the verdict BEFORE the improvement gate
+       runs and ``_measure_predicted_sum`` only after it returns, so a refusal
+       between the two persists a report with ``predicted_sum`` still ``None``
+       — honest, not a leak: the spec verdict did evaluate that prediction. The
+       refusal that produced this shape is retired (``accountability``'s item
+       2); a pre-retirement state still carries it, and a consumer shows the
+       verdict with no curve to draw.
 
     So ``overall_passed`` is ``None`` — not ``False`` — whenever no report was
     stored, under the same never-fabricate-a-clean-reading rule
@@ -2219,11 +2217,11 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         CLAIM_PASS,
         PHASE_CLOUD_VERIFY,
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-        REASON_CORRECTION_NOT_AN_IMPROVEMENT,
         REASON_VERIFY_CROSSOVER_REGION,
         TIER_EXPRESS,
         TIER_FULL,
     )
+    from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT
     from jasper.active_speaker.fc_selector import SELECTION_KEEP_CONFIGURED, SELECTION_RECOMMEND
 
     fc = block.get("fc_selection")
@@ -2256,11 +2254,11 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     sweep_ran = bool(fc)
 
     if not block.get("applied"):
-        failure = block.get("failure")
-        keep_previous = (
-            isinstance(failure, Mapping)
-            and failure.get("code") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-        ) or (comparison_complete and fc_verdict == SELECTION_RECOMMEND)
+        # One cause, since ``accountability``'s item 2 stopped refusing: a
+        # forecast can no longer be why a round did not apply. A state carrying
+        # the retired failure code reads ``inconclusive`` now, not
+        # ``keep_previous`` — pinned in the endpoints suite.
+        keep_previous = comparison_complete and fc_verdict == SELECTION_RECOMMEND
         return {
             **({"outcome": RESULT_KEEP_PREVIOUS if keep_previous else RESULT_INCONCLUSIVE} if keep_previous or fc else {}),
             "state": GRADE_NOT_APPLIED,
@@ -2327,8 +2325,10 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         and str(verify.get("code") or "") != REASON_VERIFY_CROSSOVER_REGION
         if isinstance(verify, Mapping) else False
     )
+    # ``accountability``'s "the forecast said worse" ledger value. Item 2 dropping
+    # its refusal is what makes this reachable; it GRADES here, it does not gate.
     no_material_improvement = (
-        str(comparison.get("reason") or "") == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+        str(comparison.get("reason") or "") == LEDGER_NOT_AN_IMPROVEMENT
         or improvement_db is not None
         and improvement_db < PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
     )
