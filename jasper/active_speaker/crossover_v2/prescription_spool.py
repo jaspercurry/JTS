@@ -584,18 +584,20 @@ def stage_prescription(
 
 
 def staged_prescription_pending() -> bool:
-    """Is a document waiting? A TEST predicate, with no production caller.
+    """Is a document waiting? The stat, and only the stat.
 
     Named rather than left as a bare ``.is_file()`` in a dozen assertions,
     because "is one pending" is the concept the lifecycle tests are actually
-    checking and a second spelling of it in each test is how the two drift. It
-    is deliberately NOT offered as a surface for a screen or a status line: no
-    such caller exists, and inventing one here would be the speculative
-    flexibility this repository trims.
+    checking and a second spelling of it in each test is how the two drift.
 
-    It answers what a stat answers and no more. Anything that wants the
-    prescription itself goes through :func:`take_staged_prescription`, which is
-    the only reader and always consumes.
+    It has ONE production caller — ``jasper-crossover-prescriber status``,
+    whose whole job is telling an operator where a speaker stands — and that
+    caller gets exactly what a stat gets: yes or no, no document. That
+    boundary is the point rather than an accident of scope. Widening this into
+    a peek at the contents would make "consumed on the round starting, never
+    reused" a convention a caller has to honour instead of a property of
+    :func:`take_staged_prescription`, which remains the only reader and always
+    consumes.
     """
     return prescription_spool_path().is_file()
 

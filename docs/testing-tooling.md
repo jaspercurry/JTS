@@ -38,6 +38,7 @@
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
+| Find out where a speaker stands before touching anything — what is declared, banked, staged and applied, and what each present or absent artifact makes possible next | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber status` |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
@@ -1814,12 +1815,17 @@ needed — the check runs before any SSH call) is pinned in
 `jasper-crossover-prescriber`
 ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
 is the read side and the write side of "hand a round's evidence to a reader,
-take a correction back". It has no model client, no API key and no network:
+take a correction back", plus one verb that says where a speaker stands before
+either. It has no model client, no API key and no network:
 **who calls the model is not the tool's business**, which is what makes it
 work identically with a human doing the reasoning, a laptop agent over SSH, or
 a paste into a browser.
 
 ```sh
+# where this speaker stands, before touching anything. Reads only.
+jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
+    --drivers <design-draft.json>
+
 # the read side: one round's banked evidence as one versioned JSON document
 jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
     --out round.json
@@ -1836,6 +1842,21 @@ jasper-crossover-prescriber stage <bundle-dir> --state <flow-state.json> \
 `propose` is the **dry run of** `stage` — the same gate on the same document,
 and the only difference is that `stage` banks the result. Run the first to see
 the answer, the second to commit to it.
+
+`status` is the one verb that writes nothing. It prints declared / banked /
+staged / applied state plus the actions each present or absent artifact makes
+possible, and every handoff URL it prints derives from the speaker's own
+`JASPER_HOSTNAME` — a speaker is `jts3.local` as readily as `jts.local`, and
+the wrong name resolves to a different box in silence. It reads the **same
+builders the three doors read** (the evidence-packet builder plus the named
+readers each gate calls) rather than walking the bundle itself, so it cannot
+answer a slightly different question from the door beside it. It reports even
+when the bundle cannot be read — the builder's error becomes each evidence
+section's reason, the spool is reported regardless because it lives on the
+speaker rather than in the bundle, and the exit code is still `1` so a script
+can tell. Reporting a staged prescription does **not** consume it:
+`take_staged_prescription` remains the only reader of the document and always
+consumes, and `status` asks only whether one is there.
 
 **Two prescription classes come through THIS door.** A document names its own
 `kind` and that is what picks its gate — there is no `--class` flag and no

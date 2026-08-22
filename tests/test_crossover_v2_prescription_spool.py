@@ -1260,7 +1260,7 @@ def test_the_state_flag_help_matches_whether_the_verb_needs_it():
 
     assert "REQUIRED for this verb" in helps["stage"]
     assert "Optional" not in helps["stage"]
-    for verb in ("packet", "propose"):
+    for verb in ("packet", "propose", "status"):
         assert "Optional" in helps[verb]
         assert "REQUIRED" not in helps[verb]
 

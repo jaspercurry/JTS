@@ -109,6 +109,7 @@ changes nothing durable · **mutating** = changes what the speaker plays ·
 | `scripts/run-crossover-round.py` | one measure round end to end; banks it | measured | `scripts/run-crossover-round.py` |
 | ” `--apply <fp>` | put the reviewed candidate on the speaker | mutating-with-gates | → `POST /crossover/v2/apply` |
 | `scripts/bank-crossover-round.sh` | gather a round into `captures/<campaign>/<label>/` | advisory | `scripts/bank-crossover-round.sh` |
+| `jasper-crossover-prescriber status` | declared / banked / staged / applied state, and what each present or absent artifact makes possible | advisory (writes nothing) | `_cmd_status` |
 | `jasper-crossover-prescriber packet` | one banked round → one versioned JSON document | advisory | `_cmd_packet` |
 | `jasper-crossover-prescriber propose` | validate a prescription against the round it answers | advisory (dry run) | `_cmd_propose` |
 | `jasper-crossover-prescriber stage` | place **one** accepted prescription for the next round | mutating | `_cmd_stage` |

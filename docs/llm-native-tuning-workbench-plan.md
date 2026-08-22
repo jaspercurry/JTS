@@ -203,13 +203,15 @@ existing owner.
 > *shape* below is shipped for the crossover domain, under a narrower name and
 > without the tool catalog. `jasper-crossover-prescriber`
 > ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
-> is an installed console script with three verbs: `packet` emits one banked
+> is an installed console script with four verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
 > ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
-> `propose` reads a correction back through a strict gate, and `stage`
+> `propose` reads a correction back through a strict gate, `stage`
 > (2026-08-19) leaves an accepted correction where the next crossover round
 > takes it
-> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)).
+> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)),
+> and `status` (2026-08-21) reports declared / banked / staged / applied state
+> through those same builders without writing anything.
 > It follows this section's CLI conventions and the laptop-agent-as-SSH-client
 > split exactly.
 >
@@ -1552,7 +1554,7 @@ When implementation begins:
   design/privacy owners.
 
 **The `Last verified:` footer below was deliberately NOT bumped.** It is a
-whole-document claim and this document is mostly unbuilt plan; three passes
+whole-document claim and this document is mostly unbuilt plan; four passes
 have edited only §5.0's shipped-status callout. The first added the second
 prescription class, and corrected a boundary note that read the per-driver seam
 as needing per-branch sweeps (true of a boost, false of a cut) and a sentence
@@ -1561,7 +1563,9 @@ second opened that class's boost route on the owner's 2026-08-19 ruling, which
 falsified the callout's headline claim that no boost has a seam in either class
 — one now does. The third removed the vertical-plane sighting bar the owner
 lifted on 2026-08-21, trueing up the boost-admission sentence and the
-per-driver-class description above it. Nothing else here was re-read against
-the code.
+per-driver-class description above it. The fourth corrected the callout's own
+verb COUNT, which the orientation verb (ticket 1.8) falsified: the console
+script ships four verbs, and `status` is the one that reports state rather than
+prescribing. Nothing else here was re-read against the code.
 
 Last verified: 2026-07-28
