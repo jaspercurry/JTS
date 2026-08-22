@@ -460,8 +460,10 @@ _POST_ROUTES = frozenset({
     "/crossover/v2/restore",
     # The review screen's "Keep current sound", which #2641 found inert.
     "/crossover/v2/decline",
-    # The remote commission tier's position release — an EXTERNAL driver's
-    # report that it has moved the microphone to the angle the envelope named.
+    # A GATED session's position release — the report that the microphone has
+    # reached the angle the envelope named, from an EXTERNAL driver on the
+    # remote tier or from the person holding the tape on a hand-walked wired
+    # round (#2879).
     "/crossover/v2/position-ready",
     # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
     # local stand-in for the phone's authenticated completion event.
@@ -516,7 +518,7 @@ def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
     kind = str(relay.get("kind") or "")
     if not any(kind.startswith(prefix) for prefix in kind_prefixes):
         return None
-    # The remote tier's live position hold, merged in here rather than pushed
+    # A gated session's live position hold, merged in here rather than pushed
     # into the slot by the gate: the gate owns the fact and this is a read, so
     # there is one writer and no window in which the slot advertises a hold the
     # gate has already released.
@@ -547,8 +549,8 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
     The enforcement itself is unchanged and cheap on the happy path: an
     in-memory ``stale_active`` check, then a force-drain of a session volume
     that outlived the ceiling its stage armed. What is added is telling the
-    remote tier's :class:`~.correction_crossover_v2.PositionGate`, when there is
-    one, so a hold blocking on a slow-but-alive driver ends by NAME
+    session's :class:`~.correction_crossover_v2.PositionGate`, when there is
+    one, so a hold blocking on a slow-but-alive positioner ends by NAME
     (``session_ceiling_expired``) instead of limping on to the relay link's own
     expiry and reaching the household as ``relay_timeout`` — a transport claim
     about a transport that never failed.
@@ -732,7 +734,8 @@ class RelayCaptureKind:
         [RelayClient | None, PiCaptureSession], Awaitable[None]
     ]
     request_stop: Callable[[], None] | None = None
-    #: The remote commission tier's position gate, or None. Only the crossover
+    #: A gated session's position gate, or None — the remote tier's, or a
+    #: hand-walked wired round's (#2879). Only the crossover
     #: v2 kinds ever set it; every other flow leaves it unset and is untouched.
     position_gate: Any | None = None
     #: True for a LOCAL (wired) kind (#2662 W2b): the orchestrator then

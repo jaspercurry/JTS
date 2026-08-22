@@ -11795,7 +11795,7 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
     return {"auto_advance": AUTO_ADVANCE_TAP}
 
 
-#: The per-entry screen keys that state a remote entry's TARGET POSITION in
+#: The per-entry screen keys that state a GATED entry's TARGET POSITION in
 #: machine terms. ``screen`` is an opaque ``str -> str`` bag the page ignores
 #: unknown keys in (the same seam ``auto_advance`` / ``noise_note`` /
 #: ``confirm_title`` already ride), so this is not a protocol change.
