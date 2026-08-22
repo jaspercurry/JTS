@@ -103,7 +103,7 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # UNDER-read its maximum, and two error sources this margin originally stood
 # for have since been eliminated rather than budgeted for: every filter's own
 # peak is sampled exactly at any Q (``_evaluation_grid`` unions the centres and
-# the band edges), and the crossover term IS the digital filter the graph runs
+# the domain edges), and the crossover term IS the digital filter the graph runs
 # rather than an analytic stand-in for it (``crossover_response_db``).
 #
 # What remains is the CASCADE's peak between two adjacent SAMPLES, plus the
@@ -200,7 +200,7 @@ def _evaluation_grid(
     filters: Sequence[Mapping[str, Any]], grid_hz: np.ndarray | None,
 ) -> np.ndarray:
     """``grid_hz`` (or :data:`CHAIN_GRID_HZ`) unioned with every filter's own
-    centre frequency and the two band edges.
+    centre frequency and the two domain edges.
 
     **Tamper hardening, and it is not optional.** A peak evaluated on a fixed
     log grid is blind to anything narrower than its own spacing: a +12 dB
@@ -212,7 +212,7 @@ def _evaluation_grid(
     contract reads graphs it does not trust, and "the emitter would never
     write this" is not a proof.
 
-    A Peaking or shelf filter's extremum is at its own ``freq`` or at a band
+    A Peaking or shelf filter's extremum is at its own ``freq`` or at a domain
     edge, both of which this grid contains, so every filter's own peak is
     sampled exactly whatever its Q.
 
