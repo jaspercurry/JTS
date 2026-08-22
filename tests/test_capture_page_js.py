@@ -709,7 +709,7 @@ def test_capture_page_auto_retake_never_answers_a_geometry_ask():
     and it is the *grant of a retry budget* that would trip this, which is the
     edit least likely to be made by someone thinking about the capture page.
     """
-    from jasper.active_speaker.crossover_v2 import vocabulary as _vocab
+    from jasper.active_speaker.crossover_v2 import refusal_copy
 
     flow_src = (
         _REPO / "jasper/active_speaker/crossover_v2_flow.py"
@@ -752,9 +752,9 @@ def test_capture_page_auto_retake_never_answers_a_geometry_ask():
     }, f"the geometry-verdict walk found {sorted(built)}"
 
     for name, payload_keys in sorted(built.items()):
-        code = getattr(_vocab, name)
+        code = getattr(refusal_copy, name)
         prompted = "prompt" in payload_keys
-        terminal = code in _vocab.NON_RETRIABLE_CODES
+        terminal = code in refusal_copy.NON_RETRIABLE_CODES
         assert prompted or terminal, (
             f"{name} is a geometry rejection that is neither prompted nor "
             "terminal, so the capture page's auto-retake (#2557 phase B) would "
@@ -765,8 +765,8 @@ def test_capture_page_auto_retake_never_answers_a_geometry_ask():
 
     # …and membership DISCRIMINATES: the prompted one is genuinely retriable,
     # so `in NON_RETRIABLE_CODES` above is not a set that swallows everything.
-    assert _vocab.REASON_CLOUD_GEOMETRY_LOCKED not in _vocab.NON_RETRIABLE_CODES
-    assert _vocab.REASON_GEOMETRY_RETAKE_UNREACHABLE in _vocab.NON_RETRIABLE_CODES
+    assert refusal_copy.REASON_CLOUD_GEOMETRY_LOCKED not in refusal_copy.NON_RETRIABLE_CODES
+    assert refusal_copy.REASON_GEOMETRY_RETAKE_UNREACHABLE in refusal_copy.NON_RETRIABLE_CODES
 
 
 def test_capture_page_beep_copy_matches_the_composed_beep_count():

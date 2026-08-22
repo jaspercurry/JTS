@@ -830,9 +830,9 @@ def test_the_band_limited_locate_puts_the_whole_timeline_back():
     screen = _check_screen(analysis)
     assert screen != "channel_map_mismatch"
     if screen is not None:
-        from jasper.active_speaker.crossover_v2 import vocabulary as _vocab
-        code = _vocab.SCREEN_KIND_REASONS[screen]
-        assert code not in _vocab.NON_RETRIABLE_CODES
+        from jasper.active_speaker.crossover_v2 import refusal_copy
+        code = refusal_copy.SCREEN_KIND_REASONS[screen]
+        assert code not in refusal_copy.NON_RETRIABLE_CODES
 
 
 def test_the_quiet_room_sibling_is_untouched_by_both_halves():

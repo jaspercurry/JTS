@@ -22,7 +22,7 @@ that also owns capture choreography.
 **What this module is, that its siblings are not.**  It is the only one that
 CHANGES THE SPEAKER: "restore the previous graph and record what happened" is
 not a pure question, so this module calls seams that act.  (Emitting a log line
-is not the distinction — :mod:`.planning` and :mod:`.vocabulary` both write one
+is not the distinction — :mod:`.planning` and :mod:`.refusal_copy` both write one
 too.  This module's own text said "every other module in this package is
 side-effect-free" until #2291 Phase 5c-iii; that was too strong, and the
 narrower claim is the one worth checking.)  The boundary it keeps is stated
@@ -34,7 +34,7 @@ household vocabulary**
 it to the ``REASON_REGISTRY`` code whose copy the household reads.  That last
 line is why :func:`run_round` can live outside the flow at all.  Its original
 form argued that the codes were the flow's and importing them back would invert
-the dependency; since #2291 Phase 5c-ii they are :mod:`.vocabulary`'s, a
+the dependency; since #2291 Phase 5c-ii they are :mod:`.refusal_copy`'s, a
 sibling, so the import would be legal now.  The rule stands on its own without
 that argument: a module that decides answers with a kind, and one that renders
 copy is doing a different job.
@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 
 #: The refusal kinds :func:`run_round` can return. Kinds rather than reason
 #: codes: the code, and the sentence it renders, belong to
-#: :mod:`.vocabulary`'s ``REASON_REGISTRY``.
+#: :mod:`.refusal_copy`'s ``REASON_REGISTRY``.
 REFUSAL_RESTORED = "restored"
 REFUSAL_ROLLBACK_FAILED = "rollback_failed"
 

@@ -200,13 +200,13 @@ def test_an_unattributed_anchor_is_retriable_and_never_a_wiring_instruction():
     returns must be neither of those things — otherwise the ladder change is
     cosmetic.
     """
-    from jasper.active_speaker.crossover_v2 import vocabulary as vocab
+    from jasper.active_speaker.crossover_v2 import refusal_copy
 
-    code = vocab.SCREEN_KIND_REASONS[cd.SCREEN_ANCHOR_AMBIGUOUS]
-    spec = vocab.REASON_REGISTRY[code]
+    code = refusal_copy.SCREEN_KIND_REASONS[cd.SCREEN_ANCHOR_AMBIGUOUS]
+    spec = refusal_copy.REASON_REGISTRY[code]
     assert spec.retry_budget > 0, "an un-attributed capture is fixed by retaking it"
-    assert code not in vocab.NON_RETRIABLE_CODES
-    assert spec.template != vocab.TEMPLATE_HARD_STOP
+    assert code not in refusal_copy.NON_RETRIABLE_CODES
+    assert spec.template != refusal_copy.TEMPLATE_HARD_STOP
     sentence = f"{spec.message} {spec.banner}".lower()
     for forbidden in ("wiring", "wire", "rewire", "speaker wiring"):
         assert forbidden not in sentence, (

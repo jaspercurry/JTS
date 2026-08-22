@@ -39,7 +39,7 @@ order — so this list is what exists, not a plan:
 * :mod:`.commanded` — what an apply asks the summed response to CHANGE: the
   applied graph's predicted sum minus the predicted sum of the graph it
   replaces, which is the delta probe's commanded axis.
-* :mod:`.vocabulary` — what the household is told when a round refuses: the
+* :mod:`.refusal_copy` — what the household is told when a round refuses: the
   reason codes, their copy and retry budgets, and the verdict that carries them.
 
 Offline evaluation, deliberately not a search:

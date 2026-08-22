@@ -1902,7 +1902,7 @@ def build_v2_verify_index_phase_map(
 # remediation templates, the ``ReasonSpec``/``RetryableReasonCopy`` carriers, the
 # ``REASON_REGISTRY`` that binds a code to its sentence and its retry budget, the
 # copy selectors, and ``PhaseVerdict`` — into
-# :mod:`jasper.active_speaker.crossover_v2.vocabulary`, and the four library
+# :mod:`jasper.active_speaker.crossover_v2.refusal_copy`, and the four library
 # clusters below into the package siblings that already own their decisions.
 #
 # Why the vocabulary had to move, when 5a-vii ruled it did not: that ruling was
@@ -1932,7 +1932,7 @@ def build_v2_verify_index_phase_map(
 # patch: patch that module, or inject through the ports its caller takes.
 # --------------------------------------------------------------------------- #
 
-from jasper.active_speaker.crossover_v2.vocabulary import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     DELTA_PROBE_REASON_BY_VERDICT as DELTA_PROBE_REASON_BY_VERDICT,
     NON_RETRIABLE_CODES as NON_RETRIABLE_CODES,
     REASON_AGC_BEHAVIORAL_FAIL as REASON_AGC_BEHAVIORAL_FAIL,

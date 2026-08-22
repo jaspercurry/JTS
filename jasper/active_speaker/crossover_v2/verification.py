@@ -1199,11 +1199,11 @@ ADOPTION_MEASURED_REGRESSION = "measured_regression"
 #: **The cause carries the CLASS, as ``<prefix>:<verdict>``**, reusing the
 #: composite-cause shape :func:`decide_adoption` already mints for its
 #: no-anchor row. The three rollback classes have three different household
-#: sentences (:data:`~.vocabulary.DELTA_PROBE_REASON_BY_VERDICT`), and they
+#: sentences (:data:`~.refusal_copy.DELTA_PROBE_REASON_BY_VERDICT`), and they
 #: were reached through the probe's own seam before the routing move. A bare
 #: prefix would have collapsed all three into one generic restore sentence — a
 #: copy regression smuggled in as plumbing — so
-#: :func:`~.vocabulary.round_restore_reason` reads the class back off the cause
+#: :func:`~.refusal_copy.round_restore_reason` reads the class back off the cause
 #: and renders exactly what it always did.
 ADOPTION_PROBE_ROLLBACK_CLASS = "delta_probe_rollback_class"
 ADOPTION_REALIZED_AND_IMPROVED = "realized_and_improved"

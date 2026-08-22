@@ -18,6 +18,12 @@ import logging
 
 import pytest
 
+from jasper.attribution.closed_sets import (
+    CONFIDENCE_TIERS,
+    EVIDENCE_TIERS,
+    FIX_CLASSES,
+    PROBES,
+)
 from jasper.attribution.findings import (
     EVIDENCE_STORE_BUNDLE,
     EVIDENCE_STORE_CAPTURE_RING,
@@ -51,12 +57,6 @@ from jasper.attribution.session_identity import (
     SessionIdentityError,
     read_session_identity,
     stamp_session_identity,
-)
-from jasper.attribution.vocabulary import (
-    CONFIDENCE_TIERS,
-    EVIDENCE_TIERS,
-    FIX_CLASSES,
-    PROBES,
 )
 
 _SESSION = SessionIdentity(

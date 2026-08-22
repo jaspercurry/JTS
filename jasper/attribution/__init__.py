@@ -12,7 +12,7 @@ with evidence and confidence, *before* prescribing.
 
 **What this package is, as of WO-1 (schema + persistence).**
 
-* :mod:`~jasper.attribution.vocabulary` — the three closed sets: fix classes
+* :mod:`~jasper.attribution.closed_sets` — the three closed sets: fix classes
   (§3.3), confidence tiers (§3.2), probe ids (§5).
 * :mod:`~jasper.attribution.mechanisms` — the pure-data registry of
   declarations, the shipped ``REASON_REGISTRY`` shape (§2). Seeded with the
@@ -43,6 +43,7 @@ existing. A session with no findings behaves exactly as it does today.
 
 from __future__ import annotations
 
+from .closed_sets import CONFIDENCE_TIERS, FIX_CLASSES, PROBES
 from .findings import (
     EVIDENCE_STORE_BUNDLE,
     EVIDENCE_STORE_CAPTURE_RING,
@@ -85,7 +86,6 @@ from .storage import (
     read_finding_set,
     verify_finding_evidence,
 )
-from .vocabulary import CONFIDENCE_TIERS, FIX_CLASSES, PROBES
 
 __all__ = [
     "CONFIDENCE_TIERS",

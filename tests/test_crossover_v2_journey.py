@@ -819,12 +819,12 @@ def test_the_package_import_graph_stays_acyclic():
 
 def _guarded_vocabulary() -> dict[str, str]:
     """``{value: owning symbol}`` for the two code vocabularies the renderer
-    speaks: ``vocabulary.REASON_*`` and ``verification.RESULT_*``."""
+    speaks: ``refusal_copy.REASON_*`` and ``verification.RESULT_*``."""
 
-    from jasper.active_speaker.crossover_v2 import verification, vocabulary
+    from jasper.active_speaker.crossover_v2 import refusal_copy, verification
 
     owners: dict[str, str] = {}
-    for module, prefix in ((vocabulary, "REASON_"), (verification, "RESULT_")):
+    for module, prefix in ((refusal_copy, "REASON_"), (verification, "RESULT_")):
         for name in dir(module):
             value = getattr(module, name)
             if name.startswith(prefix) and isinstance(value, str):

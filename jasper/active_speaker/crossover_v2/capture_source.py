@@ -12,7 +12,7 @@ deferred begins, host events, purge — is that provider's private internals,
 never the conductor's or the web host's.
 
 This module is the seam's VOCABULARY, deliberately logic-free (the same
-register as :mod:`.vocabulary` and :mod:`.contracts`): the provider identities
+register as :mod:`.refusal_copy` and :mod:`.contracts`): the provider identities
 and the answer contract. The two halves of the conversation live where they
 already are:
 
@@ -46,7 +46,7 @@ accident:
 * **The host owns the persisted-code mapping.** What crosses the seam when a
   session dies is the flow's own reason vocabulary
   (``REASON_RELAY_TIMEOUT``, ``REASON_USER_STOPPED``, … —
-  :mod:`.vocabulary` and the flow's ``REASON_REGISTRY``), never a transport's
+  :mod:`.refusal_copy` and the flow's ``REASON_REGISTRY``), never a transport's
   exception types: only the relay provider knows ``CaptureTimeout`` from
   ``RelayError``, and it translates them before the host persists. The
   persisted codes themselves are frozen — hydration and incident replay

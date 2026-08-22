@@ -111,7 +111,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     candidate_topology,
 )
-from jasper.active_speaker.crossover_v2.vocabulary import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
     REASON_SESSION_CEILING_EXPIRED,
@@ -247,7 +247,7 @@ class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
     ``code`` is an optional
-    :data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_REGISTRY`
+    :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY`
     code. A refusal raised BEFORE any durable state is written — which the
     session-open pre-flight is, by design (issue #1821: no link minted, no
     session burned) — never reaches the envelope, because the envelope renders
@@ -310,7 +310,7 @@ def classify_program_failure(
     Issue #1820 defect 4: the session runner's catch-all arm used to fold the
     WHOLE family — ``ProgramPlaybackError``, ``ProgramAdmissionError``,
     ``CrossoverV2FlowError`` — into a single
-    :data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_PROGRAM_UNPLAYABLE`,
+    :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_PROGRAM_UNPLAYABLE`,
     so a deterministic "JTS cannot use the saved safety limits" and
     a genuine level-ceiling failure rendered the same sentence and offered the
     same (for the former, actively harmful) action. Refusal identity survives
@@ -380,7 +380,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     ``correction_setup._relay_failure_message`` never sees it either.
 
     So classify FIRST and carry the code out. The message comes from the same
-    :data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_REGISTRY` entry the
+    :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the
     phone's failure screen renders, so the two surfaces cannot disagree, and
     the ``code=`` lets the 400 body pick up that reason's ``next_action`` when
     it declares one. ``program_unplayable`` — the only code this function can

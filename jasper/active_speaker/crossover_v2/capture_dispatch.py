@@ -22,7 +22,7 @@ analysis for a deferred fit, publishing CHECK evidence across the seam, raising
 answers the same way, which is what makes a replayed capture safe to re-screen.
 
 **No household vocabulary lives here.**  A refusal leaves as a *kind*;
-:mod:`.vocabulary` maps it through ``SCREEN_KIND_REASONS`` and renders the
+:mod:`.refusal_copy` maps it through ``SCREEN_KIND_REASONS`` and renders the
 sentence from ``REASON_REGISTRY``.  That is the same boundary :mod:`.spatial`
 draws, and the reason this module can exist at all — see the note on the
 vocabulary below.
@@ -52,7 +52,7 @@ have done differently:
   refusals here would conclude MEASURE has no other judgement to make.
 
 **On the household vocabulary.**  This note used to argue that the vocabulary
-did not have to move.  #2291 Phase 5c-ii moved it, to :mod:`.vocabulary` — on a
+did not have to move.  #2291 Phase 5c-ii moved it, to :mod:`.refusal_copy` — on a
 fact that changed (the conductor dissolved and its spine landed in this
 package, which cannot import the flow), not on that argument having been wrong.
 The reasoning lives in that module's docstring and is not restated here.  What
@@ -149,7 +149,7 @@ ANCHOR_SCREEN_KINDS = frozenset({
 })
 
 #: Every kind any capture ladder in this package can return.
-#: :mod:`.vocabulary`'s ``SCREEN_KIND_REASONS`` (which the flow only
+#: :mod:`.refusal_copy`'s ``SCREEN_KIND_REASONS`` (which the flow only
 #: re-exports) is checked for completeness against THIS set, so a new rung
 #: in either owner cannot ship without a household sentence.
 CAPTURE_SCREEN_KINDS = SCREEN_KINDS | ANCHOR_SCREEN_KINDS
