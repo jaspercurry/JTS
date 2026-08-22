@@ -47,7 +47,7 @@ from typing import Any
 from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
-    PRESCRIPTION_MALFORMED,
+    BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
@@ -222,7 +222,7 @@ def _gate(
         # case, so both commands have exactly one arm that handles "this is not
         # a prescription we can use".
         raise BlendPrescriptionRefused(
-            PRESCRIPTION_MALFORMED, "the prescription document was empty"
+            BLEND_PRESCRIPTION_MALFORMED, "the prescription document was empty"
         )
     # The candidate fields are computed INSIDE the gate, above, because each
     # seam re-asks its own route and can therefore refuse too. Computed by the

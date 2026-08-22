@@ -140,10 +140,10 @@ __all__ = [
     "ENVELOPE_KIND_FIELD",
     "PRESCRIPTION_CLASS_NOT_ACCEPTED",
     "PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND",
+    "PRESCRIPTION_SPOOL_REFUSAL_REASONS",
     "SPOOL_KIND",
     "SPOOL_MALFORMED",
     "SPOOL_MAX_BYTES",
-    "SPOOL_REFUSAL_REASONS",
     "SPOOL_SCHEMA_VERSION",
     "SPOOL_TOO_LARGE",
     "STAGEABLE_KINDS",
@@ -300,7 +300,7 @@ PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND = "prescription_not_staged_for_this_round
 PRESCRIPTION_CLASS_NOT_ACCEPTED = "prescription_class_not_accepted"
 
 #: The lifecycle vocabulary, beside rather than inside
-#: :data:`~.blend_prescription.PRESCRIPTION_REFUSAL_REASONS`.
+#: :data:`~.blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS`.
 #:
 #: Two sets because they answer two questions with two owners. That module's
 #: slugs say whether a proposal is a correction this system may apply — a fact
@@ -314,7 +314,13 @@ PRESCRIPTION_CLASS_NOT_ACCEPTED = "prescription_class_not_accepted"
 #: The exception TYPE is shared (:class:`.BlendPrescriptionRefused`), because
 #: every caller already handles that shape and a second exception class would
 #: buy a second ``except`` arm and nothing else.
-SPOOL_REFUSAL_REASONS = frozenset({
+#:
+#: ``PRESCRIPTION_SPOOL_`` prefixed: an unprefixed ``SPOOL_REFUSAL_REASONS``
+#: would collide with :mod:`.angle_capture_spool`'s own bare
+#: ``SPOOL_REFUSAL_REASONS`` — two different closed vocabularies for two
+#: different mailboxes, sharing one name. Values are unchanged; only the
+#: Python identifier moved.
+PRESCRIPTION_SPOOL_REFUSAL_REASONS = frozenset({
     SPOOL_MALFORMED,
     SPOOL_TOO_LARGE,
     PRESCRIPTION_NOT_STAGED_FOR_THIS_ROUND,
@@ -615,9 +621,9 @@ def take_staged_prescription(
 
     Raises :class:`~.blend_prescription.BlendPrescriptionRefused` when a
     document IS staged and this round may not run it, with a slug from either
-    vocabulary: :data:`SPOOL_REFUSAL_REASONS` for a lifecycle refusal, or
-    :data:`~.blend_prescription.PRESCRIPTION_REFUSAL_REASONS` for a content one
-    raised by the gate this re-runs.
+    vocabulary: :data:`PRESCRIPTION_SPOOL_REFUSAL_REASONS` for a lifecycle
+    refusal, or :data:`~.blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS`
+    for a content one raised by the gate this re-runs.
 
     **The consume happens before the validation and that ordering is the
     contract.** A document this round refused is still a document that has had

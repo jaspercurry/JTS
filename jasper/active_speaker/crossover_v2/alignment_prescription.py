@@ -128,7 +128,12 @@ from jasper.log_event import log_event
 
 __all__ = [
     "ALIGNMENT_PRESCRIPTION_KEY",
-    "PRESCRIPTION_REFUSAL_REASONS",
+    "ALIGNMENT_PRESCRIPTION_KIND",
+    "ALIGNMENT_PRESCRIPTION_MALFORMED",
+    "ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING",
+    "ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS",
+    "ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED",
+    "ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION",
     "AlignmentPrescription",
     "AlignmentPrescriptionRefused",
     "alignment_prescription_from_mapping",
@@ -148,13 +153,32 @@ PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_alignment_prescription_
 #: this package is: the reader that owns the shape owns the name of the shape.
 ALIGNMENT_PRESCRIPTION_KEY = "alignment_prescription"
 
+#: The document version a prescriber of THIS class answers, mirroring
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_VERSION`'s envelope —
+#: a proposal naming a version this build does not speak is refused rather than
+#: best-effort parsed.
+ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION = 1
+
+#: The ``kind`` discriminator, mirroring
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_KIND`: distinct from every
+#: sibling class's own string, so a reader handed the wrong document refuses by
+#: name instead of parsing it as something it is not.
+ALIGNMENT_PRESCRIPTION_KIND = "jts_crossover_alignment_prescription"
+
 #: The closed vocabulary of refusals, so a caller can branch on a reason without
 #: reading a message.  Same rule as
 #: :data:`~.contracts.PLAN_REFUSAL_REASONS`: by type and code, never by prose.
-PRESCRIPTION_MALFORMED = "prescription_malformed"
+#:
+#: ``ALIGNMENT_PRESCRIPTION_`` prefixed on the three names that would otherwise
+#: collide with :mod:`.blend_prescription`'s own bare ``PRESCRIPTION_MALFORMED``
+#: / ``PRESCRIPTION_PROVENANCE_MISSING`` / ``PRESCRIPTION_REFUSAL_REASONS`` —
+#: two different closed vocabularies for two different seams, sharing one name.
+#: Values are unchanged; only the Python identifiers moved, to
+#: :data:`~.alignment_prescription.ALIGNMENT_PRESCRIPTION_KEY`'s own style.
+ALIGNMENT_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
 PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
-PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
+ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: The preset's own declared delay window — the ONE bound in this gate that
@@ -166,20 +190,24 @@ PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: reason, never that screen's.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
 #: A ``polarity`` that is neither of the two words the candidate's own alignment
-#: speaks. Its own reason rather than :data:`PRESCRIPTION_MALFORMED`, because a
-#: misspelled basin ("inverted", "flip", "-1") is the one shape an operator
-#: walking a basin sweep will actually type, and the refusal has to send them to
-#: the vocabulary rather than to the shape.
+#: speaks. Its own reason rather than :data:`ALIGNMENT_PRESCRIPTION_MALFORMED`,
+#: because a misspelled basin ("inverted", "flip", "-1") is the one shape an
+#: operator walking a basin sweep will actually type, and the refusal has to
+#: send them to the vocabulary rather than to the shape.
 PRESCRIPTION_POLARITY_INVALID = "prescription_polarity_invalid"
-PRESCRIPTION_REFUSAL_REASONS = frozenset({
-    PRESCRIPTION_MALFORMED,
+#: A document naming a version this build does not speak. Mirrors
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED`.
+ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED = "alignment_prescription_schema_unsupported"
+ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS = frozenset({
+    ALIGNMENT_PRESCRIPTION_MALFORMED,
     PRESCRIPTION_DELAY_INVALID,
     PRESCRIPTION_BASIS_INVALID,
-    PRESCRIPTION_PROVENANCE_MISSING,
+    ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_FC_UNKNOWN,
     PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_POLARITY_INVALID,
+    ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
 })
 
 #: The field names a prescription may carry.  Anything else is refused rather
@@ -187,6 +215,8 @@ PRESCRIPTION_REFUSAL_REASONS = frozenset({
 #: provenance would leave the bound checking a prescription against a basis
 #: nobody declared, which is the one failure this reader exists to prevent.
 _PRESCRIPTION_FIELDS = frozenset({
+    "kind",
+    "artifact_schema_version",
     "delay_us",
     "basis_delay_us",
     "basis_artifacts",
@@ -209,8 +239,9 @@ _PRESCRIPTION_FIELDS = frozenset({
 class AlignmentPrescriptionRefused(ValueError):
     """One prescription this module would not accept, and why.
 
-    Carries a ``reason`` from :data:`PRESCRIPTION_REFUSAL_REASONS` beside the
-    human ``detail``, following :class:`~.contracts.CrossoverV2ContractError`'s
+    Carries a ``reason`` from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`
+    beside the human ``detail``, following
+    :class:`~.contracts.CrossoverV2ContractError`'s
     rule: the classification travels with the raise, so a caller never has to
     re-derive it from wording no test owns.
     """
@@ -298,6 +329,8 @@ class AlignmentPrescription:
     def to_dict(self) -> dict[str, Any]:
         """The receipt's view: what was prescribed, and what justifies it."""
         return {
+            "artifact_schema_version": ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
+            "kind": ALIGNMENT_PRESCRIPTION_KIND,
             "delay_us": self.delay_us,
             "basis_delay_us": self.basis_delay_us,
             "residual_us": self.residual_us,
@@ -340,14 +373,27 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
     """
     if not isinstance(raw, Mapping):
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_MALFORMED,
+            ALIGNMENT_PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
     unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_MALFORMED,
+            ALIGNMENT_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
+        )
+    if raw.get("kind") != ALIGNMENT_PRESCRIPTION_KIND:
+        raise AlignmentPrescriptionRefused(
+            ALIGNMENT_PRESCRIPTION_MALFORMED,
+            f"a prescription must name kind={ALIGNMENT_PRESCRIPTION_KIND!r}, "
+            f"got {raw.get('kind')!r}",
+        )
+    version = raw.get("artifact_schema_version")
+    if version != ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION:
+        raise AlignmentPrescriptionRefused(
+            ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+            f"this build speaks alignment-prescription schema "
+            f"{ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
         )
     if "delay_us" not in raw:
         raise AlignmentPrescriptionRefused(
@@ -370,7 +416,7 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
     note = raw.get("basis_note", "")
     if not isinstance(note, str):
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
             f"basis_note must be text, got {type(note).__name__}",
         )
     return AlignmentPrescription(
@@ -560,12 +606,12 @@ def _read_artifacts(value: Any) -> tuple[str, ...]:
     """
     if value is None:
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
             "a prescription must name the basis_artifacts it was measured from",
         )
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
             "basis_artifacts must be a list of names, got "
             f"{type(value).__name__}",
         )
@@ -573,13 +619,13 @@ def _read_artifacts(value: Any) -> tuple[str, ...]:
     for entry in value:
         if not isinstance(entry, str) or not entry.strip():
             raise AlignmentPrescriptionRefused(
-                PRESCRIPTION_PROVENANCE_MISSING,
+                ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
                 "every basis_artifacts entry must be a non-blank name",
             )
         artifacts.append(entry.strip())
     if not artifacts:
         raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
             "a prescription must name at least one basis artifact",
         )
     return tuple(artifacts)

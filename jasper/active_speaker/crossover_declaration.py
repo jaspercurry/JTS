@@ -56,6 +56,8 @@ from .test_signal_plan import (
 
 __all__ = [
     "CROSSOVER_BELOW_DECLARED_FLOOR",
+    "CROSSOVER_DECLARATION_CHANGE_KIND",
+    "CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION",
     "CrossoverBelowDeclaredFloor",
     "CrossoverDeclarationChange",
     "CrossoverGeometry",
@@ -89,6 +91,19 @@ _PROTECTED_ROLE = "tweeter"
 #: half of a hearing-safety refusal: the operator sentence may be reworded,
 #: this may not.
 CROSSOVER_BELOW_DECLARED_FLOOR = "crossover_below_declared_protection_floor"
+
+#: The document version :func:`change_to_record` answers, mirroring
+#: :data:`~.crossover_v2.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_VERSION`'s
+#: envelope. A record naming a version this build does not speak reads as no
+#: change to reverse, on this module's own tolerant-read rule — see
+#: :func:`change_from_record`.
+CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION = 1
+
+#: The ``kind`` discriminator, mirroring
+#: :data:`~.crossover_v2.driver_prescription.DRIVER_PRESCRIPTION_KIND`: this
+#: record is the Undo inverse of a Sound-declaration write, not a prescription,
+#: and its own string says so.
+CROSSOVER_DECLARATION_CHANGE_KIND = "jts_crossover_declaration_change"
 
 
 class CrossoverBelowDeclaredFloor(ValueError):
@@ -294,6 +309,8 @@ def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
     """
 
     return {
+        "artifact_schema_version": CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
+        "kind": CROSSOVER_DECLARATION_CHANGE_KIND,
         "between_roles": [change.between_roles[0], change.between_roles[1]],
         "applied_hz": float(change.selected.fc_hz),
         "previous_hz": float(change.configured.fc_hz),
@@ -314,9 +331,21 @@ def change_from_record(record: Any) -> CrossoverDeclarationChange | None:
     unreachable until this seam existed), so there is no older shape to be
     tolerant of, and inventing a slope to write into ``/sound`` would be a
     number no accept ever chose.
+
+    ``kind`` and ``artifact_schema_version`` are checked on the same terms as
+    every other field: a record from before this envelope existed, or one
+    naming a version this build does not speak, reads as ``None`` — the family
+    tolerant-read rule :mod:`.crossover_v2.driver_prescription` follows, and no
+    migration is owed because the read-back was already unconditionally strict.
     """
 
     if not isinstance(record, Mapping):
+        return None
+    if (
+        record.get("kind") != CROSSOVER_DECLARATION_CHANGE_KIND
+        or record.get("artifact_schema_version")
+        != CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION
+    ):
         return None
     roles = record.get("between_roles")
     applied_hz = _finite_positive(record.get("applied_hz"))

@@ -1196,7 +1196,17 @@ MAX_LINES_BY_PATH = {
     # when that vocabulary does: a THIRD spelling of a crossover, or a second
     # protected role. Deriving-and-refusing only — the single durable writer
     # stays in `sound_setup`, in both directions.
-    "jasper/active_speaker/crossover_declaration.py": 407,
+    # 2026-08-21 (tuning master plan 2.5): 407 -> 436, +29, no extraction. The
+    # version+kind envelope the other three prescription doors already carry
+    # (`driver_prescription`/`blend_prescription`'s established shape): two
+    # named constants (`CROSSOVER_DECLARATION_CHANGE_KIND` /
+    # `_SCHEMA_VERSION`) with their own docstrings, two fields on
+    # `change_to_record`'s output, and `change_from_record`'s envelope check —
+    # on the SAME terms as the seven fields already required there, so a
+    # pre-envelope record reads as no change to reverse rather than raising.
+    # No seam to cut: this is the file's one vocabulary gaining one more fact
+    # about itself, not a second concern arriving.
+    "jasper/active_speaker/crossover_declaration.py": 436,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

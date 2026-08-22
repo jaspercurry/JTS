@@ -128,7 +128,10 @@ from .fc_sweep import (
 __all__ = [
     "TOPOLOGY_AUTHORITY_OPERATOR_PINNED",
     "TOPOLOGY_PRESCRIPTION_KEY",
+    "TOPOLOGY_PRESCRIPTION_KIND",
     "TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS",
+    "TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED",
+    "TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION",
     "TopologyPrescription",
     "TopologyPrescriptionRefused",
     "apply_topology_pin",
@@ -149,6 +152,18 @@ PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_topology_prescription_u
 #: spelled at the web boundary for the reason every other vocabulary constant in
 #: this package is: the reader that owns the shape owns the name of the shape.
 TOPOLOGY_PRESCRIPTION_KEY = "topology_prescription"
+
+#: The document version a prescriber of THIS class answers, mirroring
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_VERSION`'s envelope —
+#: a pin naming a version this build does not speak is refused rather than
+#: best-effort parsed.
+TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION = 1
+
+#: The ``kind`` discriminator, mirroring
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_KIND`: distinct from every
+#: sibling class's own string, so a reader handed the wrong document refuses by
+#: name instead of parsing it as something it is not.
+TOPOLOGY_PRESCRIPTION_KIND = "jts_crossover_topology_prescription"
 
 #: What stands behind a pinned corner, stamped by the gate onto every accepted
 #: prescription.  See this module's docstring: one value, because a topology pin
@@ -171,6 +186,9 @@ TOPOLOGY_PROVENANCE_MISSING = "topology_provenance_missing"
 #: The declared-slope bound.  New here because nothing else applies it to a
 #: crossover corner — see this module's docstring.
 TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT = "topology_slope_below_declared_requirement"
+#: A document naming a version this build does not speak. Mirrors
+#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED`.
+TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED = "topology_prescription_schema_unsupported"
 TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_MALFORMED,
     TOPOLOGY_FC_INVALID,
@@ -178,6 +196,7 @@ TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_ORDER_UNSUPPORTED,
     TOPOLOGY_PROVENANCE_MISSING,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
+    TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
     # The three frequency bounds are the AUTOMATIC path's own, reused rather
     # than re-spelled: a pin and a proposal are admissible on identical terms,
     # and a second vocabulary for one predicate is how the two drift into
@@ -193,6 +212,8 @@ TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
 #: round claiming a basis nobody declared. ``polarity`` is refused BY THIS SET —
 #: it is the sibling module's field, and this module's docstring says why.
 _PRESCRIPTION_FIELDS = frozenset({
+    "kind",
+    "artifact_schema_version",
     "fc_hz",
     "order",
     "basis_artifacts",
@@ -296,6 +317,8 @@ class TopologyPrescription:
         """The receipt's view: what was pinned, what justifies it, what it
         cleared, and what stands behind it."""
         return {
+            "artifact_schema_version": TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
+            "kind": TOPOLOGY_PRESCRIPTION_KIND,
             "fc_hz": self.fc_hz,
             "order": self.order,
             "slope_db_per_octave": self.slope_db_per_octave,
@@ -436,6 +459,19 @@ def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
+        )
+    if raw.get("kind") != TOPOLOGY_PRESCRIPTION_KIND:
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_MALFORMED,
+            f"a prescription must name kind={TOPOLOGY_PRESCRIPTION_KIND!r}, "
+            f"got {raw.get('kind')!r}",
+        )
+    version = raw.get("artifact_schema_version")
+    if version != TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION:
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+            f"this build speaks topology-prescription schema "
+            f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
         )
     if "fc_hz" not in raw:
         raise TopologyPrescriptionRefused(
@@ -805,6 +841,13 @@ def topology_prescription_response_format() -> dict[str, Any]:
             "says nothing about whether a different corner would be better"
         ),
         "fields": {
+            "kind": (
+                f"required, must be exactly {TOPOLOGY_PRESCRIPTION_KIND!r}"
+            ),
+            "artifact_schema_version": (
+                "required, must be exactly "
+                f"{TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION}"
+            ),
             "fc_hz": "required number, the corner BOTH branches split at",
             "order": (
                 "required integer, one of "

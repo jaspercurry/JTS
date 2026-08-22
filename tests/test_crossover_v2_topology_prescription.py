@@ -42,7 +42,10 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
     TOPOLOGY_PRESCRIPTION_KEY,
+    TOPOLOGY_PRESCRIPTION_KIND,
     TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS,
+    TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+    TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
     TOPOLOGY_PROVENANCE_MISSING,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
     TopologyPrescription,
@@ -83,6 +86,8 @@ def _pin(corner_hz: float, /, **overrides: object) -> dict:
     those calls a ``TypeError`` instead of a mutation.
     """
     body: dict = {
+        "kind": TOPOLOGY_PRESCRIPTION_KIND,
+        "artifact_schema_version": TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
         "fc_hz": corner_hz,
         "order": 4,
         "basis_artifacts": list(ARTIFACTS),
@@ -167,6 +172,40 @@ def test_every_accepted_field_survives_the_round_trip_the_receipt_needs():
     again = topology_prescription_from_mapping(pinned.to_dict())
     assert again is not None
     assert again.to_dict() == pinned.to_dict()
+
+
+def test_the_receipt_carries_kind_and_schema_version():
+    """The envelope, on the established shape.
+
+    Mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
+    DriverPrescription.to_dict`'s ``kind``/``artifact_schema_version`` pair.
+    """
+    pinned = _read(_pin(2400.0))
+    assert pinned is not None
+    record = pinned.to_dict()
+    assert record["kind"] == TOPOLOGY_PRESCRIPTION_KIND
+    assert record["artifact_schema_version"] == TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ({"kind": "nope"}, TOPOLOGY_MALFORMED),
+        ({"kind": None}, TOPOLOGY_MALFORMED),
+        ({"artifact_schema_version": 2}, TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED),
+        ({"artifact_schema_version": None}, TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED),
+    ],
+)
+def test_the_envelope_is_checked_before_any_content_field(mutation, reason):
+    """The version+kind envelope, on the established shape.
+
+    Mirrors :mod:`~jasper.active_speaker.crossover_v2.driver_prescription`'s
+    own gate: a document naming the wrong kind is malformed, and one naming a
+    version this build does not speak is its own, distinct refusal.
+    """
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0, **mutation))
+    assert excinfo.value.reason == reason
 
 
 # --------------------------------------------------------------------------- #
@@ -546,6 +585,12 @@ def test_the_response_format_names_the_request_time_door_and_its_severity():
     assert block["authority"] == TOPOLOGY_AUTHORITY_OPERATOR_PINNED
     # The caveat a prescriber must read before believing a pinned receipt.
     assert "not a measured ranking" in block["authority_detail"]
+    # The envelope a prescriber must send, discoverable beside the content
+    # fields rather than left implicit.
+    assert str(TOPOLOGY_PRESCRIPTION_KIND) in block["fields"]["kind"]
+    assert str(TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION) in (
+        block["fields"]["artifact_schema_version"]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -579,6 +624,20 @@ def test_the_read_back_still_refuses_a_mangled_shape_and_says_so(caplog):
     assert "crossover_v2_topology_prescription_unreadable" in caplog.text
 
 
+def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
+    """The tolerant-read rule every door in this family shares.
+
+    Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
+    ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
+    prescription``: ``None``, an unrecognised ``kind``, and a totally empty
+    mapping — the exact shape a pre-envelope record left behind — all read as
+    ``None`` rather than raising.
+    """
+    assert topology_prescription_from_mapping(None) is None
+    assert topology_prescription_from_mapping({"kind": "nope"}) is None
+    assert topology_prescription_from_mapping({}) is None
+
+
 def test_the_read_back_of_nothing_is_nothing_and_is_silent(caplog):
     """The ordinary round: no pin was made. It must not look like a failure."""
     with caplog.at_level(logging.WARNING):
@@ -587,9 +646,19 @@ def test_the_read_back_of_nothing_is_nothing_and_is_silent(caplog):
 
 
 def test_a_pre_gate_record_reads_back_without_the_stamped_fields():
-    """A hand-built block that never went through the gate is missing context,
-    not malformed — refusing it would cost a round its provenance entirely."""
+    """A hand-built block that never went through the gate is missing the
+    GATE's own context, not malformed — refusing it would cost a round its
+    provenance entirely.
+
+    ``kind``/``artifact_schema_version`` are on the OTHER side of that line:
+    they are part of the document's required SHAPE, exactly as ``fc_hz`` /
+    ``order`` / ``basis_artifacts`` always were, so this record carries them —
+    what it omits is only the five fields the GATE stamps after its bounds
+    pass (``authority``, the four ``checked_against_*`` / beaming fields).
+    """
     again = topology_prescription_from_mapping({
+        "kind": TOPOLOGY_PRESCRIPTION_KIND,
+        "artifact_schema_version": TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
         "fc_hz": 2400.0, "order": 4, "basis_artifacts": ["bench"],
     })
     assert again == TopologyPrescription(

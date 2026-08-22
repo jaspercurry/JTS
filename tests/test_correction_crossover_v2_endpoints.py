@@ -9346,6 +9346,8 @@ def test_a_slope_only_change_reaches_the_declaration_and_leaves_fc_alone(
     }
     # The inverse is recorded on both halves, so Undo has a slope to put back.
     assert v2host.load_v2_state()["sound_declaration_undo"] == {
+        "kind": "jts_crossover_declaration_change",
+        "artifact_schema_version": 1,
         "sound_revision": 2,
         "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
         "applied_hz": 2500.0,
@@ -10451,6 +10453,8 @@ def test_undo_puts_the_declared_crossover_back_through_the_sound_writer(
     # it produced plus the geometry Sound declared a moment earlier. Nothing
     # else on the speaker remembers the latter.
     assert v2host.load_v2_state()["sound_declaration_undo"] == {
+        "kind": "jts_crossover_declaration_change",
+        "artifact_schema_version": 1,
         "sound_revision": 2,
         "between_roles": [regions[0].lower_driver, regions[0].upper_driver],
         "applied_hz": applied_hz,
@@ -10884,6 +10888,8 @@ def test_start_over_keeps_the_declaration_undo_record_with_the_applied_graph():
 #: reasons at once proves neither of them, and every field the writer gained is
 #: a new way for these cases to go quietly redundant.
 _READABLE_DECLARATION_UNDO = {
+    "kind": "jts_crossover_declaration_change",
+    "artifact_schema_version": 1,
     "sound_revision": 2,
     "between_roles": ["woofer", "tweeter"],
     "applied_hz": 2750.0,
@@ -10911,6 +10917,14 @@ _READABLE_DECLARATION_UNDO = {
      if k != "previous_slope_db_per_octave"},
     {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
      if k != "applied_filter_type"},
+    # The envelope is part of the shape too: a record from before it existed,
+    # or one naming a version this build does not speak, is unreadable on the
+    # same terms as any other missing field.
+    {k: v for k, v in _READABLE_DECLARATION_UNDO.items() if k != "kind"},
+    {k: v for k, v in _READABLE_DECLARATION_UNDO.items()
+     if k != "artifact_schema_version"},
+    {**_READABLE_DECLARATION_UNDO, "kind": "nope"},
+    {**_READABLE_DECLARATION_UNDO, "artifact_schema_version": 2},
 ])
 def test_an_unusable_declaration_undo_record_is_not_applicable_not_a_guess(record):
     """A record this build cannot read is ``not_applicable``, never a
@@ -12124,6 +12138,8 @@ def _topology_pin(**overrides: Any) -> dict[str, Any]:
     inadmissible" cannot accidentally also be testing a missing provenance.
     """
     body: dict[str, Any] = {
+        "kind": "jts_crossover_topology_prescription",
+        "artifact_schema_version": 1,
         "fc_hz": _PIN_FC_HZ,
         "order": _PIN_ORDER,
         "basis_artifacts": ["captures/offline-fc-search/arm-2.json"],

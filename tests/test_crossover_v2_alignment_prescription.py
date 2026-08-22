@@ -29,15 +29,18 @@ from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KEY,
+    ALIGNMENT_PRESCRIPTION_KIND,
+    ALIGNMENT_PRESCRIPTION_MALFORMED,
+    ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
+    ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS,
+    ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
+    ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
     PRESCRIPTION_BASIS_INVALID,
     PRESCRIPTION_DELAY_INVALID,
     PRESCRIPTION_FC_UNKNOWN,
-    PRESCRIPTION_MALFORMED,
     PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_POLARITY_INVALID,
-    PRESCRIPTION_PROVENANCE_MISSING,
-    PRESCRIPTION_REFUSAL_REASONS,
     AlignmentPrescription,
     AlignmentPrescriptionRefused,
     alignment_prescription_from_mapping,
@@ -129,6 +132,8 @@ def _arm(arm_us: float, **overrides: object) -> dict:
     those calls a ``TypeError`` instead of a mutation.
     """
     body = {
+        "kind": ALIGNMENT_PRESCRIPTION_KIND,
+        "artifact_schema_version": ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
         "delay_us": arm_us,
         "basis_delay_us": BASIS_US,
         "basis_artifacts": list(ARTIFACTS),
@@ -285,14 +290,17 @@ def test_an_unusable_corner_is_its_own_refusal(fc_hz):
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
-        ({"basis_artifacts": []}, PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": None}, PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": ["  "]}, PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_artifacts": [None]}, PRESCRIPTION_PROVENANCE_MISSING),
+        ({"basis_artifacts": []}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
+        ({"basis_artifacts": None}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
+        ({"basis_artifacts": ["  "]}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
+        ({"basis_artifacts": [None]}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
         # A bare string would make "a,b" one artifact and ["a","b"] two,
         # decided by punctuation.
-        ({"basis_artifacts": "one.json,two.json"}, PRESCRIPTION_PROVENANCE_MISSING),
-        ({"basis_note": 7}, PRESCRIPTION_PROVENANCE_MISSING),
+        (
+            {"basis_artifacts": "one.json,two.json"},
+            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
+        ),
+        ({"basis_note": 7}, ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING),
     ],
 )
 def test_a_prescription_without_real_provenance_is_refused(mutation, reason):
@@ -313,7 +321,7 @@ def test_a_prescription_missing_its_artifacts_key_entirely_is_refused():
     del body["basis_artifacts"]
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(body, fc_hz=FC_HZ)
-    assert excinfo.value.reason == PRESCRIPTION_PROVENANCE_MISSING
+    assert excinfo.value.reason == ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING
 
 
 @pytest.mark.parametrize(
@@ -328,7 +336,7 @@ def test_a_prescription_missing_its_artifacts_key_entirely_is_refused():
         ({"basis_delay_us": False}, PRESCRIPTION_BASIS_INVALID),
         ({"basis_delay_us": float("nan")}, PRESCRIPTION_BASIS_INVALID),
         # The typo that would otherwise silently drop the provenance.
-        ({"basis_artifact": ["x"]}, PRESCRIPTION_MALFORMED),
+        ({"basis_artifact": ["x"]}, ALIGNMENT_PRESCRIPTION_MALFORMED),
     ],
 )
 def test_the_reader_is_strict_about_shape(mutation, reason):
@@ -348,7 +356,29 @@ def test_the_reader_is_strict_about_shape(mutation, reason):
 def test_a_non_mapping_prescription_is_refused(raw):
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(raw, fc_hz=FC_HZ)
-    assert excinfo.value.reason == PRESCRIPTION_MALFORMED
+    assert excinfo.value.reason == ALIGNMENT_PRESCRIPTION_MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ({"kind": "nope"}, ALIGNMENT_PRESCRIPTION_MALFORMED),
+        ({"kind": None}, ALIGNMENT_PRESCRIPTION_MALFORMED),
+        ({"artifact_schema_version": 2}, ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED),
+        ({"artifact_schema_version": None}, ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED),
+    ],
+)
+def test_the_envelope_is_checked_before_any_content_field(mutation, reason):
+    """The version+kind envelope, on the established shape.
+
+    Mirrors :mod:`~jasper.active_speaker.crossover_v2.driver_prescription`'s
+    own gate: a document naming the wrong kind is malformed, and one naming a
+    version this build does not speak is its own, distinct refusal — sent to
+    the vocabulary rather than merged into the generic shape reason.
+    """
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(_arm(-450.0, **mutation), fc_hz=FC_HZ)
+    assert excinfo.value.reason == reason
 
 
 def test_every_refusal_reason_is_in_the_closed_vocabulary():
@@ -362,6 +392,7 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
         (_arm(-450.0), 0.0),
         (_arm(0.0), FC_HZ),
         (_arm(-450.0, polarity="inverted"), FC_HZ),
+        (_arm(-450.0, artifact_schema_version=2), FC_HZ),
     ):
         with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
             _read(body, fc_hz=fc_hz)
@@ -372,8 +403,8 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0), declared_bounds_us=HORN_WINDOW_US)
     raised.add(excinfo.value.reason)
-    assert raised <= PRESCRIPTION_REFUSAL_REASONS
-    assert raised == PRESCRIPTION_REFUSAL_REASONS
+    assert raised <= ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS
+    assert raised == ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS
 
 
 # --------------------------------------------------------------------------- #
@@ -570,6 +601,54 @@ def test_a_prescription_round_trips_through_its_receipt_shape():
     assert alignment_prescription_from_mapping(
         {k: v for k, v in record.items() if k != "residual_us"}
     ) == prescription
+
+
+def test_the_receipt_carries_kind_and_schema_version():
+    """The envelope, on the established shape.
+
+    Mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
+    DriverPrescription.to_dict`'s ``kind``/``artifact_schema_version`` pair —
+    the same fields, the same job: a reader handed this record can tell what
+    it is without guessing from its field names alone.
+    """
+    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
+    record = prescription.to_dict()
+    assert record["kind"] == ALIGNMENT_PRESCRIPTION_KIND
+    assert record["artifact_schema_version"] == ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION
+
+
+def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
+    """The tolerant-read rule every door in this family shares.
+
+    Mirrors ``tests/test_crossover_v2_driver_prescription.py``'s
+    ``test_a_mangled_durable_block_reads_as_absent_never_as_half_a_
+    prescription``: ``None``, an unrecognised ``kind``, and a totally empty
+    mapping — the exact shape a pre-envelope record left behind — all read as
+    ``None`` rather than raising. No migration is owed for a record banked
+    before this envelope existed; it simply reads as absent.
+    """
+    assert alignment_prescription_from_mapping(None) is None
+    assert alignment_prescription_from_mapping({"kind": "nope"}) is None
+    assert alignment_prescription_from_mapping({}) is None
+
+
+def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
+    """This module's own members of the three-name collision with
+    :mod:`.blend_prescription` — ``PRESCRIPTION_MALFORMED`` /
+    ``PRESCRIPTION_PROVENANCE_MISSING`` / ``PRESCRIPTION_REFUSAL_REASONS``,
+    each renamed here to an ``ALIGNMENT_``-prefixed name. The bare names must
+    not still be attributes of this module.
+    """
+    from jasper.active_speaker.crossover_v2 import alignment_prescription as ap
+
+    assert not hasattr(ap, "PRESCRIPTION_MALFORMED")
+    assert not hasattr(ap, "PRESCRIPTION_PROVENANCE_MISSING")
+    assert not hasattr(ap, "PRESCRIPTION_REFUSAL_REASONS")
+    assert ap.ALIGNMENT_PRESCRIPTION_MALFORMED == "prescription_malformed"
+    assert (
+        ap.ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING
+        == "prescription_provenance_missing"
+    )
 
 
 # --------------------------------------------------------------------------- #

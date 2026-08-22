@@ -49,6 +49,7 @@ from jasper.active_speaker.crossover_v2.blend_correction import (
 from jasper.active_speaker.crossover_v2 import blend_prescription as bp
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
+    BLEND_PRESCRIPTION_REFUSAL_REASONS,
     BOOST_MIN_TESTIFYING_POSITIONS,
     PRESCRIPTION_KIND,
     PRESCRIPTION_MAX_BOOST_Q,
@@ -57,7 +58,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     PRESCRIPTION_MAX_FILTER_BOOST_DB,
     PRESCRIPTION_MAX_TOTAL_BOOST_DB,
     PRESCRIPTION_MIN_Q,
-    PRESCRIPTION_REFUSAL_REASONS,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
     blend_prescription_from_mapping,
@@ -573,7 +573,7 @@ def test_the_gate_refuses_every_malformed_or_out_of_bounds_filter(
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(filters, packet))
     assert excinfo.value.reason == reason
-    assert excinfo.value.reason in PRESCRIPTION_REFUSAL_REASONS
+    assert excinfo.value.reason in BLEND_PRESCRIPTION_REFUSAL_REASONS
     assert excinfo.value.detail.strip()
 
 
@@ -1375,9 +1375,25 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert fmt["bounds"]["q_max_boost"] == PRESCRIPTION_MAX_BOOST_Q
     assert "q_max" not in fmt["bounds"], "one q_max would hide the sign split"
     assert fmt["boost_bar"]["min_testifying_positions"] == BOOST_MIN_TESTIFYING_POSITIONS
-    assert set(fmt["refusal_reasons"]) == PRESCRIPTION_REFUSAL_REASONS
+    assert set(fmt["refusal_reasons"]) == BLEND_PRESCRIPTION_REFUSAL_REASONS
     assert fmt["execution_boundary"]["model_may_execute"] is False
     assert fmt["execution_boundary"]["model_may_grade_itself"] is False
+
+
+def test_the_unprefixed_names_colliding_with_alignment_prescription_are_gone():
+    """This module's own members of the three-name collision with
+    :mod:`.alignment_prescription` — ``PRESCRIPTION_MALFORMED`` /
+    ``PRESCRIPTION_PROVENANCE_MISSING`` / ``PRESCRIPTION_REFUSAL_REASONS``,
+    each renamed here to a ``BLEND_``-prefixed name. Two different closed
+    vocabularies sharing one bare name is exactly what an unqualified `import
+    *` from both modules would shadow; the bare names must not still be
+    attributes of this module.
+    """
+    assert not hasattr(bp, "PRESCRIPTION_MALFORMED")
+    assert not hasattr(bp, "PRESCRIPTION_PROVENANCE_MISSING")
+    assert not hasattr(bp, "PRESCRIPTION_REFUSAL_REASONS")
+    assert bp.BLEND_PRESCRIPTION_MALFORMED == "prescription_malformed"
+    assert bp.BLEND_PRESCRIPTION_PROVENANCE_MISSING == "prescription_provenance_missing"
 
 
 def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet):
