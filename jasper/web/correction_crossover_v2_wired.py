@@ -148,13 +148,11 @@ def _fallback_program_s() -> float:
 
 
 class _RetakeRequested(Exception):
-    """The household asked to replace the just-accepted take while this begin
-    was still being held.
+    """How the hold loop tells the walk to abandon a begin nobody has released
+    and re-open the previous slot instead.
 
-    Private to this module and never seen outside one walk: it is how the
-    hold loop tells the walk to abandon a begin nobody has released yet and
-    re-open the previous slot instead. It is deliberately NOT one of the flow's
-    reasons — nothing failed, and no household ever reads it.
+    Private to one walk, and deliberately NOT one of the flow's reasons:
+    nothing failed, and no household ever reads it.
     """
 
 
@@ -621,20 +619,12 @@ def build_v2_wired_run_and_consume(
             def _serve_retake(
                 accepted: int, attempt: int, deadline: float,
             ) -> tuple[int, bool]:
-                """Re-capture the just-accepted slot, on the relay's §2.6 terms.
+                """Re-capture the just-accepted slot — the terms are stated once,
+                in this function's own runner docstring above.
 
-                Returns ``(attempt, end_walk)`` — the attempt counter after
-                this, and whether the walk must stop. It re-runs the SAME index
-                through the ordinary authorize → capture → consume path, which
-                is what makes an accepted retake replace the retained position
-                (the conductor's retention is per-index idempotent) and a
-                rejected one leave the original standing: nothing was dropped
-                on its behalf. Both takes stay banked under their own attempt.
-
-                ``accepted`` is the index, never ``accepted + 1``, and it is
-                deliberately NOT advanced by an accepted retake: the slot was
-                counted once and stays counted, so the completion check and
-                every index→phase lookup are untouched.
+                Returns ``(attempt, end_walk)``: the attempt counter after this,
+                and whether the walk must stop. The three refusals below are the
+                only policy here; everything else is the ordinary path.
                 """
                 if accepted < 1:
                     # Nothing has been accepted yet, so there is no take to
@@ -693,14 +683,12 @@ def build_v2_wired_run_and_consume(
                         continue
                     except CaptureBeginRefused as refusal:
                         # A refused RETAKE must not end a session that already
-                        # holds a usable take for this slot — the household
+                        # holds a usable take for this slot: the household
                         # asked for a bonus, not for the set to be torn down,
                         # and the per-slot extras ledger running out is the
-                        # ordinary way this arm is reached. The two clock
-                        # deaths are refused here too and lose nothing: the
-                        # walk's own deadline checks re-decide them on the very
-                        # next pass, against the same ceiling, with the same
-                        # registered code.
+                        # ordinary way here. The two clock deaths lose nothing
+                        # by being swallowed — the walk's own deadline checks
+                        # re-decide them next pass, same ceiling, same code.
                         log_event(
                             logger,
                             "correction.crossover_v2_wired_retake_refused",
