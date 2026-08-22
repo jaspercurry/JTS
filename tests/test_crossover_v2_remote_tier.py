@@ -877,6 +877,52 @@ def test_the_gate_can_read_a_hand_released_plans_own_entries():
     gate.gate(1, 1, plan.entry_for_index(1))
 
 
+#: The arm's two SHIPPED plans, as wire bytes. Captured on the #2879 split and
+#: re-derived against the pre-split build, so they say the pose-statement axis
+#: coming off the advance axis moved nothing the positioner reads.
+#:
+#: Deliberately NOT added to ``_GOLDEN_V2_PLAN_BYTES``: that table builds each
+#: plan from the BUILDER's defaults, and ``include_cloud_measure`` defaults True
+#: — which for remote's N=9 walks a vertical pose and makes
+#: ``position_angle_deg`` refuse before a digest exists. Remote is only
+#: constructible through the flags a session actually uses
+#: (:data:`STAGE1_INCLUDES_CLOUD_MEASURE`), so its digest belongs beside its own
+#: contract rather than in a table whose convention it cannot satisfy.
+_GOLDEN_REMOTE_PLAN_BYTES = {
+    "stage1-remote": (
+        1322,
+        "fc27865bbd695be7a4fe08611efe2c825f88820666c82fc59e1eb93176dd3b5e",
+    ),
+    "stage2-remote": (
+        1797,
+        "b2a38c46887329266142d66a18622ad581efe0edf5922e7ec04e6ba7bdccdfdc",
+    ),
+}
+
+
+def test_the_arms_shipped_plans_are_byte_identical():
+    """The tier's own promise, as bytes rather than as spot-checked fields.
+
+    ``test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate`` below
+    names the two fields the split could plausibly have disturbed; this says
+    nothing at all moved, which is the claim #2879 actually made.
+    """
+    import hashlib
+    import json
+
+    plans = {
+        "stage1-remote": _stage1(TIER_REMOTE),
+        "stage2-remote": _stage2(TIER_REMOTE),
+    }
+    assert set(plans) == set(_GOLDEN_REMOTE_PLAN_BYTES)
+    for label, plan in plans.items():
+        raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+        actual = (len(raw), hashlib.sha256(raw).hexdigest())
+        assert actual == _GOLDEN_REMOTE_PLAN_BYTES[label], (
+            f"{label} wire bytes changed: len={actual[0]} sha256={actual[1]}"
+        )
+
+
 def test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate():
     """The byte-identity promise, restated for the new fact: nothing about the
     arm's plan moves. (``_GOLDEN_V2_PLAN_BYTES`` proves it in hashes; this

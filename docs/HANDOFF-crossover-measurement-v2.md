@@ -314,6 +314,33 @@ to back while the household was still walking to the next spot. Whoever is
 holding the tape is the one who POSTs `/position-ready`, and the envelope
 publishes the same `position_pending` payload the arm's driver reads.
 
+> **Until [#2881](https://github.com/jaspercurry/JTS/issues/2881) lands, that
+> POST is MANUAL, once per capture.** Nothing shipped renders
+> `relay.position_pending` or posts the release except `jasper-arm-walk`, which
+> drives a turntable. So a Full/Express round on the wired source — the source
+> auto-selects whenever a measurement-class mic is attached — holds at **every**
+> capture and waits for a human to run the curl below. Leave it unattended and
+> each hold expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
+> `position_hold_expired`: loud, named, and self-recovering, but a wasted
+> session. **The tuning loop is unaffected** — `scripts/run-crossover-round.py`
+> defaults to `--tier remote`, which `jasper-arm-walk` already releases.
+>
+> The release needs the CSRF dance (no bypass exists, by design): GET a wizard
+> page with a cookie jar to mint `jts_csrf` + the `<meta name="jts-csrf">`
+> token, then POST with the jar and the `X-CSRF-Token` header. `index` is the
+> `position_pending.index` the envelope just published — a stale one is a 409,
+> which is the guard working.
+>
+> ```sh
+> JAR=$(mktemp)
+> TOKEN=$(curl -fsS -c "$JAR" http://jts.local/correction/crossover/ \
+>   | sed -n 's/.*name="jts-csrf" content="\([^"]*\)".*/\1/p')
+> # ...read position_pending.index off the envelope, then per capture:
+> curl -fsS -b "$JAR" -H "X-CSRF-Token: $TOKEN" \
+>   -H 'Content-Type: application/json' -d '{"index": 1}' \
+>   http://jts.local/correction/crossover/v2/position-ready
+> ```
+
 Two steps are new on this source:
 
 * when stage 1's pre-apply group is walked, the held set closes on
