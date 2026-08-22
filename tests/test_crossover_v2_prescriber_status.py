@@ -316,9 +316,21 @@ def test_the_handoff_url_survives_an_unset_hostname(tmp_path, capsys, monkeypatc
     assert payload["speaker"]["crossover_url"].startswith("http://jts.local/")
 
 
-def test_the_handoff_page_is_the_one_the_household_actually_opens(capsys):
-    """The page that runs, applies and undoes a round is served at this path."""
-    assert cli.CROSSOVER_PAGE_PATH == "/sound/crossover/"
+def test_the_handoff_page_is_the_one_the_household_actually_opens():
+    """The path printed here is the path the correction hub links to.
+
+    Two owners of "where does a human go for active-speaker tuning" would drift
+    the day the page moves, and the CLI's copy is the one nobody would notice —
+    a wizard tab that 404s is seen immediately, a printed URL is followed once
+    by an operator who then assumes the speaker is broken. The CLI keeps its own
+    constant rather than importing the web module (a CLI that depended on
+    ``jasper.web`` to print a string would be the worse trade); this test is
+    what makes the two one answer.
+    """
+    from jasper.web.correction_hub import SECTIONS
+
+    hrefs = {key: href for key, _label, href in SECTIONS}
+    assert cli.CROSSOVER_PAGE_PATH == hrefs["crossover"]
 
 
 # --------------------------------------------------------------------------- #
