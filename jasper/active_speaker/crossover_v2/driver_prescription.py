@@ -1051,8 +1051,9 @@ def _composed_grid(
     rather than mirrored: the gate and the charge cannot disagree about where to
     look, because it is one construction.
 
-    *Resolution.* That span's background sampling is 1/48 octave over ten
-    octaves, which is coarser inside one driver's band than a Q-8 filter needs;
+    *Resolution.* That span's background sampling is 1/48 octave over the
+    14.55 octaves from ``_GRID_EDGE_LO_HZ`` to ``_GRID_EDGE_HI_HZ``, which is
+    coarser inside one driver's band than a Q-8 filter needs;
     a dense per-band sweep is unioned in for that. Both halves are needed —
     the span alone under-reads three cases this module pins (a two-bell cascade
     peaking between its centres), and the band alone is the domain hole above.
@@ -1130,29 +1131,40 @@ def _check_composed(
         composed = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
         )
-        worst_cut = float(np.min(composed))
+        # "over its own band" is what this grid is deliberately NOT limited to
+        # — `_composed_grid` reads the CHARGE's whole span, so an extremum can
+        # and does land outside the declared band (measured as low as 1.92 Hz
+        # and as high as 21.5 kHz). Both refusals therefore name the FREQUENCY
+        # rather than an interval the number may not be inside: a reader told
+        # only "at its peak over its own band" goes looking for a filter there
+        # and finds none.
+        worst_cut_index = int(np.argmin(composed))
+        worst_cut = float(composed[worst_cut_index])
         if worst_cut < -DRIVER_MAX_COMPOSED_CUT_DB:
             _refuse(
                 COMPOSED_CUT_EXCEEDED,
                 f"the {role}'s composed cascade cuts {-worst_cut:.2f} dB at its "
-                f"worst over its own band, past the "
+                f"worst ({grid[worst_cut_index]:.1f} Hz), past the "
                 f"{DRIVER_MAX_COMPOSED_CUT_DB:g} dB ceiling",
                 role=role,
                 composed_cut_db=worst_cut,
+                composed_cut_hz=float(grid[worst_cut_index]),
                 max_composed_cut_db=DRIVER_MAX_COMPOSED_CUT_DB,
             )
-        peak_boost = max(0.0, float(np.max(composed)))
+        peak_index = int(np.argmax(composed))
+        peak_boost = max(0.0, float(composed[peak_index]))
         if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
                 f"the {role}'s composed cascade boosts {peak_boost:.2f} dB at "
-                f"its peak over its own band, past the "
+                f"its peak ({grid[peak_index]:.1f} Hz), past the "
                 f"{DRIVER_MAX_COMPOSED_BOOST_DB:g} dB ceiling. Two filters "
                 "whose skirts overlap deliver more than either alone, and "
                 "every dB above unity is charged against the household's "
                 "maximum SPL",
                 role=role,
                 composed_boost_db=peak_boost,
+                composed_boost_hz=float(grid[peak_index]),
                 max_composed_boost_db=DRIVER_MAX_COMPOSED_BOOST_DB,
                 max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB,
             )
@@ -1680,19 +1692,18 @@ def driver_prescription_to_candidate_fields(
     browser surface reads it from the design draft), so carrying it would be
     the speculative flexibility the paragraph above trims.
 
-    ``headroom_cost_db`` is the one omission that is a KNOWN GAP rather than a
-    true answer, and it is stated here because it became one when the bounded
-    boost route opened (#2754). What reaches the GRAPH is unaffected — the
-    charge that protects the speaker is computed by
-    ``camilla_yaml.linearization_headroom_db`` from the filters themselves and
-    absorbed by ``active_baseline_headroom``, and neither reads this key. What
-    is affected is the DISCLOSURE: ``worst_headroom_cost_db`` reduces this map
-    for the household-facing max-level cost, so a prescribed BOOST branch
-    currently reports 0.0 there and under-states what the correction costs in
-    maximum SPL. Carrying the replaced fit's number would be worse — it is that
-    fit's charge for filters that are no longer emitted — and deriving the
-    branch's own charge needs the crossover chain, which this pure merge does
-    not have and should not grow. Tracked as issue #2759.
+    ``headroom_cost_db`` is the one omission this function does not OWN: the
+    entries it returns carry no charge, and
+    :func:`~.planning.build_candidate` stamps one onto every prescribed role
+    before the map reaches a candidate (#2759). The split is that a charge is a
+    property of the emitted CHAIN — filters, crossover sections, committed trim
+    — and this is a pure function over a document and a fitted map, which holds
+    the first of those three. Carrying the replaced fit's number instead would
+    be worse than omitting it: it is that fit's charge for filters that are no
+    longer emitted. So a caller that folds these entries onto a candidate
+    WITHOUT charging them discloses 0.0 through ``worst_headroom_cost_db`` for
+    a branch that genuinely spends maximum SPL — which is what a prescribed
+    BOOST does once the bounded boost route is open (#2754).
 
     ``{}`` for a ``None`` prescription, whatever ``fitted`` holds: with no
     document there is nothing to merge, and the fit reaches the candidate by its

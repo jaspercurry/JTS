@@ -4722,18 +4722,27 @@ def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
     """D3/D4's era stamp, at the only place that can honestly write it.
 
     A candidate this function serializes was built by THIS process, so its
-    per-fit charges are the post-#1808 realized-peak rule by construction. The
-    stamp is recorded here rather than inferred downstream because nothing on a
-    persisted fit distinguishes the two derivations."""
+    per-fit charges are the CURRENT rule by construction. The stamp is recorded
+    here rather than inferred downstream because nothing on a persisted fit
+    distinguishes the derivations.
+
+    The value moved with #2758: the realized peak is now evaluated over the
+    whole domain, and that era can read SMALLER than a ``realized_peak`` stamp
+    for the same filters — the one direction the earlier eras never had — so it
+    needs its own name rather than riding the old one."""
     from jasper.active_speaker.linearization_fit import (
         HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
     )
 
     conductor = _closed_cloud_conductor()
     v2host.persist_conductor_state(conductor, failure_code=None)
 
     candidate = v2host.load_v2_state()["candidate"]
-    assert candidate["headroom_cost_basis"] == HEADROOM_COST_BASIS_REALIZED_PEAK
+    assert candidate["headroom_cost_basis"] == (
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
+    )
+    assert candidate["headroom_cost_basis"] != HEADROOM_COST_BASIS_REALIZED_PEAK
     assert isinstance(candidate["headroom_cost_db"], float)
 
 

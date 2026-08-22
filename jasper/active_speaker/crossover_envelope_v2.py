@@ -347,12 +347,15 @@ def _headroom_cost_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
     """``{"db": float|None, "basis": str}`` — the correction's disclosed
     max-level cost, inseparable from the era that stamped it (D4 / #1808).
 
-    ``basis`` is :data:`~jasper.active_speaker.linearization_fit
-    .HEADROOM_COST_BASIS_REALIZED_PEAK` for a candidate persisted by a build
-    that records one, and ``unknown`` for anything older — the persisted
-    absence is the only evidence of era there is, and it is read as unknown
-    rather than assumed current. A renderer must say so; "costs 22.5 dB" and
-    "costs an amount measured a way we no longer use" are different sentences.
+    ``basis`` is whichever stamped era the candidate carries
+    (:data:`~jasper.active_speaker.linearization_fit.HEADROOM_COST_BASIS_*`),
+    passed through rather than collapsed: the two peak eras disagree in the
+    direction #2758 opened — a narrower grid could read SMALLER than today's
+    charge — so telling them apart is the whole reason the field exists.
+    Anything else is ``unknown``, including an absence, which is the only
+    evidence of a pre-#1808 era there is and is read rather than assumed
+    current. A renderer must say so; "costs 22.5 dB" and "costs an amount
+    measured a way we no longer use" are different sentences.
 
     ``db`` is ``None`` — not ``0.0`` — when the stored value is missing or
     unusable. Zero is a real, common answer here (every cut-only correction
@@ -361,17 +364,18 @@ def _headroom_cost_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
     """
     from .linearization_fit import (
         HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
         HEADROOM_COST_BASIS_UNKNOWN,
     )
 
     basis = candidate.get("headroom_cost_basis")
+    known = (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
+    )
     return {
         "db": _finite(candidate.get("headroom_cost_db")),
-        "basis": (
-            HEADROOM_COST_BASIS_REALIZED_PEAK
-            if basis == HEADROOM_COST_BASIS_REALIZED_PEAK
-            else HEADROOM_COST_BASIS_UNKNOWN
-        ),
+        "basis": str(basis) if basis in known else HEADROOM_COST_BASIS_UNKNOWN,
     }
 
 

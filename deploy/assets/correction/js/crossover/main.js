@@ -354,10 +354,20 @@ function renderCandidateReview(review) {
   // same correction now costs ~5 — an order of magnitude, on the one screen
   // whose purpose is honesty. An `unknown` basis therefore gets a sentence
   // saying so rather than a figure presented as current.
+  //
+  // A SET, not an equality, and that is what #2758 taught: the widened
+  // evaluation grid minted `realized_peak_full_domain`, and an equality
+  // against the one older name would have told the household that every FRESH
+  // correction was "measured a way JTS no longer uses". Both realized-peak
+  // eras are a measured charge for the emitted chain and read plainly here;
+  // only the sum-of-positives era (which reaches this payload as `unknown`)
+  // gets the caveat. A NEW era must be added here deliberately — which is the
+  // point of listing them.
   const headroom = review.headroom_cost;
+  const MEASURED_HEADROOM_BASES = ['realized_peak', 'realized_peak_full_domain'];
   if (headroom && typeof headroom.db === 'number') {
     details.push(
-      headroom.basis === 'realized_peak'
+      MEASURED_HEADROOM_BASES.includes(headroom.basis)
         ? `costs ${headroom.db.toFixed(1)} dB of maximum volume`
         : `costs ${headroom.db.toFixed(1)} dB of maximum volume, measured a ` +
           'way JTS no longer uses — re-measure for a current figure',

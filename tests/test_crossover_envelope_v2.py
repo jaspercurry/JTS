@@ -2296,6 +2296,39 @@ def test_candidate_review_carries_the_headroom_cost_with_the_era_that_stamped_it
     }
 
 
+def test_every_stamped_era_reaches_the_renderer_by_its_own_name():
+    """#2758 minted a THIRD basis, and the reader must pass each through rather
+    than collapse the two peak eras.
+
+    They disagree in the direction the earlier eras never had — a
+    ``realized_peak`` stamp can read SMALLER than re-emitting the same filters
+    charges today — so telling them apart is the whole reason the field exists.
+    An unrecognised value still reads ``unknown``: absent-means-unknown extends
+    to "a name this build does not know", never to "assume current".
+    """
+    from jasper.active_speaker.linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
+        HEADROOM_COST_BASIS_UNKNOWN,
+    )
+
+    def _basis_for(stamped: str) -> str:
+        env = build_crossover_envelope_v2(_status(
+            phase="done", verify={"outcome": "pass"},
+            candidate=_candidate_summary(
+                headroom_cost_db=5.2, headroom_cost_basis=stamped,
+            ),
+        ))
+        return env["candidate_review"]["headroom_cost"]["basis"]
+
+    for stamped in (
+        HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
+    ):
+        assert _basis_for(stamped) == stamped
+    assert _basis_for("some_era_from_the_future") == HEADROOM_COST_BASIS_UNKNOWN
+
+
 def test_a_pre_amendment_headroom_cost_never_renders_bare():
     """D3's cross-era rule, pinned structurally rather than by convention.
 

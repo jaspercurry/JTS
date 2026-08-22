@@ -4343,6 +4343,63 @@ number than re-emitting it would charge today — ~22.5 dB vs ~5 on the
 2026-07-28 JTS3 profile. The stamp is deliberately not re-derived on load
 (it records what that graph was emitted with); a recommission replaces it.
 
+**Reading one from before the 2026-08-22 grid widening (#2758) — and the new
+direction.** There are now THREE eras, named by the `headroom_cost_basis`
+stamped beside the number
+(`linearization_fit.HEADROOM_COST_BASIS_*`):
+
+| basis | era | how it can be wrong today |
+|---|---|---|
+| absent → `unknown` | before #1808 | over-states, often by an order (sum of positive gains) |
+| `realized_peak` | #1808 → #2758 | realized peak on a 20 Hz – 20 kHz grid |
+| `realized_peak_full_domain` | #2758 onward | realized peak, whole evaluated domain |
+
+The middle era is the one to read carefully, because it can be wrong in the
+direction the earlier ones never were: its grid had no sample between 20 kHz
+and Nyquist (or below 20 Hz), so a mixed-sign cascade peaking there was
+under-read. A `realized_peak` stamp can therefore be **smaller** than
+re-emitting the identical filters charges today — 1.8596 dB stamped against
+7.8305 dB charged, on the cascade #2758 was filed for.
+
+That matters for a reader, not only for an archivist. `sections_by_role`'s
+docstring calls "a disclosure smaller than its own charge" the impossible
+direction; that sentence is about the role → sections derivation it describes,
+and is not a claim about a stamp read across this boundary. And the pairing is
+reachable rather than theoretical: the republish path stamps
+`headroom_cost_basis` unconditionally, so a candidate reopened after the deploy
+carries a current-era basis beside per-branch numbers stamped under the old
+grid. **Trust the basis, not the neighbourhood.**
+
+**Migration.** A graph already on hardware re-proves against the allowance
+baked into its own bytes, and the condition is the runtime's, not the margin
+alone: `peak_new <= headroom_charge_db(peak_old) + 1e-3`. Two classes come out
+of that:
+
+- **The ordinary chain.** `headroom_charge_db` is peak + `HEADROOM_MARGIN_DB`,
+  so it has the full 1.0 dB of room. Over a corpus of chains the pre-#2758 gate
+  would have admitted, sampled at the fit engine's own per-filter rail, the
+  worst move measures 0.3101 dB at the seed
+  `test_a_graph_the_old_gate_accepted_still_proves_after_the_widening` pins.
+  A more clustered population runs higher — all filters within ±5 % of one
+  centre at the same rails reaches 0.3143 dB — and a wider search may find more,
+  which is why the runtime guard below is the backstop and that corpus is
+  evidence rather than a proof over the whole space.
+- **The near-unity chain.** `headroom_charge_db` returns **0.0** at or under
+  `_PEAK_EPS_DB` (0.01 dB) — a chain that never exceeded unity was charged
+  nothing — so its tolerance is the 1e-3 float slack, not 1.0 dB. This class is
+  MOST of that corpus (~80 % at the pinned seed; the trims put a majority under
+  unity), and what it does is a separate fact: **no** member of it refuses at
+  that seed, and the test caps refusals at 2 % rather than forbidding them,
+  because at a 1e-3 tolerance a future sampler will find some.
+
+Both refusals, and the two cascades whose peak lived in the old grid's hole,
+land in the same place: the graph stops proving,
+`safe_graph_for_current_topology` **refuses** rather than silently selecting the
+all-muted startup graph (which would be a green deploy onto a silent speaker),
+and the remedy is `jasper-active-speaker baseline-reemit` — not a recommission.
+Having the deploy run that re-emit itself is issue #2847; until then a refused
+box is left with its renderers parked, which is loud on purpose.
+
 #### Per-capture diagnostics — every capture logs its numbers
 
 Before this, `event=correction.crossover_v2_result` carried only

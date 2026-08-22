@@ -1681,6 +1681,24 @@ def _baseline_gain_limiter_safe(
 # is correct by construction from failing its own proof on the last digit.
 _LINEARIZATION_BOOST_EPS_DB: float = 1e-3
 
+#: The one NUMERIC refusal in this walk, named apart from the shape refusals.
+#:
+#: Public because two other seams key on it rather than re-deriving the
+#: condition: ``safe_graph_for_current_topology`` refuses to fall silently past
+#: an active graph that carries it (#2758's migration shape), and the deploy
+#: transcript prints it. A shape refusal says the graph is not the emitter's;
+#: this one says the graph IS the emitter's and its arithmetic no longer holds,
+#: which is a different sentence with a different remedy (re-emit, not
+#: re-commission).
+LINEARIZATION_HEADROOM_UNPROVEN_CODE = "active_linearization_headroom_unproven"
+
+#: Journal name for the same event. A grep contract, so a rename is visible as
+#: one — this module says almost nothing on its own logger, and a numeric
+#: refusal that leaves no trace is how a silent speaker gets diagnosed twice.
+EVENT_LINEARIZATION_HEADROOM_UNPROVEN = (
+    "active_speaker.linearization_headroom_unproven"
+)
+
 
 def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     """How much branch-chain peak THIS graph has already paid for.
@@ -1779,15 +1797,17 @@ def _linearization_chain_peak_db(
     filters: Sequence[Mapping[str, Any]],
     crossovers: Sequence[tuple[str, str]],
     gain_name: str,
-) -> float:
-    """The realized peak of this branch's emitted chain, dB — re-derived from
-    the graph, never from the candidate that produced it (#1808).
+) -> tuple[float, float]:
+    """The realized peak of this branch's emitted chain — ``(dB, Hz)``,
+    re-derived from the graph, never from the candidate that produced it
+    (#1808).
 
     ``crossover ⊗ linearization ⊗ trim``, the same three terms and the same
-    :func:`jasper.active_speaker.branch_chain.branch_chain_peak_db` the
+    :func:`jasper.active_speaker.branch_chain.branch_chain_peak` the
     emitter charges ``active_baseline_headroom`` with, so a graph that is
     correct by construction cannot fail its own proof on a modelling
-    difference. Every input comes from the payload: the Linkwitz-Riley
+    difference. The frequency rides along so a refusal can NAME where the
+    chain peaks rather than only how high. Every input comes from the payload: the Linkwitz-Riley
     corner/order out of the named BiquadCombos this walk already validated,
     the biquad params out of the named linearization filters, and the trim out
     of the branch's baseline Gain.
@@ -1795,7 +1815,7 @@ def _linearization_chain_peak_db(
     A trim that is absent or unreadable is treated as 0 dB (no credited
     attenuation), which over-states the peak — the safe direction for a proof.
     """
-    from .branch_chain import CrossoverSection, branch_chain_peak_db
+    from .branch_chain import CrossoverSection, branch_chain_peak
 
     sections: list[CrossoverSection] = []
     for direction, name in crossovers:
@@ -1810,7 +1830,7 @@ def _linearization_chain_peak_db(
             )
         )
     trim_db = _strict_finite_number(_filter_params(payload, gain_name).get("gain"))
-    return branch_chain_peak_db(
+    return branch_chain_peak(
         filters,
         sections=tuple(sections),
         trim_db=min(0.0, float(trim_db)) if trim_db is not None else 0.0,
@@ -1865,6 +1885,7 @@ def _consume_linearization_chain(
     role: str,
     *,
     crossovers: Sequence[tuple[str, str]] = (),
+    notes: list[dict[str, str]] | None = None,
 ) -> tuple[int, bool]:
     """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
     linearization run (#1668) for ``role``: an optional named leading shelf
@@ -1885,6 +1906,16 @@ def _consume_linearization_chain(
     ``classify_bass_extension_graph``) or their ~8 external callers the way
     ``bass_profile_summary`` does — this stays a purely-local addition to
     ``_baseline_output_chain``.
+
+    ``notes`` is an optional sink for the ONE refusal a caller cannot
+    reconstruct from a bare ``False``: the headroom proof is a NUMERIC
+    comparison, and its failure used to surface only as the caller's
+    ``active_output_driver_chain_unrecognized`` — "does not use the exact
+    ordered emitter chain", when the order was right and the arithmetic was
+    not. An issue appended here carries the peak, the allowance and the
+    FREQUENCY, so the operator reads what failed instead of inferring it. It
+    is a sink rather than a return value because every other refusal in this
+    walk is honestly a shape refusal and needs no words.
 
     Returns ``(new_cursor, ok)``. ``ok`` is False iff a recognized
     linearization-named filter proves UNSAFE (wrong Biquad subtype for its
@@ -1963,13 +1994,32 @@ def _consume_linearization_chain(
     # importing numpy, which it otherwise does not (see branch_chain).
     if not any(float(entry["gain"]) > 0.0 for entry in emitted):
         return index, True
-    peak_db = _linearization_chain_peak_db(
+    peak_db, peak_hz = _linearization_chain_peak_db(
         payload,
         filters=emitted,
         crossovers=crossovers,
         gain_name=_baseline_gain_name(role),
     )
     if peak_db > allowance_db + _LINEARIZATION_BOOST_EPS_DB:
+        detail = (
+            f"{role} linearization chain peaks {peak_db:.4f} dB at "
+            f"{peak_hz:.1f} Hz, past the {allowance_db:.4f} dB this graph set "
+            "aside for it ahead of the split; the chain's ORDER is correct and "
+            "the headroom arithmetic is what failed"
+        )
+        log_event(
+            logger,
+            EVENT_LINEARIZATION_HEADROOM_UNPROVEN,
+            level=logging.WARNING,
+            role=role,
+            peak_db=round(peak_db, 4),
+            peak_hz=round(peak_hz, 1),
+            allowance_db=round(allowance_db, 4),
+        )
+        if notes is not None:
+            notes.append(_issue(
+                "blocker", LINEARIZATION_HEADROOM_UNPROVEN_CODE, detail,
+            ))
         return index, False
     return index, True
 
@@ -1981,8 +2031,14 @@ def _baseline_output_chain(
     channel: int,
     bass_management_highpass: bool,
     bass_extension: bool = False,
+    notes: list[dict[str, str]] | None = None,
 ) -> tuple[tuple[str, str], ...] | None:
-    """Prove the exact emitter-owned chain before the canonical limiter."""
+    """Prove the exact emitter-owned chain before the canonical limiter.
+
+    ``notes`` is handed straight to :func:`_consume_linearization_chain`, the
+    one refusal here that is arithmetic rather than shape — see its docstring.
+    Every other ``None`` this returns genuinely means "not the emitter's
+    chain", which the caller's own issue already says."""
 
     names = _post_split_filter_names(payload, channel=channel)
     if assignment.role == "subwoofer":
@@ -2054,7 +2110,8 @@ def _baseline_output_chain(
     # linearization SHOULD be here" evidence needs threading through this
     # module's callers the way bass_extension's boolean does).
     cursor, linearization_ok = _consume_linearization_chain(
-        chain, cursor, payload, assignment.role, crossovers=tuple(crossovers),
+        chain, cursor, payload, assignment.role,
+        crossovers=tuple(crossovers), notes=notes,
     )
     if not linearization_ok:
         return None
@@ -3075,6 +3132,7 @@ def _active_graph_evidence(
                 if role == "subwoofer"
                 else _baseline_limiter_name(role)
             )
+            chain_notes: list[dict[str, str]] = []
             crossovers = _baseline_output_chain(
                 payload,
                 assignment=assignment,
@@ -3083,16 +3141,26 @@ def _active_graph_evidence(
                     contract.subwoofer_present and index in mains_low_outputs
                 ),
                 bass_extension=index in bass_owner_channels,
+                notes=chain_notes,
             )
             if crossovers is None:
-                issues.append(_issue(
-                    "blocker",
-                    "active_output_driver_chain_unrecognized",
-                    (
-                        "active graph does not use the exact ordered emitter "
-                        f"chain on DAC output {index + 1} ({role})"
-                    ),
-                ))
+                # The NUMERIC refusal reports itself, with the peak, the
+                # allowance and the frequency; only fall back to the shape
+                # sentence when the shape is genuinely what failed. Saying both
+                # would put "does not use the exact ordered emitter chain" next
+                # to an arithmetic failure and send the reader after the wrong
+                # defect — which is exactly what this walk did before #2758.
+                if chain_notes:
+                    issues.extend(chain_notes)
+                else:
+                    issues.append(_issue(
+                        "blocker",
+                        "active_output_driver_chain_unrecognized",
+                        (
+                            "active graph does not use the exact ordered emitter "
+                            f"chain on DAC output {index + 1} ({role})"
+                        ),
+                    ))
             else:
                 prior = crossovers_by_role.setdefault(role, crossovers)
                 if prior != crossovers:
@@ -4623,6 +4691,38 @@ def parked_safe_graph_decision(
     )
 
 
+def _linearization_headroom_regression(
+    *graphs: GraphSafety | None,
+) -> tuple[dict[str, str], ...]:
+    """The numeric headroom refusals carried by any of ``graphs``.
+
+    Empty whenever none of them failed THAT way — which includes every graph
+    that is allowed, every graph refused on shape, and the absent-graph case.
+    So a caller can ask "did this box's own active graph regress on the
+    headroom arithmetic?" without re-deriving the condition, and a new refusal
+    reason cannot silently start firing a migration guard written for this one.
+
+    DE-DUPLICATED, order-preserving, because on a commissioned box the two
+    graphs asked here are usually the SAME FILE: the applied-baseline authority
+    points at the artifact the statefile already loads, so both classifications
+    carry the identical refusal and the deploy transcript printed every blocker
+    twice. Keyed on the whole issue rather than on the code, so two branches
+    that genuinely both regressed still report one line each — the message
+    names the role and the numbers, which is exactly what a reader needs when
+    the woofer and the tweeter fail differently.
+    """
+    seen: list[dict[str, str]] = []
+    for graph in graphs:
+        if graph is None:
+            continue
+        for issue in graph.issues:
+            if issue.get("code") != LINEARIZATION_HEADROOM_UNPROVEN_CODE:
+                continue
+            if issue not in seen:
+                seen.append(issue)
+    return tuple(seen)
+
+
 def safe_graph_for_current_topology(
     topology: OutputTopology | None = None,
     *,
@@ -4908,6 +5008,41 @@ def safe_graph_for_current_topology(
         **authority,
     )
     staged_path = staged_graph.config_path
+    # A commissioned box whose OWN boot graph stopped proving on the headroom
+    # arithmetic must not be quietly re-pointed at the all-muted startup graph
+    # (#2758). That fall is legal — the staged graph really is safe — and it is
+    # exactly what makes it dangerous here: the deploy stays GREEN, the speaker
+    # goes SILENT, and it is sticky, because the next deploy preserves the
+    # all-muted graph it just selected and nothing on the deploy path re-emits
+    # the baseline. Refuse instead, carrying the numbers, so a human is
+    # summoned to `baseline-reemit` rather than a household discovering it.
+    # Having the DEPLOY run that re-emit itself is issue #2847; this is the
+    # half that makes the failure loud, which is the half that has to exist.
+    #
+    # Narrow on purpose, and each clause earns its place. Only the NUMERIC
+    # refusal (`LINEARIZATION_HEADROOM_UNPROVEN_CODE`) fires it: a shape refusal
+    # is a different defect with a different remedy, and every OTHER reason a
+    # box lands on the staged anchor — mid-commission with no baseline at all,
+    # or the #2814 identity-unconfirmed hold, where the graph stays `allowed`
+    # and is skipped rather than refused — is a state this ladder is SUPPOSED
+    # to resolve silently and green.
+    regressed = _linearization_headroom_regression(current_graph, preferred_graph)
+    if regressed:
+        return SafeGraphDecision(
+            status="blocked",
+            selected_config_path=None,
+            reason=(
+                "the active-speaker graph this box boots no longer proves its "
+                "own headroom charge; selecting the all-muted startup graph "
+                "would silence the speaker on a green deploy. Re-emit the "
+                "baseline (`jasper-active-speaker baseline-reemit`) and re-run"
+            ),
+            topology_contract=contract,
+            current_graph=current_graph,
+            preferred_graph=preferred_graph,
+            fallback_graph=staged_graph,
+            issues=tuple(regressed),
+        )
     if (
         staged_graph
         and staged_graph.allowed

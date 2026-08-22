@@ -22,6 +22,11 @@ from jasper.active_speaker.branch_chain import (
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
     CrossoverSection,
+    _GRID_EDGE_HI_HZ,
+    _GRID_EDGE_LO_HZ,
+    _PEAK_EPS_DB,
+    _evaluation_grid,
+    branch_chain_peak,
     branch_chain_peak_db,
     branch_headroom_db,
     chain_response,
@@ -32,6 +37,12 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
+# The runtime re-proof's own float slack, imported rather than restated so the
+# migration corpus asserts the condition the contract actually applies.
+from jasper.active_speaker.runtime_contract import (
+    _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
+)
+from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 # --------------------------------------------------------------------------- #
 # the 2026-07-28 JTS3 profile, verbatim
@@ -398,15 +409,337 @@ def test_charge_above_unity_is_peak_plus_margin():
     assert headroom_charge_db(4.0) == pytest.approx(4.0 + HEADROOM_MARGIN_DB)
 
 
-def test_the_grid_spans_the_audio_band_the_contract_must_police():
+def test_the_grid_spans_the_whole_domain_the_peak_is_taken_over():
     """Deliberately wider than the fit's own 150 Hz-floored envelope grid: the
     runtime contract reads this against a graph it does not trust, and a grid
-    that starts at 150 Hz cannot see a boost tampered in at 60 Hz."""
-    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(20.0)
-    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(20_000.0)
+    that starts at 150 Hz cannot see a boost tampered in at 60 Hz.
+
+    Wider than the AUDIO band too, and that half is #2758: the background
+    sampling has to reach both domain edges, because appending the edges
+    themselves bounds a monotonic shelf's asymptote and nothing else.
+    """
+    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(_GRID_EDGE_LO_HZ)
+    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(_GRID_EDGE_HI_HZ)
     assert branch_chain_peak_db(
         (_peaking(60.0, 2.0, 5.0),)
     ) == pytest.approx(5.0, abs=0.05)
+
+
+def test_the_background_stays_at_one_forty_eighth_of_an_octave():
+    """The span widened; the resolution the tamper-hardening rests on did not.
+
+    Pinned because :data:`CHAIN_GRID_HZ`'s point count is now DERIVED from the
+    edges, so a moved edge silently changes the spacing every between-bin bound
+    below is measured at.
+    """
+    steps = np.diff(np.log2(np.asarray(CHAIN_GRID_HZ)))
+    assert float(np.max(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
+    assert float(np.min(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("filters", "sections", "sweep_hz", "was_read_db"),
+    [
+        pytest.param(
+            (_peaking(20_000.0, 0.5, 3.0),) * 5 + (_peaking(18_182.0, 1.0, -8.0),) * 3,
+            (CrossoverSection(1600.0, 4, highpass=True),),
+            (15_000.0, _GRID_EDGE_HI_HZ),
+            0.8596,
+            id="ultrasonic",
+        ),
+        pytest.param(
+            (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3,
+            (CrossoverSection(1600.0, 4, highpass=False),),
+            (_GRID_EDGE_LO_HZ, 60.0),
+            1.4733,
+            id="subsonic",
+        ),
+    ],
+)
+def test_a_cascade_peaking_outside_the_audio_band_is_charged_for_it(
+    filters, sections, sweep_hz, was_read_db,
+):
+    """#2758: a MIXED-SIGN cascade's extremum can sit outside the hull of its
+    own centres AND outside the audio band, where a 20 Hz - 20 kHz background
+    grid had no sample at all.
+
+    Both cases are on the shipped tweeter/woofer bands behind a real 1600 Hz
+    LR4 section. The ultrasonic one measured 6.8728 dB realized against a
+    0.8596 dB reading — under-READ by 6.0132 dB and so under-CHARGED by 5.0132
+    against a 1.0 dB margin, with clipping products at 21.5 kHz aliasing back
+    into the audible band. ``was_read_db`` is what the narrower grid returned,
+    asserted as a floor the reading has cleared rather than left as prose.
+
+    Graded against a dense sweep of the neighbourhood, so what is pinned is the
+    distance to the CONTINUOUS maximum rather than to another sampling of it.
+    """
+    dense = np.geomspace(*sweep_hz, 400_000)
+    true_peak_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+        + crossover_response_db(dense, sections)
+    ))
+    read_db = branch_chain_peak_db(filters, sections=sections)
+
+    assert read_db > was_read_db + 1.0, "the grid still has the hole"
+    assert true_peak_db - read_db < 0.07
+    assert branch_headroom_db(filters, sections=sections) > true_peak_db
+
+
+def test_a_filter_centred_in_the_nyquist_sliver_is_read_at_its_full_gain():
+    """The 4.8 Hz between ``_GRID_EDGE_HI_HZ`` and Nyquist is a place a filter
+    can SIT, and the background grid's top is not a bound on that.
+
+    The bilinear prewarp compresses frequency without bound approaching
+    Nyquist, so this filter delivers its whole +12 dB at 23999 Hz while
+    measuring 0.0120 dB at 23995.2 — clamping the centre to the edge (the
+    tempting one-line fix) still reads 0.0120 and still proves a graph SAFE
+    that is charged nothing for 12 dB. Only unioning the centre at its OWN
+    frequency closes it.
+    """
+    sliver = (_peaking(23_999.0, 8.0, 12.0),)
+
+    assert _GRID_EDGE_HI_HZ < 23_999.0 < 0.5 * RESPONSE_SAMPLE_RATE_HZ
+    assert branch_chain_peak_db(sliver) == pytest.approx(12.0, abs=1e-6)
+    # ...and the edge sample alone is the under-read this closes, so the pin
+    # cannot pass by the grid happening to be dense up there.
+    assert float(np.max(20.0 * np.log10(np.abs(
+        chain_response(sliver, np.asarray([_GRID_EDGE_HI_HZ]))
+    )))) < 0.05
+
+
+def test_a_centre_above_nyquist_is_read_by_the_background_it_mirrors_into():
+    """The other side of the same boundary, pinned so the rule above is not
+    mistaken for "clamp everything".
+
+    Above Nyquist the digital response MIRRORS: a filter declared at 30 kHz
+    peaks at 18 kHz, inside the band, where the 1/48-octave background already
+    reads it. Left to that background deliberately — measured within 0.103 dB,
+    the same order as the ordinary between-sample residue.
+    """
+    above = (_peaking(30_000.0, 8.0, 12.0),)
+    assert branch_chain_peak_db(above) == pytest.approx(12.0, abs=0.11)
+
+
+def test_the_peak_accessor_names_where_the_chain_peaks():
+    """``branch_chain_peak`` is one evaluation reporting two facts, and the
+    frequency is the half a refusal cannot be acted on without."""
+    peak_db, peak_hz = branch_chain_peak(_ULTRASONIC_CASCADE, sections=_HP_1600)
+
+    assert peak_db == pytest.approx(branch_chain_peak_db(
+        _ULTRASONIC_CASCADE, sections=_HP_1600,
+    ))
+    assert peak_hz == pytest.approx(21_500.0, abs=200.0)
+    # The cut-only short-circuit evaluates no grid, so it has no frequency to
+    # name — nan rather than 0.0, which would read as DC.
+    assert math.isnan(branch_chain_peak((_peaking(1000.0, 2.0, -3.0),))[1])
+
+
+# --------------------------------------------------------------------------- #
+# MIGRATION: what the grid widening does to graphs already on hardware (#2758)
+# --------------------------------------------------------------------------- #
+#
+# A config emitted by the pre-#2758 build carries `active_baseline_headroom =
+# peak_old + HEADROOM_MARGIN_DB` in its own bytes, and the runtime contract
+# re-proves it with a RECOMPUTED peak. So the whole migration question is one
+# inequality: `peak_new - peak_old <= HEADROOM_MARGIN_DB`. Above it, a box that
+# was playing fine boots to a graph its own contract refuses.
+
+_OLD_CHAIN_GRID_HZ = np.geomspace(20.0, 20_000.0, 480)
+
+_HP_1600 = (CrossoverSection(1600.0, 4, highpass=True),)
+_ULTRASONIC_CASCADE = (
+    (_peaking(20_000.0, 0.5, 3.0),) * 5 + (_peaking(18_182.0, 1.0, -8.0),) * 3
+)
+_SUBSONIC_CASCADE = (
+    (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3
+)
+
+
+def _old_gate_composed_db(filters, band_hz):
+    """What the PRE-#2758 prescription gate read for these filters.
+
+    The gate's own `_composed_grid`, rebuilt on the old shared span — the
+    import is what makes this the gate's reading rather than a second opinion
+    about it.
+    """
+    from jasper.active_speaker.crossover_v2.driver_prescription import (
+        _COMPOSED_GRID_POINTS,
+    )
+
+    grid = _evaluation_grid(filters, np.concatenate([
+        _OLD_CHAIN_GRID_HZ, np.geomspace(band_hz[0], band_hz[1], _COMPOSED_GRID_POINTS),
+    ]))
+    return float(np.max(
+        20.0 * np.log10(np.maximum(np.abs(chain_response(filters, grid)), 1e-12))
+    ))
+
+
+def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
+    """Why the corpus above asserts the charge and not the margin.
+
+    ``headroom_charge_db`` is a STEP: 0.0 at or under :data:`_PEAK_EPS_DB`, and
+    peak + :data:`HEADROOM_MARGIN_DB` above it. So a chain that sat just under
+    unity was charged NOTHING, and its persisted allowance leaves it the
+    runtime's float slack — 1e-3 dB — before the re-proof refuses. Not the
+    1.0 dB every other chain gets.
+
+    A migration bound stated only as "moved less than the margin" is therefore
+    not the condition, and a corpus asserting it would call this class safe.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        _LINEARIZATION_BOOST_EPS_DB,
+    )
+
+    just_under = _PEAK_EPS_DB - 0.002
+    just_over = _PEAK_EPS_DB + 0.0001
+
+    assert headroom_charge_db(just_under) == 0.0
+    # A chain charged nothing has NEGATIVE room: any reading above unity at all
+    # is already past its own allowance plus the slack.
+    assert headroom_charge_db(just_under) + _LINEARIZATION_BOOST_EPS_DB < just_under
+    # One ten-thousandth of a dB higher and the step pays the whole margin.
+    assert headroom_charge_db(just_over) - just_over == pytest.approx(
+        HEADROOM_MARGIN_DB
+    )
+
+
+def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
+    """**The migration bound, over a corpus rather than an anecdote.**
+
+    Every chain here is one the OLD composed gate would have ADMITTED — the
+    population that is actually on hardware — at the FIT ENGINE's own rails
+    (``PER_FILTER_BOOST_CAP_DB``, Q <= 8, <= 8 filters in the shipped tweeter
+    band), because the fit emits to hardware too and its per-filter rail is
+    four times the prescription class's.
+
+    **The condition asserted here is the RUNTIME's, not a paraphrase of it.**
+    The re-proof compares ``peak_new > headroom_charge_db(peak_old) + 1e-3``,
+    and ``headroom_charge_db`` returns 0.0 for any chain at or under
+    :data:`_PEAK_EPS_DB` — so near unity the tolerance is 1e-3, NOT the 1.0 dB
+    margin. A chain peaking at +0.008 dB emits an allowance of 0.000000 and
+    refuses at +0.0099. Asserting the margin alone would have called that
+    class safe.
+
+    So: every chain carrying a REAL charge must still prove, and the near-unity
+    class is counted rather than waved at. Any that refuse do so into the SF-1
+    blocked-deploy path, which names ``baseline-reemit`` — the correct
+    direction, loudly.
+
+    **Two different quantities, kept apart.** The near-unity CLASS is most of
+    this corpus — 184 of 230 accepted chains at this seed, ~80 %, because the
+    -6..0 dB trims put a majority under unity. What that class does is a
+    separate fact: ZERO of them refuse at this seed, and the assertion below
+    caps refusals at 2 % rather than forbidding them, because the tolerance up
+    there is 1e-3 dB and a future sampler will find some.
+
+    Numbers are MEASURED AT THIS SEED and are not what the assertions pin: the
+    worst move here is 0.3101 dB against a 1.0 dB margin. A more CLUSTERED
+    population runs higher — drawing all filters within ±5 % of one centre at
+    the same rails reaches 0.3143 dB — and a wider search than any run here may
+    find more still. That is why the runtime guard is the backstop and this
+    corpus is evidence, not a proof over the whole space.
+    """
+    from jasper.active_speaker.crossover_v2.driver_prescription import (
+        DRIVER_MAX_COMPOSED_BOOST_DB,
+        DRIVER_MAX_FILTERS_PER_ROLE,
+    )
+    from jasper.active_speaker.linearization_fit import PER_FILTER_BOOST_CAP_DB
+
+    band = (1600.0, 20_000.0)
+    rng = np.random.default_rng(2758)
+    accepted = 0
+    worst = 0.0
+    near_unity_refusals = 0
+    for _ in range(1200):
+        filters = [
+            _peaking(
+                float(np.exp(rng.uniform(np.log(band[0]), np.log(band[1])))),
+                float(rng.uniform(0.5, 8.0)),
+                float(rng.uniform(
+                    -PER_FILTER_BOOST_CAP_DB, PER_FILTER_BOOST_CAP_DB
+                )),
+            )
+            for _ in range(int(rng.integers(1, DRIVER_MAX_FILTERS_PER_ROLE + 1)))
+        ]
+        if not any(f["gain"] > 0.0 for f in filters):
+            continue
+        if _old_gate_composed_db(filters, band) > DRIVER_MAX_COMPOSED_BOOST_DB:
+            continue  # the old gate refused it, so it is not on any hardware
+        accepted += 1
+        trim_db = float(rng.uniform(-6.0, 0.0))
+        old = branch_chain_peak_db(
+            filters, sections=_HP_1600, trim_db=trim_db,
+            grid_hz=_OLD_CHAIN_GRID_HZ,
+        )
+        new = branch_chain_peak_db(filters, sections=_HP_1600, trim_db=trim_db)
+        worst = max(worst, new - old)
+        proves = new <= headroom_charge_db(old) + _RUNTIME_BOOST_EPS_DB
+        if old > _PEAK_EPS_DB:
+            assert proves, (
+                f"a graph the old gate accepted peaks {new:.4f} dB against the "
+                f"{headroom_charge_db(old):.4f} dB its own bytes set aside — it "
+                "would boot to a graph its own runtime contract refuses"
+            )
+        elif not proves:
+            near_unity_refusals += 1
+
+    assert accepted > 150, "the corpus must actually contain admissible chains"
+    assert worst <= HEADROOM_MARGIN_DB, (
+        f"a chain moved {worst:.4f} dB, past the {HEADROOM_MARGIN_DB} dB margin"
+    )
+    # Bounded, not forbidden: a chain sitting AT unity was charged nothing, so
+    # any upward movement at all refuses it. Zero at this seed; the cap is 2 %
+    # so a sampler that finds one does not read as a regression, and the SF-1
+    # path is what makes each of them loud.
+    assert near_unity_refusals <= accepted // 50
+
+
+@pytest.mark.parametrize(
+    ("filters", "sweep_hz"),
+    [
+        pytest.param(_ULTRASONIC_CASCADE, (15_000.0, _GRID_EDGE_HI_HZ), id="ultrasonic"),
+        pytest.param(_SUBSONIC_CASCADE, (_GRID_EDGE_LO_HZ, 60.0), id="subsonic"),
+    ],
+)
+def test_the_two_cascades_are_knowingly_refused_and_recovered_by_re_emit(
+    filters, sweep_hz,
+):
+    """The documented exception to the bound above, and its remedy — pinned as
+    BEHAVIOUR rather than left as a paragraph.
+
+    These two are the graphs the widening is FOR: their peak was never in the
+    old grid at all, so the reading moves further than the margin and a graph
+    carrying one legitimately stops proving. That is the fix working. What
+    makes it survivable is that re-emitting the SAME filters charges the new,
+    honest number, which re-proves with the margin intact — so the migration
+    path is `baseline-reemit`, not re-commissioning.
+
+    ``safe_graph_for_current_topology`` is what refuses to take such a box
+    silently to the all-muted graph in the meantime; that half is pinned in
+    ``test_active_speaker_runtime_contract``.
+    """
+    sections = _HP_1600 if sweep_hz[0] > 100.0 else (
+        CrossoverSection(1600.0, 4, highpass=False),
+    )
+    dense = np.geomspace(*sweep_hz, 200_000)
+    truth_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+        + crossover_response_db(dense, sections)
+    ))
+
+    old_allowance_db = branch_headroom_db(
+        filters, sections=sections, grid_hz=_OLD_CHAIN_GRID_HZ,
+    )
+    new_peak_db = branch_chain_peak_db(filters, sections=sections)
+    new_allowance_db = branch_headroom_db(filters, sections=sections)
+
+    # 1. The old bytes no longer prove: the recomputed peak is past what they
+    #    set aside. Knowingly — that IS the under-charge #2758 closes.
+    assert new_peak_db > old_allowance_db
+    # 2. Re-emitting the same filters charges the honest number, which covers
+    #    the true continuous peak with the margin intact.
+    assert new_allowance_db > truth_db
+    assert new_allowance_db - truth_db < HEADROOM_MARGIN_DB
 
 
 # --------------------------------------------------------------------------- #
