@@ -13,16 +13,31 @@ tagged ``domain="deconvolved"`` / ``source.kind="signal_bounded_pre_sweep_quiet"
 (see ``test_active_speaker_driver_acoustics.py``). A repo-wide grep for the two
 literal values (``pending_signal_boundary``, ``controlled_pre_sweep``) across
 every ``.py``/``.js``/``.md``/``.yml``/``.json`` file found no reader anywhere
-outside this function's own writer — they were write-only. This module pins:
+outside this function's own writer — they were write-only.
 
-  - the trimmed return shape (no ``domain``/``source`` keys)
+Adversarial review (gate on PR #2834) found the same dishonesty class in the
+remaining ``"method": "paired_signal_window_deconvolution"`` field: it is read
+only inside ``if noise_domain == "deconvolved":`` branches
+(``driver_acoustics.py``'s two ``effective_noise_report.get("method")`` sites),
+the stub's ``domain`` is absent so ``unwrap_noise_report`` yields ``"raw"``, and
+the stub never even reaches ``unwrap_noise_report`` on the live path — both
+call sites in ``web_measurement.py`` (the single-capture path and the
+repeat-capture "winner" finalize path) force ``noise_band_report=None``
+whenever the stub exists. So ``method`` was equally write-only and is removed
+too. This module pins:
+
+  - the trimmed return shape (only ``schema_version`` / ``ambient_duration_s``
+    remain — no ``domain``, ``source``, or ``method``)
   - the validation behavior is unchanged (still raises / still returns
     ``None`` on a bad or undeclared duration)
-  - a report persisted by the OLD code (with the two removed fields) still
+  - a report persisted by the OLD code (with all three removed fields) still
     reads exactly the same as a NEW one through the one reader every real
     consumer actually goes through, ``snr_policy.unwrap_noise_report`` — it
     only ever compares ``domain`` against ``"deconvolved"`` and reads
-    ``.get("bands")``, so dropping the fields is not a migration.
+    ``.get("bands")``, so dropping the fields is not a migration
+  - ``method``'s presence or absence never changes ``unwrap_noise_report``'s
+    output, independent of ``domain``/``source`` — it isn't even a key that
+    function looks at
 """
 from __future__ import annotations
 
@@ -51,13 +66,16 @@ def test_stored_ambient_report_omits_the_removed_placeholder_fields(tmp_path):
         calibration=None,
         ambient_duration_s=3.0,
     )
+    # Only what something actually reads survives: ambient_duration_s is read
+    # back by the caller (raw["ambient_duration_s"]), schema_version mirrors
+    # the sibling "deconvolved" shape. domain/source/method are all gone.
     assert report == {
         "schema_version": 2,
-        "method": "paired_signal_window_deconvolution",
         "ambient_duration_s": 3.0,
     }
     assert "domain" not in report
     assert "source" not in report
+    assert "method" not in report
 
 
 def test_stored_ambient_report_still_raises_when_the_capture_is_too_short(tmp_path):
@@ -90,13 +108,14 @@ def test_a_legacy_stored_report_with_the_removed_fields_still_reads_as_no_bands(
     """A measurement recorded by the pre-ticket-2.13 code still parses.
 
     Its persisted ``acoustic.ambient`` block can still carry
-    ``domain="controlled_pre_sweep"`` / ``source.kind="pending_signal_boundary"``
-    on disk. Nothing requires migrating those records: the tolerant reader
-    every consumer goes through degrades a legacy record and a current one
-    (no ``domain``/``source`` at all) to the identical outcome — no band
-    evidence, "not deconvolved" — because it was already keyed only off
-    ``.get("bands")`` and an equality check against ``"deconvolved"``, never
-    off presence of ``domain``/``source`` or the specific placeholder values.
+    ``domain="controlled_pre_sweep"``, ``method="paired_signal_window_deconvolution"``,
+    and ``source.kind="pending_signal_boundary"`` on disk. Nothing requires
+    migrating those records: the tolerant reader every consumer goes through
+    degrades a legacy record and a current one (none of the three fields) to
+    the identical outcome — no band evidence, "not deconvolved" — because it
+    was already keyed only off ``.get("bands")`` and an equality check
+    against ``"deconvolved"``, never off presence of ``domain``/``source`` or
+    the specific placeholder values.
     """
     legacy = {
         "schema_version": 2,
@@ -110,7 +129,6 @@ def test_a_legacy_stored_report_with_the_removed_fields_still_reads_as_no_bands(
     }
     current = {
         "schema_version": 2,
-        "method": "paired_signal_window_deconvolution",
         "ambient_duration_s": 14.0,
     }
 
@@ -125,3 +143,14 @@ def test_a_legacy_stored_report_with_the_removed_fields_still_reads_as_no_bands(
     # their domain strings differ.
     assert legacy_domain != "deconvolved"
     assert current_domain != "deconvolved"
+
+    # method's presence or absence is a no-op on its own: unwrap_noise_report
+    # never looks at that key at all (only "domain" and "bands"), so a record
+    # that still carries the old method value on disk reads identically to
+    # one that never had it — independent of whatever domain/source say.
+    with_method = {**current, "method": "paired_signal_window_deconvolution"}
+    with_method_domain, with_method_bands = snr_policy.unwrap_noise_report(
+        with_method
+    )
+    assert with_method_domain == current_domain
+    assert with_method_bands == current_bands

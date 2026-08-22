@@ -119,10 +119,15 @@ def _stored_ambient_report(
     window itself — ``driver_acoustics.analyze_driver_capture`` is the real
     acoustic analyzer; it locates the sweep from the signal and persists the
     exact quiet-window sample offsets under its own ``ambient`` block. The
-    beginning of the phone WAV is deliberately never treated as ambient
-    here. The dict returned here is used as a last-resort fallback for that
-    block when the real analyzer's own computation comes back empty (see
-    ``record_driver_acoustic_capture`` in ``commissioning_capture.py``).
+    beginning of the phone WAV is deliberately never treated as ambient. The
+    dict returned here is used as a last-resort fallback for that block when
+    the real analyzer's own computation comes back empty (see
+    ``record_driver_acoustic_capture`` in ``commissioning_capture.py``). That
+    fallback is never mistaken for the real analysis: nothing reads
+    ``method`` off a report whose ``domain`` isn't ``"deconvolved"``
+    (``driver_acoustics.py``'s two ``effective_noise_report.get("method")``
+    sites are both inside ``if noise_domain == "deconvolved":``), so this
+    dict carries no ``method`` of its own.
     """
 
     try:
@@ -144,7 +149,6 @@ def _stored_ambient_report(
         raise ValueError("crossover capture is missing its controlled ambient interval")
     return {
         "schema_version": 2,
-        "method": "paired_signal_window_deconvolution",
         "ambient_duration_s": round(duration, 3),
     }
 
