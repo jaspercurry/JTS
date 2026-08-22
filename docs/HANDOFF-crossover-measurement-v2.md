@@ -644,7 +644,7 @@ the module, not a second copy here.
 | [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | `CrossoverV2Session` — session state, seams, irreversible acts, and the host adapter; plus the capture-plan builders, tier/plan shape, cloud prompts, and `confirm_graph_is_live`. |
 | [`crossover_v2/__init__.py`](../jasper/active_speaker/crossover_v2/__init__.py) | The organ package's index — what each sibling owns, and the rule that they are no longer numbered. |
 | [`crossover_v2/contracts.py`](../jasper/active_speaker/crossover_v2/contracts.py) | The immutable domain values and their construction-time invariants and fingerprints. |
-| [`crossover_v2/vocabulary.py`](../jasper/active_speaker/crossover_v2/vocabulary.py) | What the household is told when a round refuses: `REASON_*` codes, `TEMPLATE_*` shapes, `REASON_REGISTRY`, and `PhaseVerdict`. |
+| [`crossover_v2/refusal_copy.py`](../jasper/active_speaker/crossover_v2/refusal_copy.py) | What the household is told when a round refuses: `REASON_*` codes, `TEMPLATE_*` shapes, `REASON_REGISTRY`, and `PhaseVerdict`. |
 | [`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py) | Where a round is and what its stage can do: the phase vocabulary, `JourneyPlan`, `CommissionJourney`, `open_stage`. |
 | [`crossover_v2/programs.py`](../jasper/active_speaker/crossover_v2/programs.py) | What a session plays and how loud: `back_off_gain`, `SessionExcitation`, `program_for_phase`. |
 | [`crossover_v2/priors.py`](../jasper/active_speaker/crossover_v2/priors.py) | What the analyzer is TOLD about each capture — every function a decision about what to withhold. |
@@ -867,7 +867,7 @@ the module, not a second copy here.
 ## Debugging — where to look first
 
 **Terminal verdicts are internal reason codes, not screens.** `REASON_REGISTRY`
-in [`crossover_v2/vocabulary.py`](../jasper/active_speaker/crossover_v2/vocabulary.py)
+in [`crossover_v2/refusal_copy.py`](../jasper/active_speaker/crossover_v2/refusal_copy.py)
 is the single source of truth for the copy: it maps each `REASON_*` code to
 one of four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
 `session_restart`) plus the two special screens, the household sentence, and
@@ -3561,7 +3561,7 @@ momentarily loaded Pi from a budget that no longer fits its work.
 > under you.
 
 Terminal verdicts are **internal reason codes, not screens.**
-`REASON_REGISTRY` (in `crossover_v2/vocabulary.py`, re-exported by
+`REASON_REGISTRY` (in `crossover_v2/refusal_copy.py`, re-exported by
 `crossover_v2_flow.py`) maps each code to one of
 four templates (`silent_auto_retry` / `fix_and_retry` / `hard_stop` /
 `session_restart`) plus the two special screens (`verify_fail`,
@@ -4202,7 +4202,7 @@ whole session.
 *Where these live now (#2291 Phase 5c):* the meter and the settle ladder
 are `crossover_v2/admission.py` (`MAX_EXTRA_ATTEMPTS_PER_POSITION`,
 `SlotAttempts`, `assess_begin`, `settle_spent_slot`); the retry vocabulary
-is `crossover_v2/vocabulary.py` (`ReasonSpec`, `NON_RETRIABLE_CODES`).
+is `crossover_v2/refusal_copy.py` (`ReasonSpec`, `NON_RETRIABLE_CODES`).
 `crossover_v2_flow.py` re-exports the first two under their historical
 names and keeps `_resolve_spent_slot` as the thin caller.
 

@@ -38,9 +38,9 @@ The v2-specific state the backend threads onto the status lives under
 apply_blocked / needs_recovery / applied); this module never re-derives it —
 :class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session` owns
 those decisions, the reason codes are
-:mod:`jasper.active_speaker.crossover_v2.vocabulary`'s, and this module maps
+:mod:`jasper.active_speaker.crossover_v2.refusal_copy`'s, and this module maps
 a reason code to its template copy through the shared
-:data:`~jasper.active_speaker.crossover_v2.vocabulary.REASON_REGISTRY`.
+:data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY`.
 """
 
 from __future__ import annotations
@@ -106,6 +106,7 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
 )
+from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 # The round-outcome vocabulary this screen renders. Imported rather than
 # re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
 # which this module may not import, so before #2662 both ends spelled the same
@@ -116,7 +117,6 @@ from .crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
-from .crossover_v2.vocabulary import REASON_VOLUME_UNRESOLVED
 from .delta_probe import (
     REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND,
     VERDICT_FRAME_MISMATCH,
@@ -2011,7 +2011,7 @@ KEEP_ITERATING_UNGRADED_TEXT = (
 #: :func:`_series_complete_text` rather than imported at module scope: that
 #: module reaches numpy through ``flat_spec``, and this one renders a
 #: household polling surface. Same rule, and the same reason, as
-#: :func:`~.crossover_v2.vocabulary.round_restore_reason`'s own lazy import.
+#: :func:`~.crossover_v2.refusal_copy.round_restore_reason`'s own lazy import.
 SERIES_COMPLETE_DEFAULT_TEXT = (
     "Everything measured is inside the target, and the tuning is finished."
 )
@@ -2855,7 +2855,7 @@ def _undo_action() -> dict[str, Any]:
 # OPEN ITEM this gate creates: the button is conditional, the COPY is not — four
 # TEMPLATE_VERIFY_FAIL registry sentences still name Undo, so a first-ever apply
 # reads copy pointing at an absent control (#1924 pointing the other way). The
-# fix belongs in crossover_v2.vocabulary.reason_message, where
+# fix belongs in crossover_v2.refusal_copy.reason_message, where
 # correction_rollback_failed already does it via ``rollback_anchor_available``;
 # four new household sentences are the owner's call, not this fix's.
 def _can_undo(status: Mapping[str, Any]) -> bool:
@@ -2875,7 +2875,7 @@ def _can_undo(status: Mapping[str, Any]) -> bool:
 #: it sounds worse than before"). Matched as fragments, so each covers its
 #: several call sites. Only sentences MINTED HERE are listed — the four
 #: TEMPLATE_VERIFY_FAIL registry sentences belong to
-#: ``crossover_v2.vocabulary.reason_message``, which narrates one failure
+#: ``crossover_v2.refusal_copy.reason_message``, which narrates one failure
 #: across surfaces this layer cannot see; those are the open item on
 #: :func:`_can_undo`.
 _UNDO_PROMISE_SWAPS = (
@@ -3440,7 +3440,7 @@ def _reason_message(
 
     This reads the record; it does not decide. WHICH sentence a fact produces
     belongs to
-    :func:`~jasper.active_speaker.crossover_v2.vocabulary.reason_message`,
+    :func:`~jasper.active_speaker.crossover_v2.refusal_copy.reason_message`,
     which the relay verdict and the budget refusal also call — so all three
     surfaces stay one voice. Both facts are extracted unconditionally: they
     are dictionary reads, and branching here on which code needs which fact

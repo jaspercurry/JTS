@@ -67,19 +67,19 @@ from typing import Any, Iterable, Mapping, Sequence
 from jasper.log_event import log_event
 
 from .findings import EvidenceRef, Finding, FindingError
-from .mechanisms import (
-    MECHANISM_BOUNDARY_SBIR,
-    MECHANISM_HF_REFLECTION,
-    MECHANISM_LEVEL_FRAME,
-)
-from .session_identity import SessionIdentity
-from .vocabulary import (
+from .closed_sets import (
     CONFIDENCE_UNSURE,
     PROBE_DESIGN_AXIS,
     PROBE_POSITION_VARIANCE,
     PROBE_REPEAT_VARIANCE,
     PROBE_ROTATION,
 )
+from .mechanisms import (
+    MECHANISM_BOUNDARY_SBIR,
+    MECHANISM_HF_REFLECTION,
+    MECHANISM_LEVEL_FRAME,
+)
+from .session_identity import SessionIdentity
 
 logger = logging.getLogger(__name__)
 

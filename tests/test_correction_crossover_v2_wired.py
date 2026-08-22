@@ -44,7 +44,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_WIRED,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
-from jasper.active_speaker.crossover_v2.vocabulary import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_INTERNAL_ERROR,
     REASON_SESSION_CEILING_EXPIRED,
     REASON_VERIFY_INCONCLUSIVE,

@@ -41,7 +41,7 @@ short-circuiting) and why it is safe.
 **No household vocabulary**, the rule :mod:`.coordinator` established: a refusal
 leaves as a *kind* from :data:`SCREEN_KINDS`, and something else maps it to the
 ``REASON_REGISTRY`` code whose copy the household reads.  That registry is
-:mod:`.vocabulary`'s since #2291 Phase 5c-ii; the rule here is unchanged, only
+:mod:`.refusal_copy`'s since #2291 Phase 5c-ii; the rule here is unchanged, only
 the owner's name is.  This module still does not import it — the mapping is
 built there, over the kinds declared here.
 

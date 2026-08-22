@@ -47,7 +47,7 @@ banked quantity: :func:`grade_attempt_outcome` never sees it, and
 :func:`assess_attempt_identity` decides an *identity*, not a number.
 
 **No household copy lives here** — the rule :mod:`.coordinator` states.  The two
-ladders answer with *kinds*; :mod:`.vocabulary` owns ``REASON_REGISTRY`` and the
+ladders answer with *kinds*; :mod:`.refusal_copy` owns ``REASON_REGISTRY`` and the
 sentences it binds, and the flow still constructs the decision payload the
 household reads.  The kernel's own vocabulary (``LoopDecision``,
 ``AttemptBudget``, ``STOP_EVIDENCE``, ``REASON_ATTEMPT_NOT_COMPARABLE``) stays

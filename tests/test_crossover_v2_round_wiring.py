@@ -68,7 +68,7 @@ from jasper.active_speaker.delta_probe import (
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
     VERDICT_MODEL_ERROR,
 )
-from jasper.active_speaker.crossover_v2.vocabulary import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     DELTA_PROBE_REASON_BY_VERDICT,
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2

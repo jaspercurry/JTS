@@ -22,7 +22,7 @@ import logging
 
 from jasper.active_speaker.crossover_v2 import accountability, intervention
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
-from jasper.active_speaker.crossover_v2.vocabulary import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_DRIVER_LEVELS_DISAGREE,
 )
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport

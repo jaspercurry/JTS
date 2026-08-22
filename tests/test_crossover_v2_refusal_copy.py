@@ -31,14 +31,14 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
     attempt_grading,
     capture_dispatch,
+    refusal_copy,
     spatial,
-    vocabulary,
 )
 
 #: Every name #2291 Phase 5c-ii moved out of the flow, by the module that owns
 #: it now. The flow re-exports all of them under their historical spellings.
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
-    "vocabulary": (
+    "refusal_copy": (
         "DELTA_PROBE_REASON_BY_VERDICT",
         "NON_RETRIABLE_CODES",
         "PhaseVerdict",
@@ -127,7 +127,7 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 _OWNERS = {
-    "vocabulary": vocabulary,
+    "refusal_copy": refusal_copy,
     "spatial": spatial,
     "attempt_grading": attempt_grading,
     "capture_dispatch": capture_dispatch,

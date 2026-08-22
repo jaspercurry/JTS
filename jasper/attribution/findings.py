@@ -45,9 +45,9 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .closed_sets import CONFIDENCE_TIERS, CONFIDENCE_UNSURE, PROBES
 from .mechanisms import MechanismError, mechanism_spec
 from .session_identity import SessionIdentity, SessionIdentityError
-from .vocabulary import CONFIDENCE_TIERS, CONFIDENCE_UNSURE, PROBES
 
 #: Schema tags. Present in every serialized payload so a reader never has to
 #: infer the shape, and so a future incompatible change is detectable.

@@ -75,7 +75,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 
-from .vocabulary import (
+from .closed_sets import (
     EVIDENCE_TIERS,
     EVIDENCE_TIER_ADJUDICATED,
     EVIDENCE_TIER_CORROBORATING,
