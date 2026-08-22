@@ -50,7 +50,7 @@
 | Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
 | Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
 | Take more than one capture at each pose of one walk — so what differs between them is time and whatever you changed, never the pose | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --per-position` |
-| Read back which pose each take of a banked walk was measured at, when no view surfaces a lateral bearing | [Crossover round runner](#crossover-round-runner) — `position_cycle.json`, derived from the banked bundle |
+| Read back which pose each take of a banked walk was measured at, as one sorted index | [Crossover round runner](#crossover-round-runner) — `position_cycle.json`, derived from the banked bundle (the evidence packet's `lateral_poses` block carries the same bearings) |
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
 | Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
@@ -1826,9 +1826,12 @@ a paste into a browser.
 jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
     --drivers <design-draft.json>
 
-# the read side: one round's banked evidence as one versioned JSON document
+# the read side: one round's banked evidence as one versioned JSON document.
+# --dumps is the same banked capture ring jasper-classify-features takes, and
+# adds per-capture SNR; the ring is off by default, so it is often absent and
+# the packet says so.
 jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
-    --out round.json
+    --dumps <capture-ring> --out round.json
 
 # the write side: validate what came back, against the round it answers
 jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
@@ -2176,13 +2179,15 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
 jasper-round-views agreement <round-dir>
 ```
 
-**No numeric microphone angle for a CLOUD position.** `evidence_packet.py`
-only ever reads the cloud positions block (`spatial.cloud_position_record`
-rows), which carries a coarse `role` (`onax`/`offax`) and no angle at all — a
-LATERAL walk pose (`spatial.lateral_pose_record`) does stamp a signed
-`position_deg`, but this module never reads those records. The campaign's
-`frozen_reference.py` carried a hardcoded `index -> degrees` table for
-exactly this reason; it is not ported. Every view here keys a position by
+**No numeric microphone angle for a CLOUD position.** Every view here reads
+the cloud positions block (`spatial.cloud_position_record` rows), which
+carries a coarse `role` (`onax`/`offax`) and no angle at all. A LATERAL walk
+pose (`spatial.lateral_pose_record`) does stamp a signed `position_deg`, and
+the evidence packet publishes those bearings in its `lateral_poses` block —
+but a walk pose is a *different capture* from a graded seat, not the same one
+with more detail, so a bearing is not something these views are missing. The
+campaign's `frozen_reference.py` carried a hardcoded `index -> degrees` table
+for exactly this reason; it is not ported. Every view here keys a position by
 its own stable `position_id` (`f"{phase}_{index:02d}"`, assigned once by the
 walk driver and stable across rounds that walk the same shape) instead.
 
@@ -2553,10 +2558,12 @@ disagree exactly on a refused or retaken pose. When the bundle cannot support
 the index, the runner names what was missing (an `ok=false` `position_cycle`
 trail row) and writes nothing.
 
-Why it earns its place, given the pose is already banked: **nothing surfaces
-it.** `jasper-round-views` and the evidence packet read the *cloud* positions
-block, so a lateral walk's bearings sit in per-take sidecars no view opens. The
-index is the convenience — one sorted file at the round root instead of a glob
+Why it earns its place, given the pose is already banked: **nothing surfaced
+it.** `jasper-round-views` reads the *cloud* positions block, so a lateral
+walk's bearings sat in per-take sidecars no view opened. The evidence packet's
+`lateral_poses` block now opens them, through this module's own
+`read_lateral_take` accept rule rather than a second reading of it. The index
+remains the convenience — one sorted file at the round root instead of a glob
 over a nested per-take tree that also holds the cloud group's positions. It does
 **not** name a config: what graph a capture played through is the speaker's to
 record, per capture, in the retained capture's `provenance.graph.fingerprint`

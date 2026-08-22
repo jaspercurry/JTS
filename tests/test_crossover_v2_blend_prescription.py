@@ -68,12 +68,24 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
+from jasper.active_speaker.crossover_v2 import feature_classifier, position_cycle
+from jasper.active_speaker.crossover_v2.feature_classifier import (
+    FeatureClassificationRefused,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
     packet_positional_evidence,
     packet_region_band_hz,
+)
+from jasper.active_speaker.crossover_v2.spatial import (
+    LateralPose,
+    lateral_pose_record,
+)
+from jasper.attribution.session_identity import (
+    SessionIdentity,
+    stamp_session_identity,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
@@ -276,7 +288,8 @@ def test_the_packet_names_every_question_this_round_cannot_answer(packet):
     """The honesty block is the packet's first duty, so it is pinned by field."""
     fields = {entry["field"] for entry in packet["not_evaluated"]}
     assert {
-        "positions[].angle_deg",
+        "lateral_poses[].position_deg",
+        "capture_snr",
         "first_reflection_ms",
         "harmonic_distortion",
         "per_bin_minimum_phase_class",
@@ -406,6 +419,516 @@ def test_two_rounds_in_one_bundle_refuse_rather_than_guess(tmp_path):
     (session / "evidence/v1/artifacts/crossover_v2/cap_SECOND").mkdir()
     with pytest.raises(CrossoverEvidencePacketError, match="more than one round"):
         build_crossover_evidence_packet(session)
+
+
+# --------------------------------------------------------------------------- #
+# the bearings — read from the round's own positions/ sidecars
+# --------------------------------------------------------------------------- #
+
+
+#: The bundle session id ``_bundle`` writes into ``info.json``. Restated here so
+#: a ring sidecar can be stamped with it (and, in one test, deliberately not).
+_BUNDLE_SESSION_ID = "c2a1812b849e"
+
+
+def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]]:
+    """One accepted pose per bearing, banked where the speaker banks them.
+
+    The records come from the SPEAKER's own producer
+    (:func:`~jasper.active_speaker.crossover_v2.spatial.lateral_pose_record`),
+    not from a dict written here: a fixture that spelled the fields itself
+    would keep passing the day that record changed shape. The envelope
+    (``schema_version`` + ``kind``) is what
+    ``correction_crossover_v2.retain_position`` wraps it in.
+    """
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    positions = round_dir / "positions"
+    positions.mkdir(exist_ok=True)
+    records = []
+    for index, angle in enumerate(degrees, start=1):
+        pose = LateralPose(
+            pose_id=f"lateral_{index:02d}",
+            index=index,
+            attempt=1,
+            prompt=f"{angle:+d} deg",
+            role="onax" if angle == 0 else "offax",
+            offset_cm=float(angle),
+            at_mark=angle == 0,
+            curves=(),
+        )
+        record = lateral_pose_record(
+            pose, position_deg=angle, lateral_consumer="forward_model",
+            session_id="relay-1", wav_sha256=f"pose-sha-{index}",
+        )
+        (positions / f"{record['take_id']}.json").write_text(json.dumps({
+            "schema_version": 1,
+            "kind": "jts_crossover_v2_position_evidence",
+            **record,
+        }))
+        records.append(record)
+    return records
+
+
+def _bank_cloud_sidecar(session: Path) -> Path:
+    """A CLOUD position's sidecar, in the same directory the poses land in.
+
+    The web host's ``retain_position`` serves both groups into one directory,
+    so this is the record the lateral reader must skip — not an error case.
+    """
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    positions = round_dir / "positions"
+    positions.mkdir(exist_ok=True)
+    path = positions / "cloud_verify_01_a01.json"
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "jts_crossover_v2_position_evidence",
+        "phase": "cloud_verify",
+        "position_id": "cloud_verify_01",
+        "index": 1, "attempt": 1, "take_id": "cloud_verify_01_a01",
+        "role": "onax", "wav_sha256": "cloud-sha",
+    }))
+    return path
+
+
+def test_the_packet_carries_the_signed_bearings_a_lateral_walk_banked(tmp_path):
+    """The row the packet used to call unanswerable, answered from the bank."""
+    session, _ = _bundle(tmp_path)
+    _bank_lateral_walk(session, [0, 7, -7])
+
+    block = build_crossover_evidence_packet(session)["lateral_poses"]
+
+    assert block["available"] is True
+    assert block["n_takes"] == 3
+    # SIGNED, and negative means LEFT of the design axis — a bearing published
+    # unsigned would put an off-axis pose on the wrong side of the speaker.
+    assert [take["position_deg"] for take in block["takes"]] == [0, 7, -7]
+    assert block["angles_deg"] == [-7, 0, 7]
+    assert {take["take_id"] for take in block["takes"]} == {
+        "lateral_01_a01", "lateral_02_a01", "lateral_03_a01"
+    }
+
+
+def test_a_cloud_position_never_gains_a_bearing_it_does_not_have(tmp_path):
+    """Two record shapes in one directory, and only one of them has an angle.
+
+    A cloud position is a floor-plan seat; ``cloud_position_record`` stamps no
+    bearing at all. Reading its sidecar as a pose would publish a ``null``
+    angle for a capture that HAS no angle — the exact flattening of "we did not
+    look" into "we looked and found nothing" the packet exists to prevent.
+    """
+    session, _ = _bundle(tmp_path)
+    _bank_lateral_walk(session, [0, 22])
+    _bank_cloud_sidecar(session)
+
+    packet = build_crossover_evidence_packet(session)
+
+    assert packet["lateral_poses"]["n_takes"] == 2
+    assert "cloud_verify_01_a01" not in {
+        take["take_id"] for take in packet["lateral_poses"]["takes"]
+    }
+    # …and the cloud block still says so, in a reason that is TRUE of the
+    # record shape rather than of the corpus.
+    angle = packet["positions"]["angle_deg"]
+    assert angle["status"] == "not_evaluated"
+    assert "floor-plan seat" in angle["reason"]
+    assert "lateral_poses" in angle["reason"]
+
+
+def test_the_corpus_wide_angle_claim_closes_when_a_walk_was_banked(tmp_path):
+    """"No numeric microphone angle is banked" was false, so it had to go.
+
+    It survives only as a statement about THIS round: printed when the round
+    banked no walk, and absent when the packet is carrying the bearings.
+    """
+    session, _ = _bundle(tmp_path)
+    without = {
+        entry["field"]
+        for entry in build_crossover_evidence_packet(session)["not_evaluated"]
+    }
+    assert "lateral_poses[].position_deg" in without
+
+    _bank_lateral_walk(session, [0])
+    with_walk = {
+        entry["field"]
+        for entry in build_crossover_evidence_packet(session)["not_evaluated"]
+    }
+    assert "lateral_poses[].position_deg" not in with_walk
+
+
+def test_a_hand_edited_pose_sidecar_costs_a_sort_order_not_the_packet(tmp_path):
+    """The packet never dies over one bad artifact — a bad take is reported.
+
+    The index fields are what this block sorts on, so a sidecar carrying a
+    non-numeric one would raise straight out of ``build_...`` if it were cast.
+    It sorts first instead, and the record is published exactly as banked.
+    """
+    session, _ = _bundle(tmp_path)
+    _bank_lateral_walk(session, [7])
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    bad = round_dir / "positions" / "lateral_99_a01.json"
+    bad.write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "jts_crossover_v2_position_evidence",
+        "phase": "lateral",
+        "index": "not-a-number", "attempt": None, "take_id": "lateral_99_a01",
+        "position_deg": True, "role": "offax", "regime": "per_driver",
+        "wav_sha256": "bad-sha",
+    }))
+
+    block = build_crossover_evidence_packet(session)["lateral_poses"]
+
+    assert block["n_takes"] == 2
+    assert block["takes"][0]["take_id"] == "lateral_99_a01"
+    assert block["takes"][0]["index"] == "not-a-number"
+    # ``bool`` subclasses ``int``, so an unguarded angle set would publish 1.
+    assert block["angles_deg"] == [7]
+
+
+def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
+    """One vocabulary for "what is a lateral take", not two.
+
+    :mod:`~jasper.active_speaker.crossover_v2.position_cycle` derives the round's
+    pose index from the same sidecars. If this block grew its own filter, the
+    two would disagree the first time either changed.
+
+    **The patch target is the OWNING module, deliberately.** An earlier version
+    patched ``evidence_packet.read_lateral_take`` — the packet's own imported
+    binding — which a behaviour-identical DUPLICATE defined inside
+    ``evidence_packet`` would satisfy just as well, so the test passed while
+    the claim it exists for was false. Patching
+    ``position_cycle.read_lateral_take`` cannot be satisfied that way: only a
+    packet that actually reaches the owner's function object goes blind.
+    """
+    session, _ = _bundle(tmp_path)
+    _bank_lateral_walk(session, [0, 7])
+    assert build_crossover_evidence_packet(session)["lateral_poses"]["available"]
+
+    with mock.patch.object(
+        position_cycle, "read_lateral_take", return_value=None
+    ) as refuse:
+        blinded = build_crossover_evidence_packet(session)
+
+    assert refuse.call_count == 2
+    assert blinded["lateral_poses"]["available"] is False
+
+
+# --------------------------------------------------------------------------- #
+# per-capture SNR — from the operator capture-retention ring
+# --------------------------------------------------------------------------- #
+
+
+def _ring_sidecar(
+    ring: Path,
+    name: str,
+    *,
+    session_id: str | None = _BUNDLE_SESSION_ID,
+    diagnostic: dict[str, Any] | None = None,
+) -> Path:
+    """One dump-ring sidecar, in the shape ``_maybe_retain_capture`` writes.
+
+    ``ring`` is the ring ROOT, the directory a caller passes; the sidecar lands
+    in the ``sidecar/`` split ``bank-crossover-round.sh`` produces, which is
+    where ``RING_SIDECAR_GLOB`` looks for it.
+
+    ``session_id=None`` writes the LEGACY shape — a sidecar from before the
+    identity stamp existed, which is the corpus WO-0 actually had to read.
+    """
+    directory = ring / "sidecar"
+    directory.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "phase": "measure",
+        "device_label": "iPhone",
+        "wav_sha256": "pose-sha-1",
+        "diagnostic": diagnostic if diagnostic is not None else {
+            "phase": "measure",
+            "delay_us": 421.0,
+            "woofer_snr_db": 31.2,
+            "woofer_snr_verdict": "ok",
+            "woofer_snr_band": "transition",
+            "woofer_alignment_snr_db": 22.5,
+            "woofer_alignment_snr_verdict": "insufficient",
+            "gain_plan_snr_floor_ok": True,
+        },
+    }
+    if session_id is not None:
+        stamp_session_identity(payload, SessionIdentity(session_id=session_id))
+    path = directory / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_per_capture_snr_is_published_for_this_session_and_counted_for_the_rest(
+    tmp_path,
+):
+    """The ring is a ROLLING buffer, so attribution is fail-closed.
+
+    A pull takes whatever the ring held, which can include an earlier round's
+    captures — WO-0 measured directory mtime actively misrouting them. Only the
+    captures this bundle's own session identity claims are published, and the
+    two kinds of leftover are COUNTED rather than dropped: a reader that saw a
+    short list without them would not know the ring had more in it.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json")
+    _ring_sidecar(ring, "2_measure.json", session_id="ffffffffffff")
+    _ring_sidecar(ring, "3_measure.json", session_id=None)
+
+    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+
+    assert block["available"] is True
+    assert (block["n_captures"], block["n_other_session"], block["n_unattributed"]) == (
+        1, 1, 1,
+    )
+    # Named by the digest the positions rows already carry, so a reader can
+    # join the two without this module deciding what a disagreement means.
+    assert block["captures"][0]["wav_sha256"] == "pose-sha-1"
+    # The SNR columns and NOTHING else off the flat diagnostic block.
+    assert set(block["captures"][0]["snr"]) == {
+        "woofer_snr_db", "woofer_snr_verdict", "woofer_snr_band",
+        "woofer_alignment_snr_db", "woofer_alignment_snr_verdict",
+        "gain_plan_snr_floor_ok",
+    }
+    assert "delay_us" not in block["captures"][0]["snr"]
+
+
+def test_an_attributed_capture_with_no_snr_still_gets_its_row(tmp_path):
+    """The block counts what it does not publish, so it drops nothing quietly.
+
+    A capture this session owns whose analysis reported no SNR is neither
+    another session's nor unattributed. Skipping it would make ``n_captures``
+    a count of something other than what the ring held for this round, while
+    the block's own note claims one row per attributed capture.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_check.json", diagnostic={"phase": "check", "delay_us": 1.0})
+
+    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+
+    assert (block["n_captures"], block["n_other_session"], block["n_unattributed"]) == (
+        1, 0, 0,
+    )
+    assert block["captures"][0]["snr"] == {}
+
+
+def test_a_ring_that_holds_nothing_for_this_session_says_so_rather_than_looking_empty(
+    tmp_path,
+):
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json", session_id="ffffffffffff")
+
+    packet = build_crossover_evidence_packet(session, dump_ring_dir=ring)
+
+    assert packet["capture_snr"]["available"] is False
+    assert packet["capture_snr"]["status"] == "not_evaluated"
+    assert "1 belonged to another" in packet["capture_snr"]["reason"]
+    stated = [e for e in packet["not_evaluated"] if e["field"] == "capture_snr"]
+    assert len(stated) == 1
+    assert stated[0]["reason"] == packet["capture_snr"]["reason"]
+
+
+def test_a_non_finite_snr_becomes_null_and_names_its_column(tmp_path):
+    """A ring sidecar is written with a plain ``json.dumps`` — it CAN carry NaN.
+
+    ``json_fingerprint`` refuses a non-finite number, so copying one through
+    would leave a round with no packet at all over a value in an off-by-default
+    forensic ring. It becomes ``null`` and its column is named, because "not
+    computable" and "not carried" are different facts.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json", diagnostic={
+        "woofer_snr_db": float("nan"),
+        "tweeter_snr_db": 30.0,
+    })
+
+    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+
+    assert block["captures"][0]["snr"]["woofer_snr_db"] is None
+    assert block["captures"][0]["snr"]["tweeter_snr_db"] == 30.0
+    assert block["non_finite_fields"] == ["woofer_snr_db"]
+
+
+#: Every SNR column the REAL hardware corpus carries, verbatim.
+#:
+#: Taken from the 45 dump-ring sidecars of the banked round
+#: ``captures/tuning-hw-validation-2026-08/d-perpos2-mini-d`` — 17 distinct
+#: columns across six phases. Spelled out here because the earlier fixture
+#: carried only the two columns the declaration happened to cover, so the guard
+#: below could not have noticed an undeclared shape: it agreed with itself.
+#: Three families the small fixture missed entirely are the reason this list is
+#: literal — the ``_band``/``_verdict`` strings, the two scalar flags, and the
+#: PILOT family, whose ``summed_pilot_snr_db`` names no driver at all.
+_REAL_SNR_COLUMNS: dict[str, Any] = {
+    "gain_plan_snr_floor_ok": True,
+    "pilot_snr_ok": True,
+    "summed_pilot_snr_db": 41.7,
+    "tweeter_alignment_snr_band": "treble",
+    "tweeter_alignment_snr_db": 33.1,
+    "tweeter_alignment_snr_verdict": "reduced",
+    "tweeter_pilot_snr_db": 39.2,
+    "tweeter_snr_band": "treble",
+    "tweeter_snr_db": 33.1,
+    "tweeter_snr_verdict": "ok",
+    "woofer_alignment_snr_band": "transition",
+    "woofer_alignment_snr_db": 28.4,
+    "woofer_alignment_snr_verdict": "insufficient",
+    "woofer_pilot_snr_db": 44.0,
+    "woofer_snr_band": "transition",
+    "woofer_snr_db": 28.4,
+    "woofer_snr_verdict": "ok",
+}
+
+
+def test_every_snr_figure_says_which_kind_of_uncertainty_it_is_not(tmp_path):
+    """Wave-1's enrichment rule: a published spread names random or systematic.
+
+    No field here IS one — an SNR bounds a random error without being a spread
+    about a reading, and it does not shrink as captures are added — so the
+    first list is empty and the second says why for each SHAPE. The two are
+    never pooled into one figure, which is the whole point of publishing the
+    magnitude and alignment ratios apart.
+
+    Run against the REAL corpus's full column set, because the rule is about
+    what the block actually publishes rather than about what a fixture chose to
+    hand it. ``undeclared_fields`` is the mechanical half: any published column
+    whose shape the table does not cover is named there, so this cannot go
+    stale the day the producer grows another SNR field.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json", diagnostic={
+        "phase": "measure", "delay_us": 421.0, **_REAL_SNR_COLUMNS,
+    })
+
+    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+
+    # Every SNR column of a real capture reached the packet…
+    assert set(block["captures"][0]["snr"]) == set(_REAL_SNR_COLUMNS)
+    # …and every one of them is covered by a declared shape.
+    assert block["undeclared_fields"] == []
+    assert block["uncertainty"]["fields"] == {}
+    declared = block["uncertainty"]["not_uncertainties"]
+    assert set(declared) == {
+        "<role>_snr_db", "<role>_snr_verdict", "<role>_snr_band",
+        "<role>_alignment_snr_db", "<role>_alignment_snr_verdict",
+        "<role>_alignment_snr_band", "<role>_pilot_snr_db",
+        "pilot_snr_ok", "gain_plan_snr_floor_ok",
+    }
+    for reason in declared.values():
+        assert reason.strip()
+    # The pilot family's role vocabulary is NOT the driver one, and the table
+    # says so rather than describing every shape as if it were a driver's.
+    assert "summed" in declared["<role>_pilot_snr_db"]
+    assert "pooling" in block["uncertainty"]["note"]
+
+    # Each column says WHICH declaration explains it. The three families whose
+    # names nest are the point: `_alignment_snr_db` and `_pilot_snr_db` both
+    # end with `_snr_db`, so a shortest-suffix-first match would file them
+    # under the magnitude declaration and describe them wrongly while still
+    # reporting full coverage.
+    declared_as = block["uncertainty"]["declared_as"]
+    assert set(declared_as) == set(_REAL_SNR_COLUMNS)
+    assert declared_as["woofer_alignment_snr_db"] == "<role>_alignment_snr_db"
+    assert declared_as["woofer_pilot_snr_db"] == "<role>_pilot_snr_db"
+    assert declared_as["woofer_snr_db"] == "<role>_snr_db"
+    assert declared_as["summed_pilot_snr_db"] == "<role>_pilot_snr_db"
+    assert declared_as["pilot_snr_ok"] == "pilot_snr_ok"
+
+
+def test_an_undeclared_snr_shape_is_named_rather_than_travelling_unlabelled(
+    tmp_path,
+):
+    """The enrichment rule is checkable because the block reports its own gaps.
+
+    A future producer field that nothing in the table covers must not travel
+    as a figure a reader was never told the kind of. It is published — losing
+    evidence would be worse — and NAMED.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json", diagnostic={
+        "woofer_snr_db": 30.0, "thermal_snr_margin_db": 4.0,
+    })
+
+    block = build_crossover_evidence_packet(session, dump_ring_dir=ring)["capture_snr"]
+
+    assert block["undeclared_fields"] == ["thermal_snr_margin_db"]
+    assert "thermal_snr_margin_db" in block["captures"][0]["snr"]
+
+
+def test_a_path_one_level_too_deep_does_not_read_as_an_empty_ring(tmp_path):
+    """A wrong `--dumps` must not come back as a confident true absence.
+
+    Pointing at ``dumps/sidecar`` instead of the ring root finds nothing, and
+    the old reason said "no capture attributed to this session (0 belonged to
+    another, 0 carried no readable identity)" — a sentence with a breakdown
+    behind it, indistinguishable from a ring that genuinely held nothing for
+    this round.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json")
+
+    too_deep = build_crossover_evidence_packet(
+        session, dump_ring_dir=ring / "sidecar"
+    )["capture_snr"]
+
+    assert too_deep["available"] is False
+    assert too_deep["n_sidecars_seen"] == 0
+    assert "ring ROOT" in too_deep["reason"]
+    assert "one level too deep" in too_deep["reason"]
+    # The right path, for contrast: same tree, one directory up.
+    assert build_crossover_evidence_packet(
+        session, dump_ring_dir=ring
+    )["capture_snr"]["n_captures"] == 1
+
+
+def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
+    """``--dumps`` means ONE directory across two tools, proven on one ring.
+
+    ``jasper-classify-features`` and ``jasper-crossover-prescriber`` both take
+    the ring ROOT, which is the split shape ``bank-crossover-round.sh`` writes
+    (``dumps/wav/`` beside ``dumps/sidecar/``). An operator who had to know
+    which tool wanted the parent would eventually hand one of them the wrong
+    path and get a silent empty answer, so this asserts on BEHAVIOUR — one
+    fixture ring, both readers observed finding the same sidecar — rather than
+    on the two spelling the same pattern, which is a thing that can be true
+    while the contract is broken.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json")
+
+    assert build_crossover_evidence_packet(
+        session, dump_ring_dir=ring
+    )["capture_snr"]["n_captures"] == 1
+
+    # The classifier refuses this ring — one non-admissible capture is not a
+    # round — but its refusal COUNTS what the glob found, which is the half
+    # being pinned here.
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    with pytest.raises(FeatureClassificationRefused) as refusal:
+        feature_classifier.load_round_captures(
+            round_dir, ring, session_id=_BUNDLE_SESSION_ID
+        )
+    assert refusal.value.reason == feature_classifier.NO_ADMISSIBLE_CAPTURES
+    assert refusal.value.detail["phases_seen"] == {"measure": 1}
+
+
+def test_an_absent_ring_is_reported_rather_than_papered_over(tmp_path):
+    """The ring is OFF by default, so this is the ordinary case, not a fault."""
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(session)
+    assert packet["capture_snr"]["available"] is False
+    assert "off by default" in packet["capture_snr"]["reason"]
+
+    absent = build_crossover_evidence_packet(
+        session, dump_ring_dir=tmp_path / "nowhere"
+    )
+    assert absent["capture_snr"]["reason"] == "source_absent"
 
 
 # --------------------------------------------------------------------------- #
@@ -1540,6 +2063,27 @@ def test_the_cli_emits_a_packet_and_exits_zero(tmp_path):
     assert emitted["kind"] == "jts_crossover_v2_evidence_packet"
     # The summary is on stderr so a piped packet is never contaminated.
     assert "not evaluated:" in err
+
+
+def test_the_cli_hands_the_capture_ring_to_the_packet(tmp_path):
+    """``--dumps`` is the third optional evidence path, on ``--drivers``' rule.
+
+    The ring sits OUTSIDE the bundle — a sibling of it in a banked round — so
+    the packet cannot find it from ``session_dir``. Without the flag the block
+    is honestly absent; with it the per-capture SNR is there.
+    """
+    session, _ = _bundle(tmp_path)
+    ring = tmp_path / "dumps"
+    _ring_sidecar(ring, "1_measure.json")
+
+    _, without, _ = _run_cli(["packet", str(session), "--json"])
+    assert json.loads(without)["capture_snr"]["available"] is False
+
+    code, out, _ = _run_cli(["packet", str(session), "--dumps", str(ring), "--json"])
+    assert code == cli.EXIT_OK
+    block = json.loads(out)["capture_snr"]
+    assert block["available"] is True
+    assert block["captures"][0]["snr"]["woofer_snr_db"] == 31.2
 
 
 def test_the_cli_accepts_a_prescription_from_a_file_and_exits_zero(tmp_path):

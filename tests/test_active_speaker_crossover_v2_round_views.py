@@ -326,6 +326,83 @@ def _write_wired_capture(
     return ir_truth
 
 
+def _stamp_ring_sidecar(
+    round_dir: Path, name: str, *, session_id: str = "sess1", nested: str = "",
+) -> Path:
+    """One session-stamped ring sidecar, optionally inside a nested ring.
+
+    ``nested`` names a subdirectory under ``dumps/`` — the shape a real
+    multi-run bank produces (``dumps/{final,night-all,phase7}/sidecar/``) and
+    the one a flat ``dumps/sidecar`` glob cannot see.
+    """
+    from jasper.attribution.session_identity import (
+        SessionIdentity,
+        stamp_session_identity,
+    )
+
+    ring = round_dir / "dumps" / nested if nested else round_dir / "dumps"
+    sidecar_dir = ring / "sidecar"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "phase": "measure",
+        "wav_sha256": "ring-sha",
+        "diagnostic": {"woofer_snr_db": 31.2, "woofer_snr_verdict": "ok"},
+    }
+    stamp_session_identity(payload, SessionIdentity(session_id=session_id))
+    path = sidecar_dir / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_load_banked_round_hands_the_capture_ring_to_the_packet(tmp_path):
+    """The wiring this module owns: the ring root reaches the evidence packet.
+
+    ``load_banked_round`` passes ``<round-dir>/dumps``, so every packet these
+    views build carries per-capture SNR when the operator banked a ring. It
+    shipped without a test; this is that test.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    assert load_banked_round(round_dir).packet["capture_snr"]["available"] is False
+
+    _stamp_ring_sidecar(round_dir, "1_measure.json")
+
+    block = load_banked_round(round_dir).packet["capture_snr"]
+    assert block["available"] is True
+    assert block["n_captures"] == 1
+    assert block["captures"][0]["snr"]["woofer_snr_db"] == 31.2
+
+
+def test_a_nested_ring_is_one_directory_to_both_readers_in_this_module(tmp_path):
+    """One module must not answer "where is the ring" two different ways.
+
+    ``_dump_ring_captures`` used to spell ``dumps/sidecar`` with a flat glob
+    while ``load_banked_round`` passed the ring root, so on a REAL nested ring
+    the packet found captures and the verify-pose reader found none. Both now
+    resolve through ``RING_SIDECAR_GLOB`` from the root.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    _stamp_ring_sidecar(round_dir, "1_measure.json", nested="night-all")
+
+    # The packet half.
+    assert load_banked_round(round_dir).packet["capture_snr"]["n_captures"] == 1
+    # The verify-pose half, reading the same nested tree for its own phase.
+    from jasper.active_speaker.crossover_v2.round_views import _dump_ring_captures
+
+    assert len(_dump_ring_captures(round_dir, phase="measure")) == 0, (
+        "no wav beside it yet — this pins the WAV pairing, not the glob"
+    )
+    nested_wav = round_dir / "dumps" / "night-all" / "wav"
+    nested_wav.mkdir(parents=True, exist_ok=True)
+    (nested_wav / "1_measure.wav").write_bytes(b"RIFF....WAVEfmt ")
+    assert [p[1].name for p in _dump_ring_captures(round_dir, phase="measure")] == [
+        "1_measure.json"
+    ]
+
+
 def test_verify_pose_curve_absent_without_dump_ring(tmp_path):
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},

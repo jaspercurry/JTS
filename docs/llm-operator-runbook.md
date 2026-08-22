@@ -332,7 +332,7 @@ let the next measurement dispose of it; a heuristic never vetoes an experiment.
 
 ### Evidence the record does not carry yet
 
-Three discriminating fields are unavailable, and knowing which is part of
+Two discriminating fields are unavailable, and knowing which is part of
 reading the rest honestly:
 
 - **Harmonics by order (H2/H3).** Computable from banked captures, but no round
@@ -341,12 +341,27 @@ reading the rest honestly:
 - **Level dependence.** Needs the escalation level, which fires on anomaly
   rather than by default. `delta_probe`'s `level_dependent_shortfall` verdict is
   both the trigger and the grading currency.
-- **Angle.** Banked but unsurfaced: `positions/*.json` carry a signed
-  whole-degree `position_deg`, and `position_cycle.json` derives it — yet the
-  evidence packet still reports `positions[].angle_deg` as `not_evaluated`,
-  with a reason ("no numeric microphone angle is banked anywhere") that is now
-  stale. **Do not conclude from the packet that no angle exists.** Read the
-  cycle document. Ticket 1.2 closes the row.
+
+**Angle is now surfaced, and it is not the field you might reach for.** The
+packet's `lateral_poses` block carries the signed whole-degree `position_deg`
+each accepted walk pose was measured at, read from the round's own
+`positions/*.json` sidecars. `positions[].angle_deg` stays `not_evaluated`, and
+that is correct rather than stale: a cloud position is a floor-plan seat whose
+record stamps no bearing at all. The two are different captures — do not join
+them by index.
+
+**Per-capture SNR arrives with the ring, not with the round.** `capture_snr`
+carries each retained capture's magnitude and alignment signal-to-noise, keyed
+by the same `wav_sha256` the position rows use. It is populated only when you
+pass `--dumps <banked-round>/dumps` — the ring ROOT, the same path
+`jasper-classify-features --dumps` takes, **not** the `sidecar/` directory
+inside it — because the capture-retention ring is off by default; the block
+says so when you do not, and says it differently when the path found no
+sidecars at all so a path one level too deep cannot read as an empty ring.
+Only captures the
+bundle's own session identity claims are published — the ring rolls over and
+can hold an earlier round's — and the leftovers are counted rather than
+dropped.
 
 ## Reading σ honestly
 

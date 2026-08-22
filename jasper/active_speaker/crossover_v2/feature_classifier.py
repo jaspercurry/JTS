@@ -99,6 +99,7 @@ from .feature_classification import (
     ROOM,
     UNRESOLVED,
 )
+from .evidence_packet import RING_SIDECAR_GLOB
 from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
 
 __all__ = [
@@ -422,9 +423,12 @@ def load_round_captures(
     ``round_dir`` is the round's own artifact directory — the
     ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` one the packet
     reads, which is where the ``<phase>_program.wav`` files live and where the
-    verdict is filed. ``dumps_dir`` is the banked capture ring: sidecar JSON
-    beside its WAV, in either the flat ``wav/`` + ``sidecar/`` shape or a
-    per-phase nesting of it.
+    verdict is filed. ``dumps_dir`` is the banked capture ring's root: sidecar
+    JSON beside its WAV, in either the flat ``wav/`` + ``sidecar/`` shape or a
+    per-phase nesting of it, found by
+    :data:`~.evidence_packet.RING_SIDECAR_GLOB` — the packet's ``capture_snr``
+    block reads the same ring through the same constant, so the two tools'
+    ``--dumps`` cannot come to mean different directories.
 
     ``session_id`` scopes the ring to this round. It is the BUNDLE session id
     (``info.json``'s ``session_id``), which is what a sidecar stamps into
@@ -449,7 +453,7 @@ def load_round_captures(
     seen_phases: dict[str, int] = {}
     lateral: list[str] = []
     missing_program: list[str] = []
-    for sidecar in sorted(dumps_dir.glob("**/sidecar/*.json")):
+    for sidecar in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
         try:
             doc = json.loads(sidecar.read_text())
         except (OSError, json.JSONDecodeError):
