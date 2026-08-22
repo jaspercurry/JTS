@@ -879,6 +879,8 @@ docs = [
   "docs/room-correction-regime-plan.md",
   "docs/two-stage-commission-flow-plan.md",
   "docs/attribution-stage-plan.md",
+  # Planning authority for the measurement/tuning program (supersessions listed in-doc).
+  "docs/tuning-master-plan.md",
   "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
