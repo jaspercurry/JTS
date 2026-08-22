@@ -504,10 +504,22 @@ def _lab_row_value(value: Any, column: str, non_finite: set[str]) -> Any:
     because its check includes ``int``.
 
     Deliberately scoped to the lab rows, which is where the failure was
-    observed. Every other block here copies its artifact verbatim and would
-    raise the same way on a non-finite value; that shape predates this function
-    and is not repaired from here, where the corpus-wide question of which other
-    producers can emit one has not been asked.
+    observed. The sibling exposure is real but NARROW, and was measured rather
+    than assumed: the receipt, the cloud evidence and the finding set are banked
+    through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
+    which passes ``allow_nan=False`` and refuses a non-finite value at write
+    time, so they structurally cannot carry one here. Two inputs are written
+    with a plain ``json.dumps`` and can:
+    ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
+    state, where all four fields this packet copies —
+    ``verify.claims``, ``fc_selection``, ``pre_apply_profile.blend_correction``
+    and ``evidence.calibration`` — kill the packet; and
+    :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
+    ``driver_safety_profile.confirmation`` is copied whole and does the same.
+    The draft's passbands do NOT, because
+    :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
+    drops a non-finite bound. Repairing those two is their writers' change, not
+    this reader's — see the follow-up issue linked from PR #2833.
     """
     if isinstance(value, float):
         if math.isfinite(value):

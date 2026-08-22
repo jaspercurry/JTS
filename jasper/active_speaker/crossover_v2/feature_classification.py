@@ -242,15 +242,27 @@ UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 #:
 #: All three are microsecond figures qualifying the same row's ``excursion_us``,
 #: and each says which kind it is and what it is a spread OF, because they are
-#: not interchangeable: two shrink when the round takes more captures and the
-#: third does not. No number here adds one to another.
+#: not interchangeable: the two random ones describe scatter that averaging over
+#: captures can reduce, and the systematic one is not reduced by repetition at
+#: all. No number here adds one to another.
+#:
+#: **None of the three is itself a quantity that shrinks with more captures, and
+#: an earlier draft of these strings said two of them were.** Both random
+#: entries are standard DEVIATIONS, which converge on a population value as
+#: captures are added rather than falling; the quantity that falls as
+#: ``1/sqrt(n)`` is the standard ERROR of the pooled mean, which this block does
+#: not publish and cannot be used to form, because it does not publish ``n``.
 LAB_ROW_UNCERTAINTY: dict[str, dict[str, str]] = {
     "excursion_sd_us": {
         "kind": UNCERTAINTY_RANDOM,
         "of": (
-            "capture-to-capture scatter of this row's excursion_us across the "
-            "round's own captures (sample standard deviation; 0.0 when the "
-            "round has a single capture). More captures shrink it"
+            "capture-to-capture scatter of this row's excursion_us: the sample "
+            "standard deviation over the round's captures, published as 0.0 at "
+            "one capture, where it is undefined. It CONVERGES as captures are "
+            "added rather than shrinking — going from one capture to two "
+            "typically moves it up off 0.0. What falls with more captures is "
+            "the standard error of the pooled mean, sd/sqrt(n), and this block "
+            "does not publish n"
         ),
     },
     "nbhd_sd_us": {
@@ -259,7 +271,8 @@ LAB_ROW_UNCERTAINTY: dict[str, dict[str, str]] = {
             "the excess-group-delay trace's own scatter across the feature's "
             "+/-1/3-octave neighbourhood with the feature band excluded, "
             "averaged over the round's captures. It is the local noise floor "
-            "this row's z_local divides by"
+            "this row's z_local divides by, and being a mean of per-capture "
+            "scatters it likewise converges rather than shrinking"
         ),
     },
     "lead_sensitivity_us": {
@@ -267,7 +280,8 @@ LAB_ROW_UNCERTAINTY: dict[str, dict[str, str]] = {
         "of": (
             "how far excursion_us moves when the phase window's 1 ms pre-peak "
             "lead is taken away — the same captures read through one different "
-            "analysis choice. More captures do not shrink it"
+            "analysis choice. Repetition does not reduce it, which is the whole "
+            "difference between this row's kind and the two above"
         ),
     },
 }
