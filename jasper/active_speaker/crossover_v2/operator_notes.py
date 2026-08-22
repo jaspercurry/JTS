@@ -29,19 +29,25 @@ than in a doc, because the artifact travels and the doc does not.
 **Three carriers, all capped at their source.** :data:`CARRIERS` is the closed
 allowlist, and each row names where the string came from, what caps it, and who
 wrote it, so the "do not add a second cap" rule is auditable in the emitted
-document rather than asserted in prose. Two of the three are live surfaces; the
-third is a legacy husk, and the artifact does not pretend otherwise:
+document rather than asserted in prose. **One of the three is a live surface
+and the other two have no live writer at all**, and the artifact does not
+pretend otherwise:
 
 * ``build_notes`` — the one free-text field the wizard actually offers
   (``operator_inputs.notes``, 1000 chars). It is also the only operator-typed
   string that reaches the *research* prompt, so a household that answers the
   guided bullets is answering both LLMs at once.
-* ``drivers[].notes`` — per-driver prose (2048 chars). Accepted and stored by
-  the draft, and written today only by a pasted research reply that carries
-  one; the wizard offers no per-driver box, which is exactly the
-  consolidation ruling R3 asks for ("one consolidated free-text notes field;
-  driver notes fold in"). Carried here because an existing draft may hold one
-  and because the schema accepts one.
+* ``drivers[].notes`` — per-driver prose (2048 chars) with **no live writer**.
+  The wizard offers no per-driver box, which is exactly the consolidation
+  ruling R3 asks for ("one consolidated free-text notes field; driver notes
+  fold in"), and a pasted research reply does **not** put one here either:
+  ``applyDriverResearchToManualSettings`` copies a named field list that has
+  never included ``notes``, and a reply's own per-driver summary lands at
+  ``driver_research.drivers[].notes`` — a different record, listed in
+  :data:`EXCLUDED_PROSE`. So a value in this carrier survives only by
+  round-tripping out of a draft an older build wrote, or by a hand edit.
+  Carried anyway, because the schema accepts one and a draft on disk may
+  hold one.
 * ``declared_context[].operator_notes`` — a legacy carrier with **no live
   writer**. ``driver_safety.build_driver_research_request`` never emits it and
   ``validate_driver_research_request`` refuses a request that still carries
@@ -81,9 +87,12 @@ __all__ = [
 #: existing key saying what it said, so it does not move this number.
 OPERATOR_NOTES_SCHEMA_VERSION = 1
 
-#: Flat ``jts_crossover_v2_*``, matching every other artifact kind this package
-#: writes. Artifact-kind namespacing is planned (ticket 2.8) and has not landed;
-#: when it does, this kind is a new write and follows whatever it rules.
+#: ``jts_<owner>_<name>`` — the shape ticket 2.8's artifact-kind ruling
+#: requires of a **new** kind, which landed in #2873 while this branch was open
+#: and which ``bundles.validate_artifact_kind`` accepts this string against.
+#: The 21 kinds written before that rule are grandfathered rather than renamed,
+#: so matching the package's existing ``jts_crossover_v2_*`` spelling and
+#: satisfying the new rule are the same act here.
 OPERATOR_NOTES_KIND = "jts_crossover_v2_operator_notes"
 
 GENERATED_BY = (
@@ -132,17 +141,21 @@ CARRIERS: dict[str, dict[str, Any]] = {
     "drivers[].notes": {
         "source": "design_draft.manual_settings.drivers[].notes",
         "max_chars": 2048,
-        # The one carrier whose author is genuinely ambiguous, and saying so is
-        # the point: it predates the single Build-notes field, the wizard
-        # offers no box for it, and ``driver_safety``'s own comment at the
-        # request builder records that it "may contain either operator prose or
-        # an imported research summary". Nothing on the record separates the
-        # two after the fact, so a reader is told that rather than sold a
-        # provenance the draft cannot support.
+        # The one carrier whose author is genuinely unknowable, and saying so
+        # is the point. It has NO live writer: the wizard offers no box, and
+        # the research import copies a named field list that has never included
+        # ``notes`` — a reply's own per-driver summary lands on a different
+        # record entirely. So whatever is here came from a build that no longer
+        # exists or from a hand edit, and nothing on the record says which.
+        # ``driver_safety``'s own comment at the request builder reaches the
+        # same conclusion from the other side ("may contain either operator
+        # prose or an imported research summary"). A reader is told that rather
+        # than sold a provenance the draft cannot support.
         "authored_by": "operator_or_research_assistant_indistinguishable",
         "note": (
-            "per-driver prose; the wizard offers no box for it, so today it "
-            "arrives only on a pasted research reply that carried one"
+            "per-driver prose with no live writer: the wizard offers no box "
+            "and a pasted research reply does not land here, so a value "
+            "survives only from an older build's draft or a hand edit"
         ),
     },
     "declared_context[].operator_notes": {
@@ -161,12 +174,31 @@ CARRIERS: dict[str, dict[str, Any]] = {
 }
 
 #: Prose that IS in the draft and is deliberately not gathered here, with the
-#: reason. Every entry is written by the research assistant rather than typed
-#: by a human, so folding it in would relabel a machine's sentence as an
-#: operator's declaration — the one confusion this artifact exists to prevent.
+#: reason. No entry is operator-typed — each is written by the research
+#: assistant or generated by code — so folding one in would relabel a machine's
+#: sentence as an operator's declaration, the one confusion this artifact
+#: exists to prevent.
+#:
+#: Every path is fully qualified by its owning record. ``drivers[]`` alone
+#: would not be: the draft has two of them, ``manual_settings.drivers[]`` (a
+#: carrier above) and ``driver_research.drivers[]`` (excluded here), and the
+#: whole S1 correction in this file is about not confusing the two.
 EXCLUDED_PROSE: dict[str, str] = {
-    "crossover_candidates[].rationale": "written by the research assistant",
-    "drivers[].sources": "citations the research assistant returned",
+    "driver_research.crossover_candidates[].rationale": (
+        "written by the research assistant"
+    ),
+    "driver_research.drivers[].sources": (
+        "citations the research assistant returned"
+    ),
+    # The research assistant's own one-sentence summary per driver. It is live
+    # prose sitting in the draft with no reader, and it is NOT the carrier
+    # above: an import writes this record and never touches
+    # ``manual_settings.drivers[].notes``. Named here so the omission is a
+    # stated decision rather than an oversight — whether it should become a
+    # fourth CARRIED field is an owner question, not this module's.
+    "driver_research.drivers[].notes": (
+        "the research assistant's per-driver summary, not operator-typed"
+    ),
     "driver_safety_profile.targets[].field_provenance[].basis": (
         "the research assistant's own justification for a value"
     ),
@@ -182,6 +214,13 @@ EXCLUDED_PROSE: dict[str, str] = {
 _DRIVER_ROW_FIELDS = ("target_id", "role", "notes")
 
 _CONTEXT_ROW_FIELDS = ("target_id", "operator_notes")
+
+#: Prose-shaped keys on ``driver_research.drivers[]`` that :data:`EXCLUDED_PROSE`
+#: already accounts for. This artifact carries none of that record, so nothing
+#: here is a carrier — the tuple exists so the scan can tell "deliberately not
+#: gathered" from "nobody noticed", which are the two things ``redacted_fields``
+#: must never merge.
+_RESEARCH_DRIVER_CLAIMED = ("notes",)
 
 
 def _prose(value: Any) -> str | None:
@@ -201,11 +240,14 @@ def _prose(value: Any) -> str | None:
 def _prose_keys(raw: Any) -> set[str]:
     """Prose-shaped keys on one source record: ``notes`` and anything ``*_notes``.
 
-    The tripwire behind ``redacted_fields``. It is deliberately narrow — a name
-    test, not a value test — because its job is to fire when someone adds a
-    fourth prose field upstream and forgets to give it a carrier, and a
+    The leaf of the tripwire behind ``redacted_fields``;
+    :func:`_scan_prose_keys` is what decides which records it is pointed at and
+    what counts as claimed there. Deliberately narrow — a name test, not a
+    value test — because its job is to fire when someone adds a prose field
+    upstream and forgets to give it either a carrier or an exclusion, and a
     heuristic over VALUES would instead fire on every long string in the
-    declaration. Today it names nothing, and a test pins that.
+    declaration. Across every record scanned it names nothing at rest today,
+    and a test pins that.
     """
     if not isinstance(raw, Mapping):
         return set()
@@ -216,8 +258,32 @@ def _prose_keys(raw: Any) -> set[str]:
     }
 
 
+def _scan_prose_keys(records: Any, path: str, claimed: tuple[str, ...]) -> set[str]:
+    """Prose-shaped keys across one record list that nothing claims, qualified.
+
+    "Claims" means either carried (a :data:`CARRIERS` row) or deliberately not
+    carried (an :data:`EXCLUDED_PROSE` row). A named exclusion is a decision,
+    so re-reporting it as unclaimed would make the tripwire cry wolf at rest
+    and train a reader to ignore it.
+
+    Qualified by the owning record because the draft holds **two** driver
+    lists — ``manual_settings.drivers[]`` and ``driver_research.drivers[]`` —
+    and a bare ``install_notes`` would not say which one grew it. That
+    ambiguity is the exact shape of the S1 defect this scan was widened to
+    close, so the output does not reproduce it.
+    """
+    found: set[str] = set()
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, Mapping):
+            continue
+        found |= {
+            f"{path}.{key}" for key in _prose_keys(record) - set(claimed)
+        }
+    return found
+
+
 def _rows(
-    records: Any, fields: tuple[str, ...], prose_key: str
+    records: Any, fields: tuple[str, ...], prose_key: str, path: str
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Rows carrying prose, and the names of prose-shaped keys nothing claims.
 
@@ -227,11 +293,10 @@ def _rows(
     second acceptance criterion forbids.
     """
     rows: list[dict[str, Any]] = []
-    unclaimed: set[str] = set()
+    unclaimed = _scan_prose_keys(records, path, fields)
     for record in records if isinstance(records, list) else []:
         if not isinstance(record, Mapping):
             continue
-        unclaimed |= _prose_keys(record) - set(fields)
         text = _prose(record.get(prose_key))
         if text is None:
             continue
@@ -274,7 +339,12 @@ def _declared_context_rows(draft: Mapping[str, Any]) -> tuple[
         if target.get("target_id") is not None:
             row["target_id"] = target["target_id"]
         flattened.append(row)
-    return _rows(flattened, _CONTEXT_ROW_FIELDS, "operator_notes")
+    return _rows(
+        flattened,
+        _CONTEXT_ROW_FIELDS,
+        "operator_notes",
+        "driver_research_request.targets[].operator_declared_context",
+    )
 
 
 def build_operator_notes(draft: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -296,14 +366,30 @@ def build_operator_notes(draft: Mapping[str, Any] | None) -> dict[str, Any]:
     manual = manual if isinstance(manual, Mapping) else {}
     inputs = draft.get("operator_inputs")
     inputs = inputs if isinstance(inputs, Mapping) else {}
+    research = draft.get("driver_research")
+    research = research if isinstance(research, Mapping) else {}
 
     build_notes = _prose(inputs.get("notes"))
     driver_rows, driver_unclaimed = _rows(
-        manual.get("drivers"), _DRIVER_ROW_FIELDS, "notes"
+        manual.get("drivers"),
+        _DRIVER_ROW_FIELDS,
+        "notes",
+        "manual_settings.drivers[]",
     )
     context_rows, context_unclaimed = _declared_context_rows(draft)
     unclaimed = (
-        driver_unclaimed | context_unclaimed | (_prose_keys(inputs) - {"notes"})
+        driver_unclaimed
+        | context_unclaimed
+        # The research reply's own driver records. Scanned even though this
+        # artifact carries nothing from them: its per-driver ``notes`` is live
+        # prose in the draft, and a scan that skipped the record entirely would
+        # make "nothing is unclaimed" true by blindness rather than by fact.
+        | _scan_prose_keys(
+            research.get("drivers"),
+            "driver_research.drivers[]",
+            _RESEARCH_DRIVER_CLAIMED,
+        )
+        | _scan_prose_keys([inputs], "operator_inputs", ("notes",))
     )
 
     artifact: dict[str, Any] = {

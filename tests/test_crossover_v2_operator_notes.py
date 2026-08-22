@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker import design_draft as design_draft_module
+from jasper.active_speaker.crossover_v2 import operator_notes as module
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     OPERATOR_NOTES_BLOCK,
     PACKET_SCHEMA_VERSION,
@@ -92,7 +93,11 @@ def _draft(
     return draft
 
 
-def _bundle(tmp_path: Path, draft: dict[str, Any] | None) -> tuple[Path, Path | None]:
+def _bundle(
+    tmp_path: Path,
+    draft: dict[str, Any] | None,
+    state: dict[str, Any] | None = None,
+) -> tuple[Path, Path | None, Path | None]:
     """A commissioning bundle, and the draft path beside it.
 
     Minimal on purpose: this block reads one file, and a fixture that also
@@ -110,12 +115,22 @@ def _bundle(tmp_path: Path, draft: dict[str, Any] | None) -> tuple[Path, Path | 
     if draft is not None:
         draft_path = tmp_path / "active_speaker_design_draft.json"
         draft_path.write_text(json.dumps(draft))
-    return session, draft_path
+    state_path = None
+    if state is not None:
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps(state))
+    return session, draft_path, state_path
 
 
-def _packet(tmp_path: Path, draft: dict[str, Any] | None) -> dict[str, Any]:
-    session, draft_path = _bundle(tmp_path, draft)
-    return build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+def _packet(
+    tmp_path: Path,
+    draft: dict[str, Any] | None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session, draft_path, state_path = _bundle(tmp_path, draft, state)
+    return build_crossover_evidence_packet(
+        session, driver_draft_path=draft_path, state_path=state_path
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -215,15 +230,62 @@ def test_an_unclaimed_prose_key_upstream_is_named_rather_than_dropped():
     """The allowlist tripwire: a fourth carrier cannot arrive in silence.
 
     Mutation-checked twice, each failing only this test: removing the
-    ``_prose_keys`` call, and widening ``_DRIVER_ROW_FIELDS`` to swallow the
-    new key — the second matters because "just add it to the allowlist" is the
-    fix a reader reaches for, and it must not silently satisfy the tripwire.
+    ``_scan_prose_keys`` call, and widening ``_DRIVER_ROW_FIELDS`` to swallow
+    the new key — the second matters because "just add it to the allowlist" is
+    the fix a reader reaches for, and it must not silently satisfy the
+    tripwire.
+
+    The name is qualified by its owning record. The draft holds two
+    ``drivers[]`` lists and a bare key would not say which one grew a field —
+    the same ambiguity that produced this file's S1 defect.
     """
     artifact = build_operator_notes(
         _draft(driver_extra={"install_notes": "wired in reverse on purpose"})
     )
-    assert artifact["redacted_fields"] == ["install_notes"]
+    assert artifact["redacted_fields"] == [
+        "manual_settings.drivers[].install_notes"
+    ]
     assert "wired in reverse" not in json.dumps(artifact)
+
+
+def test_the_scan_looks_at_the_research_record_it_carries_nothing_from():
+    """S1c. ``nothing is unclaimed`` must be a fact, not a blind spot.
+
+    ``driver_research.drivers[]`` is live prose in the draft that this artifact
+    deliberately does not gather. Before the scan reached it, a new prose field
+    on that record could appear and no tripwire would fire — the companion
+    at-rest test would have kept passing for the wrong reason.
+
+    Mutation-checked twice, each failing only this test. Deleting the
+    ``driver_research`` branch of the union in ``build_operator_notes`` is the
+    blind spot this exists to hold open. Emptying ``_RESEARCH_DRIVER_CLAIMED``
+    is the opposite error and matters as much: the scan then reports a key
+    :data:`EXCLUDED_PROSE` deliberately names, turning a stated decision into a
+    standing false alarm that teaches a reader to ignore the field.
+    """
+    draft = _draft()
+    draft["driver_research"] = {"drivers": [
+        {"role": "tweeter", "notes": "assistant summary", "fit_notes": "N-W"},
+    ]}
+    artifact = build_operator_notes(draft)
+
+    # ``notes`` there is named in EXCLUDED_PROSE, so it is a decision, not a
+    # miss — and a decision must not be re-reported as unclaimed.
+    assert artifact["redacted_fields"] == [
+        "driver_research.drivers[].fit_notes"
+    ]
+    # Neither string is gathered: the record is scanned, never carried.
+    assert "assistant summary" not in json.dumps(artifact)
+    assert "N-W" not in json.dumps(artifact)
+
+
+def test_the_excluded_research_notes_row_names_its_owning_record():
+    """S1b. The row exists, and its path says which ``drivers[]`` it means."""
+    assert "driver_research.drivers[].notes" in module.EXCLUDED_PROSE
+    assert all(
+        path.split(".")[0] in {"driver_research", "driver_safety_profile"}
+        for path in module.EXCLUDED_PROSE
+    ), module.EXCLUDED_PROSE
 
 
 def test_nothing_is_unclaimed_today():
@@ -269,6 +331,20 @@ def test_each_carrier_reports_the_cap_its_source_actually_applies():
         "CARRIERS) or the call was reformatted (update this anchor)"
     )
     assert CARRIERS["declared_context[].operator_notes"]["max_chars"] == 2048
+
+
+def test_the_new_kind_satisfies_the_namespacing_rule_that_landed_under_it():
+    """2.8's ruling (#2873) landed while this branch was open, so it applies.
+
+    A **new** artifact kind must name its owner as ``jts_<owner>_<name>``. The
+    21 kinds written before the rule are grandfathered; this one is not, so it
+    is checked against the real validator rather than against a restatement of
+    the shape.
+    """
+    from jasper.audio_measurement.bundles import validate_artifact_kind
+
+    assert validate_artifact_kind(OPERATOR_NOTES_KIND) == OPERATOR_NOTES_KIND
+    assert OPERATOR_NOTES_KIND.startswith("jts_crossover_v2_")
 
 
 def test_the_one_carrier_with_an_ambiguous_author_says_so():
@@ -355,10 +431,25 @@ def test_the_two_absences_are_not_merged(tmp_path):
 
 
 def test_household_prose_stays_excluded_while_operator_prose_is_carried(tmp_path):
-    """The two are different populations, and only one of them travels."""
-    packet = _packet(tmp_path, _draft())
+    """The two are different populations, and only one of them travels.
+
+    The state file is load-bearing and was missing when this test was first
+    written: with no state supplied, ``withheld_state_fields`` is empty because
+    there was nothing to withhold, so the assertion passed whatever
+    ``_STATE_WITHHELD`` said. Emptying that tuple passed all 27 tests. Supplying
+    household copy is what makes the boundary real.
+
+    Mutation-checked after the fix: ``_STATE_WITHHELD = ()`` now fails here.
+    """
+    packet = _packet(tmp_path, _draft(), state={
+        "household_findings": [{"household_copy": "my flat, second bedroom"}],
+    })
     assert packet["privacy"]["household_prose_excluded"] is True
-    assert packet["privacy"]["withheld_state_fields"] == []
+    assert packet["privacy"]["withheld_state_fields"] == ["household_findings"]
+    # The household's words are gone from the whole document…
+    assert "my flat, second bedroom" not in json.dumps(packet)
+    # …and the operator's travelled, in that same document.
+    assert packet[OPERATOR_NOTES_BLOCK]["build_notes"] == WAVEGUIDE
 
 
 def test_the_added_block_does_not_move_the_packet_schema_version(tmp_path):
@@ -404,6 +495,18 @@ def test_the_prose_gatherer_has_exactly_one_production_caller():
 
     Walks every shipped module's import statements rather than grepping text,
     so a module that imports the gatherer under an alias is still caught.
+
+    Two edges this pair does not close, named rather than left for a reader to
+    find. A dynamic ``importlib.import_module("...operator_notes")`` is not an
+    ``Import``/``ImportFrom`` node, so this walk misses it; and a
+    ``from ...evidence_packet import OPERATOR_NOTES_BLOCK`` followed by
+    ``packet[OPERATOR_NOTES_BLOCK]`` reaches the block without ever spelling
+    the literal the companion greps for. Both are theoretical — neither
+    appears in the tree — and both are defeated anyway by
+    ``test_prose_changes_nothing_in_the_packet_but_the_prose``, which does not
+    care HOW a consumer reached the strings, only that the document moves when
+    they do. That behavioural test is the real guard; these two are the cheap
+    ones that name the offender.
     """
     importers = set()
     for path in sorted((REPO_ROOT / "jasper").rglob("*.py")):

@@ -242,13 +242,16 @@ path and the cap for each:
   household is asked to describe the waveguide, the enclosure, and why the
   speaker was built the way it was, and it is the carrier you should expect to
   find filled.
-- **`drivers[]`** — per-driver prose, `{target_id, role, notes}`. The wizard
-  offers no box for it, so today it arrives only on a pasted research reply
-  that carried one. **This is the one carrier whose author is ambiguous**: its
-  `authored_by` says `operator_or_research_assistant_indistinguishable`,
-  because nothing on the record separates a sentence the operator typed from
-  one they pasted. Weight it accordingly — it may be a machine's guess wearing
-  a declaration's clothes.
+- **`drivers[]`** — per-driver prose, `{target_id, role, notes}`, with **no
+  live writer**. The wizard offers no box for it, and a pasted research reply
+  does not land here either — the import copies a named field list that has
+  never included `notes`, and a reply's own per-driver summary goes to
+  `driver_research.drivers[].notes`, a different record this artifact
+  deliberately excludes (see `excluded_prose`). So a value here came from a
+  build that no longer exists, or from a hand edit. **That makes it the one
+  carrier whose author is unknowable**, which is what its `authored_by` says:
+  `operator_or_research_assistant_indistinguishable`. Weight it accordingly —
+  nothing on the record tells you whose sentence it is.
 - **`declared_context[]`** — a legacy carrier with no live writer, present only
   on a bundle banked before it was demoted.
 
