@@ -1068,8 +1068,11 @@ seeds, and from what:
   The collapse to one owner has landed: `crossover_preview.SCHEMA_VERSION` was
   bumped to 2 precisely so a preview saved before it — carrying un-derived
   driver payloads — cannot be reused (#2603). The woofer's breakup ceiling and
-  the horn's coverage bound the choice from above; `radiating_diameter_mm`
-  feeds #1675's ka-beaming hint (`branch_chain.beaming_onset_hz`).
+  the horn's coverage bound the choice from above **as acoustics**, but only
+  the first of the two has a declared field the code reads:
+  `radiating_diameter_mm` feeds #1675's ka-beaming hint
+  (`branch_chain.beaming_onset_hz`), while coverage rides the driver notes as
+  operator prose since #2872 deleted the structured field nothing consumed.
 - **A protection slope, not a crossover order.** Worth separating, because the
   two are easy to conflate: the *crossover* filter's type and order are
   declared, not derived. What the low limit's slope condition derives is the

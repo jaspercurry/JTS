@@ -2258,27 +2258,33 @@ def test_component_entry_fields_present_in_all_four_allowlist_gates():
     assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)
 
 
-def test_deleted_component_entry_field_is_gone_from_every_schema_copy():
-    """The same drift guard, in the deletion direction (#2872).
+def test_retired_driver_fields_are_gone_from_every_schema_copy():
+    """The #1665 drift guard, in the deletion direction (#2872).
 
     ``horn_coverage_deg`` was a fourth component-entry field.  Deleting it
     from three of the four copies and forgetting the fourth would leave a
     schema that still accepts and stores a value nothing reads — the exact
-    state the deletion was for.  It survives in one place only: the named
-    legacy set the gates tolerate and the normalisers drop.
+    state the deletion was for.  A retired key survives in one place only: the
+    named legacy set the gates tolerate and the normalisers drop.
+
+    Driven off ``LEGACY_DROPPED_DRIVER_FIELDS`` rather than a hard-coded name,
+    because that set is append-only: the next key retired the same way
+    inherits this coverage instead of needing someone to remember to add it.
     """
     from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
     from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS
 
+    # A vacuous pass over an empty set would assert nothing at all.
+    assert LEGACY_DROPPED_DRIVER_FIELDS
+    assert "horn_coverage_deg" in LEGACY_DROPPED_DRIVER_FIELDS
     for schema in (
         dd._MANUAL_DRIVER_FIELDS,
         ds._MANUAL_DRIVER_FIELDS,
         ds._V2_RESEARCH_DRIVER_FIELDS,
         dd._V2_RESEARCH_COMPARABLE_FIELDS,
     ):
-        assert "horn_coverage_deg" not in schema
-    assert "horn_coverage_deg" in LEGACY_DROPPED_DRIVER_FIELDS
+        assert not (LEGACY_DROPPED_DRIVER_FIELDS & set(schema))
 
 
 # --- #2186: the estimate-friendly research contract -------------------------

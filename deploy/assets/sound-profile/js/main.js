@@ -1464,10 +1464,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.editedDriverTargets[targetId] = true;
     invalidateDriverResearchBinding();
     // driver_class/pad_kind each gate which OTHER fields this row shows
-    // (diameter vs horn coverage; resistor inputs vs the direct-dB input) --
-    // unlike every other manual-driver field above, a selection here must
-    // re-render immediately or the newly-relevant field stays hidden until
-    // some unrelated action repaints the page. Mirrors
+    // (a radiating diameter or nothing; resistor inputs vs the direct-dB
+    // input) -- unlike every other manual-driver field above, a selection
+    // here must re-render immediately or the newly-relevant field stays
+    // hidden until some unrelated action repaints the page. Mirrors
     // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
     if (field === 'driver_class' || field === 'pad_kind') render();
   }
