@@ -28,12 +28,14 @@
       "role": "woofer",
       "manufacturer": "Dayton Audio",
       "model": "Epique E150HE-44",
-      "sensitivity_db": 83.3
+      "sensitivity_db": 83.3,
+      "bring_up_note": "Smooth usable response through the planned crossover; suppress known upper breakup by crossover design."
     },
     "tweeter": {
       "role": "tweeter",
       "manufacturer": "B&C Speakers",
       "model": "DE250",
+      "bring_up_note": "Compression-driver horn response must be measured with the final horn or waveguide attached.",
       "protection_highpass_floor_hz": 1600
     }
   },
@@ -60,5 +62,5 @@
     "require_channel_identity_before_drivers": true,
     "emergency_stop_required": true
   },
-  "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements. Woofer (Dayton Audio Epique E150HE-44): Smooth usable response through the planned crossover; suppress known upper breakup by crossover design. Tweeter (B&C Speakers DE250): Compression-driver horn response must be measured with the final horn or waveguide attached."
+  "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements."
 }

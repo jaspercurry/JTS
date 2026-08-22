@@ -28,13 +28,15 @@
       "role": "woofer",
       "manufacturer": "Dayton Audio",
       "model": "Epique E150HE-44",
-      "sensitivity_db": 83.3
+      "sensitivity_db": 83.3,
+      "bring_up_note": "Manufacturer response extends through the bring-up crossover region; measure final baffle and enclosure before final EQ."
     },
     "tweeter": {
       "role": "tweeter",
       "manufacturer": "Eminence",
       "model": "F110M-8",
-      "sensitivity_db": 108.4
+      "sensitivity_db": 108.4,
+      "bring_up_note": "Compression driver must be measured with the final horn or waveguide attached; first bring-up keeps it muted and protected."
     }
   },
   "crossover_regions": [
@@ -60,5 +62,5 @@
     "require_channel_identity_before_drivers": true,
     "emergency_stop_required": true
   },
-  "notes": "Safe bring-up preset for a mono 2-way cabinet. The 2.5 kHz LR4 target is intentionally conservative for first power-up; final crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ require measurement with the actual horn, baffle, enclosure, amplifier gain, and microphone. Woofer (Dayton Audio Epique E150HE-44): Manufacturer response extends through the bring-up crossover region; measure final baffle and enclosure before final EQ. Tweeter (Eminence F110M-8): Compression driver must be measured with the final horn or waveguide attached; first bring-up keeps it muted and protected."
+  "notes": "Safe bring-up preset for a mono 2-way cabinet. The 2.5 kHz LR4 target is intentionally conservative for first power-up; final crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ require measurement with the actual horn, baffle, enclosure, amplifier gain, and microphone."
 }
