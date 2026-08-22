@@ -551,7 +551,6 @@ def _jts3_safety_profile(topology):
             "model": f"model-{role}",
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
-            "crossover_search_band_hz": [1500, 2500],
             **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,

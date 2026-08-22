@@ -33,7 +33,6 @@ def _profile_and_targets(
     mid_peak: float = -65,
     hard_band: list | None = None,
     measurement_band: list | None = None,
-    search_band: list | None = None,
     tweeter_low_limit_hz: float = 1500.0,
 ):
     topology = mono_output_topology(mode=mode)
@@ -57,7 +56,6 @@ def _profile_and_targets(
                 else {}
             ),
             "measurement_band_hz": measurement_band or [500, 10_000],
-            "crossover_search_band_hz": search_band or [1500, 2500],
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 4,
@@ -404,7 +402,6 @@ def test_skipped_derivation_logs_named_role(caplog):
 def test_upper_edge_ignores_measurement_band_lower_edge_still_absolute():
     _topology, profile, targets = _profile_and_targets(
         hard_band=[1200, 20_000], measurement_band=[1800, 18_000],
-        search_band=[1900, 2500],
     )
     band, _ceiling = resolve_driver_excitation_ceilings(
         profile, targets["woofer"]["target_fingerprint"],
@@ -427,7 +424,6 @@ def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
     # that direction is not a reachable scenario to pin here.)
     _topology, profile, targets = _profile_and_targets(
         hard_band=[1200, 30_000], measurement_band=[1800, 25_000],
-        search_band=[1900, 2500],
     )
     band, _ceiling = resolve_driver_excitation_ceilings(
         profile, targets["woofer"]["target_fingerprint"],
@@ -446,7 +442,7 @@ def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
 # one. Each pins declaration -> derivation, not a literal.
 
 _JTS3_TWEETER = {"hard_band": [1600, 20_000], "measurement_band": [2000, 18_000],
-                 "search_band": [2000, 2500], "tweeter_low_limit_hz": 1600.0}
+                 "tweeter_low_limit_hz": 1600.0}
 
 
 def test_hf_proven_hp_sweep_floor_follows_the_declared_hard_band():
@@ -482,7 +478,6 @@ def test_low_frequency_floor_keeps_the_analysis_window_as_excursion_protection()
     # high-pass inside the declared hard band.)
     _topology, profile, targets = _profile_and_targets(
         hard_band=[45, 20_000], measurement_band=[60, 10_000],
-        search_band=[1500, 2500],
     )
     band, _cap = resolve_driver_excitation_ceilings(
         profile, targets["woofer"]["target_fingerprint"], program_admission=True,
@@ -496,7 +491,7 @@ def test_the_widened_floor_never_reaches_below_the_declared_hard_band():
     # hard floor sits above its analysis floor is still held at the hard floor.
     _topology, profile, targets = _profile_and_targets(
         hard_band=[2500, 20_000], measurement_band=[2500, 18_000],
-        search_band=[2600, 2800], tweeter_low_limit_hz=2500.0,
+        tweeter_low_limit_hz=2500.0,
     )
     band, _cap = resolve_driver_excitation_ceilings(
         profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
@@ -522,7 +517,7 @@ def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog)
     # analysis floor already equals its hard floor is unchanged by this rule.
     _topology, profile, targets = _profile_and_targets(
         hard_band=[1600, 20_000], measurement_band=[1600, 18_000],
-        search_band=[2000, 2500], tweeter_low_limit_hz=1600.0,
+        tweeter_low_limit_hz=1600.0,
     )
     with caplog.at_level(logging.INFO):
         resolve_driver_excitation_ceilings(
@@ -541,7 +536,7 @@ def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog)
 
 def test_resolve_driver_measurement_band_hz_returns_the_declared_window():
     _topology, profile, targets = _profile_and_targets(
-        measurement_band=[5000, 20_000], search_band=[6000, 7000],
+        measurement_band=[5000, 20_000],
     )
     band = resolve_driver_measurement_band_hz(
         profile, targets["tweeter"]["target_fingerprint"],
@@ -556,7 +551,6 @@ def test_resolve_driver_measurement_band_hz_differs_from_the_excitation_ceiling(
     # figure; the measurement band is the declared window itself.
     _topology, profile, targets = _profile_and_targets(
         hard_band=[1600, 20_000], measurement_band=[2000, 18_000],
-        search_band=[2100, 2500],
     )
     ceiling_band, _peak = resolve_driver_excitation_ceilings(
         profile, targets["tweeter"]["target_fingerprint"],

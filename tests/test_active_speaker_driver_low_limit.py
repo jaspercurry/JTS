@@ -62,7 +62,6 @@ def _de250(**overrides) -> dict:
         "recommended_highpass_slope_db_per_octave": DE250_PUBLISHED_SLOPE_DB_PER_OCTAVE,
         "hard_excitation_band_hz": [DE250_LOW_LIMIT_HZ, 20000.0],
         "measurement_band_hz": list(DE250_PUBLISHED_RANGE_HZ),
-        "crossover_search_band_hz": [1600.0, 2500.0],
     }
     driver.update(overrides)
     return driver

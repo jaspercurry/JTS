@@ -14,9 +14,13 @@ The declarations in the candidate tests are jts3's own, read out of the banked
 ``captures/armloop-first-drive-2026-08/r1-baseline-summed/design-draft.json``
 on 2026-08-20, deliberately: this gate exists so a pre-registered Fc/slope
 tournament can run on that speaker, and a test written against placeholder
-declarations would not have caught that two of its three candidates are
-refused by the speaker's own declared search band before the slope question
-is even reached.
+declarations cannot say which of its candidates that speaker actually admits.
+
+Two candidates of that tournament were refused ``outside_declared_search_band``
+by an invented ``crossover_search_band_hz`` until the 2026-08-22 owner ruling
+deleted it (#2870). Both drivers' declared HARD bands admitted them the whole
+time, so they are admitted here now, and the refusals this file still pins are
+exactly the two that name a component-damage mechanism.
 """
 
 from __future__ import annotations
@@ -29,7 +33,6 @@ import pytest
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_OUTSIDE_SEARCH_BAND,
     _fc_rejection,
     recornered_preset,
 )
@@ -65,9 +68,6 @@ from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 DECLARED_FLOOR_HZ = 1600.0
 #: The lower driver's declared hard ceiling.
 LOWER_CEILING_HZ = 4000.0
-#: The INTERSECTION the two roles' declared ``crossover_search_band_hz`` leaves:
-#: woofer [1200, 2500] against tweeter [1600, 2500].
-SEARCH_BAND_HZ = (1600.0, 2500.0)
 #: The tweeter's declared ``minimum_slope_db_per_octave``.
 DECLARED_SLOPE = 24.0
 #: What the speaker is commissioned at today.
@@ -100,7 +100,6 @@ def _read(raw, **overrides):
     kwargs = {
         "declared_floor_hz": DECLARED_FLOOR_HZ,
         "lower_driver_ceiling_hz": LOWER_CEILING_HZ,
-        "search_band_hz": SEARCH_BAND_HZ,
         "minimum_slope_db_per_octave": DECLARED_SLOPE,
         "beaming_ceiling_hz": None,
     }
@@ -275,62 +274,54 @@ def test_an_unsupported_order_is_told_which_orders_exist():
 
 
 def test_a_corner_below_the_declared_floor_is_refused():
+    """1500 Hz — under the DE250's 1600 Hz diaphragm-excursion floor. A genuine
+    component-damage stop, and #2870 leaves it exactly where it was."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(1500.0), search_band_hz=(1000.0, 2500.0))
+        _read(_pin(1500.0))
     assert excinfo.value.reason == FC_REJECT_BELOW_DECLARED_FLOOR
+    # The declaration the operator has to go and edit, named in the sentence.
+    assert "1600.0" in excinfo.value.detail
 
 
 def test_a_corner_above_the_lower_drivers_ceiling_is_refused():
+    """5000 Hz — above the woofer's own declared 4000 Hz hard ceiling. The
+    second damage stop, likewise untouched by #2870."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(5000.0), search_band_hz=(1600.0, 6000.0))
+        _read(_pin(5000.0))
     assert excinfo.value.reason == FC_REJECT_ABOVE_LOWER_DRIVER_BAND
+    assert "4000.0" in excinfo.value.detail
 
 
-def test_a_corner_outside_the_declared_search_band_is_refused():
-    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(2600.0))
-    assert excinfo.value.reason == FC_REJECT_OUTSIDE_SEARCH_BAND
-    # The band the operator has to go and edit, named in the sentence.
-    assert "1600.0-2500.0" in excinfo.value.detail
+def test_the_corner_the_invented_search_band_used_to_refuse_is_admitted():
+    """#2870's acceptance case, on jts3's own declared bands.
 
-
-def test_an_undeclared_search_band_refuses_every_pin_and_says_why():
-    """``resolve_fc_search_band`` returns ``None`` for "no proposal may be made
-    at all" — a participating role that declared nothing, or an empty
-    intersection. For a pin that means the same thing it means for a proposal,
-    and the fail-closed direction is the only safe reading of an anomaly."""
-    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(2400.0), search_band_hz=None)
-    assert excinfo.value.reason == FC_REJECT_OUTSIDE_SEARCH_BAND
-    assert "no band" in excinfo.value.detail
-
-
-def test_an_undeclared_band_must_not_be_read_as_permitting_everything():
-    """The trap this gate could have walked into, pinned so it cannot be.
-
-    ``resolve_fc_search_band``'s ``None`` means "the declarations admit no
-    corner at all", but the same ``None`` reaching ``_fc_rejection`` means the
-    OPPOSITE — "no declared band constrains this" — and a pin would then be
-    bounded only by the excitation bands. Without the translation here, a
-    speaker whose roles declare no overlapping band would admit any corner
-    between the floor and the ceiling.
+    2600 Hz is the closest horn/woofer beamwidth match for the 190 mm R-OSSE
+    waveguide (112.0 deg against 115.2 deg). Both declarations admit it
+    comfortably — it is a kilohertz above the tweeter's 1600 Hz floor and well
+    under the woofer's 4000 Hz ceiling — yet it was refused
+    ``outside_declared_search_band`` purely by an invented 2500 Hz edge that
+    named no mechanism. That was the nanny the ruling removed.
     """
-    # Comfortably inside floor..ceiling, so ONLY the missing band can refuse it.
-    assert _fc_rejection(
-        3000.0, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, None,
-    ) is None
-    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(3000.0), search_band_hz=None)
-    assert excinfo.value.reason == FC_REJECT_OUTSIDE_SEARCH_BAND
+    pinned = _read(_pin(2600.0))
+    assert pinned is not None and pinned.fc_hz == 2600.0
+    # And the receipt records the two bounds it actually cleared, so a reader
+    # six weeks later can see WHICH declarations admitted it.
+    assert pinned.checked_against_floor_hz == DECLARED_FLOOR_HZ
+    assert pinned.checked_against_ceiling_hz == LOWER_CEILING_HZ
 
 
-def test_a_missing_band_is_still_answered_after_the_harder_bounds():
-    """Hardest-first stays the shared predicate's own ordering: a corner that
-    ALSO misses the declared floor is told about the floor, because that is the
-    sentence that sends the operator to the right declaration."""
-    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(900.0), search_band_hz=None)
-    assert excinfo.value.reason == FC_REJECT_BELOW_DECLARED_FLOOR
+def test_the_gate_has_no_third_frequency_bound_left():
+    """The deletion, pinned at the gate rather than only at the predicate.
+
+    Nothing between the two declared hard edges may refuse a pin any more, and
+    the retired keyword is gone from the signature rather than merely ignored —
+    a caller still passing it learns immediately instead of believing a bound
+    is being applied that is not.
+    """
+    for corner_hz in (1600.0, 1800.0, 2400.0, 2600.0, 3000.0, 4000.0):
+        assert _read(_pin(corner_hz)) is not None, corner_hz
+    with pytest.raises(TypeError):
+        _read(_pin(2600.0), search_band_hz=(1600.0, 2500.0))
 
 
 @pytest.mark.parametrize("corner_hz", [
@@ -342,7 +333,7 @@ def test_a_pin_and_a_declared_corner_are_admissible_on_identical_terms(corner_hz
 
     An operator who pins the corner their declarations already permit must not
     be refused, and one who pins a corner those declarations exclude must not be
-    admitted. Two spellings of three comparisons is exactly how those two
+    admitted. Two spellings of the same comparisons is exactly how those two
     answers drift apart on one speaker — so the gate asks
     ``fc_sweep._fc_rejection``, and this walks a grid across every declared
     edge to prove it still does.
@@ -351,7 +342,7 @@ def test_a_pin_and_a_declared_corner_are_admissible_on_identical_terms(corner_hz
     than a fence, so the shared predicate carries none.
     """
     expected = _fc_rejection(
-        corner_hz, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, SEARCH_BAND_HZ,
+        corner_hz, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ,
     )
     if expected is None:
         pinned = _read(_pin(corner_hz))
@@ -427,8 +418,8 @@ def test_the_frequency_bounds_are_answered_before_the_slope():
     range is the more fundamental of the two answers. A candidate that fails
     both must be told the frequency one."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(4000.0, order=2))
-    assert excinfo.value.reason == FC_REJECT_OUTSIDE_SEARCH_BAND
+        _read(_pin(5000.0, order=2))
+    assert excinfo.value.reason == FC_REJECT_ABOVE_LOWER_DRIVER_BAND
 
 
 def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
@@ -495,7 +486,6 @@ def test_the_gate_records_what_it_compared_this_pin_to():
     assert pinned is not None
     assert pinned.checked_against_floor_hz == DECLARED_FLOOR_HZ
     assert pinned.checked_against_ceiling_hz == LOWER_CEILING_HZ
-    assert pinned.checked_against_search_band_hz == SEARCH_BAND_HZ
     assert pinned.checked_against_slope_db_per_octave == DECLARED_SLOPE
     assert pinned.beaming_ceiling_hz == 1800.0
 
@@ -520,7 +510,6 @@ def test_a_request_cannot_forge_the_stamped_fields():
         authority="peer_reviewed_measurement",
         checked_against_floor_hz=1.0,
         checked_against_ceiling_hz=99999.0,
-        checked_against_search_band_hz=[1.0, 99999.0],
         checked_against_slope_db_per_octave=0.0,
         beaming_ceiling_hz=99999.0,
         slope_db_per_octave=999.0,
@@ -529,7 +518,6 @@ def test_a_request_cannot_forge_the_stamped_fields():
     assert pinned.authority == TOPOLOGY_AUTHORITY_OPERATOR_PINNED
     assert pinned.checked_against_floor_hz == DECLARED_FLOOR_HZ
     assert pinned.checked_against_ceiling_hz == LOWER_CEILING_HZ
-    assert pinned.checked_against_search_band_hz == SEARCH_BAND_HZ
     assert pinned.checked_against_slope_db_per_octave == DECLARED_SLOPE
     assert pinned.beaming_ceiling_hz is None
     # Derived, never read: a request claiming 999 dB/octave gets order * 6.
@@ -605,12 +593,80 @@ def test_the_read_back_does_not_reapply_the_bounds():
     banked = _read(_pin(2400.0))
     assert banked is not None
     # A record from a round whose speaker has since re-declared a narrower
-    # band. It was legal when it was accepted; grading must still read it.
+    # ceiling. It was legal when it was accepted; grading must still read it.
     record = banked.to_dict()
-    record["checked_against_search_band_hz"] = [1600.0, 1700.0]
+    record["checked_against_ceiling_hz"] = 2000.0
     again = topology_prescription_from_mapping(record)
     assert again is not None
     assert again.fc_hz == 2400.0
+
+
+#: A receipt this repository ACTUALLY WROTE before #2870, emitted by
+#: ``origin/main``'s own ``read_topology_prescription`` at jts3's declarations
+#: on 2026-08-22 and frozen verbatim — not a hand-typed approximation of one.
+#: Its ``checked_against_search_band_hz`` is the field the ruling retired.
+BANKED_PRE_2870_RECEIPT = {
+    "artifact_schema_version": 1,
+    "authority": "operator_pinned_no_measured_ranking",
+    "basis_artifacts": ["armloop-first-drive-2026-08/offline-fc-search"],
+    "basis_note": "offline candidate search, no measured ranking",
+    "beaming_ceiling_hz": None,
+    "checked_against_ceiling_hz": 4000.0,
+    "checked_against_floor_hz": 1600.0,
+    "checked_against_search_band_hz": [1600.0, 2500.0],
+    "checked_against_slope_db_per_octave": 24.0,
+    "fc_hz": 2400.0,
+    "kind": "jts_crossover_topology_prescription",
+    "order": 4,
+    "slope_db_per_octave": 24.0,
+}
+
+
+def test_a_receipt_banked_before_the_field_was_retired_still_reads_back(caplog):
+    """#2870 hazard 2, pinned: the deploy that deletes a field must not make
+    every receipt written before it unreadable.
+
+    ``_PRESCRIPTION_FIELDS`` refuses an unknown field rather than ignoring it,
+    so a banked receipt carrying ``checked_against_search_band_hz`` would have
+    become ``None`` at grading — silently discarding the provenance of a round
+    that really ran. The read-back drops a RETIRED field instead, on the same
+    posture split the pre-envelope tolerance already uses.
+
+    ``None`` is the failure mode to catch, so the WARNING is asserted absent:
+    a receipt that reads back but logs unreadable is still a receipt somebody
+    will go looking for.
+    """
+    with caplog.at_level(logging.WARNING):
+        again = topology_prescription_from_mapping(dict(BANKED_PRE_2870_RECEIPT))
+    assert again is not None
+    assert again.fc_hz == 2400.0
+    assert again.order == 4
+    # Everything the build still speaks survives the drop unharmed.
+    assert again.checked_against_floor_hz == 1600.0
+    assert again.checked_against_ceiling_hz == 4000.0
+    assert again.checked_against_slope_db_per_octave == 24.0
+    assert again.authority == TOPOLOGY_AUTHORITY_OPERATOR_PINNED
+    assert again.basis_artifacts == (
+        "armloop-first-drive-2026-08/offline-fc-search",
+    )
+    assert "crossover_v2_topology_prescription_unreadable" not in caplog.text
+    # DROPPED, never read: the retired value must not reappear on the way out,
+    # or a deleted concept keeps riding receipts this build cannot interpret.
+    assert "checked_against_search_band_hz" not in again.to_dict()
+
+
+def test_the_request_gate_still_refuses_a_freshly_authored_retired_field():
+    """The other half of the posture split, and the reason it is a split.
+
+    Tolerance is for documents this repository already wrote. A prescriber
+    AUTHORING ``checked_against_search_band_hz`` today is talking to a build
+    that no longer exists, and must learn at the tap rather than have the field
+    silently dropped — which would look like a bound being applied that is not.
+    """
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0, checked_against_search_band_hz=[1600.0, 2500.0]))
+    assert excinfo.value.reason == TOPOLOGY_MALFORMED
+    assert "checked_against_search_band_hz" in excinfo.value.detail
 
 
 def test_the_read_back_still_refuses_a_mangled_shape_and_says_so(caplog):
@@ -830,36 +886,42 @@ def test_recornering_without_an_order_leaves_the_declared_order_alone():
 
 
 @pytest.mark.parametrize(
-    ("arm", "corner_hz", "order", "reason"),
+    ("arm", "corner_hz", "order"),
     [
-        ("C1", 2600.0, 4, FC_REJECT_OUTSIDE_SEARCH_BAND),
-        ("C2", 4000.0, 4, FC_REJECT_OUTSIDE_SEARCH_BAND),
-        ("C3", 4000.0, 2, FC_REJECT_OUTSIDE_SEARCH_BAND),
+        ("C1", 2600.0, 4),
+        ("C2", 4000.0, 4),
     ],
 )
-def test_the_pre_registered_tournament_arms_refuse_on_jts3s_own_declarations(
-    arm, corner_hz, order, reason,
+def test_the_pre_registered_tournament_arms_run_on_jts3s_own_declarations(
+    arm, corner_hz, order,
 ):
-    """The pre-flight, banked so it cannot be re-derived wrongly later.
+    """The pre-flight, banked so it cannot be re-derived wrongly later — and
+    the clearest single measure of what #2870 changed.
 
-    All three pre-registered candidates sit ABOVE the 2500 Hz ceiling both
-    roles declare, so every one of them is refused for the band before the
-    slope question is reached — including C3, whose order-2 slope would ALSO
-    have been refused had its corner been legal (the test below). That is the
-    door working: the candidates are inadmissible on this speaker as declared
-    today, and the honest outcome is a receipted refusal rather than a
-    measurement.
+    Until the 2026-08-22 ruling all three pre-registered candidates were refused
+    ``outside_declared_search_band``: they sit above a 2500 Hz edge that neither
+    driver declared as a limit on anything, so the tournament could not run at
+    all. Both drivers' HARD bands admitted every one of them — 2600 and 4000 are
+    inside [1600, 4000] — and now the gate says so.
+
+    C3 is deliberately not in this table: its corner is legal now, so its
+    order-2 slope becomes its FIRST refusal rather than its second (below).
+    """
+    pinned = _read(_pin(corner_hz, order=order))
+    assert pinned is not None, arm
+    assert pinned.fc_hz == corner_hz
+    assert pinned.order == order
+
+
+def test_the_order_2_candidate_is_refused_for_its_slope_now_its_corner_is_legal():
+    """C3, whose second refusal used to be hidden behind its corner.
+
+    jts3's tweeter declares 24 dB/octave; order 2 is 12. That is a declaration
+    about what the crossover's own filter must do, so it still refuses — the
+    ruling deleted a bound that named no mechanism, not the ones that do.
     """
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(corner_hz, order=order))
-    assert excinfo.value.reason == reason, arm
-
-
-def test_the_order_2_arm_would_still_be_refused_at_a_legal_corner():
-    """C3's second refusal, which its corner hides today. jts3's tweeter
-    declares 24 dB/octave; order 2 is 12."""
-    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
-        _read(_pin(2400.0, order=2))
+        _read(_pin(4000.0, order=2))
     assert excinfo.value.reason == TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT
 
 
@@ -1030,15 +1092,15 @@ def test_the_announced_capture_program_follows_the_corner_it_is_built_at():
     assert build_verify_program(250.0).segment("sweep_verify").f1_hz == 125.0
 
     # THE PILOT's high bound: live all the way to 2000 Hz, which is what puts
-    # the divergence inside jts3's own declared 1600-2500 Hz pin band.
+    # the divergence inside jts3's own declared 1600-4000 Hz pin band.
     clamped_at = VERIFY_PILOT_F_HI_HZ * VERIFY_PILOT_FC_CLEARANCE_RATIO
     assert clamped_at == 2000.0
-    assert _pilot_hi(SEARCH_BAND_HZ[0]) == 640.0
+    assert _pilot_hi(DECLARED_FLOOR_HZ) == 640.0
     assert _pilot_hi(INCUMBENT_HZ) == INCUMBENT_HZ / VERIFY_PILOT_FC_CLEARANCE_RATIO
     assert _pilot_hi(1800.0) == 720.0
     # …and only from 2000 Hz up does it stop moving.
     assert _pilot_hi(2000.0) == VERIFY_PILOT_F_HI_HZ
-    assert _pilot_hi(SEARCH_BAND_HZ[1]) == VERIFY_PILOT_F_HI_HZ
+    assert _pilot_hi(LOWER_CEILING_HZ) == VERIFY_PILOT_F_HI_HZ
     # The incumbent and a legal pin inside the same band announce DIFFERENT
     # programs — the whole reason the spec must take the round's own corner.
     assert _pilot_hi(INCUMBENT_HZ) != _pilot_hi(1800.0)

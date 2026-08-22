@@ -49,7 +49,6 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
             "model": f"model-{role}",
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
-            "crossover_search_band_hz": [1500, 2500],
             # #2603: the tweeter declares its low limit once; its hard floor and
             # protective high-pass derive from it, instead of sharing the
             # woofer's 500 Hz floor under a 5000 Hz protective high-pass.

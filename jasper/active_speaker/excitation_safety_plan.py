@@ -683,49 +683,13 @@ def resolve_driver_measurement_band_hz(
     return (lo, hi)
 
 
-def resolve_driver_crossover_search_band_hz(
-    safety_profile: Mapping[str, Any], target_fingerprint: str,
-) -> tuple[float, float] | None:
-    """The confirmed ``crossover_search_band_hz`` for one driver, or ``None``.
-
-    The declared range this driver may be crossed over IN — read by
-    ``crossover_v2.fc_sweep.resolve_fc_search_band``, which intersects the
-    participating roles' bands because a two-way Fc puts BOTH drivers at that
-    frequency.
-
-    **Returns ``None`` rather than raising**, unlike its sibling
-    :func:`resolve_driver_measurement_band_hz` above, and the difference is
-    deliberate: the measurement band bounds a program that is about to PLAY, so
-    an unreadable one must stop the session. This one bounds what may be
-    PROPOSED, and the fail-closed reading of a missing declaration is "no
-    proposal from this role" — which is exactly what ``resolve_fc_search_band``
-    does with a ``None``, naming the role in ``undeclared_roles`` so the
-    household is told which declaration to fix. Refusing a whole measurement
-    session over a selector's optional input would be the wrong direction.
-    """
-    try:
-        target = _target_for_request(safety_profile, target_fingerprint)
-    except ExcitationSafetyPlanError:
-        return None
-    band = target.get("crossover_search_band_hz")
-    if not isinstance(band, list) or len(band) != 2:
-        return None
-    try:
-        lo, hi = float(band[0]), float(band[1])
-    except (TypeError, ValueError):
-        return None
-    if not (math.isfinite(lo) and math.isfinite(hi)) or not 0.0 < lo < hi:
-        return None
-    return (lo, hi)
-
-
 def resolve_driver_protection_slope_db_per_octave(
     safety_profile: Mapping[str, Any], target_fingerprint: str,
 ) -> float | None:
     """The confirmed protective HIGH-PASS minimum slope for one driver, or
     ``None``.
 
-    The third of this file's confirmed-record readers, and the frequency
+    The second of this file's confirmed-record readers, and the frequency
     sibling of :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`
     — that function reads the ``cutoff_hz`` out of ``required_protection_filters``
     and nothing read the ``minimum_slope_db_per_octave`` beside it back out.  A
@@ -745,9 +709,10 @@ def resolve_driver_protection_slope_db_per_octave(
     protection filter and the commissioning admission path (``graph_safety``)
     read the declaration, and crossover apply compares corner FREQUENCIES only.
 
-    **Returns ``None`` rather than raising**, like
-    :func:`resolve_driver_crossover_search_band_hz` above and unlike
-    :func:`resolve_driver_measurement_band_hz`, and ``None`` means *no slope is
+    **Returns ``None`` rather than raising**, unlike its sibling
+    :func:`resolve_driver_measurement_band_hz` above, and the difference is
+    deliberate: the measurement band bounds a program that is about to PLAY, so
+    an unreadable one must stop the session.  ``None`` here means *no slope is
     declared* — never a guessed default, on
     ``declared_protection_highpass_floor_hz``'s never-nanny rule.  What keeps
     that honest rather than fail-open: a MALFORMED

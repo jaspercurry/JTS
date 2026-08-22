@@ -28,7 +28,6 @@ from jasper.output_topology import OutputTopology
 from ._common import LEGACY_DROPPED_DRIVER_FIELDS
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
-    HIGH_FREQUENCY_ROLES,
     apply_driver_low_limit,
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
@@ -36,7 +35,6 @@ from .driver_protection import (
     resolve_driver_low_limit,
 )
 from .measurement import active_driver_targets, physical_driver_target
-from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DRIVER_RESEARCH_REQUEST_KIND = "jts_active_crossover_driver_research_request"
@@ -86,7 +84,6 @@ _MANUAL_DRIVER_FIELDS = {
     "hard_excitation_band_hz",
     "required_protection_filters",
     "measurement_band_hz",
-    "crossover_search_band_hz",
     "level_duration_limits",
     "cabinet",
     "source",
@@ -738,7 +735,6 @@ def normalise_driver_safety_fields(
     for key in (
         "hard_excitation_band_hz",
         "measurement_band_hz",
-        "crossover_search_band_hz",
     ):
         band = _frequency_band(value.get(key), f"{field_name}.{key}")
         if band is not None:
@@ -809,7 +805,6 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "hard_excitation_band_hz",
     "required_protection_filters",
     "measurement_band_hz",
-    "crossover_search_band_hz",
     "level_duration_limits",
     "cabinet",
     "unknowns",
@@ -1061,6 +1056,12 @@ def validate_driver_research_request(
         if channel.driver_style
     }
     targets: list[dict[str, Any]] = []
+    #: The same targets as ``targets``, except that any retired key the stored
+    #: context still carries is put BACK, verbatim. It reconstructs the core the
+    #: build that wrote this request fingerprinted; see the fingerprint check
+    #: below for why tolerating the allowlist is not enough on its own.
+    legacy_targets: list[dict[str, Any]] = []
+    saw_retired_context_field = False
     for index, (raw_target, current) in enumerate(zip(raw_targets, current_targets)):
         field_name = f"driver_research_request.targets[{index}]"
         if not isinstance(raw_target, Mapping):
@@ -1132,6 +1133,13 @@ def validate_driver_research_request(
                 raise DriverSafetyProfileError(
                     f"{field_name}.operator_declared_context must be an object"
                 )
+            # Tolerated, never stored: this context is built by
+            # ``normalise_driver_safety_fields``, so a request PERSISTED in the
+            # draft by an older build carries whatever that build's normaliser
+            # emitted -- and ``design_draft.build_design_draft`` re-validates the
+            # stored request on EVERY save. Refusing here would make an old
+            # draft unsaveable over a key the ask no longer sends. The
+            # normaliser below drops it. See LEGACY_DROPPED_DRIVER_FIELDS.
             _reject_unknown_keys(
                 context_raw,
                 f"{field_name}.operator_declared_context",
@@ -1139,11 +1147,10 @@ def validate_driver_research_request(
                     "hard_excitation_band_hz",
                     "required_protection_filters",
                     "measurement_band_hz",
-                    "crossover_search_band_hz",
                     "cabinet",
                     "level_duration_limits",
                     "operator_notes",
-                },
+                } | LEGACY_DROPPED_DRIVER_FIELDS,
             )
             context = normalise_driver_safety_fields(
                 context_raw,
@@ -1159,6 +1166,17 @@ def validate_driver_research_request(
             )
             if notes:
                 context["operator_notes"] = notes
+        # The retired keys as this request STORED them. Copied verbatim rather
+        # than re-derived: the stored context IS an older
+        # ``normalise_driver_safety_fields`` output, so the stored value is
+        # already in that build's normalised form and copying it reproduces the
+        # fingerprinted bytes exactly, whatever the key's type was.
+        legacy_context = dict(context)
+        if isinstance(context_raw, Mapping):
+            for retired in sorted(LEGACY_DROPPED_DRIVER_FIELDS):
+                if retired in context_raw:
+                    legacy_context[retired] = context_raw[retired]
+                    saw_retired_context_field = True
         target = {
             **expected_fields,
             "driver_style": expected_style,
@@ -1167,6 +1185,14 @@ def validate_driver_research_request(
         }
         targets.append(
             {key: value for key, value in target.items() if value is not None}
+        )
+        legacy_targets.append(
+            {
+                key: value
+                for key, value in {**target, "operator_declared_context":
+                                   legacy_context or None}.items()
+                if value is not None
+            }
         )
     core: dict[str, Any] = {
         "artifact_schema_version": DRIVER_RESEARCH_REQUEST_SCHEMA_VERSION,
@@ -1182,9 +1208,38 @@ def validate_driver_research_request(
     }
     core = {key: value for key, value in core.items() if value is not None}
     fingerprint = request.get("request_fingerprint")
-    if not _is_sha256(fingerprint) or fingerprint != _fingerprint(core):
+    current_fingerprint = _fingerprint(core)
+    # **Tolerating the retired key in the allowlist is necessary and NOT
+    # sufficient**, because the context is FINGERPRINTED. The build that wrote
+    # this request hashed a core whose context still carried the key; dropping
+    # it here recomputes a different digest, and a request a real box stored
+    # would be refused "fingerprint is invalid" on the deploy that retired the
+    # field -- on the very save the household's remedy copy tells them to make.
+    #
+    # Same posture, and the same sentence, as
+    # ``crossover_v2.topology_prescription._parse_prescription``'s read-back:
+    # a document this repository already wrote must stay readable across the
+    # deploy that retired the field. So a stored digest is accepted when it
+    # matches the core computed WITH the retired context field present.
+    #
+    # TRANSITIONAL by construction: the returned record is re-stamped with
+    # ``current_fingerprint`` below, so the draft that saves it is written in
+    # the new shape and matches on its own terms next time. The re-stamp is also
+    # load-bearing rather than hygiene -- the staleness check immediately below
+    # compares this record against a freshly built one, which carries the
+    # current digest.
+    if not _is_sha256(fingerprint):
         raise DriverSafetyProfileError("driver_research_request fingerprint is invalid")
-    canonical = {**core, "request_fingerprint": fingerprint}
+    if fingerprint != current_fingerprint:
+        legacy_core = {
+            key: (legacy_targets if key == "targets" else value)
+            for key, value in core.items()
+        }
+        if not saw_retired_context_field or fingerprint != _fingerprint(legacy_core):
+            raise DriverSafetyProfileError(
+                "driver_research_request fingerprint is invalid"
+            )
+    canonical = {**core, "request_fingerprint": current_fingerprint}
     expected = build_driver_research_request(
         topology,
         operator_inputs,
@@ -1462,7 +1517,6 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     # one and the example has to model that.
     hp = int(_prompt_example_highpass_hz(request))
     hard_low = hp - 500
-    search_high = min(hp * 2, 18000)
     return "\n".join(
         (
             "You are a loudspeaker-driver datasheet researcher. Your entire reply is data for a machine to parse, not prose for a human.",
@@ -1499,8 +1553,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             'A mid therefore adds exactly one entry, in this shape: "required_protection_filters": [{"kind":"lowpass","cutoff_hz":3000,"minimum_slope_db_per_octave":24,"family_or_equivalent":"equivalent_or_steeper"}]. No other role sends this key.',
             "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends. Its LOWER edge is derived from recommended_highpass_hz, so what matters here is the upper edge.",
             "measurement_band_hz is the driver's published frequency-response range — for example a compression driver rated 1.0-18.0 kHz sends [1000, 18000]. Send the published range even when it extends below the minimum crossover; this build clamps the analysis window up into the allowed band itself.",
-            "crossover_search_band_hz is a protocol choice, not a driver fact. A filter cutoff is not a brick wall.",
-            "Nest the bands: the crossover-search band sits inside the measurement band, and the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
+            "Nest the bands: the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
             "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
             "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver. For a tweeter with no published level limit, send exactly the ceiling listed under LIMITS: that hands the level choice to this build's own protection logic, which raises it only once a protective high-pass is proven in the signal path.",
             "Send a lower tweeter number only when you mean it as a deliberate quieter limit — anything below the ceiling is taken literally and is never raised. Never send a value above the ceiling.",
@@ -1528,7 +1581,6 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "recommended_highpass_slope_db_per_octave": 12,',
             f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
             f'    "measurement_band_hz": [{hp - 1000}, 18000],',
-            f'    "crossover_search_band_hz": [{hp + 500}, {search_high}],',
             '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
@@ -1773,67 +1825,6 @@ def _band_subset(inner: Sequence[float], outer: Sequence[float]) -> bool:
     return inner[0] >= outer[0] and inner[1] <= outer[1]
 
 
-def _search_band_issues(
-    role: str,
-    search: Sequence[float],
-    measurement: Sequence[float],
-    hard: Sequence[float] | None,
-) -> list[str]:
-    """Which declared band bounds each edge of ``crossover_search_band_hz``.
-
-    Low-edge asymmetry, HIGH-FREQUENCY ROLES ONLY (#2191, mirroring #1654).
-    ``resolve_driver_excitation_ceilings`` in
-    :mod:`jasper.active_speaker.excitation_safety_plan` already ships the same
-    asymmetry on the DERIVED excitation floor: it appends
-    ``measurement_band[0]`` to the floor candidates for every role and every
-    caller EXCEPT a high-frequency role on the ``program_admission`` path,
-    where the floor is ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``.
-    Its rationale is that such a graph carries the driver's crossover
-    high-pass by construction, so the sub-window region reaches the driver
-    ATTENUATED rather than naked, and the declared HARD floor is the
-    operator-confirmed datasheet minimum for exactly that question.
-
-    Every crossover search runs on that path --
-    :mod:`jasper.active_speaker.program_admission` and the v2 session in
-    ``jasper.web.correction_crossover_v2`` both pass ``program_admission=True``
-    -- so requiring ``search`` to be a subset of ``measurement`` made a search
-    band that MEASURE legitimately sweeps unstorable: the tweeter repair
-    ``[2000, 2500]`` -> ``[1600, 2500]`` against ``measurement=[2000, 18000]``
-    landed the profile ``incomplete``, which no save can clear (#2191).
-    This function is the store-time half of one rule, restated because
-    ``excitation_safety_plan`` imports this module and cannot be imported back;
-    ``tests/test_active_speaker_driver_safety.py`` pins the two halves to the
-    same number so the restatement cannot drift.
-
-    The declared HARD floor still binds, always, for every role -- that is the
-    only relationship this relaxes away from, and it relaxes TO a bound the
-    hard band owns, never to none. A high-frequency role whose hard band is
-    missing (already its own blocking issue) keeps the unchanged subset rule
-    rather than losing a floor.
-
-    Every low-frequency role keeps ``measurement_band[0]``, because the shipped
-    floor keeps it there too: a woofer driven below its declared analysis floor
-    has nothing between it and its own suspension.
-
-    The UPPER edge is untouched for every role. #1668 already excludes
-    ``measurement_band[1]`` from the shipped excitation CEILING, so this
-    contract is deliberately more conservative than MEASURE on the high side.
-    Nothing has ruled on widening it, and refusing to STORE a wider search band
-    is a usability limit rather than a safety gap, so it stays as shipped.
-    """
-
-    if role not in HIGH_FREQUENCY_ROLES or hard is None:
-        if _band_subset(search, measurement):
-            return []
-        return [f"{role}:search_band_outside_measurement_band"]
-    reasons: list[str] = []
-    if float(search[1]) > float(measurement[1]):
-        reasons.append(f"{role}:search_band_outside_measurement_band")
-    if float(search[0]) < max(MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard[0])):
-        reasons.append(f"{role}:search_band_below_hard_band")
-    return reasons
-
-
 def _target_issues(target: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
     role = str(target.get("role") or "driver")
@@ -1844,13 +1835,10 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
         reasons.append(f"{role}:model_missing")
     hard = target.get("hard_excitation_band_hz")
     measurement = target.get("measurement_band_hz")
-    search = target.get("crossover_search_band_hz")
     if not isinstance(hard, list):
         reasons.append(f"{role}:hard_excitation_band_missing")
     if not isinstance(measurement, list):
         reasons.append(f"{role}:measurement_band_missing")
-    if not isinstance(search, list):
-        reasons.append(f"{role}:crossover_search_band_missing")
     limits = target.get("level_duration_limits")
     required_limit_fields = (
         "max_effective_peak_dbfs",
@@ -1879,15 +1867,6 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
     if isinstance(hard, list) and isinstance(measurement, list):
         if not _band_subset(measurement, hard):
             reasons.append(f"{role}:measurement_band_outside_hard_band")
-    if isinstance(measurement, list) and isinstance(search, list):
-        reasons.extend(
-            _search_band_issues(
-                role,
-                search,
-                measurement,
-                hard if isinstance(hard, list) else None,
-            )
-        )
     filters = target.get("required_protection_filters")
     filters = filters if isinstance(filters, list) else []
     kinds = {str(item.get("kind")) for item in filters if isinstance(item, Mapping)}
@@ -1963,7 +1942,6 @@ def _profile_core(
             "hard_excitation_band_hz",
             "required_protection_filters",
             "measurement_band_hz",
-            "crossover_search_band_hz",
             "level_duration_limits",
             "cabinet",
         )
@@ -2063,7 +2041,6 @@ def _profile_core(
                 "required_protection_filters", []
             ),
             "measurement_band_hz": derived.get("measurement_band_hz"),
-            "crossover_search_band_hz": derived.get("crossover_search_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
             "cabinet": visible.get(
                 "cabinet",
@@ -2324,7 +2301,6 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "hard_excitation_band_hz",
                 "required_protection_filters",
                 "measurement_band_hz",
-                "crossover_search_band_hz",
                 "level_duration_limits",
                 "cabinet",
                 "unknowns",
@@ -2436,7 +2412,6 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             "hard_excitation_band_hz",
             "required_protection_filters",
             "measurement_band_hz",
-            "crossover_search_band_hz",
             "level_duration_limits",
             "cabinet",
         }
@@ -2587,6 +2562,52 @@ def _superseded_typed_highpass(
     return tuple(out)
 
 
+#: Target field names a stored safety PROFILE may carry that this build has
+#: RETIRED.  ``crossover_search_band_hz`` declared where a driver "may be
+#: crossed"; the 2026-08-22 owner ruling deleted it (#2870) because the only
+#: bounds entitled to refuse a corner are the drivers' declared hard excitation
+#: bands, which it did not narrow toward — it narrowed AWAY from them, refusing
+#: corners both drivers admit.
+#:
+#: **Deliberately not** :data:`~._common.LEGACY_DROPPED_DRIVER_FIELDS`, and the
+#: difference is the question each answers.  That set is "which retired keys may
+#: a stored DRIVER RECORD still carry at a write gate" — tolerated and dropped,
+#: so an old draft stays saveable.  This one is "which retired keys, found on a
+#: stored PROFILE TARGET, mean the profile is stale-but-fixable rather than
+#: corrupt" — reported, never dropped, because the profile is re-derived rather
+#: than edited.  Their memberships differ too: a profile target never carried
+#: ``horn_coverage_deg``.  **Retiring another per-driver field means deciding
+#: for BOTH** — whether a stored record may carry it, and whether a stored
+#: profile carrying it is fixable.
+_RETIRED_TARGET_FIELDS = frozenset({"crossover_search_band_hz"})
+
+#: A stored profile that is structurally fine except that it names a retired
+#: field.  Reported under its own name rather than the generic schema-invalid
+#: one, on :class:`DriverSafetyProfileStaleLowLimitError`'s rule: the household's
+#: only question is "will saving fix it?", and here the answer is a plain yes.
+#: No auto-migration is written for it — a rebuild re-derives every target from
+#: the values the operator can see, and silently rewriting a confirmed safety
+#: declaration behind their back is the wrong direction for a declaration whose
+#: whole point is that a human made it.
+DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON = "driver_safety_profile_retired_field"
+
+
+def _retired_fields_present(profile: Mapping[str, Any]) -> bool:
+    """Whether any stored target still carries a field this build retired.
+
+    Total by construction, like :func:`_stale_low_limit_rebuild_issues` below:
+    it runs inside an except branch whose contract is to REPORT rather than
+    raise, so an unreadable target contributes ``False`` rather than an error.
+    """
+    targets = profile.get("targets")
+    if not isinstance(targets, list):
+        return False
+    return any(
+        isinstance(target, Mapping) and not _RETIRED_TARGET_FIELDS.isdisjoint(target)
+        for target in targets
+    )
+
+
 def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:
     """The blocking issues a REBUILD of this stale profile would carry.
 
@@ -2640,12 +2661,15 @@ def evaluate_driver_safety_profile(
         # The reasons carry MORE than the name, because the name alone cannot
         # answer the only question the household has: will saving fix it?
         # Deriving the low limit moves the hard band's lower edge up to it, and
-        # that can push an already-declared crossover-search band outside its
-        # own hard band -- at which point the rebuild lands ``incomplete``, and
-        # the save the copy just recommended changes nothing. Appending the
-        # rebuild's own blocking issues lets /sound/ name the field to fix
-        # first, instead of sending the household round a loop. jts3 is exactly
-        # this shape.
+        # that can leave an already-declared analysis window outside the hard
+        # band it must nest in, or leave the derived limit implausible for the
+        # declared driver type -- at which point the rebuild lands
+        # ``incomplete``, and the save the copy just recommended changes
+        # nothing. Appending the rebuild's own blocking issues lets /sound/
+        # name the field to fix first, instead of sending the household round a
+        # loop. (Until #2870 the commonest such blocker was a declared
+        # crossover-search band pushed under its own hard band; that field is
+        # gone, and the surviving relationships are the ones named above.)
         fingerprint = profile.get("profile_fingerprint")
         return DriverSafetyProfileEvaluation(
             "malformed",
@@ -2658,6 +2682,19 @@ def evaluate_driver_safety_profile(
         )
     except DriverSafetyProfileError:
         fingerprint = profile.get("profile_fingerprint")
+        # A profile written before a field was RETIRED is not corrupt, and
+        # saying "JTS could not read these limits" about one sends the
+        # household looking for damage that is not there. Named separately for
+        # the same reason the stale-low-limit case above is: the remedy is
+        # specific (open /sound/setup/ and save the visible values again), and
+        # a name is what lets /sound/ say so.
+        if _retired_fields_present(profile):
+            return DriverSafetyProfileEvaluation(
+                "malformed",
+                False,
+                str(fingerprint) if isinstance(fingerprint, str) else None,
+                (DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,),
+            )
         return DriverSafetyProfileEvaluation(
             "malformed",
             False,

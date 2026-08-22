@@ -40,9 +40,9 @@ each one is asked of the module that already owns it:
 
 * ``order`` must be an order the graph can emit
   (:data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`);
-* ``fc_hz`` must clear the three DECLARED frequency bounds every corner clears,
-  asked of the shared predicate that owns them
-  (see :func:`_declared_frequency_refusal`);
+* ``fc_hz`` must clear the two DECLARED hard-excitation bounds every corner
+  clears, asked of the shared predicate that owns them
+  (:func:`.fc_sweep._fc_rejection`);
 * ``order * 6`` dB/octave must be at least the protected role's declared
   ``minimum_slope_db_per_octave``.
 
@@ -121,7 +121,6 @@ from ..profile import SUPPORTED_LR_ORDERS
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_OUTSIDE_SEARCH_BAND,
     _fc_rejection,
     recornered_preset,
 )
@@ -198,13 +197,12 @@ TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_PROVENANCE_MISSING,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
     TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-    # The three frequency bounds are the AUTOMATIC path's own, reused rather
-    # than re-spelled: a pin and a proposal are admissible on identical terms,
-    # and a second vocabulary for one predicate is how the two drift into
-    # disagreeing about the same speaker. See :func:`_declared_frequency_refusal`.
+    # The two declared frequency bounds are the AUTOMATIC path's own, reused
+    # rather than re-spelled: a pin and a proposal are admissible on identical
+    # terms, and a second vocabulary for one predicate is how the two drift into
+    # disagreeing about the same speaker. See :func:`~.fc_sweep._fc_rejection`.
     FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
-    FC_REJECT_OUTSIDE_SEARCH_BAND,
 })
 
 #: The field names a prescription may carry.  Anything else is refused rather
@@ -226,12 +224,24 @@ _PRESCRIPTION_FIELDS = frozenset({
     "authority",
     "checked_against_floor_hz",
     "checked_against_ceiling_hz",
-    "checked_against_search_band_hz",
     "checked_against_slope_db_per_octave",
     "beaming_ceiling_hz",
     # Derived on the way out. Accepted on the way in for the same round-trip
     # reason and likewise never trusted — ``slope_db_per_octave`` is a property.
     "slope_db_per_octave",
+})
+
+#: Field names this build once WROTE onto a receipt and no longer speaks.
+#: Dropped on the durable read-back only (:func:`topology_prescription_from_mapping`),
+#: never at the request gate — the same split, and the same reason, as the
+#: pre-envelope tolerance in :func:`_parse_prescription`: a banked receipt is a
+#: document this repository already wrote and must stay readable across the
+#: deploy that retired the field, while a freshly-authored pin naming a retired
+#: field is a prescriber talking to a build that no longer exists and learns so
+#: at the tap.  ``checked_against_search_band_hz`` recorded the crossover search
+#: band the 2026-08-22 ruling deleted (#2870).
+_RETIRED_PRESCRIPTION_FIELDS = frozenset({
+    "checked_against_search_band_hz",
 })
 
 
@@ -275,7 +285,7 @@ class TopologyPrescription:
     docstring for why a pinned corner must say out loud that no measurement
     ranked it.
 
-    The five ``checked_against_*`` / ``beaming_ceiling_hz`` fields are the
+    The three ``checked_against_*`` fields and ``beaming_ceiling_hz`` are the
     GATE's own record of what it compared this pin to, filled after the bounds
     pass, so a receipt states not only what was pinned but WHAT IT CLEARED — a
     reader who finds ``fc_hz: 2400`` on a receipt cannot otherwise tell whether
@@ -292,7 +302,6 @@ class TopologyPrescription:
     authority: str = ""
     checked_against_floor_hz: float | None = None
     checked_against_ceiling_hz: float | None = None
-    checked_against_search_band_hz: tuple[float, float] | None = None
     checked_against_slope_db_per_octave: float | None = None
     #: The ka/beaming onset this corner was compared to, DISCLOSED and never
     #: enforced (#1675). Present and above ``fc_hz`` means the candidate is
@@ -329,10 +338,6 @@ class TopologyPrescription:
             "authority": self.authority,
             "checked_against_floor_hz": self.checked_against_floor_hz,
             "checked_against_ceiling_hz": self.checked_against_ceiling_hz,
-            "checked_against_search_band_hz": (
-                None if self.checked_against_search_band_hz is None
-                else list(self.checked_against_search_band_hz)
-            ),
             "checked_against_slope_db_per_octave": (
                 self.checked_against_slope_db_per_octave
             ),
@@ -434,16 +439,6 @@ def _optional_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _optional_band(value: Any) -> tuple[float, float] | None:
-    """A two-number band, or ``None`` — never a raise, for the reason above."""
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        return None
-    lo, hi = _optional_number(value[0]), _optional_number(value[1])
-    if lo is None or hi is None:
-        return None
-    return (lo, hi)
-
-
 def _parse_prescription(
     raw: Mapping[str, Any], *, read_back: bool = False,
 ) -> TopologyPrescription:
@@ -453,9 +448,9 @@ def _parse_prescription(
     only thing that differs between those two is their gate policy — which is
     the only thing that should.
 
-    ``read_back`` is that one difference for the envelope specifically, and
-    mirrors :func:`~.alignment_prescription._parse_prescription`'s own
-    parameter for the identical reason. ``False`` (the request gate,
+    ``read_back`` is that one difference, and mirrors
+    :func:`~.alignment_prescription._parse_prescription`'s own parameter for the
+    identical reason. ``False`` (the request gate,
     :func:`read_topology_prescription`) judges a freshly-authored pin: a
     missing or wrong ``kind``/``artifact_schema_version`` is a malformed
     document and refuses at the tap. ``True`` (the durable read-back,
@@ -468,13 +463,26 @@ def _parse_prescription(
     pre-envelope shape and reads as this build's own kind and version 1,
     never a raise; a record naming EITHER field, even if the other is missing
     or wrong, is refused under both postures.
+
+    It buys ONE more tolerance, on the same terms and for the same reason: a
+    banked receipt may carry a field this build has since RETIRED
+    (:data:`_RETIRED_PRESCRIPTION_FIELDS`), and the read-back drops it rather
+    than refusing the record. Dropped, never read — a retired field's VALUE has
+    no meaning to this build, and pretending otherwise is how a deleted concept
+    keeps deciding things. The request gate still refuses one, so a prescriber
+    authoring a retired field learns immediately.
     """
     if not isinstance(raw, Mapping):
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
-    unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
+    known = (
+        _PRESCRIPTION_FIELDS | _RETIRED_PRESCRIPTION_FIELDS
+        if read_back
+        else _PRESCRIPTION_FIELDS
+    )
+    unknown = sorted(set(raw) - known)
     if unknown:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
@@ -532,9 +540,6 @@ def _parse_prescription(
         checked_against_ceiling_hz=_optional_number(
             raw.get("checked_against_ceiling_hz")
         ),
-        checked_against_search_band_hz=_optional_band(
-            raw.get("checked_against_search_band_hz")
-        ),
         checked_against_slope_db_per_octave=_optional_number(
             raw.get("checked_against_slope_db_per_octave")
         ),
@@ -542,63 +547,11 @@ def _parse_prescription(
     )
 
 
-def _declared_frequency_refusal(
-    fc_hz: float,
-    *,
-    declared_floor_hz: float,
-    lower_driver_ceiling_hz: float,
-    search_band_hz: tuple[float, float] | None,
-) -> str | None:
-    """The three DECLARED frequency bounds, asked of the automatic path's own
-    predicate.
-
-    ``fc_sweep._fc_rejection`` is the single owner of "is this corner
-    admissible for this speaker", including the hardest-first ordering and the
-    :data:`~.fc_sweep._FC_GRID_EPS_HZ` tolerance on the declared band edge.  It
-    is imported by its private name deliberately: a pinned corner and a declared
-    one have to be admissible on *identical* terms — an operator who pins the
-    corner their declarations already permit must not be refused, and one who
-    pins a corner those declarations exclude must not be admitted — and a second
-    spelling of three comparisons is precisely how those two answers drift apart
-    on one speaker.  ``tests/test_crossover_v2_topology_prescription.py`` pins
-    the two to agree across a grid, so the import cannot quietly become a copy.
-
-    The predicate carries no beaming term, and that absence is #1675's ruling
-    rather than an omission: the ka onset is guidance to warn on, not a fence.
-    It rides :attr:`TopologyPrescription.beaming_ceiling_hz` as disclosure
-    instead, so a receipt can say a candidate was above it.
-
-    **A ``None`` band is translated HERE, and it is the one thing the shared
-    predicate cannot be asked.**  ``resolve_fc_search_band`` returns ``None`` for
-    "the declarations admit no corner at all" — a participating role that
-    declared nothing, or an intersection that is empty — but the same ``None``
-    reaching ``_fc_rejection`` means the OPPOSITE, "no declared band constrains
-    this", and the corner would then be bounded only by the excitation bands.
-    This module is the one that makes the translation, rather than passing an
-    ambiguous ``None`` through a predicate that reads it the other way.
-    Fail-closed: an anomaly means "this speaker has told us nothing about where
-    it may be crossed", never "it permits everything".
-
-    The refusal is added AFTER the shared call rather than before it so the
-    hardest-first ordering is still the shared predicate's own: a corner that
-    also misses the declared floor is told about the floor.
-    """
-    reason = _fc_rejection(
-        fc_hz, declared_floor_hz, lower_driver_ceiling_hz, search_band_hz,
-    )
-    # A ``None`` band is a NO-OP inside that call by construction, which is why
-    # the refusal for it is added here instead.
-    if reason is None and search_band_hz is None:
-        return FC_REJECT_OUTSIDE_SEARCH_BAND
-    return reason
-
-
 def read_topology_prescription(
     raw: Mapping[str, Any] | None,
     *,
     declared_floor_hz: float,
     lower_driver_ceiling_hz: float,
-    search_band_hz: tuple[float, float] | None,
     minimum_slope_db_per_octave: float | None,
     beaming_ceiling_hz: float | None,
 ) -> TopologyPrescription | None:
@@ -611,7 +564,7 @@ def read_topology_prescription(
     **The web boundary short-circuits before it gets here**, so in production
     this function is only ever handed a real block.  That is not a redundancy
     to tidy away in either direction: the boundary skips the call because the
-    five declarations below cost a context read each, and an ORDINARY round
+    four declarations below cost a context read each, and an ORDINARY round
     must not depend on declarations it is not using; this function still
     tolerates ``None`` because it is a public gate and a total one is cheaper
     to reason about than one whose contract is "ask my caller".  Absence is
@@ -625,7 +578,7 @@ def read_topology_prescription(
     the manufacturer made about this hardware.  A caller that forgot one would
     lose the hardware's own opinion about a candidate it is about to play, and never
     know, which is exactly the failure a defaulted keyword hides.  ``None`` is
-    still a legal VALUE for the three that admit it, and it means the same thing
+    still a legal VALUE for the two that admit it, and it means the same thing
     each time: that bound was not declared, so there is nothing to gate on —
     never a guessed default, on
     :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`'s
@@ -633,10 +586,10 @@ def read_topology_prescription(
 
     ``declared_floor_hz`` and ``lower_driver_ceiling_hz`` are the two role
     bands a corner is admissible within — :func:`~.fc_sweep._fc_rejection`'s own
-    ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz`` — and
-    ``search_band_hz`` is the INTERSECTED declared band
-    :func:`~.fc_sweep.resolve_fc_search_band` returns, whose ``None`` means
-    "the declarations admit no corner at all".
+    ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz``.  They are the WHOLE
+    frequency gate: a corner both drivers' declared hard bands admit is
+    admitted, and the invented crossover search band that used to narrow them
+    further was deleted by the 2026-08-22 owner ruling (#2870).
 
     ``minimum_slope_db_per_octave`` is the PROTECTED (upper) role's declared
     protection high-pass slope, and only that role's.  A two-way corner
@@ -659,11 +612,26 @@ def read_topology_prescription(
     # Frequency before slope. The two send a prescriber to different places —
     # re-declare the band vs re-choose the order — and a corner that is outside
     # the hardware's declared range is the more fundamental of the two answers.
-    reason = _declared_frequency_refusal(
+    #
+    # ``fc_sweep._fc_rejection`` is the single owner of "is this corner
+    # admissible for this speaker", including the hardest-first ordering, and is
+    # imported by its private name deliberately: a pinned corner and a declared
+    # one have to be admissible on *identical* terms — an operator who pins the
+    # corner their declarations already permit must not be refused, and one who
+    # pins a corner those declarations exclude must not be admitted — and a
+    # second spelling of the comparisons is precisely how those two answers
+    # drift apart on one speaker. ``tests/test_crossover_v2_topology_prescription.py``
+    # pins the two to agree across a grid, so the call cannot quietly become a
+    # copy.
+    #
+    # The predicate carries no beaming term, and that absence is #1675's ruling
+    # rather than an omission: the ka onset is guidance to warn on, not a fence.
+    # It rides ``TopologyPrescription.beaming_ceiling_hz`` as disclosure
+    # instead, so a receipt can say a candidate was above it.
+    reason = _fc_rejection(
         prescription.fc_hz,
-        declared_floor_hz=float(declared_floor_hz),
-        lower_driver_ceiling_hz=float(lower_driver_ceiling_hz),
-        search_band_hz=search_band_hz,
+        float(declared_floor_hz),
+        float(lower_driver_ceiling_hz),
     )
     if reason == FC_REJECT_BELOW_DECLARED_FLOOR:
         raise TopologyPrescriptionRefused(
@@ -677,19 +645,8 @@ def read_topology_prescription(
             f"{prescription.fc_hz:.1f} Hz is above the lower driver's declared "
             f"ceiling of {float(lower_driver_ceiling_hz):.1f} Hz",
         )
-    if reason == FC_REJECT_OUTSIDE_SEARCH_BAND:
-        band = (
-            "no band the participating roles both admit"
-            if search_band_hz is None
-            else f"{float(search_band_hz[0]):.1f}-{float(search_band_hz[1]):.1f} Hz"
-        )
-        raise TopologyPrescriptionRefused(
-            reason,
-            f"{prescription.fc_hz:.1f} Hz is outside the declared crossover "
-            f"search band ({band})",
-        )
     if reason is not None:  # pragma: no cover - defensive
-        # Unreachable while ``_fc_rejection``'s vocabulary is the three codes
+        # Unreachable while ``_fc_rejection``'s vocabulary is the two codes
         # ``fc_sweep`` declares, each of which the cases above already name.
         # Kept because the alternative to naming an unhandled code is admitting
         # a pin the shared predicate refused, which is the one outcome this
@@ -712,10 +669,6 @@ def read_topology_prescription(
         authority=TOPOLOGY_AUTHORITY_OPERATOR_PINNED,
         checked_against_floor_hz=float(declared_floor_hz),
         checked_against_ceiling_hz=float(lower_driver_ceiling_hz),
-        checked_against_search_band_hz=(
-            None if search_band_hz is None
-            else (float(search_band_hz[0]), float(search_band_hz[1]))
-        ),
         checked_against_slope_db_per_octave=(
             None if minimum_slope_db_per_octave is None
             else float(minimum_slope_db_per_octave)

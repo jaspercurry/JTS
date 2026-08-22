@@ -1927,8 +1927,10 @@ Owning modules and their gates:
   pre-registered Fc/slope tournament can measure chosen candidates. Bounded by
   **admissibility** rather than excursion — an excursion bound from the
   incumbent would refuse a tournament by construction, and no measured ranking
-  exists to anchor on instead. Its bounds are the same three declared frequency
-  bounds the automatic Fc proposal path applies (asked of that path's own
+  exists to anchor on instead. Its bounds are the same two declared frequency
+  bounds the automatic Fc proposal path applies — both drivers' hard excitation
+  edges, since [#2870](https://github.com/jaspercurry/JTS/issues/2870) deleted
+  the crossover search band that used to narrow them (asked of that path's own
   predicate, so a pin and a proposal are admissible on identical terms), plus
   the protected role's declared `minimum_slope_db_per_octave`. **Nothing else
   applies that slope to a crossover** — the commissioning admission path reads
@@ -1939,7 +1941,7 @@ Two things a topology pin does that no other prescription does:
 
 - It **closes the Fc search.** There is one corner, an operator chose it, and
   the only remaining question is admissibility, not ranking — `fc_sweep.py`'s
-  surviving `_fc_rejection` checks the pin against the same three declared
+  surviving `_fc_rejection` checks the pin against the same two declared
   bounds a proposal would face. There is no selector left to suppress:
   `fc_sweep.py`'s candidate sweep and `STAGE1_INCLUDES_LATERAL` are deleted
   ([tuning-master-plan.md](tuning-master-plan.md) ruling R1, ticket 2.3) and
