@@ -22,6 +22,8 @@ from jasper.active_speaker.branch_chain import (
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
     CrossoverSection,
+    _GRID_EDGE_HI_HZ,
+    _GRID_EDGE_LO_HZ,
     branch_chain_peak_db,
     branch_headroom_db,
     chain_response,
@@ -398,15 +400,80 @@ def test_charge_above_unity_is_peak_plus_margin():
     assert headroom_charge_db(4.0) == pytest.approx(4.0 + HEADROOM_MARGIN_DB)
 
 
-def test_the_grid_spans_the_audio_band_the_contract_must_police():
+def test_the_grid_spans_the_whole_domain_the_peak_is_taken_over():
     """Deliberately wider than the fit's own 150 Hz-floored envelope grid: the
     runtime contract reads this against a graph it does not trust, and a grid
-    that starts at 150 Hz cannot see a boost tampered in at 60 Hz."""
-    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(20.0)
-    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(20_000.0)
+    that starts at 150 Hz cannot see a boost tampered in at 60 Hz.
+
+    Wider than the AUDIO band too, and that half is #2758: the background
+    sampling has to reach both domain edges, because appending the edges
+    themselves bounds a monotonic shelf's asymptote and nothing else.
+    """
+    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(_GRID_EDGE_LO_HZ)
+    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(_GRID_EDGE_HI_HZ)
     assert branch_chain_peak_db(
         (_peaking(60.0, 2.0, 5.0),)
     ) == pytest.approx(5.0, abs=0.05)
+
+
+def test_the_background_stays_at_one_forty_eighth_of_an_octave():
+    """The span widened; the resolution the tamper-hardening rests on did not.
+
+    Pinned because :data:`CHAIN_GRID_HZ`'s point count is now DERIVED from the
+    edges, so a moved edge silently changes the spacing every between-bin bound
+    below is measured at.
+    """
+    steps = np.diff(np.log2(np.asarray(CHAIN_GRID_HZ)))
+    assert float(np.max(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
+    assert float(np.min(steps)) == pytest.approx(1.0 / 48.0, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("filters", "sections", "sweep_hz", "was_read_db"),
+    [
+        pytest.param(
+            (_peaking(20_000.0, 0.5, 3.0),) * 5 + (_peaking(18_182.0, 1.0, -8.0),) * 3,
+            (CrossoverSection(1600.0, 4, highpass=True),),
+            (15_000.0, _GRID_EDGE_HI_HZ),
+            0.8596,
+            id="ultrasonic",
+        ),
+        pytest.param(
+            (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3,
+            (CrossoverSection(1600.0, 4, highpass=False),),
+            (_GRID_EDGE_LO_HZ, 60.0),
+            1.4733,
+            id="subsonic",
+        ),
+    ],
+)
+def test_a_cascade_peaking_outside_the_audio_band_is_charged_for_it(
+    filters, sections, sweep_hz, was_read_db,
+):
+    """#2758: a MIXED-SIGN cascade's extremum can sit outside the hull of its
+    own centres AND outside the audio band, where a 20 Hz - 20 kHz background
+    grid had no sample at all.
+
+    Both cases are on the shipped tweeter/woofer bands behind a real 1600 Hz
+    LR4 section. The ultrasonic one measured 6.8728 dB realized against a
+    0.8596 dB reading — 5.01 dB over its absorbed charge, against a 1.0 dB
+    margin, with clipping products at 21.5 kHz aliasing back into the audible
+    band. ``was_read_db`` is what the narrower grid returned, asserted as a
+    floor the reading has cleared rather than left as prose.
+
+    Graded against a dense sweep of the neighbourhood, so what is pinned is the
+    distance to the CONTINUOUS maximum rather than to another sampling of it.
+    """
+    dense = np.geomspace(*sweep_hz, 400_000)
+    true_peak_db = float(np.max(
+        20.0 * np.log10(np.abs(chain_response(filters, dense)))
+        + crossover_response_db(dense, sections)
+    ))
+    read_db = branch_chain_peak_db(filters, sections=sections)
+
+    assert read_db > was_read_db + 1.0, "the grid still has the hole"
+    assert true_peak_db - read_db < 0.07
+    assert branch_headroom_db(filters, sections=sections) > true_peak_db
 
 
 # --------------------------------------------------------------------------- #

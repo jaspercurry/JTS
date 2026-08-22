@@ -106,12 +106,16 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # the band edges), and the crossover term IS the digital filter the graph runs
 # rather than an analytic stand-in for it (``crossover_response_db``).
 #
-# What remains:
-#   * the CASCADE's peak between two adjacent centres, where near-coincident
-#     filters reach more together than either does alone — measured at
-#     <= 0.07 dB with the adjacent-pair midpoints in the grid;
-#   * the emitter's own 4-decimal YAML rounding of freq/q/gain.
-# Both are an order or more inside 1.0 dB.
+# What remains is the CASCADE's peak between two adjacent SAMPLES, plus the
+# emitter's own 4-decimal YAML rounding of freq/q/gain. Both are an order or
+# more inside 1.0 dB, and the first is bounded in each of its two shapes:
+#   * between two adjacent CENTRES, where near-coincident filters reach more
+#     together than either does alone — measured at <= 0.07 dB with the
+#     adjacent-pair midpoints in the grid;
+#   * between two adjacent BACKGROUND bins, outside the centres' own hull —
+#     measured at 0.04 dB on the #2758 cascade, and only bounded at all
+#     because :data:`CHAIN_GRID_HZ` spans the whole evaluated domain. A
+#     background grid narrower than that domain left this term at 5.01 dB.
 #
 # 1.0 dB and not an arbitrary number: it is exactly
 # ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``, so a correction's loudest
@@ -136,36 +140,60 @@ HEADROOM_MARGIN_DB: float = 1.0
 # honest.
 _PEAK_EPS_DB: float = 0.01
 
-# The grid every chain peak is evaluated on: 1/48 octave, 20 Hz - 20 kHz.
+# The domain every chain peak is taken over: essentially DC to essentially
+# Nyquist, the digital response's own edges. Appended to every evaluation grid
+# so a caller-supplied axis carries them too.
+#
+# A shelf's extreme is at an EDGE, not at its corner: a Lowshelf reaches its
+# full gain below the corner and a Highshelf above it. A grid that stops at
+# 20 Hz / 20 kHz reads a +12 dB Lowshelf cornered at 30 Hz as 9.69 dB — an
+# under-read of 2.3 dB, which is past the margin. Sampling the two edges
+# captures both asymptotes exactly. The frequencies are outside the audible
+# band on purpose: what is being bounded is what the FILTER can do to the
+# signal, and a shelf that lifts 12 dB at 25 Hz has lifted 12 dB whether or
+# not the household can hear it.
+_GRID_EDGE_LO_HZ: float = 1.0
+_GRID_EDGE_HI_HZ: float = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
+
+# The BACKGROUND resolution of the grid below, points per octave — the
+# crossover's smooth shape and whatever a cascade does between its filters'
+# centres. It is NOT what makes a narrow filter's own peak visible:
+# ``_evaluation_grid`` unions each filter's exact frequency into it for that,
+# because no fixed resolution can bound an arbitrary Q.
+_CHAIN_GRID_POINTS_PER_OCTAVE: int = 48
+
+# The grid every chain peak is evaluated on: 1/48 octave, EDGE TO EDGE.
 #
 # Deliberately NOT the fit's own ``DEFAULT_ENVELOPE_GRID_HZ`` (150 Hz floor):
 # this grid is read by the runtime contract against a graph it does not trust,
 # and a grid that starts at 150 Hz cannot see a boost placed at 60 Hz.
 #
-# It is the BACKGROUND sampling — the crossover's smooth shape and whatever a
-# cascade does between its filters' centres. It is NOT what makes a narrow
-# filter's own peak visible: ``_evaluation_grid`` unions each filter's exact
-# frequency into it for that, because no fixed resolution can bound an
-# arbitrary Q. Roughly 4 ms per branch on a laptop for a full
-# 8-filter chain behind a crossover, on a path that runs once per config emit
-# and once per branch at graph re-proof; the cut-only short-circuit below
-# means the ordinary graph pays none of it.
-CHAIN_GRID_HZ: np.ndarray = np.geomspace(20.0, 20_000.0, 480)
-CHAIN_GRID_HZ.flags.writeable = False
-
-# The two points appended to every evaluation grid, beyond the audio band.
+# **The span is the domain above and not the audio band, and that is a
+# correctness requirement rather than tidiness (#2758).** The two edge points
+# capture a monotonic shelf's ASYMPTOTE; they say nothing about an extremum
+# BETWEEN an edge and the band. A mixed-sign cascade puts one there: measured
+# on the shipped tweeter band behind a real 1600 Hz LR4 high-pass,
+# ``5x(+3.0 Q0.5)@20000 + 3x(-8.0 Q1.0)@18182`` peaks 6.8728 dB at 21500.6 Hz,
+# which a 20 Hz - 20 kHz background read as 0.8596 — 5.01 dB under-charged,
+# and ultrasonic clipping products alias back into the audible band. The
+# woofer-side mirror is the same hole: ``5x(+3.0 Q0.5)@20 + 3x(-8.0 Q1.0)@22``
+# behind a 1600 Hz LR4 low-pass peaks 3.4196 dB at 9.22 Hz, read as 1.4733.
+# One span for gate, charge and re-proof is what keeps them one construction,
+# so the hole was shared by all three.
 #
-# A shelf's extreme is at an EDGE, not at its corner: a Lowshelf reaches its
-# full gain below the corner and a Highshelf above it. A grid that stops at
-# 20 Hz / 20 kHz reads a +12 dB Lowshelf cornered at 30 Hz as 9.69 dB — an
-# under-read of 2.3 dB, which is past the margin. Sampling essentially DC and
-# essentially Nyquist (the digital response's own domain edges) captures both
-# asymptotes exactly. The frequencies are outside the audible band on purpose:
-# what is being bounded is what the FILTER can do to the signal, and a shelf
-# that lifts 12 dB at 25 Hz has lifted 12 dB whether or not the household can
-# hear it.
-_GRID_EDGE_LO_HZ: float = 1.0
-_GRID_EDGE_HI_HZ: float = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
+# Roughly 6 ms per branch on a laptop for a full 8-filter chain behind a
+# crossover, on a path that runs once per config emit and once per branch at
+# graph re-proof; the cut-only short-circuit below means the ordinary graph
+# pays none of it.
+CHAIN_GRID_HZ: np.ndarray = np.geomspace(
+    _GRID_EDGE_LO_HZ,
+    _GRID_EDGE_HI_HZ,
+    round(
+        _CHAIN_GRID_POINTS_PER_OCTAVE
+        * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)
+    ) + 1,
+)
+CHAIN_GRID_HZ.flags.writeable = False
 
 
 def _evaluation_grid(

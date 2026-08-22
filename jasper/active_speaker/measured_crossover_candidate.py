@@ -234,21 +234,27 @@ class MeasuredCrossoverCandidate:
       filters, fit_band_hz, target_level_db, residuals, an octave-band reason
       summary, mic_tier, driver_class, n_repeats);
     * a PRESCRIBED role — ``filters`` plus ``prescribed_by`` (model, operator,
-      packet fingerprint) plus ``mic_tier``, and deliberately none of the
-      fit-quality fields, because a prescription measured nothing and emitting
-      those zeroed would bank a claim nothing made. ``mic_tier`` is the one
-      exception and is carried forward from the entry it replaces: it names the
-      MICROPHONE, not the correction, and ``_mic_trust_ceiling_hz`` reads it to
-      decide where the delta probe may grade at all. The owner of that split is
-      ``crossover_v2.driver_prescription.driver_prescription_to_candidate_fields``.
+      packet fingerprint) plus ``mic_tier`` plus ``headroom_cost_db``, and
+      deliberately none of the fit-quality fields, because a prescription
+      measured nothing and emitting those zeroed would bank a claim nothing
+      made. The last two are the exceptions and neither is a fit-quality claim:
+      ``mic_tier`` names the MICROPHONE rather than the correction and is
+      carried forward from the entry it replaces, so
+      ``_mic_trust_ceiling_hz`` can decide where the delta probe may grade at
+      all; ``headroom_cost_db`` is what the EMITTED chain costs the household in
+      maximum level, so a prescribed boost discloses its own spend rather than
+      0.0 (#2759). The owner of the first split is ``crossover_v2.
+      driver_prescription.driver_prescription_to_candidate_fields``; the charge
+      is stamped by ``crossover_v2.planning.build_candidate``, where the
+      crossover sections and the committed trim are in scope.
 
     Every reader here must therefore treat a fit-quality key as OPTIONAL rather
     than as a shape guarantee — which is what
     ``linearization_filters_by_role`` (reads only ``filters``),
-    ``worst_headroom_cost_db`` (absent key is an honest 0.0 for a cuts-only
-    prescription) and the emitter's own ``_validated_linearization`` already
-    do. Like ``analysis``, the map is frozen through the SAME exact-JSON-data
-    walk. A
+    ``worst_headroom_cost_db`` (absent key is an honest 0.0 for an era-older
+    entry that carries none) and the emitter's own ``_validated_linearization``
+    already do. Like ``analysis``, the map is frozen through the SAME
+    exact-JSON-data walk. A
     NON-empty value participates in the fingerprint — tampering with a
     persisted linearization result trips the same ``candidate_tampered``
     refusal as tampering with anything else in this candidate. The empty

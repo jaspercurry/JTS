@@ -75,7 +75,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.log_event import log_event
 
-from ..branch_chain import CrossoverSection, sections_by_role
+from ..branch_chain import CrossoverSection, branch_headroom_db, sections_by_role
 from ..linearization_fit import linearization_filters_by_role
 from .candidates import CloudFitEvidence, LinearizationState
 from .contracts import CandidateAcousticContext
@@ -519,6 +519,26 @@ def exclusion_evidence_json(
     }
 
 
+def _sections_for_candidate(
+    candidate_sections: Mapping[str, Sequence[CrossoverSection]] | None,
+    preset: Any,
+) -> dict[str, tuple[CrossoverSection, ...]]:
+    """Role -> the Linkwitz-Riley sections THIS candidate's branch runs through.
+
+    ``candidate_sections`` for a swept corner, the preset's own crossover
+    regions for the configured one. One derivation because two consumers read
+    it and both must describe the same emitted graph: the planner bounds its
+    fit band and charges its headroom with it, and :func:`build_candidate`
+    charges a PRESCRIBED branch's disclosure with it (#2759). A second copy
+    here would be the drift ``branch_chain.sections_by_role``'s own docstring
+    records having already happened once, in the direction that makes a
+    disclosure smaller than its charge.
+    """
+    if candidate_sections is not None:
+        return {role: tuple(regions) for role, regions in candidate_sections.items()}
+    return sections_by_role(getattr(preset, "crossover_regions", ()) or ())
+
+
 def plan_for_candidate(
     analysis: ProgramAnalysis,
     cand: Any,
@@ -587,14 +607,9 @@ def plan_for_candidate(
     ``test_crossover_v2_planner_wiring`` pins that it reaches the flow's own
     logger.
     """
-    sections = (
-        {role: tuple(regions) for role, regions in candidate_sections.items()}
-        if candidate_sections is not None
-        else sections_by_role(
-            getattr(preset, "crossover_regions", ()) or ()
-        )
+    context = CandidateAcousticContext.from_sections(
+        _sections_for_candidate(candidate_sections, preset)
     )
-    context = CandidateAcousticContext.from_sections(sections)
     measure_program = program_for_phase(PHASE_MEASURE)
     seg_w = measure_program.segment("sweep_w")
     seg_t = measure_program.segment("sweep_t")
@@ -829,6 +844,32 @@ def build_candidate(
         candidate_linearization = driver_prescription_to_candidate_fields(
             driver_prescription, fitted=linearization
         )[LINEARIZATION_CANDIDATE_FIELD]
+        # #2759: and the DISCLOSURE has to describe that same graph. The merge
+        # is a pure function over a document and a fitted map, so a prescribed
+        # entry reaches it with no ``headroom_cost_db`` — which reduces to 0.0
+        # for a branch that genuinely spends maximum SPL, once the bounded
+        # per-driver boost route is open (#2754). Charged HERE because this is
+        # where the chain is: the merged filters, the sections this candidate is
+        # realized with, and the trim the fit committed. Through the same
+        # ``branch_headroom_db`` over the same three terms that
+        # ``camilla_yaml.linearization_headroom_db`` charges the speaker with,
+        # so what the household is told and what the speaker gives up are one
+        # number rather than two that agree by inspection.
+        #
+        # Prescribed roles only: a fitted role already carries the planner's own
+        # stamp for the identical chain, and re-charging it here would be a
+        # second writer of one field.
+        sections = _sections_for_candidate(candidate_sections, source_preset)
+        charged = dict(candidate_linearization)
+        for role in driver_prescription.roles:
+            entry = dict(charged[role])
+            entry["headroom_cost_db"] = branch_headroom_db(
+                entry["filters"],
+                sections=sections.get(role, ()),
+                trim_db=float(role_attenuations_db.get(role, 0.0)),
+            )
+            charged[role] = entry
+        candidate_linearization = charged
         # SF1: the prediction must model the EMITTED graph. Recomposed through
         # the fit module's own single composition rather than a second copy of
         # that arithmetic here, from the same raw branches and the same trim the

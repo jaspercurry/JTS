@@ -416,7 +416,7 @@ def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
     )
     assert "gain: 3.000" in boosted
     charged = _headroom_gain_db(flat) - _headroom_gain_db(boosted)
-    assert charged == pytest.approx(2.8707, abs=1e-3)
+    assert charged == pytest.approx(2.8693, abs=1e-3)
     assert charged < 4.5  # the retired sum-of-positives rule
 
 
@@ -510,8 +510,8 @@ def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
 
     Two +3.0 dB Q-8 boosts 0.12 octaves apart compose to 3.993 dB on the gate's
     own evaluation — just inside ``DRIVER_MAX_COMPOSED_BOOST_DB`` — and the
-    emitter charges 4.964 dB for them. Move them 0.005 octaves closer and the
-    gate REFUSES at 4.062 dB composed, which would have charged 5.040 dB. So
+    emitter charges 4.970 dB for them. Move them 0.005 octaves closer and the
+    gate REFUSES at 4.062 dB composed, which would have charged 5.021 dB. So
     the published bound is not a slogan beside the cap; it is the cap.
     """
     preset = _preset()
@@ -528,10 +528,10 @@ def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
         return _headroom_gain_db(flat) - _headroom_gain_db(text)
 
     assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + 1.0
-    assert charged(0.12) == pytest.approx(4.9642, abs=1e-3)
+    assert charged(0.12) == pytest.approx(4.9704, abs=1e-3)
     assert charged(0.12) < MAX_SPL_SPEND_BOUND_DB
     # The first arrangement past the gate's cap, and it is past the bound too.
-    assert charged(0.115) == pytest.approx(5.0401, abs=1e-3)
+    assert charged(0.115) == pytest.approx(5.0211, abs=1e-3)
     assert charged(0.115) > MAX_SPL_SPEND_BOUND_DB
 
 
@@ -661,10 +661,10 @@ def test_applied_program_level_delta_is_the_emitted_headroom_move():
     # 2.2 kHz sits deep in the woofer's own 1600 Hz low-pass and so adds ~0.05
     # dB to the branch's realized peak rather than its full 1.5. The margin is
     # already inside this number.
-    assert emitted_move_db == pytest.approx(-2.8707, abs=1e-3)
+    assert emitted_move_db == pytest.approx(-2.8693, abs=1e-3)
     # Tolerance is the EMITTED config's own quantization (the gain is written
     # to 4 dp), not slack in the agreement: the reader returns
-    # -2.8707248525…, the YAML carries -2.8707.
+    # -2.8692747…, the YAML carries -2.8693.
     assert applied_program_level_delta_db(
         _delta_profile({}), _delta_profile(lin),
     ) == pytest.approx(emitted_move_db, abs=1e-4)
@@ -677,15 +677,15 @@ def test_applied_program_level_delta_reads_any_magnitude_including_small():
     small = _delta_profile({"woofer": [_peak(gain=4.0)]})
     none_ = _delta_profile({})
     assert applied_program_level_delta_db(none_, big) == pytest.approx(
-        -22.2348, abs=1e-3
+        -22.2373, abs=1e-3
     )
     assert applied_program_level_delta_db(none_, small) == pytest.approx(
-        -3.8083, abs=1e-3
+        -3.8101, abs=1e-3
     )
     # Re-tuning a heavily-charged profile down to a light one hands headroom
     # BACK — a positive move, and a downward correction for the probe.
     assert applied_program_level_delta_db(big, small) == pytest.approx(
-        18.4264, abs=1e-3
+        18.4271, abs=1e-3
     )
 
 
@@ -694,7 +694,7 @@ def test_applied_program_level_delta_is_era_tolerant_and_snapshot_first():
     # is the move.
     assert applied_program_level_delta_db(
         None, _delta_profile({"woofer": [_peak(gain=3.0)]}),
-    ) == pytest.approx(-2.8213, abs=1e-3)
+    ) == pytest.approx(-2.8194, abs=1e-3)
     # A pre-linearization profile on either side contributes 0.0, never a raise.
     assert profile_program_headroom_db(_delta_profile(None)) == 0.0
     assert profile_program_headroom_db(None) == 0.0

@@ -63,6 +63,7 @@ from jasper.active_speaker.linearization_fit import (
     LinearizationFilter,
     LinearizationFit,
     linearization_filters_by_role,
+    worst_headroom_cost_db,
 )
 from jasper.capture_relay.session import CaptureBeginRefused
 from jasper.cli import crossover_prescriber as cli
@@ -83,6 +84,8 @@ from tests.crossover_v2_fixtures import (
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_FEATURE_HZ,
     WOOFER_FEATURE_HZ,
+    _boost as _driver_boost,
+    _boostable as _driver_boostable,
     _classification as _driver_classification,
     _cut as _driver_cut,
     _document as _driver_document,
@@ -1969,6 +1972,50 @@ def test_a_round_with_no_per_driver_document_carries_the_fit_untouched(monkeypat
     candidate, fit = _candidate_from_a_prescribed_round(monkeypatch, None)
 
     assert candidate.linearization == fit
+
+
+def test_a_prescribed_boost_discloses_what_the_emitter_charges_for_it(
+    tmp_path, monkeypatch,
+):
+    """#2759: the merge produces an entry with no charge on it, and a BOOST
+    branch disclosing 0.0 under-states the maximum SPL the household gives up.
+
+    Walked all the way to an emitted config, like its fitted twin
+    (``test_crossover_v2_conductor
+    .test_the_stamped_disclosure_equals_what_the_emitter_actually_charges``):
+    the disclosure and the charge are asserted to be ONE number over the real
+    preset, the committed trims and the emitted filters, rather than two that
+    agree by inspection.
+    """
+    from jasper.active_speaker.camilla_yaml import (
+        _branch_context, linearization_headroom_db,
+    )
+
+    _stage_driver(
+        tmp_path, ordinal=9,
+        filters=[_driver_boost()],
+        classification=_driver_boostable(),
+    )
+    taken = spool.take_staged_prescription(
+        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
+    ).prescription
+    assert taken.prescription_class == "boost", "the fixture must spend headroom"
+
+    candidate, _fit = _candidate_from_a_prescribed_round(monkeypatch, taken)
+
+    disclosed = worst_headroom_cost_db(candidate.linearization)
+    assert disclosed > 0.0, "a prescribed boost disclosed as free is the defect"
+    charged = linearization_headroom_db(
+        linearization_filters_by_role(candidate.linearization),
+        branch_context=_branch_context(
+            candidate.source_preset,
+            {
+                role: {"gain_db": float(gain_db)}
+                for role, gain_db in candidate.role_attenuations_db.items()
+            },
+        ),
+    )
+    assert disclosed == pytest.approx(charged, abs=1e-9)
 
 
 # --- the prediction, which must model the graph that ships ------------------ #

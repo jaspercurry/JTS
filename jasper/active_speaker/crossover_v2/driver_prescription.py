@@ -1680,19 +1680,18 @@ def driver_prescription_to_candidate_fields(
     browser surface reads it from the design draft), so carrying it would be
     the speculative flexibility the paragraph above trims.
 
-    ``headroom_cost_db`` is the one omission that is a KNOWN GAP rather than a
-    true answer, and it is stated here because it became one when the bounded
-    boost route opened (#2754). What reaches the GRAPH is unaffected — the
-    charge that protects the speaker is computed by
-    ``camilla_yaml.linearization_headroom_db`` from the filters themselves and
-    absorbed by ``active_baseline_headroom``, and neither reads this key. What
-    is affected is the DISCLOSURE: ``worst_headroom_cost_db`` reduces this map
-    for the household-facing max-level cost, so a prescribed BOOST branch
-    currently reports 0.0 there and under-states what the correction costs in
-    maximum SPL. Carrying the replaced fit's number would be worse — it is that
-    fit's charge for filters that are no longer emitted — and deriving the
-    branch's own charge needs the crossover chain, which this pure merge does
-    not have and should not grow. Tracked as issue #2759.
+    ``headroom_cost_db`` is the one omission this function does not OWN: the
+    entries it returns carry no charge, and
+    :func:`~.planning.build_candidate` stamps one onto every prescribed role
+    before the map reaches a candidate (#2759). The split is that a charge is a
+    property of the emitted CHAIN — filters, crossover sections, committed trim
+    — and this is a pure function over a document and a fitted map, which holds
+    the first of those three. Carrying the replaced fit's number instead would
+    be worse than omitting it: it is that fit's charge for filters that are no
+    longer emitted. So a caller that folds these entries onto a candidate
+    WITHOUT charging them discloses 0.0 through ``worst_headroom_cost_db`` for
+    a branch that genuinely spends maximum SPL — which is what a prescribed
+    BOOST does once the bounded boost route is open (#2754).
 
     ``{}`` for a ``None`` prescription, whatever ``fitted`` holds: with no
     document there is nothing to merge, and the fit reaches the candidate by its
