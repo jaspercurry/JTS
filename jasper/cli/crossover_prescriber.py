@@ -515,12 +515,26 @@ def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
     was readable" are the two facts a prescription author most needs kept
     apart, because a prescription is a TOTAL and the second means they do not
     know what they are totalling.
+
+    **The reason is echoed only from the absence shape the packet builder
+    writes.** This block is the one place a value read VERBATIM out of a
+    bundle artifact reaches the report, so a receipt whose ``incumbent`` is
+    some other object would otherwise print that object's ``reason`` key as
+    though the builder had explained something. Checking the ``status`` field
+    reduces that to the shape the builder actually authors; it does not
+    eliminate it, because a receipt that mimics the shape is indistinguishable
+    from one the builder wrote without the packet recording which of the two it
+    is. That residue is terminal output only — this verb gates nothing — and is
+    pinned below rather than left for the next reader to rediscover.
     """
     if isinstance(value, list):
         return {"available": True, "n_filters": len(value)}
+    authored = (
+        isinstance(value, dict) and value.get("status") == "not_evaluated"
+    )
     return {
         "available": False,
-        "reason": _reason(value if isinstance(value, dict) else {}, packet_error),
+        "reason": _reason(value if authored else {}, packet_error),
     }
 
 
@@ -607,7 +621,7 @@ def _banked_section(
             + (
                 f", {classification['n_verdicts']} classified feature(s)"
                 if classification["available"]
-                else f", no classification ({classification['reason']})"
+                else f", no readable classification ({classification['reason']})"
             )
         )
         if available
@@ -752,8 +766,15 @@ def _next_actions(
                 "no bound and is refused by name"
             )
         else:
+            # "readable", not "banked": this arm also covers an artifact that
+            # WAS banked and whose every row the typed reader dropped. Saying
+            # "not banked" there would send an operator to look for a file that
+            # is sitting right in the round directory. The action is the same
+            # either way — run the classifier — so one honest sentence covers
+            # both, and the reason (``source_absent`` vs "not reported") is
+            # what tells them apart.
             out.append(
-                "no feature classification is banked for this round "
+                "no readable feature classification for this round "
                 f"({classification['reason']}) — run `jasper-classify-features`; "
                 "without it no per-driver filter can be shown to be aimed at a "
                 "driver defect"

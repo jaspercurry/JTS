@@ -31,7 +31,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.cli import crossover_prescriber as cli
 
-from tests.test_crossover_v2_blend_prescription import _bundle
+from tests.test_crossover_v2_blend_prescription import _bundle, _receipt
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_BAND,
     WOOFER_BAND,
@@ -199,6 +199,57 @@ def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
     )
 
 
+def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
+    """Rewrite the banked receipt's incumbent to an arbitrary JSON value."""
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    receipt = _receipt()
+    receipt["round_measurements"]["blend"]["incumbent"] = incumbent
+    (round_dir / "round_receipt.json").write_text(json.dumps(receipt))
+
+
+def test_a_stray_reason_key_in_the_receipt_is_not_echoed_as_an_explanation(
+    tmp_path, capsys
+):
+    """The incumbent block is the one value read VERBATIM out of a bundle.
+
+    A receipt whose ``incumbent`` is some other object would otherwise have that
+    object's ``reason`` key printed as though the packet builder had explained
+    something. Only the builder's own absence shape is echoed.
+    """
+    session, _ = _speaker_dirs(tmp_path)
+    _receipt_with_incumbent(session, {"unrelated": "junk", "reason": "STRAY-FIELD"})
+
+    _, payload = _status([str(session)], capsys)
+    _, out = _report([str(session)], capsys)
+
+    assert payload["applied"]["from_round_receipt"]["reason"] == "not reported"
+    assert "STRAY-FIELD" not in out
+
+
+def test_a_receipt_that_mimics_the_absence_shape_is_a_recorded_residue(
+    tmp_path, capsys
+):
+    """The half this layer CANNOT close, pinned so it stays a decision.
+
+    A receipt carrying the builder's own ``status: not_evaluated`` shape is
+    indistinguishable from one the builder wrote, because the packet does not
+    record which of the two authored a given absence. Closing it belongs to the
+    packet builder, not here. It is terminal output only — this verb gates
+    nothing and no refusal reads this string — so it is recorded rather than
+    papered over with an allowlist of the packet's own reason slugs, which
+    would be a second copy of a vocabulary the packet owns and would not close
+    it anyway (a crafted receipt can always claim a legal slug).
+    """
+    session, _ = _speaker_dirs(tmp_path)
+    _receipt_with_incumbent(
+        session, {"status": "not_evaluated", "reason": "FABRICATED-REASON"}
+    )
+
+    _, payload = _status([str(session)], capsys)
+
+    assert payload["applied"]["from_round_receipt"]["reason"] == "FABRICATED-REASON"
+
+
 # --------------------------------------------------------------------------- #
 # 2. the same builders the doors read
 # --------------------------------------------------------------------------- #
@@ -232,6 +283,8 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
          lambda s: s["banked"]["region"]["band_hz"], [111.0, 222.0]),
         ("packet_driver_passbands_hz", lambda p: {"midrange": (300.0, 3000.0)},
          lambda s: s["declared"]["roles"], ["midrange"]),
+        ("packet_feature_classifications", lambda p: ("one", "two", "three"),
+         lambda s: s["banked"]["classification"]["n_verdicts"], 3),
     ],
 )
 def test_each_state_comes_from_the_named_reader_its_gate_uses(
@@ -239,12 +292,20 @@ def test_each_state_comes_from_the_named_reader_its_gate_uses(
 ):
     """The packet owns its layout; this verb asks it the gate's own questions.
 
-    ``packet_region_band_hz`` is what bounds a blend prescription and
-    ``packet_driver_passbands_hz`` is what bounds a per-driver one. Reading the
-    blocks by hand instead would be a second opinion about where in the
-    document those bounds live.
+    ``packet_region_band_hz`` is what bounds a blend prescription,
+    ``packet_driver_passbands_hz`` is what bounds a per-driver one, and
+    ``packet_feature_classifications`` is what the per-driver gate's
+    classification bar counts. Reading the blocks by hand instead would be a
+    second opinion about where in the document those live.
+
+    The third case is the one with a live consumer: the typed reader
+    deliberately DROPS a row it cannot type, so a hand-rolled ``len(verdicts)``
+    would count rows the gate will not honour and report a round as answerable
+    when it is not. A block that grows columns the typed reader ignores makes
+    the two numbers diverge silently, which is exactly when a status line is
+    read instead of the gate.
     """
-    session, _ = _speaker_dirs(tmp_path, draft=_draft())
+    session, _ = _speaker_dirs(tmp_path, draft=_draft(), classification=_classification())
     monkeypatch.setattr(cli, reader, replacement)
 
     _, payload = _status([str(session)], capsys)
