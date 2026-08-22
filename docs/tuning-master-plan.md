@@ -3,7 +3,7 @@
 > **Status: adopted plan (owner-ratified direction, 2026-08-21), execution in progress.**
 > This document is the planning authority for the measurement/tuning program;
 > the prior plans it supersedes are listed in "Supersessions and standing
-> docs" below. Wave 0 landed 2026-08-21 (all five PRs merged); Waves 1–2 are
+> docs" below. Wave 0 landed 2026-08-21 (all five PRs merged); Waves 1–3 are
 > underway (tracking: epics #2824/#2825/#2826 carry per-ticket state — not
 > enumerated here; one planning authority, one tracker). The 2026-08-21
 > adversarial gate review of this document returned 1 blocker and 7
@@ -84,17 +84,23 @@ executed under both.
    no code path in JTS reads the strings for any decision.
 9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`) — never a
    DSP variant. DSP variants under test are **candidates**; a tournament
-   round runs a **candidate cycle** at each pose. The rule binds this
-   program's vocabulary, not every use of the word: three unrelated senses
-   survive deliberately in the tree and are not violations — a branch or
-   case of a conditional (`outputd`'s "both arms" comments,
-   `program_analysis`'s `None` and low-SNR arms), an arm of a comparison
-   study (`scripts/severed-twin-replay.py`'s three replay arms), and the
-   offline A/B emit bench's welded `arm` field, `arm=` log key, and
-   `"derived both arms:"` CLI string, whose carve-out and rename are
-   #2878's. Forward-only for new work; ticket 2.8's subject sweep trued up
-   the DSP-variant prose it covered (`alignment_prescription` is now at
-   zero) and left the bench family to #2878.
+   round runs a **candidate cycle** at each pose. Forward-only for new work;
+   ticket 2.8's subject sweep trued up the DSP-variant prose it covered
+   (`alignment_prescription` is now at zero). The rule binds this program's
+   vocabulary, not the word: unrelated senses survive deliberately across
+   the tree and a sweeper should leave them alone — one ring/coupling
+   arming transaction as a noun (`coupling_reconcile`'s "the arm's outputd
+   restart" and "an arm or a disarm"; the `test_ring_anchor_arm_acceptance`
+   and `test_composite_ring_arm_enabling` modules), a branch or case of a
+   conditional (`outputd`'s "both arms", `program_analysis`'s `None` and
+   low-SNR arms), and an arm of a comparison study
+   (`severed-twin-replay`'s three replay arms). The offline A/B emit bench
+   is the one **covered** exception, not an unrelated sense: #2878 records
+   that its "control-vs-treated legs genuinely ARE DSP variants under test —
+   so the invariant does cover them", non-violating only because this
+   invariant is forward-only for identifiers, and #2878 owns the rename of
+   its welded `arm` field, `arm=` log key, and `"derived both arms:"` CLI
+   string.
 
 ## The three loops, one substrate
 
@@ -491,9 +497,9 @@ deviation rows as they close.
     amended to "lands FIRST of the five".
     #2880 — "Pose programs as data with an elevation axis: (azimuth,
     elevation) pose identity, per-mover reach, plan constants become code
-    (3.7)"; amended to depend on #2879, and to pull this ticket's stated
-    elevation follow-on into core — "a deliberate widening, not a reading of
-    the plan as written".
+    (3.7)"; amended to depend on #2879, and to pull 3.7's stated elevation
+    follow-on into core — "a deliberate widening, not a reading of the plan
+    as written".
     #2881 — "Guided round mode on /correction/crossover/: render the minted
     release action, per-take verdict and retake; promote the walk shell to
     shared/".
