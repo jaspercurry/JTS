@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_KIND,
@@ -228,6 +230,27 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
     assert [t["take_id"] for t in takes] == ["lateral_01_a01"]
 
 
+def test_the_index_and_the_evidence_packet_share_one_accept_rule(tmp_path):
+    """"What is a lateral take" is answered in ONE place, from both directions.
+
+    This index globs the sidecars from the BANKED ROUND root; the evidence
+    packet's ``lateral_poses`` block reaches the same files from the session
+    bundle's round directory. Two starting points, one rule — and if either
+    grew its own filter, they would disagree the first time a record shape
+    moved. Proven by making the shared reader refuse everything and watching
+    the index empty out, rather than by reading the call site.
+    """
+    _bank(tmp_path, [_record(1, 0), _record(2, 7)])
+
+    with mock.patch.object(
+        position_cycle, "read_lateral_take", return_value=None
+    ) as refuse:
+        with pytest.raises(PositionCycleError, match="no lateral take records"):
+            position_cycle_document(tmp_path, derived_at=STAMP)
+
+    assert refuse.call_count == 2
+
+
 def test_a_foreign_json_file_in_the_positions_dir_is_not_a_take(tmp_path):
     _bank(tmp_path, [_record(1, 0)])
     positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
@@ -322,6 +345,57 @@ def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
     assert document["sources"] == [
         f"bundle/{bundle_dir.name}/{_BANKED_ARTIFACTS}/{relay}/positions"
     ]
+
+
+def test_the_evidence_packet_finds_a_record_the_REAL_store_wrote(tmp_path):
+    """The packet reaches the same sidecars from the SESSION BUNDLE instead.
+
+    Its `lateral_poses` block globs `<round-dir>/positions/*.json`, where the
+    round dir is `round_artifact_dir`'s own return value — one segment, not the
+    full path this module's glob spells. That segment is the half a fixture
+    cannot pin: every packet test builds the tree itself, so all of them would
+    agree with a wrong subdirectory name as happily as with the right one, and
+    the block would report a walk that ran as a round with no bearings.
+
+    So this publishes through the REAL store and asks the packet, on the same
+    reasoning as the derivation test above.
+    """
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        build_crossover_evidence_packet,
+    )
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_3_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    assert info is not None
+    store = CommissioningEvidenceStore.open(
+        info["bundle_dir"], expected_session_id=info["session_id"],
+    )
+    relay, record = "cap1", _record(1, -22)
+    store.publish_json_artifact(
+        f"crossover_v2/{relay}/positions/{record['take_id']}.json",
+        {
+            "schema_version": 1,
+            "kind": POSITION_EVIDENCE_KIND,
+            "relay_session_id": relay,
+            **record,
+        },
+    )
+
+    block = build_crossover_evidence_packet(
+        Path(info["bundle_dir"])
+    )["lateral_poses"]
+
+    assert block["available"] is True
+    assert [take["take_id"] for take in block["takes"]] == [record["take_id"]]
+    assert block["angles_deg"] == [-22]
 
 
 def test_the_fixture_tree_and_the_real_store_agree_on_the_layout(tmp_path):

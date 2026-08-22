@@ -33,10 +33,14 @@ which questions this round cannot answer at all.  Three examples this survey
 actually found on the shipped corpus, all carried as
 ``not_evaluated`` entries rather than omitted:
 
-* **the microphone's angle at each position** is nowhere in the banked tree;
-  only a coarse ``role`` (``onax``/``offax``) is.  The lab recovered angles by
-  reading a walk-driver log.  A packet that quietly emitted ``role`` alone
-  would let a reader assume the angle was simply not interesting.
+* **the microphone's angle at a CLOUD position** is nowhere in the banked
+  tree; only a coarse ``role`` (``onax``/``offax``) is, because a cloud
+  position is a floor-plan seat and :func:`~.spatial.cloud_position_record`
+  stamps no bearing.  A packet that quietly emitted ``role`` alone would let a
+  reader assume the angle was simply not interesting.  The signed bearings
+  that ARE banked belong to a lateral walk's poses, and the ``lateral_poses``
+  block carries them — which is why that entry is now a narrow statement about
+  the cloud rows rather than the corpus-wide claim it used to be.
 * **per-branch verify claims** come back ``not_evaluated`` with the reason
   ``no_per_branch_verify_capture``.  That string is copied through untouched.
   Flattening it to a ``null`` — or worse, to a zero — would turn "we did not
@@ -66,11 +70,23 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from jasper.attribution.session_identity import (
+    SessionIdentityError,
+    read_session_identity,
+)
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
 
+from .journey import PHASE_LATERAL
+# The MODULE, not the function: ``position_cycle`` owns the accept rule, and
+# resolving it through the module on every call is what makes that ownership
+# real rather than a copy taken once at import. A gate round proved the
+# difference — a behaviour-identical duplicate defined here satisfied a test
+# that patched this module's own binding, because the binding was all the test
+# could see.
+from . import position_cycle
 from .alignment_prescription import alignment_prescription_response_format
 from .blend_prescription import prescription_response_format
 from .topology_prescription import topology_prescription_response_format
@@ -91,6 +107,7 @@ __all__ = [
     "NO_ROUND_ARTIFACTS_REASON",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
+    "RING_SIDECAR_GLOB",
     "CrossoverEvidencePacketError",
     "build_crossover_evidence_packet",
     "packet_driver_passbands_hz",
@@ -182,6 +199,161 @@ _IDENTITY_FIELDS = (
 #: over.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
+#: Where a round banks one JSON record per accepted take, INSIDE the round
+#: directory :func:`round_artifact_dir` returns.
+#:
+#: The web host's ``retain_position`` publishes
+#: ``crossover_v2/{relay}/positions/{take_id}.json`` and the evidence store
+#: prefixes ``{EVIDENCE_ROOT}/artifacts/``, so the record lands one level below
+#: the relay directory this module already resolves. :mod:`.position_cycle`
+#: reaches the same files from the BANKED ROUND root — a different starting
+#: point for the same tree — which is why the accept rule is imported from
+#: there rather than restated here.
+_POSITIONS_SUBDIR = "positions"
+
+#: How a banked capture ring's sidecars are found under the ring root, on
+#: :func:`round_program_dir`'s rule that a location fact has ONE owner.
+#:
+#: ``**/`` because ``bank-crossover-round.sh`` splits the speaker's flat ring
+#: into ``dumps/wav/`` + ``dumps/sidecar/`` and a per-phase nesting of that
+#: shape exists too, so the ring ROOT is what a caller passes and the pattern
+#: finds the sidecars wherever inside it they sit.
+#: :func:`~.feature_classifier.load_round_captures` is the other reader of the
+#: same ring and consumes this constant, so ``jasper-crossover-prescriber
+#: --dumps`` and ``jasper-classify-features --dumps`` cannot come to mean two
+#: different directories.
+RING_SIDECAR_GLOB = "**/sidecar/*.json"
+
+#: The substring that identifies a signal-to-noise field in a dump-ring
+#: sidecar's flat ``diagnostic`` block.
+#:
+#: A substring rather than a name list because the producer
+#: (:func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`)
+#: composes most of them onto a ROLE the packet cannot know — the roles are
+#: "whatever the program declared", read off each entry at the analyze seam —
+#: so ``woofer_snr_db`` and ``tweeter_alignment_snr_verdict`` are names no
+#: allowlist here could enumerate. Every SNR field that producer writes is
+#: spelled with this substring, and a name list would have to be kept equal to
+#: a set it cannot see; selecting by the substring instead cannot go stale when
+#: the producer adds another one.
+_DIAGNOSTIC_SNR_MARKER = "snr"
+
+#: Why each published SNR field is NOT an uncertainty — one entry per SHAPE,
+#: and the block reports any published field this does not cover.
+#:
+#: Keyed by SHAPE rather than by name because the role half is not knowable
+#: here: the producer composes these onto roles read off the analysis. The
+#: entries point at the policy for their thresholds instead of restating them —
+#: the floors live on a ``QualityModel`` (``snr_ok_db`` /
+#: ``alignment_snr_ok_db``), each capture carries that policy's own verdict
+#: beside its number, and a decibel figure copied here would be a second place
+#: for one to drift.
+#:
+#: **``<role>`` is not one vocabulary.** The six driver families take a DRIVER
+#: role off ``analysis.driver_responses`` (``woofer``, ``tweeter``); the pilot
+#: family takes a PILOT role off ``analysis.pilots``, which includes ``summed``
+#: — a name no driver has. They are described separately for that reason: an
+#: earlier version of this table carried the driver description alone and its
+#: "the band it came from is ``<role>_snr_band``" sentence was simply false for
+#: a pilot, which publishes no band and no verdict of its own.
+_SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "<role>_snr_db": (
+        "the worst per-band signal-to-noise ratio over the bands that decide "
+        "this DRIVER role's MAGNITUDE claims — its level and its overlap-band "
+        "trim. A ratio is not a spread about a reading: it BOUNDS the random "
+        "error a level measured in that band can carry, and it does not shrink "
+        "as captures are added, because it is a property of the capture "
+        "conditions rather than of how many times they were repeated"
+    ),
+    "<role>_snr_verdict": (
+        "the policy's own answer about the figure above, in "
+        "jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL "
+        "vocabulary that ships a shortfall in dB, deliberately not the "
+        "quality_model trust labels it resembles. The words are not spelled "
+        "here: they have an owner, and a copy that agrees today is still a "
+        "copy. A verdict, not a quantity: there is nothing here to be "
+        "uncertain by"
+    ),
+    "<role>_snr_band": (
+        "which band produced the worst reading above. A label, not a "
+        "quantity"
+    ),
+    "<role>_alignment_snr_db": (
+        "the same worst-band ratio over the bands that decide this DRIVER "
+        "role's ALIGNMENT claims — polarity and delay — which need far more "
+        "SNR because a null of depth D cannot be measured with less than "
+        "roughly D + 10 dB. Published apart from the magnitude figure rather "
+        "than pooled with it: the two answer different questions under "
+        "different floors, and one number would let a capture that is fine "
+        "for a trim read as fine for a null depth"
+    ),
+    "<role>_alignment_snr_verdict": (
+        "the same policy's answer about the alignment figure, under the "
+        "alignment floor rather than the magnitude one — which is why one "
+        "capture can legitimately carry a passing magnitude verdict and a "
+        "refusing alignment one at the same time. A verdict, not a quantity"
+    ),
+    "<role>_alignment_snr_band": (
+        "which band produced the worst alignment reading. A label, not a "
+        "quantity"
+    ),
+    "<role>_pilot_snr_db": (
+        "the quiet-pilot in-band SNR this PILOT role's snr_valid is "
+        "thresholded from. The role vocabulary here is the pilot's, not a "
+        "driver's — 'summed' appears and names no driver. Null when the "
+        "capture carried no ambient window to validate against, which is an "
+        "absent measurement rather than a low one. Like every ratio here it "
+        "bounds a random error without being one"
+    ),
+    "pilot_snr_ok": (
+        "whether EVERY pilot in the capture cleared its own SNR floor, and "
+        "null when the capture carried no pilots at all — 'no evidence', "
+        "never a pass. A boolean verdict over the per-pilot figures above"
+    ),
+    "gain_plan_snr_floor_ok": (
+        "the room-quality gate: whether the ambient report cleared the floor "
+        "the target capture level needs. False also when that report was "
+        "missing or unreadable, so it is a gate outcome rather than a "
+        "measurement, and never a spread"
+    ),
+}
+
+#: The shapes above whose name is composed onto a role, longest suffix first.
+#:
+#: Order is load-bearing: ``woofer_alignment_snr_db`` ends with ``_snr_db``
+#: too, so a shortest-first walk would file it under the magnitude family and
+#: report the alignment shape as covered when it is not.
+_SNR_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            (shape.removeprefix("<role>"), shape)
+            for shape in _SNR_NOT_AN_UNCERTAINTY
+            if shape.startswith("<role>")
+        ),
+        key=lambda pair: len(pair[0]),
+        reverse=True,
+    )
+)
+
+
+def _snr_shape(column: str) -> str | None:
+    """Which declared shape ``column`` is an instance of, or ``None``.
+
+    ``None`` is what makes the enrichment rule checkable rather than merely
+    claimed: a published field whose shape nothing declares is named in the
+    block's ``undeclared_fields`` instead of quietly travelling as a figure no
+    reader was told the kind of. The producer composes these names on the fly
+    from roles read off the analysis, so a static list of NAMES could never
+    have covered them and a list of SHAPES has to be matched rather than
+    looked up.
+    """
+    if column in _SNR_NOT_AN_UNCERTAINTY:
+        return column
+    for suffix, shape in _SNR_ROLE_SUFFIXES:
+        if column.endswith(suffix) and len(column) > len(suffix):
+            return shape
+    return None
+
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
 #: NOT among them and never will be: it is household-authored prose, so it is
 #: both the one privacy-sensitive field in the tree and the only place a string
@@ -213,6 +385,14 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _ordinal(value: Any) -> int:
+    """A sort key from an identity field, or ``0`` when it is not a number."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     """Which of the two absences this is, said explicitly.
 
@@ -242,6 +422,70 @@ def _copy_allowed(
     kept = {key: raw[key] for key in allowed if key in raw}
     withheld = sorted(key for key in raw if key not in allowed)
     return kept, withheld
+
+
+def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
+    """One copied value as exact JSON, naming any column that was not.
+
+    Two inputs to this packet legitimately carry ``NaN``. A classification row
+    is one: the instrument writes one for ``z_local`` when a feature's
+    neighbourhood scatter is zero, for ``frac_of_nmp`` when the control scale
+    is, and into ``excess_loss_vs_null`` when a gate's reference reading is —
+    and ``jasper-classify-features`` banks the artifact with a plain
+    ``json.dumps``, which writes ``NaN`` verbatim and reads it back as a float.
+    A dump-ring sidecar is the other, written the same plain way.
+    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint` refuses
+    a non-finite number, so copying one through would leave a round that
+    classified perfectly well with NO packet at all: this module's one hard
+    failure, thrown for a value that is merely absent.
+
+    So a non-finite number becomes ``null`` — the same answer
+    :func:`~.feature_classification.read_feature_verdicts` already gives for one
+    — and its COLUMN is named in the block's ``non_finite_fields``, because
+    "not computable" and "not carried" are different facts and the packet's
+    rule is that neither is silently the other. Recursive because three
+    classification columns are per-gate tables and one is a list, not scalars.
+
+    The four branches are exactly what ``json.loads`` can produce that
+    ``_freeze_json`` cares about, and no more. There is deliberately no ``bool``
+    guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
+    (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
+    through to the passthrough already — unlike in
+    :func:`~.feature_classification._finite`, which needs one because its check
+    includes ``int``.
+
+    Scoped to the two blocks whose sources are written with a plain
+    ``json.dumps``, and the rest of the exposure is real but NARROW and was
+    measured rather than assumed: the receipt, the cloud evidence and the
+    finding set are banked
+    through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
+    which passes ``allow_nan=False`` and refuses a non-finite value at write
+    time, so they structurally cannot carry one here. Two further inputs are
+    written with a plain ``json.dumps`` and are NOT guarded:
+    ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
+    state, where all four fields this packet copies —
+    ``verify.claims``, ``fc_selection``, ``pre_apply_profile.blend_correction``
+    and ``evidence.calibration`` — kill the packet; and
+    :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
+    ``driver_safety_profile.confirmation`` is copied whole and does the same.
+    The draft's passbands do NOT, because
+    :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
+    drops a non-finite bound. Repairing those two is their writers' change, not
+    this reader's — see the follow-up issue linked from PR #2833.
+    """
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        non_finite.add(column)
+        return None
+    if isinstance(value, dict):
+        return {
+            key: _exact_json_value(item, column, non_finite)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_exact_json_value(item, column, non_finite) for item in value]
+    return value
 
 
 def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
@@ -337,15 +581,258 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
         "angle_deg": {
             "status": "not_evaluated",
             "reason": (
-                "no numeric microphone angle is banked anywhere in a round's "
-                "artifacts; only the coarse role below is. Recovering an angle "
-                "means reading the walk driver's own log, which is not part of "
-                "this bundle."
+                "a cloud position is a floor-plan seat and its banked record "
+                "carries no bearing at all; only the coarse role below is. The "
+                "signed whole-degree bearings a round DOES bank belong to a "
+                "lateral walk's poses, which are different captures — see the "
+                "lateral_poses block."
             ),
         },
         "role_vocabulary": sorted({
             str(row.get("role")) for row in rows if row.get("role")
         }),
+    }
+
+
+def _lateral_poses_block(round_dir: Path) -> dict[str, Any]:
+    """The signed bearings a lateral walk banked, one row per accepted take.
+
+    Read from the round's own ``positions/{take_id}.json`` sidecars through
+    :func:`~.position_cycle.read_lateral_take`, which is the accept rule
+    :func:`~.position_cycle.position_cycle_document` uses for the same files —
+    one vocabulary for "what is a lateral take", reached from two different
+    starting directories.
+
+    **Beside the ``positions`` block, never merged into it.** These are not the
+    same captures: a cloud position is a summed sweep at a floor-plan seat,
+    judged by gating and ripple; a lateral pose is a per-driver measurement at
+    a bearing on the design axis. They share a ``take_id`` convention and
+    nothing else, and a merged list would invite a reader to compare a curve
+    from one against a curve from the other.
+
+    ``position_deg`` is the SIGNED whole-degree bearing, negative LEFT of the
+    design axis, stamped by :func:`~.spatial.lateral_pose_record` at take time.
+    It is a commanded pose recorded verbatim, not a measurement with a spread,
+    so this block publishes no uncertainty — the walk's own pointing error is
+    unmeasured rather than quantified here.
+
+    Both survivors and superseded takes are listed, because the speaker keeps
+    both on disk deliberately and an index that hid one would be a third
+    opinion about which take counted.
+    """
+    directory = round_dir / _POSITIONS_SUBDIR
+    takes = [
+        take
+        for take in (
+            position_cycle.read_lateral_take(path)
+            for path in sorted(directory.glob("*.json"))
+        )
+        if take is not None
+    ]
+    if not takes:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                f"this round banked no {PHASE_LATERAL} take records under "
+                f"{_POSITIONS_SUBDIR}/ — its walk was refused at take time, its "
+                "poses were never accepted, or the round ran no lateral walk "
+                "at all"
+            ),
+            "n_takes": 0,
+        }
+    # Coerced rather than cast: a hand-edited sidecar with a non-numeric index
+    # sorts first instead of raising. The packet's rule is that a bad artifact
+    # is a fact it reports, never a reason to have no packet — and this block
+    # publishes what the record carried either way.
+    takes.sort(key=lambda take: (_ordinal(take["index"]), _ordinal(take["attempt"])))
+    return {
+        "available": True,
+        "n_takes": len(takes),
+        "takes": takes,
+        # ``bool`` subclasses ``int``, so a ``true`` in this field would
+        # otherwise publish 1 as a bearing.
+        "angles_deg": sorted({
+            take["position_deg"] for take in takes
+            if isinstance(take.get("position_deg"), int)
+            and not isinstance(take.get("position_deg"), bool)
+        }),
+        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
+        "note": (
+            "position_deg is signed whole degrees, negative LEFT of the design "
+            "axis. These are LATERAL walk poses, not the cloud seats in the "
+            "positions block above; the two are different captures and share "
+            "no row. Membership is every ACCEPTED take, a superseded attempt "
+            "included — which is a different set from the conductor's live "
+            "lateral_poses, where a retake replaces the attempt it supersedes "
+            "and only the latest per index survives"
+        ),
+    }
+
+
+def _capture_snr_block(
+    dump_ring_dir: Path | None, session_id: Any
+) -> dict[str, Any]:
+    """Per-capture signal-to-noise, from the operator capture-retention ring.
+
+    ``dump_ring_dir`` is the ring's ROOT (``dumps/`` in a banked round), found
+    inside it by :data:`RING_SIDECAR_GLOB` — the same directory and the same
+    rule ``jasper-classify-features --dumps`` takes, so an operator hands the
+    two tools one path. The ring writes one JSON sidecar per retained WAV
+    carrying
+    :func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`'s
+    flat diagnostic block. It is off by default and rolls over, so it is
+    OPTIONAL and its absence is reported like every other artifact's.
+
+    **The ring is a rolling buffer, so attribution is fail-closed.** A pull
+    takes whatever the ring held, which can include captures from an earlier
+    round; the sidecar's banked session identity is the join that exists
+    precisely because directory mtime was measured misrouting them. Only
+    captures whose identity matches THIS bundle are published, and the two
+    kinds of leftover — another session's, and one carrying no readable
+    identity — are counted separately rather than silently dropped, because a
+    reader that saw a short list without them would not know the ring had more
+    in it.
+
+    A capture is named by ``wav_sha256``, the identity the ``positions`` rows
+    already carry, so a reader that wants to know which position a ring
+    capture belongs to can join them. This module does not: a cloud row and a
+    ring sidecar agreeing on a digest is a fact, and deciding what follows from
+    a disagreement is a judgement.
+    """
+    if dump_ring_dir is None:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                "no capture-retention ring directory was supplied; the ring is "
+                "off by default and a banked round carries one only when the "
+                "operator created its ENABLED marker before the round"
+            ),
+            "n_captures": 0,
+        }
+    if not dump_ring_dir.is_dir():
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": "source_absent",
+            "n_captures": 0,
+        }
+    captures: list[dict[str, Any]] = []
+    non_finite: set[str] = set()
+    undeclared: set[str] = set()
+    declared_as: dict[str, str] = {}
+    other_session = 0
+    unattributed = 0
+    seen = 0
+    for path in sorted(dump_ring_dir.glob(RING_SIDECAR_GLOB)):
+        seen += 1
+        raw, _ = _read_json(path)
+        if not isinstance(raw, dict):
+            unattributed += 1
+            continue
+        try:
+            identity = read_session_identity(raw)
+        except SessionIdentityError:
+            identity = None
+        if identity is None:
+            unattributed += 1
+            continue
+        if identity.session_id != session_id:
+            other_session += 1
+            continue
+        diagnostic = _mapping(raw.get("diagnostic"))
+        snr = {}
+        for column, value in sorted(diagnostic.items()):
+            if _DIAGNOSTIC_SNR_MARKER not in column:
+                continue
+            shape = _snr_shape(column)
+            if shape is None:
+                undeclared.add(column)
+            else:
+                declared_as[column] = shape
+            snr[column] = _exact_json_value(value, column, non_finite)
+        # An attributed capture whose analysis reported no SNR at all still
+        # gets its row, with an empty ``snr``. Dropping it would be a third
+        # kind of silent leftover in a block whose whole posture is that what
+        # it does not publish, it counts.
+        captures.append({
+            "wav_sha256": raw.get("wav_sha256"),
+            "phase": raw.get("phase"),
+            "snr": snr,
+        })
+    absent: dict[str, Any] = {}
+    if not captures and not seen:
+        # A path one level too deep — the ``sidecar/`` directory rather than
+        # the ring ROOT — finds nothing, and reporting that as "nothing was
+        # attributed to this session" would be a confident false absence with
+        # a 0/0/0 breakdown behind it. Distinguished so a wrong path can never
+        # read as a true one.
+        absent = {
+            "status": "not_evaluated",
+            "reason": (
+                f"the directory supplied holds no sidecar matching "
+                f"{RING_SIDECAR_GLOB}. This argument is the ring ROOT (dumps/ "
+                "in a banked round), not the sidecar/ directory inside it, and "
+                "a path one level too deep looks exactly like an empty ring"
+            ),
+        }
+    elif not captures:
+        absent = {
+            "status": "not_evaluated",
+            "reason": (
+                f"the capture-retention ring holds {seen} sidecar(s) but none "
+                f"attributed to this session ({other_session} belonged to "
+                f"another, {unattributed} carried no readable session identity)"
+                + (
+                    "; this bundle's info.json carries no usable session_id, so "
+                    "nothing in the ring could be matched to it"
+                    if not (isinstance(session_id, str) and session_id)
+                    else ""
+                )
+            ),
+        }
+    return {
+        "available": bool(captures),
+        **absent,
+        "n_captures": len(captures),
+        "n_sidecars_seen": seen,
+        "n_other_session": other_session,
+        "n_unattributed": unattributed,
+        "captures": captures,
+        "non_finite_fields": sorted(non_finite),
+        "undeclared_fields": sorted(undeclared),
+        "source": f"the capture-retention ring, {RING_SIDECAR_GLOB}",
+        "uncertainty": {
+            "fields": {},
+            "not_uncertainties": dict(sorted(_SNR_NOT_AN_UNCERTAINTY.items())),
+            # Which declaration explains each column actually published, so a
+            # reader looks the reason up instead of doing suffix arithmetic —
+            # and so the mapping is a stated fact rather than an internal
+            # detail. ``woofer_alignment_snr_db`` ends with ``_snr_db`` as well
+            # as ``_alignment_snr_db``, and only one of those is the truth
+            # about it.
+            "declared_as": dict(sorted(declared_as.items())),
+            "note": (
+                "no field in this block is an uncertainty, which is why the "
+                "first list is empty and the second says why for each shape "
+                "— <role> standing for whichever role the producer composed "
+                "the name onto. An SNR bounds a random error without being "
+                "one, and pooling it with a systematic term — or reading it "
+                "as a spread that more captures would shrink — is the mistake "
+                "the two lists exist to prevent. undeclared_fields names any "
+                "published field this table does not cover, so the claim "
+                "above is checkable rather than merely made"
+            ),
+        },
+        "note": (
+            "one row per retained capture attributed to this session, named by "
+            "the same wav_sha256 the positions rows carry so a reader can join "
+            "them. n_sidecars_seen is what the ring held at all; "
+            "n_other_session and n_unattributed count what this block did not "
+            "publish. The ring is off by default, so an empty block usually "
+            "means nobody turned it on"
+        ),
     }
 
 
@@ -476,67 +963,6 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
-def _lab_row_value(value: Any, column: str, non_finite: set[str]) -> Any:
-    """One lab-row value as exact JSON, naming any number that was not.
-
-    A classification row legitimately carries ``NaN``. The instrument writes one
-    for ``z_local`` when a feature's neighbourhood scatter is zero, for
-    ``frac_of_nmp`` when the control scale is, and into ``excess_loss_vs_null``
-    when a gate's reference reading is — and ``jasper-classify-features`` banks
-    the artifact with a plain ``json.dumps``, which writes ``NaN`` verbatim and
-    reads it back as a float.
-    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint` refuses
-    a non-finite number, so copying one through would leave a round that
-    classified perfectly well with NO packet at all: this module's one hard
-    failure, thrown for a value that is merely absent.
-
-    So a non-finite number becomes ``null`` — the same answer
-    :func:`~.feature_classification.read_feature_verdicts` already gives for one
-    — and its COLUMN is named in the block's ``non_finite_fields``, because
-    "not computable" and "not carried" are different facts and the packet's
-    rule is that neither is silently the other. Recursive because three columns
-    are per-gate tables and one is a list, not scalars.
-
-    The four branches are exactly what ``json.loads`` can produce that
-    ``_freeze_json`` cares about, and no more. There is deliberately no ``bool``
-    guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
-    (``clean``, ``is_dip``, ``controls_ok``) falls through to the passthrough
-    already — unlike in :func:`~.feature_classification._finite`, which needs one
-    because its check includes ``int``.
-
-    Deliberately scoped to the lab rows, which is where the failure was
-    observed. The sibling exposure is real but NARROW, and was measured rather
-    than assumed: the receipt, the cloud evidence and the finding set are banked
-    through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
-    which passes ``allow_nan=False`` and refuses a non-finite value at write
-    time, so they structurally cannot carry one here. Two inputs are written
-    with a plain ``json.dumps`` and can:
-    ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
-    state, where all four fields this packet copies —
-    ``verify.claims``, ``fc_selection``, ``pre_apply_profile.blend_correction``
-    and ``evidence.calibration`` — kill the packet; and
-    :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
-    ``driver_safety_profile.confirmation`` is copied whole and does the same.
-    The draft's passbands do NOT, because
-    :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
-    drops a non-finite bound. Repairing those two is their writers' change, not
-    this reader's — see the follow-up issue linked from PR #2833.
-    """
-    if isinstance(value, float):
-        if math.isfinite(value):
-            return value
-        non_finite.add(column)
-        return None
-    if isinstance(value, dict):
-        return {
-            key: _lab_row_value(item, column, non_finite)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_lab_row_value(item, column, non_finite) for item in value]
-    return value
-
-
 def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     """The banked feature verdicts and the working behind them, not re-derived.
 
@@ -599,7 +1025,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
         kept, dropped = _copy_allowed(entry, LAB_ROW_FIELDS)
         withheld.update(dropped)
         lab_rows.append({
-            column: _lab_row_value(value, column, non_finite)
+            column: _exact_json_value(value, column, non_finite)
             for column, value in kept.items()
         })
     return {
@@ -642,6 +1068,8 @@ def _not_evaluated(
     state_reason: str,
     classification_available: bool,
     drivers_available: bool,
+    lateral_poses_available: bool,
+    capture_snr_reason: str,
     findings: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
@@ -652,13 +1080,6 @@ def _not_evaluated(
     are stated whether or not this particular session was complete.
     """
     entries: list[dict[str, Any]] = [
-        {
-            "field": "positions[].angle_deg",
-            "reason": (
-                "no numeric microphone angle is banked; only the coarse "
-                "onax/offax role is"
-            ),
-        },
         {
             "field": "first_reflection_ms",
             "reason": (
@@ -695,6 +1116,28 @@ def _not_evaluated(
             ),
         },
     ]
+    if not lateral_poses_available:
+        # Was an unconditional "no numeric microphone angle is banked" until the
+        # packet read the positions/ sidecars. That claim was about the CORPUS
+        # and it was false: a lateral walk banks a signed whole-degree bearing
+        # per pose. What remains true, and only when this round banked no walk,
+        # is that this packet carries no bearing for any capture. Printing the
+        # old sentence beside a lateral_poses block full of angles would be the
+        # opposite of the honesty this block exists for.
+        entries.append({
+            "field": "lateral_poses[].position_deg",
+            "reason": (
+                "this round banked no lateral walk poses, so no capture in it "
+                "carries a numeric bearing. A cloud position never does — see "
+                "positions.angle_deg, which is a property of that record shape "
+                "rather than of this round"
+            ),
+        })
+    if capture_snr_reason:
+        entries.append({
+            "field": "capture_snr",
+            "reason": capture_snr_reason,
+        })
     if not classification_available:
         # Was unconditional until a round could carry banked verdicts. Stating
         # it while the packet carries verdicts would be the opposite of the
@@ -749,6 +1192,7 @@ def build_crossover_evidence_packet(
     *,
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
+    dump_ring_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -770,6 +1214,15 @@ def build_crossover_evidence_packet(
     posture and same reason: OPTIONAL, absence reported. A packet without it
     cannot say where each driver's own band starts and ends, so the per-driver
     prescription class has no bound to be checked against and refuses by name.
+
+    ``dump_ring_dir`` is the operator capture-retention ring's root
+    (``dumps/`` in a banked round — the same directory
+    ``jasper-classify-features --dumps`` takes), which sits OUTSIDE the
+    bundle: it is a sibling of it, not a path derivable from ``session_dir``,
+    which is why it arrives as a third optional argument rather than being
+    guessed at from the tree. Same posture again: OPTIONAL, absence reported.
+    A packet without it carries no per-capture signal-to-noise, and the ring is
+    off by default so that is the ordinary case.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
@@ -812,6 +1265,9 @@ def build_crossover_evidence_packet(
         draft_reason = read_reason
     drivers = _drivers_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
+    lateral_poses = _lateral_poses_block(round_dir)
+
+    capture_snr = _capture_snr_block(dump_ring_dir, info_raw.get("session_id"))
 
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
@@ -876,6 +1332,11 @@ def build_crossover_evidence_packet(
         "spec": spec,
         "curve": _mapping(cloud.get("curve")),
         "positions": _positions_block(cloud),
+        # The bearings, beside the seats and never inside them: a lateral walk
+        # pose and a cloud position are different captures that share only a
+        # take-id convention.
+        "lateral_poses": lateral_poses,
+        "capture_snr": capture_snr,
         "honesty_mask": {
             "merged_excluded_bands_hz": cloud.get("merged_excluded_bands_hz"),
             "screen_excluded_bands_hz": cloud.get("screen_excluded_bands_hz"),
@@ -915,6 +1376,8 @@ def build_crossover_evidence_packet(
             state_reason=state_reason,
             classification_available=bool(classification.get("available")),
             drivers_available=bool(drivers.get("available")),
+            lateral_poses_available=bool(lateral_poses.get("available")),
+            capture_snr_reason=str(capture_snr.get("reason") or ""),
             findings=findings,
         ),
         # TWO contracts, one per prescription class, each written by the gate

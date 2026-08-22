@@ -55,16 +55,17 @@ from the seam that already owns it:
 is recovered for any position this module reads. That is narrower than "a
 round's bundle never carries one" — :func:`~.spatial.lateral_pose_record`
 DOES stamp a signed whole-degree ``position_deg`` for a per-driver LATERAL
-walk pose — but this module (via :mod:`.evidence_packet`) only ever reads
-the CLOUD positions block, built from
-:func:`~.spatial.cloud_position_record`, which carries a coarse ``role``
-(``onax``/``offax``) and no angle at all. Recovering one for a cloud
-position means reading a walk-driver log that is not part of any banked
-round. The campaign's ``frozen_reference.py`` carried a hardcoded
-``index -> degrees`` table for exactly this reason; it is not ported.
-Every view here keys a position by its own stable ``position_id`` instead
-(``f"{phase}_{index:02d}"``, assigned once by the walk driver and stable
-across rounds that walk the same shape).
+walk pose, and :mod:`.evidence_packet` now publishes those bearings in its
+``lateral_poses`` block — but every view below reads the CLOUD positions
+block, built from :func:`~.spatial.cloud_position_record`, which carries a
+coarse ``role`` (``onax``/``offax``) and no angle at all. A lateral pose is
+a DIFFERENT capture from a cloud seat, not the same one with more detail,
+so a bearing is not something these views are missing: it is not a property
+a graded seat has. The campaign's ``frozen_reference.py`` carried a
+hardcoded ``index -> degrees`` table for exactly this reason; it is not
+ported. Every view here keys a position by its own stable ``position_id``
+instead (``f"{phase}_{index:02d}"``, assigned once by the walk driver and
+stable across rounds that walk the same shape).
 """
 
 from __future__ import annotations
@@ -87,6 +88,7 @@ from jasper.active_speaker.flat_spec_views import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
+    RING_SIDECAR_GLOB,
     _EVIDENCE_GLOB,
     build_crossover_evidence_packet,
     round_program_dir,
@@ -190,11 +192,13 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     session_dir = _bundle_session_dir(round_dir)
     state_path = round_dir / "state.json"
     draft_path = round_dir / "design-draft.json"
+    ring_dir = round_dir / "dumps"
     try:
         packet = build_crossover_evidence_packet(
             session_dir,
             state_path=state_path if state_path.is_file() else None,
             driver_draft_path=draft_path if draft_path.is_file() else None,
+            dump_ring_dir=ring_dir if ring_dir.is_dir() else None,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
@@ -462,20 +466,34 @@ class VerifyPoseResult:
 
 
 def _dump_ring_captures(round_dir: Path, *, phase: str) -> list[tuple[Path, Path]]:
-    """``(wav_path, sidecar_path)`` pairs whose sidecar reports ``phase``."""
-    sidecar_dir = round_dir / "dumps" / "sidecar"
-    wav_dir = round_dir / "dumps" / "wav"
-    if not sidecar_dir.is_dir() or not wav_dir.is_dir():
+    """``(wav_path, sidecar_path)`` pairs whose sidecar reports ``phase``.
+
+    Finds sidecars from the ring ROOT through
+    :data:`~.evidence_packet.RING_SIDECAR_GLOB`, and takes each WAV from its
+    OWN sidecar's sibling ``wav/`` rather than from one directory computed
+    once — the same rule
+    :func:`~.feature_classifier.load_round_captures` uses.
+
+    That is not a tidy-up. This function used to spell ``dumps/sidecar`` with
+    a flat glob while :func:`load_banked_round` above passes the ring root, so
+    on a REAL nested ring (``dumps/{final,night-all,phase7}/sidecar/``) the
+    packet found captures here and this function found none — one module, two
+    answers about one directory. The constant's docstring is what says a
+    location fact has one owner, and this module has already paid this bug
+    class once (#2796).
+    """
+    ring_dir = round_dir / "dumps"
+    if not ring_dir.is_dir():
         return []
     pairs: list[tuple[Path, Path]] = []
-    for sidecar_path in sorted(sidecar_dir.glob("*.json")):
+    for sidecar_path in sorted(ring_dir.glob(RING_SIDECAR_GLOB)):
         try:
             doc = json.loads(sidecar_path.read_text())
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(doc, dict) or doc.get("phase") != phase:
             continue
-        wav_path = wav_dir / (sidecar_path.stem + ".wav")
+        wav_path = sidecar_path.parent.parent / "wav" / (sidecar_path.stem + ".wav")
         if wav_path.is_file():
             pairs.append((wav_path, sidecar_path))
     return pairs

@@ -2652,16 +2652,24 @@ def test_a_new_class_does_not_bump_the_blend_classs_schema_version(tmp_path):
 def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     """The rule: bump when a reader that understood v1 would MISREAD v2.
 
-    Two blocks and one contract were ADDED, and ``feature_classification`` was
+    Two blocks and one contract were ADDED, ``feature_classification`` was
     later WIDENED with the classifier's own lab rows beside the gate view it
-    already published. Every v1 field is unchanged in all four cases and a v1
-    reader ignores what it does not know, so nothing is misread — the version
-    stays where it is rather than invalidating every banked packet.
+    already published, and ``lateral_poses``/``capture_snr`` were added after
+    that. Every v1 field is unchanged in all of those cases and a v1 reader
+    ignores what it does not know, so nothing is misread — the version stays
+    where it is rather than invalidating every banked packet.
 
     The widening is the case worth naming, because "the block a v1 reader
     already read grew" sounds like the misreading case and is not one: the seven
     keys of ``verdicts[]`` still say exactly what they said, and a reader that
     never looks at ``lab_rows`` reaches every conclusion it reached before.
+
+    ``positions.angle_deg`` is the OTHER case worth naming, and it is the
+    closest call here: its ``reason`` prose changed, from a false corpus-wide
+    claim to a true statement about the cloud record's own shape. The FIELD
+    still says what it said — ``not_evaluated`` for a cloud row's angle — so a
+    v1 reader reaches the same conclusion from it; only the sentence explaining
+    why got accurate.
     """
     assert PACKET_SCHEMA_VERSION == 1
     assert packet["artifact_schema_version"] == 1
@@ -2670,6 +2678,9 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     )
     assert packet["feature_classification"]["lab_rows"]
     assert len(packet["feature_classification"]["verdicts"][0]) == 7
+    assert packet["lateral_poses"]["available"] is False
+    assert packet["capture_snr"]["available"] is False
+    assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
 
 
 def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):

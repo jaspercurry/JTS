@@ -512,8 +512,10 @@ def test_the_index_is_derived_from_the_bundle_the_bank_pulled(
     """Speaker-written facts only — the runner's staged angles never enter it.
 
     The pose IS banked (``lateral_pose_record`` -> ``positions/{take_id}.json``
-    inside the evidence bundle); nothing SURFACES it, because the views read the
-    cloud block. The index closes that gap by projecting those records.
+    inside the evidence bundle); the round-grading views read the cloud block
+    and never see it. The index projects those records into one sorted file at
+    the round root — the same records the evidence packet's ``lateral_poses``
+    block reads, through the same accept rule.
     """
     trail = tmp_path / "trail.jsonl"
     proc, _, _ = _run(

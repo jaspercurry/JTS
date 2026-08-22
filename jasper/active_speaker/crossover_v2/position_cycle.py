@@ -57,10 +57,13 @@ holds the cloud group's positions.  When the banked evidence cannot support the
 index, this refuses and names exactly what was missing — it never falls back to
 intent.
 
-**Why an index is worth having at all.**  The pose IS banked; nothing SURFACES
-it.  ``round_views`` and the evidence packet read the *cloud* positions block,
-so a lateral walk's bearings — the numbers a take-per-pose comparison is made of
-— are on disk in per-take sidecars that no view opens.
+**Why an index is worth having at all.**  The pose IS banked; nothing SURFACED
+it.  ``round_views`` reads the *cloud* positions block, so a lateral walk's
+bearings — the numbers a take-per-pose comparison is made of — sat on disk in
+per-take sidecars that no view opened.  The evidence packet now opens them
+through :func:`read_lateral_take` below, which is this module's own accept rule
+rather than a second reading of it; this index remains the convenient sorted
+form of the same records.
 """
 
 from __future__ import annotations
@@ -184,29 +187,51 @@ def staged_stops(angles: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """Every lateral take the bundle banked, with the directories they came from.
+def read_lateral_take(path: Path) -> dict[str, Any] | None:
+    """One banked ``positions/{take_id}.json`` as a lateral take, or ``None``.
 
-    Unreadable and non-lateral records are skipped rather than raised on: the
-    same directory legitimately holds the CLOUD group's positions (the web
-    host's ``retain_position`` serves both), and one corrupt sidecar must not
-    cost the index the takes that are fine. What is missing is decided by the
-    caller, from what came back.
+    ``None`` for everything that is not one, and the four ways that happens are
+    deliberately indistinguishable to the caller: unreadable, not a JSON
+    object, not a position-evidence record at all, or a CLOUD position. The
+    last is the ordinary case rather than an error — the web host's
+    ``retain_position`` serves both groups into the same directory, and only a
+    :data:`~.journey.PHASE_LATERAL` pose carries a bearing
+    (:func:`~.spatial.cloud_position_record` stamps none). One corrupt sidecar
+    must not cost a reader the takes that are fine, so nothing here raises;
+    what is MISSING is decided by the caller, from what came back.
+
+    Public because it is the accept rule two readers share:
+    :func:`position_cycle_document` below, and
+    :func:`~.evidence_packet.build_crossover_evidence_packet`'s
+    ``lateral_poses`` block. A second reader with its own idea of what a
+    lateral take is would disagree with this one silently.
+
+    Returns the record narrowed to :data:`_TAKE_FIELDS` — the identity, the
+    pose, and the verifier. The banked record stays the place to go for the
+    rest.
     """
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("kind") != POSITION_EVIDENCE_KIND:
+        return None
+    if raw.get("phase") != PHASE_LATERAL:
+        return None
+    return {field: raw.get(field) for field in _TAKE_FIELDS}
+
+
+def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every lateral take the bundle banked, with the directories they came from."""
     records: list[dict[str, Any]] = []
     sources: set[str] = set()
     for path in sorted(round_dir.glob(_BANKED_POSITIONS_GLOB)):
-        try:
-            raw = json.loads(path.read_text())
-        except (OSError, ValueError):
+        take = read_lateral_take(path)
+        if take is None:
             continue
-        if not isinstance(raw, Mapping):
-            continue
-        if raw.get("kind") != POSITION_EVIDENCE_KIND:
-            continue
-        if raw.get("phase") != PHASE_LATERAL:
-            continue
-        records.append(dict(raw))
+        records.append(take)
         sources.add(path.parent.relative_to(round_dir).as_posix())
     return records, sorted(sources)
 
@@ -238,7 +263,7 @@ def position_cycle_document(
             f"take time, or its poses were never accepted"
         )
     takes = sorted(
-        ({field: record.get(field) for field in _TAKE_FIELDS} for record in records),
+        records,
         key=lambda take: (int(take["index"] or 0), int(take["attempt"] or 0)),
     )
     stamp = derived_at or datetime.now(timezone.utc)

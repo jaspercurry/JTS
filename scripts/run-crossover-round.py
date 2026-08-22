@@ -62,11 +62,14 @@ from the staged angles would be a SECOND writer of one fact — the runner's
 intent beside the speaker's record — and the two disagree exactly when it
 matters, on a refused or retaken pose.
 
-The pose IS banked; nothing SURFACES it. ``jasper-round-views`` and the evidence
-packet read the CLOUD positions block, so a lateral walk's bearings sit in
-per-take sidecars no view opens. That is the gap the index closes, and it is why
-a round whose bundle carries no lateral takes gets a named refusal here rather
-than a document assembled from intent.
+The pose IS banked; nothing SURFACED it. ``jasper-round-views`` reads the CLOUD
+positions block, so a lateral walk's bearings sat in per-take sidecars no view
+opened. The evidence packet's ``lateral_poses`` block now opens them, through
+``position_cycle.read_lateral_take`` — the same accept rule this index uses, so
+the two cannot come to disagree about what a lateral take is. This index stays
+the convenient sorted form at the round root, which is why a round whose bundle
+carries no lateral takes gets a named refusal here rather than a document
+assembled from intent.
 
 The walk starts BEFORE the open because ``jasper-arm-walk``'s first poll is
 what checks a staged walk is still waiting — see its module docstring. It is
