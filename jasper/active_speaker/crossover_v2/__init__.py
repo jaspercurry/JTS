@@ -24,8 +24,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.spatial` — what a capture-consuming phase decides about one take.
 * :mod:`.candidates` — what one candidate build produced, as values.
 * :mod:`.accountability` — whether a built candidate may be proposed at all.
-* :mod:`.fc_sweep` — which crossover corners this speaker may be asked about,
-  what each costs to score, and which one the evidence recommends.
+* :mod:`.fc_sweep` — whether a crossover corner is admissible for this
+  speaker's declarations, and what its preset looks like re-cornered there.
 * :mod:`.topology_prescription` — ONE crossover corner and order, pinned for one
   round: the request gate, its admissibility bounds, and the durable read-back.
 * :mod:`.planning` — one candidate assembled: the eligibility gate, the

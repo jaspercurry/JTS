@@ -21,13 +21,10 @@ computed for a different crossover.  Held per build and passed by hand, the
 question cannot arise: a state describes exactly the candidate whose build
 returned it, and a build a retake moots is dropped whole.
 
-**Why these three moved together, and why now.**  They are the Fc sweep's
-blocking dependency: ``_evaluate_fc_candidate`` consumes a build product,
-and through it the linearization state and the cloud terms.  5a-iii deferred
-the sweep on exactly that — "its return types are 5a-v territory" — and the
-committed sweep golden's header says so in as many words.  Moving the values
-ahead of the machinery that reads them is what lets the sweep follow without
-a second flow-local type appearing behind it.
+**Why these three moved together.**  Each is a build product the package's own
+machinery consumes, and through them the linearization state and the cloud
+terms.  Moving the values ahead of the machinery that reads them is what let
+that machinery follow without a second flow-local type appearing behind it.
 
 **No behaviour lives here.**  These are frozen values with one projection
 (:meth:`LinearizationState.from_plan`) and one derived property; every

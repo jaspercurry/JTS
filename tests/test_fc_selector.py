@@ -1,10 +1,10 @@
-"""R17 PR-3: the Fc selector's scoring and adjudication kernel.
+"""The Fc selector's scoring and adjudication kernel, and how a verdict reads.
 
-Every test here pins a sentence the module or the campaign promises. The
-declaration-state pair at the bottom is the load-bearing one: the selector must
-behave honestly on the live jts3 declaration TODAY (one candidate, tweeter
-named as the blocker) and bloom into a real comparison the moment the operator
-widens it, with no other input changed.
+Every test here pins a sentence the module or the campaign promises: the
+borrowed flatness arithmetic, the pose-sum consumer, the scoring policy, §9.8's
+adjudication, the retained record's memory contract, and — at the bottom — what
+an :class:`~jasper.active_speaker.fc_selector.FcSelection` becomes in the
+household-facing envelope.
 """
 
 from __future__ import annotations
@@ -19,15 +19,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import fc_selector as sel
-from jasper.active_speaker.crossover_v2_flow import (
-    fc_candidate_set,
-    resolve_fc_search_band,
-)
+from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
 GRID = np.geomspace(20.0, 20_000.0, 121)
 BAND = (1000.0, 4000.0)
-JTS3_LIVE_BANDS = {"woofer": (1200.0, 2500.0), "tweeter": (2000.0, 2500.0)}
-JTS3_WIDENED_BANDS = {"woofer": (1200.0, 2500.0), "tweeter": (1600.0, 2500.0)}
 
 
 @dataclass(frozen=True)
@@ -194,10 +189,13 @@ def test_headroom_is_a_cost_but_a_small_one():
 
 
 def test_the_beaming_prior_is_not_a_scoring_term():
-    """PR-1's settled collision policy: ka bounds what may be PROPOSED, and the
-    configured Fc is evaluated even above the ceiling (jts3: 1915.4 vs 2000).
-    Scoring it again would charge the configured candidate twice for a bound
-    the records call guidance."""
+    """#1675's ruling, kept on this side of the seam: the ka/beaming onset is
+    DISCLOSED and never enforced. ``fc_sweep._fc_rejection`` carries no beaming
+    term, and the number rides
+    :attr:`~jasper.active_speaker.crossover_v2.topology_prescription.TopologyPrescription.beaming_ceiling_hz`
+    as disclosure alone. Scoring it here would turn that disclosure into a
+    penalty — and on jts3 (ceiling 1915.4, configured 2000) the penalty would
+    land on the corner the household actually crosses at."""
     above_ceiling = sel.score_candidate(_evaluation(fc_hz=2000.0, sum_db=_dip(-3.0)), [])
     below_ceiling = sel.score_candidate(_evaluation(fc_hz=1700.0, sum_db=_dip(-3.0)), [])
     assert above_ceiling.score == pytest.approx(below_ceiling.score)
@@ -317,15 +315,16 @@ def test_a_candidate_evaluation_retains_no_analysis_sized_object():
     """The retained record's DECLARED shape, on a constructed instance.
 
     **Scope, stated because an earlier version of this docstring overclaimed
-    it:** these subjects are hand-built, so this cannot see a field that
-    production populates and the fixture does not — the resilience lens proved
+    it:** these subjects are hand-built, so this cannot see a field that a
+    caller populates and the fixture does not — the resilience lens proved
     exactly that by adding an ``analysis`` field, hoarding a full
     ``ProgramAnalysis`` per candidate, and leaving the suite green. What this
     pins is that the shape as declared stays in the tens of kilobytes.
 
-    The PRODUCTION guard is
-    ``test_crossover_v2_fc_selector_wiring.test_the_sweep_retains_no_analysis_sized_object``,
-    which walks a real sweep's records and whitelists their fields by type.
+    There is no production counterpart any more: the counterpart walked a real
+    corner sweep's records, and the sweep was deleted by ticket 2.3 of
+    ``docs/tuning-master-plan.md``. Nothing in the tree builds these records
+    today, so the declared shape is the whole of what can be checked.
     """
     sweep = [_evaluation(fc_hz=fc) for fc in
              (1648.7, 1698.9, 1750.6, 1803.9, 1858.9, 2000.0)]
@@ -350,9 +349,9 @@ def test_a_candidate_evaluation_retains_no_analysis_sized_object():
 
 
 def test_retained_growth_is_bounded_per_candidate_not_per_analysis():
-    """Growth must be LINEAR in candidates and small — the release points are
-    what keep it so. One candidate's retained bytes times six must still be
-    the whole sweep's."""
+    """Growth must be LINEAR in candidates and small: one record holds a grid,
+    an anchor curve and one operator per role, and nothing that scales with the
+    analysis behind it. Pinned per record, so N records cost N times this."""
     one = _evaluation()
     per_candidate = sum(
         a.nbytes for a in
@@ -361,116 +360,74 @@ def test_retained_growth_is_bounded_per_candidate_not_per_analysis():
     assert per_candidate < 11_000, f"one candidate retains {per_candidate} bytes"
 
 
-# --- both declaration states (the owner's hardware gate) ---------------------
+# --- what a verdict becomes for the household --------------------------------
+#
+# Relocated here when ticket 2.3 of ``docs/tuning-master-plan.md`` deleted the
+# corner sweep and with it ``test_crossover_v2_fc_selector_wiring.py``, which
+# was the only suite reading these two renderers. ``FcSelection`` is this
+# module's own type, so the copy a verdict turns into belongs beside the
+# adjudication that produces it. (``tests/test_crossover_envelope_v2.py`` is the
+# tidier long-term home; moving them there is the envelope's PR to make.)
 
 
-def _candidates_for(bands):
-    band = resolve_fc_search_band(bands)
-    return band, fc_candidate_set(
-        configured_hz=2000.0, hf_hard_floor_hz=1600.0,
-        lower_driver_hard_ceiling_hz=4000.0, search_band_hz=band.band_hz,
-        lower_driver_diameter_mm=114.0,
+def test_no_recommendation_is_rendered_when_no_selection_exists():
+    """No session runs a corner sweep any more, so ``fc_selection`` is always
+    ``None`` and the summary declines — and the envelope must then print nothing
+    at all. "Keep what you have" from a selector that never ran would be a
+    verdict nobody reached."""
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        _fc_recommendation_lines,
+    )
+    from jasper.web.correction_crossover_v2 import _fc_selection_summary
+
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    assert c.fc_selection is None
+    assert _fc_selection_summary(c) is None
+    assert _fc_recommendation_lines({"crossover_v2": {}}) == []
+
+
+def test_a_recommending_verdict_says_apply_saves_the_exact_sound_choice():
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        _fc_recommendation_lines,
     )
 
-
-def test_on_the_live_declaration_the_selector_proposes_nothing_and_says_who_blocks():
-    """TODAY, unedited: the tweeter's declared [2000, 2500] sits entirely above
-    the 1915.4 Hz beaming ceiling, so exactly one candidate exists and the
-    honest verdict is keep-configured — with the tweeter named so the operator
-    knows which declaration to edit."""
-    band, candidates = _candidates_for(JTS3_LIVE_BANDS)
-    assert candidates.candidates == (2000.0,)
-    assert candidates.alternatives == ()
-    assert band.lo_role == "tweeter"
-
-    verdict = _select([_evaluation(fc_hz=2000.0, sum_db=_dip(-4.8))], planned=1)
-    assert verdict.kept_configured is True
-    assert verdict.recommended_hz is None
+    lines = _fc_recommendation_lines({"crossover_v2": {"fc_selection": {
+        "verdict": "recommend_alternative",
+        "configured_hz": 2000.0, "recommended_hz": 1750.0, "margin_db": 1.4,
+        "evaluated": 6, "planned": 6, "limits": {}, "refusals": [], "scores": [],
+        "attempted": [2000.0, 1650.0, 1700.0, 1750.0, 1800.0, 1850.0],
+        "comparison_complete": True,
+    }}})
+    joined = " ".join(lines).lower()
+    assert "1750 hz" in joined and "2000 hz" in joined
+    assert "save this choice in sound" in joined, joined
 
 
-def test_widening_the_tweeter_declaration_blooms_the_sweep_with_nothing_else_changed():
-    """The same inputs with the tweeter widened to its declared 1600 Hz hard
-    floor reopen the downward set — six candidates, spanning the ~1.7 kHz the
-    physics prior and the measured dip both point at.
-
-    Re-baselined by #2603's exact-is-legal ruling. The set is still six wide and
-    still spans the same region, but the grid is now half-open ``[floor,
-    ceiling)`` instead of strictly interior, so **the declared 1600 Hz floor is
-    itself the first proposal** rather than the nearest point above it. That is
-    the ruling arriving at the surface a household actually sees: the number the
-    manufacturer recommends is offered, not kept at a margin.
-    """
-    _, live = _candidates_for(JTS3_LIVE_BANDS)
-    _, widened = _candidates_for(JTS3_WIDENED_BANDS)
-    assert len(live.candidates) == 1
-    assert widened.candidates == (2000.0, 1600.0, 1658.6, 1719.4, 1782.4, 1847.7)
-    assert 1600.0 in widened.candidates, "#2603: the declared floor is offered"
-    assert 2000.0 in widened.candidates, "§9.8: configured is always evaluated"
-
-    # …and the selector can then actually recommend one.
-    verdict = _select(
-        [_evaluation(fc_hz=fc, sum_db=_dip(-4.8 if fc == 2000.0 else -1.2))
-         for fc in widened.candidates],
-        planned=len(widened.candidates),
-    )
-    assert verdict.verdict == sel.SELECTION_RECOMMEND
-    assert verdict.recommended_hz in widened.alternatives
-    assert verdict.evaluated == len(widened.candidates)
-    assert verdict.comparison_complete is True
-
-
-def test_configured_is_first_and_duplicate_alternatives_are_removed():
-    """A squeezed ceiling collapses the grid onto a handful of shared points.
-
-    Re-baselined by #2603: the grid is half-open ``[floor, ceiling)`` now, so
-    the 1000.0 floor is proposed too and the surviving set is one wider.
-    """
-    candidates = fc_candidate_set(
-        configured_hz=2000.0,
-        hf_hard_floor_hz=1000.0,
-        lower_driver_hard_ceiling_hz=1000.2,
-        count=5,
-    )
-    assert candidates.candidates == (2000.0, 1000.0, 1000.1, 1000.2)
-
-
-def test_a_configured_corner_sitting_on_the_declared_floor_is_not_duplicated():
-    """The coincidence #2603 made reachable: configured Fc **is** the floor.
-
-    Before the exact-is-legal ruling this could not happen — the floor was
-    refused, so it was never proposed and could never collide with the
-    configured corner that is always evaluated first. Now the floor is the
-    grid's first point, so a household already crossed AT its driver's declared
-    minimum produces the same number twice.
-
-    Asserted as a PAIR against a control that differs only in the configured
-    value, so the collapse is visible rather than inferred: the coincidence set
-    is the control's minus exactly the repeated entry, the configured corner is
-    still first, and every entry is still distinct.
-    """
-    control = fc_candidate_set(
-        configured_hz=2500.0,
-        hf_hard_floor_hz=1600.0,
-        lower_driver_hard_ceiling_hz=3200.0,
-        count=5,
-    )
-    coincident = fc_candidate_set(
-        configured_hz=1600.0,
-        hf_hard_floor_hz=1600.0,
-        lower_driver_hard_ceiling_hz=3200.0,
-        count=5,
+def test_incomplete_or_legacy_state_never_presents_an_alternative_as_best():
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        _fc_recommendation_lines,
     )
 
-    assert control.candidates == (2500.0, 1600.0, 1837.9, 2111.2, 2425.1, 2785.8)
-    assert coincident.candidates == (1600.0, 1837.9, 2111.2, 2425.1, 2785.8)
-
-    assert coincident.candidates[0] == coincident.configured_hz == 1600.0
-    assert len(set(coincident.candidates)) == len(coincident.candidates)
-    # Exactly one entry collapsed — not a silently truncated sweep.
-    assert len(coincident.candidates) == len(control.candidates) - 1
-    assert set(coincident.candidates) == set(control.candidates) - {2500.0}
-    # The floor is proposed, so it is never left sitting in the refused list.
-    assert coincident.rejected == ()
+    selection = {
+        "verdict": "recommend_alternative",
+        "configured_hz": 2000.0,
+        "recommended_hz": 1700.0,
+        "evaluated": 2,
+        "planned": 6,
+        "attempted": [2000.0, 1700.0],
+    }
+    for completeness in (False, None):
+        payload = dict(selection)
+        if completeness is not None:
+            payload["comparison_complete"] = completeness
+        joined = " ".join(_fc_recommendation_lines({
+            "crossover_v2": {"fc_selection": payload},
+        })).lower()
+        assert "incomplete" in joined
+        assert "no alternative was selected" in joined
+        assert "measured better" not in joined
+        assert "best" not in joined
 
 
 # --- the lateral weight's own claim, checked against the corpus it cites ------

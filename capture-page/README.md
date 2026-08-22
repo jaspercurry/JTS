@@ -290,10 +290,18 @@ it reached. So:
   page second**, for the mirror-image reason.
 
 Nothing gates the pair mechanically — `validate_capture_page` checks the build
-stamp's FORMAT, never a minimum — so the ordering is the whole safeguard. After
-this build the page owns no copy of the number at all: the Pi mints it
-(`fc_sweep_result_wait_s`), the spec carries it (`CaptureSpec.result_wait_s`),
-and a later budget change never needs this page republished again.
+stamp's FORMAT, never a minimum — so the ordering is the whole safeguard.
+
+**Superseded 2026-08-21, and in the safe direction.** The Pi mints no
+`result_wait_s` any more: that wait was the Fc corner hunt's compute ceiling,
+and the hunt was deleted (`docs/tuning-master-plan.md` ticket 2.3). So a current
+Pi behaves exactly like the "old Pi" row above, every page falls back to the
+90 s constant, and all four page/Pi pairings are safe — 90 s clears by 8.7 s the
+slowest round ever measured, which scored six corners where a round now scores
+none. The ordering above still governs the INTERMEDIATE Pi generation that does
+mint a sweep-sized wait, which is why the entry stays. The spec field and the
+page's fallback branch both stay too, so a future Pi that legitimately needs a
+longer wall can still say so without republishing this page.
 
 The one thing that is NOT optional in either direction: the field must ride a
 repeat of the WHOLE armed payload, never a partial event. The relay's

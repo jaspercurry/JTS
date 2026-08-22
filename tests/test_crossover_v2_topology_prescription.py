@@ -5,9 +5,10 @@
 """The explicit, admissibility-gated, provenance-carrying crossover pin.
 
 Covers the request gate (shape, provenance, and every bound), the single-owner
-claim that a PIN and a PROPOSAL are admissible on identical terms, the two
-suppressions a pinned round owes the selector, the durable read-back, and — the
-control that matters most — that a request with no prescription changes nothing.
+claim that a PINNED corner and a DECLARED one are admissible on identical terms,
+that the pin reaches the emitted filters under a region name apply accepts, the
+durable read-back, and — the control that matters most — that a request with no
+prescription changes nothing.
 
 The declarations in the arm tests are jts3's own, read out of the banked
 ``captures/armloop-first-drive-2026-08/r1-baseline-summed/design-draft.json``
@@ -30,9 +31,6 @@ from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_BELOW_DECLARED_FLOOR,
     FC_REJECT_OUTSIDE_SEARCH_BAND,
     _fc_rejection,
-    adjudicate,
-    candidate_sections,
-    candidate_set,
     recornered_preset,
 )
 from jasper.active_speaker.crossover_v2.topology_prescription import (
@@ -271,7 +269,7 @@ def test_an_unsupported_order_is_told_which_orders_exist():
 
 
 # --------------------------------------------------------------------------- #
-# 4. The declared frequency bounds — and that they are the sweep's own
+# 4. The declared frequency bounds — and that they are the shared predicate's
 # --------------------------------------------------------------------------- #
 
 
@@ -309,16 +307,16 @@ def test_an_undeclared_search_band_refuses_every_pin_and_says_why():
 def test_an_undeclared_band_must_not_be_read_as_permitting_everything():
     """The trap this gate could have walked into, pinned so it cannot be.
 
-    ``resolve_fc_search_band``'s ``None`` means "no proposal may be made at
-    all", but the same ``None`` reaching ``_fc_rejection`` means the OPPOSITE —
-    "no declared band constrains this" — and a pin would then be bounded only
-    by the excitation bands. ``candidate_set`` makes this exact translation into
-    ``count=0``; without the mirror of it here, a speaker whose roles declare no
-    overlapping band would admit any corner between the floor and the ceiling.
+    ``resolve_fc_search_band``'s ``None`` means "the declarations admit no
+    corner at all", but the same ``None`` reaching ``_fc_rejection`` means the
+    OPPOSITE — "no declared band constrains this" — and a pin would then be
+    bounded only by the excitation bands. Without the translation here, a
+    speaker whose roles declare no overlapping band would admit any corner
+    between the floor and the ceiling.
     """
     # Comfortably inside floor..ceiling, so ONLY the missing band can refuse it.
     assert _fc_rejection(
-        3000.0, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, None, None,
+        3000.0, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, None,
     ) is None
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(3000.0), search_band_hz=None)
@@ -326,9 +324,9 @@ def test_an_undeclared_band_must_not_be_read_as_permitting_everything():
 
 
 def test_a_missing_band_is_still_answered_after_the_harder_bounds():
-    """Hardest-first stays the sweep's own ordering: a corner that ALSO misses
-    the declared floor is told about the floor, because that is the sentence
-    that sends the operator to the right declaration."""
+    """Hardest-first stays the shared predicate's own ordering: a corner that
+    ALSO misses the declared floor is told about the floor, because that is the
+    sentence that sends the operator to the right declaration."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(900.0), search_band_hz=None)
     assert excinfo.value.reason == FC_REJECT_BELOW_DECLARED_FLOOR
@@ -338,22 +336,21 @@ def test_a_missing_band_is_still_answered_after_the_harder_bounds():
     1400.0, 1599.9, 1600.0, 1600.1, 1648.7, 2000.0,
     2499.9, 2500.0, 2500.1, 2600.0, 3999.9, 4000.0, 4000.1, 5000.0,
 ])
-def test_a_pin_and_a_proposal_are_admissible_on_identical_terms(corner_hz):
+def test_a_pin_and_a_declared_corner_are_admissible_on_identical_terms(corner_hz):
     """The single-owner proof, and the reason the gate imports a private name.
 
-    An operator who pins a corner the automatic sweep would have PROPOSED must
-    not be refused, and one who pins a corner the sweep would have REJECTED
-    must not be admitted. Two spellings of three comparisons is exactly how
-    those two answers drift apart on one speaker — so the gate asks
+    An operator who pins the corner their declarations already permit must not
+    be refused, and one who pins a corner those declarations exclude must not be
+    admitted. Two spellings of three comparisons is exactly how those two
+    answers drift apart on one speaker — so the gate asks
     ``fc_sweep._fc_rejection``, and this walks a grid across every declared
     edge to prove it still does.
 
-    Beaming is passed as ``None`` on both sides: #1675 makes the ka onset
-    guidance rather than a fence, and a pinned corner is its round's configured
-    corner, which ``FcCandidateSet`` already exempts.
+    Neither side has a beaming term: #1675 makes the ka onset guidance rather
+    than a fence, so the shared predicate carries none.
     """
     expected = _fc_rejection(
-        corner_hz, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, SEARCH_BAND_HZ, None,
+        corner_hz, DECLARED_FLOOR_HZ, LOWER_CEILING_HZ, SEARCH_BAND_HZ,
     )
     if expected is None:
         pinned = _read(_pin(corner_hz))
@@ -454,9 +451,10 @@ def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
 
 def test_a_pin_above_the_beaming_onset_is_admitted_and_disclosed():
     """#1675 defines the ka ceiling as guidance to warn on rather than a fence,
-    and ``FcCandidateSet`` already exempts the configured corner from it. A
-    pinned corner IS its round's configured corner, so enforcing it here would
-    be stricter about this speaker than the automatic path is."""
+    so no admissibility bound anywhere reads it — ``fc_sweep._fc_rejection``
+    carries no beaming term for the automatic path either. A pinned corner IS
+    its round's configured corner, so enforcing it here would be stricter about
+    this speaker than that path is."""
     pinned = _read(_pin(2400.0), beaming_ceiling_hz=1800.0)
     assert pinned is not None
     # Admitted despite sitting ABOVE the onset…
@@ -724,103 +722,38 @@ def test_a_pre_gate_record_reads_back_without_the_stamped_fields():
 
 
 # --------------------------------------------------------------------------- #
-# 10. What a pinned round owes the selector
+# 10. The pin reaches the filters, and the region keeps a name apply accepts
 # --------------------------------------------------------------------------- #
-
-
-def _candidate_set(**overrides):
-    kwargs = {
-        "configured_hz": 2400.0,
-        "hf_hard_floor_hz": DECLARED_FLOOR_HZ,
-        "lower_driver_hard_ceiling_hz": LOWER_CEILING_HZ,
-        "search_band_hz_by_role": {
-            "woofer": (1200.0, 2500.0), "tweeter": SEARCH_BAND_HZ,
-        },
-        "lower_driver_diameter_mm": None,
-        "topology_pinned": False,
-    }
-    kwargs.update(overrides)
-    return candidate_set(**kwargs)
-
-
-def test_an_unpinned_round_still_proposes_alternatives():
-    """The control. A pin must change this and nothing else must."""
-    assert _candidate_set().alternatives
-
-
-def test_a_pinned_round_proposes_no_alternative_to_the_pinned_corner():
-    """The operator pinned it precisely so that one corner is the only thing
-    this round measures. Proposing alternatives would spend the capture's
-    compute on a comparison nobody asked for."""
-    pinned = _candidate_set(topology_pinned=True)
-    assert pinned.alternatives == ()
-    # …and the configured corner is still evaluated (§9.8's golden mode), so a
-    # pinned round has a candidate rather than an empty set.
-    assert pinned.candidates == (2400.0,)
-    # The bounds still explain themselves rather than vanishing with the
-    # proposals — a household can see what the search was allowed to consider.
-    assert pinned.limits["declared_floor_hz"] == DECLARED_FLOOR_HZ
-    assert pinned.limits["search_hi_hz"] == SEARCH_BAND_HZ[1]
-
-
-def test_a_pinned_round_publishes_no_selector_verdict():
-    """The ``polarity_agrees_with_sum`` rule applied to the corner: reporting a
-    verdict for a comparison that never ran is the same dishonesty as reporting
-    disagreement for one.
-
-    Including the honest-SOUNDING one — on an ordinary round
-    ``no_alternative_evaluated`` means "the declarations left nothing to
-    compare", and here it would silently mean "nobody was asked to".
-    """
-    def _never_called(*args, **kwargs):  # pragma: no cover - must not run
-        raise AssertionError("the selector ran on a pinned round")
-
-    result = adjudicate(
-        [], [],
-        select=_never_called,
-        candidate_set_of=_never_called,
-        configured_fc_hz=2400.0,
-        topology_pinned=True,
-    )
-    assert result.selection is None
-    assert result.selected_evaluation is None
-    assert result.record.fields["fc_adjudication"] == "suppressed"
-    assert result.record.fields["fc_statistic_paused"] is True
-    assert result.record.fields["reason"] == "topology_pinned"
-
-
-# --------------------------------------------------------------------------- #
-# 11. The pin reaches the filters, and the region keeps a name apply accepts
-# --------------------------------------------------------------------------- #
-
-
-class _Region:
-    """A duck-typed crossover region — ``sections_by_role`` reads it that way,
-    and this module must not import the preset schema to test one."""
-
-    def __init__(self, fc_hz: float, order: int) -> None:
-        self.fc_hz, self.order = fc_hz, order
-        self.lower_driver, self.upper_driver = "woofer", "tweeter"
-        self.id = "woofer_tweeter_1649hz"
-
-    def __eq__(self, other):  # pragma: no cover - identity is enough here
-        return self is other
-
-
-def test_a_swept_corner_still_moves_only_the_corner():
-    """R17 adjudicates WHERE to cross and never what shape to cross with
-    (#1894), so the order axis must stay absent unless a pin supplies one."""
-    sections = candidate_sections([_Region(INCUMBENT_HZ, 4)], 2400.0)
-    for role_sections in sections.values():
-        for section in role_sections:
-            assert section.fc_hz == 2400.0
-            assert section.order == 4
 
 
 def test_a_pinned_order_reaches_both_branches_filters():
     """A round that crosses at a prescribed order must compose, fit, predict,
-    emit and verify through that order — not wear it as a label."""
-    sections = candidate_sections([_Region(INCUMBENT_HZ, 4)], 2400.0, order=2)
+    emit and verify through that order — not wear it as a label.
+
+    Through the route production takes: ``apply_topology_pin`` re-corners the
+    PRESET, and every downstream branch reads its sections back off that preset
+    with ``sections_by_role``. So this asserts the pinned order survives the one
+    hop that carries it to the filters.
+    """
+    import dataclasses
+
+    from jasper.active_speaker.branch_chain import sections_by_role
+
+    @dataclasses.dataclass(frozen=True)
+    class _Preset:
+        crossover_regions: tuple
+
+    @dataclasses.dataclass(frozen=True)
+    class _Frozen:
+        id: str
+        fc_hz: float
+        order: int
+        lower_driver: str = "woofer"
+        upper_driver: str = "tweeter"
+
+    preset = _Preset((_Frozen("woofer_tweeter_1649hz", INCUMBENT_HZ, 4),))
+    moved = recornered_preset(preset, fc_hz=2400.0, order=2)
+    sections = sections_by_role(moved.crossover_regions)
     assert set(sections) == {"woofer", "tweeter"}
     for role_sections in sections.values():
         for section in role_sections:
@@ -868,8 +801,8 @@ def test_the_recornered_region_id_is_spelled_the_way_apply_recompiles_it():
 
 
 def test_recornering_without_an_order_leaves_the_declared_order_alone():
-    """The swept path's behaviour, byte for byte — this function is its single
-    owner now, so a pin must not have changed what a sweep emits."""
+    """The automatic path's behaviour, byte for byte: ``order`` moves ONLY when
+    an operator pinned one, so an unpinned round keeps its declared slope."""
     import dataclasses
 
     @dataclasses.dataclass(frozen=True)
@@ -891,7 +824,7 @@ def test_recornering_without_an_order_leaves_the_declared_order_alone():
 
 
 # --------------------------------------------------------------------------- #
-# 12. The pre-flight, as an executable record
+# 11. The pre-flight, as an executable record
 # --------------------------------------------------------------------------- #
 
 

@@ -1327,8 +1327,8 @@ def plan_linearization(
             # A disclosure port that can abort the plan is worse than no port.
             # Legacy called ``log_event`` inline and inherited logging's own
             # never-raise posture; a host formatter that throws on one field
-            # would, without this, cost a household an entire candidate — and
-            # in a six-candidate sweep, silently narrow the comparison. The
+            # would, without this, cost a household an entire candidate —
+            # which, now that a round builds exactly one, is the whole round. The
             # record is still on the returned plan, and the failure is
             # disclosed rather than swallowed: see ``journal_dropped``.
             dropped.append(f"{record.event}: {type(exc).__name__}: {exc}")

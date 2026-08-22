@@ -502,16 +502,22 @@ def test_capture_page_existing_field_rollout_order_is_pinned():
 
 def test_capture_page_result_wait_rollout_order_is_pinned():
     """Build 20260818.1 moves the post-upload result wait off the page and onto
-    the spec, and the two directions are NOT symmetric — which is the whole
+    the spec, and the two directions were NOT symmetric — which is the whole
     reason the entry has to exist.
 
-    A new page against an old Pi falls back to the same 90 s it always used, so
-    that pair is exactly today's behaviour. An OLD page against a new Pi holds a
-    90 s wall against a sweep whose ceiling is now 96 s: `waitForCaptureResult`
-    then throws a terminal `sweepFailed` and the household loses a completed
-    capture. Nothing gates the pair — `validate_capture_page` checks the stamp's
-    FORMAT, never a minimum — so the documented order is the only safeguard, and
-    an undocumented order is how it gets got wrong.
+    While a Pi minted that wait, an OLD page against a NEW Pi held a 90 s wall
+    against a sweep whose ceiling had grown to 96 s: `waitForCaptureResult`
+    throws a terminal `sweepFailed` and the household loses a completed capture.
+    Nothing gates the pair — `validate_capture_page` checks the stamp's FORMAT,
+    never a minimum — so the documented order was the only safeguard, and an
+    undocumented order is how it gets got wrong.
+
+    **The current Pi mints no wait at all** (the corner sweep whose ceiling it
+    published was deleted — `docs/tuning-master-plan.md` ticket 2.3), so it
+    behaves exactly like the "old Pi" row and every pairing is safe again. The
+    entry and this pin stay because the INTERMEDIATE Pi generation still mints a
+    sweep-sized wait, and because the asymmetry is a property of the mechanism
+    rather than of one build: any future Pi that lengthens its wall re-opens it.
     """
     readme = (_REPO / "capture-page/README.md").read_text(encoding="utf-8")
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
@@ -1611,8 +1617,13 @@ def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
     result_body = main_js[start:end]
     assert "failure.sweepFailed = true;" in result_body
     assert "throw failure;" in result_body
-    # The wait is the Pi's to publish (`CaptureSpec.result_wait_s`); the
-    # constant survives only as the fallback for a Pi that publishes none.
+    # The wait is the Pi's to publish (`CaptureSpec.result_wait_s`), and the
+    # constant is the fallback for a Pi that publishes none — which, since the
+    # corner sweep was deleted, is EVERY current Pi. So this is the wall every
+    # round actually runs under, and the value is pinned here rather than left
+    # to a reader of `main.js` who might size it for the old fallback-only role.
+    # It clears the slowest round the ten-round jts3 corpus measured (81.28 s,
+    # scoring six corners) by 8.7 s, and a round now scores none.
     assert "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;" in main_js
     assert "resultWaitMs(spec), Number(spec.duration_ms) || 0" in result_body
 

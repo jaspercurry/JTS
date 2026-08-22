@@ -5,13 +5,13 @@
 """The angle-capture seam: {per-driver | summed} x {angles} x {arm | human}.
 
 Four things are pinned here, and the third is the one that matters most for
-review: this feature is NOT a route around the paused lateral-walk statistic.
+review: this feature is NOT a route around the retired lateral-walk statistic.
 
 1. the angle round trip -- degrees in, degrees back out of the shipped derivation;
 2. the seam's dispatch -- each combination resolves to the right program object,
    pose and advance policy, mutation-checked so a collapsed branch fails;
-3. **the ruling** -- the seam neither reads nor needs ``STAGE1_INCLUDES_LATERAL``
-   and never mints ``PHASE_LATERAL``, so the barred statistic stays off;
+3. **the ruling** -- the seam never mints ``PHASE_LATERAL`` itself, so it cannot
+   be a route back to the retired statistic;
 4. mover parity, and the record/receipt shape the shipped consumers read.
 """
 
@@ -285,43 +285,18 @@ def test_the_seam_never_mints_the_lateral_phase() -> None:
         assert PHASE_LATERAL not in set(ac.index_phase_map(request).values())
 
 
-def test_the_seam_is_independent_of_the_paused_lateral_flag() -> None:
-    """Flipping STAGE1_INCLUDES_LATERAL changes NOTHING here.
+def test_the_seam_module_does_not_reference_phase_lateral_as_code() -> None:
+    """Static backstop for the ruling in the module docstring.
 
-    **This is the mutation that states the ruling.** The pause exists because
-    the lateral-walk STATISTIC was invalidated (pose-ratio cancellation, #2711);
-    per-driver captures at angles as forward-model input are a different consumer
-    with a different validity argument. If this seam's behaviour moved with that
-    flag, the two would in fact be the same switch and the feature WOULD be a
-    bar-dodge. It does not move -- asserted in both flag states -- so the
-    capability and the barred statistic are genuinely separate.
-
-    The converse is asserted too: the seam does not turn the walk on. Reading
-    the shipped flag after exercising the seam still finds it False.
-    """
-    request = ac.both_at(_SHIPPED_ANGLES, mover=ac.MOVER_ARM)
-    baseline = ac.resolve_request(request)
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
-        assert ac.resolve_request(request) == baseline
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
-        assert ac.resolve_request(request) == baseline
-
-    assert flow.STAGE1_INCLUDES_LATERAL is False
-
-
-def test_the_seam_module_does_not_reference_the_paused_flag() -> None:
-    """Static backstop for the ruling above.
-
-    A future edit could reintroduce the coupling the test above rules out; this
-    fails the moment the module names either symbol *as code*.
+    A future edit could have this module mint ``PHASE_LATERAL`` itself, which
+    is exactly the coupling that would make it a route back to the retired
+    statistic; this fails the moment the module names that symbol *as code*.
 
     **Parsed, never text-scanned** -- the discipline `test_lint_contracts.py`
-    states for exactly this shape of rule: the module docstring discusses both
-    names at length in prose (that discussion is the point), so a text scan
+    states for exactly this shape of rule: the module docstring discusses the
+    name at length in prose (that discussion is the point), so a text scan
     would report the explanation as the violation. The AST sees only code, and
-    prose is where these names belong.
+    prose is where the name belongs.
     """
     import ast
     from pathlib import Path
@@ -337,7 +312,6 @@ def test_the_seam_module_does_not_reference_the_paused_flag() -> None:
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     }
-    assert "STAGE1_INCLUDES_LATERAL" not in referenced
     assert "PHASE_LATERAL" not in referenced
     # Positive control: the scan does see the names this module DOES use, so a
     # vacuous pass (an empty or mis-walked tree) cannot masquerade as a clean one.
@@ -781,4 +755,3 @@ def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
         {f.name for f in dataclasses.fields(flow.CloudPositionPrompt)}
         & {"phase", "index", "program_phase"}
     )
-    assert flow.STAGE1_INCLUDES_LATERAL is False

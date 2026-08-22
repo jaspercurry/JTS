@@ -22,7 +22,6 @@ import dataclasses
 import logging
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -501,38 +500,6 @@ def test_the_walk_route_carries_its_builds_own_realized_level_verdict():
     assert isinstance(proposal, InterventionProposal)
     assert dict(proposal.realized_branch_level) == _REALIZED, (
         "the walk must read the verdict off its OWN build's linearization state"
-    )
-
-
-def test_the_selection_route_carries_its_evaluations_own_realized_level_verdict():
-    """The same wiring pin for the alternative-Fc route.
-
-    Its accessor is a different one — ``evaluation.realized_branch_level``, the
-    copy the sweep retained — so severing either route leaves the other's pin
-    green. Two routes, two assertions, on purpose.
-    """
-    from jasper.active_speaker.fc_selector import FcCandidateEvaluation
-
-    session, seams = _session()
-    candidate = _candidate(linearization_outcome="fitted")
-    evaluation = FcCandidateEvaluation(
-        fc_hz=FC_HZ,
-        freqs_hz=np.asarray([100.0, 1000.0, 10000.0]),
-        branch_operator_by_role={},
-        anchor_sum_db=np.asarray([0.0, 0.0, 0.0]),
-        scoring_band_hz=None,
-        candidate=candidate.to_dict(),
-        predicted_sum=(np.asarray([100.0]), np.asarray([0.0])),
-        realized_branch_level=dict(_REALIZED),
-    )
-
-    session._commit_fc_candidate(evaluation)
-
-    assert len(seams.published_candidates) == 1, "the real commit ran"
-    proposal = session.last_intervention_proposal
-    assert isinstance(proposal, InterventionProposal)
-    assert dict(proposal.realized_branch_level) == _REALIZED, (
-        "the selection must read the verdict off ITS OWN retained evaluation"
     )
 
 

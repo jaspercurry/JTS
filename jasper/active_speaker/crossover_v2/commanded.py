@@ -68,16 +68,20 @@ measured branches are composed through a CONFIGURED crossover
 (``program_analysis._compose_configured_path_ir``'s ``S = M*C/P``), and the
 previous side is modelled on those same branches — so the model only describes
 the graph the speaker actually ran while that ``C`` is the ``C`` the previous
-apply ran. Two live doors move it, and an earlier revision of this module
-claimed only one of them existed:
+apply ran. A mismatch omits a term measured at up to 5.88 dB against this
+probe's 1.5 dB tolerance (adversarial panel, PR #2614), and **two live doors
+move it, not one** — an earlier revision of this module named only the first
+and called the second benign:
 
 * the household edits the crossover corner in ``/sound`` between rounds, so the
   capture composes at the new corner while the applied profile ran the old one;
-* **the alternative-Fc sweep**, which is not the benign case that revision
-  asserted. ``crossover_v2.priors.candidate_priors`` re-points the composition
-  at each SWEPT corner, so every non-configured candidate's branches carry a
-  ``C`` the applied profile never ran — measured at up to 5.88 dB of omitted
-  term against this probe's 1.5 dB tolerance (adversarial panel, PR #2614).
+* **an operator's topology pin**, which opens the session AT the pinned corner
+  (``topology_prescription.apply_topology_pin``), so the round's branches carry
+  a ``C`` the applied profile never ran.
+
+(A third door, the alternative-Fc sweep, closed with the corner hunt on
+2026-08-21 — ``docs/tuning-master-plan.md`` ticket 2.3. The check below is
+unchanged: it was never counting doors, it compares corners.)
 
 :func:`profile_crossover_fc_hz` reads the corner the applied graph was built at
 off its own snapshot, and the caller refuses the previous side outright when it

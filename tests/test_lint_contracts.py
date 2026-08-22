@@ -836,7 +836,26 @@ MAX_LINES_BY_PATH = {
     # split, which claimed 3 + 6 for the pre-round +9 when it was 4 + 5.) The
     # metric itself is `program_analysis`'s, at the end of this dict; this file
     # only reports it.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_299,
+    # 2026-08-22 corner-hunt deletion (plan ticket 2.3): 13,299 -> 12,996,
+    # LOWERED with the cut rather than left as slack. Out went the Fc candidate
+    # sweep's four session methods and its commit path, the candidate-set
+    # delegate, the `_adjudicating_walk` predicate, the lateral walk's
+    # adjudicating close, and `STAGE1_INCLUDES_LATERAL` with its evidence block.
+    # The ratchet's rule is that room freed by a deletion is returned, so the
+    # next diff that wants it has to say what earned it. 19 of the 303 lines
+    # freed were spent back, all on prose the same deletion falsified and none
+    # on behaviour: `_settled_group_verdict`'s R16 comment said a dropped last
+    # pose must close the walk "or the session would end with no candidate at
+    # all" (MEASURE publishes it now; what the close owes is the journal record
+    # that the walk ENDED); this ceiling's own note quoted the assert-side
+    # figure as though it were the binding one, when the walk-armed row lands ON
+    # 32; `commit_intervention_proposal` described one method under two
+    # contradictory names after the second commit route was deleted; the
+    # previous-graph guard listed a dead door as live where the live second door
+    # is an operator's topology pin; and four sites still narrated a sweep
+    # scoring six corners. A ceiling that refused those would be buying a
+    # smaller number with a falser file.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_013,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1221,7 +1240,12 @@ MAX_LINES_BY_PATH = {
     #       the prefix and not the five
     # Net +43 against 23 lines removed: the extraction pays for a third of
     # itself, which is what distinguishes it from a third transcription.
-    "jasper/web/correction_crossover_v2.py": 9_398,
+    # 2026-08-22 corner-hunt deletion (plan ticket 2.3): 9,398 -> 9,386,
+    # LOWERED with the cut rather than left as slack. The Pi-minted per-capture
+    # result wait went with the sweep whose compute ceiling it published — see
+    # `_mint_source_session`, which now states why the page's own 90 s floor
+    # governs instead.
+    "jasper/web/correction_crossover_v2.py": 9_386,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1358,7 +1382,19 @@ MAX_LINES_BY_PATH = {
     # comments alone and was cut by roughly two-thirds on the "point, never
     # re-teach" rule; the long forms live in PR #2836 and in
     # HANDOFF-crossover-measurement-v2.md, and this file points at them.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_293,
+    #
+    # 2026-08-22 corner-hunt deletion (plan ticket 2.3, gate round 1): 4,293 ->
+    # 4,297, +4 and no executable line. The Undo button's second reading of
+    # "does this apply change the declaration?" justified its own gap as
+    # unreachable — "the only producer of a candidate that crosses somewhere
+    # other than the declaration is the Fc sweep, which writes `fc_selection`
+    # in the same breath". That producer was deleted; the live one is an
+    # operator's topology pin, which writes no `fc_selection`, so the gap is
+    # REACHABLE and the comment now says which reading can be short (this one,
+    # not the apply -- `handle_v2_apply` derives from the candidate's own preset
+    # and is the authority). A comment that talks a reader out of a live gap is
+    # the one kind this file cannot afford to keep small.
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_297,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`

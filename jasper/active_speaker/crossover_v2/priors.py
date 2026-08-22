@@ -111,16 +111,12 @@ def candidate_required_band_hz(
     a candidate graded against a band it was never given.
 
     **The single owner, as of #2291 Phase 5a-v (the #2336 gate's N2).**  This
-    expression had two writers: :func:`measure_priors` below at the session's
-    configured corner, and the Fc sweep's per-candidate re-pointing at a
-    swept one.  Before 5a-iii they were two call sites in one module; after it
-    they were two call sites in two modules, which is the shape where a pair
-    drifts without either side looking wrong.  Both now ask here, so the
-    session corner and every candidate corner are answered by one formula.
+    expression once had two writers, in two modules — the shape where a pair
+    drifts without either side looking wrong.  Everything that needs the band
+    asks here, so one formula answers whatever corner a round runs at.
 
-    ``fc_hz`` is coerced rather than trusted: the sweep hands a corner it
-    derived, and the two callers' float-ness should not be able to move a
-    published band.
+    ``fc_hz`` is coerced rather than trusted: a caller's float-ness should not
+    be able to move a published band.
     """
     overlap = overlap_band_hz(float(fc_hz))
     return {
@@ -219,16 +215,17 @@ def measure_priors(
     round, its receipt, and the operator all called it a prescribed arm.
 
     It survives :func:`candidate_priors` untouched, which is the behaviour a
-    swept corner needs: a prescription is a fact about the drivers' physical
-    arrival gap, and that gap does not move when the crossover corner does.
+    re-pointed corner needs: a prescription is a fact about the drivers'
+    physical arrival gap, and that gap does not move when the crossover corner
+    does.
 
     ``explicit_alignment_polarity_sign`` is the same request's OPTIONAL basin
     pin, and rides every one of those rules — same origin, same boundary, same
-    survival through a swept corner (which basin the drivers sum in is a fact
-    about their wiring, not about the corner).  Its own line is that ``None``
-    here is the ordinary answer even on a prescribed round: pinning the delay is
-    common, pinning the basin is what a round does when it needs to hold the
-    basin still to measure something else.
+    survival through :func:`candidate_priors` (which basin the drivers sum in
+    is a fact about their wiring, not about the corner).  Its own line is that
+    ``None`` here is the ordinary answer even on a prescribed round: pinning
+    the delay is common, pinning the basin is what a round does when it needs
+    to hold the basin still to measure something else.
 
     The three configured-path fields are gated on ``protection_sections_by_role``
     together, and that grouping is load-bearing:
@@ -274,11 +271,17 @@ def candidate_priors(
 ) -> MeasurementPriors:
     """MEASURE's priors re-pointed at one candidate — THREE fields move.
 
-    The swept-corner sibling of :func:`measure_priors`, and the only member of
-    this family that takes an already-built set rather than building one: the
-    session's own MEASURE priors ARE the base, and a candidate differs from
-    them in exactly three fields. Re-deriving the other seven here would put a
-    second writer on each.
+    **No production code calls this.** It served the corner sweep, which re-
+    pointed the composition at each candidate corner; that sweep closed with
+    the corner hunt on 2026-08-21 (``docs/tuning-master-plan.md`` ticket 2.3).
+    The function is kept rather than deleted alongside it — retiring it is a
+    separate decision, deliberately deferred — so what follows states the
+    contract it still satisfies, not a path a round takes today.
+
+    The sibling of :func:`measure_priors` that takes an already-built set
+    rather than building one: the session's own MEASURE priors ARE the base,
+    and a candidate differs from them in exactly three fields. Re-deriving the
+    other seven here would put a second writer on each.
 
     ``configured_polarity_sign_by_role`` and
     ``measurement_protection_response_by_role`` are carried UNCHANGED:
@@ -296,8 +299,8 @@ def candidate_priors(
         # The same union :func:`measure_priors` takes, at THIS candidate's
         # corner — asked of its single owner rather than re-spelled. The
         # twin the #2336 gate named (N2) is closed here: this module owns
-        # the formula, the session corner and every swept corner ask it,
-        # and there is no second place for the pair to drift apart in.
+        # the formula and every corner that needs the union asks it, so
+        # there is no second place for the pair to drift apart in.
         candidate_required_band_hz_by_role=candidate_required_band_hz(
             sections, fc_hz=float(fc_hz),
         ),

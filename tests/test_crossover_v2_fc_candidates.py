@@ -1,8 +1,13 @@
-"""R17 PR-1 — the declared inputs the Fc selector adjudicates from (#1894).
+"""The declarations that say WHERE this speaker may be crossed (#1894).
 
-Two halves, both hardware-free: the ka/beaming geometry (#1675) and the bounded
-candidate set derived from declarations. No selector here — the evaluation loop,
-scoring, and golden-equivalence proof are PR-2's.
+Hardware-free throughout, in three parts: the ka/beaming geometry (#1675), the
+declared diameter's route from the draft to the conductor, and the two owners of
+corner admissibility — ``_fc_rejection`` for "is this corner within every
+declared bound" and ``resolve_fc_search_band`` for "which roles' declarations
+bind the band".
+
+The corner is executed, not hunted: a round crosses where the household declared
+or where an operator pinned, so nothing here ranks one corner against another.
 """
 
 from __future__ import annotations
@@ -16,9 +21,7 @@ from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
 from jasper.active_speaker.crossover_v2_flow import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_BEAMING,
     FC_REJECT_OUTSIDE_SEARCH_BAND,
-    fc_candidate_set,
 )
 
 # The JTS3 declaration, so the numbers below are the ones the owner's speaker
@@ -68,224 +71,77 @@ def test_beaming_onset_refuses_a_dimension_nobody_declared():
         beaming_onset_hz(JTS3_DIAMETER_MM, ka=0.0)
 
 
-# --- the candidate set --------------------------------------------------------
+# --- corner admissibility -----------------------------------------------------
 
 
-def test_the_declared_speaker_yields_a_downward_set_under_the_beaming_ceiling():
-    """The owner's ruling in numbers: with the arbitrary [2000, 2500] search
-    band withdrawn, the physics puts every proposal BELOW the configured Fc."""
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert JTS3_CONFIGURED_HZ in result.candidates
-    assert result.alternatives, "the selector must have somewhere to move"
-    ceiling = beaming_onset_hz(JTS3_DIAMETER_MM)
-    for fc in result.alternatives:
-        assert JTS3_HF_FLOOR_HZ <= fc <= ceiling
-    assert result.limits["beaming_ceiling_hz"] == pytest.approx(1915.4, abs=0.05)
-    assert len(result.alternatives) <= flow.MAX_PROPOSED_FC_CANDIDATES
-
-
-def test_the_configured_candidate_survives_a_beaming_ceiling_below_it():
-    """§9.8 versus #1675, at the exact point they collide on this speaker: the
-    ka=2 ceiling is 1915.4 Hz and the configured crossover is 2000 Hz.
-
-    #1675 defines ka as something to WARN on ("the fix is crossover placement
-    ... never a filter"), not a fence, and §9.8 requires the configured path
-    stay evaluable as the golden mode. So the ceiling bounds what may be
-    PROPOSED and never evicts what is configured — otherwise this speaker
-    would have no golden candidate and keep-configured could not be a verdict.
-    """
-    ceiling = beaming_onset_hz(JTS3_DIAMETER_MM)
-    assert ceiling < JTS3_CONFIGURED_HZ, "the collision this test exists for"
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert JTS3_CONFIGURED_HZ in result.candidates
-    assert all(fc <= ceiling for fc in result.alternatives)
-
-
-def test_no_declared_diameter_means_no_beaming_ceiling_and_it_is_visible():
-    """Undeclared is disclosed, not defaulted — the set simply widens, and the
-    absence of the limit is what a consumer reads to say so."""
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        lower_driver_diameter_mm=None,
-    )
-    assert "beaming_ceiling_hz" not in result.limits
-    assert max(result.alternatives) > beaming_onset_hz(JTS3_DIAMETER_MM)
-
-
-def test_a_corner_exactly_at_the_declared_floor_is_offered_and_legal():
+def test_a_corner_exactly_at_the_declared_floor_is_legal():
     """Owner ruling, 2026-08-17: "exact is legal — if the user/manufacturer says
     1600, we should be able to do it. no nannies."
 
     The manufacturer's minimum recommended crossover is a SANCTIONED operating
-    point, so the sweep both OFFERS it and accepts it. #1654's earlier
-    strictness cited the candidate's handoff landing on the evidence band's
-    edge; that is a continuum (every Fc within an octave of the floor is
-    clamped the same way, just less), not a degeneracy at equality — at
-    ``fc == floor`` the scoring band is a full octave wide — so there was
-    conservatism to drop and no math to repair.
+    point, so a round may be opened there. #1654's earlier strictness cited the
+    candidate's handoff landing on the evidence band's edge; that is a continuum
+    (every Fc within an octave of the floor is clamped the same way, just less),
+    not a degeneracy at equality — at ``fc == floor`` the scoring band is a full
+    octave wide — so there was conservatism to drop and no math to repair.
+
+    Pinned at the BOUNDARY, which is what the table below cannot carry: one
+    epsilon under the floor is still refused, and refused by name.
     """
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    # Offered...
-    assert JTS3_HF_FLOOR_HZ in result.alternatives
-    # ...and legal, with no rejection reason of any kind.
     assert flow._fc_rejection(
-        JTS3_HF_FLOOR_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None, None,
+        JTS3_HF_FLOOR_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
     ) is None
     # One epsilon below is still refused, and refused BY NAME.
     assert flow._fc_rejection(
         math.nextafter(JTS3_HF_FLOOR_HZ, 0.0),
-        JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None, None,
+        JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
     ) == FC_REJECT_BELOW_DECLARED_FLOOR
     # jts3's shipped corner was legal before this ruling and stays legal.
     assert JTS3_CONFIGURED_HZ > JTS3_HF_FLOOR_HZ
     assert flow._fc_rejection(
-        JTS3_CONFIGURED_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None, None,
+        JTS3_CONFIGURED_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
     ) is None
 
 
-@pytest.mark.parametrize("fc, floor, ceiling, search, beaming, expected", [
-    (1500.0, 1600.0, 4000.0, None, None, FC_REJECT_BELOW_DECLARED_FLOOR),
+@pytest.mark.parametrize("fc, floor, ceiling, search, expected", [
+    (1500.0, 1600.0, 4000.0, None, FC_REJECT_BELOW_DECLARED_FLOOR),
     # Exact is legal (owner ruling 2026-08-17): AT the floor clears
     # every bound, so it produces no rejection reason at all.
-    (1600.0, 1600.0, 4000.0, None, None, None),
-    (4500.0, 1600.0, 4000.0, None, None, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
-    (1800.0, 1600.0, 4000.0, (2000.0, 2500.0), None,
-     FC_REJECT_OUTSIDE_SEARCH_BAND),
-    (1950.0, 1600.0, 4000.0, None, 1915.4, FC_REJECT_BEAMING),
-    (1800.0, 1600.0, 4000.0, None, 1915.4, None),
+    (1600.0, 1600.0, 4000.0, None, None),
+    (4500.0, 1600.0, 4000.0, None, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
+    (1800.0, 1600.0, 4000.0, (2000.0, 2500.0), FC_REJECT_OUTSIDE_SEARCH_BAND),
 ])
-def test_every_bound_has_a_named_reason(fc, floor, ceiling, search, beaming, expected):
+def test_every_bound_has_a_named_reason(fc, floor, ceiling, search, expected):
     """No bare numbers reach a household: each bound is a declaration someone
     confirmed, so each refusal names which one. Ordered hardest-first, so a
     value outside two bounds reports the safety one."""
-    assert flow._fc_rejection(fc, floor, ceiling, search, beaming) == expected
+    assert flow._fc_rejection(fc, floor, ceiling, search) == expected
 
 
-def test_a_search_band_that_excludes_everything_leaves_only_configured():
-    """The pre-ruling [2000, 2500] declaration, kept as a case rather than a
-    footnote: it admits no alternative at all once the beaming ceiling applies,
-    which is exactly why the owner withdrew it. An empty ALTERNATIVE set is an
-    honest keep-configured, not a crash."""
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        search_band_hz=(2000.0, 2500.0),
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert result.candidates == (JTS3_CONFIGURED_HZ,)
-    assert result.alternatives == ()
+def test_the_band_edge_tolerance_absorbs_one_decimal_of_rounding():
+    """A corner is spelled to one decimal everywhere it is declared, pinned or
+    displayed, so the band check must not refuse a value rounding put ON the
+    edge it is being checked against — while still refusing one genuinely
+    outside.
 
-
-def test_proposals_are_geometric_bounded_and_inside_the_open_interval():
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    alts = result.alternatives
-    assert len(alts) == flow.MAX_PROPOSED_FC_CANDIDATES
-    ratios = [alts[i + 1] / alts[i] for i in range(len(alts) - 1)]
-    assert all(r == pytest.approx(ratios[0], rel=1e-3) for r in ratios), (
-        "a crossover argument is per-octave; an arithmetic grid would crowd the top"
-    )
-    # Half-open [floor, ceiling): the declared floor IS proposed since the
-    # 2026-08-17 ruling made it a legal operating point, while the ceiling
-    # stays a bound rather than a recommendation.
-    assert min(alts) == JTS3_HF_FLOOR_HZ
-    assert max(alts) < beaming_onset_hz(JTS3_DIAMETER_MM)
-
-
-@pytest.mark.parametrize(
-    "search_lo",
-    [
-        # Rounds DOWN under the old ``- 0.05`` clamp: these three fail the
-        # moment the epsilon comes back. Verified by mutation, not assumed.
-        pytest.param(2500.0, id="rounds_down_2500"),
-        pytest.param(3000.0, id="rounds_down_3000"),
-        pytest.param(1501.6, id="rounds_down_1501p6"),
-        # Rounds UP, so it passed even WITH the bug — the same rounding luck the
-        # two shipped goldens had. Kept as the control: the fix must not move a
-        # case that already worked.
-        pytest.param(1750.5, id="rounds_up_control_1750p5"),
-    ],
-)
-def test_a_binding_search_floor_is_proposed_not_refused_as_its_own_violation(
-    search_lo,
-):
-    """The grid's first point must survive the band check the grid itself applies.
-
-    Regression for the bug the exact-is-legal ruling introduced. While the
-    proposals were strictly interior, the ``lo`` clamp could sit an epsilon
-    under the declared search floor harmlessly. Once ``lo`` BECAME the first
-    proposal, that nudge was rounded to one decimal and landed below
-    ``_fc_rejection``'s own tolerance -- which measures from the DECLARED edge,
-    not the nudged one -- so the sweep refused its own first candidate as
-    ``outside_declared_search_band``: one proposal silently lost, and a journal
-    line that reads like the household declared something contradictory.
-
-    Three of the four floors here round DOWN under the old clamp and fail the
-    instant the epsilon returns (mutation-verified). The fourth rounds UP and
-    passed even WITH the bug — it is the control, and it is also the whole
-    reason the suite could not see this: both shipped goldens (1600 and 2000)
-    round UP, so every existing case passed on rounding luck.
+    Both directions, because a tolerance is only correct if it has a far side:
+    a one-sided pin would pass just as well against no tolerance at all, or
+    against one wide enough to admit a corner the declaration excludes.
     """
+    band = (2000.0, 2500.0)
+    eps = flow._FC_GRID_EPS_HZ
 
-    result = fc_candidate_set(
-        configured_hz=2200.0,
-        hf_hard_floor_hz=300.0,
-        lower_driver_hard_ceiling_hz=6000.0,
-        search_band_hz=(search_lo, search_lo + 900.0),
-    )
-
-    assert not [r for r in result.rejected if r[1] == FC_REJECT_OUTSIDE_SEARCH_BAND], (
-        f"the grid refused its own proposal against its own band: {result.rejected}"
-    )
-    # The declared floor is the first proposal, and it is offered rather than
-    # merely un-refused.
-    assert min(result.alternatives) == pytest.approx(search_lo, abs=0.05)
-    assert len(result.alternatives) == flow.MAX_PROPOSED_FC_CANDIDATES
-
-
-def test_asking_for_no_proposals_still_evaluates_the_configured_path():
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        count=0,
-    )
-    assert result.candidates == (JTS3_CONFIGURED_HZ,)
-
-
-def test_an_inverted_admissible_range_proposes_nothing_rather_than_guessing():
-    """A declaration whose ceiling sits under its floor is a broken speaker
-    profile, not an invitation to interpolate."""
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=3000.0,
-        lower_driver_hard_ceiling_hz=1800.0,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert result.alternatives == ()
-    assert result.candidates == (JTS3_CONFIGURED_HZ,)
+    # Inside the tolerance at both edges — admitted.
+    for fc in (band[0] - eps, band[1] + eps):
+        assert flow._fc_rejection(fc, 1600.0, 4000.0, band) is None, fc
+    # Past it at both edges — refused by name.
+    for fc in (band[0] - eps * 2, band[1] + eps * 2):
+        assert flow._fc_rejection(fc, 1600.0, 4000.0, band) == (
+            FC_REJECT_OUTSIDE_SEARCH_BAND
+        ), fc
+    # …and the tolerance is half a display digit, not a licence: it may never
+    # reach the 0.1 Hz the spelling itself can move a corner by.
+    assert 0.0 < eps < 0.1
 
 
 # --- the declared diameter reaches the conductor (#1675's four edits) ---------
@@ -336,7 +192,7 @@ def test_a_draft_without_declarations_yields_no_priors(draft):
     assert _resolve_radiating_diameter_by_role(draft) == {}
 
 
-# --- which roles' search bands bind the set (R17 PR-2 design point) ------------
+# --- which roles' declarations bind the search band ---------------------------
 #
 # Two declaration SHAPES on this speaker's numbers, not two readings of the box.
 # The pre-repair tweeter band [2000, 2500] is the withdrawn arbitrary-2000
@@ -381,37 +237,13 @@ def test_the_binding_band_is_the_intersection_and_names_who_set_each_edge():
     assert band.undeclared_roles == ()
 
 
-def test_a_search_floor_above_the_ka_ceiling_proposes_nothing_and_that_is_a_verdict():
-    """End to end on the pre-repair shape: the intersection starts at 2000 and
-    the ka ceiling ends at 1915.4, so there is no room to propose into. The
-    configured Fc survives anyway (§9.8), so the session has a golden candidate
-    and 'keep configured' is reachable rather than an error."""
-    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        search_band_hz=band.band_hz,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert band.band_hz is not None
-    # The verdict's governing relationship, named rather than assumed: the
-    # search floor sits ABOVE the beaming ceiling, so the admissible interval
-    # is empty. (That the floor is also 2000 Hz is a property of this shape,
-    # not the reason.)
-    assert band.band_hz[0] > result.limits["beaming_ceiling_hz"]
-    assert result.candidates == (JTS3_CONFIGURED_HZ,)
-    assert result.alternatives == ()
-    # …and the limits carry every bound that produced that verdict, so the
-    # disclosure is derivable without re-running the search.
-    assert result.limits["search_lo_hz"] == PRE_REPAIR_SEARCH_BAND_BY_ROLE["tweeter"][0]
-    assert result.limits["beaming_ceiling_hz"] == pytest.approx(1915.4, abs=0.05)
-
-
-def test_repairing_the_stale_tweeter_declaration_reopens_the_downward_set():
+def test_repairing_the_stale_tweeter_declaration_widens_the_binding_band():
     """The rule's payoff, and the proof it is the DECLARATION that binds rather
     than anything hardcoded: widen the tweeter to its declared hard floor and
-    proposals appear, with no other input changed."""
+    the binding band widens with it, with no other input changed. The control is
+    the sibling above, which pins the same speaker's pre-repair band at
+    ``(2000.0, 2500.0)``.
+    """
     band = flow.resolve_fc_search_band(REPAIRED_SEARCH_BAND_BY_ROLE)
 
     # The repaired low edge is the tweeter's declared hard floor exactly — the
@@ -420,16 +252,6 @@ def test_repairing_the_stale_tweeter_declaration_reopens_the_downward_set():
     # stored search floor since #2191.
     assert band.band_hz == (JTS3_HF_FLOOR_HZ, 2500.0)
     assert band.lo_role == "tweeter"
-    result = fc_candidate_set(
-        configured_hz=JTS3_CONFIGURED_HZ,
-        hf_hard_floor_hz=JTS3_HF_FLOOR_HZ,
-        lower_driver_hard_ceiling_hz=JTS3_WOOFER_CEILING_HZ,
-        search_band_hz=band.band_hz,
-        lower_driver_diameter_mm=JTS3_DIAMETER_MM,
-    )
-    assert result.alternatives, "a repaired declaration must open the search"
-    for fc in result.alternatives:
-        assert JTS3_HF_FLOOR_HZ <= fc <= result.limits["beaming_ceiling_hz"]
 
 
 def test_an_undeclared_role_proposes_nothing_rather_than_permitting_everything():
@@ -473,3 +295,25 @@ def test_the_binding_band_never_widens_what_a_role_declared():
     for role, declared in PRE_REPAIR_SEARCH_BAND_BY_ROLE.items():
         assert band.band_hz[0] >= declared[0], role
         assert band.band_hz[1] <= declared[1], role
+
+
+def test_the_search_band_resolver_reads_the_confirmed_profile_fail_soft():
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_crossover_search_band_hz as resolve,
+    )
+
+    profile = {
+        "targets": [
+            {"target_fingerprint": "fp-w", "crossover_search_band_hz": [200, 2500]},
+            {"target_fingerprint": "fp-t", "crossover_search_band_hz": "nonsense"},
+            {"target_fingerprint": "fp-x"},
+        ],
+    }
+    assert resolve(profile, "fp-w") == (200.0, 2500.0)
+    # Malformed, absent, and an unknown target all decline rather than raise:
+    # this bounds where a corner may be OPENED, and refusing a measurement
+    # session over it would be the wrong direction (its sibling
+    # measurement-band resolver raises).
+    assert resolve(profile, "fp-t") is None
+    assert resolve(profile, "fp-x") is None
+    assert resolve(profile, "fp-missing") is None

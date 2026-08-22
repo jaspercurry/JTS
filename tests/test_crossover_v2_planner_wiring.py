@@ -60,10 +60,10 @@ def _walked_to_measure():
 def test_the_request_takes_its_corner_from_the_candidates_sections():
     """Not from ``self._fc_hz``, which is the 2026-08-10 defect at this seam.
 
-    Both branches are exercised: a swept candidate (``candidate_sections``
-    supplied) and the configured walk (derived from the session preset). Each
-    must produce a context at ITS OWN corner, and the swept one must differ from
-    the session's or the assertion proves nothing.
+    Both branches are exercised: a candidate built at another corner
+    (``candidate_sections`` supplied) and the configured walk (derived from the
+    session preset). Each must produce a context at ITS OWN corner, and the
+    supplied one must differ from the session's or the assertion proves nothing.
     """
     c, analysis = _walked_to_measure()
     swept_fc_hz = 1750.0
@@ -296,8 +296,8 @@ def test_a_candidate_with_no_crossover_degrades_to_trims_only(caplog):
     Driven through ``candidate_sections`` rather than a region-less preset
     because ``MeasuredCrossoverCandidate`` refuses such a preset itself, one
     layer later — so a region-less session cannot produce a candidate at all,
-    and the reachable shape of this refusal is a swept candidate whose sections
-    came back empty.
+    and the reachable shape of this refusal is a supplied section set that came
+    back empty.
     """
     caplog.set_level("WARNING", logger=_DIAG_LOGGER)
     c, analysis = _walked_to_measure()

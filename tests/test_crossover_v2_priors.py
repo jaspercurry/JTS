@@ -13,15 +13,17 @@ cannot support.  So these pin the ABSENCES, not the presences.
 The presences are covered elsewhere and better: the dual-run in this PR compares
 every field of all six phases against the pre-extraction conductor, and the
 suites that consume the priors (``test_crossover_v2_entry_baseline.py``,
-``test_crossover_v2_lateral_evidence.py``, ``test_crossover_v2_fc_selector_wiring.py``)
-grade what the analyzer does with them.
+``test_crossover_v2_lateral_evidence.py``) grade what the analyzer does with
+them.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+from jasper.active_speaker.branch_chain import (
+    CrossoverSection, radiating_band_hz, sections_by_role,
+)
 from jasper.active_speaker.crossover_v2 import priors
 from jasper.audio_measurement.program_analysis import overlap_band_hz
 
@@ -29,6 +31,17 @@ from tests.crossover_v2_fixtures import FC_HZ, _preset
 
 PRESET = _preset()
 PROTECTION = sections_by_role(PRESET.crossover_regions)
+
+#: One candidate corner, and the LR pair a branch would run through there — the
+#: same shape :data:`PROTECTION` has at the session's own corner, moved. Written
+#: out rather than derived because the function that used to derive it was
+#: deleted with the corner hunt; a test that rebuilt that derivation would be
+#: asserting against its own copy of retired production code.
+CANDIDATE_FC_HZ = 2400.0
+CANDIDATE_SECTIONS = {
+    "woofer": (CrossoverSection(fc_hz=CANDIDATE_FC_HZ, order=4, highpass=False),),
+    "tweeter": (CrossoverSection(fc_hz=CANDIDATE_FC_HZ, order=4, highpass=True),),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -148,6 +161,58 @@ def test_the_configured_path_priors_are_all_present_or_all_absent():
     assert all(v is None for v in absent), absent
 
 
+def test_a_re_pointed_candidate_carries_the_maps_the_corner_does_not_move():
+    """Three fields move; the other two thirds of the trio are CARRIED.
+
+    :func:`~jasper.active_speaker.crossover_v2.priors.candidate_priors` re-points
+    a built MEASURE set at another corner, and it replaces exactly ONE of the
+    three maps ``_compose_configured_path_ir`` reads: the configured crossover,
+    because that is the filter the candidate would realize. Polarity is how the
+    drivers are wired and protection is the filter the graph actually emitted,
+    and neither moves when the corner does, so both ride through the
+    ``dataclasses.replace`` untouched.
+
+    **Carrying them is load-bearing, not tidy.** That consumer returns its input
+    untouched iff ALL THREE maps are ``None`` and RAISES
+    (``ConfiguredPathConditioningError("incomplete priors")``) on any partial
+    set. So a re-pointing that spelled a fresh constructor instead of a
+    ``replace`` — and forgot either map — would not produce a slightly-worse
+    candidate; it would refuse the composition outright and the session would
+    yield nothing. The half that moves is the half a reader notices, which is
+    exactly why the half that stays needs the pin.
+
+    Pinned here because the suite that owned this contract was deleted with the
+    corner hunt (plan ticket 2.3), leaving the function's own docstring as the
+    only record of it. ``test_crossover_v2_alignment_prescription`` covers the
+    two prescription fields' survival for its own reason; this covers the trio.
+    """
+    base = priors.measure_priors(
+        fc_hz=FC_HZ, source_preset=PRESET,
+        protection_sections_by_role=PROTECTION,
+        ambient_report=None, alignment_delay_bounds_us=None,
+        applied_alignment=None, explicit_alignment_delay_us=None,
+        explicit_alignment_polarity_sign=None,
+    )
+
+    got = priors.candidate_priors(base, CANDIDATE_FC_HZ, CANDIDATE_SECTIONS)
+
+    # Moves: the corner, the crossover the candidate realizes (rebuilt from the
+    # sections handed in, so identity is what says it was not inherited), and
+    # the required band the two of them define — at the owner's answer for THIS
+    # corner, which is a different band from the session's.
+    assert got.crossover_fc_hz == CANDIDATE_FC_HZ != base.crossover_fc_hz
+    assert (got.configured_crossover_response_by_role
+            is not base.configured_crossover_response_by_role)
+    assert got.candidate_required_band_hz_by_role == priors.candidate_required_band_hz(
+        CANDIDATE_SECTIONS, fc_hz=CANDIDATE_FC_HZ,
+    ) != base.candidate_required_band_hz_by_role
+    # Carries: the two maps that complete the trio, or there is no composition.
+    assert (got.measurement_protection_response_by_role
+            is base.measurement_protection_response_by_role)
+    assert (got.configured_polarity_sign_by_role
+            is base.configured_polarity_sign_by_role)
+
+
 def test_verify_carries_the_design_target_unguarded_by_protection():
     """VERIFY's absolute claim (R18) does not need ``P``, unlike MEASURE's.
 
@@ -207,13 +272,13 @@ def test_the_required_band_covers_both_declarations_without_widening():
 
 
 def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
-    """The session corner and a swept corner answer from one formula.
+    """Whatever corner a round runs at, the band answers from one formula.
 
-    ``measure_priors`` is the configured-corner caller and
-    ``candidate_priors`` is the swept-corner one.  This pins the first
-    against the owner directly; the second is pinned at six corners by
-    ``test_crossover_v2_fc_selector_wiring``'s ``REQUIRED_BAND_WOOFER_HI_HZ``
-    golden, which is literal and therefore not self-referential.
+    ``measure_priors`` is the configured-corner caller, pinned here against the
+    owner directly.  ``candidate_priors`` re-points the same expression at
+    another corner and has no production caller since the corner hunt was
+    deleted (plan ticket 2.3); it survives for the pinned-corner claim
+    ``test_crossover_v2_alignment_prescription`` makes about it.
     """
     got = priors.measure_priors(
         fc_hz=FC_HZ, source_preset=PRESET,
@@ -412,8 +477,8 @@ class CrossoverV2Session:
     def _check_priors(self):
         return _priors.check_priors(fc_hz=self._fc_hz)
 
-    def _fc_candidate_set(self):
-        return ()
+    def _measure_sweep_bounds(self):
+        return (None, None)
 
     def _check_priors(self):
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)

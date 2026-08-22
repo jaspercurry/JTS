@@ -7,8 +7,8 @@ Phase 5a-v(c)).
 
 A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
 :mod:`.candidates` and :mod:`.fc_sweep`.  :mod:`.candidates` owns the *values*
-one build returns; :mod:`.fc_sweep` owns which corners are worth building at
-all.  This one owns the build itself: the eligibility gate, the planner request
+one build returns; :mod:`.fc_sweep` owns which corners this speaker may be
+crossed at.  This one owns the build itself: the eligibility gate, the planner request
 this candidate's own sections imply, the cloud evidence its envelope consumed,
 and the assembly of the emitted
 :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`.
@@ -27,8 +27,8 @@ here, so a class- or instance-level substitution of
 — six on the class, three on an instance) or ``_exclusion_evidence_json`` still
 binds on production instead of addressing a name production no longer routes
 through (issue #2354).
-:func:`ineligible_reason` is the counter-case and follows :mod:`.fc_sweep`'s own
-rule: nothing substitutes it, so :func:`build_candidate` calls it directly and
+:func:`ineligible_reason` is the counter-case and follows the same rule from the
+other side: nothing substitutes it, so :func:`build_candidate` calls it directly and
 the session's delegate calls the same function — one derivation either way.
 
 ``exclusion_evidence`` is a port for the second reason that module names: it is
@@ -137,9 +137,8 @@ EVENT_FIT_FAILED_JOURNAL_DROPPED = (
 )
 
 #: The exceptions :func:`build_candidate`'s own ``journal`` call is guarded
-#: against — the same 8-exception family as ``intervention._PORT_ERRORS``
-#: and ``fc_sweep._SWEEP_ERRORS``, and a superset of
-#: ``coordinator._SEAM_ERRORS`` (whose 6 omit ``ArithmeticError`` and
+#: against — the same 8-exception family as ``intervention._PORT_ERRORS``,
+#: and a superset of ``coordinator._SEAM_ERRORS`` (whose 6 omit ``ArithmeticError`` and
 #: ``IndexError``). Enumerated rather than a blind ``except Exception``
 #: (ruff BLE, and the repository's frozen broad-except budget). ``OSError``
 #: is in the set for the same reason it is in theirs: the port is a logging
@@ -525,8 +524,11 @@ def _sections_for_candidate(
 ) -> dict[str, tuple[CrossoverSection, ...]]:
     """Role -> the Linkwitz-Riley sections THIS candidate's branch runs through.
 
-    ``candidate_sections`` for a swept corner, the preset's own crossover
-    regions for the configured one. One derivation because two consumers read
+    ``candidate_sections`` when a caller supplies an explicit override, the
+    preset's own crossover regions otherwise. The swept corners that supplied
+    one are gone with the corner hunt (``docs/tuning-master-plan.md`` ticket
+    2.3), so no production caller passes it today and every shipped call takes
+    the preset branch. One derivation because two consumers read
     it and both must describe the same emitted graph: the planner bounds its
     fit band and charges its headroom with it, and :func:`build_candidate`
     charges a PRESCRIBED branch's disclosure with it (#2759). A second copy
@@ -566,9 +568,10 @@ def plan_for_candidate(
     and is reached identically from both candidate paths (#2291 Phase 2b).
 
     **One corner, and it is the candidate's.** The context is built from
-    the sections this candidate is realized with — ``candidate_sections``
-    for a swept corner, ``preset``'s own crossover regions for the configured
-    one — and
+    the sections this candidate is realized with — an explicit
+    ``candidate_sections`` override when one is supplied, ``preset``'s own
+    crossover regions otherwise (:func:`_sections_for_candidate` owns that
+    choice and records who still supplies an override) — and
     :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
     derives the corner FROM them. The session's ``_fc_hz`` is not read, and
     there is no second corner in scope for the planner to read either — this
@@ -591,8 +594,8 @@ def plan_for_candidate(
     must do so AFTER the section set has been judged: the two section refusals
     are the more specific answer.
 
-    ``plan_linearization`` is the pure planner itself, injected for the reason
-    :mod:`.fc_sweep` injects ``select_fc``: three sites in
+    ``plan_linearization`` is the pure planner itself, injected for the ordinary
+    ports-not-patches reason: three sites in
     ``test_crossover_v2_planner_wiring`` substitute the flow module's own
     ``plan_linearization`` name by string, and importing it here instead would
     leave those patches addressing a name production no longer routes through

@@ -526,13 +526,19 @@ def read_alignment_prescription(
     which is the exact failure a defaulted keyword hides.
 
     ``fc_hz`` is the crossover corner the bound is a half-period of.  The
-    caller passes the corner the speaker is commissioned at (the one its rounds
-    are measured through); an alternative-Fc sweep re-scores the same
-    prescription at other corners, where the aligner's own ``left_anchor_lobe``
-    tripwire keeps watching the same geometry and discloses if a corner would
-    move the commitment out of its lobe.  Gating here and observing there is
-    deliberate: an operator's input fails closed at the boundary, the
-    machinery's own exploration is reported rather than refused.
+    caller passes the corner THIS round runs at — the one the speaker is
+    commissioned at, or the pinned one when an operator pinned the topology,
+    since ``topology_prescription.apply_topology_pin`` settles that before this
+    gate is asked.  One corner per round: nothing re-scores the same
+    prescription at a second corner since the corner hunt closed
+    (``docs/tuning-master-plan.md`` ticket 2.3).
+
+    Gating here and observing in the aligner is deliberate, and unchanged by
+    that closure: an operator's declared basis fails closed at this boundary,
+    while the aligner's own ``left_anchor_lobe`` tripwire keeps watching the
+    same geometry on the delay actually committed and discloses a commitment
+    that left its lobe.  The two answer different questions — may this request
+    run, and did the result stay where the request said it would.
 
     **The bound is inclusive.**  A prescription exactly half a period from its
     basis is legal; one past it is refused.  Exactness is legal in this

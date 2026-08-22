@@ -35,7 +35,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     STAGE1_INCLUDES_CLOUD_MEASURE,
     STAGE1_INCLUDES_ENTRY_BASELINE,
-    STAGE1_INCLUDES_LATERAL,
     CrossoverV2Session,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
@@ -63,19 +62,23 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
     """The ``include_lateral`` half of an existing guard that only checks
     ``include_cloud_measure``.
 
-    ``prepare_v2_session`` reads each stage-1 flag once and threads it into
-    TWO surfaces: the session spec the phone renders, and the conductor's
+    ``prepare_v2_session`` decides each stage-1 inclusion once and threads it
+    into TWO surfaces: the session spec the phone renders, and the conductor's
     index→phase map. That pairing is the module's own stated invariant —
     "an entry's prompt can never address a different phase than the conductor
     believes it is running" (``build_v2_cloud_index_phase_map``'s docstring).
 
     ``test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map``
     in ``tests/test_correction_crossover_v2_endpoints.py`` guards exactly this
-    for ``include_cloud_measure`` — including the ``== 2`` call count. There
-    is no ``include_lateral`` equivalent anywhere, and ``include_lateral`` is
-    the flag that is ON. Both builders default it to ``False`` (asserted
-    below), so dropping either thread is silent: the session would still
-    build, and it would build the no-walk shape while the flag says otherwise.
+    for ``include_cloud_measure`` — including the ``== 2`` call count. There is
+    no ``include_lateral`` equivalent anywhere, and ``include_lateral`` is not
+    read from a module flag at all: the lateral walk is not a stage-1 group, so
+    the preparer sets a local literal instead, and an operator's staged angle
+    walk is the only thing that flips it (to ``True``) later in the same
+    function. Both builders still default the *parameter* to ``False``
+    (asserted below), so dropping either thread is silent in the same way it
+    always was: the session would still build, quietly reverting to the
+    no-walk shape while the local says otherwise.
 
     Source-inspected rather than driven, mirroring the sibling guard's own
     choice — trusting the call site to stay wired is the desync it guards.
@@ -96,13 +99,13 @@ def test_the_session_preparer_threads_the_lateral_walk_into_both_surfaces():
 
     source = inspect.getsource(v2host.prepare_v2_session)
 
-    # The preparer READS the one owner of the fact, rather than restating it.
-    # That read is the whole point of this assertion and is unaffected by which
-    # way the flag points; the value is stated beside it so a flip is visible
-    # here too. Paused since 2026-08-18 — see the flag's own comment.
-    assert "include_lateral = STAGE1_INCLUDES_LATERAL" in source
-    assert STAGE1_INCLUDES_LATERAL is False
-    # …and threads that one read into every surface: the map, the same map
+    # The preparer sets this decision ONCE, as a local literal rather than a
+    # module flag — the lateral walk is not a stage-1 group, per the comment
+    # beside this line in production — and that one decision is what gets
+    # threaded below. The literal is stated here so a reversion back to
+    # reading a module flag is visible in this pin too.
+    assert "include_lateral = False" in source
+    # …and threads that one decision into every surface: the map, the same map
     # rebuilt when #2732's angle-walk take supplies one, and the spec. Three
     # since that take, and the count is about the LOCAL being threaded rather
     # than about how many builders read it — a literal at any of the three is

@@ -159,29 +159,22 @@ GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL
 # who READS a lateral group
 # --------------------------------------------------------------------------- #
 #
-# ``PHASE_LATERAL`` says what a group PLAYS; a CONSUMER says who reads it.  Two
-# walks play identically and differ only here, and the difference is bar-gated:
-# the max-over-poses Fc statistic was paused on 2026-08-18 and may not run until
-# #2711 clears (the bar is recorded on ``STAGE1_INCLUDES_LATERAL``).
+# ``PHASE_LATERAL`` says what a group PLAYS; a CONSUMER says who reads it.  The
+# two walks play identically and differ in WHICH POSE TABLE they run.  Neither
+# reads itself as a whole any more: the max-over-poses Fc statistic was paused on
+# 2026-08-18 for ranking below its own noise, and retired with the corner hunt it
+# fed, so a walk's close publishes nothing either way.  The distinction the
+# validator below still enforces is the table, not the reader.
 
-#: Stage 1's ratified walk. Its close adjudicates Fc. The DEFAULT.
+#: The walk over the ratified pose table. The DEFAULT. Its historical spelling,
+#: kept because the string is banked on every round that ran one.
 LATERAL_CONSUMER_FC_SELECTOR = "fc_selector"
 
-#: An operator-staged walk, banked for the offline P2 forward model. Nothing
-#: in-session reads it as a whole, so its close adjudicates nothing.
+#: An operator-staged walk over poses the request itself states, banked for the
+#: offline P2 forward model.
 LATERAL_CONSUMER_FORWARD_MODEL = "forward_model_evidence"
 
 LATERAL_CONSUMERS = (LATERAL_CONSUMER_FC_SELECTOR, LATERAL_CONSUMER_FORWARD_MODEL)
-
-
-def lateral_adjudicates(consumer: str) -> bool:
-    """Does a group for ``consumer`` read itself as a whole?
-
-    ``True`` means all three of: MEASURE defers its candidate to the walk, the
-    Fc candidate sweep arms at the anchor, and the walk's close adjudicates.
-    Derived, never stored, so the three cannot disagree.
-    """
-    return consumer == LATERAL_CONSUMER_FC_SELECTOR
 
 
 def validated_lateral_consumer(consumer: str, *, states_own_poses: bool) -> str:
@@ -189,8 +182,7 @@ def validated_lateral_consumer(consumer: str, *, states_own_poses: bool) -> str:
 
     Guarantees: ``consumer`` is in :data:`LATERAL_CONSUMERS`, and it states its
     own poses if and only if it is :data:`LATERAL_CONSUMER_FORWARD_MODEL` — the
-    selector walk may only ever run over the ratified table, and an evidence
-    walk may not borrow it.
+    ratified table is the other walk's and an evidence walk may not borrow it.
     """
     if consumer not in LATERAL_CONSUMERS:
         raise ValueError(
@@ -200,8 +192,8 @@ def validated_lateral_consumer(consumer: str, *, states_own_poses: bool) -> str:
     if states_own_poses != (consumer == LATERAL_CONSUMER_FORWARD_MODEL):
         raise ValueError(
             f"exactly the {LATERAL_CONSUMER_FORWARD_MODEL} walk states its own "
-            f"poses: {LATERAL_CONSUMER_FC_SELECTOR} adjudicates over the "
-            "ratified table, and neither walk may borrow the other's"
+            f"poses: {LATERAL_CONSUMER_FC_SELECTOR} runs over the ratified "
+            "table, and neither walk may borrow the other's"
         )
     return consumer
 

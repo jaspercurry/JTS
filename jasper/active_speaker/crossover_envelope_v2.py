@@ -1580,11 +1580,15 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # since the 2026-08-19 apply-path change it is a SECOND reading of that
     # question: `handle_v2_apply` derives the answer from the candidate's own
     # preset (`crossover_declaration.declaration_change_for_candidate`), not
-    # from this record. The two agree on every shape reachable today — the only
-    # producer of a candidate that crosses somewhere other than the declaration
-    # is the Fc sweep, which writes `fc_selection` in the same breath — but a
-    # producer that does NOT write one would leave this button under-claiming a
-    # declaration write it is about to make. Closing that needs the review-time
+    # from this record. They agreed on every shape reachable while the Fc sweep
+    # was the only producer of a candidate crossing somewhere other than the
+    # declaration, because it wrote `fc_selection` in the same breath. That
+    # producer is gone (`docs/tuning-master-plan.md` ticket 2.3) and the live one
+    # is an operator's TOPOLOGY PIN, which writes no `fc_selection` at all — so
+    # this second reading can now under-claim a declaration write the apply is
+    # about to make. The apply itself is unaffected: `handle_v2_apply` derives
+    # from the candidate's own preset and is the authority. What can be short is
+    # this BUTTON's copy on a pinned round. Closing it needs the review-time
     # producer PR-4 owns; do not close it here with a third reading.
     fc_selection = _mapping(v2.get("fc_selection"))
     recommended_hz = _finite(fc_selection.get("recommended_hz"))

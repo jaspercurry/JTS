@@ -34,39 +34,31 @@ representation the evidence sidecar, the ``wide`` rule and the attribution stage
 already read, so an angle-requested capture banks in the same shape as a
 hand-walked one and stays comparable with it.
 
-**What this is NOT, stated because the distinction is load-bearing.**  This
-module does not un-pause the R16 lateral walk and must never be read as a route
-around its bar.  Those are different consumers with different validity
-arguments:
+**What this is NOT, stated because the distinction is load-bearing.**  These
+poses are FORWARD-MODEL INPUT and never a pose-ratio statistic.  The two are
+different consumers with different validity arguments:
 
 * The **lateral-walk STATISTIC** was paused on 2026-08-18
   ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717)) because the
-  statistic itself was invalidated -- a max-over-poses reduction that adjudicates
+  statistic itself was invalidated -- a max-over-poses reduction that ranked
   below its own repeat noise, and whose argmax pose is frequently the zero-offset
-  closing repeat.  Re-introducing THAT statistic is barred until the redesign in
-  [#2711](https://github.com/jaspercurry/JTS/issues/2711) clears the four-point
-  bar recorded on ``STAGE1_INCLUDES_LATERAL`` itself.
-* **Per-driver responses at angles as FORWARD-MODEL INPUT** -- the P2 crossover
-  search's complex-summation model, which predicts a candidate's summed response
-  from the per-driver complex responses -- needs no pose-ratio statistic at all.
-  It consumes each angle's complex transfer function directly.  The pose-ratio
+  closing repeat.  It was retired with the corner hunt it fed; a redesign would
+  have to clear that four-point bar
+  ([#2711](https://github.com/jaspercurry/JTS/issues/2711)).
+* **Per-driver responses at angles** -- the P2 crossover search's
+  complex-summation model, which predicts a candidate's summed response from the
+  per-driver complex responses -- need no pose-ratio statistic at all.  The model
+  consumes each angle's complex transfer function directly.  The pose-ratio
   cancellation that invalidated the statistic is a property of the REDUCTION,
   not of the captures, and PR #2717's own evidence says so in as many words:
   "The poses are clean; it is the max-over-poses reduction into one scalar that
   cannot separate candidates."
 
 This module therefore **never constructs**
-:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL` and never reads
-or writes ``STAGE1_INCLUDES_LATERAL``: it returns poses and refusals, and the
-session host is what tags indexes with a phase.
-
-**Where the bar is held, since a session takes these walks (2026-08-19).**  Not
-here.  A taken walk runs as the session's lateral group and so does reach
-``_close_lateral_walk``; what keeps the paused statistic unreachable is that
-group's declared CONSUMER
-(:data:`~jasper.active_speaker.crossover_v2.journey.LATERAL_CONSUMERS`), one
-layer down, pinned in ``tests/test_crossover_v2_lateral_evidence.py``.  This
-module is upstream of the PHASE, not of the bar.
+:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL`: it returns
+poses and refusals, and the session host is what tags indexes with a phase.  A
+taken walk runs as the session's lateral group and so does reach
+``_close_lateral_walk``, whose close publishes nothing.
 
 Dependency direction: a sibling of :mod:`jasper.active_speaker.crossover_v2_flow`
 that imports FROM it, the same direction

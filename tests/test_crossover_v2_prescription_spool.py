@@ -93,12 +93,6 @@ from tests.test_crossover_v2_driver_prescription import (
     _speaker as _driver_packet,
     _verdict as _driver_verdict,
 )
-# …and the Fc sweep's own harness, for the one pin that has to walk it.
-from tests.test_crossover_v2_fc_selector_wiring import (
-    _eligible_seams,
-    _selector_conductor,
-)
-
 # The stage-bridge harness — one definition of "what a real preparer needs
 # stubbed". The autouse fixtures are re-exported under the redundant-alias form
 # for the reason ``test_crossover_v2_round_wiring`` states: pytest activates an
@@ -1778,47 +1772,6 @@ def test_a_per_driver_filter_nudged_onto_a_nearby_dip_is_refused_at_the_take(
 
     assert _refusal_slug(caplog) == DRIVER_FEATURE_NOT_CUTTABLE
     assert conductor._prescribed_driver is None
-
-
-def test_every_swept_fc_corner_carries_the_prescription(tmp_path, monkeypatch):
-    """The Fc sweep builds candidates through the SAME door, so all of them merge.
-
-    ``MeasuredCrossoverCandidate`` is constructed in one place, reached only
-    through ``_build_measure_candidate`` — and one of that method's callers is
-    the sweep's ``build=`` port. Merging into every corner is the right answer
-    rather than an accident: the sweep CHOOSES between corners, and prescribing
-    only the committed one would have it comparing a prescribed candidate
-    against unprescribed rivals.
-    """
-    _stage_driver(
-        tmp_path, ordinal=9,
-        filters=[_driver_cut(role="woofer", freq=WOOFER_FEATURE_HZ)],
-    )
-    taken = spool.take_staged_prescription(
-        round_ordinal=9, accepts=spool.STAGEABLE_KINDS
-    ).prescription
-
-    conductor = _selector_conductor(_eligible_seams(), driver_prescription=taken)
-    _run_phase(conductor, 1, 1)
-    conductor._sweep_fc_candidates(
-        conductor.program_for_phase(flow.PHASE_MEASURE),
-        object(),
-        conductor._measure_analysis,
-    )
-
-    assert conductor._fc_evaluations, "the sweep must have produced evidence"
-    # The retained record is the SERIALIZED candidate (the sweep's memory
-    # contract keeps no object), so the merge is read off the persisted map —
-    # which is the same shape the emitter and the ceiling read.
-    carried = [
-        "prescribed_by" in (
-            (evaluation.candidate.get("linearization") or {}).get("woofer") or {}
-        )
-        for evaluation in conductor._fc_evaluations
-        if evaluation.candidate is not None
-    ]
-    assert carried, "no swept corner produced a candidate to inspect"
-    assert all(carried)
 
 
 # --- the merge, at the site that consumes it -------------------------------- #

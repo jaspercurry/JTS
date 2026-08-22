@@ -4,15 +4,13 @@ It reads per-candidate evidence gathered at MEASURE-consume, scores each
 candidate against the lateral walk's robustness evidence, and returns a
 RECOMMENDATION. The host retains its winner for Sound-owned apply; see R17.
 
-**No stage-1 session feeds this today.** The lateral walk that produces
-``poses`` was paused on 2026-08-18 (``crossover_v2_flow.
-STAGE1_INCLUDES_LATERAL``, whose comment carries the evidence), and the sweep
-that gathers the evidence fires only in a session that walks an ADJUDICATING
-walk — so the shipped round commits its configured Fc without scoring
-candidates. Nothing here
-changed and nothing here is dead: forcing that flag back on restores this
-module's inputs unmodified. It is kept intact for the redesigned lateral
-statistic the pause is waiting on.
+**Nothing feeds this.** The lateral walk that produced ``poses`` was paused on
+2026-08-18 for ranking below its own noise, and the corner sweep that gathered
+the per-candidate evidence was deleted with it (plan ruling R1): a round crosses
+at the corner the household declared or an operator pinned, so no comparison is
+made and no recommendation is produced. This module is cancelled work, retired
+by ticket 2.4 of ``docs/tuning-master-plan.md``; the types it defines are still
+imported by readers of rounds banked while a selector existed.
 
 Everything here is a pure function of small arrays — no conductor state, no
 I/O. ``M`` below is a pose's NEUTRAL measured transfer (``plant * P``), what
@@ -108,14 +106,12 @@ class FcCandidateEvaluation:
     next starts. Bounded evidence retains the winner, not a ``ProgramAnalysis``,
     ``DriverResponse`` or ``EnvelopeCurve``.
 
-    The guard is
-    ``test_crossover_v2_fc_selector_wiring.test_the_sweep_retains_no_analysis_sized_object``,
-    which walks the fields of records a REAL sweep produced and whitelists them
-    by type — so a new field of an unexpected type fails by construction. It is
-    named here rather than the kernel suite's shape test because that one
-    inspects a hand-built instance: a field populated only in production would
-    never be set on it, which the resilience lens demonstrated by hoarding a
-    full analysis past a green suite.
+    The guard that walked a REAL sweep's records and whitelisted their fields by
+    type went with the sweep. What remains is the kernel suite's shape test,
+    which inspects a hand-built instance — weaker in exactly the way the
+    resilience lens once demonstrated, by hoarding a full analysis past a green
+    suite: a field populated only in production is never set on a hand-built
+    one.
 
     ``branch_operator_by_role`` carries everything a candidate would do to one
     driver's neutral measurement — polarity, the ``C_c / P`` re-composition,

@@ -77,7 +77,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_MEASURE,
     STAGE1_INCLUDES_CLOUD_MEASURE,
     STAGE1_INCLUDES_ENTRY_BASELINE,
-    STAGE1_INCLUDES_LATERAL,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,
 )
@@ -1463,7 +1462,7 @@ def test_stage_1_plans_no_pre_apply_cloud_and_one_entry_baseline(monkeypatch):
     planned = build_v2_cloud_index_phase_map(
         plan_shape=resolve_plan_shape(None),
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     assert PHASE_CLOUD_MEASURE not in planned.values()

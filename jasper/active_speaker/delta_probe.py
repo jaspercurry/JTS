@@ -333,8 +333,10 @@ VERDICT_FRAME_MISMATCH = "frame_mismatch"
 VERDICT_UNAVAILABLE = "unavailable"
 #: Only the HEARING-SAFETY half of this probe ran (#2614). The caller had the
 #: applied graph's own declared transfer but no CHANGE axis — the reachable
-#: case is a committed alternative-Fc candidate, whose branches are composed
-#: through a crossover the previous graph never ran — so "did the speaker put
+#: case is a previous graph that cannot be named, whether because none was ever
+#: applied, because its record cannot be read, or because the crossover corner
+#: moved out from under it and the branches are composed through a crossover
+#: that graph never ran; the journal names which — so "did the speaker put
 #: more energy into a driver than the graph declared" is answerable and "did
 #: the correction realize the shape it commanded" is not.
 #:
@@ -1676,12 +1678,14 @@ def classify_delta_probe(
 
     ``state_axis_only`` says the curve in the ``commanded_delta_db`` slot is
     that STATE axis rather than a change axis, because the caller has no change
-    axis to give (#2614). The reachable case is a committed alternative-Fc
-    candidate: its branches are composed through a crossover the previous graph
-    never ran, so the previous side is refused and the change axis with it —
-    while the applied graph's own declared transfer is well-defined at every
-    swept corner. What still holds there is the MODEL's departure, measured on
-    ``realized − commanded``; nothing else does, so nothing else is returned.
+    axis to give (#2614). The reachable case is a previous graph the caller
+    could not name — a corner that moved out from under the applied profile is
+    the one worth saying, because the branches are then composed through a
+    crossover that graph never ran, so the previous side is refused and the
+    change axis goes with it — while the applied graph's own declared transfer
+    stays well-defined at whatever corner the round runs at. What still holds
+    there is the MODEL's departure, measured on ``realized − commanded``;
+    nothing else does, so nothing else is returned.
     The verdict is :data:`VERDICT_SAFETY_ONLY` and the map carries no shape or
     level grade at all — and since series-2 D1, no directional safety finding
     either, because those need the pre-apply capture this path has none of. Do

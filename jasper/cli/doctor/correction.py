@@ -681,10 +681,11 @@ def check_capture_relay() -> CheckResult:
         )
     from jasper.active_speaker.crossover_v2_flow import relay_plan_attempts_required
 
-    # The SHARED producer, not local arithmetic: it counts R16's lateral walk
-    # exactly when that walk is on, so this number and the runtime capacity
-    # guard's move together. See its docstring for what reading the cloud
-    # figure alone would have cost a Pi on an older Worker.
+    # The SHARED producer, not local arithmetic: it counts R16's lateral walk,
+    # which an operator's staged angle walk can add to any session, so this
+    # number and the runtime capacity guard's move together. See its docstring
+    # for what reading the cloud figure alone would have cost a Pi on an older
+    # Worker.
     needed = relay_plan_attempts_required()
     ceiling, capacity_detail = health.probe_relay_plan_capacity(base)
     if ceiling is not None and ceiling >= needed:
