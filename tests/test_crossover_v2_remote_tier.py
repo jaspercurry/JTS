@@ -877,9 +877,11 @@ def test_the_gate_can_read_a_hand_released_plans_own_entries():
     gate.gate(1, 1, plan.entry_for_index(1))
 
 
-#: The arm's two SHIPPED plans, as wire bytes. Captured on the #2879 split and
-#: re-derived against the pre-split build, so they say the pose-statement axis
-#: coming off the advance axis moved nothing the positioner reads.
+#: The arm's two SHIPPED plans, as wire bytes. Captured from the #2879 SPLIT
+#: build and then re-run against the PRE-SPLIT ``crossover_v2_flow`` (that
+#: module checked out at the merge base, this test unchanged): both digests
+#: matched, which is the tier's byte-identity promise as a measurement rather
+#: than as a claim.
 #:
 #: Deliberately NOT added to ``_GOLDEN_V2_PLAN_BYTES``: that table builds each
 #: plan from the BUILDER's defaults, and ``include_cloud_measure`` defaults True
