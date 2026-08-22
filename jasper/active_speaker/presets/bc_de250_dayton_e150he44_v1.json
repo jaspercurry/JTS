@@ -60,5 +60,5 @@
     "require_channel_identity_before_drivers": true,
     "emergency_stop_required": true
   },
-  "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements."
+  "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements. Woofer (Dayton Audio Epique E150HE-44): Smooth usable response through the planned crossover; suppress known upper breakup by crossover design. Tweeter (B&C Speakers DE250): Compression-driver horn response must be measured with the final horn or waveguide attached."
 }
