@@ -85,7 +85,8 @@ place only by naming the component-damage mechanism it guards against —
 - Round runner (the loop's home; measure and apply are two separate,
   fingerprint-named steps): `scripts/run-crossover-round.py`.
 - Prescription doors (alignment, topology, blend, driver) —
-  `jasper-crossover-prescriber` (`packet` / `propose` / `stage`) plus the
+  `jasper-crossover-prescriber` (`packet` / `propose` / `stage`; its fourth
+  verb `status` orients rather than prescribes) plus the
   session-open request body; cataloged in
   [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 - Evidence packet — one document per round a reader (human or LLM) can

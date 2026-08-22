@@ -203,13 +203,15 @@ existing owner.
 > *shape* below is shipped for the crossover domain, under a narrower name and
 > without the tool catalog. `jasper-crossover-prescriber`
 > ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
-> is an installed console script with three verbs: `packet` emits one banked
+> is an installed console script with four verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
 > ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
-> `propose` reads a correction back through a strict gate, and `stage`
+> `propose` reads a correction back through a strict gate, `stage`
 > (2026-08-19) leaves an accepted correction where the next crossover round
 > takes it
-> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)).
+> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)),
+> and `status` (2026-08-21) reports declared / banked / staged / applied state
+> through those same builders without writing anything.
 > It follows this section's CLI conventions and the laptop-agent-as-SSH-client
 > split exactly.
 >

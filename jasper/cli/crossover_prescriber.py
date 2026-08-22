@@ -16,9 +16,9 @@ SSH, or with a paste into a browser.
 ``status`` is the fourth verb and the odd one out: it writes nothing and gates
 nothing. Sequencing in this loop is a set of artifact-dependency refusals
 rather than a workflow engine, which is cheap to run and expensive to be
-dropped into the middle of — so one verb says where a speaker currently
-stands, and it derives that from the SAME builders the three doors read rather
-than from a second walk of the same tree.
+dropped into the middle of — so one verb says where a speaker stands, and it
+derives that from the SAME builders the three doors read rather than from a
+second walk of the same tree.
 
 ``propose`` and ``stage`` run the SAME gate on the same document; the only
 difference is that ``stage`` banks the result. That is deliberate — a staging
@@ -32,7 +32,8 @@ Conventions mirror :mod:`jasper.cli.correction_bundle` and the workbench plan's
 ``main() -> int``, non-zero exit on failure, and ``-`` for stdin.
 
 **Exit codes are part of the contract**, because the caller of this tool is
-often a script: ``0`` accepted, ``1`` the evidence could not be read, ``2`` the
+often a script: ``0`` accepted (``status``, which accepts nothing, exits ``0``
+when it read the evidence), ``1`` the evidence could not be read, ``2`` the
 prescription was refused, ``3`` an accepted prescription could not be staged. A
 refusal is not a crash — it is the loop working — so it prints the
 machine-readable reason on stdout as JSON when asked, and the human sentence on
@@ -527,54 +528,55 @@ def _incumbent_phrase(record: dict[str, Any]) -> str:
     )
 
 
-def _status_sections(
+def _declared_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """Declared, banked, staged, applied — through the doors' own readers.
+    """What this speaker says its drivers are, through the per-driver gate's reader.
 
-    Every fact here comes from
-    :func:`~.evidence_packet.build_crossover_evidence_packet` and the named
-    readers the gate itself calls
-    (:func:`~.evidence_packet.packet_region_band_hz`,
-    :func:`~.evidence_packet.packet_driver_passbands_hz`,
-    :func:`~.evidence_packet.packet_feature_classifications`), plus the spool's
-    own :func:`~.prescription_spool.staged_prescription_pending`. **No second
-    walk of the bundle.** A status verb with its own tree reader would answer a
-    slightly different question from the door beside it, and the day they
-    disagreed the operator would believe the one that was not enforcing
-    anything.
-
-    All three packet readers tolerate ``None``, so a bundle that could not be
-    read at all needs no special case: every section resolves to unavailable
-    carrying the builder's own error as its reason.
-
-    Each section carries a ``summary`` sentence, and it is the SAME sentence
-    the human report prints — a printer that phrased its own would be a second
-    wording of each fact, and the ``--json`` reader and the terminal reader
-    would end up told different things.
+    :func:`~.evidence_packet.packet_driver_passbands_hz` is what bounds a
+    per-driver prescription, so asking it here is asking the question the door
+    will ask. Reading ``drivers.passbands_hz`` out of the block by hand would
+    be a second opinion about where in the document that bound lives.
     """
     passbands = packet_driver_passbands_hz(packet)
-    region = packet_region_band_hz(packet)
-    verdicts = packet_feature_classifications(packet)
-
-    declared: dict[str, Any] = {
+    roles = sorted(passbands)
+    reason = None if passbands else _reason(_block(packet, "drivers"), packet_error)
+    return {
         "available": bool(passbands),
-        "roles": sorted(passbands),
+        "roles": roles,
         "passbands_hz": {
             role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
         },
-        "reason": (
-            None if passbands else _reason(_block(packet, "drivers"), packet_error)
+        "reason": reason,
+        "summary": (
+            ", ".join(_passband_phrase(role, *passbands[role]) for role in roles)
+            if passbands
+            else f"no declared driver band ({reason})"
         ),
     }
-    declared["summary"] = (
-        ", ".join(
-            _passband_phrase(role, *passbands[role]) for role in declared["roles"]
-        )
-        if passbands
-        else f"no declared driver band ({declared['reason']})"
-    )
 
+
+def _banked_section(
+    packet: dict[str, Any] | None, packet_error: str
+) -> dict[str, Any]:
+    """The round, and the two banked bounds a prescription of either class needs.
+
+    The region bounds a blend document and the classified features are what a
+    per-driver filter must be shown to be aimed at, so both ride inside the
+    banked section rather than beside it: they are facts about this round's
+    evidence, and they are absent for the same reasons the round is.
+    """
+    region = packet_region_band_hz(packet)
+    verdicts = packet_feature_classifications(packet)
+    region_state: dict[str, Any] = {
+        "available": region is not None,
+        "band_hz": [region[0], region[1]] if region else None,
+        "reason": (
+            None
+            if region
+            else _reason(_block(packet, "crossover_region"), packet_error)
+        ),
+    }
     classification = {
         "available": bool(verdicts),
         "n_verdicts": len(verdicts) if verdicts else 0,
@@ -584,32 +586,14 @@ def _status_sections(
             else _reason(_block(packet, "feature_classification"), packet_error)
         ),
     }
-    region_state = {
-        "available": region is not None,
-        "band_hz": [region[0], region[1]] if region else None,
-        "reason": (
-            None
-            if region
-            else _reason(_block(packet, "crossover_region"), packet_error)
-        ),
-    }
     round_block = _block(packet, "round")
     session = _block(packet, "session")
-    banked: dict[str, Any] = {
-        "available": bool(round_block.get("available")),
-        "reason": (
-            None
-            if round_block.get("available")
-            else _reason(round_block, packet_error)
-        ),
-        "bundle_session_id": session.get("bundle_session_id"),
-        "round_id": session.get("round_id"),
-        "region": region_state,
-        "classification": classification,
-    }
-    banked["summary"] = (
+    available = bool(round_block.get("available"))
+    reason = None if available else _reason(round_block, packet_error)
+    summary = (
         (
-            f"round {banked['round_id']} in session {banked['bundle_session_id']}"
+            f"round {session.get('round_id')} in session "
+            f"{session.get('bundle_session_id')}"
             + (
                 f", region {_band_phrase(*region_state['band_hz'])}"
                 if region_state["available"]
@@ -621,12 +605,30 @@ def _status_sections(
                 else f", no classification ({classification['reason']})"
             )
         )
-        if banked["available"]
-        else f"no round receipt ({banked['reason']})"
+        if available
+        else f"no round receipt ({reason})"
     )
+    return {
+        "available": available,
+        "reason": reason,
+        "bundle_session_id": session.get("bundle_session_id"),
+        "round_id": session.get("round_id"),
+        "region": region_state,
+        "classification": classification,
+        "summary": summary,
+    }
 
+
+def _staged_section() -> dict[str, Any]:
+    """Whether an instruction is waiting for the next round. The stat, not a peek.
+
+    No packet argument, and that is the point: the spool lives on the speaker
+    rather than in any bundle, so a prescription waiting for the next round is
+    a fact whichever directory the operator named — including a directory that
+    turned out not to be a bundle at all.
+    """
     pending = staged_prescription_pending()
-    staged = {
+    return {
         "pending": pending,
         "path": str(prescription_spool_path()),
         "summary": (
@@ -636,14 +638,15 @@ def _status_sections(
         ),
     }
 
-    incumbent_block = _block(packet, "incumbent")
-    from_receipt = _incumbent_record(
-        incumbent_block.get("from_round_receipt"), packet_error
-    )
-    from_profile = _incumbent_record(
-        incumbent_block.get("from_applied_profile"), packet_error
-    )
-    applied = {
+
+def _applied_section(
+    packet: dict[str, Any] | None, packet_error: str
+) -> dict[str, Any]:
+    """What the round was measured THROUGH, from both records the packet keeps."""
+    block = _block(packet, "incumbent")
+    from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
+    from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)
+    return {
         "from_round_receipt": from_receipt,
         "from_applied_profile": from_profile,
         "summary": (
@@ -652,11 +655,38 @@ def _status_sections(
         ),
     }
 
+
+def _status_sections(
+    packet: dict[str, Any] | None, packet_error: str
+) -> dict[str, Any]:
+    """Declared, banked, staged, applied — through the doors' own readers.
+
+    Every fact in these four comes from
+    :func:`~.evidence_packet.build_crossover_evidence_packet` and the named
+    readers the gate itself calls
+    (:func:`~.evidence_packet.packet_region_band_hz`,
+    :func:`~.evidence_packet.packet_driver_passbands_hz`,
+    :func:`~.evidence_packet.packet_feature_classifications`), plus the spool's
+    own :func:`~.prescription_spool.staged_prescription_pending`. **No second
+    walk of the bundle.** A status verb with its own tree reader would answer a
+    slightly different question from the door beside it, and the day they
+    disagreed the operator would believe the one that was not enforcing
+    anything.
+
+    Every packet reader tolerates ``None``, so a bundle that could not be read
+    at all needs no special case: each section resolves to unavailable carrying
+    the builder's own error as its reason.
+
+    Each section carries a ``summary`` sentence, and it is the SAME sentence
+    the human report prints — a printer that phrased its own would be a second
+    wording of each fact, and the ``--json`` reader and the terminal reader
+    would end up told different things.
+    """
     return {
-        "declared": declared,
-        "banked": banked,
-        "staged": staged,
-        "applied": applied,
+        "declared": _declared_section(packet, packet_error),
+        "banked": _banked_section(packet, packet_error),
+        "staged": _staged_section(),
+        "applied": _applied_section(packet, packet_error),
     }
 
 
