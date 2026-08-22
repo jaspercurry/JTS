@@ -235,8 +235,8 @@ revisited when evidence demands it.
 - **Ground-plane and two-distance regimes; air absorption modeling.**
 - **Calibration phase application and incidence-aware math**: the cal
   file's phase column is parsed but never applied (this ledger entry is the
-  record; 2.14 adds the in-file note); orientation routes the vendor fetch
-  only.
+  record, and `CalibrationCurve.phase_deg` carries the in-file note);
+  orientation routes the vendor fetch only.
 - **Bespoke mechanism detectors** (port resonance, cone breakup, room mode,
   panel resonance, rattle/impulsive defects, amplifier-clipping
   heuristics): the per-feature evidence record carries the discriminating
@@ -257,8 +257,8 @@ revisited when evidence demands it.
 ## Supersessions and standing docs
 
 This plan is the planning authority for the measurement/tuning program.
-Ticket 2.14 applies the banners/tags below; until it lands, this section is
-the ruling and those documents are stale.
+Ticket 2.14 applied the banners/tags below on 2026-08-22; this section stays
+the ruling those banners point back to.
 
 **Superseded (historical-tag or banner + pointer here):**
 

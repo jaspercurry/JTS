@@ -8,6 +8,14 @@
 > archaeology and
 > **still tagged historical**. Read the spine for "where are we and what is
 > next"; read the appendix for "why is the pipeline layered like this."
+>
+> **Campaign-ordering authority moved out (2026-08-21).** "What supersedes
+> what", and what the program runs next, now live in
+> [`tuning-master-plan.md`](tuning-master-plan.md); this spine keeps its
+> charter, phase ladder, research index, issue index, and the CURRENT
+> POSITION record. Before acting on the mission named in that block: the R21
+> "apply-vertical" candidate is **cancelled**, not deferred — the reason is
+> in [CURRENT POSITION](#current-position)'s `next_mission`.
 
 ## The machine — the program charter (2026-07-31)
 
@@ -1082,13 +1090,17 @@ follow_ups:     #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 OverflowError) and #2256 (walking cross-ecosystem pin guard).
                 The campaign's complete
                 issue sweep lives only in crossover-linearization-80-20-plan.md
-next_mission:   no campaign round is open. The owner's two hardware slices
-                come first — they are the only evidence that can justify a
-                follow-on round. The named R21 candidate is the apply-vertical
-                that would let a RECOMMENDED Fc reach applied DSP (nine sites
-                across six modules, its own round with a real gate, per the
-                Reading-1 ruling on #1894); #1791 Room and #1703 3-way stay
-                parked by design, Room as its own campaign with its own Gate 0
+next_mission:   CANCELLED 2026-08-21. Campaign ordering moved to
+                tuning-master-plan.md, whose invariant 2 — "no path applies a
+                machine-recommended corner" — cancels the named R21
+                candidate: the apply-vertical that would have let a
+                RECOMMENDED Fc reach applied DSP (nine sites across six
+                modules, its own round with a real gate, per the Reading-1
+                ruling on #1894) is not built, and this block is the only
+                record of it. No campaign round is open here; the owner's two
+                hardware slices above stand as evidence debt. #1791 Room and
+                #1703 3-way stay parked by design, Room as its own campaign
+                with its own Gate 0
 blocked_on:     nothing in code. The hardware slices are blocked only on the
                 owner's availability; jts3's declaration is confirmed and its
                 Confirm click is done
@@ -1100,7 +1112,8 @@ One writer per fact. Drift between these is a bug, not a style question.
 
 | Fact | Lives in | Never in |
 |---|---|---|
-| **Strategy** — charter, rungs, sequencing, what supersedes what | **this document** | handoffs, issues |
+| **Strategy** — charter, rungs, sequencing | **this document** | handoffs, issues |
+| **Program ordering** — what supersedes what, what runs next | [`tuning-master-plan.md`](tuning-master-plan.md) (since 2026-08-21) | this spine, handoffs, issues |
 | Campaign status/order — active round and dependency-ordered IDs | **this document** | handoffs, issues |
 | R14–R20 mission, territory, exit, and launch contract | [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md) | this spine, handoffs, issues |
 | Session state — where we are right now | the CURRENT POSITION block above | a handoff's prose |

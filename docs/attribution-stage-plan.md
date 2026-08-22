@@ -1,6 +1,21 @@
 # Attribution stage — work order (issue #1866)
 
-> **Status: adopted work order (2026-07-29, round-3 architect session).**
+> **Status: historical.** Snapshot from 2026-07-29, when this was the adopted
+> work order (round-3 architect session) for the attribution stage. Superseded
+> 2026-08-21 by [`tuning-master-plan.md`](tuning-master-plan.md), which
+> absorbed the open work orders: "P1 (reverse-null probe) → the `verify`
+> program; P6/M6 (harmonic extraction) → ticket 1.4; P2 (position variance) →
+> tickets 1.2/1.3; WO-7's serial dial-in loop → Loop B's tournament
+> mechanics; WO-8 (room line) → Wave 5; the mechanism registry + fix-class
+> vocabulary → the per-feature record join (ticket 1.10). The attribution
+> package's shipped findings/promotion code is substrate for that join, not a
+> parallel system" (that plan's Supersessions section). So the shipped code
+> under `jasper/attribution/` stands; the open work orders below are
+> **absorbed, not pursued independently from here**. Preserved for
+> primary-source archaeology — specific facts (WO ladder state, seam names,
+> §4's seed table) will drift over time. Read this for the narrative, not for
+> current state.
+>
 > Anchors [issue #1866](https://github.com/jaspercurry/JTS/issues/1866),
 > where every owner ruling and prior-art adoption below is recorded. Gate:
 > independent adversarial docs review (round 2) → merge; each WO then ships
@@ -11,7 +26,8 @@
 > [`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)),
 > which is the chassis this stage renders on; the
 > [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
-> which stays the planning authority for agent-assisted tuning surfaces;
+> then the planning authority for agent-assisted tuning surfaces, itself
+> historical since 2026-08-21;
 > [`gating-v2-plan.md`](gating-v2-plan.md); and
 > [`room-correction-regime-plan.md`](room-correction-regime-plan.md).
 > **Supersedes: nothing.**
@@ -225,10 +241,10 @@ refuses with the named probe instead of guessing.
 
 **Reconciliation with the workbench plan (explicit).**
 [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md)
-is the current planning authority for agent-assisted tuning surfaces, and
-its §12 explicitly supersedes "a mandatory structured attribution verdict"
-and "a fixed diagnostic/discriminator order". This plan does not reinstate
-either:
+was the planning authority for agent-assisted tuning surfaces at this
+snapshot, and its §12 explicitly supersedes "a mandatory structured
+attribution verdict" and "a fixed diagnostic/discriminator order". This plan
+does not reinstate either:
 
 - Findings are **optional evidence artifacts**. The deterministic flow and
   the workbench may consume them; neither is *gated* on a structured

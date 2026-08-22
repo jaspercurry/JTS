@@ -1,4 +1,15 @@
-# Audio commissioning roadmap (working document)
+# Audio commissioning roadmap
+
+> **Status: historical.** Snapshot from 2026-08-14, when this was the
+> owner-ratified program-wide roadmap for the audio commissioning program.
+> Superseded 2026-08-21 by
+> [`tuning-master-plan.md`](tuning-master-plan.md) — "the previous
+> program-wide roadmap for the identical scope. Replaced whole" (that plan's
+> Supersessions section), which is now the planning authority for the
+> measurement/tuning program. Preserved for primary-source archaeology —
+> specific facts (sequencing, wave contents, ratification-pending lists,
+> measurement snapshots) will drift over time. Read this for the narrative,
+> not for current state.
 
 The cross-subsystem working roadmap for the audio commissioning program —
 the measurement substrate, crossover and linearization commissioning, and

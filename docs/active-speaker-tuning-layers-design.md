@@ -701,10 +701,11 @@ correctable:
 1. **A deterministic trend engine** — closes the third mechanism above by
    making the prescription read the round-over-round objectives the plateau
    test already banks.
-2. **An LLM prescriber** —
-   [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md)
+2. **An LLM prescriber** — [`tuning-master-plan.md`](tuning-master-plan.md)
    is the planning authority for agent-assisted tuning and is where that
-   option's shape lives.
+   option's shape lives (it superseded
+   [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md)
+   on 2026-08-21).
 
 The owner's stated concern is **complexity**. The observation that makes
 deferring cheap: everything except the trend engine itself — the contract,
@@ -1739,8 +1740,10 @@ Opened since, and load-bearing for the 2026-08-17 rulings: #2600 blend-window
 instrument blindness · #2603 the driver low-limit's two declared values ·
 #2636 the headless lab capture client's revival · #2653 the level datum's
 frame-coherence condition · #2662 the capture-source seam. Campaign-wide wave
-state lives in
-[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), not here.
+state lives in [`tuning-master-plan.md`](tuning-master-plan.md) and its
+tracking epics, not here (it replaced
+[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md) whole on
+2026-08-21).
 
 Load-bearing for decision 14 (2026-08-18), both from that day's
 lateral-statistic redesign study: #2710 per-role integer-sample alignment
