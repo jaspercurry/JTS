@@ -10,10 +10,10 @@ end to end into the emitted graph and its proof, the round receipt's
 provenance, and — the control that matters most — that a session with no
 prescription selects exactly what it selected before.
 
-The numbers in the arm-set tests are the series-2 diagnosis's, deliberately:
-the harness exists to measure those arms, and a test written against
-placeholder values would not have caught that the ``0 µs`` control arm cannot
-be expressed as a prescription at all.
+The numbers in the candidate-set tests are the series-2 diagnosis's,
+deliberately: the harness exists to measure those candidates, and a test
+written against placeholder values would not have caught that the ``0 µs``
+control candidate cannot be expressed as a prescription at all.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ FC_HZ = 1648.7
 #: so the alignment-correcting delay is negative (it delays the woofer).
 #: −405.7 ± 3.3 µs over n = 33, diagnosis §2.2.
 BASIS_US = -405.7
-#: The diagnosis's corrected arm set (§3), including the ``0`` control.
+#: The diagnosis's corrected candidate set (§3), including the ``0`` control.
 ARMS_US = (0.0, -250.0, -350.0, -450.0, -550.0)
 #: Every corner the banked r1b ``fc_selection`` actually swept.
 SWEPT_CORNERS_HZ = (1600.0, 1648.7, 1658.6, 1719.4, 1782.4, 1847.7)
@@ -108,11 +108,11 @@ ARTIFACTS = (
 #: Tonight's speaker's declared delay window: `preview-default-2way` carries
 #: ``delay_range_ms = [0.0, 1.0]`` (verified in ``series2-state-r1b.json``),
 #: which ``alignment_delay_search_bounds_us`` margin-expands by 0.1 ms to
-#: 0–1100 µs. Every arm is representable here.
+#: 0–1100 µs. Every candidate is representable here.
 TONIGHT_WINDOW_US = (0.0, 1100.0)
 #: The OTHER shipped preset shape, and the one that would have bitten:
 #: ``bc_de250_dayton_e150he44_v1`` declares ``[0.05, 0.3]`` ms → 0–400 µs, so
-#: the two best arms are outside the hardware's own declaration.
+#: the two best candidates are outside the hardware's own declaration.
 HORN_WINDOW_US = (0.0, 400.0)
 
 
@@ -126,7 +126,7 @@ def _read(
 
 
 def _arm(arm_us: float, **overrides: object) -> dict:
-    """One arm as the session POST body carries it.
+    """One candidate as the session POST body carries it.
 
     The positional parameter is deliberately NOT called ``delay_us``: several
     tests below override that very key, and a same-named parameter would make
@@ -171,11 +171,11 @@ def test_exactly_at_the_bound_is_legal_and_past_it_is_refused(direction):
     Exactness is legal in this repository's gates. A strict comparison would
     make the legality of a round depend on floating-point noise in the sixth
     decimal of a corner frequency — and, worse, would do it asymmetrically
-    depending on which side of the basis the arm sits.
+    depending on which side of the basis the candidate sits.
     """
     lobe_us = half_period_us(FC_HZ)
     at_bound = BASIS_US + direction * lobe_us
-    assert abs(at_bound - BASIS_US) <= lobe_us, "the at-bound arm is really at it"
+    assert abs(at_bound - BASIS_US) <= lobe_us, "the at-bound candidate is at it"
     assert _read(_arm(at_bound), fc_hz=FC_HZ) is not None
 
     # The smallest representable step past the bound IN THE DELAY, walked until
@@ -188,20 +188,21 @@ def test_exactly_at_the_bound_is_legal_and_past_it_is_refused(direction):
         if abs(past_delay - BASIS_US) > lobe_us:
             break
         past_delay = float(np.nextafter(past_delay, direction * np.inf))
-    assert abs(past_delay - BASIS_US) > lobe_us, "the past-bound arm is really past it"
+    assert abs(past_delay - BASIS_US) > lobe_us, "the past-bound candidate is past it"
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(past_delay), fc_hz=FC_HZ)
     assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
 
 
 def test_the_corrected_arm_set_clears_the_bound_and_the_control_arm_does_not():
-    """Print-what-you-assert, on the arms this harness was built to run.
+    """Print-what-you-assert, on the candidates this harness was built to run.
 
-    Four of the diagnosis's five arms are admissible; the ``0 µs`` control is
-    not, because zero delay leaves the drivers 405.7 µs apart — 241° of phase
-    error at Fc, well outside the lobe. That is the correct verdict rather than
-    a gap: refusing to bless a known-misaligned state as measurement-backed is
-    what the gate is for, and "no prescription" is how a control arm is run.
+    Four of the diagnosis's five candidates are admissible; the ``0 µs``
+    control is not, because zero delay leaves the drivers 405.7 µs apart —
+    241° of phase error at Fc, well outside the lobe. That is the correct
+    verdict rather than a gap: refusing to bless a known-misaligned state as
+    measurement-backed is what the gate is for, and "no prescription" is how
+    a control candidate is run.
     """
     admitted = {}
     for arm_us in ARMS_US:
@@ -222,7 +223,7 @@ def test_the_corrected_arm_set_clears_the_bound_and_the_control_arm_does_not():
 
 def test_every_swept_corner_admits_the_same_four_arms():
     """The bound is validated once, at the commissioned corner — and on this
-    arm set that choice is not load-bearing.
+    candidate set that choice is not load-bearing.
 
     A FROZEN regression guard over the corners the banked r1b round actually
     swept, back when an alternative-Fc sweep re-scored the same prescription at
@@ -230,12 +231,12 @@ def test_every_swept_corner_admits_the_same_four_arms():
     round runs at one corner, and the sweep and the selector that ranked its
     results are both retired (``docs/tuning-master-plan.md`` tickets 2.3, 2.4).
     What the guard is still worth: the half-period lobe tightens with frequency,
-    so a corner other than the commissioned one could in principle exclude an
-    arm the boundary admitted. It does not across this banked span — the
-    tightest corner in it (1847.7 Hz, lobe 270.6 µs) still clears every arm,
-    whose worst residual is 155.7 µs. Pinned so a future arm set that DOES
-    straddle one of these corners fails here rather than surprising a bench
-    session.
+    so a corner other than the commissioned one could in principle exclude a
+    candidate the boundary admitted. It does not across this banked span — the
+    tightest corner in it (1847.7 Hz, lobe 270.6 µs) still clears every
+    candidate, whose worst residual is 155.7 µs. Pinned so a future candidate
+    set that DOES straddle one of these corners fails here rather than
+    surprising a bench session.
     """
     per_corner = {}
     for fc_hz in SWEPT_CORNERS_HZ:
@@ -255,9 +256,9 @@ def test_the_bound_is_measured_from_the_basis_not_from_the_incumbent():
 
     The series-2 incumbent (+96.0 µs applied) sits 501.7 µs from the measured
     basis — **1.65 half-period lobes**, 0.83 of a period at Fc. A bound anchored
-    on it would refuse every arm that could fix the misalignment, which is how a
-    fail-closed guard becomes decorative. Anchored on the declared basis, the
-    optimum arm is admitted and the incumbent itself would not be.
+    on it would refuse every candidate that could fix the misalignment, which is
+    how a fail-closed guard becomes decorative. Anchored on the declared basis,
+    the optimum candidate is admitted and the incumbent itself would not be.
 
     The ratio is asserted, not narrated: this docstring justified the design
     deviation with "more than a period and a half" for one review round, which
@@ -279,7 +280,8 @@ def test_the_bound_is_measured_from_the_basis_not_from_the_incumbent():
 
 @pytest.mark.parametrize("fc_hz", (0.0, -1648.7, float("nan"), float("inf"), True, "x"))
 def test_an_unusable_corner_is_its_own_refusal(fc_hz):
-    """A corner the bound is undefined at never reads as an out-of-lobe arm.
+    """A corner the bound is undefined at never reads as an out-of-lobe
+    candidate.
 
     Two different problems, and reporting the second would send an operator to
     re-derive a number that was fine.
@@ -469,10 +471,11 @@ def test_an_unpinned_prescription_is_the_automatic_path_for_the_polarity():
 def test_an_unknown_basin_is_refused_by_name_never_ignored(value):
     """A silently-dropped pin would leave the round measuring a re-rolled basin.
 
-    Under the arm's name, which is the same class of dishonesty the delay half
-    of this gate exists to prevent — so it refuses, and refuses with its OWN
-    reason rather than the generic malformed one, because a misspelled basin
-    sends an operator to the vocabulary and not to the shape.
+    Under the candidate's name, which is the same class of dishonesty the
+    delay half of this gate exists to prevent — so it refuses, and refuses
+    with its OWN reason rather than the generic malformed one, because a
+    misspelled basin sends an operator to the vocabulary and not to the
+    shape.
     """
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0, polarity=value))
@@ -502,13 +505,13 @@ def test_the_presets_declared_window_is_asked_at_the_tap_not_ten_minutes_later()
     ``crossover_v2_flow.alignment_delay_plausible`` has always screened the
     committed delay against the preset's ``delay_range_ms`` — but downstream,
     inside the MEASURE capture rungs, at a screen whose household copy asks the
-    user to move the microphone. On a prescribed arm that is a lie about a
-    number the request could have been refused for immediately, so the gate
-    asks the same declaration at the tap under its own reason.
+    user to move the microphone. On a prescribed candidate that is a lie
+    about a number the request could have been refused for immediately, so
+    the gate asks the same declaration at the tap under its own reason.
 
     Pinned on BOTH shipped shapes, because the difference is the whole point:
     ``bc_de250_dayton_e150he44_v1`` declares 0.05–0.3 ms (0–400 µs expanded)
-    and would refuse the two best arms outright, while tonight's speaker
+    and would refuse the two best candidates outright, while tonight's speaker
     declares 0–1 ms (0–1100 µs) and admits every one.
     """
     horn_verdicts = {}
@@ -547,8 +550,8 @@ def test_the_hardware_window_is_answered_before_the_measurements_lobe():
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(both_wrong, declared_bounds_us=HORN_WINDOW_US)
     assert excinfo.value.reason == PRESCRIPTION_OUTSIDE_DECLARED_WINDOW
-    # …and with no declaration to answer, the same arm falls through to the
-    # measurement's own bound rather than passing.
+    # …and with no declaration to answer, the same candidate falls through
+    # to the measurement's own bound rather than passing.
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(both_wrong, declared_bounds_us=None)
     assert excinfo.value.reason == PRESCRIPTION_OUT_OF_LOBE
@@ -782,8 +785,8 @@ def test_the_prescription_is_committed_exactly_not_snapped_to_a_better_neighbour
     automatic objective commits ~0 µs. Handed a prescription it commits the
     prescribed number instead, to the bit — not the nearby grid point that
     scored better, and not the seed the flat-minimum epsilon would otherwise
-    prefer. An arm that silently measured the estimator's answer under the
-    arm's name is the failure this path exists to remove.
+    prefer. A candidate that silently measured the estimator's answer under
+    the candidate's name is the failure this path exists to remove.
     """
     freqs, W, T = _lr4_branches()
     automatic = _select_alignment_pair(freqs, W, T, **_selector_kwargs())
@@ -910,7 +913,7 @@ def test_a_pinned_basin_holds_through_the_low_snr_refusal_too():
     because polarity is the question the capture was refused for. A pin did not
     come from this capture any more than the delay did, so the refusal has
     nothing to say about it — and a round that silently measured ``+1`` under
-    an inverted arm's name is exactly the confound this field removes.
+    an inverted candidate's name is exactly the confound this field removes.
     """
     freqs, W, T = _lr4_branches()
     low_snr = dict(
@@ -996,10 +999,10 @@ def _overlapping_branches() -> tuple[np.ndarray, np.ndarray]:
     Bare impulses will not do, and finding that out is what a mutation harness
     is for: two full-band deltas sum to a magnitude the residual delay barely
     moves (three distinct dB values across the whole curve), so a test asserting
-    "these two arms predict identically" passed even with the anchor withdrawal
-    switched OFF. Band-limited branches that actually overlap make the summed
-    magnitude a real function of the residual, which is the only way the
-    withdrawal's consequence is observable at all.
+    "these two candidates predict identically" passed even with the anchor
+    withdrawal switched OFF. Band-limited branches that actually overlap
+    make the summed magnitude a real function of the residual, which is
+    the only way the withdrawal's consequence is observable at all.
     """
     return (
         _band_impulse(200, 150.0, 6000.0, 1.0, n=8192),
@@ -1037,25 +1040,26 @@ def test_the_low_snr_arm_withdraws_the_anchor_and_its_model_goes_arm_blind():
     Dropping the prescription's low-SNR objective from that set turns the
     withdrawal off silently; nothing but this test notices.
 
-    **And the consequence, stated rather than implied.** On this arm the
+    **And the consequence, stated rather than implied.** On this candidate the
     predicted curve is bit-identical no matter which delay was prescribed. That
     is CORRECT — the capture supplied no trustworthy frame, and phasing a model
     the accountability gate can refuse on by an untrusted number is the #2617
-    hazard — but it means the arm has no pre-apply discriminating net: two arms
-    predict the same thing, so nothing before the speaker plays can tell them
-    apart. It is also model-only-adoption-proof, in the strongest possible
-    sense: on this arm the model cannot express a preference, so an adoption
-    can only ever rest on measurement.
+    hazard — but it means the candidate has no pre-apply discriminating net:
+    two candidates predict the same thing, so nothing before the speaker plays
+    can tell them apart. It is also model-only-adoption-proof, in the strongest
+    possible sense: on this candidate the model cannot express a preference,
+    so an adoption can only ever rest on measurement.
     """
     a, (freqs_a, pred_a) = _low_snr_candidate_at(-350.0)
     b, (freqs_b, pred_b) = _low_snr_candidate_at(-550.0)
 
-    # Both committed their own arm, exactly…
+    # Both committed their own candidate, exactly…
     assert (a.delay_us, b.delay_us) == (-350.0, -550.0)
     assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
     # …the withdrawal fired, so neither model carries a residual…
     assert a.snap_delta_us != pytest.approx(0.0, abs=1e-9)
-    # …and the prediction is therefore identical across two different arms.
+    # …and the prediction is therefore identical across two different
+    # candidates.
     assert np.array_equal(freqs_a, freqs_b)
     assert np.array_equal(pred_a, pred_b)
 
@@ -1065,8 +1069,8 @@ def test_a_trusted_capture_keeps_its_residual_so_its_model_tracks_the_arm():
 
     On a capture that PASSED its SNR verdict the anchor is trustworthy, so the
     prescription's commitment stays out of the declared-polarity set and its
-    model carries ``prescribed − anchor``. Two arms then predict differently —
-    the pre-apply net the low-SNR arm above does without.
+    model carries ``prescribed − anchor``. Two candidates then predict
+    differently — the pre-apply net the low-SNR candidate above does without.
     """
     woofer_ir, tweeter_ir = _overlapping_branches()
 
@@ -1186,7 +1190,7 @@ def test_the_publish_site_carries_the_selections_answer_not_its_own():
 
 
 def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
-    """ONE owner for the cross-check, across all three arms.
+    """ONE owner for the cross-check, across all three candidates.
 
     The rule — only a commitment whose POLARITY the flat sum actually chose may
     answer this — lives on
@@ -1198,7 +1202,7 @@ def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
     durable surfaces read the published value, so the disagreement was not
     cosmetic.
 
-    The third arm is the one that matters: it must publish ``False`` — a
+    The third candidate is the one that matters: it must publish ``False`` — a
     comparison that ran and disagreed — never ``None``.
     """
     automatic = _published_agreement(seed_sign=1, prescribed=None)
@@ -1218,9 +1222,10 @@ def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
 def test_an_arm_that_asked_nothing_publishes_none_not_a_false_agreement():
     """The other direction of the same honesty.
 
-    On the low-SNR arm the polarity is the DECLARATION, not a flat-sum result,
-    so no comparison happened — and recording "correlation agreed" because
-    nothing disagreed with it is the dishonesty the field exists to avoid.
+    On the low-SNR candidate the polarity is the DECLARATION, not a flat-sum
+    result, so no comparison happened — and recording "correlation agreed"
+    because nothing disagreed with it is the dishonesty the field exists to
+    avoid.
     """
     candidate, _predicted = _low_snr_candidate_at(-450.0)
     assert candidate.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
@@ -1311,9 +1316,10 @@ def test_an_unpinned_analysis_still_solves_its_own_basin():
 def test_a_prescription_that_reaches_no_commitment_says_so_at_warning(caplog):
     """The disclosure surface, pinned with its fields.
 
-    An arm that silently measures the trims-only or seed fallback under the
-    arm's name is the failure this whole path exists to remove, and the WARNING
-    is what a bench operator has between the round and the receipt. Its FIELDS
+    A candidate that silently measures the trims-only or seed fallback under
+    the candidate's name is the failure this whole path exists to remove, and
+    the WARNING is what a bench operator has between the round and the
+    receipt. Its FIELDS
     are asserted, not just its presence: a line that fires without saying which
     delay was prescribed or what was committed instead cannot be acted on.
     """
@@ -1443,8 +1449,9 @@ def test_the_selection_event_names_the_prescribed_basin(caplog):
 def test_both_prescription_objectives_are_registered_in_the_vocabulary():
     """A commitment nothing can name is a commitment a forensic reader loses."""
     assert ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES <= ALIGNMENT_COMMITMENTS
-    # The trusted-capture arm keeps its residual (its anchor IS trustworthy);
-    # the refused-capture arm gives it up with the rest of that refusal.
+    # The trusted-capture candidate keeps its residual (its anchor IS
+    # trustworthy); the refused-capture candidate gives it up with the rest
+    # of that refusal.
     assert ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION not in (
         ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
     )
@@ -1575,7 +1582,7 @@ def test_a_prescribed_delay_reaches_the_graph_as_the_one_delay_field():
     assert candidate.alignment.polarity == POLARITY_KEEP
 
     yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
-    # Exactly one non-zero delay in the emitted graph, and it is the arm.
+    # Exactly one non-zero delay in the emitted graph, and it is the candidate.
     delays = [
         float(line.split(":", 1)[1])
         for line in yaml_text.splitlines()
@@ -1585,10 +1592,11 @@ def test_a_prescribed_delay_reaches_the_graph_as_the_one_delay_field():
 
 
 def test_moving_the_prescription_moves_that_field_and_nothing_else():
-    """Mutation-pinned one-owner: two arms, one changed line.
+    """Mutation-pinned one-owner: two candidates, one changed line.
 
-    Two same-sign arms differ only in magnitude, so if any SECOND place in the
-    emitted graph carried the delay this diff would be wider than one line.
+    Two same-sign candidates differ only in magnitude, so if any SECOND place
+    in the emitted graph carried the delay this diff would be wider than one
+    line.
     """
     a = compile_candidate_config(_candidate_for(-350.0), playback_device="hw:ActiveDAC")
     b = compile_candidate_config(_candidate_for(-450.0), playback_device="hw:ActiveDAC")
@@ -1601,12 +1609,12 @@ def test_moving_the_prescription_moves_that_field_and_nothing_else():
 
 
 def test_a_prescribed_arm_is_proved_by_the_ordinary_derivation():
-    """No bypass: the arm goes through the same compile-and-prove every
+    """No bypass: the candidate goes through the same compile-and-prove every
     automatic candidate does, including the headroom recompute and the static
     delay binding proof.
 
     Mutation-pinned in the direction that matters — tamper the emitted delay
-    and the proof refuses by its own code, so an arm whose graph does not
+    and the proof refuses by its own code, so a candidate whose graph does not
     carry the prescribed number cannot reach a speaker.
     """
     candidate = _candidate_for(-450.0)
@@ -1685,8 +1693,8 @@ def test_an_adopted_arms_receipt_names_what_its_timing_rests_on():
     # guessing which corner's lobe 44.3 µs cleared.
     assert banked["checked_at_fc_hz"] == pytest.approx(FC_HZ)
     assert banked["lobe_us"] == pytest.approx(half_period_us(FC_HZ))
-    # A delay-only arm banks an explicit "no basin was pinned", which is a
-    # different fact from a receipt written before the field existed.
+    # A delay-only candidate banks an explicit "no basin was pinned", which is
+    # a different fact from a receipt written before the field existed.
     assert banked["polarity"] is None
 
 
@@ -1705,7 +1713,7 @@ def test_a_pinned_arms_receipt_banks_the_basin_in_the_operators_own_words(word):
     banked = _round_measurements_for(prescription)["alignment_prescription"]
 
     assert banked["polarity"] == word
-    # The pin does not change what the arm asked of the timing.
+    # The pin does not change what the candidate asked of the timing.
     assert banked["delay_us"] == -450.0
     assert banked["committed"] is True
 
@@ -1724,14 +1732,14 @@ def test_a_pinned_arms_receipt_banks_the_basin_in_the_operators_own_words(word):
     ],
 )
 def test_the_receipt_says_whether_the_arm_actually_ran(objective, committed):
-    """An arm's provenance without its outcome can credit a round that never
-    measured the arm.
+    """A candidate's provenance without its outcome can credit a round that
+    never measured the candidate.
 
     The rail is reachable, not theoretical: an ``ALIGNMENT_OK`` estimate whose
     band holds no scorable bin makes ``_select_alignment_pair`` return ``None``,
     and the seed — the estimator's own lobe-hopping answer — is committed while
     the round still carries the prescription's name. A grader reading only the
-    prescription would call that "the arm measured better".
+    prescription would call that "the candidate measured better".
     """
     prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     banked = _round_measurements_for(
@@ -1746,7 +1754,7 @@ def test_the_uncommitted_rail_is_reachable_and_the_receipt_reports_it():
 
     A real capture, a real prescription, a band with no scorable bin — the
     machinery commits the SEED, and the receipt built from that round's
-    objective says the arm did not run.
+    objective says the candidate did not run.
     """
     woofer_ir = np.zeros(8192)
     tweeter_ir = np.zeros(8192)
@@ -1787,8 +1795,9 @@ def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
     """It rides with the MEASUREMENTS, never in the round identity.
 
     ``_round_identity`` is the instruction channel the next round reads back as
-    its incumbent. A prescription there is how an arm gets re-run without being
-    asked for — each arm of a delay sweep is prescribed explicitly.
+    its incumbent. A prescription there is how a candidate gets re-run
+    without being asked for — each candidate of a delay sweep is prescribed
+    explicitly.
     """
     prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
     published: list[dict] = []
@@ -1808,8 +1817,8 @@ def test_the_prescription_is_not_an_instruction_the_next_round_inherits():
     banked = published[0]["round_measurements"]["alignment_prescription"]
     assert banked["basis_delay_us"] == BASIS_US
     # …and the identity the NEXT round reads back carries no prescription at
-    # all, so no arm can be re-run without being asked for. Asserted over the
-    # built mapping, not over a docstring.
+    # all, so no candidate can be re-run without being asked for. Asserted
+    # over the built mapping, not over a docstring.
     assert "alignment_prescription" not in repr(decision.receipt_identity)
 
 

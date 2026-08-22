@@ -12242,14 +12242,14 @@ class _StoppedAtTheTap(Exception):
     """
 
 
-#: The pinned arm. Legal for the fixture speaker's declarations below and
+#: The pinned candidate. Legal for the fixture speaker's declarations below and
 #: nowhere near ``FC_HZ`` (1600.0, the corner it is commissioned at), so
 #: "the pin took effect" and "the incumbent answered" can never tie.
 _PIN_FC_HZ = 2400.0
 
 #: Order 4 is 24 dB/octave, which exactly MEETS the tweeter's declared
 #: protective minimum below. Exactness is legal in this repository's gates, so
-#: an arm on the edge is the honest default for a fixture.
+#: a candidate on the edge is the honest default for a fixture.
 _PIN_ORDER = 4
 
 #: The fixture speaker's own declarations, quoted once. ``_roles()`` supplies
@@ -12302,7 +12302,7 @@ def _topology_pin(**overrides: Any) -> dict[str, Any]:
         "fc_hz": _PIN_FC_HZ,
         "order": _PIN_ORDER,
         "basis_artifacts": ["captures/offline-fc-search/arm-2.json"],
-        "basis_note": "arm 2 of a pre-registered Fc/slope tournament",
+        "basis_note": "candidate 2 of a pre-registered Fc/slope tournament",
     }
     body.update(overrides)
     return body
@@ -12420,9 +12420,9 @@ def test_a_pinned_round_bounds_its_delay_at_the_pinned_corner_not_the_incumbent(
     208.3 us, so the two corners do not merely disagree about a label — they
     admit different delays. A boundary that read the delay prescription first,
     or that kept handing it ``context.fc_hz`` after the topology pin moved the
-    round, would gate a 2400 Hz arm against the 1600 Hz lobe: a gate that
-    passes commitments the round it is gating cannot support, with the arm's
-    own name on the receipt.
+    round, would gate a 2400 Hz candidate against the 1600 Hz lobe: a gate
+    that passes commitments the round it is gating cannot support, with the
+    candidate's own name on the receipt.
 
     So the corner the delay gate is HANDED is asserted, at the gate, rather
     than a later symptom of it. Both prescriptions ride the same request,
@@ -12461,9 +12461,9 @@ def test_a_topology_pin_is_never_inherited_the_way_the_tier_deliberately_is(
     ``full``; pinned by
     ``tests/test_crossover_v2_remote_tier.py::test_a_re_measure_with_no_tier_inherits_the_lapsed_sessions``).
     A prescription must NOT travel that road. "Measure again" would then re-run
-    a tournament arm nobody asked for, at a corner the speaker is not
-    commissioned for, and bank a receipt carrying that arm's name — the same
-    class of dishonesty as clamping an inadmissible pin to a legal one.
+    a tournament candidate nobody asked for, at a corner the speaker is not
+    commissioned for, and bank a receipt carrying that candidate's name — the
+    same class of dishonesty as clamping an inadmissible pin to a legal one.
 
     Both facts are read out of ONE durable state in one run, so the test cannot
     pass by the state being unreadable: the tier IS inherited from it, the
@@ -12490,11 +12490,11 @@ def test_a_topology_pin_is_never_inherited_the_way_the_tier_deliberately_is(
     seen = _stage_1_prescription_taps(monkeypatch, {})
 
     # Not inherited: the topology gate is never consulted at all, so there is
-    # no route by which the banked arm could have reached this round.
+    # no route by which the banked candidate could have reached this round.
     assert "topology_raw" not in seen
     assert "topology" not in seen
     # ...so the round really is unpinned end to end — the delay bound comes off
-    # the speaker's commissioned corner, not off the banked arm's.
+    # the speaker's commissioned corner, not off the banked candidate's.
     assert seen["alignment_fc_hz"] == FC_HZ
     # The contrast, from the same state file in the same run: the tier IS
     # inherited. Without this the test would also pass on a preparer that had
@@ -12533,7 +12533,7 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
         _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
     )
     # The ka onset is DISCLOSED as a number, never enforced (#1675): this
-    # arm is above it and the receipt says so rather than refusing.
+    # candidate is above it and the receipt says so rather than refusing.
     assert accepted.beaming_ceiling_hz is not None
     assert accepted.fc_hz > accepted.beaming_ceiling_hz
 
@@ -12549,7 +12549,7 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     assert rehydrated is not None
     assert rehydrated.to_dict() == accepted.to_dict()
     # ...and an ordinary round still banks nothing, so a reader can tell a
-    # pinned arm from the speaker's commissioned crossover.
+    # pinned candidate from the speaker's commissioned crossover.
     v2host.persist_conductor_state(
         _rearm_conductor_for_persist("cap_ordinary_round", {1: PHASE_VERIFY}),
         failure_code=None,
@@ -12669,8 +12669,8 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
 
     assert FC_REJECT_OUTSIDE_SEARCH_BAND in str(excinfo.value)
     # Never clamped to the nearest legal corner and quietly measured: the
-    # operator asked for an arm, and a silently different arm is worse than no
-    # arm because its receipt would carry the arm's name.
+    # operator asked for a candidate, and a silently different candidate is
+    # worse than none because its receipt would carry the candidate's name.
     assert "5500" in str(excinfo.value)
     assert v2host.load_v2_state() is None
 

@@ -10,13 +10,13 @@ that the pin reaches the emitted filters under a region name apply accepts, the
 durable read-back, and — the control that matters most — that a request with no
 prescription changes nothing.
 
-The declarations in the arm tests are jts3's own, read out of the banked
+The declarations in the candidate tests are jts3's own, read out of the banked
 ``captures/armloop-first-drive-2026-08/r1-baseline-summed/design-draft.json``
 on 2026-08-20, deliberately: this gate exists so a pre-registered Fc/slope
 tournament can run on that speaker, and a test written against placeholder
-declarations would not have caught that two of its three arms are refused by
-the speaker's own declared search band before the slope question is even
-reached.
+declarations would not have caught that two of its three candidates are
+refused by the speaker's own declared search band before the slope question
+is even reached.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
 from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 
 # --------------------------------------------------------------------------- #
-# jts3's own declarations, and the arms they were meant to serve
+# jts3's own declarations, and the candidates they were meant to serve
 # --------------------------------------------------------------------------- #
 
 #: The upper driver's declared floor — the tweeter's permitted excitation band
@@ -77,7 +77,7 @@ ARTIFACTS = ("armloop-first-drive-2026-08/offline-fc-search",)
 
 
 def _pin(corner_hz: float, /, **overrides: object) -> dict:
-    """One arm as the session POST body carries it.
+    """One candidate as the session POST body carries it.
 
     The positional parameter is deliberately NOT called ``fc_hz``: several
     tests below override that very key, and a same-named parameter would make
@@ -252,7 +252,8 @@ def test_each_required_field_is_required(field):
 
 def test_a_float_order_is_refused_rather_than_truncated():
     """``int(4.7)`` is ``4``, and an order that quietly became a different
-    order is exactly the silently-different arm this gate exists to prevent."""
+    order is exactly the silently-different candidate this gate exists to
+    prevent."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(2400.0, order=4.7))
     assert excinfo.value.reason == TOPOLOGY_ORDER_INVALID
@@ -372,7 +373,7 @@ def test_a_corner_exactly_at_a_declared_edge_is_legal(corner_hz):
 
 
 # --------------------------------------------------------------------------- #
-# 5. The slope bound — the refusal a tournament's order-2 arm exists to produce
+# 5. The slope bound — the refusal a tournament's order-2 candidate exists to produce
 # --------------------------------------------------------------------------- #
 
 
@@ -382,9 +383,9 @@ def test_an_order_below_the_declared_slope_is_refused_with_both_numbers():
     Nothing downstream applies this: the declared clamp is read by the
     COMMISSIONING admission path and by the derived protection filter, while
     crossover apply compares corner FREQUENCIES only. Without this refusal an
-    order-2 arm at a legal corner runs with less sub-Fc attenuation than the
-    tweeter's own declaration asks for, silently, on a receipt carrying the
-    arm's name.
+    order-2 candidate at a legal corner runs with less sub-Fc attenuation than
+    the tweeter's own declaration asks for, silently, on a receipt carrying
+    the candidate's name.
     """
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(2400.0, order=2))
@@ -423,8 +424,8 @@ def test_an_undeclared_slope_gates_nothing():
 def test_the_frequency_bounds_are_answered_before_the_slope():
     """The two send a prescriber to different places — re-declare the band
     versus re-choose the order — and a corner outside the hardware's declared
-    range is the more fundamental of the two answers. An arm that fails both
-    must be told the frequency one."""
+    range is the more fundamental of the two answers. A candidate that fails
+    both must be told the frequency one."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(4000.0, order=2))
     assert excinfo.value.reason == FC_REJECT_OUTSIDE_SEARCH_BAND
@@ -460,7 +461,7 @@ def test_a_pin_above_the_beaming_onset_is_admitted_and_disclosed():
     # Admitted despite sitting ABOVE the onset…
     assert pinned.fc_hz > 1800.0
     # …and the receipt carries the number a reader compares it against, so the
-    # arm is disclosed rather than silently fine.
+    # candidate is disclosed rather than silently fine.
     assert pinned.beaming_ceiling_hz == 1800.0
     assert pinned.to_dict()["beaming_ceiling_hz"] == 1800.0
 
@@ -841,12 +842,13 @@ def test_the_pre_registered_tournament_arms_refuse_on_jts3s_own_declarations(
 ):
     """The pre-flight, banked so it cannot be re-derived wrongly later.
 
-    All three pre-registered arms sit ABOVE the 2500 Hz ceiling both roles
-    declare, so every one of them is refused for the band before the slope
-    question is reached — including C3, whose order-2 slope would ALSO have
-    been refused had its corner been legal (the test below). That is the door
-    working: the arms are inadmissible on this speaker as declared today, and
-    the honest outcome is a receipted refusal rather than a measurement.
+    All three pre-registered candidates sit ABOVE the 2500 Hz ceiling both
+    roles declare, so every one of them is refused for the band before the
+    slope question is reached — including C3, whose order-2 slope would ALSO
+    have been refused had its corner been legal (the test below). That is the
+    door working: the candidates are inadmissible on this speaker as declared
+    today, and the honest outcome is a receipted refusal rather than a
+    measurement.
     """
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(corner_hz, order=order))
