@@ -729,14 +729,15 @@ def test_the_session_builds_its_previous_side_from_the_applied_profile():
 
 
 def test_a_capture_composed_at_another_corner_has_no_nameable_previous_graph(caplog):
-    """The corner guard, and it is the SWEEP's door as much as ``/sound``'s.
+    """The corner guard, and it is the PIN's door as much as ``/sound``'s.
 
     The branches are composed through whichever crossover the capture was
-    analysed at (``priors.candidate_priors`` re-points that at every swept
-    corner), while the applied profile only ever ran the corner it was built
-    at. Modelling the previous graph on the wrong ``C`` omits a term measured at
-    up to 5.88 dB against a 1.5 dB tolerance, so the axis is refused and the
-    probe reports ``unavailable`` — no rollback, no pass.
+    analysed at (``topology_prescription.apply_topology_pin`` re-corners the
+    preset and opens the session AT an operator's pinned corner), while the
+    applied profile only ever ran the corner it was built at. Modelling the
+    previous graph on the wrong ``C`` omits a term measured at up to 5.88 dB
+    against a 1.5 dB tolerance, so the axis is refused and the probe reports
+    ``unavailable`` — no rollback, no pass.
     """
     import logging
 
@@ -776,8 +777,8 @@ def test_a_profile_that_cannot_name_its_corner_is_refused_too(caplog):
     assert "reason=applied_profile_names_no_corner" in caplog.text
 
 
-def test_one_applied_profile_is_disclosed_once_across_a_sweeps_corners(caplog):
-    """Six swept corners read one profile; the journal says so once (#2614).
+def test_one_applied_profile_is_disclosed_once_across_repeated_reads(caplog):
+    """Six reads of one profile; the journal says so once (#2614).
 
     The disclosure is per distinct ANSWER, not per call, so a session does not
     put six identical ``previous_graph`` lines in front of a reader for one
@@ -1284,7 +1285,7 @@ def _alternative_fc_probe(*, hot_db: float, declared: bool = True):
     """A round with NO commanded axis, run through ``_run_delta_probe`` itself.
 
     The commanded delta is absent exactly as the corner guard leaves it; the
-    declared transfer is present exactly as every swept corner computes it.
+    declared transfer is present exactly as any re-cornered round computes it.
     """
     from tests.crossover_v2_fixtures import FakeSeams
 

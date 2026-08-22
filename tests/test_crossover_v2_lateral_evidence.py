@@ -428,17 +428,26 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
     assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
         "the shipped relay ceiling no longer carries the worst-case plan"
     )
-    # The poses are IN the number: subtracting them must leave a strictly
-    # smaller count, so a build that stopped counting them is visible here.
-    without_walk = with_walk - LATERAL_COUNT
-    assert without_walk < with_walk
 
-    # A ceiling that fits the walk-less plan but not the walk must REFUSE, which
-    # is the whole point of counting the poses.
-    ceiling = without_walk + 1
-    assert ceiling < with_walk, "the walk must be long enough to be countable"
+    # The control has to be INDEPENDENT of the function under test. Deriving it
+    # as ``with_walk - LATERAL_COUNT`` asserts only that 6 > 0, which stays true
+    # with the poses uncounted — so the term is summed here from the primitives
+    # instead, and a build that dropped it or put it back behind a stage-1 flag
+    # comes up exactly LATERAL_COUNT short.
+    expected = (
+        flow.cloud_plan_max_attempts(**worst)
+        + LATERAL_COUNT
+        + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
+    )
+    assert with_walk == expected, (
+        "the producer no longer counts the lateral walk unconditionally"
+    )
+
+    # …and the count is load-bearing, not decorative: a ceiling that fits the
+    # walk-less plan but not the walk must REFUSE.
+    without_walk = expected - LATERAL_COUNT
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
+        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", without_walk + 1)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
 

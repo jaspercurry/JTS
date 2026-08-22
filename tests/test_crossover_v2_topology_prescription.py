@@ -5,9 +5,10 @@
 """The explicit, admissibility-gated, provenance-carrying crossover pin.
 
 Covers the request gate (shape, provenance, and every bound), the single-owner
-claim that a PIN and a PROPOSAL are admissible on identical terms, the two
-suppressions a pinned round owes the selector, the durable read-back, and — the
-control that matters most — that a request with no prescription changes nothing.
+claim that a PINNED corner and a DECLARED one are admissible on identical terms,
+that the pin reaches the emitted filters under a region name apply accepts, the
+durable read-back, and — the control that matters most — that a request with no
+prescription changes nothing.
 
 The declarations in the arm tests are jts3's own, read out of the banked
 ``captures/armloop-first-drive-2026-08/r1-baseline-summed/design-draft.json``
@@ -450,9 +451,10 @@ def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
 
 def test_a_pin_above_the_beaming_onset_is_admitted_and_disclosed():
     """#1675 defines the ka ceiling as guidance to warn on rather than a fence,
-    and ``FcCandidateSet`` already exempts the configured corner from it. A
-    pinned corner IS its round's configured corner, so enforcing it here would
-    be stricter about this speaker than the automatic path is."""
+    so no admissibility bound anywhere reads it — ``fc_sweep._fc_rejection``
+    carries no beaming term for the automatic path either. A pinned corner IS
+    its round's configured corner, so enforcing it here would be stricter about
+    this speaker than that path is."""
     pinned = _read(_pin(2400.0), beaming_ceiling_hz=1800.0)
     assert pinned is not None
     # Admitted despite sitting ABOVE the onset…
@@ -799,8 +801,8 @@ def test_the_recornered_region_id_is_spelled_the_way_apply_recompiles_it():
 
 
 def test_recornering_without_an_order_leaves_the_declared_order_alone():
-    """The swept path's behaviour, byte for byte — this function is its single
-    owner now, so a pin must not have changed what a sweep emits."""
+    """The automatic path's behaviour, byte for byte: ``order`` moves ONLY when
+    an operator pinned one, so an unpinned round keeps its declared slope."""
     import dataclasses
 
     @dataclasses.dataclass(frozen=True)

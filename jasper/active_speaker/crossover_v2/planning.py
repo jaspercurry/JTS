@@ -524,8 +524,11 @@ def _sections_for_candidate(
 ) -> dict[str, tuple[CrossoverSection, ...]]:
     """Role -> the Linkwitz-Riley sections THIS candidate's branch runs through.
 
-    ``candidate_sections`` for a swept corner, the preset's own crossover
-    regions for the configured one. One derivation because two consumers read
+    ``candidate_sections`` when a caller supplies an explicit override, the
+    preset's own crossover regions otherwise. The swept corners that supplied
+    one are gone with the corner hunt (``docs/tuning-master-plan.md`` ticket
+    2.3), so no production caller passes it today and every shipped call takes
+    the preset branch. One derivation because two consumers read
     it and both must describe the same emitted graph: the planner bounds its
     fit band and charges its headroom with it, and :func:`build_candidate`
     charges a PRESCRIBED branch's disclosure with it (#2759). A second copy
@@ -565,9 +568,10 @@ def plan_for_candidate(
     and is reached identically from both candidate paths (#2291 Phase 2b).
 
     **One corner, and it is the candidate's.** The context is built from
-    the sections this candidate is realized with — ``candidate_sections``
-    for a swept corner, ``preset``'s own crossover regions for the configured
-    one — and
+    the sections this candidate is realized with — an explicit
+    ``candidate_sections`` override when one is supplied, ``preset``'s own
+    crossover regions otherwise (:func:`_sections_for_candidate` owns that
+    choice and records who still supplies an override) — and
     :class:`~jasper.active_speaker.crossover_v2.contracts.CandidateAcousticContext`
     derives the corner FROM them. The session's ``_fc_hz`` is not read, and
     there is no second corner in scope for the planner to read either — this

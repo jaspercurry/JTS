@@ -1216,7 +1216,9 @@ because they are easy to re-derive wrongly:
   now opens by saying so in its own words — "**Nothing feeds this.** The
   lateral walk that produced `poses` was paused on 2026-08-18 for ranking
   below its own noise, and the corner sweep that gathered the per-candidate
-  evidence was deleted with it." A staged angle walk is per-driver but
+  evidence was deleted with it (plan ruling R1): a round crosses at the corner
+  the household declared or an operator pinned, so no comparison is made and no
+  recommendation is produced." A staged angle walk is per-driver but
   declares the forward-model consumer, so it feeds no selector; and the
   multi-position walks that run *automatically* yield nothing per-driver,
   because every cloud phase sits in `SUMMED_SWEEP_PHASES`

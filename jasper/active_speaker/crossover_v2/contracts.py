@@ -455,9 +455,10 @@ class TrimStrategy(str, Enum):
     proposal assembled at the commit seam
     (:func:`~.proposal.trim_strategy_for_outcome`, restored by #2392) reads the
     ``linearization_outcome`` string the build stamped onto the candidate,
-    because that is the one trim fact both commit routes certainly share, and
-    the string does not record which pair won the realized-level grading.  It
-    states that evidence gap rather than guessing a precise member.
+    because that is the one trim fact the committing walk certainly holds — see
+    that function for why it holds no other — and the string does not record
+    which pair won the realized-level grading.  It states that evidence gap
+    rather than guessing a precise member.
 
     It had a second, drift-qualified sibling until #2392 — the issue #2291
     Phase 5c-iii left the question to — and that member is deleted rather than

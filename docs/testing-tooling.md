@@ -1341,8 +1341,10 @@ of JSON under
 and
 [`tests/test_crossover_v2_incident_replay.py`](../tests/test_crossover_v2_incident_replay.py)
 drives `CrossoverV2Session._build_candidate` with it, using the exact keyword
-pair `_evaluate_fc_candidate` passes for a non-configured corner. It stops
-there deliberately: the caller `_build_measure_candidate` adds a
+pair a candidate build hands it for a non-configured corner — the
+`candidate_sections=` parameter that `planning.build_candidate` reads, plus the
+matching `source_preset=`. It stops there deliberately: the caller
+`_build_measure_candidate` adds a
 linearized-vs-raw predicted-spec gate that passed on the incident, is
 orthogonal to both defects, and cannot pass on synthetic branches without
 shaping them until it does. Copy the shape, not the contents:

@@ -3338,13 +3338,14 @@ final `capture_result` before the page's ~250 ms poll reads it.
 > apply**. What survives in `fc_sweep.py` is corner ADMISSIBILITY — the spine's
 > file map says what. Everything below described the sweep while it existed.
 >
-> **The apply path below is NOT gated on that record** (2026-08-19). It asks
-> the candidate being applied what crossover it carries and compares that with
-> what `/sound` declares, so any producer of a candidate measured somewhere
-> other than the declaration reaches it — the dormant sweep today, whatever
-> supersedes it next — with no further wiring. A shipped round still writes
-> nothing to Sound, because its candidate is measured at exactly the declared
-> crossover, which is the same outcome by a different route.
+> **The apply path below is NOT gated on that record** (2026-08-19, and this
+> half still holds). It asks the candidate being applied what crossover it
+> carries and compares that with what `/sound` declares, so ANY producer of a
+> candidate measured somewhere other than the declaration reaches it with no
+> further wiring — the sweep was one such producer while it existed, an
+> operator's topology pin is the live one, and whatever comes next needs no
+> change here. An ordinary round still writes nothing to Sound, because its
+> candidate is measured at exactly the declared crossover.
 
 R17. The session evaluates the crossover frequencies the DECLARATIONS admit and
 tells the household which one measured best. A configured-Fc winner keeps the

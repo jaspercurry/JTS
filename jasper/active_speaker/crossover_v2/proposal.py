@@ -91,17 +91,20 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
 
     **Why the strategy is derived from the artifact string rather than read off
     the live :class:`~.intervention.TrimDecision`.** The proposal is assembled
-    at the ONE commit seam, which is reached from two sites with different
-    evidence in hand: the configured-Fc walk holds a
-    :class:`~.candidates.LinearizationState` (which retains the realized level
-    match but not the trim decision), and the alternative-Fc selection holds
-    only the serialized
-    :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`.  Giving
-    the selection site the decision would mean widening ``fc_selector``'s
-    memory contract, which the #1894 ruling caps deliberately.  So the one
-    fact both sites certainly share is the string the build stamped onto the
-    candidate — and deriving from it gives both sites the SAME fidelity rather
-    than a field whose precision depends on which route committed.
+    at the ONE commit seam, and the walk that reaches it holds a
+    :class:`~.candidates.LinearizationState` — which retains the realized level
+    match but **not** the trim decision.  The decision is a by-product of the
+    fit that the state deliberately does not carry, so the fact actually in
+    hand at the seam is the string the build stamped onto the candidate, and
+    this function derives from that.
+
+    The derivation used to serve a second commit route as well — an
+    alternative-Fc selection holding only a serialized
+    :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`, which is
+    why the artifact string was the one fact BOTH routes shared.  That route
+    closed with the corner hunt on 2026-08-21 (``docs/tuning-master-plan.md``
+    ticket 2.3); the derivation is unchanged, because the surviving route never
+    held the decision either.
 
     **``"trim_rejected"`` is precise, and provably so.**
     :attr:`~.intervention.TrimDecision.outcome` returns ``"trim_rejected"`` if
@@ -172,10 +175,9 @@ def build_intervention_proposal(
     stated is empty *honestly*:
 
     * ``predicted_response_before``, ``predicted_spec_before`` and
-      ``predicted_spec_after`` — the two spec reports differ between the two
-      commit sites (the walk installs its report out-of-band), so quoting one
-      here would make the proposal's identity depend on which route committed
-      it.
+      ``predicted_spec_after`` — the commit seam does not hold them.  The walk
+      installs its spec report out-of-band, so this assembler is never handed
+      one, and a proposal may not quote a report it was not given.
     * ``anchored_trim_db`` and ``alternative_trim_db`` — the contract's own
       placeholders, ``None`` until a phase returns them as data (their field
       docstrings say so).  The call below is the only

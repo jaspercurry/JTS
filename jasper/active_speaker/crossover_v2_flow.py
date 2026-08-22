@@ -407,11 +407,20 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 #     ------------------------------------------------------------------
 #     N=12 -> 33, N=11 -> 32 = MAX_CAPTURE_PLAN_ATTEMPTS
 #
-# No stage-1 plan builds that walk any more, so the guard computes 26 at N=11
-# and this ceiling has six indexes of slack. Do NOT spend that slack: an
-# operator's staged angle walk still runs six poses through the same index
-# space, and raising N on the strength of the stage-1 count would turn one of
-# those walks into a capacity refusal mid-session.
+# **There is no slack, and the table above is why.** No stage-1 plan builds that
+# walk any more, but ``relay_plan_attempts_required`` counts its six poses
+# unconditionally — an operator's staged angle walk adds them to any session,
+# through this same index space — so the walk-armed row IS the binding one: at
+# N=11, M=6 it lands on 32, which is ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly. At
+# the shipped M=5 it is 31, one index under. Raising N by a single step spends
+# that last index and puts a staged walk at the ceiling.
+#
+# Two different numbers get quoted at this ceiling and they answer different
+# questions; do not read one as the other. ``assert_cloud_plan_fits_relay_capacity``
+# sums ``cloud_capture_target`` (positions, not attempts) plus the poses, the
+# entry baseline and the geometry retries — 26 at N=11 — while the doctor asks
+# ``relay_plan_attempts_required`` for worst-case ATTEMPTS, which is the 31
+# above and the figure the relay Worker's own ceiling has to carry.
 #
 # Nothing shipped changes: ``DEFAULT_CLOUD_MEASURE_POSITIONS`` is 9 and stage 1
 # does not run the pre-apply cloud at all (``STAGE1_INCLUDES_CLOUD_MEASURE``).
@@ -3052,9 +3061,9 @@ class V2FlowSeams:
     # as ``residual_offset_db`` instead of being silently claimed as accounted.
     applied_offset_db: Callable[[], float] | None = None
     # #2611: the Layer-A profile the speaker is playing RIGHT NOW — the graph an
-    # apply would replace. Read once per candidate EVALUATED, which is once on
-    # the configured walk and once per swept corner on the alternative-Fc sweep
-    # (so up to six times in one session), always at MEASURE time — the apply
+    # apply would replace. Read once per candidate EVALUATED, which is ONCE in a
+    # session: a round builds the candidate for the corner it was opened at.
+    # Always at MEASURE time — the apply
     # has not happened yet, so "currently applied" IS the previous graph — and
     # turned into the PREVIOUS side of the commanded axis by
     # :meth:`CrossoverV2Session._previous_graph_predicted_sum`. The answer does
@@ -5384,11 +5393,11 @@ class CrossoverV2Session:
         # probe's two directional safety rules read it, because since #2611 the
         # commanded axis is a change and a repeat round therefore commands ~0
         # across every band it leaves alone, including one the applied graph
-        # still boosts. Same two routes and same reason as the field above.
+        # still boosts. Same route and same reason as the field above.
         self._measure_declared_transfer: Any = measure_declared_transfer
         # What ``_previous_graph_predicted_sum``'s INFO line last disclosed, so
-        # one applied profile read once per swept corner is one journal line
-        # rather than six identical ones.
+        # repeated reads of one unchanged applied profile are one journal line
+        # rather than one per read.
         self._previous_graph_disclosed: tuple[Any, ...] | None = None
         # #2291's "before" measurement. WRITTEN by stage 1, whose
         # ``PHASE_ENTRY_BASELINE`` capture reduces it (``_consume_entry_baseline``);
@@ -8669,14 +8678,14 @@ class CrossoverV2Session:
         what the probe's measured side is a change against.
 
         ``capture_fc_hz`` is the crossover corner THIS candidate's branches were
-        composed at — the session's own corner on the configured walk, and the
-        SWEPT corner for an alternative-Fc candidate, because
-        ``crossover_v2.priors.candidate_priors`` re-points the composition at
-        each one. The applied profile's graph only ran the corner it was built
-        at, so the model below describes the speaker's actual previous graph
-        only while the two agree, and the guard is why this is a parameter
-        rather than a read of ``self._fc_hz``: on the sweep those two are
-        different numbers on purpose.
+        composed at.  Every shipped route passes the session's own corner, so it
+        equals ``self._fc_hz`` today; it stays a PARAMETER rather than a read of
+        that field because the two are different questions — one is the corner
+        the branches in front of this call were composed at, the other is the
+        corner the session happens to hold — and the guard below is exactly the
+        check that they agree with a third number, the corner the applied
+        profile ran.  A caller that composed branches somewhere else would have
+        to say so here rather than be silently credited with the session's.
 
         ``None`` whenever the previous graph cannot be named, with the reason on
         the journal. Every ``None`` here becomes an ``unavailable`` delta probe
@@ -8702,7 +8711,11 @@ class CrossoverV2Session:
         # on branches composed through a crossover it never ran is wrong by up
         # to 5.88 dB against this probe's 1.5 dB tolerance (adversarial panel,
         # PR #2614), and the two doors that reach it — a ``/sound`` corner edit
-        # between rounds, and every alternative-Fc candidate — are both live.
+        # between rounds, and an operator's TOPOLOGY PIN, which opens the
+        # session at the pinned corner while the applied profile still holds the
+        # incumbent — are both live. (A third, every alternative-Fc candidate,
+        # closed with the corner hunt.) This check never counted doors: it
+        # compares corners, so it covers whichever ones exist.
         applied_fc_hz = _commanded.profile_crossover_fc_hz(profile)
         if applied_fc_hz is None:
             return _absent("applied_profile_names_no_corner")
@@ -8765,11 +8778,14 @@ class CrossoverV2Session:
         # rollback should never need a second session to establish which graph
         # the round was graded against.
         #
-        # ONCE per distinct answer, not once per call. This runs for every swept
-        # corner, and the applied profile does not change between them, so the
-        # unguarded version put six identical lines in the journal for one fact
-        # (adversarial panel, PR #2614). The guard is the fields themselves, so
-        # a graph that genuinely differs still gets its own line.
+        # ONCE per distinct answer, not once per call. The applied profile does
+        # not change within a session, so a caller that asked repeatedly used to
+        # put one identical line in the journal per ask — six of them, back when
+        # a sweep scored six corners (adversarial panel, PR #2614). A round asks
+        # once now, so the guard is idle on the shipped path; it is kept because
+        # it is keyed on the FIELDS, which makes it correct for any number of
+        # asks rather than for a particular one, and a graph that genuinely
+        # differs still gets its own line.
         disclosed = (
             tuple(sorted((r, round(v, 4)) for r, v in graph.trim_db.items())),
             round(graph.delay_us, 3),
@@ -8799,15 +8815,15 @@ class CrossoverV2Session:
     ) -> Any:
         """This candidate's commanded axis: applied graph minus previous graph.
 
-        The one place the two halves meet, so the configured-Fc walk and the
-        alternative-Fc sweep cannot build the axis differently. ``analysis`` is
-        the candidate's OWN analysis — the sweep re-analyses at each corner, and
-        the previous graph has to be modelled on the same branches the applied
-        side was, or the branch measurement stops cancelling. ``capture_fc_hz``
-        is the corner those branches were composed at, and it travels for the
-        same reason: on the sweep it is the SWEPT corner, not the session's, and
-        the previous graph is only nameable while it matches the corner the
-        applied profile ran.
+        The one place the two halves meet, so no caller can build the axis
+        differently. ``analysis`` is the candidate's OWN analysis, because the
+        previous graph has to be modelled on the same branches the applied side
+        was or the branch measurement stops cancelling. ``capture_fc_hz`` is the
+        corner those branches were composed at, and it travels rather than being
+        read off the session for the reason
+        :meth:`_previous_graph_predicted_sum` gives: the previous graph is only
+        nameable while that corner matches the one the applied profile ran, and
+        this call is where the two are put side by side.
         """
         return _commanded_delta(
             self._previous_graph_predicted_sum(analysis, capture_fc_hz),
@@ -8846,27 +8862,27 @@ class CrossoverV2Session:
     ) -> None:
         """The ONE seam through which a planned candidate becomes real (#2291).
 
-        Both commit sites — the configured-Fc walk
-        (:meth:`_commit_measure_candidate`) and the alternative-Fc selection
-        (:meth:`_commit_measure_candidate`) — install a candidate through here, so
-        Phase 2 has a single place to hollow rather than two near-duplicate
-        inline blocks that had already drifted.
+        **One commit route reaches it**, :meth:`_commit_measure_candidate`, and
+        that is the whole shape now: the corner a round commits is the one the
+        household declared or an operator pinned.  It was built as a seam
+        because there were TWO routes — the configured-Fc walk and an
+        alternative-Fc selection — installing near-duplicate inline blocks that
+        had already drifted; the second route went with the corner hunt, and the
+        seam stays because it is where the proposal is assembled and
+        fingerprinted (below), not merely where duplication was folded.
 
         **What this seam covers, exactly:** the three session state writes
-        that were byte-identical at both sites (``_candidate``,
-        ``_measure_predicted_sum``, ``_measure_commanded_delta``), the
-        proposal assembly #2392 added, and the two irreversible seam fires
+        (``_candidate``, ``_measure_predicted_sum``, ``_measure_commanded_delta``),
+        the proposal assembly #2392 added, and the two irreversible seam fires
         (``publish_candidate`` then ``_publish_level_frame_finding``).
 
         **What it deliberately does NOT cover:** ``_measure_predicted_spec_
         report``, and the ``correction.crossover_v2_candidate_built``
-        disclosure.  Both still differ between the two sites — the walk installs
-        the spec report out-of-band, from the decision
-        :meth:`_assert_accountable` replays (#2291 Phase 5a-v made it a value on
-        that decision rather than a second session method), while the
-        selection installs it here; and the two log lines carry different
-        fields.  Folding either in would be a behavior change, which no phase
-        of this migration has sanctioned; they stay at their call sites.
+        disclosure.  The walk installs the spec report out-of-band, from the
+        decision :meth:`_assert_accountable` replays (#2291 Phase 5a-v made it a
+        value on that decision rather than a second session method), and it says
+        its own log line.  Folding either in would be a behavior change, which
+        no phase of this migration has sanctioned; they stay at the call site.
 
         Ordering is preserved rather than merely similar: every session
         attribute write still completes before ``publish_candidate``, the first
@@ -8900,8 +8916,8 @@ class CrossoverV2Session:
         self._candidate = candidate
         self._measure_predicted_sum = predicted_sum
         self._measure_commanded_delta = commanded_delta
-        # #2614's STATE axis, written here for the CHANGE axis's reason and by
-        # the same two sites. It is deliberately NOT part of the proposal: the
+        # #2614's STATE axis, written here for the CHANGE axis's reason and on
+        # the same route. It is deliberately NOT part of the proposal: the
         # proposal states what the round asks for, and this states what the
         # graph declares — the delta probe's safety mask is its only reader.
         self._measure_declared_transfer = declared_transfer
@@ -10813,14 +10829,15 @@ class CrossoverV2Session:
         the same missing fact.
 
         **A missing CHANGE axis no longer silences the hearing-safety half**
-        (#2614). A committed alternative-Fc candidate has no nameable previous
-        graph — its branches are composed through a crossover that graph never
-        ran — so the commanded delta is absent, and until this the whole probe
-        was absent with it: the two directional findings never ran, and
-        ``evaluate_applied_safety`` reported SAFE on a round where nothing had
-        looked. The STATE axis needs no corner match and is computed at every
-        swept corner, so when it is present the probe runs its safety half on
-        that alone and reports
+        (#2614). A round whose branches are composed through a crossover the
+        applied graph never ran has no nameable previous graph — an operator's
+        topology pin is the live producer of that shape, and a first-ever round
+        reaches it with no applied graph at all — so the commanded delta is
+        absent, and until this the whole probe was absent with it: the two
+        directional findings never ran, and ``evaluate_applied_safety`` reported
+        SAFE on a round where nothing had looked. The STATE axis needs no corner
+        match, so when it is present the probe runs its safety half on that
+        alone and reports
         :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — which
         is not a pass, carries no shape grade, and says on the record that the
         shape check did not run and why.

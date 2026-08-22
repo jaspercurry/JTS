@@ -954,8 +954,10 @@ SAFETY_NO_FINDING = "no_unsafe_finding"
 #: an instrument's name over a quantity it did not measure — one layer up, and
 #: it is not rare: a first-ever round reaches it BY CONSTRUCTION (no prior
 #: applied profile ⇒ no nameable previous graph ⇒ ``state_axis_only``), as does
-#: every committed alternative-Fc round and every capture whose quiet bins are
-#: too few to anchor. This is :class:`~.contracts.BenefitStatus.INDETERMINATE`'s
+#: any round whose crossover corner moved out from under the applied profile —
+#: a ``/sound`` edit between rounds, or an operator's topology pin opening the
+#: session at the pinned corner — and every capture whose quiet bins are too
+#: few to anchor. This is :class:`~.contracts.BenefitStatus.INDETERMINATE`'s
 #: argument on this axis (#1868: *"we do not know" must have somewhere to live*
 #: rather than defaulting to the success value).
 #:
@@ -1089,8 +1091,8 @@ def evaluate_applied_safety(
         "probe_graded": bool(verdict),
         # ...and HOW MUCH of the probe looked (#2614). A ``safety_only`` map is
         # a real grade of the two directional findings and no grade at all of
-        # the correction's shape — the alternative-Fc case, where the previous
-        # graph is unnameable and the change axis with it. ``probe_graded``
+        # the correction's shape — the case where the previous graph cannot be
+        # named and the change axis goes with it. ``probe_graded``
         # alone cannot say that, and a reader who took it for a full grade
         # would read "safe" as "the shape check passed" on a round where it
         # never ran.
