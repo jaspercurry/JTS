@@ -349,15 +349,16 @@ Two steps are new on this source:
   session's wall-clock ceiling and expires as `session_ceiling_expired`; and
 * `POST /correction/crossover/v2/retake` (empty body) re-opens the take that
   just completed — the wired stand-in for the phone's
-  `begin_capture {retake: true}`, on the relay's own §2.6 terms. It is served
-  the next time the walk is waiting on a person (a held begin, or the held-set
-  window), spends one ordinary attempt, never advances the accepted count, and
-  leaves the original take standing if the replacement is rejected. WHICH slot
-  is the walk's own fact, so the request names no index. A retake the walk
-  cannot serve — no take yet, the plan's attempts spent, the slot's extras
-  ledger empty — is journalled as
-  `event=correction.crossover_v2_wired_retake_refused` and leaves the
-  household with the take they already had, never a session death.
+  `begin_capture {retake: true}`. **Its terms are the relay's own §2.6, stated
+  once** in `run_capture_plan`'s docstring
+  ([`jasper/capture_relay/session.py`](../jasper/capture_relay/session.py)) and
+  implemented against that statement in `build_v2_wired_run_and_consume`
+  ([`jasper/web/correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py));
+  read either, not a third copy here. The two facts that are LOCAL rather than
+  the relay's: the request names no index (WHICH slot is the walk's own fact),
+  and a retake the walk cannot serve is journalled as
+  `event=correction.crossover_v2_wired_retake_refused`, leaving the household
+  the take they already had rather than ending the session.
 
 A
 REJECTED wired capture auto-retries the same position on the next attempt
@@ -533,6 +534,8 @@ Observability: `event=correction.crossover_v2_remote_session_open` — emitted
 for either gated shape, with `hand_released=` naming which mover releases the
 holds; the event keeps the arm's name because drivers grep it —
 `…_position_pending` (with `degrees`), `…_position_released`,
+`…_position_hold_abandoned` (a held begin the walk left to serve a retake, so
+the envelope stops advertising a position nothing is measuring),
 `…_position_hold_expired`, `…_session_ceiling_expired`,
 `…_geometry_retake_unreachable`, and on the wired source
 `…_wired_retake` / `…_wired_retake_refused`.
