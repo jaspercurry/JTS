@@ -262,15 +262,13 @@ def rebuild_measure_program(
     directions because the ``program_id`` hash is what accepts it: a wrong
     prelude cannot match, it can only fail to.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        PILOT_LEVEL_DELTA_DB,
-        courtesy_prelude_for_phase,
-    )
     from jasper.audio_measurement.program import (
         FrequencyBand,
         RoleBand,
         build_measure_program,
     )
+
+    from .programs import PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase
 
     gains = state.get("gain_plan_db") or {}
     candidate = state.get("candidate") or {}

@@ -506,7 +506,7 @@ def _real_state() -> dict[str, Any]:
     program-reproduction failure.
     """
     state = _state()
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.programs import (
         PILOT_LEVEL_DELTA_DB,
         courtesy_prelude_for_phase,
     )
