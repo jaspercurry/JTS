@@ -2060,7 +2060,9 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     _gate_disclosure as _gate_disclosure,
     _gate_floor_source as _gate_floor_source,
+    _gate_moved_rms_db as _gate_moved_rms_db,
     _gate_record as _gate_record,
+    _gate_reflection_delay_ms as _gate_reflection_delay_ms,
     _gate_trusted_band_hz as _gate_trusted_band_hz,
     _gate_window_ms as _gate_window_ms,
     _pilot_by_role as _pilot_by_role,
@@ -7944,6 +7946,8 @@ class CrossoverV2Session:
             gate_window_ms=_gate_window_ms(position.response),
             gate_floor_source=_gate_floor_source(position.response),
             gate_disclosure=_gate_disclosure(position.response),
+            gate_moved_rms_db=_gate_moved_rms_db(position.response),
+            gate_reflection_delay_ms=_gate_reflection_delay_ms(position.response),
             validity_floor_hz=getattr(
                 position.response, "validity_floor_hz", None
             ),

@@ -666,25 +666,80 @@ def _gate_disclosure(response: Any) -> str | None:
     return gate_disclosure.describe_gate(response.gating)
 
 
-def _gate_record(response: Any) -> dict[str, Any] | None:
-    """The gate reduced to the two facts a household SCREEN needs, or ``None``.
+def _gate_moved_rms_db(response: Any) -> float | None:
+    """How far the gate moved the response's SHAPE, in dB RMS (ticket 1.5).
 
-    ``{"disclosure": <the sentence>, "reflection_measured": <bool>}``. Both are
-    :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivations, taken
-    here at compose time — one is :func:`_gate_disclosure`'s sentence, the
-    other is
-    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`,
-    the single owner of "may this record claim reflections were removed".
-    Neither is re-derived downstream.
+    The number :func:`_gate_disclosure`'s sentence already narrates ("the gate
+    moved the response 2.59 dB RMS over 357-20000 Hz"), taken off the same
+    typed record rather than re-derived, so the digits in the prose and the
+    digits in the field cannot disagree. Read
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.delta_rms_db`'s
+    own module docstring before reading the number: it is only interpretable
+    beside ``gate_floor_source``, because a small delta means "genuinely clean"
+    on a measured bound and "nothing was proven" on a ceiling-capped one.
+
+    ``None`` when no delta could be priced at all — an ungateable capture, or
+    a capture whose program declared no radiated band, where inventing a
+    reading is exactly the over-report ``evaluation_band_hz`` refuses to make.
+    """
+    if response is None or not getattr(response, "gating", None):
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return gate_disclosure.build_gate_disclosure(response.gating).delta_rms_db
+
+
+def _gate_reflection_delay_ms(response: Any) -> float | None:
+    """The first reflection's arrival AFTER the direct one, in ms (ticket 1.5).
+
+    The physical quantity, and deliberately NOT the gating block's own
+    ``first_reflection_ms``: that field is an absolute time inside the analysed
+    IR, an artifact of the deconvolution window's origin, and
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
+    — the single owner of the subtraction — calls it meaningless to a reader on
+    its own. The delay is what :func:`_gate_disclosure`'s sentence narrates and
+    what a reader can turn into a reflector distance.
+
+    ``None`` when either side is unknown, and ALSO the honest answer on a
+    capture whose window was capped at the search ceiling: nothing was found,
+    so there is no arrival to time.
+    """
+    if response is None or not getattr(response, "gating", None):
+        return None
+    from jasper.audio_measurement import gate_disclosure
+
+    return gate_disclosure.build_gate_disclosure(response.gating).reflection_delay_ms
+
+
+def _gate_record(response: Any) -> dict[str, Any] | None:
+    """The gate reduced to the facts that leave this capture, or ``None``.
+
+    ``{"disclosure": <the sentence>, "reflection_measured": <bool>,
+    "moved_rms_db": <float|None>, "reflection_delay_ms": <float|None>}``. Every
+    one is :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivation,
+    taken here at compose time — the sentence is :func:`_gate_disclosure`'s,
+    the bool is
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`
+    (the single owner of "may this record claim reflections were removed"), and
+    the two numbers are :func:`_gate_moved_rms_db` and
+    :func:`_gate_reflection_delay_ms`. None is re-derived downstream.
 
     **A reduction, not the block.** What travels to the wizard's durable state
-    is these two derived facts rather than the gating fragment itself, so the
+    is these derived facts rather than the gating fragment itself, so the
     state file does not take a dependency on
     :mod:`~jasper.audio_measurement.gating`'s schema — that schema is versioned
     and moves (it went 1 -> 2 in R9), and a screen re-deriving copy from it
     would be a second place the two epistemic states could be collapsed back
     into one. A response with no gating block yields ``None``: absent stays
     absent, and no screen invents a gate that was never applied.
+
+    **The two numbers were added because the sentence was the only copy of
+    them** (ticket 1.5). A screen still reads only ``disclosure`` and
+    ``reflection_measured``; the numbers exist so a READER of the banked round
+    does not have to parse prose to get them, which the evidence packet's own
+    ``not_evaluated`` block used to say it could not do. They stay derivations
+    of the one typed record for the same reason the sentence is, so widening
+    this record buys no new schema dependency.
     """
     disclosure = _gate_disclosure(response)
     if disclosure is None:
@@ -696,6 +751,8 @@ def _gate_record(response: Any) -> dict[str, Any] | None:
         "reflection_measured": gate_disclosure.build_gate_disclosure(
             response.gating
         ).gated_anything,
+        "moved_rms_db": _gate_moved_rms_db(response),
+        "reflection_delay_ms": _gate_reflection_delay_ms(response),
     }
 
 

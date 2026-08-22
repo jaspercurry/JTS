@@ -570,6 +570,49 @@ def test_each_position_carries_the_gate_provenance_as_a_sentence_too() -> None:
     assert "gate_disclosure" in block["field_descriptions"]
 
 
+def test_the_numbers_behind_that_sentence_are_projected_and_described() -> None:
+    """Ticket 1.5 — the same allowlist argument as the sentence's, one level on.
+
+    The sentence fixed the record for a person; a reader mining the round for
+    NUMBERS still had to parse English. ``_RECORD_FIELDS`` therefore projects
+    the two figures beside it, and ``FIELD_DESCRIPTIONS`` has to describe them
+    or the file grows a column nothing explains.
+
+    The other half is the allowlist's own ``is not None`` rule, which is what
+    makes the ceiling-capped row below carry a movement and no delay: an
+    absent key here means "this capture had no such number", never "nobody
+    banks one" — the distinction ``evidence_packet._gate_numbers_reason``
+    depends on.
+    """
+    records = _records()
+    records[0]["gate_moved_rms_db"] = 2.59
+    records[0]["gate_reflection_delay_ms"] = 5.33
+    # The 2026-07-30 corpus's own state: the window was capped, so the gate
+    # still MOVED the response and there was no reflection to time.
+    records[1]["gate_moved_rms_db"] = 1.37
+    records[1]["gate_reflection_delay_ms"] = None
+
+    block = position_evidence_block(
+        _combined(), position_records=records, validity_floor_hz=142.9
+    )
+    by_id = {row["position_id"]: row for row in block["positions"]}
+
+    assert by_id["cloud_measure_00"]["gate_moved_rms_db"] == 2.59
+    assert by_id["cloud_measure_00"]["gate_reflection_delay_ms"] == 5.33
+    assert by_id["cloud_measure_01"]["gate_moved_rms_db"] == 1.37
+    assert "gate_reflection_delay_ms" not in by_id["cloud_measure_01"]
+    # A row whose record carried neither stays as it was — the projection adds
+    # nothing it was not given.
+    assert "gate_moved_rms_db" not in by_id["cloud_measure_02"]
+
+    for column in ("gate_moved_rms_db", "gate_reflection_delay_ms"):
+        assert column in FIELD_DESCRIPTIONS
+        assert column in block["field_descriptions"]
+    # And the description says the thing a reader gets wrong: the delay is not
+    # the gating block's absolute ``first_reflection_ms``.
+    assert "first_reflection_ms" in FIELD_DESCRIPTIONS["gate_reflection_delay_ms"]
+
+
 def test_the_accepted_attempt_is_recoverable_per_position() -> None:
     """§6: "the accepted-attempt <-> position mapping (today retries are
     visible only as skipped attempt indices in filenames)". A geometry retake

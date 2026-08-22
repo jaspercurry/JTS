@@ -33,6 +33,16 @@ IS banked, and why that reduction is a different statistic on a different grid
 either way.  Anything that needs a new measurement, or that decides what a
 number MEANS, still belongs somewhere else.
 
+**It also performs exactly one unit conversion, which is not a second
+statistic.**  :func:`_reflections_block` multiplies the interference-null
+ladder's already-banked ``tau_ladder_us`` by the speed of sound, so the excess
+path length a reader was doing by hand is in the document.  No sample is
+touched, no spread is taken and no threshold is applied — the arithmetic is one
+multiply by a constant this module imports rather than restates.  It is called
+out here rather than folded into the paragraph above because the two are
+different sizes of claim, and a reader auditing what this module DERIVES is
+owed both.
+
 **Its one impurity, named.**  It reads JSON files under a directory.  That is
 the same bounded impurity :mod:`.round_anchor` declares, and it is the whole
 of it: no clock, no network, no CamillaDSP handle, no session.
@@ -93,6 +103,10 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
+# The repo's ONE speed of sound, consumed rather than restated — the same
+# constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
+# It is a plain float in a stdlib-only module, so this costs no cycle.
+from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 from .journey import PHASE_LATERAL
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
@@ -185,6 +199,12 @@ _POSITION_FIELDS = (
     "validity_floor_hz",
     "gate_disclosure",
     "gate_floor_source",
+    # The two NUMBERS the sentence above narrates (ticket 1.5). Copied beside
+    # it rather than instead of it: the sentence is what makes a small
+    # ``gate_moved_rms_db`` readable, and the number is what makes the sentence
+    # usable without parsing English.
+    "gate_moved_rms_db",
+    "gate_reflection_delay_ms",
     "gate_window_ms",
     "gating_applied",
     "glitch_detected",
@@ -1476,6 +1496,302 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
+#: The air temperature :data:`DEFAULT_SOUND_SPEED_M_S` is the conventional figure
+#: for, in degrees Celsius.
+#:
+#: Published beside the distance rather than left implicit, because it is the
+#: ASSUMPTION the conversion rests on and nothing in this corpus measures the
+#: room's air temperature. Dry air's speed of sound is ``331.3 + 0.606*T`` m/s
+#: with ``T`` in Celsius, so 343.0 is the figure at 19.3 °C and 20 °C is the
+#: round number it is conventionally quoted for — the 0.4 m/s between them is
+#: itself smaller than a 1 K error in the assumption.
+_SPEED_OF_SOUND_AIR_TEMPERATURE_C = 20.0
+
+#: The two numbers a capture's gate now banks beside the sentence that used to
+#: be their only copy (ticket 1.5), as they are spelled on a POSITION row.
+#:
+#: :func:`~.spatial.cloud_position_record` writes them and
+#: :data:`_POSITION_FIELDS` copies them through; this set exists so
+#: :func:`_gate_numbers_reason` can ask whether a round's records carry the
+#: fields at all — which is a different question from whether their values are
+#: null, and the two send a reader to different places.
+_POSITION_GATE_NUMBER_FIELDS = frozenset({
+    "gate_moved_rms_db",
+    "gate_reflection_delay_ms",
+})
+
+#: The same two facts as :data:`_POSITION_GATE_NUMBER_FIELDS`, as
+#: :func:`~.capture_dispatch._gate_record` spells them inside ``verify.gate``.
+#:
+#: The ``gate_`` prefix is dropped there because the block is already the gate —
+#: the convention ``gate_disclosure`` / ``gate.disclosure`` and
+#: ``gate_floor_source`` / ``gate.reflection_measured`` already follow.
+_VERIFY_GATE_NUMBER_FIELDS = frozenset({
+    "moved_rms_db",
+    "reflection_delay_ms",
+})
+
+#: Where the reflector-path conversion reads its delay from.
+_REFLECTOR_PATH_SOURCE = "cloud_verify.json -> null_registry.tau_ladder_us"
+
+#: Decimal places the reflector path length is published to — millimetres.
+#:
+#: Three, for the reason :data:`_SIGMA_DECIMALS` is four. A millimetre of excess
+#: path is 2.9 us of delay, already finer than anything this number
+#: supports: the fitted ladder tau and the directly measured arrival tau
+#: disagree by 7 % on the S0 corpus (about 21 us, or 7 mm, at the ~300 us those
+#: taus were), and the assumed speed of sound moves the answer 1.8 % over a 10 K
+#: room. Digits past the millimetre are arithmetic noise, and this document is
+#: content-fingerprinted, so noise digits are a fingerprint that moves for a
+#: reason no reader could point at.
+_REFLECTOR_PATH_DECIMALS = 3
+
+#: Everything the ``reflections`` block publishes, and why none of it is an
+#: uncertainty — including the four per-capture gate numbers, which live on the
+#: ``positions`` rows and inside ``verify.gate`` and are declared HERE because
+#: this is the block that owns the subject. A field published in one place and
+#: declared in none is exactly what the enrichment rule forbids, and giving the
+#: ``positions`` block a declaration table of its own would leave every OTHER
+#: column in it undeclared beside these two.
+_REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "reflector_path_distance_m": (
+        "how much FURTHER the delayed copy travelled than the direct sound — "
+        "tau times the speed of sound, in metres. An excess path length, not a "
+        "distance to the reflector: a mirror-image bounce off a surface d away "
+        "from a coincident source and microphone travels 2d further, and this "
+        "corpus banks no geometry that would let the packet halve it for one "
+        "case and not another. Published to the millimetre, which is already "
+        "finer than anything it supports. A READING, derived from one. The "
+        "SYSTEMATIC it carries and this block does not publish as a field: the "
+        "speed of sound is assumed, not measured, and moves 0.606 m/s per Kelvin — "
+        "0.18 % of 343 — so a room 10 K from the assumption below shifts every "
+        "distance here by 1.8 %. That is small next to the error already "
+        "banked beside it: the comment on interference_nulls."
+        "LADDER_ARRIVAL_TOLERANCE records the fitted ladder tau sitting "
+        "-7.058 % to -7.424 % below the "
+        "directly measured arrival tau across the four S0 groupings, and "
+        "null_registry.ladder_arrival_gap carries this round's own figure. "
+        "There is no uncertainty ON the distance to publish: nothing banks a "
+        "sigma for tau, and the two things that bound it — that gap, and each "
+        "rung's own rung_error_spacings — are already on the registry, so this "
+        "block points at them rather than reducing them to a second number"
+    ),
+    "tau_ladder_us": (
+        "the fitted ladder delay this distance was converted from, in "
+        "microseconds — echoed from honesty_mask.null_registry.tau_ladder_us, "
+        "which stays its one authority. It is here so the multiply is "
+        "auditable in place and so the distance cannot be paired with a tau it "
+        "was not taken from, the same reason cross_seat_sigma sits inside the "
+        "positions block rather than beside it. A READING: the frequency-domain "
+        "least-squares fit over at least MIN_LADDER_RUNGS consecutive rungs, "
+        "corroborated against an independent time-domain arrival before any of "
+        "it is published"
+    ),
+    "speed_of_sound_m_s": (
+        "the constant the conversion used, in m/s — jasper.audio_measurement."
+        "null_walk.DEFAULT_SOUND_SPEED_M_S, the repo's one definition, "
+        "consumed here rather than restated. An ASSUMPTION, not a measurement "
+        "and not a spread: it is published so the arithmetic is reproducible "
+        "and so a reader who knows the room's real temperature can redo it"
+    ),
+    "speed_of_sound_air_temperature_c": (
+        "the air temperature the constant above is the conventional figure "
+        "for. An assumption's own assumption, published for the same reason: "
+        "nothing in this corpus measures room temperature, so a reader is owed "
+        "the number that was assumed instead of one that was read"
+    ),
+    "positions[].gate_moved_rms_db": (
+        "how far THAT capture's reflection gate moved the response's shape, in "
+        "dB RMS over the band the gate can be priced on. A READING, and one "
+        "that is uninterpretable alone: the same small number means 'genuinely "
+        "clean' beside gate_floor_source=measured_reflection and 'nothing was "
+        "proven about reflections' beside search_span_bound. Its band is the "
+        "capture's own trusted floor intersected with what the stimulus "
+        "radiated, and where that intersection is empty the field is null "
+        "rather than a figure taken over noise"
+    ),
+    "positions[].gate_reflection_delay_ms": (
+        "when the first reflection arrived AFTER the direct sound, at that "
+        "capture, in milliseconds. A READING. It is a DELAY, deliberately not "
+        "the gating block's absolute first_reflection_ms, whose origin is the "
+        "deconvolution window's and means nothing to a reader. Null — never "
+        "0.0 — on a capture whose window was capped at the search ceiling: no "
+        "reflection was found, so there is none to time. Its own reflector "
+        "path is NOT converted here: it is a different tau, from a different "
+        "instrument, at one pose rather than fitted across the cloud"
+    ),
+    "verify.gate.moved_rms_db": (
+        "the same reading as positions[].gate_moved_rms_db, for the VERIFY "
+        "capture rather than a cloud seat. Read it beside "
+        "verify.gate.reflection_measured, which is that capture's "
+        "gate_floor_source in the one bit a reader needs"
+    ),
+    "verify.gate.reflection_delay_ms": (
+        "the same reading as positions[].gate_reflection_delay_ms, for the "
+        "VERIFY capture. Null when that capture found no reflection, which is "
+        "what the whole 2026-07-30 corpus was"
+    ),
+}
+
+
+def _reflections_uncertainty() -> dict[str, Any]:
+    """This block's declaration table — no uncertainties, and why that is honest.
+
+    ``fields`` is empty and stays empty until something banks a spread on one
+    of these numbers. That is a finding rather than an omission: every figure
+    here is a reading or an assumed constant, and the one place an uncertainty
+    could legitimately be computed — a sigma on the ladder's fitted tau — is
+    not banked by the instrument that fits it. Publishing a made-up error bar
+    beside a distance would be worse than publishing none.
+    """
+    return {
+        "fields": {},
+        "not_uncertainties": dict(sorted(_REFLECTIONS_NOT_AN_UNCERTAINTY.items())),
+        "note": (
+            "nothing in this block is an uncertainty, so fields is empty on "
+            "purpose rather than unfilled. The two errors a reader should hold "
+            "against the distance are declared beside the reading they affect: "
+            "the assumed speed of sound is a systematic worth 0.18 % per "
+            "Kelvin, and the fitted tau's own error is bounded — not "
+            "quantified — by null_registry.ladder_arrival_gap and each rung's "
+            "rung_error_spacings, both already banked. The four per-capture "
+            "gate numbers are declared here with their full paths because they "
+            "are published on the positions rows and inside verify.gate, "
+            "beside the sentence that used to be their only copy"
+        ),
+    }
+
+
+def _gate_numbers_reason(
+    positions: dict[str, Any], verify: dict[str, Any]
+) -> str:
+    """Why this round carries no gate numbers, or ``""`` when it does.
+
+    Asks whether ANY banked record in the round carries the fields, over both
+    carriers — the cloud's position rows and ``verify.gate`` — because the two
+    have different absence rules and either one answering settles it.
+    ``verify.gate`` is :func:`~.capture_dispatch._gate_record`'s dict, which
+    always spells both keys once the writer shipped, null or not; a position row
+    is filtered by :data:`~jasper.attribution.position_evidence._RECORD_FIELDS`,
+    which drops a key whose value is ``None``, so an all-ungateable round could
+    legitimately carry neither.
+
+    **That is why the sentence this returns names both readings.** It states
+    what is checkable — no record carries either number — and names
+    ``gate_floor_source`` as the field that separates "banked before the
+    writers existed" from "every capture in this round was ungateable". A
+    reason that asserted only the first would be a claim this function cannot
+    make.
+
+    Silent when there is nothing that COULD have carried them — a round with
+    no position rows and no verify gate has already reported those absences,
+    and a second sentence about a third thing they imply would be noise.
+    """
+    rows = [row for row in positions.get("positions") or [] if isinstance(row, dict)]
+    gate = verify.get("gate")
+    gate = gate if isinstance(gate, dict) else {}
+    if not rows and not gate:
+        return ""
+    if any(_POSITION_GATE_NUMBER_FIELDS & set(row) for row in rows):
+        return ""
+    if _VERIFY_GATE_NUMBER_FIELDS & set(gate):
+        return ""
+    return (
+        "no banked record in this round carries gate_moved_rms_db or "
+        "gate_reflection_delay_ms, so its gate survives as a sentence only, and "
+        "neither number can be recovered from that prose without parsing it — "
+        "which this packet will not do. Two different rounds look like this and "
+        "positions[].gate_floor_source separates them: one banked before the "
+        "capture-time writers gained the fields, and one every capture of which "
+        "was ungateable, where there was never a number to bank"
+    )
+
+
+def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
+    """How far the delayed copy travelled — the ladder's tau, converted.
+
+    ``reflector_path_distance_m = tau_ladder_us * 1e-6 * c``. The whole
+    computation, and the reason it is here rather than in an instrument: tau is
+    ALREADY banked (``honesty_mask.null_registry.tau_ladder_us``, written by
+    ``crossover_v2_flow._null_registry_to_dict``) and what was missing was the
+    multiply, not the measurement. This is a unit conversion of a number the
+    packet already carries, not a second statistic — see this module's own
+    boundary paragraph, which names the one statistic it does compute.
+
+    **The LADDER's tau, not the arrival's.** ``arrival_tau_us`` sits beside it
+    on the same registry and is deliberately not converted: on a
+    ``no_corroborating_arrivals`` refusal it still carries whatever the
+    sub-minimum cluster held, so a distance built from it could be published
+    from evidence the gate itself refused. The ladder's tau exists only after
+    two independent estimators — one frequency-domain, one time-domain — agreed
+    within :data:`~jasper.audio_measurement.interference_nulls.LADDER_ARRIVAL_TOLERANCE`,
+    which is the corroboration that makes a distance worth printing.
+
+    Refuses BY NAME rather than publishing a zero. ``tau_ladder_us`` is 0.0
+    when no ladder was fitted — a sentinel, not a measurement — and 0.0 metres
+    is a claim that the reflector is at the microphone.
+    """
+    registry = _mapping(cloud.get("null_registry"))
+    constants: dict[str, Any] = {
+        "speed_of_sound_m_s": DEFAULT_SOUND_SPEED_M_S,
+        "speed_of_sound_air_temperature_c": _SPEED_OF_SOUND_AIR_TEMPERATURE_C,
+        "source": _REFLECTOR_PATH_SOURCE,
+        "uncertainty": _reflections_uncertainty(),
+    }
+    refusal = ""
+    if not registry:
+        refusal = (
+            f"this round banked no interference-null registry ({reason}), so "
+            "no fitted ladder delay exists to convert into a path length"
+        )
+    elif registry.get("reason"):
+        refusal = (
+            "the interference-null gate identified nothing in this round "
+            f"(null_registry.reason={registry.get('reason')!r}), so its "
+            "tau_ladder_us is the no-ladder sentinel rather than a delay"
+        )
+    tau_us = finite_number(registry.get("tau_ladder_us")) if not refusal else None
+    if not refusal and (tau_us is None or tau_us <= 0.0):
+        refusal = (
+            "the interference-null registry reported no usable fitted ladder "
+            "delay, so there is nothing to convert"
+        )
+    # ``tau_us is None`` cannot be reached with an empty ``refusal`` — the arm
+    # above sets one for exactly that case. It is here to narrow the type for
+    # the multiply below, not as a second guard.
+    if refusal or tau_us is None:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": refusal,
+            "tau_ladder_us": None,
+            "reflector_path_distance_m": None,
+            **constants,
+            "note": (
+                "no distance is published here and none is implied: a reader "
+                "should not read the absent field as 'the reflector is close'"
+            ),
+        }
+    return {
+        "available": True,
+        "tau_ladder_us": tau_us,
+        "reflector_path_distance_m": round(
+            tau_us * 1e-6 * DEFAULT_SOUND_SPEED_M_S, _REFLECTOR_PATH_DECIMALS
+        ),
+        **constants,
+        "note": (
+            "an EXCESS path length: how much further the delayed copy "
+            "travelled than the direct sound, not a distance to a surface. "
+            "Halving it for a mirror-image bounce is the reader's call and "
+            "needs geometry this round does not bank. The per-capture gate "
+            "delays on the positions rows are a DIFFERENT tau — one pose, one "
+            "instrument, the time domain — and are published as times rather "
+            "than converted, so two numbers about two reflectors cannot be "
+            "read as one"
+        ),
+    }
+
+
 def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
     """The crossover region a proposal must sit inside.
 
@@ -1712,6 +2028,8 @@ def _not_evaluated(
     capture_snr_reason: str,
     cross_seat_sigma_reason: str,
     harmonics_reason: str,
+    gate_numbers_reason: str,
+    reflector_path_reason: str,
     findings: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
@@ -1722,14 +2040,6 @@ def _not_evaluated(
     are stated whether or not this particular session was complete.
     """
     entries: list[dict[str, Any]] = [
-        {
-            "field": "first_reflection_ms",
-            "reason": (
-                "the reflection time is narrated inside verify.gate.disclosure "
-                "prose and is not banked as a number anywhere in a round's "
-                "artifacts"
-            ),
-        },
         # The one place the PRESCRIPTION PATH states this geometry — the remote
         # tier's own disclosures (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``,
         # ``crossover_envelope_v2._REMOTE_VERTICAL_NUDGE``) carry theirs, about
@@ -1767,6 +2077,27 @@ def _not_evaluated(
                 "positions.angle_deg, which is a property of that record shape "
                 "rather than of this round"
             ),
+        })
+    if gate_numbers_reason:
+        # Was the unconditional "the reflection time is narrated inside
+        # verify.gate.disclosure prose and is not banked as a number anywhere in
+        # a round's artifacts". That was a claim about the CORPUS and ticket 1.5
+        # falsified it: ``spatial.cloud_position_record`` and
+        # ``capture_dispatch._gate_record`` now bank both numbers beside the
+        # sentence. Printing the old sentence beside a positions row carrying
+        # gate_reflection_delay_ms would be the opposite of the honesty this
+        # block exists for, so what remains — and only for a round banked before
+        # those writers gained the fields — is the narrow statement about THIS
+        # round's records. It names both numbers rather than only the reflection
+        # time: they were banked together and they are missing together.
+        entries.append({
+            "field": "positions[].gate_reflection_delay_ms",
+            "reason": gate_numbers_reason,
+        })
+    if reflector_path_reason:
+        entries.append({
+            "field": "reflections.reflector_path_distance_m",
+            "reason": reflector_path_reason,
         })
     if capture_snr_reason:
         entries.append({
@@ -1930,6 +2261,8 @@ def build_crossover_evidence_packet(
     spec = _mapping(cloud.get("spec"))
     positions = _positions_block(cloud)
     cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
+    verify = _verify_block(state, state_reason)
+    reflections = _reflections_block(cloud, cloud_reason)
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -2015,12 +2348,18 @@ def build_crossover_evidence_packet(
             "findings": findings.get("findings") or [],
             "field_descriptions": _mapping(findings.get("field_descriptions")),
         },
-        "verify": _verify_block(state, state_reason),
+        "verify": verify,
         # No ``fc_selection`` block: the corner selector that produced one is
         # retired (``docs/tuning-master-plan.md`` ticket 2.4), so the field is
         # absent from this version of the packet rather than published as a
         # permanent ``not_evaluated`` — which would read to the operator as an
         # evaluation this round skipped rather than one no round makes.
+        # The round's reflection geometry as NUMBERS, and the one place the
+        # per-capture gate numbers on the positions rows and inside
+        # verify.gate are declared. Top-level rather than inside honesty_mask
+        # because that block is copied verbatim from the cloud artifact and a
+        # derived field does not belong inside a verbatim copy.
+        "reflections": reflections,
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed
@@ -2041,6 +2380,8 @@ def build_crossover_evidence_packet(
             capture_snr_reason=str(capture_snr.get("reason") or ""),
             cross_seat_sigma_reason=str(cross_seat_sigma.get("reason") or ""),
             harmonics_reason=str(harmonics.get("reason") or ""),
+            gate_numbers_reason=_gate_numbers_reason(positions, verify),
+            reflector_path_reason=str(reflections.get("reason") or ""),
             findings=findings,
         ),
         # TWO contracts, one per prescription class, each written by the gate

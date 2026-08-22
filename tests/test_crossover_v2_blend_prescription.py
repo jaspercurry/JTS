@@ -215,8 +215,16 @@ def _bundle(
     dip_at: list[float | None] | None = None,
     state: dict[str, Any] | None = None,
     grid: list[float] | None = None,
+    cloud_over: dict[str, Any] | None = None,
+    position_over: dict[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
-    """A commissioning bundle on disk, in the real tree shape."""
+    """A commissioning bundle on disk, in the real tree shape.
+
+    ``cloud_over`` replaces top-level keys of the cloud artifact and
+    ``position_over`` merges into every position row, so a test can vary one
+    banked fact (a fitted null ladder, a capture's gate numbers) without
+    restating the whole shape.
+    """
     if dip_at is None:
         dip_at = [1000.0, 1000.0, 1000.0, 1000.0]
     session = tmp_path / "session"
@@ -239,9 +247,12 @@ def _bundle(
         },
     }))
     (round_dir / "round_receipt.json").write_text(json.dumps(_receipt()))
-    (round_dir / "cloud_verify.json").write_text(
-        json.dumps(_cloud(dip_at, grid=grid))
-    )
+    cloud = _cloud(dip_at, grid=grid)
+    if position_over:
+        for row in cloud["positions"]["positions"]:
+            row.update(position_over)
+    cloud.update(cloud_over or {})
+    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
     (round_dir / "findings_cloud_verify.json").write_text(json.dumps({
         "findings": [], "field_descriptions": {"finding": {"band_hz": "prose"}},
         "produced_by": "jasper.attribution.promotion.promote_carve_outs",
@@ -307,19 +318,342 @@ def test_the_packet_names_every_question_this_round_cannot_answer(packet):
     that round. This fixture banks no reading, so it is present here — the
     other half, that it DISAPPEARS when one is banked, is pinned in
     ``tests/test_crossover_v2_harmonic_evidence.py``.
+
+    ``first_reflection_ms`` went the same way in ticket 1.5, and its
+    replacement is spelled as the FIELD a reader would go looking for
+    (``positions[].gate_reflection_delay_ms``) rather than as the gating
+    block's own absolute time, which is a different quantity — see
+    ``GateDisclosure.reflection_delay_ms``. Its disappearance is pinned below.
     """
     fields = {entry["field"] for entry in packet["not_evaluated"]}
     assert {
         "lateral_poses[].position_deg",
         "capture_snr",
-        "first_reflection_ms",
+        "positions[].gate_reflection_delay_ms",
+        "reflections.reflector_path_distance_m",
         "harmonics",
         "per_bin_minimum_phase_class",
         "vertical_plane_response",
     } <= fields
     assert "harmonic_distortion" not in fields
+    # The claim ticket 1.5 falsified: the reflection time is no longer "not
+    # banked as a number anywhere in a round's artifacts", so no entry may say
+    # so about the corpus under the old field name.
+    assert "first_reflection_ms" not in fields
     for entry in packet["not_evaluated"]:
         assert entry["reason"].strip(), f"{entry['field']} claims absence with no reason"
+
+
+# --------------------------------------------------------------------------- #
+# ticket 1.5 — the gate's numbers, and the reflector path
+# --------------------------------------------------------------------------- #
+
+#: A registry with a ladder actually fitted, in the shipped serializer's shape.
+#: The taus are the S0 corpus's own (``interference_nulls``'s
+#: ``LADDER_ARRIVAL_TOLERANCE`` comment: fitted 297.96-298.90 us against
+#: arrival medians of 321.85-321.93 us), so the two differ by the measured
+#: ~7 % and a conversion that read the wrong one is visible in the answer.
+_FITTED_LADDER = {
+    "classification": "position_invariant",
+    "reason": "",
+    "tau_ladder_us": 298.75,
+    "arrival_tau_us": 321.93,
+    "ladder_arrival_gap": -0.0721,
+    "nulls": [{"f_center_hz": 8646.0, "n": 2, "tau_us": 298.75}],
+}
+
+
+def _reflections(tmp_path: Path, *, at: str = "r", **over: Any) -> dict[str, Any]:
+    """One bundle's ``reflections`` block. ``at`` names a fresh subdirectory so
+    two bundles (or one beside the ``packet`` fixture's) can share a tmp_path."""
+    root = tmp_path / at
+    root.mkdir()
+    session, _ = _bundle(root, **over)
+    return build_crossover_evidence_packet(session)["reflections"]
+
+
+def test_the_reflector_path_is_the_ladders_own_delay_times_the_speed_of_sound(
+    tmp_path,
+):
+    """Ticket 1.5's third field. tau was banked all along; the multiply was not.
+
+    The packet is the right home for it precisely because nothing is measured
+    here: ``null_registry.tau_ladder_us`` is already in the document (the
+    honesty mask copies the registry verbatim), and what a reader kept doing by
+    hand was one multiply by a constant. Asserted by recomputing it from the
+    published tau and the published constant, so the block cannot pass by
+    carrying a number nobody can reproduce.
+    """
+    from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+
+    block = _reflections(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
+
+    assert block["available"] is True
+    assert block["tau_ladder_us"] == 298.75
+    assert block["speed_of_sound_m_s"] == DEFAULT_SOUND_SPEED_M_S
+    assert block["reflector_path_distance_m"] == round(
+        block["tau_ladder_us"] * 1e-6 * block["speed_of_sound_m_s"], 3
+    )
+    # ~10 cm of excess path, which is the S0 rim wave's own scale.
+    assert block["reflector_path_distance_m"] == pytest.approx(0.102)
+    # The constant is the repo's ONE definition, consumed rather than restated
+    # — three independent literal 343s already exist in this tree.
+    assert DEFAULT_SOUND_SPEED_M_S == 343.0
+
+
+def test_the_ladders_tau_is_converted_and_the_arrivals_is_not(tmp_path):
+    """Two taus sit on the registry and only one has been corroborated.
+
+    ``arrival_tau_us`` still carries whatever a sub-minimum cluster held on a
+    ``no_corroborating_arrivals`` refusal, so a distance built from it could be
+    published out of evidence the gate itself declined. The ladder's tau exists
+    only after a frequency-domain fit and a time-domain arrival agreed within
+    ``LADDER_ARRIVAL_TOLERANCE``.
+
+    The two differ by the measured ~7 % here, so this discriminates rather than
+    restating the field name.
+
+    Mutation-selected: converting ``arrival_tau_us`` instead fails this and the
+    recomputation test above, and nothing else in the file.
+    """
+    block = _reflections(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
+
+    assert block["tau_ladder_us"] != _FITTED_LADDER["arrival_tau_us"]
+    from_arrival = round(
+        _FITTED_LADDER["arrival_tau_us"] * 1e-6 * block["speed_of_sound_m_s"], 3
+    )
+    assert block["reflector_path_distance_m"] != from_arrival
+
+
+def test_a_round_with_no_fitted_ladder_refuses_by_name_rather_than_saying_zero(
+    tmp_path,
+):
+    """``tau_ladder_us`` is 0.0 when nothing was fitted — a sentinel, not a
+    delay. Converted blindly it becomes 0.0 metres, which is a claim that the
+    reflector is at the microphone.
+
+    The refusal names the instrument's own reason slug, so a reader is sent to
+    why the gate found nothing rather than to a missing field.
+    """
+    registry = {**_FITTED_LADDER, "tau_ladder_us": 0.0, "nulls": [],
+                "reason": "no_corroborating_arrivals",
+                "classification": "insufficient_evidence"}
+    block = _reflections(tmp_path, cloud_over={"null_registry": registry})
+
+    assert block["available"] is False
+    assert block["reflector_path_distance_m"] is None
+    assert block["tau_ladder_us"] is None
+    assert "no_corroborating_arrivals" in block["reason"]
+    assert block["status"] == "not_evaluated"
+
+
+def test_a_registry_that_fitted_nothing_but_named_no_reason_still_refuses(
+    tmp_path, packet,
+):
+    """The fixture's own registry: identified nothing, carries no tau at all.
+
+    A second refusal arm rather than the same one, because ``reason`` and a
+    usable ``tau_ladder_us`` are independent facts on a hand-edited or older
+    artifact, and a block that only checked the first would divide ``None`` by
+    nothing.
+    """
+    assert packet["reflections"]["available"] is False
+    assert packet["reflections"]["reflector_path_distance_m"] is None
+    assert "no usable fitted ladder delay" in packet["reflections"]["reason"]
+    # …and the honesty block carries it, under the field a reader searches for.
+    stated = [
+        entry for entry in packet["not_evaluated"]
+        if entry["field"] == "reflections.reflector_path_distance_m"
+    ]
+    assert len(stated) == 1
+    assert stated[0]["reason"] == packet["reflections"]["reason"]
+
+
+def test_the_absent_distance_is_not_left_to_read_as_a_near_reflector(
+    tmp_path, packet,
+):
+    """A refused block still says what its silence does NOT mean.
+
+    Every reading is null and every ASSUMPTION is still published, so the two
+    shapes differ only by the ``status``/``reason`` pair the packet adds to a
+    refusal everywhere else. A reader holding a refused block can still see
+    which constant a distance WOULD have been converted with.
+    """
+    from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+
+    block = packet["reflections"]
+    assert block["speed_of_sound_m_s"] == DEFAULT_SOUND_SPEED_M_S
+    assert "the reflector is close" in block["note"]
+    fitted = _reflections(
+        tmp_path, at="fitted", cloud_over={"null_registry": _FITTED_LADDER}
+    )
+    assert set(block) - set(fitted) == {"status", "reason"}
+    assert not set(fitted) - set(block)
+
+
+def test_the_gate_numbers_reach_the_packet_beside_the_sentence(tmp_path):
+    """Ticket 1.5's first two fields, at the reader's end of the wire.
+
+    Two allowlists sit between the capture and here — ``_RECORD_FIELDS`` into
+    the cloud artifact and ``_POSITION_FIELDS`` into the packet — and a field
+    missing from either is dropped in silence, which is exactly how a number
+    stays trapped in prose. Asserted on the packet's own rows.
+    """
+    session, _ = _bundle(tmp_path, position_over={
+        "gate_moved_rms_db": 1.37, "gate_reflection_delay_ms": 5.33,
+    })
+    packet = build_crossover_evidence_packet(session)
+    rows = packet["positions"]["positions"]
+
+    assert rows
+    assert all(row["gate_moved_rms_db"] == 1.37 for row in rows)
+    assert all(row["gate_reflection_delay_ms"] == 5.33 for row in rows)
+    # Not withheld, which is what an un-allowlisted field would look like.
+    assert "gate_moved_rms_db" not in packet["positions"]["redacted_fields"]
+    # …and the honesty block stops claiming the number is nowhere.
+    fields = {entry["field"] for entry in packet["not_evaluated"]}
+    assert "positions[].gate_reflection_delay_ms" not in fields
+
+
+def test_a_round_whose_gate_survives_as_prose_says_so_about_itself(packet):
+    """The replacement for the old corpus-wide claim, narrowed to one round.
+
+    The entry used to say the reflection time "is not banked as a number
+    anywhere in a round's artifacts" — true of the corpus when it was written,
+    false the moment the writers shipped. What survives is a statement about
+    THIS round's records, and it names the field that separates the two rounds
+    that look identical from here rather than asserting the one it cannot
+    check.
+    """
+    stated = [
+        entry for entry in packet["not_evaluated"]
+        if entry["field"] == "positions[].gate_reflection_delay_ms"
+    ]
+    assert len(stated) == 1
+    reason = stated[0]["reason"]
+    assert "gate_moved_rms_db" in reason and "gate_reflection_delay_ms" in reason
+    assert "gate_floor_source separates them" in reason
+    # It must not claim the corpus banks nothing, which is what 1.5 falsified.
+    assert "anywhere in a round's artifacts" not in reason
+
+
+def test_the_verify_gates_own_numbers_close_the_row_too(tmp_path):
+    """Either carrier answers, because they are one fact about two captures.
+
+    ``verify.gate`` is ``_gate_record``'s dict and always spells both keys once
+    the writer shipped; a position row is filtered by an allowlist that drops a
+    null. So a round with a verify capture and no usable position numbers still
+    banks them, and the honesty entry must not fire.
+    """
+    state = {"verify": {"outcome": "pass", "gate": {
+        "disclosure": "reflection measured at 5.33 ms after the direct arrival",
+        "reflection_measured": True,
+        "moved_rms_db": 2.59,
+        "reflection_delay_ms": 5.33,
+    }}}
+    session, state_path = _bundle(tmp_path, state=state)
+    packet = build_crossover_evidence_packet(session, state_path=state_path)
+
+    assert packet["verify"]["gate"]["reflection_delay_ms"] == 5.33
+    assert packet["verify"]["gate"]["moved_rms_db"] == 2.59
+    fields = {entry["field"] for entry in packet["not_evaluated"]}
+    assert "positions[].gate_reflection_delay_ms" not in fields
+
+
+def test_every_field_the_reflections_block_publishes_is_covered_by_a_declaration(
+    tmp_path,
+):
+    """The enrichment rule made checkable, over EMITTED data on BOTH shapes.
+
+    A declaration table checked against a hand-written list agrees with itself;
+    checked against what the block actually publishes it fails the day a key is
+    added without a declaration. Both shapes are walked because the refused one
+    publishes keys the available one does not.
+
+    Mutation-selected: publishing an undeclared ``reflector_confidence`` fails
+    this and the shape test above, and nothing else in the file.
+    """
+    available = _reflections(
+        tmp_path, at="fitted", cloud_over={"null_registry": _FITTED_LADDER}
+    )
+    refused = _reflections(tmp_path, at="unfitted")
+
+    for block in (available, refused):
+        declared = set(block["uncertainty"]["fields"]) | set(
+            block["uncertainty"]["not_uncertainties"]
+        )
+        # Everything that is prose about the block rather than a published fact.
+        described = {"available", "status", "reason", "source", "note",
+                     "uncertainty"}
+        published = set(block) - described
+        undeclared = published - declared
+        assert not undeclared, f"published with no declaration: {undeclared}"
+
+    # Nothing here IS an uncertainty, and that is a finding rather than an
+    # unfilled table — the one place a spread could legitimately be computed
+    # (a sigma on the fitted tau) is not banked by the instrument that fits it.
+    assert available["uncertainty"]["fields"] == {}
+    assert "fields is empty on purpose" in available["uncertainty"]["note"]
+
+
+def test_the_declared_gate_number_paths_are_paths_the_packet_really_publishes(
+    tmp_path,
+):
+    """The other half of coverage: a declaration for a field that is not there.
+
+    These four are declared in the ``reflections`` block and published in two
+    OTHER blocks, which is the arrangement that lets a declaration rot silently
+    — nothing about the ``reflections`` block breaks when ``positions`` stops
+    carrying a column. So each declared path is resolved against a real packet.
+
+    Mutation-selected, twice, in the two directions this can rot. Declaring a
+    path nothing publishes (``positions[].gate_reflector_distance_m`` added to
+    ``_REFLECTIONS_NOT_AN_UNCERTAINTY``) left this the ONLY failing test in the
+    file. Dropping ``gate_moved_rms_db`` from ``_POSITION_FIELDS`` — the column
+    vanishing under a live declaration — failed this and
+    ``test_the_gate_numbers_reach_the_packet_beside_the_sentence``, which is
+    the other end of the same wire.
+    """
+    state = {"verify": {"outcome": "pass", "gate": {
+        "disclosure": "reflection measured at 5.33 ms after the direct arrival",
+        "reflection_measured": True,
+        "moved_rms_db": 2.59, "reflection_delay_ms": 5.33,
+    }}}
+    session, state_path = _bundle(tmp_path, state=state, position_over={
+        "gate_moved_rms_db": 1.37, "gate_reflection_delay_ms": 5.33,
+    })
+    packet = build_crossover_evidence_packet(session, state_path=state_path)
+    declared = packet["reflections"]["uncertainty"]["not_uncertainties"]
+
+    foreign = sorted(name for name in declared if "." in name or "[]" in name)
+    assert foreign == [
+        "positions[].gate_moved_rms_db",
+        "positions[].gate_reflection_delay_ms",
+        "verify.gate.moved_rms_db",
+        "verify.gate.reflection_delay_ms",
+    ]
+    for path in foreign:
+        if path.startswith("positions[]."):
+            column = path.split(".", 1)[1]
+            rows = packet["positions"]["positions"]
+            assert rows and all(column in row for row in rows), path
+        else:
+            leaf = path.rsplit(".", 1)[1]
+            assert leaf in packet["verify"]["gate"], path
+
+
+def test_the_reflections_block_leaves_the_packet_schema_version_alone(tmp_path):
+    """A new block whose existing fields are untouched is additive.
+
+    Same rule ticket 1.4's ``harmonics`` block was held to: the version moves
+    when a reader that understood the previous one would MISREAD this one, not
+    because the document grew.
+    """
+    session, _ = _bundle(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
+    packet = build_crossover_evidence_packet(session)
+
+    assert packet["artifact_schema_version"] == PACKET_SCHEMA_VERSION == 1
+    assert packet["reflections"]["available"] is True
 
 
 def test_the_vertical_plane_is_disclosed_once_and_refuses_nothing(packet):

@@ -95,6 +95,14 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "gate_window_ms",
     "gate_floor_source",
     "gate_disclosure",
+    # The two numbers ``gate_disclosure``'s sentence narrates, banked beside it
+    # so a reader does not have to parse English for them (ticket 1.5). Subject
+    # to the same ``is not None`` rule as every field here: a row carries the
+    # key only when the capture had a value for it, which is why a reader
+    # asking "does this round bank them at all" has to look at more than one
+    # row — see ``evidence_packet._gate_numbers_reason``.
+    "gate_moved_rms_db",
+    "gate_reflection_delay_ms",
     "validity_floor_hz",
     "gating_applied",
     "summed_ripple_db",
@@ -165,6 +173,23 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "retained-capture sidecar cannot describe the same gate two "
         "different ways. Read this rather than reassembling the numbers; the "
         "numbers beside it are for machines."
+    ),
+    "gate_moved_rms_db": (
+        "How far the gate moved this capture's response SHAPE, dB RMS over the "
+        "band the comparison is honest across (the gate's trusted floor "
+        "intersected with what the stimulus radiated). The machine-readable "
+        "half of the last clause of gate_disclosure. It is uninterpretable "
+        "alone: the same small number means 'genuinely clean' beside "
+        "gate_floor_source=measured_reflection and 'the gate did nothing and "
+        "nothing was proven' beside search_span_bound. Absent when no band "
+        "supported a comparison — never a zero standing in for one."
+    ),
+    "gate_reflection_delay_ms": (
+        "When the first reflection arrived AFTER the direct sound, "
+        "milliseconds. A DELAY, not the gating block's absolute "
+        "first_reflection_ms, whose origin is the deconvolution window's and "
+        "means nothing on its own. Absent — never 0.0 — when the window was "
+        "capped at the search ceiling, because nothing was found to time."
     ),
     "summed_ripple_db": "This capture's own summed-response ripple, dB.",
     "wav_sha256": (

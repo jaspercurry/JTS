@@ -415,7 +415,8 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
         position_id="angle_01", phase="measure", index=stop.index, attempt=1,
         prompt=stop.prompt.text, wide=stop.prompt.wide, role=stop.prompt.role,
         captured_at=0.0, session_id="s", gate_window_ms=None,
-        gate_floor_source=None, gate_disclosure=None, validity_floor_hz=None,
+        gate_floor_source=None, gate_disclosure=None, gate_moved_rms_db=None,
+        gate_reflection_delay_ms=None, validity_floor_hz=None,
         gating_applied=False, summed_ripple_db=None, glitch_detected=False,
         wav_sha256=None,
     )
