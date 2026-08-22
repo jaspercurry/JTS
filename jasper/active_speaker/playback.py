@@ -47,7 +47,12 @@ from jasper.camilla_config_contract import (
 )
 
 from .camilla_yaml import _forbidden_playback_token
-from .driver_protection import driver_protection_payload, normalise_driver_role
+from .driver_protection import (
+    LOW_LIMIT_DECLARED,
+    LOW_LIMIT_LEGACY_PROTECTION_FILTER,
+    driver_protection_payload,
+    normalise_driver_role,
+)
 from .safe_playback import (
     floor_audio_confirmed_for_target,
     floor_audio_retry_allowed_for_target,
@@ -551,7 +556,40 @@ def _driver_protection_for_plan(plan: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         band_limit=_tone_band_limit(plan),
+        declared_low_limit_hz=_plan_declared_low_limit_hz(matching_plan_protection),
     )
+
+
+def _plan_declared_low_limit_hz(protection: dict[str, Any] | None) -> float | None:
+    """The DECLARED low limit a plan's own protection block already carries.
+
+    Carried forward, not re-derived: this module REFRESHES a plan's protection
+    block against the tone actually staged, and the driver's declared low limit
+    is part of that block. Without it the refresh would fall back to the style
+    default and refuse a plan whose producer had already passed it at the
+    manufacturer's published figure -- one plan failing one gate and passing
+    another (#2874). Same trust boundary the sibling reads already extend to
+    ``protection_status`` and ``driver_style``: plans are built by this server
+    from its own compiled preset, never accepted from a client.
+
+    A ``style_default`` block carries no declaration, so ``None`` comes back
+    and the fallback re-derives the identical number under its OWN label.
+    Passing that figure back in as a declaration would make a code default
+    print as "manufacturer declared", which is the provenance lie #2874 is
+    about, one field over.
+    """
+
+    if not isinstance(protection, dict):
+        return None
+    if protection.get("low_limit_provenance") not in {
+        LOW_LIMIT_DECLARED,
+        LOW_LIMIT_LEGACY_PROTECTION_FILTER,
+    }:
+        return None
+    value = protection.get("low_limit_hz")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _tone_at_floor(tone: dict[str, Any]) -> bool:

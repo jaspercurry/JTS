@@ -1478,9 +1478,11 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     assert accepted["status"] == "confirmed"
     assert _issue_codes(accepted) == set()
 
-    # ...and what refuses in its place is the plausibility band. 200 Hz for a
-    # compression driver is not a datasheet, and refusing garbage IS the safety
-    # class the ruling kept.
+    # ...and #2874 reversed what stood in its place. A plausibility BLOCKER
+    # over a saved declaration is the same class-over-declaration inversion one
+    # layer down, so 200 Hz on a compression driver now SAVES with a loud
+    # warning naming the number, the band it missed and the anchor. The
+    # refusing arm moved to the research-reply intake.
     unsafe_highpass = _manual_settings()
     tweeter = unsafe_highpass["drivers"][1]
     tweeter["recommended_highpass_hz"] = 200.0
@@ -1488,9 +1490,163 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
     tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
-    assert "tweeter:low_limit_implausible_for_style" in _blocked_codes(
-        compression, unsafe_highpass
+    warned = build_driver_safety_profile(
+        compression,
+        manual_settings=unsafe_highpass,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
     )
+    assert warned["status"] == "confirmed"
+    assert [
+        issue["code"] for issue in warned["issues"]
+        if issue["severity"] == "blocker"
+    ] == []
+    warning = next(
+        issue for issue in warned["issues"]
+        if issue["code"] == "tweeter:low_limit_implausible_for_style"
+    )
+    assert warning["severity"] == "warning"
+    assert "200 Hz" in warning["message"]
+    assert "500-8000 Hz" in warning["message"]
+    assert "transposed digit" in warning["message"]
+
+
+def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typist(
+) -> None:
+    """#2874's author split, both arms, on the same number.
+
+    Owner ruling 2026-08-22: declared values are the only refusing authority.
+    So the plausibility band -- which is anchored on the class table -- keeps
+    its teeth exactly where the author is a machine, and becomes a disclosure
+    where the author is the household:
+
+    * a RESEARCH REPLY carrying 700 Hz for a tweeter whose class band is
+      [1250, 20000] is refused at intake. "Ask again with the datasheet" is the
+      right answer to an LLM misreading one, and refusing at the paste means
+      the number never becomes a declaration anyone has to un-declare;
+    * the SAME 700 Hz typed by hand SAVES, with a warning that names the value,
+      the band it missed, the anchor that band came from, and the two things it
+      is most likely to be. The tinker box trusts its owner and says so first.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(topology, _operator_inputs())
+
+    implausible_reply = _research_result(request)
+    tweeter_reply = next(
+        driver for driver in implausible_reply["drivers"]
+        if driver["role"] == "tweeter"
+    )
+    tweeter_reply["recommended_highpass_hz"] = 700
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="not believable for its driver type",
+    ) as refused:
+        build_design_draft(
+            topology,
+            driver_research_request=request,
+            driver_research=implausible_reply,
+            operator_inputs=_operator_inputs(),
+        )
+    # The refusal teaches: the number, the band, the anchor, and the two ways
+    # out (a datasheet page, or typing it yourself).
+    assert "700 Hz" in str(refused.value)
+    assert "1250-20000 Hz" in str(refused.value)
+    assert "5000 Hz class default" in str(refused.value)
+    assert "Ask again with the datasheet" in str(refused.value)
+    assert "by hand under Advanced" in str(refused.value)
+
+    # A published figure INSIDE the band passes the intake screen untouched,
+    # including one below the class default -- that is the #2603 ruling and it
+    # is not reopened here.
+    from jasper.active_speaker.driver_safety import (
+        validate_research_low_limit_plausibility,
+    )
+
+    plausible_reply = _research_result(request)
+    next(
+        driver for driver in plausible_reply["drivers"]
+        if driver["role"] == "tweeter"
+    )["recommended_highpass_hz"] = 1600
+    validate_research_low_limit_plausibility(plausible_reply, request)
+    # ...and a reply that declares nothing is not judged at all.
+    validate_research_low_limit_plausibility(_research_result(request), request)
+
+    # The other arm: the same 700 Hz, typed.
+    typed = _manual_settings()
+    tweeter = typed["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 700.0
+    tweeter["hard_excitation_band_hz"] = [700.0, 22000.0]
+    tweeter["measurement_band_hz"] = [700.0, 20000.0]
+    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 700.0
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=typed,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    assert profile["status"] == "confirmed"
+    assert profile["confirmation"] is not None
+    warning = next(
+        issue for issue in profile["issues"]
+        if issue["code"] == "tweeter:low_limit_implausible_for_style"
+    )
+    assert warning["severity"] == "warning"
+    assert "700 Hz" in warning["message"]
+    assert "1250-20000 Hz" in warning["message"]
+    assert "5000 Hz class default" in warning["message"]
+    assert "transposed digit" in warning["message"]
+
+    # A warning is not a blocker: the profile it rides on is usable, and the
+    # evaluation re-derives the same warning rather than reading it off disk.
+    evaluation = evaluate_driver_safety_profile(profile, topology)
+    assert evaluation.status == "confirmed"
+    assert evaluation.confirmed_and_current is True
+
+    # And a hand-edited artifact cannot quietly drop its own warning.
+    tampered = deepcopy(profile)
+    tampered["issues"] = []
+    assert evaluate_driver_safety_profile(tampered, topology).status == "malformed"
+
+
+def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
+    """The warning must survive shape validation to be read at all.
+
+    ``_validate_driver_safety_profile_shape`` caps an issue's fields, and a
+    message over its cap lands the WHOLE profile ``malformed`` -- the loudest
+    possible way to say nothing. Pinned against the longest render this warning
+    has: the longest registered style name, and an out-of-band value on both
+    sides of the band.
+
+    The caps are READ from the validator rather than restated here, the same
+    way ``_emittable_reason_codes`` reads the reason vocabulary, so raising or
+    lowering one there cannot leave this test measuring a bound that is gone.
+    """
+
+    from jasper.active_speaker.driver_safety import _target_low_limit_warnings
+
+    source = Path(driver_safety_module.__file__).read_text()
+    caps = {
+        field: int(chars)
+        for field, chars in re.findall(
+            r'\("(severity|code|message)", (\d+)\)', source
+        )
+    }
+    assert set(caps) == {"severity", "code", "message"}, caps
+
+    longest_style = max((style for style, _ in _TWEETER_STYLE_FLOORS), key=len)
+    for cutoff_hz in (1.5, 999999.5):
+        warnings = _target_low_limit_warnings({
+            "role": "tweeter",
+            "driver_style": longest_style,
+            "required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": cutoff_hz},
+            ],
+        })
+        assert warnings, (longest_style, cutoff_hz)
+        for field, cap in caps.items():
+            assert len(warnings[0][field]) <= cap, (field, warnings[0][field])
 
 
 def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
@@ -2531,6 +2687,10 @@ def test_protection_policy_view_reads_policy_never_restates_it(
     cannot satisfy all of them, so this fails the moment the view stops calling
     ``driver_protection_profile``.  ``role_class`` travels too, so /sound/ never
     keeps its own copy of which roles are high-frequency.
+
+    With no visible declaration the resolved low limit IS the class figure --
+    and says so.  The declared case is
+    ``test_the_policy_view_publishes_the_resolved_floor_with_its_provenance``.
     """
 
     from jasper.active_speaker.driver_protection import driver_protection_profile
@@ -2544,31 +2704,80 @@ def test_protection_policy_view_reads_policy_never_restates_it(
     tweeter = by_target["mono:tweeter"]
     policy = driver_protection_profile("tweeter", driver_style=style)
     assert tweeter["role_class"] == "high_frequency"
-    assert tweeter["min_highpass_hz"] == expected_floor == policy.min_highpass_hz
+    assert tweeter["low_limit_hz"] == expected_floor == policy.min_highpass_hz
+    assert tweeter["low_limit_provenance"] == "style_default"
+    assert tweeter["low_limit_summary"] == (
+        f"{expected_floor:g} Hz (class fallback; nothing declared)"
+    )
     assert tweeter["max_auto_level_dbfs"] == policy.max_auto_level_dbfs
 
     woofer = by_target["mono:woofer"]
     assert woofer["role_class"] == "low_frequency"
-    assert woofer["min_highpass_hz"] is None
+    assert woofer["low_limit_hz"] is None
+    assert woofer["low_limit_provenance"] is None
+    assert woofer["low_limit_summary"] is None
 
     # The emitted per-target shape, pinned. `role` is deliberately absent --
     # role_class answers every question the page asks, and a field with no
-    # reader is a field that drifts unnoticed. `min_highpass_hz` stays because
-    # it is the only value here that DISCRIMINATES between HF styles (they all
-    # share max_auto_level_dbfs), so it is what the parametrisation above uses
-    # to prove this view is derived rather than restated.
+    # reader is a field that drifts unnoticed. The raw `min_highpass_hz` is
+    # absent since #2874: it discriminated between HF styles, but so does the
+    # resolved trio that replaced it, and printing the class figure unlabelled
+    # beside a declared one is the ambiguity that ticket removed.
     assert set(tweeter) == {
         "target_id",
         "role_class",
         "max_auto_level_dbfs",
-        "min_highpass_hz",
+        "low_limit_hz",
+        "low_limit_provenance",
+        "low_limit_summary",
     }
+    assert "min_highpass_hz" not in tweeter
     # `hf_measurement_abs_ceiling_dbfs` is deliberately absent: the provisional
     # -35 dBFS constant it published was retired 2026-08-20, and the bound that
     # replaced it (the per-driver sensitivity derivation) is not computable from
     # a topology alone. Pinned as an exact key set so re-adding it — or
     # restating the global test ceiling in its place — fails here.
     assert set(view) == {"policy_version", "targets"}
+
+
+def test_the_policy_view_publishes_the_resolved_floor_with_its_provenance() -> None:
+    """#2874's confusion surface, closed on the view the draft carries.
+
+    The draft on jts3 showed ``recommended_highpass_hz: 1600`` beside an
+    unlabelled ``min_highpass_hz: 2000`` with nothing saying which bounds the
+    corner, and two readers independently took the 2000 for a second floor.
+    The view now answers that question in the same document, in words.
+    """
+
+    from jasper.active_speaker.driver_safety import driver_protection_policy_view
+
+    topology = _topology_with_tweeter_style("compression_driver")
+    manual = _manual_settings()
+    manual["drivers"][1]["recommended_highpass_hz"] = 1600.0
+
+    view = driver_protection_policy_view(topology, manual)
+    tweeter = next(
+        entry for entry in view["targets"] if entry["target_id"] == "mono:tweeter"
+    )
+
+    assert tweeter["low_limit_hz"] == 1600.0
+    assert tweeter["low_limit_provenance"] == "declared"
+    assert tweeter["low_limit_summary"] == "1600 Hz (manufacturer declared)"
+    # The class figure is not republished beside it, unlabelled or otherwise.
+    assert "min_highpass_hz" not in tweeter
+    assert 2000.0 not in tweeter.values()
+
+    # Same topology, nothing declared: the class figure IS the answer, and says
+    # so rather than passing itself off as a datasheet number.
+    undeclared = driver_protection_policy_view(topology)
+    undeclared_tweeter = next(
+        entry for entry in undeclared["targets"]
+        if entry["target_id"] == "mono:tweeter"
+    )
+    assert undeclared_tweeter["low_limit_hz"] == 2000.0
+    assert undeclared_tweeter["low_limit_summary"] == (
+        "2000 Hz (class fallback; nothing declared)"
+    )
 
 
 def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
@@ -2597,7 +2806,7 @@ def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
         path=path,
     )
     assert saved["driver_protection_policy_view"] == driver_protection_policy_view(
-        topology
+        topology, saved["manual_settings"]
     )
 
     # Poison the persisted copy the way a policy change would — including with
@@ -2610,7 +2819,7 @@ def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
 
     loaded = load_design_draft(path, topology=topology)
     assert loaded["driver_protection_policy_view"] == driver_protection_policy_view(
-        topology
+        topology, loaded["manual_settings"]
     )
 
     # The name is load-bearing: excitation_safety_plan already hashes a
@@ -3146,21 +3355,12 @@ def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itsel
 @pytest.mark.parametrize(
     "field,mutation,expected_code",
     [
-        # A low limit that is not a datasheet figure at all: refused BY NAME,
-        # not quietly raised to the class default. The operator sees the bound
-        # and decides.
-        #
-        # WHICH bound moved with #2603. The dome_tweeter class default (3000 Hz)
-        # is no longer a veto -- a sourced 2500 Hz now WINS, which is the whole
-        # point of the ruling -- so the refusal this case exercises is the
-        # plausibility band around that default ([750, 12000] at a factor of 4).
-        # 700 Hz is outside it, and a 700 Hz "dome tweeter" is a transposed
-        # digit or a woofer's number in the wrong row, never a datasheet.
-        (
-            "required_protection_filters",
-            [{"kind": "highpass", "cutoff_hz": 700, "minimum_slope_db_per_octave": 24}],
-            "tweeter:low_limit_implausible_for_style",
-        ),
+        # An implausible low limit used to be a case here. It moved out with
+        # #2874: a SAVED declaration is operator-authored, and refusing one on
+        # a class anchor is the class-over-declaration inversion that ruling
+        # ends. It is now a warning that saves, and the refusing arm sits at
+        # the research-reply intake -- both pinned in
+        # ``test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typist``.
         # An estimate louder than the high-frequency ceiling.
         (
             "level_duration_limits",

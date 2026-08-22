@@ -8128,24 +8128,26 @@ async function testSubwooferWithSpareOutputHidesWirelessCta() {
 // save can succeed. These render the real card and assert the review callout is
 // hoisted ahead of the Advanced disclosure in exactly those states, names the
 // right remedy, and is gone once the declaration is usable.
-function designDraftWithSafety(evaluation) {
+function designDraftWithSafety(evaluation, issues = []) {
   return {
     status: "ready_for_review",
     revision: 3,
     summary: {},
     operator_inputs: {},
-    driver_safety_profile: { status: evaluation.status === "confirmed"
-      ? "confirmed" : "incomplete" },
+    driver_safety_profile: {
+      status: evaluation.status === "confirmed" ? "confirmed" : "incomplete",
+      issues,
+    },
     driver_safety_profile_evaluation: evaluation,
     permissions: {},
   };
 }
 
-async function harnessWithSafetyEvaluation(evaluation, options = {}) {
+async function harnessWithSafetyEvaluation(evaluation, options = {}, issues = []) {
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(
-      response(designDraftWithSafety(evaluation))
+      response(designDraftWithSafety(evaluation, issues))
     ),
   }), options);
   await loadAndSetActiveState(harness);
@@ -8170,6 +8172,59 @@ async function testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl() {
     fail("the confirm control was retired and must not render anywhere", { html });
   }
   return { usableSafetyProfileRendersNoCalloutAndNoConfirmControl: true };
+}
+
+// #2874. An implausible low limit the household TYPED saves, and the page has
+// to say so — the review callout above stays quiet on a confirmed profile,
+// which is exactly the state a warning describes. The copy is server-phrased
+// because it names the household's own numbers, so this proves it is rendered
+// and escaped rather than dropped or trusted as markup.
+async function testATypedDeclarationWarningIsShownOnAConfirmedProfile() {
+  const harness = await harnessWithSafetyEvaluation(
+    { status: "confirmed", confirmed_and_current: true, reasons: [] },
+    {},
+    [{
+      severity: "warning",
+      code: "tweeter:low_limit_implausible_for_style",
+      message: "tweeter: declared 700 Hz is more than 4x below the "
+        + "compression_driver class band of 500-8000 Hz <img src=x onerror=1>",
+    }],
+  );
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes('id="confirm-safety-limits"')) {
+    fail("a warning is not a refusal and must not hoist the review callout", {
+      html,
+    });
+  }
+  if (!html.includes("JTS is trusting your declaration")) {
+    fail("a saved declaration JTS is warning about must say so", { html });
+  }
+  if (!html.includes("declared 700 Hz is more than 4x below")) {
+    fail("the server-phrased warning text must reach the page", { html });
+  }
+  if (html.includes("<img src=x onerror=1>")) {
+    fail("warning text is server data and must be escaped, never markup", {
+      html,
+    });
+  }
+  if (!html.includes("&lt;img src=x onerror=1&gt;")) {
+    fail("the escaped form of the warning text is missing", { html });
+  }
+  return { typedDeclarationWarningIsShownOnAConfirmedProfile: true };
+}
+
+// ...and a profile with no warnings renders no such block at all.
+async function testNoWarningsRenderNoTrustBlock() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "confirmed",
+    confirmed_and_current: true,
+    reasons: [],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes("JTS is trusting your declaration")) {
+    fail("an unwarned declaration must not grow a warning block", { html });
+  }
+  return { noWarningsRenderNoTrustBlock: true };
 }
 
 async function testIncompleteSafetyProfileHoistsTheReviewCallout() {
@@ -8452,6 +8507,8 @@ results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndOffersWirelessCta());
 results.push(await testSubwooferWithSpareOutputHidesWirelessCta());
 results.push(await testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl());
+results.push(await testATypedDeclarationWarningIsShownOnAConfirmedProfile());
+results.push(await testNoWarningsRenderNoTrustBlock());
 results.push(await testIncompleteSafetyProfileHoistsTheReviewCallout());
 results.push(await testStaleLowLimitWithABlockerNamesTheCauseAndTheFix());
 results.push(await testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy());

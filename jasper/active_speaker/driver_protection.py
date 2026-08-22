@@ -44,13 +44,20 @@ _UNKNOWN_HF_STYLE = "unknown_high_frequency"
 # issue #2603) this table is NOT a veto over sourced manufacturer data: a
 # published minimum recommended crossover wins outright, including below the
 # figure here. It keeps THREE jobs: (1) the DEFAULT answer when a manufacturer
-# publishes nothing, (2) the anchor for the plausibility band that refuses a
+# publishes nothing, (2) the anchor for the plausibility band that treats a
 # declared low limit as garbage -- see ``resolve_driver_low_limit`` and
 # ``driver_low_limit_plausibility_band_hz`` -- and (3) the commissioning-tone
-# gate, since ``_highpass_satisfied`` compares a staged high-pass against
-# ``min_highpass_hz`` to set ``band_limit_highpass_ok``. Job (3) is the one to
-# remember before editing a number here: it decides whether a tone is allowed
-# to PLAY, not merely whether a profile confirms.
+# gate's FALLBACK, for a driver with nothing declared.
+#
+# Job (3) was the whole table until #2874. ``_highpass_satisfied`` compared a
+# staged high-pass against ``min_highpass_hz`` directly, so a tweeter declared
+# at B&C's published 1.6 kHz was refused a tone whose protective high-pass sat
+# at exactly that published figure -- the module refusing on a code default,
+# one page below ``apply_driver_low_limit``'s own rule that a code default may
+# never REFUSE. The gate now anchors on ``tone_gate_low_limit``, which resolves
+# declared -> legacy protection filter -> this table. So editing a number here
+# still moves an *audible-test* gate and not only a confirmation one, but only
+# for a driver whose manufacturer publishes nothing.
 _STYLE_HIGH_PASS_HZ = {
     "compression_driver": 2000.0,
     "horn_compression_driver": 2000.0,
@@ -314,16 +321,17 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     role-keyed research + manual-settings merge, which can carry a research-only
     value that no saved safety profile has validated.
 
-    Believability is validated elsewhere and stays there:
-    ``driver_safety._target_issues`` refuses a *visible* declaration that is not
-    believable for its style (``<role>:low_limit_implausible_for_style``), and
-    ``build_driver_safety_profile`` lands ``incomplete`` — never ``confirmed`` —
-    for a profile carrying that issue. Note what that does NOT buy since the
-    2026-08-17 ruling: a confirmed declaration may sit BELOW this module's
-    ``min_highpass_hz`` class default, because a published manufacturer figure
-    wins outright. "Confirmed" now means plausible for the style, never at or
-    above policy — and either way it is a property of the confirmed profile,
-    not of this read.
+    Believability is judged elsewhere and stays there, and since #2874 the
+    answer depends on WHO declared it: ``driver_safety`` refuses an unbelievable
+    figure in a *research reply* at intake
+    (``validate_research_low_limit_plausibility``), and DISCLOSES one a human
+    typed (``_target_low_limit_warnings``, severity ``warning``) rather than
+    refusing it — a class-anchored band may not overrule a declaration. So a
+    ``confirmed`` profile no longer certifies that its low limit is plausible
+    for its style, and it never certified that the limit sits at or above this
+    module's ``min_highpass_hz`` class default: since the 2026-08-17 ruling a
+    published manufacturer figure wins outright, including below it. Either way
+    both are properties of the profile, not of this read.
 
     An unvalidated floor arriving here can only ever *tighten*: the derived
     protection clamp is ``max(floor, multiplier x fc)``, so a floor can raise
@@ -398,7 +406,7 @@ def protection_highpass_floor_satisfied(
     """Whether a high-pass corner honours a declared protection floor.
 
     The single comparison rule every protection-floor consumer shares (the
-    derived-protection clamp in ``_highpass_satisfied``, the crossover-preview
+    commissioning-tone gate in ``_highpass_satisfied``, the crossover-preview
     disclosure, the path-safety load gate, and the L0 emit gate
     ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), so the
     four surfaces cannot drift apart on the boundary case. An absent floor is
@@ -479,22 +487,42 @@ def format_protection_hz(value: float) -> str:
 #: the corner -- and it keeps every already-emitted graph legal.
 PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
 
-#: How far a DECLARED low limit may sit from its style's default before it is
-#: refused as garbage rather than believed. The style table is no longer a veto
-#: over sourced manufacturer data (a published 1.6 kHz for a compression driver
-#: must win over the 2 kHz class default); it is a plausibility anchor. A
-#: factor of 4 admits every real datasheet the field publishes -- large-format
-#: compression drivers publish recommended crossovers as low as 500-800 Hz and
-#: small ones as high as 8 kHz, both inside the compression-driver band -- while
-#: still catching a transposed digit or a woofer's number pasted into a tweeter
-#: row. One factor rather than a per-style band on purpose: the anchor is
-#: already per-style, and a second table would be a second thing to keep in
-#: sync (including its JS mirror) for a bound nothing has earned.
+#: How far a DECLARED low limit may sit from its style's default before it stops
+#: being believed on sight. The style table is no longer a veto over sourced
+#: manufacturer data (a published 1.6 kHz for a compression driver must win over
+#: the 2 kHz class default); it is a plausibility anchor. A factor of 4 admits
+#: every real datasheet the field publishes -- large-format compression drivers
+#: publish recommended crossovers as low as 500-800 Hz and small ones as high as
+#: 8 kHz, both inside the compression-driver band -- while still catching a
+#: transposed digit or a woofer's number pasted into a tweeter row. One factor
+#: rather than a per-style band on purpose: the anchor is already per-style, and
+#: a second table would be a second thing to keep in sync (including its JS
+#: mirror) for a bound nothing has earned.
+#:
+#: What "stops being believed" MEANS depends on the author since #2874: a
+#: research reply outside the band is refused at intake, a human-typed value
+#: outside it saves under a loud warning. See the author-split block comment in
+#: ``driver_safety``.
 LOW_LIMIT_PLAUSIBILITY_FACTOR = 4.0
 
 LOW_LIMIT_DECLARED = "declared"
 LOW_LIMIT_LEGACY_PROTECTION_FILTER = "legacy_protection_filter"
 LOW_LIMIT_STYLE_DEFAULT = "style_default"
+
+#: One operator-facing phrase per low-limit provenance. Every surface that
+#: PRINTS a resolved low limit renders it through :func:`format_low_limit`, so
+#: the tone gate's refusal, the /sound/ policy view and the design draft cannot
+#: describe the same number three different ways -- which is the confusion
+#: #2874 was filed on: a draft showed ``recommended_highpass_hz: 1600`` beside
+#: an unlabelled class-table ``2000`` and two readers independently took the
+#: 2000 for a second floor on the corner.
+LOW_LIMIT_PROVENANCE_LABELS = {
+    LOW_LIMIT_DECLARED: "manufacturer declared",
+    LOW_LIMIT_LEGACY_PROTECTION_FILTER: (
+        "inferred from a stored protective high-pass"
+    ),
+    LOW_LIMIT_STYLE_DEFAULT: "class fallback; nothing declared",
+}
 
 
 @dataclass(frozen=True)
@@ -589,6 +617,11 @@ def driver_low_limit_plausible(
     corner floor that module owns, the commissioning high-pass at a multiple of
     the crossover corner, the ``path_safety`` load gate, and the excitation
     level ceilings -- none of which this factor touches.
+
+    The one predicate behind both arms of the #2874 author split, which is why
+    it answers only *believable?* and never *what happens next?*: an
+    unbelievable RESEARCH REPLY is refused at intake, an unbelievable typed
+    value is disclosed and saved. ``driver_safety`` owns that choice.
     """
 
     band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
@@ -666,6 +699,62 @@ def resolve_driver_low_limit(
             "code default for this driver style; the manufacturer publishes "
             "no minimum recommended crossover frequency"
         ),
+    )
+
+
+def format_low_limit_provenance(provenance: Any) -> str:
+    """Render one low-limit provenance as the phrase an operator reads.
+
+    An unrecognised token renders as itself rather than as a guessed phrase:
+    inventing "class fallback" for a provenance this map does not know would
+    tell a household where a number came from on no evidence at all.
+    """
+
+    token = str(provenance or "")
+    return LOW_LIMIT_PROVENANCE_LABELS.get(token, token or "unknown provenance")
+
+
+def format_low_limit(limit: DriverLowLimit) -> str:
+    """Render one resolved low limit as ``"1600 Hz (manufacturer declared)"``.
+
+    The single renderer for the frequency AND where it came from. A surface
+    that prints the number without the provenance is what #2874 is about, so
+    the two are produced together rather than left to each caller to pair up.
+    """
+
+    return (
+        f"{format_protection_hz(limit.frequency_hz)} "
+        f"({format_low_limit_provenance(limit.provenance)})"
+    )
+
+
+def tone_gate_low_limit(
+    role: Any,
+    *,
+    driver_style: Any = None,
+    declared_low_limit_hz: Any = None,
+) -> DriverLowLimit | None:
+    """The floor the commissioning-tone gate compares a staged high-pass against.
+
+    ``declared_low_limit_hz`` is this driver's OWN declared low limit, when the
+    caller knows it -- ``test_signal_plan`` reads it off the compiled preset,
+    ``playback`` off the protection block its plan already carries. ``None``
+    means the caller has no declaration to offer, and the style default stands
+    as the FALLBACK, which is the only tone-gate job the class table keeps
+    since #2874.
+
+    The resolution order is not repeated here: the declared frequency is handed
+    to :func:`resolve_driver_low_limit` in the field that function reads as the
+    OWNER, so the gate, the profile-confirm path and the crossover preview
+    cannot disagree about which number wins. ``None`` comes back only for a
+    role with no declaration and no style anchor (every low-frequency role),
+    and means "no floor at all" -- never a floor of zero.
+    """
+
+    return resolve_driver_low_limit(
+        {"recommended_highpass_hz": declared_low_limit_hz},
+        role=role,
+        driver_style=driver_style,
     )
 
 
@@ -751,12 +840,12 @@ def apply_driver_low_limit(
 
 def _highpass_satisfied(
     *,
-    profile: DriverProtectionProfile,
+    low_limit: DriverLowLimit | None,
     band_limit: Any,
 ) -> bool:
     return protection_highpass_floor_satisfied(
         highpass_hz=_band_highpass_hz(band_limit),
-        floor_hz=profile.min_highpass_hz,
+        floor_hz=low_limit.frequency_hz if low_limit is not None else None,
     )
 
 
@@ -766,15 +855,26 @@ def driver_protection_payload(
     driver_style: Any = None,
     protection_status: Any = None,
     band_limit: Any = None,
+    declared_low_limit_hz: Any = None,
 ) -> dict[str, Any]:
     """Return the protection envelope for one target.
 
     ``audio_allowed`` means the driver role/style has enough deterministic
     protection evidence to be considered by higher-level readiness gates. It
     does not bypass safe-session, backend, floor-confirmation, or Stop checks.
+
+    ``declared_low_limit_hz`` is this driver's own declared low limit when the
+    caller knows it; see :func:`tone_gate_low_limit` for what absent means.
     """
 
     profile = driver_protection_profile(role, driver_style=driver_style)
+    low_limit = tone_gate_low_limit(
+        role,
+        driver_style=driver_style,
+        declared_low_limit_hz=declared_low_limit_hz,
+    )
+    staged_highpass_hz = _band_highpass_hz(band_limit)
+    highpass_ok = _highpass_satisfied(low_limit=low_limit, band_limit=band_limit)
     status = str(protection_status or "").strip().lower()
     issues: list[dict[str, str]] = []
     if profile.role_class == "unsupported":
@@ -790,22 +890,61 @@ def driver_protection_payload(
                 "high_frequency_protection_missing",
                 "high-frequency drivers require marked physical protection or software-guarded bring-up",
             ))
-        if not _highpass_satisfied(profile=profile, band_limit=band_limit):
-            issues.append(_issue(
-                "blocker",
-                "high_frequency_highpass_missing",
-                "high-frequency driver tone requires a protective high-pass band limit",
-            ))
+        # Two refusals, not one. The single ``..._missing`` blocker told a
+        # household a protective high-pass was MISSING while one was staged --
+        # it just sat below the class default -- which is how the #2874 report
+        # started. Absent and below-floor are different facts with different
+        # fixes, so they are different codes carrying different copy, and both
+        # name the floor they compared against and where that floor came from.
+        #
+        # ``low_limit is not None`` narrows for the renderer below rather than
+        # guarding an unreachable state: a None limit means no floor, and
+        # ``protection_highpass_floor_satisfied`` already answered True there.
+        if not highpass_ok and low_limit is not None:
+            if staged_highpass_hz is None:
+                issues.append(_issue(
+                    "blocker",
+                    "high_frequency_highpass_missing",
+                    (
+                        "high-frequency driver tone requires a protective "
+                        "high-pass band limit at or above this driver's low "
+                        f"limit of {format_low_limit(low_limit)}; none is staged"
+                    ),
+                ))
+            else:
+                issues.append(_issue(
+                    "blocker",
+                    "high_frequency_highpass_below_low_limit",
+                    (
+                        "the staged protective high-pass "
+                        f"{format_protection_hz(staged_highpass_hz)} sits below "
+                        "this driver's low limit of "
+                        f"{format_low_limit(low_limit)}"
+                    ),
+                ))
+    envelope = {
+        # The raw class figure is deliberately NOT republished here beside the
+        # resolved floor (#2874). It is the tone gate's fallback, not its
+        # anchor, and two floats one key apart with only one of them labelled
+        # is the ambiguity this ticket exists to remove. ``low_limit_hz``
+        # carries the class number whenever the class number is the operative
+        # one, with ``low_limit_provenance`` saying so.
+        key: value
+        for key, value in profile.to_dict().items()
+        if key != "min_highpass_hz"
+    }
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": DRIVER_PROTECTION_KIND,
         "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
-        **profile.to_dict(),
-        "protection_status": status or None,
-        "band_limit_highpass_ok": _highpass_satisfied(
-            profile=profile,
-            band_limit=band_limit,
+        **envelope,
+        "low_limit_hz": low_limit.frequency_hz if low_limit is not None else None,
+        "low_limit_provenance": low_limit.provenance if low_limit is not None else None,
+        "low_limit_summary": (
+            format_low_limit(low_limit) if low_limit is not None else None
         ),
+        "protection_status": status or None,
+        "band_limit_highpass_ok": highpass_ok,
         "audio_allowed": not issues and profile.role_class in {
             "low_frequency",
             "high_frequency",
@@ -840,6 +979,7 @@ def auto_level_decision(
     driver_style: Any = None,
     protection_status: Any = None,
     band_limit: Any = None,
+    declared_low_limit_hz: Any = None,
     observed_mic_dbfs: Any = None,
     mic_clipping: bool = False,
     floor_audio_confirmed: bool = False,
@@ -858,6 +998,7 @@ def auto_level_decision(
         driver_style=driver_style,
         protection_status=protection_status,
         band_limit=band_limit,
+        declared_low_limit_hz=declared_low_limit_hz,
     )
     profile = driver_protection_profile(role, driver_style=driver_style)
     current = _current_level(calibration_level)

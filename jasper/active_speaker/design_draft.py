@@ -1247,7 +1247,9 @@ def build_design_draft(
         "driver_research": research,
         "driver_safety_profile": safety_profile,
         "driver_safety_profile_evaluation": safety_evaluation,
-        "driver_protection_policy_view": driver_protection_policy_view(topology),
+        "driver_protection_policy_view": driver_protection_policy_view(
+            topology, manual
+        ),
         "manual_settings": manual,
         "summary": summary,
         "permissions": {
@@ -1442,7 +1444,14 @@ def load_design_draft(
     # `_view` in the name because `driver_protection_policy` is already taken,
     # by a different shape: excitation_safety_plan hashes one under that key
     # inside the protection-requirement fingerprint.
-    out["driver_protection_policy_view"] = driver_protection_policy_view(topology)
+    # The saved manual settings travel in, because the resolved low limit the
+    # view now publishes is a property of the DECLARATION, not of the topology
+    # (#2874). Without them every target would report the class fallback on a
+    # box that declared its drivers.
+    out["driver_protection_policy_view"] = driver_protection_policy_view(
+        topology,
+        raw.get("manual_settings"),
+    )
     return out
 
 

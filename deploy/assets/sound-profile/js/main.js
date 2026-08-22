@@ -1088,8 +1088,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // The `floor_hz` KEY NAME predates #2603 and is now a misnomer worth reading
   // carefully: since that ruling the figure is not a floor the declaration must
   // clear. It is the default when a datasheet publishes nothing, the anchor of
-  // the plausibility band, and the commissioning-tone gate. A published figure
-  // BELOW it is accepted outright.
+  // the plausibility band, and — since #2874 — the commissioning-tone gate's
+  // FALLBACK for a driver that declares nothing. A published figure BELOW it is
+  // accepted outright, and gates a tone at its own value.
   // "horn_compression_driver" is a valid style value (same 2000 Hz figure as
   // compression_driver) but is not offered as a separate option here — one
   // driver type should not appear twice in the picker.
@@ -1116,8 +1117,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // class known to run out of linear excursion or HF extension sooner).
   // Distinct from driver_style above (topology-owned; it drives the tweeter's
   // default minimum crossover, the plausibility band, and the commissioning-
-  // tone gate — see driver_protection.py): driver_class applies to every
-  // role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
+  // tone gate's fallback — see driver_protection.py): driver_class applies to
+  // every role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
   // in jasper/active_speaker/_common.py.
   function driverClasses() {
     return [
@@ -2638,16 +2639,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'high-pass cutoff sits outside its hard excitation band',
     lowpass_cutoff_outside_hard_band:
       'low-pass cutoff sits outside its hard excitation band',
-    // The band this refusal is measured against is anchored on the driver's
-    // declared type, and an UNDECLARED type is anchored on the cautious
-    // unknown-tweeter default — which is how a genuinely published 800 Hz on a
-    // large-format horn gets refused on a box whose type nobody set. The copy
-    // therefore names the declaration as the first thing to check, rather than
-    // asserting a "driver type" the household may never have chosen.
-    low_limit_implausible_for_style:
-      'the minimum crossover frequency is not believable for its driver type ' +
-      '(check the tweeter type above is set — an undeclared type is judged ' +
-      'against a cautious default)',
+    // `low_limit_implausible_for_style` used to sit here. Since #2874 an
+    // implausible SAVED low limit is not a refusal at all — it is a warning
+    // the server renders itself, because its copy names numbers (the value,
+    // the band it missed, the class anchor) that a code-to-phrase map here
+    // cannot carry. renderDriverSafetyWarnings below shows that server text.
     max_effective_peak_above_code_policy:
       'level ceiling is louder than what JTS allows for that driver'
   };
@@ -3599,6 +3595,32 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
     '</div>';
   }
+  // Non-blocking disclosures the SERVER phrased (#2874). Unlike a blocking
+  // reason — a bare code this page turns into a sentence via
+  // SAFETY_RELATIONSHIP_TEXT — a warning's copy names the household's own
+  // numbers, so the server sends the sentence and this renders it. Shown
+  // whatever the profile status is: the whole point of a warning is that the
+  // declaration SAVED and is in use, which is exactly when the review callout
+  // above stays quiet.
+  function driverSafetyWarnings() {
+    var profile = (driverResearch.designDraft || {}).driver_safety_profile || {};
+    var issues = Array.isArray(profile.issues) ? profile.issues : [];
+    return issues.filter(function(issue) {
+      return issue && issue.severity === 'warning' && issue.message;
+    });
+  }
+  function renderDriverSafetyWarnings() {
+    var warnings = driverSafetyWarnings();
+    if (!warnings.length) return '';
+    return '<div class="driver-research__section driver-research__confirm">' +
+      '<div><h3 class="setting-row__title">JTS is trusting your declaration</h3>' +
+        warnings.map(function(issue) {
+          return '<p class="setting-row__hint">' +
+            escapeHtml(String(issue.message)) + '</p>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
   // Deep link from the measurement wizard's profile hard stop. A bare fragment
   // is not enough: the callout lives inside a collapsible step card that is
   // only open when it is the current step, so this opens the owning step,
@@ -3620,6 +3642,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
       renderDriverSafetyReviewCallout(topology) +
+      renderDriverSafetyWarnings() +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
         renderComponentSettings(topology) +
