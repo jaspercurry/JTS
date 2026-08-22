@@ -271,6 +271,54 @@ def _acoustic_measurement_state(*, summed: bool = True) -> dict:
     }
 
 
+def test_active_config_path_from_statefile_reads_through_canonical_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ticket 2.11: setup_status must delegate, not keep a second parser.
+
+    Before the fold, ``active_config_path_from_statefile`` held its own copy
+    of the ``JASPER_CAMILLA_STATEFILE`` env-var name, default statefile path,
+    and ``config_path:`` regex. This monkeypatches
+    ``read_camilla_statefile_config_path`` under the name ``setup_status``
+    imports it as, then asserts both the passed-through argument and the
+    passed-through return value -- pinning the delegation: a reintroduced
+    private parser would never call this patched name, so it would not
+    observe the fake return value and this test would fail.
+    """
+
+    calls: list[str | Path | None] = []
+
+    def fake_reader(path: str | Path | None = None) -> str | None:
+        calls.append(path)
+        return "/from/canonical/reader.yml"
+
+    monkeypatch.setattr(setup_mod, "read_camilla_statefile_config_path", fake_reader)
+
+    result = setup_mod.active_config_path_from_statefile("/some/statefile.yml")
+
+    assert result == "/from/canonical/reader.yml"
+    assert calls == ["/some/statefile.yml"]
+
+
+def test_active_config_path_from_statefile_none_becomes_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical reader's ``None`` (not-found) folds to this wrapper's ``""``.
+
+    Preserves ``active_config_path_from_statefile``'s pre-fold ``str`` return
+    contract (empty-string sentinel, never ``None``) so its one caller inside
+    :func:`jasper.active_speaker.setup_status.read_active_speaker_setup_status`
+    (``if not config_path`` / ``config_path or ""`` / ``config_path or None``)
+    needed no change.
+    """
+
+    monkeypatch.setattr(
+        setup_mod, "read_camilla_statefile_config_path", lambda path=None: None
+    )
+
+    assert setup_mod.active_config_path_from_statefile() == ""
+
+
 def test_passive_speaker_is_ready_without_active_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

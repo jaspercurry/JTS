@@ -13,7 +13,6 @@ into the answer that UI, control, and multiroom gates consume.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -36,6 +35,7 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .design_draft import load_design_draft
+from .environment import read_camilla_statefile_config_path
 from .measurement import load_measurement_state
 from .profile import ActiveSpeakerConfigError
 from .runtime_contract import (
@@ -52,8 +52,6 @@ ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
     "automatic_commissioning_receipt"
 )
 
-_CAMILLA_STATEFILE_ENV = "JASPER_CAMILLA_STATEFILE"
-_DEFAULT_CAMILLA_STATEFILE = "/var/lib/camilladsp/outputd-statefile.yml"
 _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
     "active_speaker_commissioning.yml",
@@ -590,19 +588,16 @@ def commissioning_summary(
 def active_config_path_from_statefile(
     path: str | Path | None = None,
 ) -> str:
-    """Best-effort active CamillaDSP config path from the outputd statefile."""
+    """Best-effort active CamillaDSP config path from the outputd statefile.
 
-    statefile = Path(
-        path or os.environ.get(_CAMILLA_STATEFILE_ENV) or _DEFAULT_CAMILLA_STATEFILE
-    )
-    try:
-        text = statefile.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
-    if not match:
-        return ""
-    return match.group(1).strip().strip("'\"")
+    Delegates to :func:`jasper.active_speaker.environment.read_camilla_statefile_config_path`
+    — the canonical ``JASPER_CAMILLA_STATEFILE`` reader — rather than keeping a
+    second copy of its env-var name, default path, and ``config_path:`` regex.
+    ``""`` (not ``None``) on an unreadable/empty statefile, preserving this
+    wrapper's original contract for its caller below.
+    """
+
+    return read_camilla_statefile_config_path(path) or ""
 
 
 def _applied_layer_a_binding(
