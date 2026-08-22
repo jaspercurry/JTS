@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,31 @@ def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(
 
     assert packet["harmonics"]["available"] is False
     assert "harmonics" in _not_evaluated_fields(packet)
+
+
+@pytest.mark.parametrize("banked", ["[]", '["a list"]', '"a string"', "7"])
+def test_an_artifact_that_is_not_an_object_still_names_itself_in_the_honest_list(
+    tmp_path, banked
+):
+    """The honest list must have no silent gaps, including this one.
+
+    A file that is absent or unreadable carries a read reason; a file that
+    PARSED into something that is not an object carries the empty string,
+    because the read succeeded. The not_evaluated builder drops any entry whose
+    reason is falsy, so passing that empty string through would have removed
+    the row from the one block whose entire job is to have no gaps.
+    """
+    session = _bundle(tmp_path)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / HARMONICS_ARTIFACT).write_text(banked)
+
+    packet = build_crossover_evidence_packet(session)
+
+    assert packet["harmonics"]["available"] is False
+    assert packet["harmonics"]["reason"].strip()
+    assert "harmonics" in _not_evaluated_fields(packet)
+    for entry in packet["not_evaluated"]:
+        assert entry["reason"].strip(), entry["field"]
 
 
 @pytest.mark.parametrize("orders", [[], None, ["2"], [True], "23"])
@@ -616,27 +642,120 @@ def test_an_integrity_disagreement_is_disclosed_rather_than_dropped():
     )
 
 
-def test_the_ring_is_scoped_to_this_round_and_deduplicated_by_content(tmp_path):
-    """A rolling ring can hold another round's captures, and re-analyses of one."""
+def _ring(tmp_path: Path, rows: Sequence[tuple[str, str, str | None]]) -> Path:
+    """A capture ring on disk: ``(name, wav_sha256, session_id)`` per sidecar."""
     ring = tmp_path / "dumps"
     (ring / "sidecar").mkdir(parents=True)
     (ring / "wav").mkdir()
-    for name, sha, session in (
+    for name, sha, session in rows:
+        doc: dict[str, Any] = {"phase": "measure", "wav_sha256": sha}
+        if session is not None:
+            doc["jts_session_identity"] = {"session_id": session}
+        (ring / "sidecar" / f"{name}.json").write_text(json.dumps(doc))
+        (ring / "wav" / f"{name}.wav").write_bytes(b"")
+    return ring
+
+
+def test_the_ring_is_scoped_to_this_round_and_deduplicated_by_content(tmp_path):
+    """A rolling ring can hold another round's captures, and re-analyses of one."""
+    ring = _ring(tmp_path, [
         ("1_measure_a", "aaa", "mine"),
         ("2_measure_b", "aaa", "mine"),      # same capture, second analysis
         ("3_measure_c", "ccc", "theirs"),    # another round
         ("4_measure_d", "ddd", "mine"),
-    ):
-        (ring / "sidecar" / f"{name}.json").write_text(json.dumps({
-            "phase": "measure",
-            "wav_sha256": sha,
-            "jts_session_identity": {"session_id": session},
-        }))
-        (ring / "wav" / f"{name}.wav").write_bytes(b"")
+    ])
 
-    bound = he._bind_measure_captures(ring, "mine")
+    captures, scope = he._scope_captures(he._bind_measure_captures(ring), "mine")
 
-    assert [capture["wav_sha256"] for capture in bound] == ["aaa", "ddd"]
+    assert [capture["wav_sha256"] for capture in captures] == ["aaa", "ddd"]
+    assert scope["session_id"] == "mine"
+    # The scope reports the whole ring it chose from, not just what survived —
+    # otherwise a reader cannot tell a one-capture round from a one-capture
+    # SLICE of a busy ring.
+    assert scope["n_ring_captures"] == 3
+
+
+def test_an_unscoped_ring_holding_several_sessions_refuses_instead_of_pooling(tmp_path):
+    """The fail-open this instrument shipped with, pinned as the refusal it is.
+
+    Every capture is read against ONE rebuilt program, and the published drive
+    is that PROGRAM's, not the capture's. Pooling a neighbouring round's capture
+    therefore publishes the wrong level silently: measured on the shipped
+    corpus, one capture read against another session's program reported
+    -6.0/-26.0 dBFS where its own says -10.2/-30.2 — 4.2 dB, on the field this
+    module insists must never be published apart from the ratio.
+
+    Neither other gate can catch it. The program gate proves program-vs-STATE,
+    and every FIDELITY_FIELD is amplitude-invariant, which is why this needs a
+    gate of its own rather than trust.
+    """
+    ring = _ring(tmp_path, [
+        ("1_measure_a", "aaa", "session-one"),
+        ("2_measure_b", "bbb", "session-two"),
+    ])
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he._scope_captures(he._bind_measure_captures(ring), None)
+
+    assert excinfo.value.reason == he.RING_NOT_SCOPED_TO_ONE_SESSION
+    assert excinfo.value.evidence["distinct_session_ids"] == [
+        "session-one", "session-two",
+    ]
+    assert "amplitude-invariant" in excinfo.value.evidence["note"]
+
+
+def test_an_unscoped_ring_holding_an_unattributable_capture_refuses(tmp_path):
+    """A capture with no readable identity cannot be shown to belong here.
+
+    Distinct from the several-sessions case only in what the evidence says: a
+    missing identity is not a matching one, and admitting it would reopen the
+    hole for exactly the captures whose provenance is least knowable.
+    """
+    ring = _ring(tmp_path, [
+        ("1_measure_a", "aaa", "session-one"),
+        ("2_measure_b", "bbb", None),
+    ])
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he._scope_captures(he._bind_measure_captures(ring), None)
+
+    assert excinfo.value.reason == he.RING_NOT_SCOPED_TO_ONE_SESSION
+    assert excinfo.value.evidence["n_unattributed"] == 1
+
+
+def test_an_unscoped_ring_of_one_session_is_admitted_and_says_so(tmp_path):
+    """The case the unscoped default exists for stays workable, and is recorded.
+
+    A ring holding one round needs no scope to be unambiguous — but the artifact
+    still says WHICH session it turned out to be and by what rule, so "nobody
+    passed a scope" and "the scope was checked" are distinguishable afterwards.
+    """
+    ring = _ring(tmp_path, [
+        ("1_measure_a", "aaa", "only-one"),
+        ("2_measure_b", "bbb", "only-one"),
+    ])
+
+    captures, scope = he._scope_captures(he._bind_measure_captures(ring), None)
+
+    assert [capture["wav_sha256"] for capture in captures] == ["aaa", "bbb"]
+    assert scope["session_id"] == "only-one"
+    assert "no scope supplied" in scope["source"]
+
+
+def test_an_empty_ring_is_not_an_ambiguous_one(tmp_path):
+    """Nothing to pool is not the same finding as too much to pool.
+
+    A ring with no MEASURE capture must reach NO_ADMISSIBLE_CAPTURES, which
+    tells an operator to go and measure; routing it to the scope refusal would
+    send them to fix a scope that was never the problem.
+    """
+    ring = tmp_path / "dumps"
+    (ring / "sidecar").mkdir(parents=True)
+
+    captures, scope = he._scope_captures(he._bind_measure_captures(ring), None)
+
+    assert captures == []
+    assert scope["session_id"] is None
 
 
 def test_a_sidecar_with_no_wav_beside_it_is_skipped(tmp_path):
@@ -648,7 +767,7 @@ def test_a_sidecar_with_no_wav_beside_it_is_skipped(tmp_path):
         "phase": "measure", "wav_sha256": "aaa",
     }))
 
-    assert he._bind_measure_captures(ring, None) == []
+    assert he._bind_measure_captures(ring) == []
 
 
 def test_a_null_reading_never_reaches_json_as_a_number():
@@ -674,12 +793,89 @@ def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
     assert he.HARMONIC_ORDERS is not distortion.DEFAULT_HARMONIC_ORDERS
 
 
-def test_the_grid_the_session_volume_is_solved_over_covers_what_the_flow_composes():
-    """Non-positive only, because the composer clamps there; 0.5 dB steps."""
+def _program_at(downstream_db: float):
+    """A real MEASURE program composed at one session volume."""
+    from jasper.active_speaker.crossover_v2.programs import (
+        PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
+    )
+    from jasper.audio_measurement.program import (
+        FrequencyBand,
+        RoleBand,
+        build_measure_program,
+    )
+
+    return build_measure_program(
+        {"woofer": -6.0, "tweeter": -31.2},
+        (
+            RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
+            RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
+        ),
+        downstream_gain_db=downstream_db,
+        leading_pilot_gains_db=(-6.0 - PILOT_LEVEL_DELTA_DB, -6.0),
+        leading_pilot_role="woofer",
+        courtesy_prelude=courtesy_prelude_for_phase("measure"),
+    )
+
+
+@pytest.mark.parametrize("volume", [-20.0, -20.5, -40.0])
+def test_a_session_volume_on_the_solve_grid_is_recovered(volume):
+    """The half-dB reference volumes the grid does cover, solved by hash."""
+    state = _state(candidate={"program_id": _program_at(volume).program_id})
+
+    _program, solved, prelude = he.rebuild_measure_program(state, he_bands())
+
+    assert solved == pytest.approx(volume)
+    assert prelude is False
+
+
+@pytest.mark.parametrize("volume", [-24.7, -43.0, -59.9])
+def test_a_session_volume_off_the_solve_grid_refuses_and_names_the_real_cause(volume):
+    """The claim that used to sit on the grid was false, and the note misled.
+
+    `session_measurement_volume_db` returns `min(reference, loudest_cap)` as an
+    UNQUANTIZED float, and its reference half admits any value above the -60 dB
+    floor — so the true domain is (-60, 0] with no step, and a half-dB grid from
+    -40 cannot cover it. Refusing is the CORRECT behaviour; what was wrong was
+    the docstring saying the grid covered everything, and a refusal note that
+    offered two causes ("bands wrong", "not a MEASURE round") when neither is
+    what an operator on a real box has hit.
+
+    -43.0 is in here deliberately: it is ON the half-dB step but BELOW the
+    grid's -40 floor, so it isolates the range half of the claim from the
+    quantization half.
+    """
+    state = _state(candidate={"program_id": _program_at(volume).program_id})
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, he_bands())
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    note = excinfo.value.evidence["note"]
+    assert "not on the solve grid" in note
+    assert "unquantized float" in note
+    assert "-60 dB floor" in note
+    # The two causes that were the ONLY ones offered before are still named,
+    # because they are real — they are just no longer the whole list.
+    assert "driver bands supplied are wrong" in note
+    assert "does not describe a MEASURE round" in note
+
+
+def test_the_solve_grid_is_half_db_steps_from_minus_forty_to_zero():
+    """The grid's own shape, asserted apart from any claim about coverage."""
     assert he._DOWNSTREAM_GRID_DB[0] == -40.0
     assert he._DOWNSTREAM_GRID_DB[-1] == 0.0
     assert all(value <= 0.0 for value in he._DOWNSTREAM_GRID_DB)
     assert len(he._DOWNSTREAM_GRID_DB) == 81
+    # The composer's floor is -60, not -40, so the grid is a SUBSET of what the
+    # flow can produce. Pinned so the docstring's honesty cannot quietly rot
+    # back into "covers every value".
+    from jasper.active_speaker.seat_level_reference import (
+        seat_level_reference_volume_db,
+    )
+
+    assert seat_level_reference_volume_db is not None
+    assert he._DOWNSTREAM_GRID_DB[0] > -60.0
 
 
 def test_reading_a_capture_ring_never_raises_on_a_hand_edited_sidecar(tmp_path):
@@ -691,7 +887,7 @@ def test_reading_a_capture_ring_never_raises_on_a_hand_edited_sidecar(tmp_path):
     (ring / "sidecar" / "2_measure_b.json").write_text(json.dumps(["a list"]))
     (ring / "sidecar" / "3_measure_c.json").write_text(json.dumps({"phase": 7}))
 
-    assert he._bind_measure_captures(ring, None) == []
+    assert he._bind_measure_captures(ring) == []
 
 
 def test_a_median_over_nothing_is_nan_not_zero():

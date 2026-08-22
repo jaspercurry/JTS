@@ -348,6 +348,17 @@ let the next measurement dispose of it; a heuristic never vetoes an experiment.
 block carries it. Absent that run the block refuses and `not_evaluated` names
 it — so an empty block means nobody read the round, not that the round is clean.
 
+**Which captures it read, and why that is published.** The drive levels below
+come from the rebuilt program, not from each capture, so a capture from a
+neighbouring round would be published with this round's level — silently, and
+wrongly by several dB. `captures.scope` in the artifact says which session the
+reading was scoped to and how many captures the ring held to choose from. The
+tool scopes by the bundle's `session_id`; a ring it cannot scope (no session id
+in `info.json`, and captures from more than one session in the ring) is
+**refused** by name (`ring_not_scoped_to_one_session`, exit 2) rather than
+pooled. If you see that refusal, the bundle is missing its session id — it is
+not telling you the captures are bad.
+
 **What the number is.** `h2_below_fundamental_db` is that order's level **minus
 the fundamental's at the same excitation frequency** — the conventional "HD2 is
 46 dB down" reading, negative for a well-behaved driver. More negative is

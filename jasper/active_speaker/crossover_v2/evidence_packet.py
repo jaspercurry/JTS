@@ -487,8 +487,8 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
     (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
     through to the passthrough already — unlike in
-    :func:`~.feature_classification._finite`, which needs one because its check
-    includes ``int``.
+    :func:`~.feature_classification.finite_number`, which needs one because its
+    check includes ``int``.
 
     Scoped to the two blocks whose sources are written with a plain
     ``json.dumps``, and the rest of the exposure is real but NARROW and was
@@ -1390,7 +1390,17 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         return {
             "available": False,
             "status": "not_evaluated",
-            "reason": reason,
+            # NEVER the bare read reason. A file that is absent or unreadable
+            # carries one, but a file that PARSED into something that is not an
+            # object carries the empty string — the read succeeded — and the
+            # honest list drops any entry whose reason is falsy. That would be a
+            # silent gap in the one block whose whole job is to have none, so
+            # the reason is constructed here rather than passed through.
+            "reason": reason or (
+                f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
+                f"{type(raw).__name__}, not as a JSON object, so there is no "
+                "reading in it to publish"
+            ),
             "n_roles": 0,
         }
     banked_roles = raw.get("roles")
