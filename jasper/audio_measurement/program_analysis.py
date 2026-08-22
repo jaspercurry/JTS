@@ -260,49 +260,45 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # "was this sweep even heard".
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
-# How much better than its runner-up the winning anchor hypothesis must score
-# before `_resolve_anchor` is allowed to call the anchor RESOLVED. A separate
-# judgment from the floor above — that one asks "was the witness heard at all",
-# this one asks "did hearing it tell the two readings apart" — and a capture can
-# pass the first and fail this one, which is precisely issue #2644.
+# How many TIMES more present the winning anchor hypothesis's witness must be
+# than its runner-up's before `_resolve_anchor` is allowed to call the anchor
+# RESOLVED. A separate judgment from the floor above — that one asks "is this a
+# locate at all", this one asks "did it tell the two readings apart" — and a
+# capture can pass the first and fail this one, which is precisely issue #2644.
 #
-# **It is NOT a separator between two clean populations, and an earlier version
-# of this comment claimed it was.** That claim was falsified by the #2644
-# adversarial panel's own sweep: an un-attributed capture's separation is a
-# continuous function of ROOM LEVEL, not a property of the mis-lock. The witness
-# scores it compares are full-band (see `_resolve_anchor`'s note beside the
-# guard), so both hypotheses' confidences fall as the room gets louder, and they
-# fall by different amounts — the panel measured a monotone ramp from 0.0000 up
-# to 0.6463 on mis-locked captures that had ALL slid by exactly one pilot
-# spacing, including five inside the range this comment used to call empty
-# (0.0663 / 0.1532 / 0.2816 / 0.3791 / 0.6463). So captures escape this margin,
-# and a bigger number would not close the door: the ramp is continuous.
+# **A RATIO, not a difference — because the ABSOLUTE scale is unusable, not
+# because the ratio is invariant.** `_locate_in_window`'s `presence` is
+# normalized by its OWN window's energy, so a correctly-attributed capture reads
+# 0.3572 in a quiet room and 0.0018 in a loud one across this module's
+# 0.003–0.65 fixture ramp. No absolute number sits above that quiet end and
+# below the loud one, which is why the subtraction this replaces had to
+# apologise for being "a continuous function of ROOM LEVEL". Comparing the two
+# readings instead cancels most of that level term — but only MOST: they are
+# different slices seconds apart, whose norms measure 13.3% apart on both
+# 2026-08-21 captures. The honest claim is the weaker one: a ratio is far less
+# level-dependent than a difference, NOT level-independent.
 #
-# What makes 0.05 a safe number is not exhaustiveness — it is that the room
-# level which widens the gap ALSO trips the rungs below this one, independently.
-# The panel constructed ~160 captures with flip controls and found ZERO rows
-# where removing only the mis-lock removed the wiring hard stop. This module's
-# own fixture agrees: over the 0.003–0.65 room-tone ramp
-# `test_a_mislocking_room_has_already_failed_a_rung_below` walks, every capture
-# that mis-locked (0.10 and up) had `gain_plan.snr_floor_ok` False as well, and
-# the room was already failing that gate at 0.05, BEFORE the first mis-lock. The
-# margin is therefore the layer that removes the *specific* harm #2644 filed —
-# a household told to rewire on a coin flip — and not a claim to catch every
-# mis-locked capture; the ones it misses are refused on other evidence, and that
-# test is what pins it.
+# What justifies 50 is the measured population gap. Winner-over-runner-up:
 #
-# What IS measured, and asserted by
-# `test_the_margin_brackets_the_two_measured_populations`, is narrower and
-# honest: on this repo's QUIET-ROOM fixtures the margin brackets the separation
-# a correctly-attributed capture shows (0.8488 here; 0.818 on 2026-08-16's
-# accepted round) against the one the reconstructed incident shows (0.0005 here;
-# 0.0034 on the refused round). That bracket is a floor sanity check on the
-# constant, not a population boundary.
+#   cannot discriminate  garbage 1.07 · #2644 twin 3.50-3.51 · silent-driver 12.4
+#   genuinely resolved   197-11500 (fixture ramp) · 214.17 and 404.40 (the two
+#                        real jts3 captures of 2026-08-21) · 61857 (VERIFY)
+#
+# 50 is the round number nearest that gap's geometric centre (sqrt(12.4 x 197) =
+# 49.4): 4.0x clear of the worst measured non-discrimination, 3.9x clear of the
+# weakest. Only the TWIN side is flat (3.51/3.51/3.50 across a 200x room-level
+# ramp — both windows hold a same-shape stimulus and correlation is
+# scale-invariant); the resolved side spans 58x over that ramp, and a low-SNR
+# capture can walk it below 50. A known limit, not a
+# refutation — the fixtures we own are a hypothesis about the population, never
+# a bound on it, and what makes an escapee survivable is unchanged from #2644:
+# `test_a_mislocking_room_has_already_failed_a_rung_below`.
 #
 # PROVISIONAL in the same sense as the constants above. `ambiguous=`,
-# `runner_up=`, and `runner_up_anchor=` on the `program_analysis.anchor` event
-# are what a field population would be counted from.
-ANCHOR_DISCRIMINATION_MARGIN = 0.05
+# `presence=`, `runner_up_presence=`, and `runner_up_anchor=` on the
+# `program_analysis.anchor` event are what a field population would be counted
+# from.
+ANCHOR_DISCRIMINATION_RATIO = 50.0
 
 # `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`'s twin
 # (#1971) — the G2 xrun detector's ceiling, duplicated here for the same
@@ -2396,15 +2392,21 @@ def _resolve_anchor(
     same :func:`_locate_in_window` the downstream locate uses. The anchor we
     commit to is by construction the anchor the segments actually locate under.
 
+    **What that witness is scored ON is the whole decision** (2026-08-21):
+    readings are ranked by :func:`_locate_in_window`'s ``presence``, never by
+    its peakedness margin — which cannot say whether the witness is there, and
+    until then was the only score this seam returned.
+
     This CANNOT manufacture a passing capture. It only changes WHERE the
     analyzer looks; the confidence it reports is still the real measured
     correlation at the chosen place, and every downstream gate
     (``SWEEP_LOCATE_CONFIDENCE_FLOOR``, the residual ceiling, linearity) is
     untouched. Re-anchoring further requires POSITIVE evidence — the winning
-    candidate's witness must clear that same "was this even heard" floor — so
-    a capture containing no locatable program scores every candidate in the
-    noise, declines to move at all, and is refused exactly as before. See
-    ``tests/test_audio_measurement_anchor_resolution.py``'s garbage cases.
+    candidate's witness locate must clear that same floor, i.e. be a sharp lag
+    rather than a wash — so a capture containing no locatable program declines
+    to move at all and is refused exactly as before. See
+    ``tests/test_audio_measurement_anchor_resolution.py``'s garbage cases, where
+    that floor and not the ranking is what holds the anchor still.
 
     Degenerate shapes keep today's behavior byte-for-byte: a program whose
     first stimulus has no shape-sibling (legacy pilot-less VERIFY, where the
@@ -2416,13 +2418,14 @@ def _resolve_anchor(
     window somewhere the witness's own shape does NOT recur — and on CHECK that
     holds in exactly one of the two shift directions (see the witness-ordering
     comment below). In the other, both hypotheses land the window on a real
-    pilot and score alike: 2026-08-16's round 3 separated its two candidates by
-    **0.0034** (0.9007 vs 0.8973), where the round that passed two hours earlier
-    on the same unchanged speaker separated its own by 0.818. An argmax over
-    that pair is a coin flip, and losing it slid every per-driver window one
-    pilot spacing — so the analysis reported energy in the wrong driver's band
-    and CHECK told the household to check its speaker wiring. Below
-    :data:`ANCHOR_DISCRIMINATION_MARGIN` the third return value is True: the
+    pilot, and because correlation is scale-invariant they then score alike on
+    presence too: this module's reconstruction of 2026-08-16's round 3 separates
+    such a pair by **3.5x**, where a reading that genuinely found the witness
+    separates its own by 197x or more. An argmax over the near pair is a coin
+    flip, and losing it slid every per-driver window one pilot spacing — so the
+    analysis reported energy in the wrong driver's band and CHECK told the
+    household to check its speaker wiring. Below
+    :data:`ANCHOR_DISCRIMINATION_RATIO` the third return value is True: the
     committed anchor is unchanged (these numbers are still the measured ones)
     but the capture is declared un-attributed, and the CHECK ladder refuses it
     as retriable rather than reading a wiring verdict off a coin flip.
@@ -2477,61 +2480,64 @@ def _resolve_anchor(
     if witness_stim is None:
         witness_stim = segment_stimulus(witness)
         stimuli[witness.segment_id] = witness_stim
-    scored: list[tuple[float, ProgramSegment, int]] = []
+    scored: list[tuple[float, float, ProgramSegment, int]] = []
     for seg in candidates:
         offset = arrival - seg.start_sample
-        _located, confidence = _locate_in_window(
+        _located, confidence, presence = _locate_in_window(
             capture, witness_stim, offset + witness.start_sample,
             witness.n_samples, sample_rate=sample_rate,
         )
-        scored.append((confidence, seg, offset))
+        scored.append((presence, confidence, seg, offset))
+    # Ranked on PRESENCE, not on the peakedness margin — see the docstring above
+    # and `_locate_in_window`. The margin is still read, at `corroborated`
+    # below, for the judgment it CAN make.
+    #
     # `max` keeps the FIRST maximum, so an exact tie holds the structurally
     # first candidate — i.e. the pre-#2093 choice — rather than drifting. The
     # runner-up is then the best of what is LEFT (again first-maximum), which
-    # is the same confidence `sorted(...)[1]` gave but keeps the losing row's
+    # is the same presence `sorted(...)[1]` gave but keeps the losing row's
     # segment and offset in hand — see the event line below for why.
-    best_index, (best_confidence, best_seg, best_offset) = max(
+    best_index, (best_presence, best_confidence, best_seg, best_offset) = max(
         enumerate(scored), key=lambda item: item[1][0]
     )
-    runner_up, runner_up_seg, runner_up_offset = max(
+    runner_up_presence, runner_up, runner_up_seg, runner_up_offset = max(
         (row for index, row in enumerate(scored) if index != best_index),
         key=lambda item: item[0],
     )
-    # Re-anchoring requires POSITIVE evidence that the witness was heard, not
-    # merely that one candidate out-scored the other. When the witness itself
-    # never played — a silent driver in CHECK, or a capture with no program in
-    # it at all — every candidate scores in the noise and the argmax between
-    # them is a coin flip that could shift the timeline for no reason. The
-    # floor is the module's existing "was this even heard" judgment
-    # (:data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`), not a second number: below it
-    # there is nothing to corroborate against, so the pre-#2093 reading stands
-    # and the capture keeps failing on its own merits.
+    # Re-anchoring requires POSITIVE evidence that the winning candidate's
+    # witness locate is a LOCATE — a lag sharp against its own neighbourhood —
+    # and not the shape a correlator makes out of room noise. When the witness
+    # never played (a silent driver in CHECK, a capture with no program in it at
+    # all) nothing in the window is sharp, and re-anchoring on the argmax of two
+    # noise readings would shift the timeline for no reason. That is the module's
+    # existing "was this even heard" judgment, on the quantity it was calibrated
+    # for (:data:`SWEEP_LOCATE_CONFIDENCE_FLOOR` against the peakedness margin),
+    # and it is NOT redundant with the presence ranking: on the garbage-capture
+    # fixture that ranking prefers the LATER candidate and this floor is the only
+    # thing that stops the move. It is equally NOT sufficient — a sharp lag is
+    # not the witness — which is the 2026-08-21 reading it used to be given.
     corroborated = best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     if not corroborated:
         best_seg, best_offset = first, arrival - first.start_sample
     # ...and when it IS corroborated, corroboration alone is not discrimination.
-    # Two candidates BOTH clearing the "was this heard" floor, separated by less
-    # than :data:`ANCHOR_DISCRIMINATION_MARGIN`, means the witness landed on a
-    # real stimulus under either reading and the argmax between them carries no
-    # information (issue #2644). The commitment below is left exactly as it was
-    # — a near-tie is not a reason to pick the OTHER one — but the capture is
-    # flagged un-attributed so a consuming phase refuses it as retriable instead
-    # of grading per-driver windows the anchor may have slid a whole pilot apart.
+    # Two candidates both clearing that floor whose witness presence sits within
+    # a factor of :data:`ANCHOR_DISCRIMINATION_RATIO` means the witness landed on
+    # a real stimulus of its own shape under EITHER reading, and the argmax
+    # between them carries no information (issue #2644 — CHECK's witness has a
+    # same-shape twin one gap later, so a one-spacing rival anchor lands the
+    # window on it). The commitment below is left exactly as it was — a near-tie
+    # is not a reason to pick the OTHER one — but the capture is flagged
+    # un-attributed so a consuming phase refuses it as retriable instead of
+    # grading per-driver windows the anchor may have slid a whole pilot apart.
     #
-    # The witness scores above are FULL-BAND on purpose — `_locate_in_window`
-    # and `_locate_segments` were left alone by #2644, which band-limited only
-    # the anchor locate. That asymmetry is why this guard is not made redundant
-    # by the band-limit: because the witness confidences carry the room's
-    # out-of-band energy in their denominator, BOTH of them fall as the room
-    # gets louder, and how far apart they land is a function of room level
-    # rather than of the schedule. So the separation compared here is not a
-    # constant property of a mis-locked capture — see
-    # :data:`ANCHOR_DISCRIMINATION_MARGIN` for what that costs and why it is
-    # survivable.
+    # A ratio rather than a difference for the reason
+    # :data:`ANCHOR_DISCRIMINATION_RATIO` measures out; written as a
+    # multiplication so a runner-up presence of exactly zero (a witness window of
+    # digital silence) is a resolved anchor rather than a division by zero.
     ambiguous = (
         corroborated
         and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-        and (best_confidence - runner_up) < ANCHOR_DISCRIMINATION_MARGIN
+        and best_presence < runner_up_presence * ANCHOR_DISCRIMINATION_RATIO
     )
     corrected = best_seg.segment_id != first.segment_id
     # One line per analyzed capture (this runs once per capture, never in a
@@ -2547,6 +2553,9 @@ def _resolve_anchor(
     # pre-#2093 reading, `arrival - first.start_sample`), so their DIFFERENCE
     # is the separation between the two candidate timelines: one pilot spacing
     # in the shape #2644 describes.
+    #
+    # `presence=` is the term the choice is MADE on; `confidence=` keeps its old
+    # meaning, so a line whose `runner_up=` exceeds it is 2026-08-21's shape.
     runner_up_shift_ms = round(
         (runner_up_offset - (arrival - first.start_sample)) / sample_rate * 1000.0, 1
     )
@@ -2559,6 +2568,8 @@ def _resolve_anchor(
         anchor=best_seg.segment_id,
         witness=witness.segment_id,
         candidates=len(candidates),
+        presence=round(best_presence, 6),
+        runner_up_presence=round(runner_up_presence, 6),
         confidence=round(best_confidence, 4),
         runner_up=round(runner_up, 4),
         runner_up_anchor=runner_up_seg.segment_id,
@@ -2593,7 +2604,7 @@ def _global_offset(
     the anchor the offset is pinned to (the program's first stimulus on every
     capture where that reading holds). The fourth return value is that
     arbitration's own honesty flag: True when the evidence could not tell the
-    interpretations apart (see :data:`ANCHOR_DISCRIMINATION_MARGIN`).
+    interpretations apart (see :data:`ANCHOR_DISCRIMINATION_RATIO`).
     """
     from scipy.signal import resample_poly
 
@@ -2645,7 +2656,7 @@ def _locate_in_window(
     n_samples: int,
     *,
     sample_rate: int,
-) -> tuple[int, float]:
+) -> tuple[int, float, float]:
     """Matched-filter ``stim`` at ``scheduled`` ± :data:`SEGMENT_SEARCH_S`.
 
     The ONE place the per-segment search geometry lives: :func:`_locate_segments`
@@ -2654,20 +2665,33 @@ def _locate_in_window(
     "the anchor these segments actually locate under". Two copies of this
     window would let the choice and the consequence drift apart silently.
 
-    A window too short to hold ``stim`` yields ``(scheduled, 0.0)`` — the
-    schedule's own guess with zero confidence, never a located claim.
+    Returns BOTH of :class:`~jasper.capture_relay.alignment.AlignmentResult`'s
+    scores, because they answer different questions and returning only the first
+    is what produced the 2026-08-21 mis-anchor. ``confidence`` is its peakedness
+    margin, ``(peak - secondary) / peak``: "is the winning lag sharp against its
+    own neighbourhood", which is what :data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`
+    grades — and NOT whether ``stim`` is here at all, because this window spans
+    only ~61 ms of lags and over that little of the lag axis the ratio of two
+    ROOM-NOISE correlation values is an ordinary 0.6-0.8. ``presence`` is its
+    ``peak``: the normalized correlation SIMILARITY at that lag, which does say.
+    On the 2026-08-21 jts3 captures the window holding ``sweep_w`` read 0.5394
+    against 0.0025 for one holding only guard silence, while their peakedness
+    sat 0.008 apart the WRONG way round.
+
+    A window too short to hold ``stim`` yields ``(scheduled, 0.0, 0.0)`` — the
+    schedule's own guess with zero of either score, never a located claim.
     """
     search = int(round(SEGMENT_SEARCH_S * sample_rate))
     lo = max(0, scheduled - search)
     hi = min(capture.size, scheduled + n_samples + search)
     window = capture[lo:hi]
     if window.size < stim.size:
-        return scheduled, 0.0
+        return scheduled, 0.0, 0.0
     res = _locate(
         window, stim, sample_rate=sample_rate,
         max_capture_s=window.size / sample_rate + 1.0,
     )
-    return lo + int(res.lag_samples), float(res.confidence)
+    return lo + int(res.lag_samples), float(res.confidence), float(res.peak)
 
 
 def _locate_segments(
@@ -2686,7 +2710,10 @@ def _locate_segments(
             if stim is None:
                 stim = segment_stimulus(seg)
                 stimuli[seg.segment_id] = stim
-            located, confidence = _locate_in_window(
+            # `presence` is the anchor arbitration's term, not this one's: every
+            # gate on `SegmentLocation.confidence` is calibrated on the
+            # peakedness margin, so recording the other would move all of them.
+            located, confidence, _presence = _locate_in_window(
                 capture, stim, scheduled, seg.n_samples, sample_rate=sample_rate,
             )
             seg_samples = capture[located:located + seg.n_samples]

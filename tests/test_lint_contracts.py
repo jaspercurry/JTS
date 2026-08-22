@@ -1468,7 +1468,7 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_511,
+    "jasper/audio_measurement/program_analysis.py": 7_538,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its
@@ -1561,6 +1561,39 @@ MAX_LINES_BY_PATH = {
     # `capture_dispatch._pilot_diag_fields`, the emit to the flow (+17, above).
     # The topology pins above did not move this file, so this bump stacks on
     # nothing: 7,374 is still the number it started from.
+    #
+    # 2026-08-21 (the anchor's witness score was measuring the wrong thing):
+    # `program_analysis` 7,511 -> 7,538. +27 net (116 added, 89 removed),
+    # counted MECHANICALLY off the diff. Of the 116 added: 69 comment, 2 blank,
+    # 32 docstring prose, 13 executable — and 11 of those 13 REPLACE the line
+    # above them, so the executable net is **+2**: the two new fields on the
+    # `program_analysis.anchor` event. Everything else is one seam returning a
+    # second number it was already computing and throwing away.
+    #
+    # What earned it: a jts3 per-driver MEASURE round failed 3/3 with
+    # `drift_baselines_disagree`, having re-anchored the timeline a full pilot
+    # spacing (-1309.9 ms) on a 0.0076 lead. `_locate_in_window` returned only
+    # `AlignmentResult.confidence` — a PEAKEDNESS margin — and over the ~61 ms
+    # of lags a per-segment window spans that margin cannot tell an empty
+    # window from an occupied one: the winner's `sweep_w` window held guard
+    # silence and scored 0.7386 against 0.7310 for the window holding the
+    # sweep. The aligner's OTHER score, the similarity it already returns,
+    # separates the same two windows 214-fold.
+    #
+    # No seam to cut, and the ratchet's usual remedy would make this worse:
+    # `_locate_in_window`'s own docstring is the "ONE place the per-segment
+    # search geometry lives", and the whole defect was a caller reading the
+    # wrong one of two scores at that seam. The prose is therefore concentrated
+    # THERE — which of the aligner's two numbers answers which question, with
+    # the measured pair — plus the constant it forced from a difference to a
+    # ratio, whose reason is a measured population gap (and an explicit note on
+    # what the ratio does NOT buy) that a reader cannot re-derive and will
+    # otherwise "simplify" back into a subtraction. Every
+    # other site that would have restated it is a cross-reference instead, which
+    # is why the two largest hunks are near-swaps rather than growth: the retired
+    # constant's block is 38 removed against 34 added, and the guard block 33
+    # against 36. The +27 is concentrated in `_locate_in_window` (+13) — the
+    # seam that was returning the wrong number.
 }
 
 
