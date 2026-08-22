@@ -2059,6 +2059,45 @@ async def _load_profile_config(
     )
 
 
+def _sound_page_island(*, page_mode: str, follower: bool) -> str:
+    """The one ``sound-page-data`` island both /sound/ shells render.
+
+    Carries the crossover vocabulary the page may OFFER, read from the compiler
+    rather than restated in the module: the editor's filter and slope pickers
+    are built from these lists, so a value the compiler cannot build is never
+    presented, and widening
+    :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
+    :data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS` widens the page
+    with no edit here. The defaults ride along because the picker must
+    pre-select the same member ``crossover_preview`` would fill in.
+    """
+
+    from jasper.active_speaker.crossover_preview import (
+        DEFAULT_FILTER_TYPE,
+        DEFAULT_SLOPE_DB_PER_OCTAVE,
+    )
+    from jasper.active_speaker.staging import (
+        supported_declaration_filter_types,
+        supported_declaration_slopes_db_per_octave,
+    )
+
+    return json_island(
+        "sound-page-data",
+        {
+            "mode": page_mode,
+            "follower": follower,
+            "crossover_vocabulary": {
+                "filter_types": list(supported_declaration_filter_types()),
+                "slopes_db_per_octave": list(
+                    supported_declaration_slopes_db_per_octave()
+                ),
+                "default_filter_type": DEFAULT_FILTER_TYPE,
+                "default_slope_db_per_octave": DEFAULT_SLOPE_DB_PER_OCTAVE,
+            },
+        },
+    )
+
+
 def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     """Render one split Sound page for a bonded active follower.
 
@@ -2085,10 +2124,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
         if leader_sound_url
         else ""
     )
-    page_island = json_island(
-        "sound-page-data",
-        {"mode": page_mode, "follower": True},
-    )
+    page_island = _sound_page_island(page_mode=page_mode, follower=True)
     title = "EQ" if page_mode == "eq" else "Sound setup"
     local_setup = (
         '<div id="view-body"></div>'
@@ -2195,10 +2231,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 </main>
 """
     )
-    page_island = json_island(
-        "sound-page-data",
-        {"mode": page_mode, "follower": False},
-    )
+    page_island = _sound_page_island(page_mode=page_mode, follower=False)
     body = editor_chrome + page_island + (
         '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
     )

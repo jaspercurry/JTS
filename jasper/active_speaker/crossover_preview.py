@@ -48,8 +48,14 @@ DEFAULT_CROSSOVER_PREVIEW_PATH = Path(
 CROSSOVER_PREVIEW_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"
 
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
-_DEFAULT_FILTER_TYPE = "Linkwitz-Riley"
-_DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
+#: What a candidate that declares no filter/slope is previewed and compiled as.
+#: Public because the /sound/ crossover editor must pre-select the SAME member
+#: of the offered vocabulary this module would fill in — a second default in the
+#: page would let the editor show one filter and the compiler build another.
+#: Both are members of the compiler's own vocabulary, pinned by
+#: ``tests/test_crossover_declaration.py``.
+DEFAULT_FILTER_TYPE = "Linkwitz-Riley"
+DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
 
 
 def _utc_now() -> str:
@@ -256,13 +262,13 @@ def _filter_type(candidate: Mapping[str, Any]) -> str:
     raw = candidate.get("filter_type")
     if isinstance(raw, str) and raw.strip():
         return " ".join(raw.split())[:80]
-    return _DEFAULT_FILTER_TYPE
+    return DEFAULT_FILTER_TYPE
 
 
 def _slope(candidate: Mapping[str, Any]) -> float:
     return (
         _finite_positive(candidate.get("slope_db_per_octave"))
-        or _DEFAULT_SLOPE_DB_PER_OCTAVE
+        or DEFAULT_SLOPE_DB_PER_OCTAVE
     )
 
 

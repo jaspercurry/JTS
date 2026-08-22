@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 import yaml as yaml_lib
 
 import jasper.active_speaker.staging as staging_mod
@@ -26,7 +27,27 @@ from jasper.active_speaker import (
     load_staged_startup_config,
     stage_protected_startup_config,
 )
-from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.crossover_preview import (
+    DEFAULT_FILTER_TYPE,
+    DEFAULT_SLOPE_DB_PER_OCTAVE,
+)
+from jasper.active_speaker.design_draft import (
+    DRIVER_RESEARCH_KIND,
+    ActiveSpeakerDesignDraftError,
+    build_design_draft,
+    normalise_manual_settings,
+)
+from jasper.active_speaker.profile import (
+    SUPPORTED_CROSSOVER_TYPES,
+    SUPPORTED_LR_ORDERS,
+    ActiveSpeakerConfigError,
+)
+from jasper.active_speaker.staging import (
+    declared_filter_type_compiles,
+    declared_slope_db_per_octave_compiles,
+    supported_declaration_filter_types,
+    supported_declaration_slopes_db_per_octave,
+)
 from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
@@ -389,6 +410,174 @@ def test_stage_protected_startup_config_uses_crossover_preview_frequency(
     assert payload["config"]["tweeter_protective_highpass_hz"] == 6400
     assert "freq: 3200.0000" in text
     assert "freq: 6400.0000" in text
+
+
+# --- The vocabulary /sound/ may OFFER ----------------------------------------
+#
+# The editor used to offer a wider vocabulary than this module builds
+# ("Butterworth" in the filter picker, any multiple of 6 dB/octave in a free
+# slope field), and the mismatch surfaced only as the
+# ``crossover_preview_filter_unsupported`` blocker several screens later. The
+# offer is derived now, so these pin the DERIVATION rather than today's
+# membership: widening the supported sets must move the offer with them.
+
+
+def test_offered_filter_types_are_one_per_supported_target_type() -> None:
+    offered = supported_declaration_filter_types()
+
+    assert len(offered) == len(SUPPORTED_CROSSOVER_TYPES)
+    assert {
+        staging_mod._normalise_filter_type(spelling) for spelling in offered
+    } == SUPPORTED_CROSSOVER_TYPES
+
+
+def test_offered_slopes_are_one_per_supported_order_ascending() -> None:
+    offered = supported_declaration_slopes_db_per_octave()
+
+    assert list(offered) == sorted(offered)
+    assert {
+        staging_mod._slope_to_lr_order(slope) for slope in offered
+    } == SUPPORTED_LR_ORDERS
+
+
+def test_a_supported_filter_with_no_declared_spelling_is_loud(monkeypatch) -> None:
+    """Silently omitting it would narrow the offer back to what it was.
+
+    That silence is exactly the defect the derived offer exists to end, so the
+    honest failure for "the compiler grew a filter Sound cannot name" is a
+    raise, not a shorter list.
+    """
+    monkeypatch.setattr(
+        staging_mod,
+        "SUPPORTED_CROSSOVER_TYPES",
+        SUPPORTED_CROSSOVER_TYPES | {"Bessel"},
+    )
+
+    with pytest.raises(ActiveSpeakerConfigError, match="Bessel"):
+        supported_declaration_filter_types()
+
+
+def test_everything_offered_compiles_and_so_do_household_spellings() -> None:
+    for spelling in supported_declaration_filter_types():
+        assert declared_filter_type_compiles(spelling)
+    # Wider than the offer on purpose: a declaration written by hand or by the
+    # research assistant may spell the same filter differently.
+    assert declared_filter_type_compiles("LR")
+    assert declared_filter_type_compiles("linkwitz riley")
+    assert not declared_filter_type_compiles("Butterworth")
+    assert not declared_filter_type_compiles("")
+    assert not declared_filter_type_compiles(None)
+
+    for slope in supported_declaration_slopes_db_per_octave():
+        assert declared_slope_db_per_octave_compiles(slope)
+    assert not declared_slope_db_per_octave_compiles(18)
+    assert not declared_slope_db_per_octave_compiles(6)
+    assert not declared_slope_db_per_octave_compiles(0)
+    assert not declared_slope_db_per_octave_compiles("twenty-four")
+
+
+def test_preview_defaults_are_members_of_the_offer() -> None:
+    """The /sound/ editor pre-selects these.
+
+    A default outside the offer would render a picker with nothing selected and
+    then compile as something the household never saw.
+    """
+    assert DEFAULT_FILTER_TYPE in supported_declaration_filter_types()
+    assert DEFAULT_SLOPE_DB_PER_OCTAVE in supported_declaration_slopes_db_per_octave()
+
+
+def test_an_alias_for_an_unsupported_filter_is_not_a_filter(monkeypatch) -> None:
+    """``"lr"`` is an alias, not a second owner of what compiles."""
+    monkeypatch.setattr(staging_mod, "SUPPORTED_CROSSOVER_TYPES", {"Bessel"})
+
+    assert not declared_filter_type_compiles("LR")
+    assert not declared_filter_type_compiles("Linkwitz-Riley")
+
+
+def _preview_with_filter(
+    topology: OutputTopology, *, filter_type: object, slope: object
+) -> dict:
+    """A preview whose crossovers declare ``filter_type`` / ``slope``.
+
+    Patched onto a valid preview on purpose: since ticket 1.7 the design draft
+    REFUSES a vocabulary the compiler cannot build, so the only way to hand
+    ``compile_preset_from_crossover_preview`` a bad one is to write it past the
+    door that now stops it.
+    """
+
+    preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
+    for group in preview["groups"]:
+        for crossover in group["crossovers"]:
+            for entry in crossover["filters"]:
+                entry["filter_type"] = filter_type
+                entry["slope_db_per_octave"] = slope
+    return preview
+
+
+def test_every_entry_accepted_crossover_vocabulary_compiles() -> None:
+    """The entry gate accepts only what this compiler builds.
+
+    ``crossover_preview_filter_unsupported`` is the blocker the design draft's
+    entry-time refusal exists to make unreachable from /sound/: anything the
+    wizard can now save must clear it.
+    """
+    topology = _topology()
+    for filter_type in supported_declaration_filter_types():
+        for slope in supported_declaration_slopes_db_per_octave():
+            preview = _preview_with_filter(
+                topology, filter_type=filter_type, slope=slope
+            )
+
+            preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+                topology, preview
+            )
+
+            codes = {issue["code"] for issue in issues}
+            assert "crossover_preview_filter_unsupported" not in codes, issues
+            assert preset is not None, issues
+            assert preset.crossover_regions[0].order == slope / 6
+
+
+def test_the_late_filter_blocker_is_now_unreachable_from_the_draft() -> None:
+    """Same value, two gates — and the entry gate is the one that fires first.
+
+    The compile-time blocker stays as defence in depth for a draft written
+    before the entry gate existed; what changed is that it is no longer the
+    FIRST place a household hears about a filter JTS cannot build.
+    """
+    topology = _topology()
+    for filter_type, slope in (("Butterworth", 24), ("Linkwitz-Riley", 18)):
+        preview = _preview_with_filter(topology, filter_type=filter_type, slope=slope)
+
+        _preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+            topology, preview
+        )
+
+        blocker = next(
+            issue
+            for issue in issues
+            if issue["code"] == "crossover_preview_filter_unsupported"
+        )
+        # The blocker names the same sets the entry gate offers, read from the
+        # accessors rather than spelled in prose that 4.1 would leave stale.
+        for offered in (
+            *supported_declaration_filter_types(),
+            *(f"{s:g}" for s in supported_declaration_slopes_db_per_octave()),
+        ):
+            assert offered in blocker["message"], (offered, blocker)
+        with pytest.raises(ActiveSpeakerDesignDraftError):
+            normalise_manual_settings(
+                {
+                    "crossover_candidates": [
+                        {
+                            "between_roles": ["woofer", "tweeter"],
+                            "frequency_hz": 2500,
+                            "filter_type": filter_type,
+                            "slope_db_per_octave": slope,
+                        }
+                    ]
+                }
+            )
 
 
 def test_compile_preset_from_crossover_preview_sets_polarity_and_delay() -> None:

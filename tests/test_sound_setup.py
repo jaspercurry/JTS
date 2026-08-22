@@ -725,6 +725,111 @@ def test_index_html_renders_setup_page_mode_without_eq_chrome():
     assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
 
 
+def _island_payload(html: str) -> dict:
+    marker = 'id="sound-page-data"'
+    start = html.index(">", html.index(marker)) + 1
+    return json.loads(html[start : html.index("</script>", start)])
+
+
+def test_sound_page_island_serves_the_compilers_crossover_vocabulary():
+    """The page offers exactly what the compiler builds, and is TOLD what that is.
+
+    Before this the filter picker carried its own list (including a Butterworth
+    the compiler refuses) and the slope was a free ``step="6"`` field, so the
+    editor could author a crossover that only failed at
+    ``crossover_preview_filter_unsupported`` several screens later. Deriving the
+    offer here is what makes widening
+    :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
+    ``SUPPORTED_LR_ORDERS`` reach the wizard with no edit in main.js.
+    """
+    from jasper.active_speaker.crossover_preview import (
+        DEFAULT_FILTER_TYPE,
+        DEFAULT_SLOPE_DB_PER_OCTAVE,
+    )
+    from jasper.active_speaker.staging import (
+        supported_declaration_filter_types,
+        supported_declaration_slopes_db_per_octave,
+    )
+
+    vocabulary = _island_payload(
+        sound_setup._index_html(page_mode="setup").decode()
+    )["crossover_vocabulary"]
+
+    assert vocabulary["filter_types"] == list(supported_declaration_filter_types())
+    assert vocabulary["slopes_db_per_octave"] == list(
+        supported_declaration_slopes_db_per_octave()
+    )
+    assert vocabulary["default_filter_type"] == DEFAULT_FILTER_TYPE
+    assert vocabulary["default_slope_db_per_octave"] == DEFAULT_SLOPE_DB_PER_OCTAVE
+
+
+def test_bonded_follower_sound_page_serves_the_same_crossover_vocabulary(monkeypatch):
+    # A bonded follower keeps its LOCAL driver domain, so it mounts the same
+    # crossover editor and needs the same offer.
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+
+    solo = _island_payload(sound_setup._index_html(page_mode="setup").decode())
+    assert solo["follower"] is True
+    assert solo["crossover_vocabulary"]["filter_types"]
+    assert solo["crossover_vocabulary"]["slopes_db_per_octave"]
+
+
+def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The refusal reaches the operator's own surface, not just the module.
+
+    A save carrying a filter the compiler cannot build must come back 400 with
+    the field named and the offer spelled out, instead of being persisted and
+    then blocked at ``crossover_preview_filter_unsupported`` several screens
+    later.
+    """
+    from jasper.output_topology import output_topology_mutation
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+        str(tmp_path / "active_speaker_design_draft.json"),
+    )
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    with output_topology_mutation(topology_path) as mutation:
+        mutation.save(mono_output_topology(card_id=None))
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        refused = json_post_with_csrf(
+            base,
+            "/active-speaker/design-draft",
+            {
+                "expected_revision": 0,
+                "operator_inputs": {"woofer": "W", "tweeter": "T"},
+                "manual_settings": {
+                    "crossover_candidates": [
+                        {
+                            "between_roles": ["woofer", "tweeter"],
+                            "frequency_hz": 2500,
+                            "filter_type": "Butterworth",
+                            "slope_db_per_octave": 24,
+                        }
+                    ]
+                },
+            },
+            expect_status=400,
+        )
+        payload = json.loads(refused.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert payload["error"] == (
+        "crossover_candidate.filter_type must be one of: Linkwitz-Riley"
+    )
+
+
 def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
