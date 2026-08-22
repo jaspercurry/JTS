@@ -99,12 +99,12 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     this function derives from that.
 
     The derivation used to serve a second commit route as well — an
-    alternative-Fc selection holding only a serialized
-    :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`, which is
-    why the artifact string was the one fact BOTH routes shared.  That route
-    closed with the corner hunt on 2026-08-21 (``docs/tuning-master-plan.md``
-    ticket 2.3); the derivation is unchanged, because the surviving route never
-    held the decision either.
+    alternative-Fc selection holding only a serialized per-candidate evaluation
+    record, which is why the artifact string was the one fact BOTH routes
+    shared.  That route closed with the corner hunt on 2026-08-22
+    (``docs/tuning-master-plan.md`` tickets 2.3 and 2.4, which deleted the
+    record type too); the derivation is unchanged, because the surviving route
+    never held the decision either.
 
     **``"trim_rejected"`` is precise, and provably so.**
     :attr:`~.intervention.TrimDecision.outcome` returns ``"trim_rejected"`` if

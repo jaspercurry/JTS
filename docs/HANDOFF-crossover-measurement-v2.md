@@ -169,7 +169,7 @@ between it and the graph change, the more of the before→after difference is
 the graph.
 
 **The 6-pose `lateral` walk is no longer a stage-1 group (2026-08-18 pause,
-retired 2026-08-21).** It ran as indexes 3–8 from R17 until the pause. The
+retired 2026-08-22).** It ran as indexes 3–8 from R17 until the pause. The
 owner-ratified evidence: over the 8 banked rounds it was 59.4% of all session
 audio, never changed an outcome, and the scalar it fed ranked below its own
 3.54 dB repeat noise. **The R17 Fc candidate sweep went with it** — plan ruling
@@ -664,7 +664,6 @@ the module, not a second copy here.
 | [`crossover_v2/round_anchor.py`](../jasper/active_speaker/crossover_v2/round_anchor.py) | What an apply displaced, what it put live, whether the running graph is still that, and whether a restore is aimed at what the round displaced. |
 | [`crossover_v2/coordinator.py`](../jasper/active_speaker/crossover_v2/coordinator.py) | The round's tail: grade, act on the adoption table, restore, bank the receipt. |
 | [`crossover_v2/attempt_grading.py`](../jasper/active_speaker/crossover_v2/attempt_grading.py) | Whether a VERIFY capture is a new tuning attempt, and how it grades against the cross-session ledger. |
-| [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) | R17's Fc selector as pure functions over small arrays. No session state, no I/O, no import of the flow. |
 | [`session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
 | [`measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
 | [`candidate_bank.py`](../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint — bounded scan, integrity through the candidate model, minting lineage resolved. The one owner of that shape (`applied_speaker_evidence` reads it from here). |
@@ -857,9 +856,10 @@ the module, not a second copy here.
     de-embedding, the emitted graph and VERIFY's design target are that
     topology's rather than the incumbent's — and stage 2 must rehydrate the pin
     or it would grade an applied graph for not being the crossover it replaced.
-    And a pinned round **publishes no selector verdict** — `fc_selection` is
-    `None`, as it is on every round since the corner hunt was deleted (ticket
-    2.3), because reporting a verdict for a comparison that never ran is the
+    And a pinned round **publishes no selector verdict** — no round does since
+    the corner hunt was deleted (ticket 2.3) and its selector retired (ticket
+    2.4), so `fc_selection` is ABSENT from the record rather than written null,
+    because reporting a verdict for a comparison that never ran is the
     same dishonesty as `polarity_agrees_with_sum` reporting disagreement for
     one. None of the four is inherited from a lapsed session's durable state
     the way `tier` deliberately is (#2639).
@@ -3332,13 +3332,19 @@ final `capture_result` before the page's ~250 ms poll reads it.
 
 ### Recommending an Fc
 
-> **DELETED 2026-08-21 — read this section as archaeology only.** The sweep
-> that recommended an Fc, its candidate set, its compute budget and its
-> adjudication are gone (`docs/tuning-master-plan.md` plan ruling R1, ticket
-> 2.3). A round crosses at the corner the household declared or an operator
-> pinned; no round produces an `fc_selection` or renders **Use N Hz and
-> apply**. What survives in `fc_sweep.py` is corner ADMISSIBILITY — the spine's
-> file map says what. Everything below described the sweep while it existed.
+> **DELETED 2026-08-22 — read this section as archaeology only.** The sweep
+> that recommended an Fc, its candidate set and its compute budget are gone
+> (`docs/tuning-master-plan.md` plan ruling R1, ticket 2.3), and the
+> `fc_selector` module that scored and adjudicated them went with ticket 2.4,
+> along with the review screen's **Use N Hz and apply** button and the
+> `SELECTION_*` verdicts the grade read. A round crosses at the corner the
+> household declared or an operator pinned; no round produces an `fc_selection`,
+> the field is absent from the persisted record rather than written null, and
+> no product read path parses one a round banked while a selector existed —
+> only the offline archaeology tooling still does, on purpose
+> ([testing-tooling.md](testing-tooling.md)). What survives in
+> `fc_sweep.py` is corner ADMISSIBILITY — the spine's file map says what.
+> Everything below described the sweep and its selector while they existed.
 >
 > **The apply path below is NOT gated on that record** (2026-08-19, and this
 > half still holds). It asks the candidate being applied what crossover it
@@ -3450,7 +3456,8 @@ automatic rollback now genuinely runs. Which stage binds it is declared once, in
 
 **Where each piece lives.**
 
-- [`jasper/active_speaker/fc_selector.py`](../jasper/active_speaker/fc_selector.py)
+- `jasper/active_speaker/fc_selector.py` (deleted by ticket 2.4; unlinked
+  because the path no longer resolves)
   — the pure kernel: `band_flatness` (R18's mean-removed signed-worst
   arithmetic), `predict_pose_sum_db`, `score_candidate`, `select_fc`. No
   conductor state, no I/O. `FcCandidateEvaluation` is the memory contract.
@@ -3852,12 +3859,14 @@ an era-older record that cannot say. `entry_anchor_offset_db` discloses what was
 removed and is **not** a warrant that the residual beside it is clean.
 
 **A refused change axis costs the SHAPE grade, and since series-2 D1 the
-hearing-safety one too — disclosed, not silently** (#2614). Every committed
-alternative-Fc candidate hits that refusal by construction, and while
-`_run_delta_probe` bailed on it nothing ran at all: `evaluate_applied_safety`
-answered SAFE on a round where nothing had looked, and no surface said so. The
-STATE axis needs no corner match — both of its sides are the candidate's own —
-so it is computed and persisted at every swept corner, and the probe runs on
+hearing-safety one too — disclosed, not silently** (#2614). A round opened at an
+operator's **topology pin** hits that refusal by construction — its branches are
+composed through a corner the applied profile never ran — as did every committed
+alternative-Fc candidate while the corner hunt existed. While `_run_delta_probe`
+bailed on that refusal nothing ran at all: `evaluate_applied_safety` answered
+SAFE on a round where nothing had looked, and no surface said so. The STATE axis
+needs no corner match — both of its sides are the candidate's own — so it is
+computed and persisted whatever corner the round ran at, and the probe runs on
 that alone:
 
 - verdict `safety_only`, reason `commanded_axis_unavailable`
@@ -4100,21 +4109,37 @@ shallower than any single position in it).
 
 **Terminal grading has one owner and four honest outcomes.** The durable result
 owner `correction_crossover_v2._post_apply_grade` classifies from the candidate
-fingerprint, comparison completeness, baseline/selected scores, existing
-material-improvement margin, tracking, and independent absolute claim; it neither creates a second state machine nor alters the audition transaction.
+fingerprint, the VERIFY outcome and its reason code, the tracking claim, the
+independent absolute claim, and the predicted-spec comparison's
+material-improvement margin; it neither creates a second state machine nor
+alters the audition transaction. It reads **no corner-selector record**: the Fc
+selector and the `fc_selection` it wrote are retired
+([tuning-master-plan.md](tuning-master-plan.md) ticket 2.4), so comparison
+completeness and per-candidate scores are no longer inputs, and a round banked
+while a selector existed grades on its own VERIFY evidence like any other.
 
-| Comparative / terminal proof | Tracking | Absolute | Outcome |
+| Terminal proof | Tracking | Absolute | Outcome |
 |---|---|---|---|
-| authorized selection | pass | pass | `verified_target` |
-| authorized material improvement | pass | fail | `verified_best_evaluated` |
-| tracking failure/regression, or complete no-improvement/unapplied alternative | fail/any | any | `keep_previous` |
-| incomplete or unevaluable without definitive keep evidence above | any | any | `inconclusive` |
+| published candidate (fingerprint) + VERIFY pass | pass | pass | `verified_target` |
+| published candidate + VERIFY pass + material improvement, with both miss numbers stated | pass | fail | `verified_best_evaluated` |
+| tracking failure, a VERIFY regression outside the crossover region, or the forecast's `LEDGER_NOT_AN_IMPROVEMENT` / a sub-bar margin | fail/any | any | `keep_previous` |
+| unevaluable — VERIFY inconclusive, a VERIFY fail coded `REASON_VERIFY_CROSSOVER_REGION`, an outcome string this build does not recognise, no fingerprint, a tracking/absolute claim that is neither pass nor fail, or **any other evidence combination without the definitive keep/pass evidence above** | any | any | `inconclusive` |
 
-`verified_best_evaluated` means only the best measured option in the completed comparison.
+An **un-applied** round reaches none of the four: it publishes no outcome at
+all. Both instruments that could once say a round DELIBERATELY kept the previous
+tune are gone — `accountability`'s item 2 stopped refusing and became a grade
+(#2854), and the corner selector's `recommend_alternative` retired with ticket
+2.4 — so that arm states nothing rather than inventing a verdict.
+
+`verified_best_evaluated` means only that the applied candidate beat its own
+predicted baseline by the material margin while missing the absolute target: a
+claim about THIS candidate against its own forecast, never about a field of
+alternatives, because no round evaluates one.
 The target remains visibly failed with miss magnitude/frequency; the copy never says within spec, perfect, or best achievable. Tracking error
 `1.398262557 dB <= 1.5 dB` plus a `4.3139 dB` miss near `1.590 kHz` is
-`verified_best_evaluated` only with complete proof and material improvement;
-with incomplete comparison it is `inconclusive`. These outcomes only report:
+`verified_best_evaluated` when the margin clears
+`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` and both miss numbers are present, and
+`inconclusive` when they are not. These outcomes only report:
 they do not apply, undo, retry, or recapture valid stored evidence.
 
 **VERIFY discloses WHAT THE GATE DID, and the inconclusive copy speaks from

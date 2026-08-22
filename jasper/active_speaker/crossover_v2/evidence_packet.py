@@ -499,8 +499,8 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     time, so they structurally cannot carry one here. Two further inputs are
     written with a plain ``json.dumps`` and are NOT guarded:
     ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
-    state, where all four fields this packet copies —
-    ``verify.claims``, ``fc_selection``, ``pre_apply_profile.blend_correction``
+    state, where all three fields this packet copies —
+    ``verify.claims``, ``pre_apply_profile.blend_correction``
     and ``evidence.calibration`` — kill the packet; and
     :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
     ``driver_safety_profile.confirmation`` is copied whole and does the same.
@@ -1825,8 +1825,8 @@ def _not_evaluated(
         entries.append({
             "field": "flow_state",
             "reason": (
-                f"{state_reason}; fc_selection, per-claim verify verdicts and "
-                "the applied profile live only here"
+                f"{state_reason}; per-claim verify verdicts and the applied "
+                "profile live only here"
             ),
         })
     if isinstance(findings.get("findings"), list) and not findings["findings"]:
@@ -2016,11 +2016,11 @@ def build_crossover_evidence_packet(
             "field_descriptions": _mapping(findings.get("field_descriptions")),
         },
         "verify": _verify_block(state, state_reason),
-        "fc_selection": (
-            _mapping(state.get("fc_selection"))
-            if isinstance(state.get("fc_selection"), dict)
-            else _absence(state_reason, False, "fc_selection")
-        ),
+        # No ``fc_selection`` block: the corner selector that produced one is
+        # retired (``docs/tuning-master-plan.md`` ticket 2.4), so the field is
+        # absent from this version of the packet rather than published as a
+        # permanent ``not_evaluated`` — which would read to the operator as an
+        # evaluation this round skipped rather than one no round makes.
         # The two per-DRIVER evidence blocks. They travel together because a
         # per-driver prescription needs both to be checked at all: the band
         # says where a filter may sit, the verdicts say what it may be aimed

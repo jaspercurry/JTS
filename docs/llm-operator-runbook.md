@@ -129,11 +129,12 @@ changes nothing durable · **mutating** = changes what the speaker plays ·
 | `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `audio_graph` (route plan, outputd DAC, AEC clock), `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
 
 **Not in the menu, on purpose.** `crossover_v2/{search,objective,candidate_space}.py`,
-`fc_sweep`'s sweep half, and `active_speaker/fc_selector.py` are **cancelled
-work** under plan ruling R1; the Wave-2 deletion PRs remove them, so check the
-tree rather than this sentence for whether a given module is still there. Either
-way: do not call them, do not read their rankings, and do not treat a shortlist
-they produce as evidence — a crossover corner is **declared and executed**,
+`fc_sweep`'s sweep half, and `active_speaker/fc_selector.py` were **cancelled
+work** under plan ruling R1 and the Wave-2 deletion PRs removed them (tickets
+2.2, 2.3, 2.4) — check the tree rather than this sentence for what is on disk
+today. Either way: do not go looking for their rankings, and do not treat a
+shortlist from an older build as evidence — a crossover corner is
+**declared and executed**,
 never measured-searched (invariant 2). `forward_model` survives, as offline
 simulated evaluation over banked solos.
 

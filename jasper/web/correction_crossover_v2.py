@@ -684,7 +684,8 @@ def observe_apply_success(
     ``sound_declaration_undo`` (#2292) is the OTHER half of that same Undo: how
     to put ``/sound``'s declared crossover back to what it said before this
     apply's accept wrote it, or ``None`` when this apply did not write Sound
-    (every configured-Fc winner). It is a parameter of THIS call, beside
+    (every candidate that crosses where ``/sound`` already declares). It is a
+    parameter of THIS call, beside
     ``pre_apply_profile`` and written in the SAME state write, because the two
     describe one reversible event and a household undoes both or neither.
 
@@ -1912,7 +1913,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # ``phase`` is ``closing`` (two-stage D1). ``""`` everywhere else.
         "cloud_close": str((state or {}).get("cloud_close") or ""),
         "candidate": (state or {}).get("candidate"),
-        "fc_selection": (state or {}).get("fc_selection"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
         # MEASURE's own verdict-time disclosures — today just G1's ripple
         # reservation (#2087). Copied through unvalidated, exactly like
@@ -2222,45 +2222,41 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
         TIER_FULL,
     )
     from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT
-    from jasper.active_speaker.fc_selector import SELECTION_KEEP_CONFIGURED, SELECTION_RECOMMEND
 
-    fc = block.get("fc_selection")
-    fc = fc if isinstance(fc, Mapping) else {}
-    fc_verdict = str(fc.get("verdict") or "")
-    comparison_complete = fc.get("comparison_complete") is True
-    # **A comparison that never ran is ABSENT, not incomplete.** Two gates
-    # below — ``comparison_complete`` and ``authorized_winner`` — encode "the Fc
+    # **This grade reads no ``fc_selection``, on any round.** It once gated its
+    # success verdicts on a corner selector's verdict and completeness — "the Fc
     # comparison finished, and the corner on the speaker is the one it
-    # authorized". Neither question EXISTS on a round that executes its declared
-    # corner rather than hunting one, so ``fc_selection`` is absent on every
-    # session; only rounds banked while a corner selector existed carry one.
-    # Reading that absence as an unfinished comparison made
-    # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
-    # a successful commission told the household "not enough complete evidence
-    # to grade… this report changed nothing automatically" over a tune that IS
-    # applied, and dropped the Undo pointer exactly where a dissatisfied
-    # household reaches for it.
+    # authorized". That selector is retired (``docs/tuning-master-plan.md``
+    # ticket 2.4) along with the corner hunt that fed it, so no round publishes
+    # one and this build cannot restate the adjudication of a round that did.
     #
     # This function's own question is the one in its title: was the applied
-    # correction checked AFTERWARDS. VERIFY and the post-apply group answer
-    # that by themselves and neither consults the selector, which is why the
-    # exemption is sound rather than merely convenient.
+    # correction checked AFTERWARDS. VERIFY and the post-apply group answer that
+    # by themselves — that is why dropping the selector consultation is sound
+    # rather than merely convenient, and it is the same reasoning that already
+    # exempted the absent case when the selector was merely unfed.
     #
-    # **Scoped to absence only.** A sweep that RAN and did not finish still
-    # fails both gates — that is a real incomplete comparison about a session
-    # that really did evaluate alternatives, and this exemption must never
-    # reach it. Both directions are pinned in
+    # **Read-back tolerance is by non-consumption.** A round banked while a
+    # selector existed still carries the payload in durable state; no product
+    # read path parses it — not this grade, the status block, the household
+    # envelope or the evidence packet — so no legacy shape, well-formed, partial
+    # or malformed, can refuse or raise. (Offline archaeology tooling still
+    # reads it on purpose: ``scripts/derive-crossover-incident-fixture.py`` mints
+    # the #2291 fixture from it, and ``scripts/bank-crossover-round.sh``
+    # snapshots it when a bank carries one.)
+    # Such a round grades on its OWN verification evidence,
+    # which is measured fact about the applied tune rather than a retired
+    # comparator's opinion of an alternative. Pinned in
     # ``tests/test_correction_crossover_v2_endpoints.py``.
-    sweep_ran = bool(fc)
-
     if not block.get("applied"):
-        # One cause, since ``accountability``'s item 2 stopped refusing: a
-        # forecast can no longer be why a round did not apply. A state carrying
-        # the retired failure code reads ``inconclusive`` now, not
-        # ``keep_previous`` — pinned in the endpoints suite.
-        keep_previous = comparison_complete and fc_verdict == SELECTION_RECOMMEND
+        # **No cause left, so no claim.** Two instruments could once say that an
+        # un-applied round had DELIBERATELY kept the previous tune: a
+        # not-an-improvement refusal, which stopped refusing when
+        # ``accountability``'s item 2 became a grade (#2854), and the corner
+        # selector's ``recommend_alternative``, retired here. Neither exists,
+        # so this arm publishes no ``outcome`` at all rather than inventing one
+        # — nothing was applied, and nothing measured why.
         return {
-            **({"outcome": RESULT_KEEP_PREVIOUS if keep_previous else RESULT_INCONCLUSIVE} if keep_previous or fc else {}),
             "state": GRADE_NOT_APPLIED,
             "graded": True,
             "verify_outcome": None,
@@ -2282,17 +2278,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     absolute = absolute if isinstance(absolute, Mapping) else {}
     tracking_status = str(integration.get("status") or "")
     absolute_status = str(absolute.get("status") or "")
-    configured_hz = _finite(fc.get("configured_hz"))
-    scores = fc.get("scores")
-    baseline_score = None
-    if configured_hz is not None and isinstance(scores, list):
-        for row in scores:
-            if not isinstance(row, Mapping):
-                continue
-            hz = _finite(row.get("fc_hz"))
-            if hz is not None and math.isclose(hz, configured_hz, abs_tol=0.05):
-                baseline_score = _finite(row.get("score"))
-                break
     prediction = block.get("prediction")
     prediction = prediction if isinstance(prediction, Mapping) else {}
     comparison = prediction.get("comparison")
@@ -2302,15 +2287,11 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     improvement_db = _finite(comparison.get("improvement_db"))
     required_db = _finite(comparison.get("required_db"))
     absolute_miss_db, absolute_worst_hz = _finite(absolute.get("max_db")), _finite(absolute.get("worst_hz"))
-    result_evidence = bool(fc or comparison or integration or absolute)
-    authorized_winner = bool(str(candidate.get("fingerprint") or "")) and (
-        # No sweep ran, so there was no alternative for a winner to beat: the
-        # published candidate IS the configured corner, which is precisely what
-        # a ``keep_configured`` verdict authorizes. The fingerprint stays
-        # required — it is the evidence that a candidate was published at all.
-        not sweep_ran
-        or (baseline_score is not None and fc_verdict == SELECTION_KEEP_CONFIGURED)
-    )
+    result_evidence = bool(comparison or integration or absolute)
+    # The published candidate IS the corner the round executed, so there is no
+    # alternative for a winner to have beaten. The fingerprint stays required —
+    # it is the evidence that a candidate was published at all.
+    authorized_winner = bool(str(candidate.get("fingerprint") or ""))
     material_improvement = (
         str(comparison.get("reason") or "") == "improved"
         and improvement_db is not None
@@ -2337,11 +2318,8 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     elif (
         outcome == "inconclusive"
         or tracking_status not in {CLAIM_PASS, CLAIM_FAIL}
-        or (sweep_ran and not comparison_complete)
     ):
         result_outcome = RESULT_INCONCLUSIVE
-    elif fc_verdict == SELECTION_RECOMMEND:
-        result_outcome = RESULT_KEEP_PREVIOUS
     elif (
         not authorized_winner or outcome != "pass"
         or absolute_status not in {CLAIM_PASS, CLAIM_FAIL}
@@ -2441,7 +2419,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
             if spatial == GRADE_SPATIAL_FAILED else None
         ),
         "complete": complete,
-        "comparison_complete": comparison_complete,
         "improvement_db": improvement_db,
         "tracking_passed": True if tracking_status == CLAIM_PASS else False if tracking_status == CLAIM_FAIL else None,
         "absolute_passed": True if absolute_status == CLAIM_PASS else False if absolute_status == CLAIM_FAIL else None,
@@ -3468,69 +3445,6 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
     return out or None
 
 
-def _fc_selection_summary(conductor: Any) -> dict[str, Any] | None:
-    """R17's Fc RECOMMENDATION, small enough to live in durable state.
-
-    ``None`` when no candidate sweep ran (an Express/no-walk session, a
-    conductor double without the surface) — never a fabricated "keep what you
-    have", which would read as a verdict the measurement never reached.
-
-    What rides: the verdict and frequencies; ordered attempted/skipped evidence;
-    the single comparison-completeness fact; the derived bounds; and compact
-    per-candidate scores. What does NOT ride: the operators and predicted sums
-    behind them. Those are working evidence, already released by the time this
-    is written, and a durable copy would be a second answer to "what did this
-    session measure" that nothing reads back.
-    """
-    selection = getattr(conductor, "fc_selection", None)
-    if selection is None:
-        return None
-    return {
-        "verdict": selection.verdict,
-        "configured_hz": round(float(selection.configured_hz), 1),
-        "recommended_hz": (
-            round(float(selection.recommended_hz), 1)
-            if selection.recommended_hz is not None else None
-        ),
-        "margin_db": (
-            round(float(selection.margin_db), 3)
-            if selection.margin_db is not None else None
-        ),
-        # k of N, disclosed rather than hidden: the accept window is bounded by
-        # the phone's own result deadline, so a loaded Pi legitimately scores
-        # fewer candidates than it proposed.
-        "evaluated": int(selection.evaluated),
-        "planned": int(selection.planned),
-        "candidate_order": [
-            round(float(fc), 1) for fc in selection.candidate_order
-        ],
-        "attempted": [round(float(fc), 1) for fc in selection.attempted],
-        "skipped": [
-            {"fc_hz": round(float(fc), 1), "reason": str(reason)}
-            for fc, reason in selection.skipped
-        ],
-        "comparison_complete": bool(selection.comparison_complete),
-        # WHY the set was the size it was — each bound traceable to a
-        # declaration the household can edit.
-        "limits": {k: round(float(v), 1) for k, v in selection.limits.items()},
-        "refusals": [
-            [round(float(fc), 1), str(reason)] for fc, reason in selection.refusals
-        ],
-        "scores": [
-            {
-                "fc_hz": round(float(s.fc_hz), 1),
-                "score": round(float(s.score), 3),
-                "worst_db": round(float(s.anchor.worst_db), 3),
-                "worst_hz": round(float(s.anchor.worst_hz), 1),
-                "lateral_excess_db": round(float(s.lateral_excess_db), 3),
-                "headroom_cost_db": round(float(s.headroom_cost_db), 3),
-                "poses": int(s.n_poses),
-            }
-            for s in selection.scores
-        ],
-    }
-
-
 def _delta_probe_summary(probe: Any) -> dict[str, Any]:
     """The delta probe's verdict, small enough to live in durable state (#1811).
 
@@ -3956,9 +3870,11 @@ def persist_conductor_state(
         # screen, null registry, spec curve) alongside this block; the geometry
         # verdict is what PR-3b measured and so what PR-3b persists.
         "cloud": _cloud_summary(conductor),
-        # R17's Fc recommendation. Sound remains the declaration writer;
-        # Review may accept the exact retained candidate through that boundary.
-        "fc_selection": _fc_selection_summary(conductor),
+        # No ``fc_selection`` key: the corner selector that produced one is
+        # retired (ticket 2.4) and the field is absent from this version of the
+        # record rather than written as a null. Rounds banked while a selector
+        # existed keep theirs in durable state; no product read path reads it
+        # back (the offline archaeology scripts still do, deliberately).
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             # Two-stage commission D4: the spec verdict for the curve above,
@@ -4287,18 +4203,13 @@ def persist_conductor_state(
         # replaying a caveat about a capture that has been superseded.
         if isinstance(prior.get("measure"), Mapping) and state["measure"] is None:
             state["measure"] = dict(prior["measure"])
-        # R17's Fc selection, on the SAME predicate and for the same
-        # reason: it is produced at the lateral walk's close, which only a
-        # MEASURING session runs, and the DONE screen belongs to stage 2 —
-        # whose conductor has no ``fc_selection`` and would persist ``None``
-        # over it. Losing it there would show the household "your crossover
-        # could be 1750 Hz" while they decide and then nothing at all once the
-        # tuning is applied, where its exact provenance still matters.
-        if (
-            isinstance(prior.get("fc_selection"), Mapping)
-            and state["fc_selection"] is None
-        ):
-            state["fc_selection"] = dict(prior["fc_selection"])
+        # The Fc selection carried across the same seam for the same reason
+        # while a corner selector existed. It is retired (ticket 2.4), no
+        # session writes the field, and no product read path reads it back — so
+        # there is
+        # nothing to carry, and a legacy value ages out of durable state on the
+        # next write rather than being copied forward into a record whose
+        # version has no such field.
     # ``pre_apply_profile`` (the Undo stash — observe_apply_success /
     # handle_v2_restore), ``expected_post_apply_offset_db`` (the apply's own
     # declared level move — observe_apply_success / the delta probe's
@@ -4381,7 +4292,10 @@ def persist_conductor_state(
     # covers it automatically.
     #
     # Deliberately NOT the shape of ``accepted_sound_revision`` directly above,
-    # even though the alternative-Fc accept is what makes both non-null:
+    # even though the same event makes both non-null — an apply whose candidate
+    # crosses somewhere other than the declaration, today an operator's topology
+    # pin (``declaration_change_for_candidate`` is the live gate; the retired
+    # alternative-Fc accept was the original one):
     #
     #   * ``accepted_sound_revision`` is the REVIEW-binding token
     #     ``_update_current_review`` gates the apply on. It is scoped to the
@@ -4444,7 +4358,7 @@ def persist_conductor_state(
         log_event(
             logger, "correction.crossover_v2_result_classified",
             session_id=snap.session_id, outcome=grade.get("outcome") or RESULT_INCONCLUSIVE,
-            comparison_complete=grade.get("comparison_complete"), improvement_db=grade.get("improvement_db"),
+            improvement_db=grade.get("improvement_db"),
             tracking_passed=grade.get("tracking_passed"), absolute_passed=grade.get("absolute_passed"),
             absolute_miss_db=grade.get("absolute_miss_db"), absolute_worst_hz=grade.get("absolute_worst_hz"),
             candidate_fingerprint=grade.get("candidate_fingerprint"),
@@ -8820,9 +8734,11 @@ def _crossover_label(geometry: Any, with_slope: bool) -> str:
 def _restore_sound_declaration(record: Any) -> tuple[str, str]:
     """Put ``/sound``'s declared crossover back to its pre-accept value.
 
-    The declaration half of Undo (#2292). ``handle_v2_apply``'s
-    alternative-Fc path writes the winning measured Fc into the Sound
-    declaration before it touches DSP (#2290), so an Undo that only reloads
+    The declaration half of Undo (#2292). ``handle_v2_apply`` writes the
+    candidate's own measured Fc into the Sound declaration before it touches DSP
+    whenever the two disagree (``declaration_change_for_candidate``; #2290's
+    alternative-Fc accept was the first route there, an operator's topology pin
+    is the live one), so an Undo that only reloads
     the previous DSP graph leaves the speaker playing one crossover while
     ``/sound`` declares another — one fact with two answers, and the wrong one
     is the one the next measurement session reads as its configured Fc.
@@ -9147,9 +9063,11 @@ def handle_v2_restore(
     then clear the durable v2 applied/candidate/failure state so the
     envelope returns to a clean measure/review state.
 
-    An apply that also WROTE the winning Fc into the Sound declaration (#2290's
-    alternative-Fc path) owes a second leg: ``/sound`` must go back to what it
-    declared before that accept, or say why it did not (#2292). The two legs
+    An apply that also WROTE its candidate's Fc into the Sound declaration owes
+    a second leg: ``/sound`` must go back to what it declared before that accept,
+    or say why it did not (#2292). The live route there is an operator's
+    topology pin, which opens the round at a corner ``/sound`` does not declare;
+    #2290's alternative-Fc accept was the original one and is retired. The legs
     are reported separately — ``status`` stays the DSP graph's answer and
     ``sound_declaration`` carries the declaration's — because they are restored
     by different owners through different writers and can genuinely disagree.

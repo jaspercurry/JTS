@@ -3091,8 +3091,24 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
 
 
 def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
+    """The miss stays visible, and the sentence claims no comparison (2.4).
+
+    Two wrong referents have been through this copy. It used to open "the best
+    measured option from the complete comparison" — a field of alternatives the
+    corner selector once produced and no round produces now. Replacing that with
+    "improved on the sound it replaced" was wrong the other way: the margin is
+    THIS candidate's linearized forecast against THIS SAME candidate's
+    un-linearized one (``accountability`` binds ``before = grade_prediction(
+    raw_predicted_sum)``), never the previously-applied graph — that is
+    ``commanded.py``'s separate instrument.
+
+    So the sentence claims the prediction match and the miss, and nothing else.
+    The assertions below pin BOTH failed referents as negatives, because each
+    one read plausibly enough to ship once. ``RESULT_VERIFIED_BEST_EVALUATED``
+    is unchanged — it is banked in log events and receipts.
+    """
     env = build_crossover_envelope_v2(_status(
-        phase="done", applied=True, fc_selection={"comparison_complete": True},
+        phase="done", applied=True,
         verify={"outcome": "pass"},
         post_apply_grade={
             "outcome": "verified_best_evaluated", "graded": True,
@@ -3100,8 +3116,12 @@ def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
         },
     ))
     text = env["verdict_text"].lower()
-    assert "best measured option" in text
+    assert "matched its prediction" in text
     assert "misses the target by 4.31 db near 1.59 khz" in text
+    # Both failed referents, pinned as negatives.
+    assert "comparison" not in text
+    assert "best measured option" not in text
+    assert "improved on the sound it replaced" not in text
     assert "within spec" not in text
     assert "best achievable" not in text
     assert "perfect" not in text
@@ -4792,7 +4812,22 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
     )
 
 
-def test_review_names_the_exact_alternative_in_the_single_apply_action():
+def test_review_names_no_corner_in_the_apply_action():
+    """One fixed label, because nothing on this screen re-answers "will Apply
+    move the declared crossover?" (ticket 2.4).
+
+    The button used to read the retired corner selector's banked recommendation
+    and name it — "Use 1750.6 Hz and apply". That was a second reading of a
+    question ``handle_v2_apply`` already answers from the candidate's own
+    preset, and once an operator's topology pin became the live producer of a
+    candidate crossing away from the declaration it could only UNDER-claim: a
+    pinned round publishes no recommendation, so the button fell back to the
+    generic label on exactly the rounds that do move the corner.
+
+    A legacy recommendation still sitting in durable state must not resurrect
+    it — a stale corner in the button is a promise about an apply that is not
+    about to make it.
+    """
     selection = {
         "verdict": "recommend_alternative",
         "configured_hz": 2500.0,
@@ -4801,22 +4836,21 @@ def test_review_names_the_exact_alternative_in_the_single_apply_action():
     }
     env = build_crossover_envelope_v2(_review_status(fc_selection=selection))
 
-    assert env["next_action"]["label"] == "Use 1750.6 Hz and apply"
+    assert env["next_action"]["label"] == "Apply and verify"
     assert env["next_action"]["id"] == "review_apply"
+    assert not any("1750.6" in line for line in env["expert_details"])
 
+    # The apply-blocked nudge is now gated on the fact its sentence is about —
+    # Sound holds a saved revision and the DSP load behind it is unconfirmed —
+    # rather than on a selector verdict that used to be its only route here.
     retry = build_crossover_envelope_v2(_review_status(
-        fc_selection=selection,
         accepted_sound_revision=7,
         apply_blocked={
             "id": "load_failed",
-            "message": "1750.6 Hz is saved in Sound but was not applied",
+            "message": "The saved crossover was not applied",
         },
     ))
-    assert retry["next_action"]["label"] == "Retry applying 1750.6 Hz"
-    assert any(
-        "already saved in Sound" in line
-        for line in retry["expert_details"]
-    )
+    assert retry["next_action"]["label"] == "Apply and verify"
     assert any(nudge["code"] == "load_failed" for nudge in retry["nudges"])
 
 

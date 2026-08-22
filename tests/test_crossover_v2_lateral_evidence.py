@@ -1026,7 +1026,9 @@ def test_an_evidence_walk_reaches_its_last_pose_and_publishes_nothing():
     # No candidate was published AT the close — MEASURE already published one,
     # and the close added nothing to its verdict.
     assert "candidate_fingerprint" not in verdicts[-1]
-    assert c.fc_selection is None
+    # No selector surface at all since ticket 2.4 — not a surface that answers
+    # "nothing to recommend", which would be a live comparator declining.
+    assert not hasattr(c, "fc_selection")
 
 
 def test_a_settled_last_pose_closes_the_walk_too():

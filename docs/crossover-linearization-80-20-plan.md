@@ -311,7 +311,7 @@ Holding the anchor solution fixed at the sides is load-bearing: re-aligning at
 each pose would erase the off-axis consequence the samples are meant to expose.
 
 *Implemented scope (R16), LIVE from R17, PAUSED 2026-08-18, CANCELLED
-2026-08-22 (ticket 2.3).*
+2026-08-22 (tickets 2.3 and 2.4).*
 `STAGE1_INCLUDES_LATERAL` was flipped `True` at R17 because Gate 0 pairs every
 producer with a current consumer, and R16's consumer — R17's
 Fc selector — landed. It was held dormant through R16 because at the
@@ -334,9 +334,11 @@ deleted `fc_sweep.py`'s sweep/adjudication half and
 `STAGE1_INCLUDES_LATERAL` outright on 2026-08-22, cancelling the #2717
 re-flip it had planned rather than leaving it waiting on a redesigned
 statistic — the crossover corner is executed, never hunted (that plan's
-invariant 2). The Fc selector (`fc_selector.py`) is now unfed code awaiting
-its own retirement in ticket 2.4, not a dormant consumer paused alongside the
-flag. The six-pose walk machinery documented below survives: an operator's
+invariant 2). The Fc selector (`fc_selector.py`) was deleted the same day by
+ticket 2.4, along with the review screen's **Use N Hz and apply** action and
+the `SELECTION_*` verdicts the post-apply grade read: R16's consumer is gone,
+not a dormant consumer paused alongside the flag. The six-pose walk machinery
+documented below survives: an operator's
 staged angle walk still runs it as forward-model evidence, and its close
 adjudicates nothing (#2753) — only the stage-1 auto-arming this note
 describes, and the adjudicating close it fed, are gone.
@@ -577,8 +579,10 @@ the multi-candidate path proves equivalence and then improvement.
 *(Cancelled 2026-08-22, not dormant: `fc_sweep.py`'s sweep/adjudication half
 that scored candidates is deleted outright — see the *Implemented scope* note
 above and [tuning-master-plan.md](tuning-master-plan.md) ruling R1 (ticket
-2.3). `fc_selector.py` itself is unfed code awaiting retirement in ticket
-2.4.)*
+2.3) — and `fc_selector.py`, this deliverable's own module, was retired the
+same day by ticket 2.4 with the review screen's **Use N Hz and apply** action
+and the `SELECTION_*` verdicts. Nothing below is live; read it as the record of
+what R17 shipped.)*
 Three structural discoveries reshaped the round, each verified in code before
 it was acted on, and each recorded on
 [#1894](https://github.com/jaspercurry/JTS/issues/1894):

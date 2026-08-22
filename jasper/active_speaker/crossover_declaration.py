@@ -23,9 +23,9 @@ record.** The candidate is the artifact that will be applied; a persisted
 recommendation is a claim *about* it. Deriving the change from the candidate
 means the declaration and the emitted graph cannot disagree by construction,
 and it leaves exactly one answer to "what crossover is this apply asking for".
-An advisory record — ``FcSelection`` was one while a corner sweep produced
-them, and whatever supersedes it will be another — stays what it is: evidence
-the review screen renders, and not a gate it was never able to keep honest.
+An advisory record — the retired corner selector's recommendation was one, and
+whatever supersedes it will be another — stays what it is: evidence a screen
+may render, and not a gate it was never able to keep honest.
 
 **Nothing here writes.** This module derives and refuses; ``sound_setup`` owns
 the single durable writer, in both directions.
