@@ -146,8 +146,35 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # constant rests on; above it the residue EXCEEDS the margin and the -1.0 dB
 # per-driver soft-clip limiters are the backstop instead. Why that is a residual
 # of a large improvement rather than a regression: before the widening that band
-# had no samples at all and read ~6 dB low. Tracked as issue #2850, to close
-# before the boost caps widen.
+# had no samples at all and read ~6 dB low. Tracked as issue #2850.
+#
+# **#2850 was still open when the boost caps widened** (ruling R8, 2026-08-22),
+# and an earlier revision of this comment said it would close first. It did not,
+# so what changed is recorded here rather than quietly dropped. The widened
+# per-filter ceiling admits filter magnitudes this residue was measured at: the
+# worst rails-legal pair on record (`+10.01 Q3.67 @23632.6` with
+# `-9.53 Q5.58 @23648.1`, under-charging 0.6116 dB) is refused by the
+# pre-R8 3.0 dB prescription ceiling and admitted by the 12.0 dB one. It stays
+# ultrasonic and stays backstopped by the -1.0 dB per-driver soft-clip limiters,
+# and reaching it through `driver_prescription` additionally requires a driver
+# declared past ~23 kHz carrying a banked boostable verdict up there — but the
+# exposure is wider after R8 than before it, which is the honest statement of
+# what widening the caps did to this margin.
+#
+# **What actually keeps the honest loop out of that band is the CLASSIFIER's
+# vouching ceiling, and it is producer-side only.** A boost is admitted only
+# against a banked `defect-boostable` verdict near its centre, and the highest
+# frequency the classifier can ever vouch for is
+# `feature_classifier.classifiable_band_hz((_, TRUSTED_CEILING_HZ))[1]`
+# (16 kHz trimmed by the +-1/3-octave neighbourhood -> 12699.2 Hz) widened by
+# `feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES` (1/6 octave) =
+# **14254.4 Hz** — comfortably below the ~18 kHz where this margin stops
+# covering the residue. So no verdict the measurement loop can PRODUCE reaches
+# the exposed band. The gate itself does not enforce this: hand-inject a 19 kHz
+# boostable verdict and it is admitted. `tests/test_active_speaker_branch_chain
+# .py::test_the_classifier_cannot_vouch_into_the_under_read_band` pins the
+# arithmetic so that raising the classifier's ceiling later trips a test
+# instead of silently opening this band.
 #
 # One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
 # Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW

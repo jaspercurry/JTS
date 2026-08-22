@@ -486,11 +486,15 @@ def test_linearization_headroom_is_zero_for_a_cut_only_correction():
 def test_a_prescribable_boost_is_charged_its_realized_chain_peak():
     """The deepest ONE admissible prescribed boost, priced.
 
-    +3.0 dB at Q 8 on 6245 Hz is exactly ``DRIVER_MAX_FILTER_BOOST_DB`` on a
-    feature the 2026-08-19 record classifies boostable. It sits in the
+    +12.0 dB at Q 8 on 6245 Hz is exactly ``DRIVER_MAX_FILTER_BOOST_DB`` since
+    R8, on a feature the 2026-08-19 record classifies boostable. It sits in the
     tweeter's own passband, 0.0301 dB down its 1600 Hz LR4 high-pass — so the
-    realized chain peak is 2.9699 dB, not the 3.0 the filter asks for, and the
+    realized chain peak is 11.9699 dB, not the 12.0 the filter asks for, and the
     charge is that plus ``branch_chain.HEADROOM_MARGIN_DB``.
+
+    This is the WORST single-filter case the widened gate admits, and it lands
+    0.0301 dB under the published bound rather than over it. (At the old 3.0 dB
+    ceiling the same fixture charged 3.9699.)
     """
     preset = _preset()
     flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
@@ -499,20 +503,35 @@ def test_a_prescribable_boost_is_charged_its_realized_chain_peak():
         linearization={"tweeter": [_peak(6245.0, DRIVER_MAX_FILTER_BOOST_DB, q=8.0)]},
     )
 
-    assert DRIVER_MAX_FILTER_BOOST_DB == 3.0, "the fixture is the ceiling itself"
+    assert DRIVER_MAX_FILTER_BOOST_DB == 12.0, "the fixture is the ceiling itself"
     assert _headroom_gain_db(flat) == 0.0
-    assert _headroom_gain_db(boosted) == pytest.approx(-3.9699, abs=1e-3)
+    assert _headroom_gain_db(boosted) == pytest.approx(-12.9699, abs=1e-3)
     assert _headroom_gain_db(boosted) > -MAX_SPL_SPEND_BOUND_DB
 
 
 def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
-    """The load-bearing arithmetic: the gate's 4.0 dB composed cap IS the 5.0.
+    """The load-bearing arithmetic: the gate's 12.0 dB composed cap IS the 13.0.
 
-    Two +3.0 dB Q-8 boosts 0.12 octaves apart compose to 3.993 dB on the gate's
-    own evaluation — just inside ``DRIVER_MAX_COMPOSED_BOOST_DB`` — and the
-    emitter charges 4.970 dB for them. Move them 0.005 octaves closer and the
-    gate REFUSES at 4.062 dB composed, which would have charged 5.021 dB. So
-    the published bound is not a slogan beside the cap; it is the cap.
+    Two +9.0 dB Q-8 boosts 0.1233 octaves apart compose to 11.916 dB on the
+    gate's own evaluation — just inside ``DRIVER_MAX_COMPOSED_BOOST_DB`` — and
+    the emitter charges 12.861 dB for them. Move them 0.0049 octaves closer and
+    the gate REFUSES at 12.088 dB composed, which would have charged 13.067 dB.
+    So the published bound is not a slogan beside the cap; it is the cap.
+
+    The emitter charges a little LESS than ``gate peak + 1.0`` (12.861 against
+    12.916) because the branch it prices also carries the 1600 Hz LR4 high-pass,
+    and that term only subtracts. That gap is step 4 of the derivation in
+    ``driver_prescription.MAX_SPL_SPEND_BOUND_DB``, observed: the gate's reading
+    is an UPPER bound on what the emitter will charge, which is the direction a
+    safety bound has to err.
+
+    Re-derived at R8's widened caps on 2026-08-22. The same test at the old
+    caps used two +3.0 dB boosts 0.12 octaves apart (3.993 composed / 4.970
+    charged) against 0.115 (4.062 / 5.021). The gains had to move off the
+    per-filter rail to build this straddle at all: R8 set the per-filter and
+    composed caps to the SAME 12.0, so two filters both at the per-filter rail
+    can never compose to under the composed cap — each reads 12.0 alone and any
+    overlap only adds.
     """
     preset = _preset()
     flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
@@ -521,18 +540,19 @@ def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
         text = emit_active_speaker_baseline_config(
             preset, playback_device=ACTIVE_PCM,
             linearization={"tweeter": [
-                _peak(6245.0, 3.0, q=8.0),
-                _peak(6245.0 * 2 ** separation_octaves, 3.0, q=8.0),
+                _peak(6245.0, 9.0, q=8.0),
+                _peak(6245.0 * 2 ** separation_octaves, 9.0, q=8.0),
             ]},
         )
         return _headroom_gain_db(flat) - _headroom_gain_db(text)
 
     assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + 1.0
-    assert charged(0.12) == pytest.approx(4.9704, abs=1e-3)
-    assert charged(0.12) < MAX_SPL_SPEND_BOUND_DB
+    assert MAX_SPL_SPEND_BOUND_DB == 13.0
+    assert charged(0.1233) == pytest.approx(12.8612, abs=1e-3)
+    assert charged(0.1233) < MAX_SPL_SPEND_BOUND_DB
     # The first arrangement past the gate's cap, and it is past the bound too.
-    assert charged(0.115) == pytest.approx(5.0211, abs=1e-3)
-    assert charged(0.115) > MAX_SPL_SPEND_BOUND_DB
+    assert charged(0.1184) == pytest.approx(13.0668, abs=1e-3)
+    assert charged(0.1184) > MAX_SPL_SPEND_BOUND_DB
 
 
 @pytest.mark.parametrize(("freq", "gain", "expected_charge"), [
@@ -568,11 +588,19 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
     Nothing about the prescription reaches this proof — it reads the emitted
     filters, the emitted crossover and the emitted headroom gain — so an
     admitted boost has to survive a re-derivation that never saw the gate.
+
+    Driven at ``DRIVER_MAX_FILTER_BOOST_DB`` rather than a literal, because
+    since R8 that IS the emitter's own rail: the headline benefit of the ruling
+    is that a prescription written at the ceiling survives emission instead of
+    being accepted at the gate and refused downstream, and this is the
+    downstream half of that claim.
     """
     topology = _active_topology("mono", "active_2_way")
     text = emit_active_speaker_baseline_config(
         _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6245.0, 3.0, q=8.0)]},
+        linearization={
+            "tweeter": [_peak(6245.0, DRIVER_MAX_FILTER_BOOST_DB, q=8.0)]
+        },
     )
 
     graph = classify_camilla_graph(topology=topology, text=text)
@@ -582,11 +610,14 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
 
 
 def test_the_emitter_still_refuses_a_boost_past_its_own_rail():
-    """The gate's 3.0 dB ceiling is the FIRST of two, never the only one.
+    """The gate's ceiling is the FIRST of two, never the only one.
 
-    PR-A opens a narrower permission inside a rail that already existed and is
-    unchanged: the emitter raises rather than clamps at 12 dB, whatever any
-    intake accepted.
+    PR-A opened a NARROWER permission (3.0 dB) inside a rail that already
+    existed; R8 moved the gate onto that same 12 dB rail, so the two now
+    coincide rather than nest. The independence is what survives and what this
+    pins: the emitter raises rather than clamps past 12 dB, whatever any intake
+    accepted — it re-validates instead of trusting the gate, so the two agreeing
+    on a number is not the same as the emitter deferring to it.
     """
     with pytest.raises(ActiveSpeakerConfigError):
         emit_active_speaker_baseline_config(

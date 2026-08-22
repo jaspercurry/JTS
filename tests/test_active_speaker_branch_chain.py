@@ -554,6 +554,15 @@ _SUBSONIC_CASCADE = (
     (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3
 )
 
+#: Where `HEADROOM_MARGIN_DB` stops covering the grid's sampling residue, Hz.
+#:
+#: Below this the margin covers it about four times over; above it the residue
+#: exceeds the margin (worst measured under-read 1.7385 dB) and the -1.0 dB
+#: per-driver soft-clip limiters are the backstop instead. Issue #2850. Stated
+#: as ~18 kHz in `branch_chain.HEADROOM_MARGIN_DB`'s own comment, which is the
+#: owner of the number; this is the test-side name for it.
+_HEADROOM_UNDER_READ_FLOOR_HZ = 18_000.0
+
 
 def _old_gate_composed_db(filters, band_hz):
     """What the PRE-#2758 prescription gate read for these filters.
@@ -609,8 +618,22 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     Every chain here is one the OLD composed gate would have ADMITTED — the
     population that is actually on hardware — at the FIT ENGINE's own rails
     (``PER_FILTER_BOOST_CAP_DB``, Q <= 8, <= 8 filters in the shipped tweeter
-    band), because the fit emits to hardware too and its per-filter rail is
-    four times the prescription class's.
+    band), because the fit emits to hardware too. Its per-filter rail was four
+    times the prescription class's until ruling R8 (2026-08-22) moved that class
+    onto the same 12.0 dB rail; the rails are EQUAL now, and this corpus is
+    drawn at them either way.
+
+    **R8 re-drew this corpus into a different one, not a bigger one.** The
+    admission filter below is ``DRIVER_MAX_COMPOSED_BOOST_DB``, which R8 moved
+    4.0 -> 12.0, so the population went 230 -> 900 accepted at this seed — but
+    only **8** of the 230 pre-R8 chains appear in the 900, and 222 are gone. The
+    cap is not a filter over a fixed sample: it ``continue``s BEFORE the
+    ``trim_db`` draw, so acceptance decides whether that draw is consumed, and
+    the two runs' RNG streams diverge at the first iteration where they disagree
+    (iteration 1 at this seed). Every later chain differs. So the figures below
+    are NOT comparable to the pre-R8 ones as "the same corpus moved
+    differently", and the smaller worst move is a property of the new draw
+    rather than evidence the widening helped anything.
 
     **The condition asserted here is the RUNTIME's, not a paraphrase of it.**
     The re-proof compares ``peak_new > headroom_charge_db(peak_old) + 1e-3``,
@@ -625,19 +648,41 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     blocked-deploy path, which names ``baseline-reemit`` — the correct
     direction, loudly.
 
-    **Two different quantities, kept apart.** The near-unity CLASS is most of
-    this corpus — 184 of 230 accepted chains at this seed, ~80 %, because the
-    -6..0 dB trims put a majority under unity. What that class does is a
-    separate fact: ZERO of them refuse at this seed, and the assertion below
-    caps refusals at 2 % rather than forbidding them, because the tolerance up
-    there is 1e-3 dB and a future sampler will find some.
+    **Two different quantities, kept apart.** The near-unity CLASS is now a
+    MINORITY of this corpus — 208 of 900 accepted chains at this seed, ~23 %.
+    Before R8 it was ~80 % (184 of 230), and the change is composition, not
+    behaviour: the widened filter admits many more chains that carry a real
+    charge, so the -6..0 dB trims no longer put a majority under unity. What
+    that class does is a separate fact: ONE of them refuses at this seed, and
+    the assertion below bounds refusals rather than forbidding them, because
+    the tolerance up there is 1e-3 dB and a sampler will find some.
+
+    **The bound is scoped to the class that can produce the outcome**, which is
+    the half of this the re-draw broke. Only a near-unity chain can refuse, so
+    a cap written against ``accepted`` loosened silently when ``accepted`` grew
+    3.9x while the at-risk class did not: ``accepted // 50`` allowed 18
+    refusals out of 208 possible — 8.7 % of the class, not the 2 % it reads as.
+    The cap is taken over ``near_unity`` instead, with a floor of one so the
+    "bounded, not forbidden" intent survives a small class. The vacuity guard
+    beside it matters as much: if the near-unity class ever emptied, a bound on
+    its refusals would pass while testing nothing.
 
     Numbers are MEASURED AT THIS SEED and are not what the assertions pin: the
-    worst move here is 0.3101 dB against a 1.0 dB margin. A more CLUSTERED
-    population runs higher — drawing all filters within ±5 % of one centre at
-    the same rails reaches 0.3143 dB — and a wider search than any run here may
-    find more still. That is why the runtime guard is the backstop and this
-    corpus is evidence, not a proof over the whole space.
+    worst move here is 0.0727 dB against a 1.0 dB margin, and across four seeds
+    (2758, 1, 7, 99) it ranges 0.0727-0.1718 dB — the uniform draw this test
+    actually runs.
+
+    **No clustered figure is quoted, deliberately.** A population with its
+    filters bunched near one centre runs materially higher, but the number is
+    strongly dependent on a construction the docstring would have to specify in
+    full to be reproducible: exploratory draws over cluster windows of ±0.5 % to
+    ±5 % across three seeds span 0.058-0.474 dB with no monotone trend in the
+    window, and a reviewer's differently-shaped construction reached higher
+    still. An earlier revision quoted "0.2980 dB over three seeds" as if it
+    bounded that family; it bounded one window at three seeds. Until someone
+    studies it properly there is no honest single number, which is itself the
+    point: the runtime guard is the backstop and this corpus is evidence, not a
+    proof over the whole space.
     """
     from jasper.active_speaker.crossover_v2.driver_prescription import (
         DRIVER_MAX_COMPOSED_BOOST_DB,
@@ -649,6 +694,7 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     rng = np.random.default_rng(2758)
     accepted = 0
     worst = 0.0
+    near_unity = 0
     near_unity_refusals = 0
     for _ in range(1200):
         filters = [
@@ -680,18 +726,73 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
                 f"{headroom_charge_db(old):.4f} dB its own bytes set aside — it "
                 "would boot to a graph its own runtime contract refuses"
             )
-        elif not proves:
-            near_unity_refusals += 1
+        else:
+            near_unity += 1
+            if not proves:
+                near_unity_refusals += 1
 
     assert accepted > 150, "the corpus must actually contain admissible chains"
     assert worst <= HEADROOM_MARGIN_DB, (
         f"a chain moved {worst:.4f} dB, past the {HEADROOM_MARGIN_DB} dB margin"
     )
+    # Without this the refusal bound below is vacuous rather than false: an
+    # empty at-risk class satisfies any cap on its refusals.
+    assert near_unity > 0, (
+        "the near-unity class must be exercised for its bound to mean anything"
+    )
     # Bounded, not forbidden: a chain sitting AT unity was charged nothing, so
-    # any upward movement at all refuses it. Zero at this seed; the cap is 2 %
-    # so a sampler that finds one does not read as a regression, and the SF-1
-    # path is what makes each of them loud.
-    assert near_unity_refusals <= accepted // 50
+    # any upward movement at all refuses it. One at this seed. Taken over
+    # `near_unity` and NOT `accepted` — only a near-unity chain can refuse, so
+    # scaling the cap with the whole corpus let it drift to 8.7 % of the class
+    # at risk when R8's filter tripled `accepted`. The floor of one keeps a
+    # small class from turning "bounded" into "forbidden", and the SF-1 path is
+    # what makes each refusal loud.
+    assert near_unity_refusals <= max(1, near_unity // 50)
+
+
+def test_the_classifier_cannot_vouch_into_the_under_read_band():
+    """The tripwire for the ONE thing keeping the honest loop out of #2850.
+
+    Above ~18 kHz the grid's sampling residue exceeds ``HEADROOM_MARGIN_DB``,
+    and R8's widened per-filter ceiling admits the filter magnitudes that
+    residue was measured at. What makes that unreachable through the product
+    loop is not the gate — hand-inject a 19 kHz ``defect-boostable`` verdict and
+    the gate takes it — but the CLASSIFIER, which cannot produce a verdict up
+    there at all: a boost is admitted only against a banked verdict near its
+    centre, and the highest frequency that can be banked is the classifiable
+    band's top widened by the verdict match tolerance.
+
+    So the protection is PRODUCER-side, it is arithmetic rather than a rule
+    anyone wrote down as one, and nothing else fails if it moves. Raising
+    ``TRUSTED_CEILING_HZ`` (or widening the match tolerance) far enough would
+    silently open the under-read band to the honest loop. This test is the
+    thing that fails first when that happens.
+    """
+    from jasper.active_speaker.crossover_v2.feature_classification import (
+        VERDICT_MATCH_TOLERANCE_OCTAVES,
+    )
+    from jasper.active_speaker.crossover_v2.feature_classifier import (
+        TRUSTED_CEILING_HZ, classifiable_band_hz,
+    )
+
+    # The floor is irrelevant to the ceiling this bounds; any value does.
+    classifiable_hi_hz = classifiable_band_hz((100.0, TRUSTED_CEILING_HZ))[1]
+    highest_vouchable_hz = classifiable_hi_hz * 2**VERDICT_MATCH_TOLERANCE_OCTAVES
+
+    # The safety assertion FIRST, so a ceiling change fails with the message
+    # that says what to do rather than with a drifted-decimal mismatch.
+    assert highest_vouchable_hz < _HEADROOM_UNDER_READ_FLOOR_HZ, (
+        f"the classifier can now vouch up to {highest_vouchable_hz:.1f} Hz, "
+        f"into the >= {_HEADROOM_UNDER_READ_FLOOR_HZ:.0f} Hz band where the "
+        "sampling residue exceeds HEADROOM_MARGIN_DB (issue #2850). The "
+        "producer-side protection that made R8's widened boost caps safe to "
+        "land with #2850 open has just been removed — close #2850, or re-argue "
+        "the caps"
+    )
+    # Today's values, pinned after it so the margin above is legible rather
+    # than mysterious: 14254.4 Hz against an 18000 Hz floor is ~3.7 kHz of room.
+    assert classifiable_hi_hz == pytest.approx(12_699.2084, abs=1e-3)
+    assert highest_vouchable_hz == pytest.approx(14_254.3795, abs=1e-3)
 
 
 @pytest.mark.parametrize(

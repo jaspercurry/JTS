@@ -355,10 +355,15 @@ def max_q_for_gain(gain_db: float) -> float:
 #:
 #: Tunable by ruling, not by a caller: there is no keyword that widens it.
 #:
-#: **Restated by** :data:`~.driver_prescription.DRIVER_MAX_FILTER_BOOST_DB` on
-#: the same ruling, and pinned equal by
-#: ``tests/test_crossover_v2_driver_prescription.py`` — so a change here is a
-#: change to what BOTH classes may boost, and the pin is what says so out loud.
+#: **This ceiling is THIS class's alone.** It was restated by
+#: :data:`~.driver_prescription.DRIVER_MAX_FILTER_BOOST_DB` on the same
+#: 2026-08-18 ruling, and the two were pinned EQUAL, until ruling R8
+#: (``docs/tuning-master-plan.md``, 2026-08-21) overturned that ruling **for the
+#: driver class only** and moved its ceiling to the fit engine's 12.0 dB rail.
+#: So a change here is a change to what the BLEND class may boost, and nothing
+#: else. ``tests/test_crossover_v2_driver_prescription.py`` now pins the pair as
+#: an INEQUALITY — this constant at 3.0 against the driver class's 12.0 — so the
+#: two can no longer be moved by one edit, in either direction.
 PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 
 #: Ceiling on the COMPOSED boost's peak over the region, dB — the same shape as
@@ -373,9 +378,16 @@ PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 #: FIRST of two independent bounds, never the only one — the emitter re-charges
 #: the composed graph's boost at the graph boundary and refuses there too.
 #:
-#: **Restated by** :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB`
-#: and pinned equal. On that seam it is load-bearing rather than latent: it is
-#: the number that bounds a prescribed boost's maximum-SPL spend at 5.0 dB.
+#: **This ceiling is THIS class's alone.** It was restated by
+#: :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB` and pinned equal,
+#: and on that seam it was load-bearing rather than latent — it was the number
+#: that bounded a prescribed boost's maximum-SPL spend. Ruling R8
+#: (``docs/tuning-master-plan.md``, 2026-08-21) ended both facts: the driver
+#: class's composed ceiling is now owner policy at 12.0 dB, restated from no
+#: neighbour, and the spend it bounds is that class's own
+#: ``MAX_SPL_SPEND_BOUND_DB`` = **13.0 dB**, not the 5.0 this pairing once
+#: implied. The pin in ``tests/test_crossover_v2_driver_prescription.py`` is now
+#: an INEQUALITY, so editing this number moves the blend class only.
 PRESCRIPTION_MAX_TOTAL_BOOST_DB = 4.0
 
 #: How deep a per-position deviation must be to count as "the dip is present

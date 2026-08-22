@@ -70,7 +70,7 @@ measured.  The rest are SHAPE, and mirror the cut side: a per-filter
 magnitude window, the shared Q envelope, and
 :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.  That
 last one is what sizes the class: it bounds the spend one document can command
-at :data:`MAX_SPL_SPEND_BOUND_DB` = 5.0 dB.  Two independent gates still, on
+at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0 dB.  Two independent gates still, on
 :mod:`.blend_prescription`'s rule that the seam's promise is a property of the
 FUNCTION and not of the call graph: :func:`_check_bounds` and
 :func:`_check_classification` at the boundary,
@@ -90,22 +90,36 @@ bound                            restored from                       value
 :data:`DRIVER_MIN_CUT_DB`        ``linearization_fit._MIN_FILTER_GAIN_DB``  0.5
 :data:`DRIVER_MAX_FILTERS_PER_ROLE` ``linearization_fit.MAX_FILTERS_PER_DRIVER``  8
 :data:`DRIVER_MIN_Q`             ``blend_prescription.PRESCRIPTION_MIN_Q``  0.5
-:data:`DRIVER_MAX_FILTER_BOOST_DB` ``blend_prescription.PRESCRIPTION_MAX_FILTER_BOOST_DB``  3.0
-:data:`DRIVER_MAX_COMPOSED_BOOST_DB` ``blend_prescription.PRESCRIPTION_MAX_TOTAL_BOOST_DB``  4.0
+:data:`DRIVER_MAX_FILTER_BOOST_DB` ``linearization_fit.PER_FILTER_BOOST_CAP_DB``  12.0
+:data:`DRIVER_MAX_COMPOSED_BOOST_DB` owner policy, ruling R8                   12.0
 ===============================  ==================================  =========
 
-The two BOOST ceilings are restored from the sibling PRESCRIPTION class rather
-than from the fit engine, and that choice is the owner's 2026-08-18 ruling that
-"a new permission should not open at the ceiling of an old one": the engine's
-own per-filter boost rail is 12.0 dB, and inheriting it would open this class
-four times wider than the blend class opened on the same reasoning.
+The per-filter BOOST ceiling is restored from the fit engine like the cut
+ceilings above it.  **It was not always**: until 2026-08-22 both boost ceilings
+came from the sibling ``blend_prescription`` class (3.0 and 4.0) on the owner's
+2026-08-18 ruling that "a new permission should not open at the ceiling of an
+old one", whose stated reason was that the fit's 12 dB rests on a closed-loop
+delta probe and — as R8 quotes it — "a prescription has no such prediction".
+Ruling **R8** of
+``docs/tuning-master-plan.md`` overturns that on its own terms — under the
+tournament every candidate banks a pre-registered expected delta before the
+round measures it, which IS that closed-loop prediction — and the per-filter
+ceiling moved to the emitter's own rail so a prescription at the ceiling is
+emittable rather than accepted here and refused downstream.
 
-They are RESTATED rather than imported, on ``camilla_yaml``'s own lockstep rule:
-this gate is an independent re-validation of a document the fit engine did not
-write, so inheriting the engine's policy constant would let a future change to
-the engine silently move what an outside reader is allowed to propose.
-``tests/test_crossover_v2_driver_prescription.py`` pins every pair
-numerically, so the duplication is a pinned lockstep and not a drift.
+The composed ceiling is the one bound here with no neighbour to restore from:
+the fit engine has no composed cap (total boost is deliberately unbounded
+there), so R8 sets it as policy at the same 12.0.  Its consequence is that two
+boost filters both at the per-filter rail can never clear the composed cap, so
+the composed cap binds every multi-filter boost.
+
+Every bound with a source is RESTATED rather than imported, on ``camilla_yaml``'s
+own lockstep rule: this gate is an independent re-validation of a document the
+fit engine did not write, so inheriting the engine's policy constant would let a
+future change to the engine silently move what an outside reader is allowed to
+propose.  ``tests/test_crossover_v2_driver_prescription.py`` pins every such
+pair numerically, so the duplication is a pinned lockstep and not a drift — and
+it pins the composed ceiling, which has no pair, against its own literal.
 
 **The band is the DRIVER's, and that is the point of the class.**  Not the
 crossover region, not the radiating band — ``branch_chain.radiating_band_hz``
@@ -341,19 +355,43 @@ DRIVER_MAX_COMPOSED_CUT_DB = 18.0
 #: on an inaudible correction is spending a scarce thing on nothing.
 DRIVER_MIN_CUT_DB = 0.5
 
-#: Highest ONE prescribed boost may go, dB — ``blend_prescription.
-#: PRESCRIPTION_MAX_FILTER_BOOST_DB``, restated on this module's lockstep rule.
+#: Highest ONE prescribed boost may go, dB — ``camilla_yaml.
+#: MAX_LINEARIZATION_BOOST_DB`` / ``linearization_fit.PER_FILTER_BOOST_CAP_DB``,
+#: the rail the fit engine emits up to, restated on this module's lockstep rule
+#: like every other bound here.
 #:
-#: **Deliberately NOT** ``camilla_yaml.MAX_LINEARIZATION_BOOST_DB`` (12.0), the
-#: rail the fit engine emits up to and every other bound here is restored from.
-#: Owner ruling, 2026-08-18: "a new permission should not open at the ceiling of
-#: an old one." The fit's 12 dB rests on a closed-loop delta probe grading what
-#: the fit predicted against what the speaker did; a prescription has no such
-#: prediction, so it opens where its sibling class opened and moves on evidence.
-DRIVER_MAX_FILTER_BOOST_DB = 3.0
+#: **This overturns the owner's 2026-08-18 ruling** that stood on this constant
+#: until 2026-08-22 — "a new permission should not open at the ceiling of an old
+#: one", which opened this class at its sibling ``blend_prescription.
+#: PRESCRIPTION_MAX_FILTER_BOOST_DB`` (3.0) instead. That ruling's stated reason
+#: was that the fit's 12 dB rests on a closed-loop delta probe grading what the
+#: fit predicted against what the speaker did, and — as R8 quotes it — "a
+#: prescription has no such prediction". Ruling **R8** of
+#: ``docs/tuning-master-plan.md`` (owner-ratified
+#: 2026-08-21) overturns it ON ITS OWN TERMS: under the tournament every
+#: candidate carries a **pre-registered expected delta**, banked before the round
+#: measures it, which is exactly the closed-loop prediction whose absence was the
+#: reason for opening low. The gate is now at the rail the emitter re-validates
+#: against, so a prescription at this ceiling is emittable rather than accepted
+#: here and refused downstream.
+#:
+#: Equal to :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by R8, which has a consequence
+#: worth naming: two boost filters BOTH at this rail can never clear the composed
+#: cap, since each alone reads 12.0 there and any skirt overlap only adds (two
+#: Q-8 boosts 0.30 octaves apart compose to 12.9526, and moving them a full third
+#: of an octave apart still reads 12.7802). So the composed cap binds every
+#: multi-filter boost, and this one binds only the single-filter case.
+DRIVER_MAX_FILTER_BOOST_DB = 12.0
 
-#: Ceiling on the COMPOSED boost's peak over one role's passband, dB —
-#: ``blend_prescription.PRESCRIPTION_MAX_TOTAL_BOOST_DB``.
+#: Ceiling on the COMPOSED boost's peak over one role's passband, dB.
+#:
+#: **POLICY, owner-ratified in ruling R8** (``docs/tuning-master-plan.md``,
+#: 2026-08-21) — the one bound in this module that is not restored from a
+#: neighbour, because there is no neighbour to restore it from: the fit engine
+#: has no composed cap to inherit (``PER_FILTER_BOOST_CAP_DB`` is a per-filter
+#: realization bound and total boost is deliberately unbounded there, by the
+#: owner's 2026-07-27 ruling), and the sibling ``blend_prescription.
+#: PRESCRIPTION_MAX_TOTAL_BOOST_DB`` (4.0) is the ceiling R8 moved off.
 #:
 #: This is the bound that sizes the whole class's cost, and it carries that
 #: weight only because :func:`_composed_grid` reads the cascade on the same
@@ -367,7 +405,7 @@ DRIVER_MAX_FILTER_BOOST_DB = 3.0
 #: :data:`DRIVER_MAX_COMPOSED_CUT_DB`'s reason, and the emitter folds the roles
 #: by worst branch rather than by sum, so the document's total spend is that
 #: bound and not a multiple of it.
-DRIVER_MAX_COMPOSED_BOOST_DB = 4.0
+DRIVER_MAX_COMPOSED_BOOST_DB = 12.0
 
 #: How shallow a boost may be before it is cosmetic, dB. The same number as
 #: :data:`DRIVER_MIN_CUT_DB` because it is the same argument — ``linearization_
@@ -379,13 +417,134 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
 #: The most maximum SPL one accepted document can cost the household, dB.
 #:
-#: DERIVED, not chosen: ``headroom_charge_db(peak) = peak + HEADROOM_MARGIN_DB``
-#: for any peak above its epsilon, and :data:`DRIVER_MAX_COMPOSED_BOOST_DB`
-#: bounds the peak. Published on the refusal and on the round's own event so a
-#: reader can see the ceiling beside the number that approached it. Imported
-#: rather than restated because it is a CONSEQUENCE of the charge formula, not a
-#: policy this gate re-validates: a margin that moved must move this too.
+#: DERIVED, not chosen, and **re-proved at 13.0 dB for ruling R8's widened caps**
+#: (2026-08-22). The derivation, in four steps, each with its owner:
+#:
+#: 1. ``branch_chain.headroom_charge_db(peak) = peak + HEADROOM_MARGIN_DB`` for
+#:    any peak above ``_PEAK_EPS_DB`` (0.01 dB). That is the whole charge
+#:    formula — one addition, no other term.
+#: 2. :func:`_check_composed` refuses any role whose evaluated cascade peak
+#:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by more than
+#:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an ACCEPTED document has
+#:    ``peak <= 12.0 + 1e-9`` on the gate's own reading. That tolerance is
+#:    carried rather than dropped; where it lands is stated after step 4,
+#:    because step 4 contributes a second term to the same sum.
+#: 3. **The span clause** — the step the whole proof rests on. That reading is
+#:    taken on :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
+#:    IMPORTED (the charge's own span) unioned with a dense sweep of the role's
+#:    band. Gate and charge therefore read the same domain, and a union can only
+#:    read HIGHER than either half. Without this clause the inference is
+#:    unsound rather than merely loose: a band-limited gate once passed a
+#:    cascade at 3.58 dB that the emitter charged 10.75 dB for, because the two
+#:    were measuring different intervals. A premise can be true and the
+#:    conclusion still false when they are about different domains.
+#: 4. The emitter's peak cannot exceed the gate's, for TWO reasons that are both
+#:    needed — the second was missing from an earlier revision of this list, and
+#:    it turns out to be the larger term:
+#:
+#:    * the remaining terms in the emitted branch (the crossover sections and
+#:      the per-driver trim) are non-positive to within 1e-8 dB, so
+#:      ``cascade + sections <= cascade`` pointwise at any scale this system
+#:      resolves. Measured and pinned: an LR section reaches a small POSITIVE
+#:      maximum — floating-point residue from cascading up to eight biquads —
+#:      that grows as the corner drops toward ~20 Hz. Worst **+8.4154e-10 dB**
+#:      on ``CHAIN_GRID_HZ`` (the domain the emitter actually charges over) and
+#:      **+1.1654e-09 dB** on the denser grid the pin stress-tests with, both at
+#:      LR8 near 20 Hz. Search minima, so the pin's bar sits an order above
+#:      them;
+#:    * the emitter evaluates on ``_evaluation_grid(filters, CHAIN_GRID_HZ)``,
+#:      which is a strict SUBSET of :func:`_composed_grid` (verified over 200
+#:      random filter sets) — the gate adds a dense per-band sweep on top of the
+#:      same base. A maximum over a subset cannot exceed the maximum over the
+#:      superset.
+#:
+#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision. Carrying
+#: both tolerances instead of dropping them, the true ceiling is step 2's 1e-9
+#: plus step 4's 1e-8 section allowance: ``13.000000011`` dB. Both are stated
+#: here, after the step that contributes the second one, rather than in step 2
+#: where the sum was not yet known.
+#:
+#: **The bound is ATTAINED, not approached**: one filter at
+#: :data:`DRIVER_MAX_FILTER_BOOST_DB`, at any Q, composes to exactly 12.000000
+#: on this gate's reading, so ``headroom_charge_db`` of it is exactly 13.000000.
+#: So this is a tight maximum — the worst-case max-SPL spend one accepted
+#: document can cost, which R8 records as moving 5 → 13 dB.
+#:
+#: Two independent checks. A random sweep over this gate's own rails, at its
+#: pinned seed: of 2 000 sets of 1-4 Peaking filters, 1 538 are admitted and
+#: their worst charge is 12.999377 dB, never crossing 13.0. That is EVIDENCE
+#: over a sample, not a proof over the space — the proof is the four steps
+#: above; the sweep is what would catch them being wrong. Its SHAPE is narrow
+#: on purpose and the limits are worth knowing before leaning on it: Peaking
+#: filters only, positive gains only, at most four of them, one band. Shelves,
+#: mixed-sign cascades and the eight-filter ceiling are covered by the
+#: dedicated refusal tests around it rather than by this draw. And the STRADDLE,
+#: pinned end to end through the EMITTER in
+#: ``tests/test_active_speaker_linearization_emission.py`` — two +9.0 dB Q-8
+#: boosts 0.1233 octaves apart compose to 11.916 here and are charged 12.861 by
+#: the emitter (admitted); move them to 0.1184 octaves and this gate refuses at
+#: 12.088 composed, which would have been charged 13.067.
+#:
+#: Those two charge figures are the EMITTER's and run a little under
+#: ``gate peak + 1.0`` (12.861 against 12.916). The gap is **0.0547 dB**, and it
+#: splits the way step 4's two reasons predict — measured on that fixture, not
+#: reasoned:
+#:
+#: * **0.0211 dB** is the crossover high-pass, which reads -0.021120 dB at the
+#:   gate's peak (6752.603 Hz);
+#: * **0.0336 dB** is the GRID, and it is the larger half: the emitter's coarser
+#:   subset does not contain 6752.603 Hz at all and takes its maximum at
+#:   6728.254 Hz instead.
+#:
+#: The peak does NOT relocate because the section is applied — checked on a
+#: fixed grid, where adding the high-pass leaves the maximum at 6752.603 Hz.
+#: The two frequencies differ because the two readings are on different grids,
+#: which is a distinction worth keeping: one is a property of the filter, the
+#: other of the sampling. One measured instance of step 4, not a demonstration
+#: of the general claim.
+#:
+#: Imported rather than restated because it is a CONSEQUENCE of the charge
+#: formula, not a policy this gate re-validates: a margin that moved must move
+#: this too. Published on the refusal and on the round's own event so a reader
+#: can see the ceiling beside the number that approached it.
+#:
+#: **What this bounds is the CHARGE, not the realized peak.** Above ~18 kHz the
+#: sampling residue exceeds ``HEADROOM_MARGIN_DB`` (issue #2850, open at this
+#: writing), so up there the -1.0 dB per-driver soft-clip limiters are the
+#: backstop rather than this arithmetic — see the widened caps' entry in
+#: ``branch_chain.HEADROOM_MARGIN_DB``'s own comment.
 MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
+
+#: Slack allowed on the COMPOSED BOOST comparison alone, dB, so that the
+#: evaluator's own double-precision residue cannot decide a policy question.
+#:
+#: Needed only because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
+#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
+#: per-filter rail composes to that rail exactly in arithmetic, and the biquad
+#: evaluates it to within a small residue whose SIGN depends on the centre
+#: frequency and Q. Untolerated, +12.0 dB at Q 3 / 6245 Hz is admitted
+#: (-5.3e-15) while +12.0 dB at Q 5 / 1600 Hz is refused (+7.8e-14) — the
+#: published per-filter ceiling refusing at its own value, decided by low bits.
+#:
+#: **The residue's size is a swept figure, not the first one measured.** Those
+#: two examples come from a hand-picked grid; over 4 000 random (freq, Q) draws
+#: at the rail plus that grid, the worst |residue| is **2.416e-13 dB** at
+#: 2015.4 Hz / Q 6.89 — about 3x the largest hand-picked value, and still
+#: 4 139x under this tolerance. Quoting the hand-picked 7.8e-14 as if it bounded
+#: the family would have been the narrow-fact-universal-tail mistake.
+#:
+#: 1e-9 dB is ~4 orders above that swept residue and ~7 below the 4-decimal
+#: precision
+#: every charge in this system is reported at, so it cannot absorb a real
+#: cascade: :data:`MAX_SPL_SPEND_BOUND_DB` still bounds the charge to 13.0 dB at
+#: every digit anything published carries.
+#:
+#: **Boost side only**, on the house rule against mirroring a fix into a sibling
+#: path that is not broken. The cut comparison has the same shape but no such
+#: collision — :data:`DRIVER_MAX_FILTER_CUT_DB` (12.0) sits well under
+#: :data:`DRIVER_MAX_COMPOSED_CUT_DB` (18.0), so one filter at the per-filter cut
+#: rail comes nowhere near the composed one.
+_COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 
 #: How many filters one role may carry — ``linearization_fit.
 #: MAX_FILTERS_PER_DRIVER``, which is also ``camilla_yaml.
@@ -993,8 +1152,8 @@ def _check_bounds(
                     FILTER_BOOST_TOO_HIGH,
                     f"filter {position} boosts {gain:.2f} dB at {freq:.1f} Hz, "
                     f"past the {DRIVER_MAX_FILTER_BOOST_DB:g} dB per-filter "
-                    "ceiling. That ceiling is this class's own opening bar, not "
-                    "the 12 dB rail the deterministic fit engine emits up to",
+                    "ceiling, which is the same rail the deterministic fit "
+                    "engine emits up to and the emitter re-validates against",
                     role=role,
                     freq_hz=freq,
                     gain_db=gain,
@@ -1104,10 +1263,16 @@ def _check_composed(
     bound reading low only ever refuses less, and it is now consistent.
 
     Both are read WITHOUT the crossover sections and WITHOUT the branch trim,
-    and BOTH of those terms are non-positive everywhere — the trim by
+    and BOTH of those terms are non-positive to within 1e-8 dB — the trim by
     construction (``intervention.anchor_trims`` normalizes it, pinned) and the
-    LR sections by measurement (every supported order and corner maxes at
-    +0.000000000 dB). So this reading is an UPPER bound on what the emitter
+    LR sections by measurement. Not exactly zero, which the old wording
+    ("maxes at +0.000000000 dB") implied by rounding: a section's true maximum
+    is a small POSITIVE floating-point residue, worst measured +8.4154e-10 dB
+    on the emitter's own grid and +1.1654e-09 dB on a denser one, both at LR8
+    near a 20 Hz corner. 1e-8 dB is what the pin asserts and the honest ceiling
+    to quote; it is a hundred-millionth of the 1.0 dB margin, so the inference
+    below is unaffected. So this reading is an UPPER
+    bound on what the emitter
     will charge, which is the direction a gate's number has to err.
 
     That inference is only sound because the span is now the charge's own. It
@@ -1153,7 +1318,7 @@ def _check_composed(
             )
         peak_index = int(np.argmax(composed))
         peak_boost = max(0.0, float(composed[peak_index]))
-        if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB:
+        if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
                 f"the {role}'s composed cascade boosts {peak_boost:.2f} dB at "
