@@ -36,6 +36,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
@@ -1533,14 +1534,20 @@ def test_the_depth_bar_is_load_bearing_not_decorative(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(("gain", "accepted"), [
-    (0.49, False), (0.5, True), (3.0, True), (3.01, False), (12.0, False),
+    (0.49, False), (0.5, True), (3.0, True), (12.0, True), (12.01, False),
 ])
 def test_the_per_filter_boost_bounds_are_inclusive(tmp_path, gain, accepted):
-    """0.5 dB is cosmetic-floor; 3.0 dB is this class's opening ceiling.
+    """0.5 dB is cosmetic-floor; 12.0 dB is this class's ceiling since R8.
 
-    12.0 is in the table because it is the rail the FIT engine emits up to, and
-    a prescriber inheriting it would open this class four times wider than the
-    owner's 2026-08-18 ruling opened its sibling.
+    3.0 stays in the table as an ordinary mid-range case — it was the ceiling
+    itself until 2026-08-22, and the row that used to assert 12.0 is REFUSED now
+    asserts it is admitted, which is the whole of what R8 changed here.
+
+    12.0 being ACCEPTED is the load-bearing row: it is the rail the emitter
+    re-validates against, so a document at the ceiling has to survive emission
+    rather than be accepted here and refused downstream. It reaches the composed
+    cap at the same time (the two caps are equal), which is why that comparison
+    carries ``_COMPOSED_BOOST_EVAL_TOL_DB``.
     """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
     document = _document([_boost(gain=gain)], packet)
@@ -1573,11 +1580,14 @@ def test_a_boost_uses_the_same_q_envelope_as_a_cut(tmp_path, q, accepted):
 def test_two_admissible_boosts_may_still_compose_past_the_budget(tmp_path):
     """The composed cap, on the EVALUATED cascade, and it is not a sum of gains.
 
-    Two +3.0 dB filters 0.2 octaves apart are each inside the per-filter
-    ceiling. At Q 8 they barely interact (3.41 dB composed, admitted); at Q 4
-    their skirts overlap enough to reach 4.30 dB and the budget refuses. The
+    Two +10.0 dB filters 0.2 octaves apart are each inside the per-filter
+    ceiling. At Q 8 they barely interact (11.54 dB composed, admitted); at Q 4
+    their skirts overlap enough to reach 14.24 dB and the budget refuses. The
     same document, the same gains, a different width — which is exactly why
     this bound is measured rather than added up.
+
+    Re-scaled from +3.0 dB (3.41 / 4.30 against the old 4.0 dB cap) when R8
+    widened the caps; the property under test is unchanged.
     """
     apart = TWEETER_DIP_HZ * 2 ** 0.2
     packet = _speaker(tmp_path, classification=_boostable(
@@ -1585,17 +1595,17 @@ def test_two_admissible_boosts_may_still_compose_past_the_budget(tmp_path):
     ))
 
     wide = _gate(packet, _document(
-        [_boost(q=8.0), _boost(freq=apart, q=8.0)], packet,
+        [_boost(gain=10.0, q=8.0), _boost(gain=10.0, freq=apart, q=8.0)], packet,
     ))
-    assert wide.composed_boost_db == pytest.approx(3.414, abs=0.01)
+    assert wide.composed_boost_db == pytest.approx(11.543, abs=0.01)
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(
-            [_boost(q=4.0), _boost(freq=apart, q=4.0)], packet,
+            [_boost(gain=10.0, q=4.0), _boost(gain=10.0, freq=apart, q=4.0)], packet,
         ))
 
     assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
-    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(4.297, abs=0.01)
+    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(14.239, abs=0.01)
     assert excinfo.value.evidence["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
     # The refusal states the household-facing consequence, not only the bound.
     assert excinfo.value.evidence["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
@@ -1607,25 +1617,31 @@ def test_the_composed_boost_cap_is_load_bearing_not_decorative(tmp_path, monkeyp
     packet = _speaker(tmp_path, classification=_boostable(
         [_dip(depth_db=20.0), _dip(hz=apart, depth_db=20.0)]
     ))
-    document = _document([_boost(q=4.0), _boost(freq=apart, q=4.0)], packet)
+    document = _document(
+        [_boost(gain=10.0, q=4.0), _boost(gain=10.0, freq=apart, q=4.0)], packet
+    )
 
     with pytest.raises(BlendPrescriptionRefused):
         _gate(packet, document)
 
     monkeypatch.setattr(dp, "DRIVER_MAX_COMPOSED_BOOST_DB", 99.0)
-    assert _gate(packet, document).composed_boost_db == pytest.approx(4.297, abs=0.01)
+    assert _gate(packet, document).composed_boost_db == pytest.approx(14.239, abs=0.01)
 
 
 def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
     """SF-GRID. A fixed log grid under-reads a high-Q filter near a wide band's
     top edge, and the bound then reads low because the DECLARATION was wide.
 
-    Two ``+3.0 dB`` Q-8 boosts stacked at 23800 Hz on a driver declared to
-    24 kHz compose to a true 6.00 dB. The pre-fix 2048-point geomspace read
-    2.47 dB and ADMITTED them; unioning the filter centres reads 6.00 and
-    refuses. The emitter always charged the true peak, so the defect was a
-    false published spend bound rather than an under-absorption — which is
-    exactly why only a test can catch it.
+    Two ``+7.0 dB`` Q-8 boosts stacked at 23800 Hz on a driver declared to
+    24 kHz compose to a true 14.00 dB — stacking identical filters doubles the
+    dB exactly. A fixed log grid under-reads that badly at the band's top edge
+    and would ADMIT them; unioning the filter centres reads 14.00 and refuses.
+    The emitter always charged the true peak, so the defect was a false
+    published spend bound rather than an under-absorption — which is exactly
+    why only a test can catch it.
+
+    Re-scaled from ``+3.0 dB`` (a true 6.00 against the old 4.0 dB cap) when R8
+    widened the caps; the grid property under test is unchanged.
     """
     wide = _draft()
     wide["driver_safety_profile"]["targets"][1]["measurement_band_hz"] = [
@@ -1643,20 +1659,23 @@ def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(
-            [_boost(freq=23800.0), _boost(freq=23800.0)], packet,
+            [_boost(gain=7.0, freq=23800.0), _boost(gain=7.0, freq=23800.0)], packet,
         ))
 
     assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
-    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(6.0, abs=0.01)
+    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(14.0, abs=0.01)
 
 
 #: A MIXED-SIGN cascade whose extremum sits BELOW its own declared band.
 #: Six broad boosts at the woofer's 40 Hz floor and two narrow cuts just above
 #: it: every filter is in-band and inside every per-filter bound, and the
-#: composed extremum lands at ~29.5 Hz, where the woofer branch has no
+#: composed extremum lands at ~30.7 Hz, where the woofer branch has no
 #: protective high-pass. Eight filters — exactly the per-role ceiling.
+#:
+#: The boosts were +3.0 dB (composing to 9.75) until R8 widened the composed cap
+#: past that; +4.0 dB restores a refusal without touching the shape being tested.
 _DOMAIN_ATTACK = [
-    {"role": "woofer", "biquad_type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 3.0},
+    {"role": "woofer", "biquad_type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 4.0},
 ] * 6 + [
     {"role": "woofer", "biquad_type": "Peaking", "freq": 48.0, "q": 2.0, "gain": -12.0},
 ] * 2
@@ -1665,7 +1684,7 @@ _DOMAIN_ATTACK = [
 #: the extremum lands, which is what makes this a control rather than a second
 #: case: it was refused before the domain fix and is refused after it.
 _DOMAIN_CONTROL = [
-    {"role": "woofer", "biquad_type": "Peaking", "freq": 400.0, "q": 0.7, "gain": 3.0},
+    {"role": "woofer", "biquad_type": "Peaking", "freq": 400.0, "q": 0.7, "gain": 4.0},
 ] * 6 + [
     {"role": "woofer", "biquad_type": "Peaking", "freq": 480.0, "q": 2.0, "gain": -12.0},
 ] * 2
@@ -1678,8 +1697,8 @@ def _woofer_dips(freqs):
 
 
 @pytest.mark.parametrize(("filters", "freqs", "expected"), [
-    (_DOMAIN_ATTACK, (40.0, 48.0), 9.75),
-    (_DOMAIN_CONTROL, (400.0, 480.0), 9.75),
+    (_DOMAIN_ATTACK, (40.0, 48.0), 14.879),
+    (_DOMAIN_CONTROL, (400.0, 480.0), 14.884),
 ])
 def test_a_cascade_peaking_outside_its_band_is_still_refused(
     tmp_path, filters, freqs, expected
@@ -1690,9 +1709,14 @@ def test_a_cascade_peaking_outside_its_band_is_still_refused(
     band-limited reading was measuring a different interval from the one it
     claimed to bound. This attack put every filter inside the woofer's declared
     40-3000 Hz band and inside every per-filter bound, and drove the composed
-    extremum to ~29.5 Hz — BELOW the band, where that branch has no protective
+    extremum to ~30.7 Hz — BELOW the band, where that branch has no protective
     high-pass. The old reading passed it at 3.58 dB against a real 10.75 dB
-    charge; both arms now refuse at ~9.75.
+    charge; both arms now refuse at ~14.88.
+
+    The two arms differ in the fourth significant figure because the extremum
+    lands at a different frequency in each, which is the ONE thing this pair
+    varies; they are pinned separately rather than to a shared number so that
+    difference stays visible.
     """
     packet = _speaker(tmp_path, classification=_woofer_dips(freqs))
 
@@ -1963,22 +1987,38 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 # --- the numbers, pinned against the constants they were restored from ------- #
 
 
-def test_the_boost_ceilings_are_the_sibling_classs_not_the_emitters_rail():
-    """LOCKSTEP pin. The owner's 2026-08-18 ruling, as an assertion.
+def test_the_boost_ceilings_are_the_emitters_rail_not_the_sibling_classs():
+    """LOCKSTEP pin. Ruling **R8**, as an assertion — and the overturn it carries.
 
-    "A new permission should not open at the ceiling of an old one": both boost
-    ceilings equal the blend class's, and both are strictly under the 12 dB rail
-    the deterministic fit engine emits up to.
+    Until 2026-08-22 this test asserted the OPPOSITE, on the owner's 2026-08-18
+    ruling that "a new permission should not open at the ceiling of an old one":
+    both boost ceilings equalled the blend class's (3.0 / 4.0) and both sat
+    strictly under the fit engine's 12 dB rail. R8 overturns that on its own
+    terms — the tournament banks a pre-registered expected delta per candidate,
+    which is the closed-loop prediction whose absence was the reason to open low.
+
+    So the per-filter ceiling is now the emitter's own rail, which is what makes
+    a prescription at the ceiling emittable instead of accepted here and refused
+    downstream; and both ceilings have LEFT the blend class, which keeps its own
+    3.0 / 4.0 because R8 moved only this class.
     """
     from jasper.active_speaker.crossover_v2.blend_prescription import (
         PRESCRIPTION_MAX_FILTER_BOOST_DB,
         PRESCRIPTION_MAX_TOTAL_BOOST_DB,
     )
+    from jasper.active_speaker.linearization_fit import PER_FILTER_BOOST_CAP_DB
 
-    assert DRIVER_MAX_FILTER_BOOST_DB == PRESCRIPTION_MAX_FILTER_BOOST_DB
-    assert DRIVER_MAX_COMPOSED_BOOST_DB == PRESCRIPTION_MAX_TOTAL_BOOST_DB
-    assert DRIVER_MAX_FILTER_BOOST_DB < camilla_yaml.MAX_LINEARIZATION_BOOST_DB
-    assert DRIVER_MAX_COMPOSED_BOOST_DB < camilla_yaml.MAX_LINEARIZATION_BOOST_DB
+    assert DRIVER_MAX_FILTER_BOOST_DB == 12.0
+    assert DRIVER_MAX_COMPOSED_BOOST_DB == 12.0
+    # The per-filter ceiling IS the emitter's rail, in lockstep with both owners
+    # of that number, so a document at the ceiling survives emission.
+    assert DRIVER_MAX_FILTER_BOOST_DB == camilla_yaml.MAX_LINEARIZATION_BOOST_DB
+    assert DRIVER_MAX_FILTER_BOOST_DB == PER_FILTER_BOOST_CAP_DB
+    # ...and the blend class did NOT move with it.
+    assert PRESCRIPTION_MAX_FILTER_BOOST_DB == 3.0
+    assert PRESCRIPTION_MAX_TOTAL_BOOST_DB == 4.0
+    assert DRIVER_MAX_FILTER_BOOST_DB > PRESCRIPTION_MAX_FILTER_BOOST_DB
+    assert DRIVER_MAX_COMPOSED_BOOST_DB > PRESCRIPTION_MAX_TOTAL_BOOST_DB
 
 
 def test_the_max_spl_spend_bound_is_derived_from_the_charge_formula():
@@ -1987,13 +2027,146 @@ def test_the_max_spl_spend_bound_is_derived_from_the_charge_formula():
     ``charge(peak) = peak + HEADROOM_MARGIN_DB`` above the epsilon, and the
     composed cap bounds the peak — so a margin that moved must move this too,
     which is why it is imported rather than restated.
+
+    **Re-proved at 13.0 dB for R8's widened caps.** Each step of the derivation
+    the constant's own comment states gets an assertion here, so the published
+    number cannot drift from the arithmetic that produced it.
     """
     from jasper.active_speaker.branch_chain import (
         HEADROOM_MARGIN_DB, headroom_charge_db,
     )
 
+    # Step 1: the charge formula is one addition, and nothing else.
+    assert HEADROOM_MARGIN_DB == 1.0
+    assert headroom_charge_db(7.5) == 7.5 + HEADROOM_MARGIN_DB
+    # Step 2: the composed cap bounds an accepted document's peak.
+    assert DRIVER_MAX_COMPOSED_BOOST_DB == 12.0
+    # Steps 1+2 compose to the published bound, and it lands at 13.0.
     assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
+    assert MAX_SPL_SPEND_BOUND_DB == 13.0
     assert headroom_charge_db(DRIVER_MAX_COMPOSED_BOOST_DB) == MAX_SPL_SPEND_BOUND_DB
+
+
+def test_the_span_clause_is_what_makes_the_bound_sound():
+    """Step 3 of the derivation, the one the whole proof rests on.
+
+    The gate's composed reading is taken on the CHARGE's own span —
+    ``branch_chain._evaluation_grid`` IMPORTED, not mirrored — unioned with a
+    dense sweep of the role's band. If the gate ever read a NARROWER domain than
+    the charge, "peak <= 12" would stop bounding the charge's input and the
+    13.0 dB number would be unsound rather than merely loose. That is not
+    hypothetical: a band-limited gate once passed a cascade at 3.58 dB that the
+    emitter charged 10.75 dB for.
+
+    Pinned two ways: the grid is a superset of the charge's own span, and a
+    cascade whose extremum sits OUTSIDE the declared band is still seen.
+    """
+    from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, _evaluation_grid
+    from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+
+    role_filters = [
+        {"type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 3.0},
+        {"type": "Peaking", "freq": 48.0, "q": 2.0, "gain": -12.0},
+    ]
+    grid = dp._composed_grid(role_filters, 40.0, 3000.0)
+
+    # The charge's whole span is inside the gate's grid — every point of it.
+    charge_span = _evaluation_grid(role_filters, CHAIN_GRID_HZ)
+    assert np.isin(charge_span, grid).all(), (
+        "the gate must read at least everywhere the charge does"
+    )
+    # And the grid reaches outside the declared band, which is the domain half.
+    assert grid.min() < 40.0
+    assert grid.max() > 3000.0
+
+
+def test_the_bound_is_attained_by_one_filter_at_the_per_filter_rail():
+    """13.0 dB is a tight maximum, not a ceiling nothing reaches.
+
+    One filter at ``DRIVER_MAX_FILTER_BOOST_DB``, at any Q, composes to exactly
+    the composed cap and charges exactly the bound. This is what R8 means by the
+    worst-case max-SPL spend moving 5 -> 13 dB, and it is only expressible
+    because R8 set the two caps equal.
+    """
+    from jasper.active_speaker.branch_chain import chain_response, headroom_charge_db
+    from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+
+    for q in (0.5, 3.0, 8.0):
+        one = [{"type": "Peaking", "freq": 6245.0, "q": q,
+                "gain": DRIVER_MAX_FILTER_BOOST_DB}]
+        grid = dp._composed_grid(one, 1600.0, 20000.0)
+        peak = float(np.max(20.0 * np.log10(
+            np.maximum(np.abs(np.asarray(chain_response(one, grid))), 1e-12)
+        )))
+        assert peak == pytest.approx(DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-9)
+        assert headroom_charge_db(peak) == pytest.approx(
+            MAX_SPL_SPEND_BOUND_DB, abs=1e-9
+        )
+
+
+def test_no_admissible_cascade_charges_more_than_the_published_bound():
+    """The safety claim itself, swept rather than argued.
+
+    The four-step derivation says an admitted document cannot be charged past
+    ``MAX_SPL_SPEND_BOUND_DB``. This walks random filter sets over the gate's
+    OWN rails — 1-4 Peaking filters, gains 0.5 to the per-filter ceiling, Q
+    across the whole envelope, centres anywhere in a tweeter's band — keeps the
+    ones ``_check_composed`` would admit, and charges each through
+    ``headroom_charge_db``.
+
+    Evidence over a sample, not a proof over the space (the derivation is the
+    proof); this is what would catch the derivation being wrong. The seed is
+    pinned so the two numbers in the constant's own comment are reproducible.
+    """
+    from jasper.active_speaker.branch_chain import chain_response, headroom_charge_db
+
+    rng = np.random.default_rng(20260822)
+    lo, hi = 1600.0, 20000.0
+    admitted = 0
+    worst = 0.0
+    for _ in range(2000):
+        filters = [
+            {
+                "type": "Peaking",
+                "freq": float(np.exp(rng.uniform(np.log(lo), np.log(hi)))),
+                "q": float(rng.uniform(dp.DRIVER_MIN_Q, dp.DRIVER_MAX_CUT_Q)),
+                "gain": float(rng.uniform(
+                    dp.DRIVER_MIN_BOOST_DB, DRIVER_MAX_FILTER_BOOST_DB
+                )),
+            }
+            for _i in range(int(rng.integers(1, 5)))
+        ]
+        grid = dp._composed_grid(filters, lo, hi)
+        peak = float(np.max(20.0 * np.log10(
+            np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
+        )))
+        if peak > DRIVER_MAX_COMPOSED_BOOST_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB:
+            continue  # the gate refuses it, so it is not this bound's problem
+        admitted += 1
+        worst = max(worst, headroom_charge_db(peak))
+
+    assert admitted == 1538, "the seed moved; re-derive the comment's numbers"
+    assert worst == pytest.approx(12.999377, abs=1e-5)
+    assert worst <= MAX_SPL_SPEND_BOUND_DB
+
+
+def test_the_composed_tolerance_absorbs_only_the_evaluators_own_noise():
+    """The tolerance R8's equal caps made necessary, bounded at both ends.
+
+    Untolerated, a filter AT the per-filter rail is admitted or refused by the
+    biquad's low bits (+-7.8e-14 dB, sign depending on centre and Q), so the
+    published ceiling would refuse at its own value. The tolerance must be big
+    enough to cover that and far too small to hide a real cascade.
+    """
+    from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+
+    assert dp._COMPOSED_BOOST_EVAL_TOL_DB == 1e-9
+    # Covers the measured evaluator residue with ~5 orders to spare...
+    assert dp._COMPOSED_BOOST_EVAL_TOL_DB > 1e-12
+    # ...and is orders below the 4-decimal precision every charge is published
+    # at, so the 13.0 dB bound is unmoved at every digit anyone reads.
+    assert dp._COMPOSED_BOOST_EVAL_TOL_DB < 0.5e-4
+    assert round(MAX_SPL_SPEND_BOUND_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB, 4) == 13.0
 
 
 def test_the_boost_floor_is_the_cut_floor_because_it_is_the_same_argument():
@@ -2070,7 +2243,7 @@ def test_the_staged_event_reports_what_the_document_will_spend(tmp_path, caplog)
     assert "prescription_class=boost" in caplog.text
     assert "boost_filters=2" in caplog.text
     assert "composed_boost_role=tweeter" in caplog.text
-    assert "max_spl_spend_bound_db=5.0" in caplog.text
+    assert "max_spl_spend_bound_db=13.0" in caplog.text
 
 
 def test_a_cut_only_staging_reports_no_spend_at_all(tmp_path, caplog):
@@ -2138,7 +2311,8 @@ def test_no_bar_reads_a_vertical_blindness_flag_off_a_row(tmp_path):
 
     for packet in (sighted, blind):
         gated = _gate(packet, _document([_boost()], packet))
-        assert gated.filters[0]["gain"] == DRIVER_MAX_FILTER_BOOST_DB
+        # The submitted gain, unchanged by the flag — which is the whole claim.
+        assert gated.filters[0]["gain"] == TWEETER_DIP_DEPTH_DB
     assert not any(
         "vertical" in key
         for key in read_feature_verdicts([_dip()])[0].to_dict()
@@ -2276,7 +2450,12 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
 
     packet = _speaker(tmp_path, classification=_boostable())
     prescription = _gate(packet, _document([_boost()], packet))
-    assert prescription.filters[0]["gain"] == DRIVER_MAX_FILTER_BOOST_DB
+    # Bounded here by the VOUCHED DEPTH, not by the per-filter ceiling: the
+    # default banked dip measures 3.0 dB and a boost may not exceed the dip it
+    # is aimed at. Those two bounds were the same number until R8 widened the
+    # ceiling to 12.0, so this asserts the one that actually binds.
+    assert prescription.filters[0]["gain"] == TWEETER_DIP_DEPTH_DB
+    assert TWEETER_DIP_DEPTH_DB < DRIVER_MAX_FILTER_BOOST_DB
 
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
     emitted = emit_active_speaker_baseline_config(

@@ -146,8 +146,20 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # constant rests on; above it the residue EXCEEDS the margin and the -1.0 dB
 # per-driver soft-clip limiters are the backstop instead. Why that is a residual
 # of a large improvement rather than a regression: before the widening that band
-# had no samples at all and read ~6 dB low. Tracked as issue #2850, to close
-# before the boost caps widen.
+# had no samples at all and read ~6 dB low. Tracked as issue #2850.
+#
+# **#2850 was still open when the boost caps widened** (ruling R8, 2026-08-22),
+# and an earlier revision of this comment said it would close first. It did not,
+# so what changed is recorded here rather than quietly dropped. The widened
+# per-filter ceiling admits filter magnitudes this residue was measured at: the
+# worst rails-legal pair on record (`+10.01 Q3.67 @23632.6` with
+# `-9.53 Q5.58 @23648.1`, under-charging 0.6116 dB) is refused by the
+# pre-R8 3.0 dB prescription ceiling and admitted by the 12.0 dB one. It stays
+# ultrasonic and stays backstopped by the -1.0 dB per-driver soft-clip limiters,
+# and reaching it through `driver_prescription` additionally requires a driver
+# declared past ~23 kHz carrying a banked boostable verdict up there — but the
+# exposure is wider after R8 than before it, which is the honest statement of
+# what widening the caps did to this margin.
 #
 # One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
 # Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW
