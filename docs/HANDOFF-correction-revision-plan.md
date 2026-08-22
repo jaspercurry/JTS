@@ -6,8 +6,9 @@
 > ladder, campaign rounds, research index, issue index, current position. The
 > appendix below it is the completed 2026-07-12 P1–P7 / H0–H4 campaign, kept as
 > archaeology and
-> **still tagged historical**. Read the spine for "where are we and what is
-> next"; read the appendix for "why is the pipeline layered like this."
+> **still tagged historical**. Read the spine for "where does the correction
+> program stand, and how did it get here"; read the appendix for "why is the
+> pipeline layered like this."
 >
 > **Campaign-ordering authority moved out (2026-08-21).** "What supersedes
 > what", and what the program runs next, now live in

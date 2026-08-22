@@ -6,7 +6,9 @@
 > snapshot date but expected to drift; do not execute it as the current plan.
 > The owner replaced its hardcoded lexicon, universal analysis schema, and
 > narrow overlay model with the LLM-native workbench direction in
-> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md).
+> [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
+> itself superseded 2026-08-21 — current direction lives in
+> [`tuning-master-plan.md`](tuning-master-plan.md).
 
 **Process contract (every PR in this ladder):**
 

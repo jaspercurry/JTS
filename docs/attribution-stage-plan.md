@@ -1,8 +1,10 @@
 # Attribution stage — work order (issue #1866)
 
-> **Status: historical.** Snapshot from 2026-07-29, when this was the adopted
-> work order (round-3 architect session) for the attribution stage. Superseded
-> 2026-08-21 by [`tuning-master-plan.md`](tuning-master-plan.md), which
+> **Status: historical.** Snapshot as of **2026-08-17**, its last substantive
+> revision — not its adoption date: it was adopted 2026-07-29 (round-3
+> architect session) and kept taking amendments after that (its M3 row records
+> #1999's 2026-08-01 close, its M7 row #2609). Tagged historical 2026-08-22,
+> superseded by [`tuning-master-plan.md`](tuning-master-plan.md), which
 > absorbed the open work orders: "P1 (reverse-null probe) → the `verify`
 > program; P6/M6 (harmonic extraction) → ticket 1.4; P2 (position variance) →
 > tickets 1.2/1.3; WO-7's serial dial-in loop → Loop B's tournament
@@ -13,8 +15,10 @@
 > under `jasper/attribution/` stands; the open work orders below are
 > **absorbed, not pursued independently from here**. Preserved for
 > primary-source archaeology — specific facts (WO ladder state, seam names,
-> §4's seed table) will drift over time. Read this for the narrative, not for
-> current state.
+> §4's seed table) will drift over time. Read this for the narrative of the
+> work orders, not for current state; the definitions and open-decision
+> records the shipped modules cite (§3.1, §5, §6 and §9 among them) remain
+> live.
 >
 > Anchors [issue #1866](https://github.com/jaspercurry/JTS/issues/1866),
 > where every owner ruling and prior-art adoption below is recorded. Gate:
