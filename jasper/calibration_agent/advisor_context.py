@@ -56,12 +56,24 @@ _BROWSER_AUDIO_ALLOWED_FIELDS = {
     "issues",
 }
 _PRIVATE_AUDIO_SENSITIVITIES = {"private_audio", "private_raw_audio"}
+# The recorded-audio kinds from the manifest vocabulary
+# (jasper.audio_measurement.bundles). A second, independent clause behind
+# sensitivity: an artifact that carries room audio is still counted if its
+# sensitivity is ever written wrong.
+#
+# Four of the five entries here used to be `capture_audio` / `noise_audio` /
+# `repeat_audio` / `verify_audio` -- strings no writer in the tree emits. They
+# were the test fixtures' invented vocabulary, so the clause matched nothing
+# in production and read as coverage it did not have. Only `sensitivity` was
+# doing the work. `test_artifact_kind_vocabulary.py` now pins every member to
+# a kind something actually writes. (A verify capture is written as
+# `raw_capture`: SessionArtifacts.record_raw_capture_artifact names only
+# noise and repeat, and defaults the rest.)
 _PRIVATE_AUDIO_KINDS = {
-    "capture_audio",
-    "noise_audio",
-    "repeat_audio",
     "raw_capture",
-    "verify_audio",
+    "noise_capture",
+    "repeat_capture",
+    "capture_wav",
 }
 _PROHIBITED_ACTIONS = (
     {

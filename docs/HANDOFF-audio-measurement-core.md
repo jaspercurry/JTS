@@ -172,6 +172,43 @@ apply, admission, lifecycle, or eligibility-receipt authority. The historical
 `correction_bundle_*` warning event names remain temporarily stable for journal
 compatibility.
 
+### Artifact-kind namespacing (2026-08-22, plan ruling R12)
+
+`ArtifactEntry.kind` was opaque free text, and three features wrote into one
+flat space with nothing keeping them apart. Room's `session_metadata` and
+Active's `metadata` are the same artifact — the bundle's own `info.json` —
+spelled two ways, and nothing would have stopped two features from spelling
+two *different* artifacts the same way.
+
+A **new** kind now carries its owner as `jts_<owner>_<name>`, the shape
+`jts_bass_extension_bench_*` already used, and `validate_artifact_kind()`
+refuses one that does not at both write entry points. The parts are not
+decomposed — the rule asks whether a kind names an owner, not which one, so
+no feature registers itself with the neutral module.
+
+The kinds written before the rule are grandfathered in
+`LEGACY_UNNAMESPACED_KINDS` and are **not renamed**: banked bundles are
+durable evidence that outlives the code that wrote them, the manifest carries
+no migration mechanism, and the plan's ruling is explicit that namespacing
+applies to new writes only. That set is closed — `tests/
+test_artifact_kind_vocabulary.py` fails if production grows an un-namespaced
+kind, including on a path no test exercises.
+
+The reader half is the other stated contract: **an unknown kind is data, not
+an error.** A reader may meet a kind from a newer JTS, a feature it does not
+know, or a bundle older than itself, and must count it, show it, or pass it
+through rather than raise or discard. Only a reader that has already found
+the kind it needs may act on it. That tolerance is what makes the write rule
+safe to tighten without touching a bundle on disk; it held by accident before
+and is now pinned per reader with an unknown-kind fixture.
+
+One drift was found and fixed while establishing this: `calibration_agent`'s
+`_PRIVATE_AUDIO_KINDS` listed five kinds of which four (`capture_audio`,
+`noise_audio`, `repeat_audio`, `verify_audio`) were emitted by nothing — they
+were the *test fixtures'* invented vocabulary. The clause read as coverage
+while `sensitivity` did all the work. The fixtures now write the real kinds,
+the allowlist names only kinds something writes, and a test pins both.
+
 ### Wave 2 neutral playback extraction (2026-07-13)
 
 `jasper.audio_measurement.playback` now owns only the process and deterministic

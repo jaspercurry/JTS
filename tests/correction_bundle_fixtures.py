@@ -287,7 +287,7 @@ def write_golden_correction_bundle(
         bundle,
         "mic_calibration.json",
         {"artifact_schema_version": 1, **mic_calibration},
-        kind="mic_calibration",
+        kind="mic_calibration_metadata",
         sensitivity="private_metadata",
         recomputable=False,
         generated_by="tests.correction_bundle_fixtures",
@@ -298,7 +298,7 @@ def write_golden_correction_bundle(
         bundle,
         "analysis/p0_response.json",
         replay_response,
-        kind="replay_response",
+        kind="derived_frequency_response",
         sensitivity="debug_safe",
         recomputable=True,
         generated_by="tests.correction_bundle_fixtures",
@@ -309,17 +309,24 @@ def write_golden_correction_bundle(
     _record_file(
         bundle,
         "mic_calibration.txt",
-        kind="mic_calibration",
+        kind="mic_calibration_raw",
         sensitivity="private_metadata",
         recomputable=False,
         dependencies=["info.json"],
         schema_version=1,
     )
+    # The kinds production actually writes (SessionArtifacts.
+    # record_raw_capture_artifact maps noise/repeat by name and defaults
+    # everything else -- verify captures included -- to raw_capture). These
+    # were once a fixture-only vocabulary (capture_audio / noise_audio /
+    # repeat_audio / verify_audio) that no writer in the tree emitted, which
+    # is how calibration_agent's private-audio allowlist came to be written
+    # against strings production never produces.
     for rel_path, kind in (
-        ("captures/p0.wav", "capture_audio"),
-        ("noise/p0_pre.wav", "noise_audio"),
-        ("repeat_captures/p0_r1.wav", "repeat_audio"),
-        ("verify.wav", "verify_audio"),
+        ("captures/p0.wav", "raw_capture"),
+        ("noise/p0_pre.wav", "noise_capture"),
+        ("repeat_captures/p0_r1.wav", "repeat_capture"),
+        ("verify.wav", "raw_capture"),
     ):
         _record_file(
             bundle,
@@ -332,7 +339,7 @@ def write_golden_correction_bundle(
     _record_file(
         bundle,
         "analysis/p0_ir.wav",
-        kind="replay_impulse_response",
+        kind="derived_impulse_response",
         sensitivity="debug_safe",
         recomputable=True,
         dependencies=["captures/p0.wav", "analysis/p0_response.json"],
@@ -344,7 +351,10 @@ def write_golden_correction_bundle(
         bundle,
         "evidence_packet.json",
         packet,
-        kind="evidence_packet",
+        # Fixture-only: no production writer records the evidence packet as a
+        # bundle artifact, so this takes a namespaced test kind rather than
+        # inventing an un-namespaced one the vocabulary would have to carry.
+        kind="jts_test_evidence_packet",
         sensitivity="debug_safe",
         recomputable=True,
         generated_by="tests.correction_bundle_fixtures",

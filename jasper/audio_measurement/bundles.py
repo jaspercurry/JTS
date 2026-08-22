@@ -9,6 +9,31 @@ correction and active-speaker commissioning.  Feature packages continue to
 own their bundle schema, directory, retention, validation, and authority
 rules.  A bundle is forensic evidence; reading it never grants playback or
 apply authority.
+
+It also owns the one artifact-``kind`` vocabulary, in two halves:
+
+**Writing — new kinds are namespaced.**  ``kind`` was free text, and three
+features wrote into one flat space with nothing but luck keeping them apart:
+room correction's ``session_metadata`` and active-speaker's ``metadata`` are
+the same artifact (the bundle's own ``info.json``) spelled two ways, and
+nothing would have stopped two features from spelling *different* artifacts
+the same way.  A new kind therefore carries its owner —
+``jts_<owner>_<name>``, the shape ``jts_bass_extension_bench_*`` already
+uses — and :func:`validate_artifact_kind` refuses one that does not.
+
+The kinds written before this rule are grandfathered in
+:data:`LEGACY_UNNAMESPACED_KINDS` and are deliberately NOT renamed.  Banked
+bundles are durable evidence that outlives the code that wrote them; a
+rename would strand every manifest already on disk, and the manifest carries
+no migration mechanism.  The set is closed — it is a record of what was
+written before the rule, so nothing may be added to it.
+
+**Reading — an unknown kind is data, not an error.**  A reader may meet a
+kind from a newer JTS, from a feature it does not know, or from a bundle
+older than itself, and must degrade readably rather than raise or discard:
+count it, show it, pass it through.  Only a reader that has *already* found
+the kind it needs may act on it.  This is what makes the write rule safe to
+tighten without migrating anything.
 """
 
 from __future__ import annotations
@@ -27,11 +52,80 @@ from jasper.log_event import log_event
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 
+KIND_NAMESPACE_PREFIX = "jts_"
+
+#: Artifact kinds written before kinds carried their owner.  CLOSED: banked
+#: bundles are durable evidence and are never migrated, so these stay exactly
+#: as written — but nothing new joins them.  A new kind is namespaced instead.
+LEGACY_UNNAMESPACED_KINDS = frozenset(
+    {
+        # room correction (jasper/correction)
+        "acoustic_quality",
+        "analysis_result",
+        "camilladsp_config",
+        "derived_frequency_response",
+        "derived_impulse_response",
+        "fir_coefficients",
+        "fir_metadata",
+        "mic_calibration_metadata",
+        "mic_calibration_raw",
+        "noise_capture",
+        "position_analysis",
+        "raw_capture",
+        "repeat_capture",
+        "runtime_integrity",
+        "session_metadata",
+        # active-speaker commissioning (jasper/active_speaker)
+        "apply_transaction",
+        "candidate_profile",
+        "capture_analysis",
+        "capture_wav",
+        "metadata",
+        "repeat_capture_analysis",
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 
 class BundleError(RuntimeError):
     """An evidence bundle or artifact manifest is missing or malformed."""
+
+
+def is_namespaced_kind(kind: str) -> bool:
+    """Whether ``kind`` carries an owner, as ``jts_<owner>_<name>``.
+
+    Three underscore-separated parts is the floor, so ``jts_room`` — a prefix
+    with no artifact name — does not pass. The parts are not decomposed: this
+    asks whether a kind names its owner, not which owner it names, so a
+    feature never registers itself with this module to add one.
+    """
+
+    if not kind.startswith(KIND_NAMESPACE_PREFIX):
+        return False
+    parts = kind.split("_")
+    return len(parts) >= 3 and all(parts)
+
+
+def validate_artifact_kind(kind: str) -> str:
+    """Return ``kind`` if it may be written, else raise :class:`BundleError`.
+
+    A programming-error guard on an internal API, in the same spirit as
+    :func:`relative_artifact_path`'s traversal check: every kind in the tree
+    is a source literal, so a violation surfaces the first time the writing
+    path is exercised, never from anything a household does.
+    """
+
+    if not isinstance(kind, str) or not kind:
+        raise BundleError("artifact kind must be a non-empty string")
+    if kind in LEGACY_UNNAMESPACED_KINDS or is_namespaced_kind(kind):
+        return kind
+    raise BundleError(
+        f"artifact kind {kind!r} is not namespaced: a new kind is written as "
+        f"'{KIND_NAMESPACE_PREFIX}<owner>_<name>' so the manifest says which "
+        "feature owns it. Only the closed LEGACY_UNNAMESPACED_KINDS set is "
+        "exempt, and it is never added to."
+    )
 
 
 @dataclass(frozen=True)
@@ -235,9 +329,11 @@ def record_artifact(
     integrity surface, not a source of runtime authority.  Per-file writes are
     atomic; callers must continue to serialize writes to one bundle.  The
     feature schema must come from authoritative ``info.json`` or the explicit
-    ``bundle_schema_version`` argument.
+    ``bundle_schema_version`` argument.  ``kind`` must be namespaced or
+    grandfathered; see the module docstring.
     """
 
+    validate_artifact_kind(kind)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     rel_path = relative_artifact_path(bundle_dir, artifact_path)
     path = bundle_dir / rel_path
@@ -317,8 +413,13 @@ def write_json_artifact(
     file_mode: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Atomically write JSON and update its manifest entry."""
+    """Atomically write JSON and update its manifest entry.
 
+    ``kind`` is validated before the payload is written, so a rejected kind
+    leaves no unrecorded file behind.
+    """
+
+    validate_artifact_kind(kind)
     rel_path = relative_artifact_path(bundle_dir, relative_path)
     resolved_bundle_schema_version = _resolve_bundle_schema_version(
         bundle_dir,
