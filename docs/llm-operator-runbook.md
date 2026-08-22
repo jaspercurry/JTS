@@ -365,28 +365,52 @@ dropped.
 
 ## Reading σ honestly
 
-Two different spreads, two different meanings, and they must never pool:
+Three different spreads, three different meanings, and they must never pool:
 
 | Statistic | What it measures | Where |
 |---|---|---|
 | repeatability σ(f) | spread across a driver's **in-capture** sweep repeats at one fixed pose | `linearization_envelope.compute_sigma_curve` |
-| `sigma_db` / `max_sigma_db` | cross-**position** spread — band-power level, and the worst single bin | `audio_measurement/spatial_combine.py` |
+| `sigma_db` / `max_sigma_db` | cross-**position** spread, two figures **per octave band** — that band's power level, and its worst single bin | `audio_measurement/spatial_combine.py` |
+| `per_bin_sigma_db` | cross-**seat** spread, one value **per grid bin** across the whole curve | the packet's `positions.cross_seat_sigma` |
 
-**The caveat that governs both:** a position spread is only as meaningful as
-the repeat spread it is measured against. If σ_repeat is 0.4 dB, a σ_position
-of 0.5 dB says almost nothing about the room. **Calibration experiment E2 — the
-study that would measure σ_repeat — has not been run** (its design is in the
-plan's "Calibration experiments" section). Until it has, every σ threshold here
-is an assumption, including two named ones,
+The third is the one you will actually read, and it is the only one that
+reaches a packet. The combiner computes the same estimator per bin and never
+publishes the array — it reduces it to two figures per octave band, and those
+reach exactly one banked artifact, `candidate.json`'s `exclusion_evidence`,
+which describes the `cloud_measure` group and is empty when no cloud evidence
+reached the fit. So `positions.cross_seat_sigma` is derived from the member
+curves the packet already carries, which makes it reproducible from the packet
+alone. It is **uncentred**: a seat that simply plays louder raises it, because a
+level difference between seats is part of what "the seats disagree" means. Below
+two usable member curves it refuses by name rather than publishing 0.0, which
+would claim the seats agreed.
+
+**The caveat that governs all three:** a position or seat spread is only as
+meaningful as the repeat spread it is measured against. If σ_repeat is 0.4 dB, a
+σ_position of 0.5 dB says almost nothing about the room. **Calibration
+experiment E2 — the study that would measure σ_repeat — has not been run** (its
+design is in the plan's "Calibration experiments" section). Until it has, every
+σ threshold here is an assumption, including two named ones,
 `round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
 `round_evidence.ITERATION_PLATEAU_DB`, both self-described as awaiting exactly
 that study.
 
+That caveat is why `per_bin_sigma_db` is published under
+`uncertainty.unseparated` rather than in the `fields` list beside a kind. It
+contains the sound field's real seat-to-seat variation **and** each member
+curve's own capture noise, and this round separates neither, so it declares the
+pooling instead of picking a kind it cannot justify — `unseparated` is
+deliberately **not** a member of the closed `{random, systematic}` set, so a
+reader applying the set test gets the true answer. `n_seats` is published beside
+it so you can judge the n; do not form `per_bin_sigma_db/√n_seats` and call it a
+standard error, because only the random half falls that way.
+
 So: state σ figures with their kind, label every published uncertainty
-**random or systematic**, and never report a position spread as evidence of
-room behavior without saying what repeat floor sits under it — or that it is
-unmeasured. The plan's stopping rule computes over the **random** terms only,
-for the same reason.
+**random or systematic** — or, where the evidence cannot separate them, say
+exactly that and name what would — and never report a position spread as
+evidence of room behavior without saying what repeat floor sits under it, or
+that it is unmeasured. The plan's stopping rule computes over the **random**
+terms only, for the same reason.
 
 ## While a round is running
 

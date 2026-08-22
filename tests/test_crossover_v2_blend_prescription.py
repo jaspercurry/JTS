@@ -29,6 +29,7 @@ import hashlib
 import io
 import json
 import math
+import statistics
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -68,10 +69,22 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
-from jasper.active_speaker.crossover_v2 import feature_classifier, position_cycle
+from jasper.active_speaker.crossover_v2 import (
+    feature_classifier,
+    planning,
+    position_cycle,
+)
+from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
+from jasper.active_speaker.crossover_v2.feature_classification import (
+    UNCERTAINTY_KINDS,
+    UNCERTAINTY_RANDOM,
+    UNCERTAINTY_SYSTEMATIC,
+    UNCERTAINTY_UNSEPARATED,
+)
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     FeatureClassificationRefused,
 )
+from jasper.audio_measurement.spatial_combine import BandSpread
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION,
     CrossoverEvidencePacketError,
@@ -929,6 +942,307 @@ def test_an_absent_ring_is_reported_rather_than_papered_over(tmp_path):
         session, dump_ring_dir=tmp_path / "nowhere"
     )
     assert absent["capture_snr"]["reason"] == "source_absent"
+
+
+# --------------------------------------------------------------------------- #
+# cross-seat sigma — the packet's one computed statistic
+# --------------------------------------------------------------------------- #
+
+
+def _sigma_block(tmp_path: Path, **over: Any) -> dict[str, Any]:
+    session, _ = _bundle(tmp_path, **over)
+    packet = build_crossover_evidence_packet(session)
+    return packet["positions"]["cross_seat_sigma"]
+
+
+def test_the_seats_own_disagreement_is_published_bin_by_bin(tmp_path):
+    """Reproducible from the packet alone, which is the point of computing it here.
+
+    The spread is taken over the rows the packet PUBLISHES rather than over the
+    artifact behind them, so a reader holding only the packet can recompute
+    every value. That is asserted the only way it can be — by recomputing them —
+    rather than by asserting a shape.
+    """
+    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1000.0, None, None])
+    positions = build_crossover_evidence_packet(session)["positions"]
+    block = positions["cross_seat_sigma"]
+
+    assert block["available"] is True
+    assert (block["n_seats"], block["n_seats_excluded"]) == (4, 0)
+    # Index-aligned with the grid in the same block, and no other grid exists
+    # here to align it with by accident.
+    assert len(block["per_bin_sigma_db"]) == len(positions["curve_grid"]["freqs_hz"])
+
+    curves = [row["magnitude_db"] for row in positions["positions"]]
+    recomputed = [
+        round(statistics.stdev(curve[i] for curve in curves), 4)
+        for i in range(len(curves[0]))
+    ]
+    assert block["per_bin_sigma_db"] == recomputed
+    # Two seats dip 4 dB and two do not, so the dipped bins are exactly where
+    # the seats disagree and the flat bins are where they do not. The dipped
+    # figure is also the ddof pinned by arithmetic rather than by assertion:
+    # the SAMPLE deviation of two-at--27.575 and two-at--23.575 is
+    # sqrt(16/3) = 2.3094, where the population one would be 2.0.
+    assert max(block["per_bin_sigma_db"]) == pytest.approx(math.sqrt(16.0 / 3.0), abs=5e-5)
+    assert min(block["per_bin_sigma_db"]) == 0.0
+
+
+def test_the_spread_is_uncentred_so_a_louder_seat_raises_it(tmp_path):
+    """Deliberate, and the difference from the in-capture repeat sigma.
+
+    ``linearization_envelope.compute_sigma_curve`` centres each occurrence to
+    its own in-band mean, because a level offset between two sweeps at ONE pose
+    is not repeat noise. Between two SEATS it is exactly the thing being
+    measured: a seat sitting 3 dB up on its neighbours is a seat that disagrees.
+    Centring here would silently delete that half of the answer, so it is pinned
+    rather than left to a future tidy-up.
+    """
+    session, _ = _bundle(tmp_path)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
+    rows = cloud["positions"]["positions"]
+    rows[0]["magnitude_db"] = [value + 3.0 for value in rows[0]["magnitude_db"]]
+    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
+
+    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
+
+    # A pure level offset on one of four otherwise-identical seats.
+    assert min(block["per_bin_sigma_db"]) == pytest.approx(1.5)
+
+
+def test_one_seat_refuses_rather_than_publishing_a_zero_spread(tmp_path):
+    """A 0.0 here would say the seats agreed; they were never compared.
+
+    The classification block's ``excursion_sd_us`` DOES publish 0.0 at one
+    capture — the instrument's own convention, copied through verbatim like
+    everything in that block. This is a new field with no convention to
+    inherit, so it takes the honest answer instead of the inherited one.
+    """
+    block = _sigma_block(tmp_path, dip_at=[1000.0])
+
+    assert block["available"] is False
+    assert block["status"] == "not_evaluated"
+    assert block["n_seats"] == 1
+    assert "per_bin_sigma_db" not in block
+    assert "UNDEFINED at one seat" in block["reason"]
+
+
+def test_a_refused_spread_reaches_the_honesty_block_by_name(tmp_path):
+    """The edges list is where a reader finds what the packet could not answer."""
+    session, _ = _bundle(tmp_path, dip_at=[1000.0])
+    packet = build_crossover_evidence_packet(session)
+
+    stated = [
+        entry for entry in packet["not_evaluated"]
+        if entry["field"] == "positions.cross_seat_sigma"
+    ]
+    assert len(stated) == 1
+    assert stated[0]["reason"] == packet["positions"]["cross_seat_sigma"]["reason"]
+    # …and it is silent when the block DID answer, rather than printing "we did
+    # not look" beside the thing that was looked at.
+    answered = build_crossover_evidence_packet(_bundle(tmp_path / "b")[0])
+    assert not [
+        entry for entry in answered["not_evaluated"]
+        if entry["field"] == "positions.cross_seat_sigma"
+    ]
+
+
+@pytest.mark.parametrize("broken, why", [
+    pytest.param([-23.0] * 3, "a-curve-shorter-than-the-grid", id="wrong-length"),
+    pytest.param(None, "a-row-with-no-curve-at-all", id="absent"),
+    pytest.param("flat", "a-curve-that-is-not-a-list", id="not-a-list"),
+])
+def test_a_member_curve_the_block_cannot_use_is_counted_not_averaged_in(
+    tmp_path, broken, why
+):
+    """All-or-nothing per row, and the row is counted — the capture_snr rule.
+
+    A curve admitted for the bins it could supply would make its seat present in
+    some bins and absent in others, so one ``n_seats`` could not be the count the
+    spread was taken over in every bin. The row is refused whole AND counted,
+    because a reader seeing three seats where the round had four would otherwise
+    have no way to know.
+    """
+    session, _ = _bundle(tmp_path)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
+    if broken is None:
+        cloud["positions"]["positions"][0].pop("magnitude_db")
+    else:
+        cloud["positions"]["positions"][0]["magnitude_db"] = broken
+    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
+
+    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
+
+    assert (block["n_seats"], block["n_seats_excluded"]) == (3, 1), why
+    assert len(block["per_bin_sigma_db"]) == len(GRID)
+
+
+def test_a_boolean_sample_is_refused_rather_than_read_as_one_decibel(tmp_path):
+    """``bool`` subclasses ``int``, so ``true`` would otherwise be 1.0 dB.
+
+    The same trap the lateral_poses block names for a bearing. It is not
+    re-guarded here: ``feature_classification.finite_number`` is the one reader
+    for "a real number out of banked JSON", and this asserts the packet actually
+    goes through it rather than through a second copy that forgot.
+    """
+    session, _ = _bundle(tmp_path)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
+    cloud["positions"]["positions"][0]["magnitude_db"][0] = True
+    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
+
+    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
+
+    assert (block["n_seats"], block["n_seats_excluded"]) == (3, 1)
+
+
+def test_a_member_curve_at_the_float_ceiling_costs_the_block_not_the_packet(tmp_path):
+    """``statistics.stdev`` raises rather than returning ``inf``; it is caught.
+
+    Reachable rather than defensive: it computes in exact arithmetic, so a
+    spread that will not fit a float is an ``OverflowError`` on the way out. This
+    module's rule is that a bad artifact is a fact it REPORTS — letting the
+    exception through would leave a round with no packet at all over one
+    hand-edited sample.
+    """
+    session, _ = _bundle(tmp_path)
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
+    rows = cloud["positions"]["positions"]
+    # Half the seats at each end of the float range: every sample is a finite
+    # float, so nothing is excluded, and the spread between them is not.
+    for index, row in enumerate(rows):
+        row["magnitude_db"] = [1.7e308 if index % 2 else -1.7e308] * len(GRID)
+    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
+
+    packet = build_crossover_evidence_packet(session)
+    block = packet["positions"]["cross_seat_sigma"]
+
+    assert block["available"] is False
+    assert block["n_seats"] == 4, "every sample is finite; the SPREAD is not"
+    assert "does not fit a float" in block["reason"]
+    # The packet itself survives, fingerprint and all.
+    assert packet["packet_fingerprint"]
+
+
+def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
+    """Wave-1's enrichment rule, on the one case that has no single-kind answer.
+
+    A cross-seat spread contains the field's real seat-to-seat variation AND the
+    per-capture measurement noise, and this round cannot separate them —
+    separating them needs a repeat spread at a fixed pose, which is calibration
+    experiment E2 and has not been run. The rule bars publishing a pooled number
+    AS a kind, so the block publishes it as neither: ``fields`` is empty, and the
+    figure is declared under ``unseparated`` with a label deliberately kept OUT
+    of the closed kind set, so a reader applying the set test concludes "not one
+    of the two" — which is the truth.
+    """
+    block = _sigma_block(tmp_path)
+
+    assert block["uncertainty"]["fields"] == {}
+    declared = block["uncertainty"]["unseparated"]["per_bin_sigma_db"]
+    assert declared["kind"] == UNCERTAINTY_UNSEPARATED
+    assert UNCERTAINTY_UNSEPARATED not in UNCERTAINTY_KINDS
+    assert {UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC} == set(UNCERTAINTY_KINDS)
+    # Both halves named, and what would separate them.
+    assert "seat to seat" in declared["of"]
+    assert "measurement noise" in declared["of"]
+    assert "E2" in declared["of"] and "has not been run" in declared["of"]
+    assert "never as a random or a systematic one" in declared["of"]
+    assert "never pooled" in block["uncertainty"]["note"]
+    # n IS published here — unlike the classification block, which says it does
+    # not publish one — so the obvious quotient has to be disclaimed.
+    assert "standard error of nothing" in (
+        block["uncertainty"]["not_uncertainties"]["n_seats"]
+    )
+
+
+def test_every_field_this_block_publishes_is_covered_by_a_declaration(tmp_path):
+    """The enrichment rule made checkable, for a block whose keys are literals.
+
+    ``capture_snr`` needs a runtime ``undeclared_fields`` because its column
+    NAMES are composed by a producer this module cannot enumerate. This block's
+    keys are literals in one function, so the check that nothing travels
+    unlabelled belongs here instead — and it fails the day a key is added
+    without a declaration.
+    """
+    block = _sigma_block(tmp_path)
+    declared = (
+        set(block["uncertainty"]["fields"])
+        | set(block["uncertainty"]["not_uncertainties"])
+        | set(block["uncertainty"]["unseparated"])
+    )
+    # Everything that is not prose about the block itself.
+    described = {"available", "source", "note", "uncertainty"}
+
+    assert set(block) - described == declared
+
+
+def test_the_packet_applies_the_analysis_kernels_estimator_not_its_own(tmp_path):
+    """The plan's "one owner per policy" for σ definitions, made checkable.
+
+    The kernel (``jasper/audio_measurement/``) owns what a cross-position spread
+    IS, and ``spatial_combine._band_spread`` spells it ``np.std(stacked,
+    axis=0, ddof=1)``. The packet applies that definition to curves the kernel
+    never sees — the combiner's per-bin array is reduced to one worst bin per
+    octave band and the round's writer keeps even that out of the artifacts —
+    and reaches for ``statistics.stdev`` because it must RAISE at n<2 rather
+    than return a silent NaN.
+
+    Two implementations of one definition is exactly the shape that drifts, so
+    it is pinned numerically rather than by comment: same curves, both routes,
+    same numbers.
+    """
+    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1400.0, None, 2200.0])
+    positions = build_crossover_evidence_packet(session)["positions"]
+
+    stacked = np.asarray(
+        [row["magnitude_db"] for row in positions["positions"]], dtype=float
+    )
+    kernel = np.std(stacked, axis=0, ddof=1)
+
+    assert positions["cross_seat_sigma"]["per_bin_sigma_db"] == [
+        round(float(value), 4) for value in kernel
+    ]
+
+
+def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
+    """One question, one set of words — and these are two questions.
+
+    ``spatial_combine`` owns ``sigma_db`` (cross-position spread of a band's
+    POWER LEVEL) and ``max_sigma_db`` (worst single bin in a band). Neither is
+    this. Both are banked — in ``candidate.json``'s ``exclusion_evidence``, for
+    the ``cloud_measure`` group — so the words are live elsewhere in the tree
+    and pinned here as NOT reused, rather than as merely absent today.
+    """
+    block = _sigma_block(tmp_path)
+
+    assert "sigma_db" not in block
+    assert "max_sigma_db" not in block
+    assert "per_bin_sigma_db" in block
+    # The combiner's own two names, so a rename there fails this rather than
+    # letting the packet quietly adopt a word that moved.
+    assert {"sigma_db", "max_sigma_db"} <= set(
+        BandSpread.__dataclass_fields__
+    )
+    # …and the shape that actually banks them, so "they live elsewhere in the
+    # tree" is asserted against the writer rather than believed.
+    banked = planning.exclusion_evidence_json(
+        CloudFitEvidence(
+            excluded_bands_hz=(),
+            band_spread=(
+                BandSpread(
+                    center_hz=1000.0, f_lo=707.0, f_hi=1414.0,
+                    sigma_db=0.5, max_sigma_db=2.0, n_bins=40,
+                ),
+            ),
+            n_positions=4,
+        ),
+        cloud_result={},
+    )
+    assert {"sigma_db", "max_sigma_db"} <= set(banked["band_spread"][0])
 
 
 # --------------------------------------------------------------------------- #

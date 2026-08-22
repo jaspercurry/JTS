@@ -2654,15 +2654,19 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
 
     Two blocks and one contract were ADDED, ``feature_classification`` was
     later WIDENED with the classifier's own lab rows beside the gate view it
-    already published, and ``lateral_poses``/``capture_snr`` were added after
-    that. Every v1 field is unchanged in all of those cases and a v1 reader
-    ignores what it does not know, so nothing is misread — the version stays
-    where it is rather than invalidating every banked packet.
+    already published, ``lateral_poses``/``capture_snr`` were added after that,
+    and ``positions`` was then widened with ``cross_seat_sigma``. Every v1 field
+    is unchanged in all of those cases and a v1 reader ignores what it does not
+    know, so nothing is misread — the version stays where it is rather than
+    invalidating every banked packet.
 
     The widening is the case worth naming, because "the block a v1 reader
     already read grew" sounds like the misreading case and is not one: the seven
     keys of ``verdicts[]`` still say exactly what they said, and a reader that
     never looks at ``lab_rows`` reaches every conclusion it reached before.
+    ``positions.cross_seat_sigma`` is the same shape of change — every position
+    row, the grid and the flat reference are byte-identical beside it, and
+    ``packet_positional_evidence`` reads exactly the three it always read.
 
     ``positions.angle_deg`` is the OTHER case worth naming, and it is the
     closest call here: its ``reason`` prose changed, from a false corpus-wide
@@ -2681,6 +2685,7 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     assert packet["lateral_poses"]["available"] is False
     assert packet["capture_snr"]["available"] is False
     assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
+    assert packet["positions"]["cross_seat_sigma"]["available"] is True
 
 
 def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):

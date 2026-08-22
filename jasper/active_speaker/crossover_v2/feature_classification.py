@@ -76,11 +76,13 @@ __all__ = [
     "UNCERTAINTY_KINDS",
     "UNCERTAINTY_RANDOM",
     "UNCERTAINTY_SYSTEMATIC",
+    "UNCERTAINTY_UNSEPARATED",
     "UNRESOLVED",
     "VERDICT_MATCH_TOLERANCE_OCTAVES",
     "FeatureVerdict",
     "defect_boostable_at",
     "defect_cuttable_at",
+    "finite_number",
     "read_feature_verdicts",
 ]
 
@@ -238,6 +240,25 @@ UNCERTAINTY_SYSTEMATIC = "systematic"
 #: treating an unrecognised label as one of the two.
 UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 
+#: The label for a spread that is real but is NOT one of the two kinds, because
+#: it contains both and the evidence publishing it cannot separate them.
+#:
+#: Deliberately **not** a member of :data:`UNCERTAINTY_KINDS`. The closed set is
+#: what lets a reader ask "random or systematic?" and get a true answer; a
+#: spread that pools the two has no true answer to that question, so admitting
+#: a third member would dress a refusal up as a third answer. A figure carrying
+#: this label is therefore published apart from the ``fields`` list a block uses
+#: for single-kind uncertainties — see the evidence packet's cross-seat sigma
+#: block, whose ``uncertainty.unseparated`` is what that looks like.
+#:
+#: The alternative was to call such a figure "not an uncertainty" the way
+#: ``gate_slack`` is, and that is the right answer for a THRESHOLD that merely
+#: mixes two kinds in its definition. It is the wrong answer for a genuine
+#: spread about a reading: the honest statement is that it IS one, and that
+#: which kind it is is something the evidence carrying it cannot say. A block
+#: publishing one owes the reader what WOULD say it.
+UNCERTAINTY_UNSEPARATED = "unseparated"
+
 #: Which :data:`LAB_ROW_FIELDS` columns ARE uncertainties, and of what.
 #:
 #: All three are microsecond figures qualifying the same row's ``excursion_us``,
@@ -312,7 +333,7 @@ LAB_ROW_NOT_AN_UNCERTAINTY: dict[str, str] = {
 }
 
 
-def _finite(value: Any) -> float | None:
+def finite_number(value: Any) -> float | None:
     """One real number out of banked JSON, or ``None`` — never a coercion.
 
     ``bool`` is rejected because it is an ``int`` in Python; strings are
@@ -320,6 +341,10 @@ def _finite(value: Any) -> float | None:
     strictness depend on whoever encoded the artifact. ``OverflowError`` is
     caught because an arbitrary-precision ``int`` is legal JSON, passes the
     isinstance check, and then raises rather than returning infinity.
+
+    Public because the evidence packet asks the same question of a banked
+    member curve's samples, and all three traps above are ones a second copy
+    would have to keep remembering. One reader, one answer.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -439,7 +464,7 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
     for entry in rows:
         if not isinstance(entry, Mapping):
             continue
-        freq = _finite(entry.get("hz"))
+        freq = finite_number(entry.get("hz"))
         if freq is None or freq <= 0.0:
             continue
         classification = entry.get("classification")
@@ -452,8 +477,8 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
                 egd_verdict=_text(entry.get("egd_verdict")),
                 gate_verdict=_text(entry.get("gate_verdict")),
                 confidence=_confidence(entry.get("confidence")),
-                measured_q=_finite(entry.get("measured_q")),
-                depth_db=_finite(entry.get("depth_db")),
+                measured_q=finite_number(entry.get("measured_q")),
+                depth_db=finite_number(entry.get("depth_db")),
             )
         )
     return tuple(out)
@@ -570,7 +595,7 @@ def _vouching_at(
     about which verdict owns a frequency. ``eligible`` is the only difference
     between them, and it is also what the tie-break moves away from.
     """
-    target = _finite(freq_hz)
+    target = finite_number(freq_hz)
     if target is None or target <= 0.0 or tolerance_octaves <= 0.0:
         return None, None
     nearest: FeatureVerdict | None = None
