@@ -13,7 +13,14 @@ from jasper.active_speaker import (
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
 
 
-def _preset(*, fc_hz: float = 1600) -> ActiveSpeakerPreset:
+def _preset(
+    *,
+    fc_hz: float = 1600,
+    tweeter_protection_floor_hz: float | None = None,
+) -> ActiveSpeakerPreset:
+    tweeter: dict = {"manufacturer": "Example", "model": "Tweeter"}
+    if tweeter_protection_floor_hz is not None:
+        tweeter["protection_highpass_floor_hz"] = tweeter_protection_floor_hz
     return ActiveSpeakerPreset.from_mapping({
         "artifact_schema_version": 1,
         "kind": "jts_active_speaker_preset",
@@ -41,7 +48,7 @@ def _preset(*, fc_hz: float = 1600) -> ActiveSpeakerPreset:
         },
         "drivers": {
             "woofer": {"manufacturer": "Example", "model": "Woofer"},
-            "tweeter": {"manufacturer": "Example", "model": "Tweeter"},
+            "tweeter": tweeter,
         },
         "crossover_regions": [{
             "id": "woofer_tweeter",
@@ -161,6 +168,49 @@ def test_driver_test_signal_plan_two_way_uses_crossover_and_protection_edges() -
         "protective_tweeter_highpass",
         "driver_protection_minimum",
     }
+
+
+def test_the_protection_edge_follows_the_declared_low_limit_not_the_class_table(
+) -> None:
+    """#2874, on the edge that sets the staged high-pass.
+
+    ``driver_protection_minimum`` sits inside the ``max`` that picks the tone's
+    own band limit, so anchoring it on the class table let a code default raise
+    a commissioning tone above the frequency the manufacturer published --
+    which would have left the tone gate's fix inert on the one path that
+    produces a high-frequency band limit in production.
+
+    A DE250-shaped tweeter (declared 1600 Hz) crossed at 700 Hz: the edge is
+    the declared 1600, not the 5000 Hz undeclared-tweeter default, and the
+    plan's protection block agrees with it.
+    """
+
+    declared = _preset(fc_hz=700, tweeter_protection_floor_hz=1600)
+    plan = driver_test_signal_plan(declared, "tweeter")
+
+    edges = {
+        edge["kind"]: edge for edge in plan["allowed_band"]["edges"]
+    }
+    assert edges["driver_protection_minimum"]["frequency_hz"] == 1600.0
+    assert edges["driver_protection_minimum"]["source"] == "driver_low_limit:declared"
+    assert "manufacturer declared" in edges["driver_protection_minimum"]["reason"]
+    assert plan["allowed_band"]["highpass_hz"] == 1600.0
+    assert plan["band_limit"]["highpass_hz"] == 1600.0
+    assert plan["driver_protection"]["low_limit_hz"] == 1600.0
+    assert plan["driver_protection"]["low_limit_provenance"] == "declared"
+    assert plan["driver_protection"]["band_limit_highpass_ok"] is True
+
+    # Same crossover, nothing declared: the class default is still the edge,
+    # and still labelled as the fallback it is.
+    undeclared = driver_test_signal_plan(_preset(fc_hz=700), "tweeter")
+    undeclared_edges = {
+        edge["kind"]: edge for edge in undeclared["allowed_band"]["edges"]
+    }
+    assert undeclared_edges["driver_protection_minimum"]["frequency_hz"] == 5000.0
+    assert undeclared_edges["driver_protection_minimum"]["source"] == (
+        "driver_low_limit:style_default"
+    )
+    assert undeclared["driver_protection"]["low_limit_provenance"] == "style_default"
 
 
 def test_driver_test_signal_plan_three_way_places_each_role_in_its_band() -> None:

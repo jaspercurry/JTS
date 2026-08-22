@@ -1129,13 +1129,18 @@ ruling (#2603), the code-owned class default
 is no longer enforced as a minimum by `driver_safety._target_issues` — a
 published manufacturer figure wins outright, including below the table's own
 number. The table keeps three jobs: the default answer when nothing is
-published; the plausibility anchor that catches a garbage declaration; and a
-**commissioning-tone gate** — `driver_protection._highpass_satisfied` compares
-the staged high-pass against that same `min_highpass_hz` to set
-`band_limit_highpass_ok`, so lowering the table moves an *audible-test* gate,
-not only a confirmation one. On top of those,
-`code_owned_policy` is still fingerprint-checked against it, so lowering the
-table's own number still un-confirms every stored profile of that style.
+published; the plausibility anchor, which since #2874 refuses a garbage figure
+in a *research reply* at intake and DISCLOSES one a human typed rather than
+refusing it; and the **commissioning-tone gate's fallback** —
+`driver_protection._highpass_satisfied` compares the staged high-pass against
+`tone_gate_low_limit`, which resolves declared → legacy protection filter →
+this table, so lowering the table still moves an *audible-test* gate and not
+only a confirmation one, but only for a driver whose manufacturer publishes
+nothing. (Until #2874 that gate compared against `min_highpass_hz` directly,
+which refused a tone whose protective high-pass sat at exactly the published
+1.6 kHz — the #2603 bug alive on the one surface that ruling missed.) On top of
+those, `code_owned_policy` is still fingerprint-checked against it, so lowering
+the table's own number still un-confirms every stored profile of that style.
 Consequence: #1654's compression-driver instance no longer needs the table
 lowered at all — the operator declares B&C's published 1.6 kHz instead, and
 the corner follows it — but the general #1654 question stays open.

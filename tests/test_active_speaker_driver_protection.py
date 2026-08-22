@@ -15,11 +15,21 @@ from jasper.active_speaker.calibration_level import (
 from jasper.active_speaker.driver_protection import (
     AUTO_LEVEL_DECISION_KIND,
     DRIVER_PROTECTION_KIND,
+    LOW_LIMIT_DECLARED,
+    LOW_LIMIT_STYLE_DEFAULT,
     auto_level_decision,
     derive_hf_measurement_ceiling_dbfs,
     driver_protection_payload,
     driver_protection_profile,
+    format_low_limit,
+    tone_gate_low_limit,
 )
+
+# B&C's published minimum recommended crossover for the DE250 compression
+# driver, and the compression_driver class default it sits below. The exact
+# pair #2603 was filed on and #2874 finished.
+DE250_LOW_LIMIT_HZ = 1600.0
+COMPRESSION_DRIVER_CLASS_DEFAULT_HZ = 2000.0
 
 
 def test_low_frequency_auto_level_raises_one_bounded_step_when_mic_is_low() -> None:
@@ -168,6 +178,14 @@ def test_high_frequency_auto_level_uses_driver_specific_cap() -> None:
 
 
 def test_high_frequency_protection_requires_highpass_band_limit() -> None:
+    """Absent and below-floor are different facts, named differently (#2874).
+
+    They shared ``high_frequency_highpass_missing`` until then, so a tone whose
+    protective high-pass was present -- at the manufacturer's own published
+    figure -- was refused with a sentence saying one was MISSING. Both codes
+    now name the floor they compared against and where that floor came from.
+    """
+
     missing = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
@@ -187,14 +205,28 @@ def test_high_frequency_protection_requires_highpass_band_limit() -> None:
     )
 
     assert missing["audio_allowed"] is False
-    assert "high_frequency_highpass_missing" in {
-        issue["code"] for issue in missing["issues"]
-    }
+    absent = [
+        issue for issue in missing["issues"]
+        if issue["code"] == "high_frequency_highpass_missing"
+    ]
+    assert absent, missing["issues"]
+    assert "none is staged" in absent[0]["message"]
+    assert "5000 Hz (class fallback; nothing declared)" in absent[0]["message"]
+
     assert blocked["kind"] == DRIVER_PROTECTION_KIND
     assert blocked["audio_allowed"] is False
-    assert "high_frequency_highpass_missing" in {
+    below = [
+        issue for issue in blocked["issues"]
+        if issue["code"] == "high_frequency_highpass_below_low_limit"
+    ]
+    assert below, blocked["issues"]
+    # A staged high-pass is NOT reported as an absent one.
+    assert "high_frequency_highpass_missing" not in {
         issue["code"] for issue in blocked["issues"]
     }
+    assert "3000 Hz" in below[0]["message"]
+    assert "5000 Hz (class fallback; nothing declared)" in below[0]["message"]
+
     assert allowed["audio_allowed"] is True
 
 
@@ -396,3 +428,159 @@ def test_a_swapped_declaration_is_not_caught_by_the_ledger() -> None:
     # 35 dB louder than the retired hedge would have allowed, on a declaration
     # that is simply wrong. The ledger is not what catches this.
     assert swapped - (-35.0) == pytest.approx(35.0)
+
+
+# --- #2874: the tone gate anchors on the resolved low limit -------------------
+
+
+def test_the_tone_gate_anchors_on_the_declared_low_limit_not_the_class_default(
+) -> None:
+    """The #2603 bug on the surface that ruling never reached.
+
+    jts3 as declared: a DE250 tweeter whose manufacturer publishes 1.6 kHz,
+    under a compression_driver class default of 2 kHz. A tone staged with a
+    protective high-pass at exactly the published figure was refused -- and
+    refused with copy claiming the high-pass was MISSING -- because
+    ``_highpass_satisfied`` compared against the class constant. It now
+    compares against the resolved low limit, and the refusal that remains at
+    1500 Hz names the number it compared against and where that number came
+    from, so nobody has to guess which of two floats bounds the corner.
+    """
+
+    at_the_declared_floor = driver_protection_payload(
+        "tweeter",
+        driver_style="compression_driver",
+        protection_status="present",
+        band_limit={"type": "highpass", "highpass_hz": DE250_LOW_LIMIT_HZ},
+        declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
+    )
+    assert at_the_declared_floor["band_limit_highpass_ok"] is True
+    assert at_the_declared_floor["issues"] == []
+    assert at_the_declared_floor["audio_allowed"] is True
+    assert at_the_declared_floor["low_limit_hz"] == DE250_LOW_LIMIT_HZ
+    assert at_the_declared_floor["low_limit_provenance"] == LOW_LIMIT_DECLARED
+    assert at_the_declared_floor["low_limit_summary"] == (
+        "1600 Hz (manufacturer declared)"
+    )
+
+    below = driver_protection_payload(
+        "tweeter",
+        driver_style="compression_driver",
+        protection_status="present",
+        band_limit={"type": "highpass", "highpass_hz": 1500.0},
+        declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
+    )
+    assert below["band_limit_highpass_ok"] is False
+    refusal = next(
+        issue for issue in below["issues"]
+        if issue["code"] == "high_frequency_highpass_below_low_limit"
+    )
+    assert "1600 Hz (manufacturer declared)" in refusal["message"]
+    assert "1500 Hz" in refusal["message"]
+
+
+def test_the_class_default_still_gates_a_tone_for_an_undeclared_driver() -> None:
+    """The one tone-gate job the class table keeps: the fallback.
+
+    Nothing declared, so a staged 1900 Hz is still refused -- against the 2000
+    Hz compression_driver default, and the copy says the floor is a class
+    fallback rather than passing a code default off as a datasheet figure.
+    """
+
+    payload = driver_protection_payload(
+        "tweeter",
+        driver_style="compression_driver",
+        protection_status="present",
+        band_limit={"type": "highpass", "highpass_hz": 1900.0},
+    )
+
+    assert payload["band_limit_highpass_ok"] is False
+    assert payload["audio_allowed"] is False
+    assert payload["low_limit_hz"] == COMPRESSION_DRIVER_CLASS_DEFAULT_HZ
+    assert payload["low_limit_provenance"] == LOW_LIMIT_STYLE_DEFAULT
+    refusal = next(
+        issue for issue in payload["issues"]
+        if issue["code"] == "high_frequency_highpass_below_low_limit"
+    )
+    assert "class fallback" in refusal["message"]
+    assert "2000 Hz" in refusal["message"]
+
+
+def test_the_payload_never_prints_the_class_figure_beside_a_declared_one() -> None:
+    """#2874's confusion surface, on the tone gate's own artifact.
+
+    Two floats one key apart with only one of them labelled is what sent two
+    readers looking for a second floor on the corner. The class figure still
+    travels -- as ``low_limit_hz`` whenever it is the operative number -- but
+    never as an unlabelled peer beside a declared one.
+    """
+
+    declared = driver_protection_payload(
+        "tweeter",
+        driver_style="compression_driver",
+        protection_status="present",
+        band_limit={"type": "highpass", "highpass_hz": DE250_LOW_LIMIT_HZ},
+        declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
+    )
+    assert "min_highpass_hz" not in declared
+    assert declared["low_limit_hz"] == DE250_LOW_LIMIT_HZ
+
+    undeclared = driver_protection_payload(
+        "tweeter",
+        driver_style="compression_driver",
+        protection_status="present",
+    )
+    assert undeclared["low_limit_hz"] == (
+        driver_protection_profile(
+            "tweeter", driver_style="compression_driver"
+        ).min_highpass_hz
+    )
+
+
+def test_tone_gate_low_limit_delegates_its_order_to_the_one_resolver() -> None:
+    """Declared wins; absent falls back; a role with no anchor has no floor.
+
+    Same three-step order ``resolve_driver_low_limit`` owns, reached through
+    the tone gate's own entry point so the two cannot drift.
+    """
+
+    declared = tone_gate_low_limit(
+        "tweeter",
+        driver_style="compression_driver",
+        declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
+    )
+    assert declared is not None
+    assert declared.frequency_hz == DE250_LOW_LIMIT_HZ
+    assert declared.provenance == LOW_LIMIT_DECLARED
+    assert format_low_limit(declared) == "1600 Hz (manufacturer declared)"
+
+    fallback = tone_gate_low_limit("tweeter", driver_style="compression_driver")
+    assert fallback is not None
+    assert fallback.frequency_hz == COMPRESSION_DRIVER_CLASS_DEFAULT_HZ
+    assert fallback.provenance == LOW_LIMIT_STYLE_DEFAULT
+    assert format_low_limit(fallback) == "2000 Hz (class fallback; nothing declared)"
+
+    # No style anchor exists for a low-frequency role, and inventing one is the
+    # nanny behaviour the never-nanny ruling excludes.
+    assert tone_gate_low_limit("woofer") is None
+
+
+def test_a_declared_low_limit_above_the_class_default_still_tightens() -> None:
+    """The gate is not one-directional relief.
+
+    A supertweeter declared at 10 kHz under an 8 kHz class default keeps the
+    stricter DECLARED number: the ruling is that the declaration wins, not that
+    the lower of the two wins.
+    """
+
+    payload = driver_protection_payload(
+        "tweeter",
+        driver_style="supertweeter",
+        protection_status="present",
+        band_limit={"type": "highpass", "highpass_hz": 9000.0},
+        declared_low_limit_hz=10000.0,
+    )
+
+    assert payload["band_limit_highpass_ok"] is False
+    assert payload["low_limit_hz"] == 10000.0
+    assert payload["low_limit_provenance"] == LOW_LIMIT_DECLARED
