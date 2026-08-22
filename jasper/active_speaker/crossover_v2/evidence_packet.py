@@ -20,8 +20,18 @@ session that wanted to reason about a round has re-walked that tree by hand —
 most recently 635 lines of throwaway glue in a captures directory, which
 recovered the mic angle by regex over a log file and hardcoded a measured
 delay as a literal.  This module is the promotion of the *reading* half of
-that glue, and nothing else: it computes no new number, grades nothing, and
-writes nothing.
+that glue: it grades nothing and writes nothing.
+
+**It computes exactly one statistic, and the boundary is worth stating.**
+:func:`_cross_seat_sigma_block` reduces the member curves already in the packet
+to their per-bin spread across seats.  That is a REDUCTION over data the packet
+already carries — no capture is re-read, no curve re-smoothed, no threshold
+applied, and no verdict reached — and it is here rather than copied from
+upstream because nothing upstream publishes it: see that function for what the
+combiner does with its own per-bin array, where the octave-band reduction of it
+IS banked, and why that reduction is a different statistic on a different grid
+either way.  Anything that needs a new measurement, or that decides what a
+number MEANS, still belongs somewhere else.
 
 **Its one impurity, named.**  It reads JSON files under a directory.  That is
 the same bounded impurity :mod:`.round_anchor` declares, and it is the whole
@@ -66,6 +76,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -98,7 +109,9 @@ from .feature_classification import (
     LAB_ROW_FIELDS,
     LAB_ROW_NOT_AN_UNCERTAINTY,
     LAB_ROW_UNCERTAINTY,
+    UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
+    finite_number,
     read_feature_verdicts,
 )
 
@@ -544,6 +557,266 @@ def round_program_dir(
     return round_dir
 
 
+#: Decimal places the cross-seat spread is published to.
+#:
+#: Four, because the member curves it is taken over are themselves rounded to
+#: four by :func:`~jasper.attribution.position_evidence._sample_onto`. A spread
+#: carrying more digits than its own inputs would be false precision, and this
+#: document is content-fingerprinted, so digits that are only arithmetic noise
+#: are a fingerprint that moves for a reason no reader could point at.
+_SIGMA_DECIMALS = 4
+
+#: The cross-seat spread, declared as the enrichment rule requires — and the
+#: honest declaration is that it is not ONE kind.
+#:
+#: Entry shape is :data:`~.feature_classification.LAB_ROW_UNCERTAINTY`'s
+#: (``kind`` + ``of``) so a reader meets one shape wherever the packet declares
+#: an uncertainty; what differs is the LIST it is published under, because
+#: :data:`~.feature_classification.UNCERTAINTY_UNSEPARATED` is deliberately not
+#: a member of the closed kind set.
+_CROSS_SEAT_SIGMA_UNCERTAINTY: dict[str, dict[str, str]] = {
+    "per_bin_sigma_db": {
+        "kind": UNCERTAINTY_UNSEPARATED,
+        "of": (
+            "how far the seats disagree at this bin — the sample standard "
+            "deviation (ddof=1) across the member curves above, uncentred. It "
+            "contains TWO spreads and separates neither: the sound field's real "
+            "variation from seat to seat, which no amount of repeating at a "
+            "fixed seat would reduce, and the measurement noise each member "
+            "curve carries, which averaging repeats into each member would. "
+            "Which of the two dominates cannot be read off this round — "
+            "separating them needs a repeat spread "
+            "measured at a FIXED pose, which is calibration experiment E2 and "
+            "has not been run. So it is published as a spread whose kind is not "
+            "yet separable, never as a random or a systematic one: calling it "
+            "either would be exactly the pooling these labels exist to prevent"
+        ),
+    },
+}
+
+#: Fields of the cross-seat block that are not spreads, and why they are here.
+#:
+#: ``n_seats`` is the load-bearing one. The classification block can state that
+#: it "does not publish n" and so cannot be used to form a standard error; this
+#: block DOES publish n, deliberately, and therefore has to say what the obvious
+#: quotient would and would not mean.
+_CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "n_seats": (
+        "how many member curves the spread above was taken over. A count, not a "
+        "spread — published because a standard deviation cannot be judged "
+        "without its n, and a reader not given one counts the rows anyway. It is "
+        "not a divisor to reach for while the spread's two halves are "
+        "unseparated: per_bin_sigma_db/sqrt(n_seats) would be the standard error "
+        "of the cross-seat MEAN, and only the random half falls that way, so "
+        "until the halves are separated that quotient is the standard error of "
+        "nothing"
+    ),
+    "n_seats_excluded": (
+        "member curves this block could not use — a row with no magnitude_db, "
+        "one whose length does not match the grid, or one carrying a sample "
+        "that is not a real number. Counted rather than dropped quietly, on the "
+        "rule the capture_snr block keeps for the ring leftovers it does not "
+        "publish. A count, not a spread"
+    ),
+}
+
+
+def _member_curve(values: Any, n_bins: int) -> list[float] | None:
+    """One member curve as ``n_bins`` real numbers, or ``None``.
+
+    All-or-nothing per row, and that is the point: a curve admitted for the bins
+    it could supply would make its seat present in some bins and absent in
+    others, so the block's single ``n_seats`` would not be the count the spread
+    was actually taken over in every bin. Refusing the whole row keeps one n for
+    the whole curve — and the row is counted, never dropped silently.
+
+    :func:`~.feature_classification.finite_number` does the per-sample work
+    rather than a second copy of its three traps (``bool`` is an ``int``,
+    ``float("1037")`` succeeds, an arbitrary-precision ``int`` raises on
+    ``float()``).
+    """
+    if not isinstance(values, list) or len(values) != n_bins:
+        return None
+    curve: list[float] = []
+    for value in values:
+        number = finite_number(value)
+        if number is None:
+            return None
+        curve.append(number)
+    return curve
+
+
+def _cross_seat_sigma_block(
+    freqs_hz: Any, rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """How far the seats disagree, bin by bin — the packet's one computed number.
+
+    The sample standard deviation (``ddof=1``) across the member curves, per
+    bin, index-aligned with ``curve_grid.freqs_hz``. Taken over the rows THIS
+    packet publishes rather than over the artifact behind them, so a reader can
+    reproduce the figure from the packet alone.
+
+    **Why the packet computes it instead of copying one.** The combiner already
+    forms this exact array —
+    :func:`~jasper.audio_measurement.spatial_combine._band_spread` opens with
+    ``np.std(stacked, axis=0, ddof=1)`` — and then never lets the ARRAY out: it
+    is reduced inside that function to two figures per octave band
+    (:class:`~jasper.audio_measurement.spatial_combine.BandSpread`), and no
+    caller ever sees the per-bin values.
+
+    The reduction does get banked, and stating that precisely matters because
+    "nothing carries a cross-position spread" would be false. It is banked in
+    ONE place: ``candidate.json``'s ``exclusion_evidence``
+    (:func:`~.planning.exclusion_evidence_json`), which the packet does not
+    read, describes the ``cloud_measure`` group rather than the ``cloud_verify``
+    curves this block runs over, and is empty on any candidate whose fit saw no
+    cloud evidence. What the packet DOES read — the cloud evidence artifact —
+    carries no spread at all: the round's close stashes ``band_spread`` for
+    comparison and keeps it out of the published group result deliberately
+    ("comparison input, not a disclosure the household reads", at
+    ``crossover_v2_flow``'s cloud close).
+
+    **And it would be a different statistic if there were.** The combiner's runs
+    over ``per_position_db`` — raw and unsmoothed, on its own shared LINEAR
+    grid. The member curves here are ``per_position_diag_db``, smoothed at the
+    diagnostic fraction and resampled onto a LOG 1/12-octave grid whose floor is
+    the round's validity floor when it has a usable one and a 20 Hz default
+    otherwise (``curve_grid.floor_source`` says which). Same estimator;
+    different curves, different
+    grid, different reduction — which is why the published array takes the name
+    of the combiner's own intermediate for this estimator (``per_bin_sigma``)
+    rather than ``sigma_db`` or ``max_sigma_db``, two words that already mean
+    the combiner's two per-octave-band reductions.
+
+    **It lives inside the positions block**, beside the grid it is on and the
+    curves it came from, on that block's own rule: a reader must not be able to
+    pair a spread with a grid it was not taken over.
+
+    **Below two usable seats it refuses, and does not publish 0.0.** A sample
+    standard deviation is undefined at n=1, and a zero would say the seats
+    agreed. The classification block's ``excursion_sd_us`` does publish 0.0 at
+    one capture — that is the instrument's own convention, copied through
+    verbatim as everything in that block is. This is a new field with no
+    convention to inherit, so it takes the honest one.
+
+    ``statistics.stdev`` rather than numpy for two reasons that both matter
+    here: it RAISES at n < 2 instead of returning a silent ``NaN``, so the
+    ``len(curves) < 2`` guard below cannot fail open the way
+    :func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`'s
+    docstring warns ``np.std(..., ddof=1)`` does; and it computes in exact
+    arithmetic, so a spread too large for a float is an ``OverflowError``
+    rather than an ``inf`` that would reach the fingerprint. Do not weaken
+    either the guard or the ``except`` on the strength of them being unlikely.
+
+    Exact arithmetic is slower, and the cost was measured rather than waved at:
+    1.8 ms for the shipped shape (4 seats over the 89-bin 1/12-octave grid of a
+    real banked round) and 54 ms for a deliberately pessimistic 12 x 2048, on a
+    laptop. The packet is built by an offline CLI, never on an audio path.
+    """
+    n_bins = len(freqs_hz) if isinstance(freqs_hz, list) else 0
+    if not n_bins:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                "the positions block carries no curve grid, so there are no "
+                "bins to take a spread over"
+            ),
+            "n_seats": 0,
+            "n_seats_excluded": len(rows),
+        }
+    curves: list[list[float]] = []
+    excluded = 0
+    for row in rows:
+        curve = _member_curve(row.get("magnitude_db"), n_bins)
+        if curve is None:
+            excluded += 1
+        else:
+            curves.append(curve)
+    if len(curves) < 2:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                f"a spread across seats needs two usable member curves and this "
+                f"round has {len(curves)} ({excluded} row(s) could not be read "
+                f"as a curve on this grid). A sample standard deviation is "
+                f"UNDEFINED at one seat, so nothing is published — a 0.0 here "
+                f"would say the seats agreed"
+            ),
+            "n_seats": len(curves),
+            "n_seats_excluded": excluded,
+        }
+    try:
+        per_bin_sigma_db = [
+            round(
+                statistics.stdev(curve[index] for curve in curves), _SIGMA_DECIMALS
+            )
+            for index in range(n_bins)
+        ]
+    except OverflowError:
+        # Reachable, not defensive: ``statistics.stdev`` computes in exact
+        # arithmetic and raises rather than returning ``inf`` when the result
+        # will not fit a float, which a hand-edited member curve near the float
+        # ceiling does. Letting it out would kill the whole packet over one bad
+        # sample, and this module's rule is that a bad artifact is a fact it
+        # reports.
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                "a member curve carries samples so large that their spread does "
+                "not fit a float; this artifact cannot be read for a cross-seat "
+                "spread at all"
+            ),
+            "n_seats": len(curves),
+            "n_seats_excluded": excluded,
+        }
+    return {
+        "available": True,
+        "n_seats": len(curves),
+        "n_seats_excluded": excluded,
+        "per_bin_sigma_db": per_bin_sigma_db,
+        "source": "positions[].magnitude_db, across seats, one value per grid bin",
+        "uncertainty": {
+            # Empty, and that is the answer rather than an omission — see note.
+            "fields": {},
+            "not_uncertainties": dict(
+                sorted(_CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY.items())
+            ),
+            # The third list, for the case neither of the first two describes: a
+            # real spread about a reading whose kind this evidence cannot say.
+            "unseparated": {
+                field: dict(entry)
+                for field, entry in sorted(_CROSS_SEAT_SIGMA_UNCERTAINTY.items())
+            },
+            "note": (
+                "fields is empty because nothing here is a random OR a "
+                "systematic uncertainty: the one spread published is a pooling "
+                "of both, so it is declared under unseparated rather than filed "
+                "as a kind it does not have. The rule that produces that "
+                "answer: the two kinds are never pooled into one number, and "
+                "where a measurement can only yield a pooled one it says so and "
+                "names what would separate it — here, a repeat spread at a "
+                "fixed pose (calibration experiment E2), which has not been "
+                "measured"
+            ),
+        },
+        "note": (
+            "one value per curve_grid.freqs_hz bin, in that order, computed "
+            "from the position rows THIS packet publishes — so it is "
+            "reproducible from the packet alone. UNCENTRED: a seat that simply "
+            "plays louder raises it, because a level difference between seats "
+            "is part of what 'the seats disagree' means here. It is not the "
+            "combiner's sigma_db/max_sigma_db under another name: those are "
+            "taken over raw unsmoothed curves on a linear grid and reduced to "
+            "two figures per octave band, they describe the cloud_measure "
+            "group, and they reach only candidate.json's exclusion_evidence — "
+            "not this document, and not the cloud evidence it is built from"
+        ),
+    }
+
+
 def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
     """Per-position curves and capture integrity, copied rather than derived.
 
@@ -553,6 +826,11 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
     No re-smoothing and no re-derivation: the lab's own per-position readers
     held that invariant and it is why their numbers could be trusted beside the
     round's.
+
+    The one DERIVED thing in it is ``cross_seat_sigma``, which reduces the
+    member curves this block publishes to their per-bin spread. It sits here
+    rather than beside the block because a spread and the grid it was taken over
+    must not be separable — see :func:`_cross_seat_sigma_block`.
     """
     positions = _mapping(cloud.get("positions"))
     grid = _mapping(positions.get("curve_grid"))
@@ -564,18 +842,22 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
         kept, dropped = _copy_allowed(entry, _POSITION_FIELDS + ("magnitude_db",))
         withheld.update(dropped)
         rows.append(kept)
+    freqs_hz = grid.get("freqs_hz") or []
     return {
         "available": bool(rows),
         "schema": positions.get("schema"),
         "n_positions": len(rows),
         "curve_grid": {
-            "freqs_hz": grid.get("freqs_hz") or [],
+            "freqs_hz": freqs_hz,
             "fractional_octave": grid.get("fractional_octave"),
             "smoothing_fraction": grid.get("smoothing_fraction"),
             "floor_hz": grid.get("floor_hz"),
             "floor_source": grid.get("floor_source"),
         },
         "positions": rows,
+        # Derived from the two above and published beside them, so a reader
+        # cannot pair the spread with a grid it was not taken over.
+        "cross_seat_sigma": _cross_seat_sigma_block(freqs_hz, rows),
         "redacted_fields": sorted(withheld),
         # The one fact a reader would otherwise assume was simply uninteresting.
         "angle_deg": {
@@ -1070,6 +1352,7 @@ def _not_evaluated(
     drivers_available: bool,
     lateral_poses_available: bool,
     capture_snr_reason: str,
+    cross_seat_sigma_reason: str,
     findings: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
@@ -1137,6 +1420,11 @@ def _not_evaluated(
         entries.append({
             "field": "capture_snr",
             "reason": capture_snr_reason,
+        })
+    if cross_seat_sigma_reason:
+        entries.append({
+            "field": "positions.cross_seat_sigma",
+            "reason": cross_seat_sigma_reason,
         })
     if not classification_available:
         # Was unconditional until a round could carry banked verdicts. Stating
@@ -1273,6 +1561,8 @@ def build_crossover_evidence_packet(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
     )
     spec = _mapping(cloud.get("spec"))
+    positions = _positions_block(cloud)
+    cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -1331,7 +1621,7 @@ def build_crossover_evidence_packet(
         "flatness": _mapping(cloud.get("flatness")),
         "spec": spec,
         "curve": _mapping(cloud.get("curve")),
-        "positions": _positions_block(cloud),
+        "positions": positions,
         # The bearings, beside the seats and never inside them: a lateral walk
         # pose and a cloud position are different captures that share only a
         # take-id convention.
@@ -1378,6 +1668,7 @@ def build_crossover_evidence_packet(
             drivers_available=bool(drivers.get("available")),
             lateral_poses_available=bool(lateral_poses.get("available")),
             capture_snr_reason=str(capture_snr.get("reason") or ""),
+            cross_seat_sigma_reason=str(cross_seat_sigma.get("reason") or ""),
             findings=findings,
         ),
         # TWO contracts, one per prescription class, each written by the gate

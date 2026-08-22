@@ -2012,10 +2012,12 @@ means fix the prescription, `3` means fix the speaker's filesystem.
 What the packet is for beyond the model loop: it is the single document the
 deterministic trend engine and any by-hand round review both want, and its
 `not_evaluated` block is the fastest way to see what a round **cannot** answer
-(no numeric mic angle is banked anywhere; the reflection time exists only
-inside gate-disclosure prose; no round banks a distortion reading; every
-banked capture is horizontal, so the vertical plane is disclosed as
-`vertical_plane_response` rather than measured).
+(a cloud position banks no bearing at all, so `positions.angle_deg` refuses —
+the signed bearings that ARE banked belong to a lateral walk's poses and ride
+in `lateral_poses`; the reflection time exists only inside gate-disclosure
+prose; no round banks a distortion reading; every banked capture is horizontal,
+so the vertical plane is disclosed as `vertical_plane_response` rather than
+measured).
 
 Owners:
 [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)

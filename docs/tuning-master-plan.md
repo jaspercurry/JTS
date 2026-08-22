@@ -113,7 +113,7 @@ method, if adopted, is another program regime.
 | Measurement programs | named, versioned pose lists as data (`baseline`, `tournament`, `verify`, `spot`) | LLM selects a program + bounded params via a staged request (generalizing the `angle_capture` request spool); it never invents free-form geometry. Arm and guided human are interchangeable providers behind `capture_source` |
 | Retention | the bank | mic WAV + stimulus are **evidence**, both flows (room's `sweep_meta` regenerates its stimulus deterministically — equivalent). IR and complex TF are **derivable caches**, prunable. Ring eviction never crosses an active round's boundary; budgets stated per store |
 | Analysis kernel | `jasper/audio_measurement/` | owns the math and the policies (smoothing widths, arrival window, σ definitions — one owner per policy). Imports neither flow |
-| Evidence | `evidence_packet.build_crossover_evidence_packet` | a **computed view** over the bank, schema-versioned; consumers rebuild it, nothing reads a stale packet file. The classifier artifact already carries the full lab rows; the packet's classification block widens to match (ticket 1.1), while the 7-key `FeatureVerdict` stays the gate-facing subset. Every published uncertainty field labels itself **random or systematic** — the two must never pool |
+| Evidence | `evidence_packet.build_crossover_evidence_packet` | a **computed view** over the bank, schema-versioned; consumers rebuild it, nothing reads a stale packet file. The classifier artifact already carries the full lab rows; the packet's classification block widens to match (ticket 1.1), while the 7-key `FeatureVerdict` stays the gate-facing subset. Every published uncertainty field labels itself **random or systematic** — the two must never pool. Where the evidence cannot separate them, the field says so under `unseparated` and names what would (ticket 1.3's cross-seat σ contains both and needs E2), never being filed as a kind it does not have |
 | Mechanism vocabulary | one taxonomy, joined in the per-feature record (ticket 1.10) | `jasper/attribution`'s mechanism ids + fix classes become the registered vocabulary of the per-feature evidence record, joined with the classifier's classifications and the envelope's depth reasons. Detectors beyond the two shipped discriminators (min-phase/gate ladder, position-invariance) are **not built** — mechanism inference over the record is the LLM's job (see the skip ledger) |
 | Prescription doors + spool | `driver_prescription` / `blend_prescription` / `alignment_prescription` / `topology_prescription` + `prescription_spool` | all four envelopes versioned; refusal vocabularies converge to the hard-stop list; spool stays single-slot last-wins (logged) |
 | Activation / apply | `program_playback.play_program` / `handle_v2_apply` | invariant 5 |
@@ -316,7 +316,9 @@ Everything below assumes they land as-is.
 
 **Wave 1 — evidence & honesty (all S unless noted).** Enrichment rule for
 1.1–1.5: every published uncertainty field labels itself random or
-systematic; the two never pool.
+systematic; the two never pool. Where a measurement can only yield a pooled
+figure it is published as `unseparated` with the separation named as pending —
+1.3's cross-seat σ is the shipped case — never as one of the two kinds.
 1.1 The evidence packet's classification block widens to carry the
     classifier artifact's full lab rows (the artifact already has all ~26
     columns; `evidence_packet._classification_block` currently publishes
