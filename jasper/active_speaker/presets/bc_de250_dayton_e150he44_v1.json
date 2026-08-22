@@ -28,17 +28,12 @@
       "role": "woofer",
       "manufacturer": "Dayton Audio",
       "model": "Epique E150HE-44",
-      "fs_hz": 40,
-      "sensitivity_db": 83.3,
-      "rated_power_w": 60,
-      "expected_nearfield_response": "Smooth usable response through the planned crossover; suppress known upper breakup by crossover design."
+      "sensitivity_db": 83.3
     },
     "tweeter": {
       "role": "tweeter",
       "manufacturer": "B&C Speakers",
       "model": "DE250",
-      "rated_power_w": 60,
-      "expected_nearfield_response": "Compression-driver horn response must be measured with the final horn or waveguide attached.",
       "protection_highpass_floor_hz": 1600
     }
   },

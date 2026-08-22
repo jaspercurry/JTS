@@ -43,13 +43,10 @@ def _two_way_preset(layout: str = "mono") -> dict:
             "woofer": {
                 "manufacturer": "Dayton Audio",
                 "model": "Epique E150HE-44",
-                "fs_hz": 40,
-                "rated_power_w": 60,
             },
             "tweeter": {
                 "manufacturer": "B&C Speakers",
                 "model": "DE250",
-                "rated_power_w": 60,
             },
         },
         "crossover_regions": [{
@@ -141,6 +138,34 @@ def test_two_way_active_speaker_preset_round_trips():
     assert preset.crossover_regions[0].fc_hz == 1600
 
     assert ActiveSpeakerPreset.from_mapping(preset.to_dict()) == preset
+
+
+def test_driver_spec_drops_removed_legacy_fields():
+    """``fs_hz``/``rated_power_w``/``expected_nearfield_response`` were removed
+    from ``DriverSpec`` -- schema-complete but never read by any consumer.
+
+    ``DriverSpec.from_mapping`` has no ``_reject_unknown_keys`` call (unlike
+    ``driver_safety.py``'s stricter research/safety-profile schemas), so it
+    does not raise on an unrecognized key -- it just never reads it into the
+    dataclass. A legacy preset dict that still carries these keys therefore
+    keeps parsing; the round-trip through ``to_dict()`` proves the fields no
+    longer survive rather than proving a rejection.
+    """
+    raw = _two_way_preset()
+    raw["drivers"]["woofer"]["fs_hz"] = 40
+    raw["drivers"]["woofer"]["rated_power_w"] = 60
+    raw["drivers"]["woofer"]["expected_nearfield_response"] = "legacy text"
+
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+    woofer = preset.drivers["woofer"]
+
+    assert not hasattr(woofer, "fs_hz")
+    assert not hasattr(woofer, "rated_power_w")
+    assert not hasattr(woofer, "expected_nearfield_response")
+    woofer_dict = preset.to_dict()["drivers"]["woofer"]
+    assert "fs_hz" not in woofer_dict
+    assert "rated_power_w" not in woofer_dict
+    assert "expected_nearfield_response" not in woofer_dict
 
 
 def test_active_speaker_preset_requires_versioned_artifact_metadata():

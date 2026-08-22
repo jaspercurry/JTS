@@ -166,10 +166,7 @@ class DriverSpec:
     role: str
     manufacturer: str
     model: str
-    fs_hz: float | None = None
     sensitivity_db: float | None = None
-    rated_power_w: float | None = None
-    expected_nearfield_response: str | None = None
     # The driver's own confirmed protective high-pass floor, carried on the
     # preset so the graph EMITTER (camilla_yaml) and the graph VERIFIER
     # (graph_evidence) read one object and cannot derive different protection
@@ -189,13 +186,8 @@ class DriverSpec:
             role=role,
             manufacturer=_require_text(raw.get("manufacturer"), f"{role}.manufacturer"),
             model=_require_text(raw.get("model"), f"{role}.model"),
-            fs_hz=_optional_float(raw.get("fs_hz"), f"{role}.fs_hz"),
             sensitivity_db=_optional_float(
                 raw.get("sensitivity_db"), f"{role}.sensitivity_db"
-            ),
-            rated_power_w=_optional_float(raw.get("rated_power_w"), f"{role}.rated_power_w"),
-            expected_nearfield_response=_optional_text(
-                raw.get("expected_nearfield_response")
             ),
             protection_highpass_floor_hz=_optional_float(
                 raw.get("protection_highpass_floor_hz"),
@@ -210,10 +202,7 @@ class DriverSpec:
             "model": self.model,
         }
         for key in (
-            "fs_hz",
             "sensitivity_db",
-            "rated_power_w",
-            "expected_nearfield_response",
             "protection_highpass_floor_hz",
         ):
             value = getattr(self, key)

@@ -281,13 +281,10 @@ def _two_way_preset() -> dict:
             "woofer": {
                 "manufacturer": "Dayton Audio",
                 "model": "Epique E150HE-44",
-                "fs_hz": 40,
-                "rated_power_w": 60,
             },
             "tweeter": {
                 "manufacturer": "B&C Speakers",
                 "model": "DE250",
-                "rated_power_w": 60,
             },
         },
         "crossover_regions": [{
