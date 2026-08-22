@@ -42,8 +42,6 @@ artifact is missing.
 1. **Orient.** `jasper-crossover-prescriber status` — the plan's designated
    orientation verb (ticket 1.8): declared / banked / staged / applied state
    and the possible next actions, read from the same builders the doors read.
-   If your build predates it, orient from `packet` plus `jasper-round-views`
-   instead.
 2. **Read the round.** `jasper-crossover-prescriber packet` → one versioned
    JSON document per banked round (`--compact` to drop indentation, `--json`
    to suppress the human summary on stderr). This is the evidence surface;
@@ -54,25 +52,39 @@ artifact is missing.
    `jasper-round-views frozen | per-seat | repeat | agreement` grades it.
 4. **Propose.** Author the prescription JSON yourself, then
    `jasper-crossover-prescriber propose --prescription -` — a true dry run
-   sharing the whole gate with `stage`. Up to ~3 candidates.
+   sharing the whole gate with `stage`.
 5. **Stage.** `jasper-crossover-prescriber stage --prescription -` writes the
    single-slot mailbox at
    `/var/lib/jasper/active_speaker_crossover_v2_prescription.json`, consumed on
    take. One slot, last write wins, logged.
 6. **Measure.** `scripts/run-crossover-round.py` runs one round end to end
-   (stage · walk · open · await · bank). Hand the human the tournament URL,
+   (stage · walk · open · await · bank). Hand the human the measurement URL,
    hostname-derived; they move the mic pose to pose.
-7. **Grade.** Read the comparative grading, compose the final prescription.
+7. **Grade.** Read the round's grading and compose the final prescription.
 8. **Apply.** `scripts/run-crossover-round.py --apply <fingerprint>` — a
    *second* invocation. A measurement run never applies.
 9. **Verify.** A verify round, then check the stopping rule (plan,
    "Measurement program constants"). Done, or iterate.
 
+**One candidate per round, today.** Steps 6–7 measure and grade a *single*
+staged candidate: the runner has no `--candidates` flag, and nothing in it
+cycles candidates within a pose. The N-candidate tournament — the cycle at each
+pose and the comparator across candidates — is the plan's **Wave 3**, tickets
+3.4 and 3.5. Until those land, a bake-off is N sequential rounds, and
+republish is how you get a past candidate back without re-measuring it.
+
 **URLs are hostname-derived.** Speakers are `jts1.local`, `jts3.local`, … —
 never a hard-coded `jts.local`. The round runner resolves `PI_HOST` /
 `PI_USER` / `JASPER_HOSTNAME` from `.env.local` (via `scripts/_lib.sh`), with
-`--hostname` as the override. The correction hub is the one **HTTPS** surface:
-`https://<speaker>/correction/…`; every other JTS page is plain `http://`.
+`--hostname` as the override.
+
+**The measurement surfaces are HTTPS, and there are several.** `getUserMedia`
+needs a secure context, so nginx's 443 block serves the whole measurement
+family: the canonical `/sound/{room,crossover,bass}/` routes, their
+`/correction/*` compatibility aliases, and `/balance/` + `/sync/` — the last
+two **HTTPS-only** (port 80 404s them). Plain `http://` still serves the
+ordinary wizards. `install.sh` provisions the private CA; a device has to trust
+it once before any of this works.
 
 ## The tool menu
 
@@ -105,17 +117,24 @@ changes nothing durable · **mutating** = changes what the speaker plays ·
 
 **Not in the menu, on purpose.** `crossover_v2/{search,objective,candidate_space}.py`,
 `fc_sweep`'s sweep half, and `active_speaker/fc_selector.py` are **cancelled
-work** (plan ruling R1) awaiting deletion in Wave 2. They still import at HEAD.
-Do not call them, do not read their rankings, and do not treat a shortlist they
-produce as evidence — a crossover corner is **declared and executed**, never
-measured-searched (invariant 2). `forward_model` survives, as offline simulated
-evaluation over banked solos.
+work** under plan ruling R1; the Wave-2 deletion PRs remove them, so check the
+tree rather than this sentence for whether a given module is still there. Either
+way: do not call them, do not read their rankings, and do not treat a shortlist
+they produce as evidence — a crossover corner is **declared and executed**,
+never measured-searched (invariant 2). `forward_model` survives, as offline
+simulated evaluation over banked solos.
 
 **Route paths have two spellings.** The table gives the path the correction
-wizard registers (it listens on `127.0.0.1:8770`). nginx mounts it under
-`/correction/` and strips that prefix, so from anywhere but the Pi's loopback
-you call `POST https://<speaker>/correction/crossover/v2/…`. Handler responses
-spell their `next_action` endpoints with the prefix, for the same reason.
+wizard registers on `127.0.0.1:8770`. From anywhere but the Pi's loopback you
+go through nginx, which strips its own prefix — so both of these reach
+`/crossover/v2/republish` on the backend:
+
+```
+POST https://<speaker>/sound/crossover/v2/republish    # canonical
+POST https://<speaker>/correction/crossover/v2/republish   # compatibility alias
+```
+
+Prefer the canonical spelling; the alias is kept for older links.
 
 **No CLI withdraw for a staged prescription.** `withdraw_staged_prescription`
 exists in `prescription_spool.py` but only `restore` calls it; the prescriber
@@ -155,8 +174,8 @@ build one.
 
 **Republish is same-corner only.** `handle_v2_republish` refuses with
 `sound_design_revision_unavailable` when the banked candidate does not hold the
-corner the speaker already declares. Bake off candidates that vary
-linearization EQ, trim, delay, and polarity — not the corner.
+corner the speaker already declares. Compare candidates that vary linearization
+EQ, trim, delay, and polarity — not the corner.
 
 **Hard stops.** The closed list is the doctrine's §3, five bullets, and it is
 stated there once. Read it there; do not accept a sixth from anywhere. A
@@ -261,9 +280,19 @@ Four outcomes, in this exact precedence:
 | else `egd_verdict = MIN-PHASE` | `defect-boostable (min-phase dip)` / `defect-cuttable (min-phase peak)` by sign |
 | else | `ambiguous` |
 
-Note what this means: `room` is decided by the **gate ladder** — the feature's
-centre shifted more than `CENTRE_SHIFT_OCT` (1/24 octave) between gate lengths,
-at a gate that resolved it — not by moving the microphone.
+Note what this means: `room` is decided by the **gate ladder**, not by moving
+the microphone. And `GATE_MOVED` has **two independent routes** — either one
+alone sets it, at any gate in the ladder:
+
+- **excess retention loss below slack** — `excess_loss_vs_null < -slack`, where
+  slack is `max(RETENTION_SLACK, 3 × standard error)`. **No resolved-gate
+  guard**: this route fires even at a gate that could not resolve the feature.
+- **centre shift** — `|centre_shift_oct| > CENTRE_SHIFT_OCT` (1/24 octave)
+  **at a gate that resolved it**.
+
+So a `room` verdict sitting beside a small centre shift is not the classifier
+contradicting itself — the retention route fired. (A loss between `-0.5 × slack`
+and `-slack` sets `tension` instead, which does not classify.)
 
 **Discriminator 2 — position invariance across the capture cloud**
 (`audio_measurement/interference_nulls.py`, promoted by `attribution/promotion.py`):
@@ -334,12 +363,13 @@ Two different spreads, two different meanings, and they must never pool:
 
 **The caveat that governs both:** a position spread is only as meaningful as
 the repeat spread it is measured against. If σ_repeat is 0.4 dB, a σ_position
-of 0.5 dB says almost nothing about the room. **Calibration experiment E2 —
-16 back-to-back gated sweeps at a fixed mic, per-bin σ across the band — has
-not been run.** Until it has, every σ threshold in this system is an
-assumption, including two named ones: `round_evidence.MEASURED_BENEFIT_MARGIN_DB`
-(0.5) and `round_evidence.ITERATION_PLATEAU_DB` (0.25), both self-described as
-awaiting exactly that study.
+of 0.5 dB says almost nothing about the room. **Calibration experiment E2 — the
+study that would measure σ_repeat — has not been run** (its design is in the
+plan's "Calibration experiments" section). Until it has, every σ threshold here
+is an assumption, including two named ones,
+`round_evidence.MEASURED_BENEFIT_MARGIN_DB` and
+`round_evidence.ITERATION_PLATEAU_DB`, both self-described as awaiting exactly
+that study.
 
 So: state σ figures with their kind, label every published uncertainty as
 **random or systematic**, and never report a position spread as evidence of
@@ -379,10 +409,19 @@ detected as the window opened, the turn is cancelled and logged
 `event=wake.late_cancel reason=measurement_active` (a remote trigger mirrors it
 as `event=session.manual_refused reason=measurement_active`). There is no cue
 and no per-event indicator; the only visible signal is the system-wide
-`measurement_active` boolean on `/state`. The related
-`event=cue.skipped reason=measurement_active` is a *different* refusal — an
-external cue-play request over the control socket or CLI, not a wake. Do not
-read a missing cue as a broken wake path during a round.
+`measurement_active` boolean on `/state`.
+
+`event=cue.skipped reason=measurement_active` is a *different* refusal, and it
+has **two** producers in `voice_daemon.py` — neither of them a wake:
+
+| Producer | Log line | What was refused |
+|---|---|---|
+| `play_cue` | no `mode=` key | a direct cue-play request — control socket or CLI |
+| `play_supervisor_cue` | `mode=supervisor` | a background supervisor's own cue, e.g. connection-failure escalation |
+
+So **`mode=` is the discriminator.** A `cue.skipped` without it came from
+outside; one with `mode=supervisor` means a supervisor stayed quiet on purpose.
+Either way, do not read a missing cue as a broken wake path during a round.
 
 ---
 
