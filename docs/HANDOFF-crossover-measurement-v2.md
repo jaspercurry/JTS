@@ -506,8 +506,13 @@ STIMULUS one — lives in
 [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) and
 answers a different question: which composer built the excitation being played
 (`PROGRAM_PHASE_CHECK` / `_MEASURE` / `_VERIFY`, and `PROGRAM_PHASES`). The two
-are not interchangeable — every cloud position is its own *session* phase but
-plays the VERIFY-shaped program, so its `program.phase` is `verify`. They used
+are not interchangeable, and a spatial cloud is where they come apart most
+visibly: all of its positions sit under the ONE session phase named just above
+(`cloud_measure`, or `cloud_verify` after the apply — that is what a
+`GROUP_PHASES` member spanning many indexes means), while every one of those
+captures plays the VERIFY-shaped summed sweep, so each carries
+`program.phase == "verify"`. One session phase, many positions, a stimulus
+phase that matches neither's name. They used
 to share all three NAMES as well as their string values, which let an import
 site take the wrong family silently; the `PROGRAM_` prefix is what separates
 them now. The values still coincide, deliberately and permanently: both sets

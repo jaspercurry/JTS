@@ -123,7 +123,7 @@ PROGRAM_SAMPLE_RATE_HZ = 48_000
 # **The ``PROGRAM_`` prefix is what keeps this vocabulary apart from the
 # session's** (master plan ticket 2.9). A second, larger ``PHASE_*`` family
 # lives in :mod:`jasper.active_speaker.crossover_v2.journey` and answers a
-# different question: *where is the round in its walk* (twelve phases —
+# different question: *where is the round in its walk* (eleven phases —
 # ``PHASE_LATERAL``, ``PHASE_REVIEW``, ``PHASE_DONE``, …). This one answers
 # *which composer built this stimulus*, and has exactly the three below.
 # Until the prefix landed both families spelled all three names identically,

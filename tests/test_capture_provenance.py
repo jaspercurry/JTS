@@ -36,8 +36,10 @@ from jasper.active_speaker.capture_provenance import (
 # is the first argument of ``bind_production_play``'s seam, which branches on
 # ``phase in SUMMED_SWEEP_PHASES``, and it is what lands in the retained
 # sidecar's top-level ``phase``. (The STIMULUS phase reaches the sidecar too,
-# but separately and without passing through here — ``record_capture_provenance``
-# reads it off ``program.phase`` into ``provenance.stimulus.phase``.) Until
+# but separately and without passing through here — the playback path calls
+# ``record_capture_provenance``, whose fail-soft belt wraps
+# ``observe_capture_provenance``, and it is THAT function which reads
+# ``program.phase`` into ``provenance.stimulus.phase``.) Until
 # master-plan ticket 2.9 gave the stimulus family its ``PROGRAM_`` prefix, this
 # file imported ``PHASE_CHECK`` from ``jasper.audio_measurement.program`` and
 # was right only by accident: the two families spelled the name identically and

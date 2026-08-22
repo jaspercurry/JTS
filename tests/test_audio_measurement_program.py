@@ -943,13 +943,24 @@ def test_program_phase_names_stay_disjoint_from_journey_phase_names():
 
     ``jasper.audio_measurement.program`` answers *which composer built this
     stimulus* (three phases). ``jasper.active_speaker.crossover_v2.journey``
-    answers *where is the round in its walk* (twelve — ``PHASE_LATERAL``,
+    answers *where is the round in its walk* (eleven — ``PHASE_LATERAL``,
     ``PHASE_REVIEW``, ``PHASE_DONE``, …). Until master-plan ticket 2.9 both
     spelled ``PHASE_CHECK`` / ``PHASE_MEASURE`` / ``PHASE_VERIFY`` — identical
     names AND identical string values for different concepts — so an import
     site could take the wrong family and still typecheck, run, and agree.
-    ``jasper.web.correction_crossover_v2_relay`` imports one name from each and
-    is where a wrong pick would have been read first.
+    ``jasper.web.correction_crossover_v2_relay`` is the one production file
+    that imports from BOTH (one stimulus name, ``PROGRAM_PHASE_CHECK``; two
+    journey ones, ``PHASE_APPLYING`` and ``PHASE_DONE``), and is where a wrong
+    pick would have been read first.
+
+    **No positive control here, deliberately.** A name-set intersection can
+    pass vacuously — if either module moved or lost its constants, both sets
+    would come back empty and this would still be green. What rules that out
+    is the test BELOW, which dereferences ``program.PROGRAM_PHASE_CHECK`` and
+    ``journey.PHASE_CHECK`` by attribute: a moved module or a dropped constant
+    hard-fails there with ``ImportError`` / ``AttributeError``. The two tests
+    are a pair, and that is why this one needs no fixture of its own — do not
+    "repair" the missing control by weakening either half.
 
     **The honest bound:** this compares NAMES on the two modules, so a third
     surface answering either question — under other names, or with bare
