@@ -127,10 +127,15 @@ was changed):
 
 [`deploy/assets/shared/js/http.js`](../deploy/assets/shared/js/http.js) is the
 second cross-page module (after `dialog.js`). Exports `csrfHeaders(headers)`,
-`jsonHeaders()`, `getJSON(path)`, `postJSON(path, body)` — CSRF-aware fetch
-helpers that read the token from the `<meta name="jts-csrf">` tag at call time
-(so the cacheable module bakes in no secret), same `X-CSRF-Token` contract as
-the inline wizards. A migrated page imports it by absolute path
+`jsonHeaders()`, `getJSON(path)`, `postJSON(path, body)`,
+`postControlAction(path)` — CSRF-aware fetch helpers that read the token from
+the `<meta name="jts-csrf">` tag at call time (so the cacheable module bakes in
+no secret), same `X-CSRF-Token` contract as the inline wizards — plus two 403
+classifiers a caller uses to tell one rejection from another:
+`isControlTokenRequired(err)` (a JSON `control_token_required` body → prompt
+for the token and retry once) and `isStaleSessionRejection(err)` (a 403 whose
+body is not JSON, which is what `reject_csrf`/`guard_mutating_host` answer with
+→ `postJSON` shows the stale-page copy and reloads, issue #1926). A migrated page imports it by absolute path
 (`/assets/shared/js/http.js`). `system-status/js/api.js` is now a thin
 re-export of `csrfHeaders`/`jsonHeaders`/`getJSON` from it (behaviour-identical;
 `postJSON` is new and imported from the shared module directly).

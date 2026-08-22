@@ -665,6 +665,13 @@ def test_applied_profile_not_confirmed_renders_verify_fail_with_a_working_exit()
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
             "applied": True,
+            # "Undo stays available throughout" is this test's claim, and
+            # since #1863 that takes a real restore target as well as a live
+            # graph — ``applied`` alone no longer offers the button, because
+            # a first-ever apply has nothing to restore and the endpoint
+            # refuses. Set explicitly so the screen under test is the one
+            # the docstring describes.
+            "can_undo": True,
             # Stamped now: only a failure the household is currently looking
             # at renders its terminal screen (#1942).
             "failure": {

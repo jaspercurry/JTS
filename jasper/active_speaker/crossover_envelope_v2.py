@@ -2883,6 +2883,9 @@ def _entry_envelope(
 # household — the live VERIFY-fail screen and the aged-failure entry screen —
 # and W6.7 ruling 3 is that Undo is owed *the moment something is live on the
 # speaker*, so the two must never drift into offering different routes out.
+# Refined by #1863: "live on the speaker" is necessary but not sufficient —
+# there must also be an earlier profile to go BACK to. Both screens, and the
+# done screen, ask :func:`_can_undo` rather than ``applied``.
 #
 # Rides the v2-aware restore path (jasper.web.correction_crossover_v2.
 # handle_v2_restore), which reloads the pre-candidate applied profile
@@ -2910,6 +2913,84 @@ def _undo_action() -> dict[str, Any]:
         "body": {},
         "show_during_relay": True,
     }
+
+
+# Issue #1863: ``applied`` says something is LIVE, not that there is an earlier
+# profile to bring BACK. ``crossover_v2_status_block`` is the one writer of
+# ``can_undo``, deriving it from the same evidence handle_v2_restore checks; this
+# reads that fact rather than re-deriving it.
+#
+# OPEN ITEM this gate creates: the button is conditional, the COPY is not — four
+# TEMPLATE_VERIFY_FAIL registry sentences still name Undo, so a first-ever apply
+# reads copy pointing at an absent control (#1924 pointing the other way). The
+# fix belongs in crossover_v2.vocabulary.reason_message, where
+# correction_rollback_failed already does it via ``rollback_anchor_available``;
+# four new household sentences are the owner's call, not this fix's.
+def _can_undo(status: Mapping[str, Any]) -> bool:
+    return bool(_v2(status).get("can_undo"))
+
+
+#: This layer's Undo promises, and what each becomes when there is nothing to
+#: restore. The REPLACEMENTS are not new copy: they are
+#: ``correction_rollback_failed_message``'s no-anchor arm and
+#: ``_DURABLE_STATE_FACTS_NO_ANCHOR`` minus their failure preamble ("the newer
+#: tuning is still applied"), which would read as an alarm on a screen that
+#: just said the speaker is tuned. Same facts, same two remedies, same voice.
+#:
+#: FIVE shapes, not the one that prompted the finding: a grep for the obvious
+#: wording ("you can undo") finds three, and a sweep across every done variant
+#: surfaced the other two ("or undo to restore the previous sound", "or undo if
+#: it sounds worse than before"). Matched as fragments, so each covers its
+#: several call sites. Only sentences MINTED HERE are listed — the four
+#: TEMPLATE_VERIFY_FAIL registry sentences belong to
+#: ``crossover_v2.vocabulary.reason_message``, which narrates one failure
+#: across surfaces this layer cannot see; those are the open item on
+#: :func:`_can_undo`.
+_UNDO_PROMISE_SWAPS = (
+    (
+        "If it sounds worse than before, you can undo.",
+        "This was its first measured crossover, so it has no stored previous "
+        "sound to go back to — clear the tuning from the Sound page to "
+        "remove it.",
+    ),
+    (
+        "if it sounds worse than before, you can undo.",
+        "this was the speaker's first measured crossover, so it has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "or undo to restore the previous sound.",
+        "or clear the tuning from the Sound page — this speaker has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "or undo if it sounds worse than before.",
+        "or clear the tuning from the Sound page — this speaker has no "
+        "stored previous sound to go back to.",
+    ),
+    (
+        "use Undo if this audition is still applied.",
+        "clear the tuning from the Sound page if this audition is still "
+        "applied — this speaker has no stored previous sound to go back to.",
+    ),
+)
+
+
+def _honest_about_undo(text: str, status: Mapping[str, Any]) -> str:
+    """Strip this layer's Undo promises when the button is not being offered.
+
+    #1863 gated the CONTROL; without this the same screens kept promising it,
+    which is #1924's rule ("every control the sentence names is on this
+    screen") pointing the other way — and worse than before the gate, because
+    the household could at least press the old button and read the endpoint's
+    honest refusal. A first-ever apply is the most ordinary case there is, so
+    this is the success screen most new speakers actually see.
+    """
+    if _can_undo(status):
+        return text
+    for promise, replacement in _UNDO_PROMISE_SWAPS:
+        text = text.replace(promise, replacement)
+    return text
 
 # --- failure recency (issue #1942) -------------------------------------------
 
@@ -3194,9 +3275,10 @@ def _aged_failure_envelope(
       are nulled below. ``None`` is not a special aged-only value: it is what
       the ``tier`` key's own contract already calls unknown, and this screen
       genuinely HAS no session.
-    * **Undo survives.** ``applied`` is the state fact that says something is
-      live on the speaker, and W6.7 ruling 3 says the household is entitled to
-      Undo whenever that is true. The live path offers it; so does this one.
+    * **Undo survives, when there is one to offer.** W6.7 ruling 3 entitles the
+      household to Undo whenever something is live — which presumes an earlier
+      profile to restore, and a first-ever apply has none (#1863). The live
+      path and this one both gate on :func:`_can_undo`, never ``applied``.
     * **Uniform across templates, except where the copy is durable.** A stale
       ``hard_stop`` gets the same treatment as a stale ``verify_fail``,
       because "act on this now" is equally untrue of both. If the blocking
@@ -3211,7 +3293,7 @@ def _aged_failure_envelope(
         status,
         next_action=next_action,
         alternate_actions=(
-            [*alternate_actions, _undo_action()] if applied
+            [*alternate_actions, _undo_action()] if _can_undo(status)
             else alternate_actions
         ),
         nudges=[{
@@ -3246,7 +3328,8 @@ def _verify_fail_envelope(
     VERIFY-phase override in :func:`_failure_envelope` (W6.7 ruling 3) for any
     OTHER code surfacing once the candidate is applied — the household is
     entitled to the Undo affordance the moment something is live on the
-    speaker, regardless of which check failed.
+    speaker AND there is actually something to restore it from (issue
+    #1863 — see :func:`_can_undo`), regardless of which check failed.
 
     **A code no retry can clear does not get a "Try again" (#1873).** For every
     other code on this screen the primary is honest: "Try again" opens a fresh
@@ -3287,7 +3370,9 @@ def _verify_fail_envelope(
     relay session, and doing that while the prior one is still tearing down
     is exactly the race the gate exists to prevent — Undo and Re-measure are
     the "get me out of this" affordances that must stay reachable
-    regardless.
+    regardless — "regardless" of the RELAY gate, that is, not a claim both are
+    always offered (#1863 omits Undo with nothing to restore; #1873 omits a
+    promoted Re-measure from the alternates).
     """
     remeasure = {
         "id": "verify_remeasure",
@@ -3329,15 +3414,19 @@ def _verify_fail_envelope(
             # is the same rule ``TEMPLATE_SESSION_RESTART`` follows with
             # ``advertise_relay=False``. Without the flag the relay-in-flight
             # gate would hide this primary in that window and leave the
-            # household with Undo alone — the affordance being promoted, gone at
-            # exactly the moment it is needed.
+            # household with Undo alone — or, since #1863, with NOTHING at all
+            # on a first-ever apply, where there is no Undo to fall back to.
+            # Either way: the affordance being promoted, gone at exactly the
+            # moment it is needed.
             **{k: v for k, v in remeasure.items() if k != "expert"},
             "label": "Re-measure this speaker",
         },
         alternate_actions=[
             # Shared with the aged-failure entry screen — see ``_undo_action``
             # for the restore-path rationale and the open W6.7 N2 item.
-            _undo_action(),
+            # Omitted entirely (not merely disabled) when there is nothing to
+            # restore (#1863) — a first-ever apply has no earlier profile.
+            *([_undo_action()] if _can_undo(status) else []),
             *([remeasure] if retriable else []),
         ],
         status=status,
@@ -3498,9 +3587,12 @@ def _failure_envelope(
     message = _reason_message(code, spec, status)
     if applied and spec.template != TEMPLATE_VERIFY_FAIL:
         if spec.template == TEMPLATE_SESSION_RESTART:
-            message = (
+            # Minted here, not in the registry, so it is this layer's to keep
+            # honest when the button is gated away (#1863 review SF1).
+            message = _honest_about_undo(
                 f"{message} The crossover was already applied — if it sounds "
-                "worse than before, you can undo."
+                "worse than before, you can undo.",
+                status,
             )
         return _verify_fail_envelope(code, message, status)
     template = spec.template
@@ -4038,6 +4130,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     f"matched its prediction, but it still misses the target{miss_text}. "
                     "If it sounds worse than before, you can undo."
                 )
+        # Every branch above may have promised Undo; the button is gated ~40
+        # lines below. One funnel, so no branch can be added that quietly
+        # promises it again (#1863 review SF1).
+        done_verdict = _honest_about_undo(done_verdict, status)
         attempt_sentence = attempt_loop_verdict_sentence(status)
         if attempt_sentence:
             done_verdict = f"{done_verdict} {attempt_sentence}"
@@ -4074,15 +4170,28 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "endpoint": "/correction/crossover/v2/session",
                 "body": {"tier": TIER_FULL},
             })
-        env = _envelope(
-            screen="done", active_step="verify",
-            verdict=done_verdict,
-            next_action={
+        # #1863: Undo leads this screen only when there is something to
+        # restore; otherwise it would be a guaranteed-400 primary, so the head
+        # of ``alternate_actions`` is promoted instead. The HEAD rather than a
+        # named action: the branches above already order that list by
+        # recommendedness (``round_remeasure`` first on an iterating round,
+        # room correction otherwise), so promoting the head inherits that
+        # decision instead of making a competing one. Never empty — the room
+        # action seeds it and the branches only insert/append; an edit that
+        # makes room conditional owes this line a fallback.
+        if _can_undo(status):
+            next_action = {
                 "id": "verify_undo",
                 "label": "Undo (restore previous sound)",
                 "endpoint": "/correction/crossover/v2/restore",
                 "body": {},
-            },
+            }
+        else:
+            next_action, *alternate_actions = alternate_actions
+        env = _envelope(
+            screen="done", active_step="verify",
+            verdict=done_verdict,
+            next_action=next_action,
             alternate_actions=alternate_actions,
             # PR-L4 item 7: the badge may not claim more than the evidence.
             # "Verified." still means the tracking comparator passed, but a

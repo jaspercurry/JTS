@@ -3301,7 +3301,13 @@ outcome plainly first ("Your speaker is tuned. If it sounds worse than
 before, you can undo.") with the measured numbers (trims/delay/polarity/
 confidence/ripple) folded into a collapsed "Technical details" disclosure,
 and Undo given the PRIMARY button on the wizard so the safety net is the
-most visible thing on the screen.
+most visible thing on the screen — **when there is one to give** (#1863). A
+first-ever apply never stashed a `pre_apply_profile`, so `handle_v2_restore`
+refuses; the screen omits Undo entirely rather than leading with a button
+that cannot work, and promotes the head of its alternates instead ("Try
+again with what we learned" on an iterating round, "Continue to Room
+correction" otherwise). The verdict COPY above still says "you can undo"
+in that case — a known gap tracked at `crossover_envelope_v2._can_undo`.
 
 **The wizard owns the VERDICT; the phone owns only the shared headline**
 (issue #1964). The phone's end copy is the `done_title`/`done_body` baked into
