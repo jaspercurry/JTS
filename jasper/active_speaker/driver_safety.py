@@ -2129,8 +2129,10 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
 
     Pure in the same way :func:`_target_issues` is, and for the same reason:
     ``evaluate_driver_safety_profile`` re-derives these from the stored targets
-    and compares them byte-for-byte against what the profile carries, so a
-    hand-edited artifact cannot quietly drop its own warning.
+    and checks them against what the profile carries, so a hand-edited artifact
+    cannot quietly drop its own warning. That check compares severity and code,
+    never the sentence — see :func:`_comparable_issue_payload` for why editing
+    warning copy must not un-confirm a box whose declaration never changed.
 
     The list holds exactly one warning: a declared low limit outside its
     style's plausibility band. It teaches rather than merely flagging -- it
@@ -2389,6 +2391,47 @@ def _profile_core(
         "authorizes_playback": False,
     }
     return core, issues, warnings
+
+
+def _comparable_issue_payload(issues: Any) -> str:
+    """The part of an ``issues`` list that re-derivation must reproduce exactly.
+
+    Every entry's ``severity`` and ``code`` — and, for a BLOCKER, its message
+    too, because a blocker's message is mechanically derived from its own code
+    and so cannot drift on its own.
+
+    A WARNING's message is excluded, and that exclusion is the point. Warning
+    prose is hand-written and interpolates the household's numbers, so putting
+    it inside this check made **editing the copy a breaking change for every
+    profile carrying that warning**: the stored text no longer matched the
+    derived text, the profile read ``malformed``, and ``confirmed_and_current``
+    flipped false on a box whose declared values had not changed by one digit.
+    That was measured, not feared — re-evaluating profiles written one commit
+    earlier flipped both warned cases (#2884 review round, item 4).
+
+    What the check still guarantees is the half that was ever load-bearing: a
+    warning cannot be dropped, invented, re-coded, or downgraded in severity
+    without this mismatching, because all of that moves the severity/code set.
+    Only the sentence can differ, and no gate reads the sentence — every
+    protection decision reads the declared values. The fingerprint never
+    covered ``issues`` at all (verified: it hashes
+    ``artifact_schema_version, kind, topology_id, targets, research, authority,
+    authorizes_playback``), so this loosens nothing the digest was holding.
+    """
+
+    return _canonical_json([
+        {
+            "severity": str(issue.get("severity") or ""),
+            "code": str(issue.get("code") or ""),
+            **(
+                {}
+                if str(issue.get("severity") or "") == "warning"
+                else {"message": str(issue.get("message") or "")}
+            ),
+        }
+        for issue in (issues if isinstance(issues, list) else [])
+        if isinstance(issue, Mapping)
+    ])
 
 
 def _profile_issue_payload(
@@ -3091,7 +3134,7 @@ def evaluate_driver_safety_profile(
     if not saved_targets:
         derived_issues.append("active_driver_targets_missing")
     expected_issue_payload = _profile_issue_payload(derived_issues, derived_warnings)
-    if _canonical_json(profile.get("issues")) != _canonical_json(
+    if _comparable_issue_payload(profile.get("issues")) != _comparable_issue_payload(
         expected_issue_payload
     ):
         return DriverSafetyProfileEvaluation(

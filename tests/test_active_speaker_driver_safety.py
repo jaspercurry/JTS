@@ -1980,10 +1980,32 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     assert evaluation.status == "confirmed"
     assert evaluation.confirmed_and_current is True
 
-    # And a hand-edited artifact cannot quietly drop its own warning.
+    # And a hand-edited artifact cannot quietly drop its own warning...
     tampered = deepcopy(profile)
     tampered["issues"] = []
     assert evaluate_driver_safety_profile(tampered, topology).status == "malformed"
+
+    # ...nor re-code or downgrade one.
+    recoded = deepcopy(profile)
+    recoded["issues"][0]["code"] = "tweeter:something_else"
+    assert evaluate_driver_safety_profile(recoded, topology).status == "malformed"
+    downgraded = deepcopy(profile)
+    downgraded["issues"][0]["severity"] = "info"
+    assert evaluate_driver_safety_profile(downgraded, topology).status == "malformed"
+
+    # ...but a DIFFERENT warning SENTENCE is not a mismatch, and this half is
+    # deliberate. Warning prose interpolates the household's own numbers, so
+    # comparing it byte-for-byte made editing the copy a breaking change: a
+    # profile written one commit earlier read `malformed` and lost
+    # `confirmed_and_current` although its declared values had not moved by one
+    # digit. No gate reads the sentence, and the fingerprint never covered
+    # `issues` at all, so excluding it loosens nothing the digest was holding.
+    reworded = deepcopy(profile)
+    reworded["issues"][0]["message"] = "tweeter: reworded in a later release."
+    reworded_evaluation = evaluate_driver_safety_profile(reworded, topology)
+    assert reworded_evaluation.status == "confirmed", reworded_evaluation.reasons
+    assert reworded_evaluation.confirmed_and_current is True
+    assert reworded_evaluation.profile_fingerprint == profile["profile_fingerprint"]
 
 
 def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
