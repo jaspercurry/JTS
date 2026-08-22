@@ -1413,6 +1413,24 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         order for order in (raw.get("orders") or [])
         if isinstance(order, int) and not isinstance(order, bool)
     ]
+    if not orders:
+        # The declarations are generated FROM this list, so an artifact that
+        # names no order would publish h2_/h3_ columns with nothing declaring
+        # them — the one way this block could quietly break the rule it exists
+        # to keep. An artifact claiming no orders carries no harmonic reading by
+        # its own account, so it is refused rather than published under-declared.
+        # ``bool`` is excluded above because it is an ``int`` in Python and a
+        # ``true`` here would otherwise declare an "h1" nothing publishes.
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                "a harmonic-distortion artifact is banked for this round but "
+                "names no harmonic order, so nothing says what its rows are "
+                "readings OF and no column in them could be declared"
+            ),
+            "n_roles": 0,
+        }
     captures = _mapping(raw.get("captures"))
     return {
         "available": True,

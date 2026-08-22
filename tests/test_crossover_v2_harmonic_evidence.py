@@ -206,6 +206,27 @@ def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(
     assert "harmonics" in _not_evaluated_fields(packet)
 
 
+@pytest.mark.parametrize("orders", [[], None, ["2"], [True], "23"])
+def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
+    tmp_path, orders
+):
+    """The one way this block could quietly break the rule it exists to keep.
+
+    Every row column is declared by generating the declaration FROM the order
+    list, so an artifact that names no readable order would publish `h2_`/`h3_`
+    columns with nothing declaring them. `True` is in here because `bool`
+    subclasses `int` in Python: admitted, it would declare an "h1" no row
+    carries while still leaving the real columns undeclared.
+    """
+    artifact = _artifact()
+    artifact["orders"] = orders
+    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=artifact))
+
+    assert packet["harmonics"]["available"] is False
+    assert "no harmonic order" in packet["harmonics"]["reason"]
+    assert "harmonics" in _not_evaluated_fields(packet)
+
+
 def test_the_packet_schema_version_does_not_move_for_an_added_block(tmp_path):
     """Additive widening keeps v1 — the rule the packet already keeps.
 
