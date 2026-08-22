@@ -333,11 +333,28 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     published manufacturer figure wins outright, including below it. Either way
     both are properties of the profile, not of this read.
 
-    An unvalidated floor arriving here can only ever *tighten*: the derived
-    protection clamp is ``max(floor, multiplier x fc)``, so a floor can raise
-    the protective corner and never lower it, and the load gate can only refuse
-    more than it did before. That is why this reader stays permissive about
-    provenance while the clamp and the gate stay monotone.
+    An unvalidated floor arriving here can only ever *tighten* the two
+    consumers this read was written for: the derived protection clamp is
+    ``max(floor, multiplier x fc)``, so a floor can raise the protective corner
+    and never lower it, and the load gate can only refuse more than it did
+    before. That is why this reader stays permissive about provenance while
+    those two stay monotone.
+
+    **A third consumer since #2874 is deliberately NOT monotone**, and the
+    asymmetry is the ruling rather than an oversight. The commissioning-tone
+    gate (:func:`tone_gate_low_limit`) anchors on the declared low limit — this
+    number, carried onto the preset by ``staging`` and read back by
+    ``test_signal_plan.declared_protection_floor_hz`` — so a floor BELOW the
+    class default now admits a tone the class default used to refuse. That is
+    the point: refusing a tone whose protective high-pass sits at the
+    manufacturer's own published figure was the #2603 bug. What bounds the
+    residual is unchanged and lives outside this read: the emitted graph's
+    protective high-pass sits AT that floor and ``graph_safety`` proves it, the
+    ``path_safety`` load gate refuses a below-floor candidate, the preview
+    DISCLOSES a declared limit under its class default
+    (``low_limit_below_style_default``), the research-reply intake refuses an
+    implausible figure before it can become one, and the naked-tone level
+    ceiling is untouched.
 
     ``None`` means *no floor is declared* — never a guessed default. Consumers
     must treat that as "unchanged behaviour", not as "floor of zero" and not as
