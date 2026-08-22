@@ -107,7 +107,7 @@ STAGED_LIFECYCLE_NOTE = (
 )
 
 
-def speaker_url(path: str) -> str:
+def _speaker_url(path: str) -> str:
     """A handoff URL for THIS speaker, from the hostname it is configured with.
 
     Through :func:`jasper.identity.read_identity` — the repository's single
@@ -799,7 +799,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError) as exc:
         packet_error = str(exc)
 
-    crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
+    crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
     sections = _status_sections(packet, packet_error)
     payload: dict[str, Any] = {
         "speaker": {
