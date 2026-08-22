@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.quality_model import ROOM, QualityModel
+from jasper.audio_measurement.quality_model import ROOM, QualityModel, Severity
 
-Severity = Literal["warn", "fail"]
+# `Severity` is imported, not re-declared: the words live with the thresholds
+# (quality_model, "Verdict vocabulary"). Which subset of them a module emits is
+# a fact about its call sites, not about the word set. Kept importable from
+# here because callers already spell it `quality.Severity`.
 
 # Default used by the local dBFS conversion helper.
 DBFS_FLOOR = ROOM.dbfs_floor

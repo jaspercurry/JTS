@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.quality_model import TrustLevel
 
-SpatialConfidence = Literal["high", "medium", "low"]
+
+# The trust rank under this module's own name — an alias of the shared
+# vocabulary (quality_model, "Verdict vocabulary"), not a second declaration
+# of the same three words.
+SpatialConfidence = TrustLevel
 
 HIGH_CONFIDENCE_STD_DB = 4.0
 MEDIUM_CONFIDENCE_STD_DB = 6.0

@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.quality_model import TrustLevel
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from . import acoustic_quality, bundles
@@ -126,7 +127,14 @@ def _input_identity(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     return stable or None
 
 
-def _level_for_repeatability(rms_db: float, p95_abs_db: float) -> str:
+def _level_for_repeatability(rms_db: float, p95_abs_db: float) -> TrustLevel:
+    """Cross-BUNDLE repeatability, on the shared trust vocabulary.
+
+    A sibling of ``acoustic_quality.repeatability_from_arrays`` (which grades
+    two captures inside ONE session) with the same four thresholds spelled
+    again above — a duplication this typing does not fix, only stops the WORDS
+    from drifting apart on top of it.
+    """
     if (
         rms_db <= REPEATABILITY_HIGH_RMS_DB
         and p95_abs_db <= REPEATABILITY_HIGH_P95_DB

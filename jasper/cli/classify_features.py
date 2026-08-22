@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     for row in rows:
         print(
             f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "
-            f"{row['confidence']:>4}  egd={row['egd_verdict']:<14} "
+            f"{row['confidence']:>6}  egd={row['egd_verdict']:<14} "
             f"gate={row['gate_verdict']:<7} depth={row['depth_db']:.2f} dB",
             file=sys.stderr,
         )

@@ -12,16 +12,20 @@ bundle shape.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.quality_model import Severity, TrustLevel
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from . import spatial
 
 
-ConfidenceLevel = Literal["high", "medium", "low"]
+# The trust rank under this module's own name — an alias of the shared
+# vocabulary (quality_model, "Verdict vocabulary"), not a second declaration
+# of the same three words.
+ConfidenceLevel = TrustLevel
 
 # Fallback band for callers that do not pass the session's actual correction
 # band. The upper edge is the room-correction boundary SSOT
@@ -63,7 +67,7 @@ POSITION_ANALYSIS_BANDS: tuple[dict[str, Any], ...] = (
 @dataclass(frozen=True)
 class ConfidenceFinding:
     code: str
-    severity: Literal["info", "warn", "fail"]
+    severity: Severity
     message: str
     details: dict[str, Any] | None = None
 
