@@ -16,10 +16,14 @@ port at all:
   drivers in ONE capture on channels 0 and 1, so they share an exact common time
   origin. This module selects that same object; it does not compose a second
   per-driver shape.
-* **The mover axis was clean.** :func:`tier_is_externally_positioned` is the one
-  predicate behind both machine-driven behaviours (auto-advance and the position
-  gate), and ``_positioned_prompt`` already restates a pose's copy as the angle a
-  driver turns to.
+* **The mover axis was clean.** The flow states an advance policy
+  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`
+  -- a machine advances, so every entry auto-begins) separately from a pose
+  statement
+  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.positions_gated`
+  -- poses are stated as bearings and every begin is held until somebody reports
+  the microphone in place), and ``_positioned_prompt`` restates a pose's copy as
+  that angle. Both a driver and a person can hold the second without the first.
 * **The angle axis was welded.** Degrees were DERIVED and never REQUESTED:
   :func:`position_angle_deg` reads a bearing off a pose's ``offset_cm``, and the
   only pose table that reaches the per-driver program off the design axis is
@@ -145,10 +149,10 @@ REGIME_SUMMED = "summed"
 
 REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED)
 
-#: An external driver turns the microphone and reports the angle reached. Pairs
-#: auto-advance with the position gate; see
+#: An external driver turns the microphone and reports the angle reached. It is
+#: the one mover that auto-advances -- there is no hand to tap -- which is what
 #: :attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`
-#: for why those two are a pair and never separable.
+#: names; its holds are released by the driver's own report.
 MOVER_ARM = "arm"
 
 #: A person moves the microphone -- the owner's string-and-protractor technique
@@ -157,8 +161,8 @@ MOVER_ARM = "arm"
 #:
 #: They read the SAME angle-stated prompt the arm is driven to
 #: (:func:`pose_at_angle`); only the advance policy differs. That combination --
-#: degrees plus a tap -- is the one the shipped tiers cannot express, and the
-#: reason this seam separates the two questions.
+#: degrees plus a tap -- is the one the two shape facts exist to express, and
+#: the reason this seam separates the two questions.
 MOVER_HUMAN = "human"
 
 MOVERS = (MOVER_ARM, MOVER_HUMAN)
@@ -335,9 +339,11 @@ class AngleCaptureRequest:
         """Whether an external driver moves the microphone between stops.
 
         The same question :attr:`V2PlanShape.externally_positioned` answers for
-        a tiered session, asked of a mover instead of a tier -- so the two
-        machine-driven behaviours (auto-advance and the position gate) stay the
-        pair that property's docstring insists they are.
+        a tiered session, asked of a mover instead of a tier -- the ADVANCE
+        axis, and only that. Whether a session HOLDS each begin is a separate
+        fact (:attr:`V2PlanShape.positions_gated`) that a person can satisfy
+        too, which is why :func:`session_lateral_walk` compares this one and
+        not that one.
         """
         return self.mover == MOVER_ARM
 
@@ -374,17 +380,16 @@ def pose_at_angle(angle_deg: int) -> CloudPositionPrompt:
     deferred axis -- which is also what keeps :func:`position_angle_deg` from
     ever being handed a row it must refuse.
 
-    **The copy is stated as the ANGLE for BOTH movers, and that is a deliberate
-    departure from the shipped walk.** Today the flow welds two independent
-    choices together: ``_positioned_prompt`` restates a pose as an angle only
-    when ``externally_positioned``, which ALSO forces the countdown and the
-    position gate. So the shipped tiers offer ``(centimetres, tap)`` and
-    ``(degrees, gate)`` -- and the ratified household technique, a string swung
-    to a protractor angle, needs the third combination ``(degrees, tap)``, which
-    no shipped tier can express. A request stated in degrees should read back in
-    degrees whoever is holding the microphone, so this seam asks the angle
-    question of the REQUEST and the advance question of the MOVER, and the two
-    stop being one switch.
+    **The copy is stated as the ANGLE for BOTH movers.** A request stated in
+    degrees reads back in degrees whoever is holding the microphone, so this
+    seam asks the angle question of the REQUEST and the advance question of the
+    MOVER. The flow separates the same two questions on its own side --
+    ``_positioned_prompt`` reads
+    :attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.positions_gated`
+    while ``_entry_advance`` reads ``externally_positioned`` -- so
+    ``(centimetres, tap)``, ``(degrees, gate)`` and the ratified household
+    technique's ``(degrees, tap)``, a string swung to a protractor angle, are
+    all sayable.
 
     It reuses the shipped :func:`remote_position_prompt` to say it rather than
     writing a second angle sentence: that function already restates a pose as
@@ -499,8 +504,16 @@ def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) ->
     a hand-guided stop is a tap (the person's own settle signal), an arm-driven
     one auto-begins behind the cancelable countdown AND declares the angle the
     position gate must wait for. The two arm behaviours are emitted together
-    because they are a pair -- a countdown without the gate fires into an arm
-    still in motion.
+    because a countdown without the gate fires into an arm still in motion.
+
+    **This is the REQUEST's own preview, which is why a hand-guided stop
+    declares no target here.** Whether a walk's begins are HELD is the
+    SESSION's fact, not the request's -- a person's walk is gated when the
+    session hosting it is (:attr:`V2PlanShape.positions_gated`), and that
+    session builds its own entries through ``_entry_policy`` off its own shape.
+    Guessing a target from the mover alone would be a second answer to a
+    question this seam cannot see. The one consumer of this bag is
+    ``jasper-angle-capture plan``'s dry run.
 
     The angle is re-read off the POSE through the shipped
     :func:`position_angle_deg` rather than copied from the request, so the
@@ -590,8 +603,13 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
 #: object at every pose, so a summed stop would be measured as something else.
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
-#: The walk's mover and the session's positioning tier disagree. Either way the
-#: session stalls: a countdown into a mic nobody moves, or a gate no arm feeds.
+#: The walk's mover and the session's ADVANCE POLICY disagree. Either way the
+#: session stalls: a countdown firing into a microphone no hand is moving, or a
+#: session waiting for a tap from an arm that has none to give. Deliberately
+#: NOT a comparison against the session's GATE: a gated session's holds are
+#: released by whichever mover it was opened for, so a person's walk inside a
+#: hand-released session is exactly the combination this vocabulary must let
+#: through.
 WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 
 #: A stop is outside the stated mover's own reach (:data:`MOVER_MAX_ANGLE_DEG`).
@@ -656,9 +674,11 @@ def session_lateral_walk(
     """The poses a measurement session should walk for this request.
 
     Takes: the staged ``request``; ``externally_positioned``, the session's own
-    answer (``V2PlanShape.externally_positioned``); ``base_entries``, how many
-    captures that session takes that are NOT this walk; ``plans_cloud_group``,
-    whether it also walks a position cloud.
+    ADVANCE policy (``V2PlanShape.externally_positioned``, never its
+    ``positions_gated`` — see :data:`WALK_MOVER_MISMATCH` for why a gated
+    hand-walked session answers ``False`` here and takes a person's walk);
+    ``base_entries``, how many captures that session takes that are NOT this
+    walk; ``plans_cloud_group``, whether it also walks a position cloud.
 
     Returns: one pose per stop, in stop order, in the ``CloudPositionPrompt``
     vocabulary every shipped prompted walk uses. Never a session phase -- the
