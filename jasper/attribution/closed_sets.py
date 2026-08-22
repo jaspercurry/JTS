@@ -5,12 +5,15 @@
 """The attribution stage's closed vocabularies.
 
 Small closed sets — :data:`FIX_CLASSES`, :data:`CONFIDENCE_TIERS`,
-:data:`PROBES` and :data:`EVIDENCE_TIERS` — kept in their own module so the
-mechanism registry (:mod:`jasper.attribution.mechanisms`) and the finding
-artifact (:mod:`jasper.attribution.findings`) can both import them without
-either importing the other. They are enumerated rather than counted: a
-cardinality is a second claim about the same list, and it is the half that
-goes stale when the list grows.
+:data:`PROBES` and :data:`EVIDENCE_TIERS` — kept in their own module so they
+sit BELOW everything that needs a vocabulary, as a leaf with no attribution
+imports of its own. Both the mechanism registry
+(:mod:`jasper.attribution.mechanisms`) and the finding artifact
+(:mod:`jasper.attribution.findings`) import from here directly; the artifact
+also imports the registry, for ``mechanism_spec``, which is precisely why the
+vocabularies are parked in neither of them. They are enumerated rather than
+counted: a cardinality is a second claim about the same list, and it is the
+half that goes stale when the list grows.
 
 Every set here is **closed on purpose**. ``docs/attribution-stage-plan.md``
 §3.3 names the fix classes as "closed set, v1"; §3.2 rules confidence to a

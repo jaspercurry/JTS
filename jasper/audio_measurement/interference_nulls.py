@@ -150,22 +150,34 @@ from jasper.audio_measurement.spatial_combine import (
 # reads the result of that. The distinction is worth stating because a null is
 # exactly the shape a power average fills; the reason it is nonetheless
 # harmless here is that 1.465 Hz is three orders of magnitude under the
-# comb period being measured (3348 Hz at the S0 ladder's 298.8 us).
+# comb period being measured (3347 Hz at the S0 ladder's fitted 298.747 us,
+# which is the tau the calibration table below pins).
 #
-# Measured 2026-07-26, S0 main leg, by lifting ``MAX_ANALYSIS_BINS`` and
-# re-running the whole gate (524289 bins against the shipped 16384): the
-# identified rungs' depths move **-0.029 / +0.026 / -0.004 dB**, tau by
-# 0.074 us, ``r_freq`` by 0.0013, and the rung set is identical. On the
-# six-position tweeter-height cloud the depth-ceiling acquittal's margin
-# moves by **0.052 dB**, against that rule's 0.98 dB of one-sided headroom.
-# What that margin IS is deliberately not restated here: the study ran against
-# a baseline #2045's prominence-vote re-gate has since moved (+2.23 -> +3.08 dB),
-# and ``test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling`` hard-asserts the live
-# value — 0.052 dB is what the decimation costs, which is the number this
-# paragraph needs. Both regimes stated because the acquittal is the
-# tightest thing this statistic feeds. The decimation's own worst-bin
-# contract is asserted by
-# test_decimated_and_undecimated_curves_agree in tests/test_spatial_combine.py.
+# Measured on the S0 main leg by lifting ``MAX_ANALYSIS_BINS`` and re-running
+# the whole gate — the raw 524289-bin grid against the shipped 16385 cap,
+# which realizes a 16384-bin curve. The rung SET is identical, and every
+# quantity this statistic feeds moves by hundredths: the identified rungs'
+# depths by at most **0.033 dB**, tau by 0.041 us, ``r_freq`` by 0.0003, and,
+# on the six-position tweeter-height cloud, the depth-ceiling acquittal's
+# margin by **0.026 dB** against that rule's 0.98 dB of one-sided headroom.
+# Both regimes stated because the acquittal is the tightest thing this
+# statistic feeds.
+#
+# RE-DERIVED 2026-08-22, and the digits are now ASSERTED rather than quoted.
+# The figures this block shipped with were the 2026-07-26 originals (depths
+# -0.029/+0.026/-0.004 dB, tau 0.074 us, r_freq 0.0013, margin 0.052 dB) and
+# had outlived two eras that moved every one of them — the 2026-07-27
+# corpus-reader alignment fix and the 2026-08-02 (#2045) prominence-vote
+# re-gate — because nothing anywhere asserted them. **The live authority is
+# test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end** in
+# tests/test_interference_nulls.py, which re-derives every figure above
+# against the corpus; re-derive from that test rather than from these digits.
+# Each new value is SMALLER than the one it replaces, so this paragraph's
+# conclusion held throughout — only its arithmetic had gone stale.
+#
+# The decimation's own worst-bin CURVE contract is a different measurement on
+# a synthetic cloud, asserted by test_decimated_and_undecimated_curves_agree
+# in tests/test_spatial_combine.py.
 #
 # **So the statistic is a lower bound on the true depth**, understated by at
 # most the peak-shave term. That direction composes correctly with everything

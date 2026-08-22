@@ -229,8 +229,9 @@ def bind_measure_capture(
     # ``"measure"``, which is why #2868 gave them a prefix), so a literal is
     # right only by coincidence and a wrong import stays silently right for
     # exactly as long as that coincidence holds.
-    # ``harmonic_evidence._scope_captures`` gates the same sidecars on the same
-    # field with this same constant.
+    # ``harmonic_evidence._bind_measure_captures`` gates the same sidecars on
+    # the same field with this same constant (``_scope_captures`` is the
+    # session-id half, applied to what that binder returns).
     from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 
     analysis = candidate["analysis"]

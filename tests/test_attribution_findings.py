@@ -152,6 +152,18 @@ def test_the_closed_vocabularies_are_the_plan_s(  # noqa: D103
     assert CONFIDENCE_TIERS == ("confident", "likely", "unsure")
     # §5's probe table.
     assert PROBES == ("P1", "P2", "P3", "P4", "P5", "P6", "P7")
+    # §4's preamble. Pinned by ENUMERATION like its three siblings, not by the
+    # membership check below: `spec.corpus_evidence_tier in EVIDENCE_TIERS`
+    # passes just as happily against a set that grew a member or had one
+    # renamed, so it reads as coverage while seeing neither. This set was the
+    # one of the four left unpinned, which is the same three-not-four omission
+    # the module and package docstrings carried.
+    assert EVIDENCE_TIERS == (
+        "adjudicated",
+        "corroborating",
+        "model_derived",
+        "refuted",
+    )
 
 
 @pytest.mark.parametrize(

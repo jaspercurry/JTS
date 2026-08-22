@@ -3661,12 +3661,15 @@ def test_decimated_and_undecimated_curves_agree(monkeypatch):
     one of its two terms is exposed to this figure at all. The claim that
     matters is measured end to end rather than inferred: with the cap lifted
     on the S0 main-leg cloud, the identified rungs' depths move by at most
-    **0.029 dB** and the depth-ceiling acquittal's margin by **0.052 dB**,
-    against that rule's 0.98 dB of one-sided headroom (see
-    ``NULL_DEPTH_STATISTIC``, which carries that measurement). The bound
-    asserted below is therefore a rot-guard on a disclosed magnitude, not a
-    correctness threshold — but it now guards a magnitude something depends
-    on.
+    **0.033 dB** and the depth-ceiling acquittal's margin by **0.026 dB**,
+    against that rule's 0.98 dB of one-sided headroom. That measurement is
+    corpus-gated and lives with the statistic it bounds —
+    ``test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end`` in
+    tests/test_interference_nulls.py asserts it, and ``NULL_DEPTH_STATISTIC``
+    narrates it. Restated here only because this test's own bound is a
+    rot-guard on that disclosed magnitude rather than a correctness threshold;
+    both figures were re-derived 2026-08-22, having gone stale in both places
+    at once while neither asserted them.
 
     ``per_position_db`` is the same kind of array (PR-1 retains the stack the
     combined curves are reduced from) and is held to the same loose bound,

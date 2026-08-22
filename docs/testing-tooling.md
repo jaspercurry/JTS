@@ -2398,9 +2398,16 @@ Runs **on the speaker**, in the foreground, one run per walk:
 # the session — the first poll is what checks a walk is still waiting.
 sudo -u pi /opt/jasper/.venv/bin/jasper-arm-walk \
     --attest-rig-clear --hostname jts3.local \
-    --expect-angles 7,-7,22,-22 --complete-after 5 \
+    --expect-angles 7,-7,22,-22 \
     --trail /tmp/arm-walk.jsonl
 ```
+
+No `--complete-after` here either, and for the same reason as the round
+runner below — this is the identical binary, invoked the same way
+(`run-crossover-round.py` builds `sudo -u pi …/jasper-arm-walk` and appends the
+flag only when you pass one), so the session's own close and its exit-code
+handling are the same on both doors. Opening the session by hand rather than
+through the runner does not change which close fires.
 
 `pi` is the identity, not a habit: the adapter opens a serial port, and `pi` is
 what the shipped turntable unit runs as (`User=pi` plus `dialout` in

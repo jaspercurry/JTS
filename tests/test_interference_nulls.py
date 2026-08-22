@@ -1314,6 +1314,107 @@ def test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling():
 
 
 @requires_s0_curves
+def test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end(s0_main_leg):
+    """E — what ``MAX_ANALYSIS_BINS`` actually costs, on the real corpus.
+
+    ``NULL_DEPTH_STATISTIC``'s decimation paragraph and
+    ``test_decimated_and_undecimated_curves_agree``'s docstring both quote an
+    end-to-end cost, and until now **neither asserted it**: that test runs on a
+    synthetic cloud and bounds worst-bin curve agreement, then defers here for
+    the end-to-end figures. So the quoted numbers were free to rot, and they
+    did — the shipped comment carried the 2026-07-26 originals (depths
+    -0.029/+0.026/-0.004 dB, tau 0.074 us, r_freq 0.0013, margin 0.052 dB)
+    straight through the 2026-07-27 corpus-reader alignment fix and the
+    2026-08-02 (#2045) prominence-vote re-gate that moved every one of them.
+    This test is the missing pin, so the next era fails here instead of
+    quietly leaving a number in prose that no longer describes the code.
+
+    RE-DERIVED 2026-08-22, both roots reachable, cap lifted in-process:
+    the 524289-bin raw grid against the shipped 16385 cap (realized 16384).
+
+      quantity                          decimated -> undecimated      move
+      rung set (main, 5-19 kHz)         [2, 3, 4] -> [2, 3, 4]        none
+      rung 2 depth                      5.9308 -> 5.8979 dB          -0.0329
+      rung 3 depth                      6.2250 -> 6.2306 dB          +0.0056
+      rung 4 depth                      3.1164 -> 3.1179 dB          +0.0015
+      tau_ladder                        298.747 -> 298.706 us        -0.0412
+      r_freq                            0.34375 -> 0.34404           +0.00028
+      acquittal margin (tweeter ht, 6)  3.0767 -> 3.0504 dB          -0.0263
+
+    Every one is SMALLER than the figure it replaces, so the paragraph's
+    conclusion — the statistic is safe at this bound — survives a fortiori;
+    only the digits were wrong. The acquittal moves because its DEPTH moves;
+    the ceiling is an arrival-derived quantity and does not move at all, which
+    is why the margin's move and the depth's move are the same number.
+
+    The 0.98 dB of one-sided headroom this is measured against is
+    ``DEPTH_CEILING_MARGIN_DB``'s, pinned by
+    ``test_s0_ladder_calibration_populations_bracket_the_constants``.
+    """
+    from jasper.audio_measurement import spatial_combine as combine_module
+
+    tweeter_height = s0_position_captures(S0_MAIN, only=S0_MAIN_TWEETER_HEIGHT)
+
+    def read(captures, band):
+        return identify_interference_nulls(combine_positions(captures), band_hz=band)
+
+    def acquittal_margin(report):
+        (dip,) = [
+            refusal
+            for refusal in report.refusals
+            if refusal.reason == CANDIDATE_DEPTH_EXCEEDS_CEILING
+        ]
+        return dip.depth_db - dip.evidence["depth_ceiling_db"], dip
+
+    shipped_cap = read(s0_main_leg, S0_BAND_HZ)
+    shipped_margin, shipped_dip = acquittal_margin(
+        read(tweeter_height, S0_WIDE_BAND_HZ)
+    )
+
+    # The cap is read fresh inside ``combine_positions`` on every call, which
+    # is what makes this measurable in-process at all.
+    original = combine_module.MAX_ANALYSIS_BINS
+    try:
+        combine_module.MAX_ANALYSIS_BINS = 10**9
+        lifted_cap = read(s0_main_leg, S0_BAND_HZ)
+        lifted_margin, lifted_dip = acquittal_margin(
+            read(tweeter_height, S0_WIDE_BAND_HZ)
+        )
+    finally:
+        combine_module.MAX_ANALYSIS_BINS = original
+
+    # The rung SET is identical — the decimation costs precision, not rungs.
+    assert [null.n for null in shipped_cap.nulls] == [2, 3, 4]
+    assert [null.n for null in lifted_cap.nulls] == [2, 3, 4]
+
+    moves = {
+        shipped.n: lifted.depth_db - shipped.depth_db
+        for shipped, lifted in zip(shipped_cap.nulls, lifted_cap.nulls, strict=True)
+    }
+    assert moves[2] == pytest.approx(-0.0329, abs=0.002)
+    assert moves[3] == pytest.approx(+0.0056, abs=0.002)
+    assert moves[4] == pytest.approx(+0.0015, abs=0.002)
+
+    assert lifted_cap.tau_ladder_us - shipped_cap.tau_ladder_us == pytest.approx(
+        -0.0412, abs=0.003
+    )
+    assert lifted_cap.r_freq - shipped_cap.r_freq == pytest.approx(
+        0.00028, abs=0.00005
+    )
+
+    # The acquittal, which is the tightest thing the statistic feeds.
+    assert lifted_margin - shipped_margin == pytest.approx(-0.0263, abs=0.002)
+    # ...and it moves because the DEPTH moves; the ceiling is arrival-derived.
+    assert lifted_dip.evidence["depth_ceiling_db"] == pytest.approx(
+        shipped_dip.evidence["depth_ceiling_db"], abs=1e-9
+    )
+    # Whatever the digits, the verdict may never flip: still acquitted, and
+    # still inside the margin rule's headroom.
+    assert lifted_margin > 0.0
+    assert abs(lifted_margin - shipped_margin) < DEPTH_CEILING_MARGIN_DB
+
+
+@requires_s0_curves
 def test_the_all_ten_cloud_refuses_the_same_dip_by_a_different_rule(s0_main_leg):
     """E — where shipped behaviour diverges from the work order's phrasing.
 
@@ -1665,6 +1766,12 @@ def test_s0_exclusion_stays_far_below_the_runaway_cap(s0_main_leg):
 
     assert max(fractions) == pytest.approx(0.3074, abs=0.001)
     assert min(fractions[1:]) == pytest.approx(0.2385, abs=0.001)
+    # The TOP of the wide-band range. Pinned 2026-08-22 because
+    # ``EXCLUSION_CAP_FRACTION``'s comment quotes the range as "23.85-25.35 %"
+    # and calls this test its authority: without this line the upper end lived
+    # only in prose, so the claim to assert "every figure" was one figure short
+    # — the same reads-as-covered gap a half-pinned set always has.
+    assert max(fractions[1:]) == pytest.approx(0.2535, abs=0.001)
     assert EXCLUSION_CAP_FRACTION - max(fractions) == pytest.approx(0.3426, abs=0.002)
 
 
