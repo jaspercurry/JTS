@@ -839,6 +839,88 @@ def test_audio_backend_refuses_high_frequency_without_highpass(
     }
 
 
+def _codes(result: dict) -> set[str]:
+    return {issue["code"] for issue in result["issues"]}
+
+
+def _staged_at(plan: dict, highpass_hz: float, protection: dict) -> dict:
+    staged = {
+        **_with_loaded_startup(plan),
+        "playback_allowed": True,
+        "would_play": True,
+        "tone_playback_implemented": True,
+    }
+    staged["tone"] = {
+        **staged["tone"],
+        "frequency_hz": 6000.0,
+        "level_dbfs": -80.0,
+        "band_limit": {"type": "highpass", "highpass_hz": highpass_hz},
+    }
+    staged["driver_protection"] = {**staged["driver_protection"], **protection}
+    return staged
+
+
+def test_playback_carries_a_plans_declared_low_limit_into_the_tone_gate(
+    tmp_path: Path,
+) -> None:
+    """One plan cannot pass its producer's gate and fail this one (#2874).
+
+    ``_driver_protection_for_plan`` REFRESHES a plan's protection block against
+    the tone actually staged. Re-deriving that block from role and style alone
+    fell back to the class default, so a plan built and passed at the
+    manufacturer's published 1.6 kHz was refused here against a 5 kHz code
+    default. The declared low limit travels with the block it belongs to.
+    """
+
+    declared = _staged_at(_plan(), 1600.0, {
+        "low_limit_hz": 1600.0,
+        "low_limit_provenance": "declared",
+    })
+    result = start_tone_playback(
+        declared,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+    assert "high_frequency_highpass_below_low_limit" not in _codes(result)
+    assert "high_frequency_highpass_missing" not in _codes(result)
+
+
+def test_playback_will_not_launder_a_class_default_into_a_declaration(
+    tmp_path: Path,
+) -> None:
+    """A style_default block carries no declaration, so it is not read as one.
+
+    Passing the class figure back in as ``declared_low_limit_hz`` would make a
+    code default print as "manufacturer declared" -- the provenance lie #2874
+    is about, one field over -- and would let any plan lower the gate simply by
+    restating the number the gate would have used anyway.
+    """
+
+    laundered = _staged_at(_plan(), 1600.0, {
+        "low_limit_hz": 1600.0,
+        "low_limit_provenance": "style_default",
+    })
+    result = start_tone_playback(
+        laundered,
+        safe_session={"status": "armed", "session_id": "session-test"},
+        backend=AplayTonePlaybackBackend(
+            pcm="hw:Active",
+            artifact_dir=tmp_path,
+            runner=lambda argv, timeout: subprocess.CompletedProcess(argv, 0),
+        ),
+        allow_audio=True,
+        now=lambda: 1000,
+    )
+    assert result["status"] == "blocked"
+    assert "high_frequency_highpass_below_low_limit" in _codes(result)
+
+
 def test_audio_backend_refuses_high_frequency_above_driver_cap(
     tmp_path: Path,
 ) -> None:

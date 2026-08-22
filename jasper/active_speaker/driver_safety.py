@@ -28,10 +28,13 @@ from jasper.output_topology import OutputTopology
 from ._common import LEGACY_DROPPED_DRIVER_FIELDS
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
+    LOW_LIMIT_PLAUSIBILITY_FACTOR,
     apply_driver_low_limit,
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
+    driver_style_is_registered,
+    format_low_limit,
     resolve_driver_low_limit,
 )
 from .measurement import active_driver_targets, physical_driver_target
@@ -43,6 +46,13 @@ DRIVER_RESEARCH_RESULT_SCHEMA_VERSION = 2
 
 DRIVER_SAFETY_PROFILE_KIND = "jts_active_speaker_driver_safety_profile"
 DRIVER_SAFETY_PROFILE_SCHEMA_VERSION = 1
+
+#: Field caps for one entry in a profile's ``issues`` list, and the whole
+#: allowed key set. ONE owner because two places need the same numbers: the
+#: shape validator ENFORCES them, and ``_target_low_limit_warnings`` FITS its
+#: rendered message to them. Splitting those is what let a warning grow past the
+#: message cap and take the save down with it -- see that function's docstring.
+PROFILE_ISSUE_FIELD_MAX_CHARS = {"severity": 20, "code": 160, "message": 320}
 
 SUPPORTED_ENCLOSURE_KINDS = {
     "sealed",
@@ -193,7 +203,10 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     return targets
 
 
-def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
+def driver_protection_policy_view(
+    topology: OutputTopology,
+    manual_settings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the code-owned protection bounds /sound/ needs to *explain* itself.
 
     Display-only, derived, never persisted-authoritative: every design-draft
@@ -222,38 +235,101 @@ def driver_protection_policy_view(topology: OutputTopology) -> dict[str, Any]:
     ``role_class`` travels with each target so the page never has to keep its
     own copy of which roles are high-frequency.
 
-    Two fields here have no reader on the page yet and are kept deliberately.
-    ``policy_version`` is staleness detection on a view whose whole contract is
-    that it gets re-stamped: without it, a copy captured under an older policy
-    is indistinguishable from a current one.  ``min_highpass_hz`` is the only
-    field that *discriminates* — every high-frequency style shares
-    ``max_auto_level_dbfs = -65``, so it is what proves this view was derived
-    from ``driver_protection_profile`` rather than restated from a constant,
-    and it is the natural next panel field ("protected above N Hz") the
-    sentinel sentence already alludes to.  ``role`` had neither property and is
+    It published the raw class-table ``min_highpass_hz`` until #2874, on the
+    reasoning that it was the only field that *discriminates* — every
+    high-frequency style shares ``max_auto_level_dbfs = -65``, so it proved the
+    view came from ``driver_protection_profile`` rather than a restated
+    constant.  That is a self-referential reason to keep an AMBIGUITY: on a
+    tweeter declared at B&C's published 1.6 kHz the draft then showed 1600 and
+    2000 side by side with nothing saying which one bounds the corner, and two
+    readers independently took the 2000 for a second floor.  What replaced it
+    resolves that and discriminates just as well, because provenance IS a
+    discriminator: ``low_limit_hz`` with ``low_limit_provenance`` and a rendered
+    ``low_limit_summary`` — "1600 Hz (manufacturer declared)" where the
+    household declared one, "5000 Hz (class fallback; nothing declared)" where
+    nobody did.  So the class figure still travels; it just never travels
+    unlabelled beside a declared one.
+
+    Resolving that needs the operator's visible values, which is why
+    ``manual_settings`` is a parameter.  Without them every target reports the
+    class fallback — honestly labelled as such rather than silently passed off
+    as the declaration.
+
+    ``policy_version`` has no reader on the page yet and is kept deliberately:
+    it is staleness detection on a view whose whole contract is that it gets
+    re-stamped, and without it a copy captured under an older policy is
+    indistinguishable from a current one.  ``role`` had no such property and is
     not emitted: ``role_class`` answers every question the page asks.
     """
 
+    manual_by_role = _manual_by_role(manual_settings)
+    manual_by_target = _manual_by_target(manual_settings)
+    targets = driver_research_targets(topology)
+    role_counts: dict[str, int] = {}
+    for target in targets:
+        role = str(target.get("role") or "")
+        role_counts[role] = role_counts.get(role, 0) + 1
+    entries: list[dict[str, Any]] = []
+    for target in targets:
+        target_id = str(target["target_id"])
+        role = str(target.get("role") or "")
+        style = _topology_driver_style(topology, target_id)
+        policy = driver_protection_profile(role, driver_style=style)
+        visible, _ = _visible_values_for_target(
+            target_id=target_id,
+            role=role,
+            manual_by_target=manual_by_target,
+            manual_by_role=manual_by_role,
+            role_counts=role_counts,
+        )
+        low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
+        entries.append({
+            "target_id": target_id,
+            "role_class": policy.role_class,
+            "max_auto_level_dbfs": policy.max_auto_level_dbfs,
+            "low_limit_hz": low_limit.frequency_hz if low_limit is not None else None,
+            "low_limit_provenance": (
+                low_limit.provenance if low_limit is not None else None
+            ),
+            "low_limit_summary": (
+                format_low_limit(low_limit) if low_limit is not None else None
+            ),
+        })
     return {
         "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
-        "targets": [
-            {
-                "target_id": str(target["target_id"]),
-                "role_class": policy.role_class,
-                "max_auto_level_dbfs": policy.max_auto_level_dbfs,
-                "min_highpass_hz": policy.min_highpass_hz,
-            }
-            for target in driver_research_targets(topology)
-            for policy in (
-                driver_protection_profile(
-                    target.get("role"),
-                    driver_style=_topology_driver_style(
-                        topology, str(target["target_id"])
-                    ),
-                ),
-            )
-        ],
+        "targets": entries,
     }
+
+
+def _visible_values_for_target(
+    *,
+    target_id: str,
+    role: str,
+    manual_by_target: Mapping[str, Mapping[str, Any]],
+    manual_by_role: Mapping[str, Mapping[str, Any]],
+    role_counts: Mapping[str, int],
+) -> tuple[Mapping[str, Any], bool]:
+    """The operator-visible values bound to one physical target, and how.
+
+    One owner for the binding rule — target-specific values first, then the
+    legacy per-role entry when that role appears exactly once — because two
+    surfaces now need it: ``_profile_core``, which freezes those values, and
+    ``driver_protection_policy_view``, which must resolve the SAME declaration
+    the freeze will.  A second copy of this rule would let the page explain one
+    number while the profile stored another.
+
+    The second element is ``True`` only for the legacy per-role read, which is
+    what ``target_values_binding`` records.
+    """
+
+    explicit = manual_by_target.get(target_id)
+    if explicit is not None:
+        return explicit, False
+    if role_counts.get(role) == 1:
+        legacy = manual_by_role.get(role)
+        if legacy is not None:
+            return legacy, True
+    return {}, False
 
 
 def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
@@ -1293,6 +1369,144 @@ def validate_research_result_binding(
         )
 
 
+# --- One implausible low limit, two authors, two answers (#2874) -------------
+#
+# Owner ruling, 2026-08-22: declared values are the only refusing authority;
+# class tables may prefill, disclose, and serve as fallback -- they must never
+# refuse a declaration. The plausibility band is anchored on the class table,
+# so as a BLOCKER over a typed number it was the code overruling its owner with
+# a class guess, on a field where nothing else gets a chaperone (sensitivity,
+# level caps and hard bands all accept typed garbage). It is split by AUTHOR
+# instead, because the two authors are not the same kind of claim:
+#
+#   * a RESEARCH REPLY outside the band is still REFUSED at intake, below. An
+#     LLM misreading a datasheet is not an operator's choice, "ask again with
+#     the datasheet" is the right answer, and refusing at the paste means the
+#     bad number never becomes a value the household has to un-declare;
+#   * an OPERATOR-TYPED value outside the band lands a loud warning that SAVES
+#     (``_target_low_limit_warnings``). The tinker box trusts its owner -- and
+#     says so, concretely, first.
+#
+# What actually protects the driver at a low declared figure is unchanged and
+# lives elsewhere: the derived protective high-pass sitting AT that frequency
+# and proved in the emitted graph by ``graph_safety``, the absolute corner
+# floor, the commissioning high-pass at a multiple of the crossover corner, the
+# ``path_safety`` load gate, and the excitation level ceilings.
+
+
+#: How much of a ``driver_style`` one diagnosis sentence may quote verbatim.
+#: The style is FREE-FORM up to 80 characters (``output_topology`` takes any
+#: safe id), while the longest style this build registers is 23
+#: (``horn_compression_driver``) -- so one more than that ellipsizes only a
+#: value no table here describes, and keeps the rendered sentence a bounded
+#: length whatever the household typed into the picker.
+_DIAGNOSIS_STYLE_MAX_CHARS = 24
+
+
+def _ellipsised(text: str, max_chars: int) -> str:
+    """``text`` shortened to ``max_chars``, marked so a reader sees it was cut."""
+
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return "..."[:max_chars]
+    return text[: max_chars - 3] + "..."
+
+
+def _low_limit_implausibility_diagnosis(
+    *,
+    role: Any,
+    driver_style: Any,
+    frequency_hz: float,
+) -> str | None:
+    """One sentence naming WHY a declared low limit is not believable, or None.
+
+    Shared by both arms of the split above so the refusal and the warning
+    cannot describe the same number differently. Diagnosis only -- each arm
+    appends its own action, because the actions are what differ.
+
+    The interpolated style is ellipsized (:data:`_DIAGNOSIS_STYLE_MAX_CHARS`)
+    because it is operator-supplied free text, not a value from any table here.
+    Quoting it verbatim made the sentence's length an operator input, and the
+    warning arm's message has a schema cap -- so an 80-character style turned a
+    DISCLOSURE into a save that hard-failed, on exactly the out-of-band
+    declaration the disclosure exists to allow.
+    """
+
+    band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
+    if band is None or driver_low_limit_plausible(
+        frequency_hz, role=role, driver_style=driver_style
+    ):
+        return None
+    # The class anchor, recovered from the band rather than re-read from the
+    # profile: the band IS that anchor divided and multiplied by the factor, so
+    # this cannot quote a number the band edges disagree with.
+    anchor_hz = band[0] * LOW_LIMIT_PLAUSIBILITY_FACTOR
+    style = _ellipsised(
+        str(driver_style or "").strip() or "undeclared",
+        _DIAGNOSIS_STYLE_MAX_CHARS,
+    )
+    direction = "below" if float(frequency_hz) < band[0] else "above"
+    # "(class default N Hz)" rather than a clause: the band already IS that
+    # default divided and multiplied by the factor, so the long form spent ~15
+    # characters restating it -- and those characters are the headroom the
+    # warning arm needs under its message cap once the unknown-style branch is
+    # reachable (both review lenses, #2884).
+    return (
+        f"declared {float(frequency_hz):g} Hz is more than "
+        f"{LOW_LIMIT_PLAUSIBILITY_FACTOR:g}x {direction} the {style} class "
+        f"band of {band[0]:g}-{band[1]:g} Hz (class default {anchor_hz:g} Hz)"
+    )
+
+
+def validate_research_low_limit_plausibility(
+    result: Mapping[str, Any],
+    expected_request: Mapping[str, Any],
+) -> None:
+    """Refuse a research reply whose declared low limit is not believable.
+
+    The REFUSING arm of the author split above, and the only one: this reads
+    the pasted packet, never a saved declaration. An operator who has actually
+    read the datasheet can still enter the same number by hand under Advanced,
+    and the message says so rather than leaving them to guess that a route
+    exists.
+    """
+
+    styles = {
+        str(target.get("target_id") or ""): target.get("driver_style")
+        for target in expected_request.get("targets", [])
+        if isinstance(target, Mapping)
+    }
+    roles = {
+        str(target.get("target_id") or ""): target.get("role")
+        for target in expected_request.get("targets", [])
+        if isinstance(target, Mapping)
+    }
+    for driver in result.get("drivers", []):
+        if not isinstance(driver, Mapping):
+            continue
+        target_id = str(driver.get("target_id") or "")
+        frequency = _positive_float(
+            driver.get("recommended_highpass_hz"),
+            f"driver_research.{target_id}.recommended_highpass_hz",
+        )
+        if frequency is None:
+            continue
+        diagnosis = _low_limit_implausibility_diagnosis(
+            role=roles.get(target_id),
+            driver_style=styles.get(target_id),
+            frequency_hz=frequency,
+        )
+        if diagnosis is None:
+            continue
+        raise DriverSafetyProfileError(
+            f"driver_research {target_id} recommended_highpass_hz is not "
+            f"believable for its driver type: {diagnosis}. Ask again with the "
+            "datasheet page for this driver, or enter the figure by hand under "
+            "Advanced if you have read it yourself."
+        )
+
+
 def finalise_research_result(
     result: Mapping[str, Any],
     expected_request: Mapping[str, Any],
@@ -1300,6 +1514,7 @@ def finalise_research_result(
     """Validate binding and add the server-computed immutable result digest."""
 
     validate_research_result_binding(result, expected_request)
+    validate_research_low_limit_plausibility(result, expected_request)
     core = dict(result)
     core.pop("result_fingerprint", None)
     return {**core, "result_fingerprint": _fingerprint(core)}
@@ -1389,7 +1604,11 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
 
 
 def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
-    """Return the per-target code-policy bounds ``_target_issues`` enforces.
+    """Return the per-target code-policy bounds this reply has to clear.
+
+    Two gates enforce them, one per line emitted here: the low-limit band by
+    :func:`validate_research_low_limit_plausibility` at intake, the peak ceiling
+    by ``_target_issues`` on the save.
 
     Read from ``driver_protection_profile`` — the one owner of that policy —
     rather than restated as prose constants, so the ask cannot drift from what
@@ -1462,21 +1681,28 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     researcher's best reality-grounded number from the driver's published facts
     and physics, declared as an estimate, with one citation.  Safety never
     lived in a number's timidity: it lives in ``_target_issues`` (below), the
-    per-style plausibility band, the peak ceiling, and the quiet-start ramp.  A
-    wrong best-estimate degrades a measurement; it cannot blow a driver, while
+    per-style plausibility screen on the reply, the peak ceiling, and the
+    quiet-start ramp.  A wrong best-estimate degrades a measurement; it cannot
+    blow a driver, while
     prompt-level lowballing costs real performance — a needlessly high cutoff
     robs usable range, a needlessly low level under-drives the measurement —
     and buys nothing the clamps do not already guarantee.  The operator is the
     arbiter: /sound/ echoes every consumed value back with its published or
     estimated badge and its source before anything is saved.
 
-    What did **not** move is the protection itself.  ``_target_issues`` still
-    refuses an estimate that lands outside code policy — the per-style
-    plausibility band, the peak ceiling, band nesting — and refuses it by name
-    rather than silently clamping it, so an operator sees the bound and decides.
-    The quiet-start commissioning ramp and its acknowledgements are untouched.
-    Widening the *sourcing* of a proposed number is a different question from
-    widening the *bound* it must clear, and only the first one changed.
+    What did **not** move is the protection itself.  A REPLY that lands outside
+    code policy is still refused by name rather than silently clamped, so an
+    operator sees the bound and decides — the peak ceiling and band nesting in
+    ``_target_issues``, and the per-style low-limit band in
+    :func:`validate_research_low_limit_plausibility`, which screens the paste
+    before any of it becomes a declaration.  (That last one used to refuse from
+    ``_target_issues`` too, over the SAVED values; #2874 split it by author, and
+    a human-typed value outside the band is now disclosed rather than refused.
+    A researcher reading this ask is unaffected either way: the bound the ask
+    names is the bound the reply must clear.)  The quiet-start commissioning
+    ramp and its acknowledgements are untouched.  Widening the *sourcing* of a
+    proposed number is a different question from widening the *bound* it must
+    clear, and only the first one changed.
     """
 
     # Dropped from the ASK (still accepted, still normalised, still prefilled
@@ -1889,29 +2115,93 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
     # landed incomplete. The 2026-08-17 ruling (#2603) reversed that -- a
     # sourced manufacturer figure wins outright, and B&C's published 1.6 kHz
     # for the DE250 is exactly the number the 2 kHz class default was rejecting.
-    # What remains is a plausibility bound: a declared low limit wildly away
-    # from its style is garbage (a transposed digit, a woofer's number pasted
-    # into a tweeter row) rather than a datasheet, and refusing garbage IS the
-    # safety class. Within the band the declaration is believed.
-    low_limit = resolve_driver_low_limit(
-        target,
-        role=role,
-        driver_style=target.get("driver_style"),
-    )
-    if low_limit is not None and not driver_low_limit_plausible(
-        low_limit.frequency_hz,
-        role=role,
-        driver_style=target.get("driver_style"),
-    ):
-        reasons.append(f"{role}:low_limit_implausible_for_style")
+    # A plausibility BLOCKER survived that reversal here and was itself
+    # reversed by the 2026-08-22 ruling (#2874): a saved declaration is
+    # operator-authored, and refusing one on a class anchor is the same
+    # class-over-declaration inversion one layer down. It is now a loud
+    # warning -- ``_target_low_limit_warnings`` -- and the refusing arm moved
+    # to the research-reply intake, ``validate_research_low_limit_plausibility``.
     return reasons
+
+
+def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Non-blocking disclosures for one stored target's declared low limit.
+
+    Pure in the same way :func:`_target_issues` is, and for the same reason:
+    ``evaluate_driver_safety_profile`` re-derives these from the stored targets
+    and checks them against what the profile carries, so a hand-edited artifact
+    cannot quietly drop its own warning. That check compares severity and code,
+    never the sentence — see :func:`_comparable_issue_payload` for why editing
+    warning copy must not un-confirm a box whose declaration never changed.
+
+    The list holds exactly one warning: a declared low limit outside its
+    style's plausibility band. It teaches rather than merely flagging -- it
+    names the number, the band it missed, the anchor that band came from, and
+    the two things it is most likely to be. A warning that does not say what to
+    check is a nanny that mumbles.
+
+    **The rendered message is FITTED to the schema cap, never merely expected to
+    fit.** An issue message over ``PROFILE_ISSUE_FIELD_MAX_CHARS["message"]``
+    fails shape validation, which lands the whole profile ``malformed`` and
+    makes ``build_driver_safety_profile`` refuse the save outright -- so a
+    length overrun here does not degrade a disclosure, it REFUSES the very
+    out-of-band declaration the disclosure exists to permit, which is the ruling
+    inverted by a rendering concern. The style is ellipsized upstream so the cut
+    lands on operator free text rather than on the guidance, and this final
+    clamp then guarantees the bound for every remaining input.
+    """
+
+    role = str(target.get("role") or "")
+    style = target.get("driver_style")
+    low_limit = resolve_driver_low_limit(target, role=role, driver_style=style)
+    if low_limit is None:
+        return []
+    diagnosis = _low_limit_implausibility_diagnosis(
+        role=role,
+        driver_style=style,
+        frequency_hz=low_limit.frequency_hz,
+    )
+    if diagnosis is None:
+        return []
+    # A style the table does not describe is judged against the cautious
+    # unknown-tweeter default, which is how a genuinely published 800 Hz on a
+    # large-format horn reads as implausible on a box whose type nobody set.
+    # Naming the picker as the first thing to check keeps that from reading as
+    # an accusation about the datasheet -- the clause the retired JS phrasing
+    # carried.
+    #
+    # The question is REGISTERED, not empty. An empty style never reaches here
+    # from a saved profile: ``_profile_core`` stamps ``"unspecified"`` and the
+    # shape validator requires the field non-empty, so a test against emptiness
+    # was dead on the shipped path -- a box whose type nobody set shipped the
+    # no-caveat copy. Asking the table also catches what no sentinel list would:
+    # a typo'd or newer-build style that looks declared and is silently judged
+    # against the same fallback.
+    check_the_type = (
+        "and set the driver type above -- unknown types get a cautious default."
+        if not driver_style_is_registered(style)
+        else "and that the driver type above is right."
+    )
+    message = (
+        f"{role}: {diagnosis}. JTS is using it as declared -- confirm it is "
+        f"the datasheet figure and not a transposed digit, {check_the_type}"
+    )
+    return [
+        {
+            "severity": "warning",
+            "code": f"{role}:low_limit_implausible_for_style",
+            "message": _ellipsised(
+                message, PROFILE_ISSUE_FIELD_MAX_CHARS["message"]
+            ),
+        }
+    ]
 
 
 def _profile_core(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None,
     driver_research: Mapping[str, Any] | None,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
     manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _manual_by_target(manual_settings)
     research_by_target = _research_by_target(driver_research)
@@ -1928,15 +2218,17 @@ def _profile_core(
     }
     targets: list[dict[str, Any]] = []
     issues: list[str] = []
+    warnings: list[dict[str, str]] = []
     for physical in physical_targets:
         target_id = str(physical["target_id"])
         role = str(physical["role"])
-        visible = manual_by_target.get(target_id)
-        used_legacy_role_value = False
-        if visible is None and role_counts.get(role) == 1:
-            visible = manual_by_role.get(role)
-            used_legacy_role_value = visible is not None
-        visible = visible or {}
+        visible, used_legacy_role_value = _visible_values_for_target(
+            target_id=target_id,
+            role=role,
+            manual_by_target=manual_by_target,
+            manual_by_role=manual_by_role,
+            role_counts=role_counts,
+        )
         research = research_by_target.get(target_id, {})
         safety_field_names = (
             "hard_excitation_band_hz",
@@ -2076,6 +2368,7 @@ def _profile_core(
             }
         }
         issues.extend(_target_issues(entry))
+        warnings.extend(_target_low_limit_warnings(entry))
         targets.append(entry)
     if not targets:
         issues.append("active_driver_targets_missing")
@@ -2097,17 +2390,74 @@ def _profile_core(
         "authority": "operator_visible_values",
         "authorizes_playback": False,
     }
-    return core, issues
+    return core, issues, warnings
 
 
-def _profile_issue_payload(issues: Sequence[str]) -> list[dict[str, str]]:
-    return [
+def _comparable_issue_payload(issues: Any) -> str:
+    """The part of an ``issues`` list that re-derivation must reproduce exactly.
+
+    Every entry's ``severity`` and ``code`` — and, for a BLOCKER, its message
+    too, because a blocker's message is mechanically derived from its own code
+    and so cannot drift on its own.
+
+    A WARNING's message is excluded, and that exclusion is the point. Warning
+    prose is hand-written and interpolates the household's numbers, so putting
+    it inside this check made **editing the copy a breaking change for every
+    profile carrying that warning**: the stored text no longer matched the
+    derived text, the profile read ``malformed``, and ``confirmed_and_current``
+    flipped false on a box whose declared values had not changed by one digit.
+    That was measured, not feared — re-evaluating profiles written one commit
+    earlier flipped both warned cases (#2884 review round, item 4).
+
+    What the check still guarantees is the half that was ever load-bearing: a
+    warning cannot be dropped, invented, re-coded, or downgraded in severity
+    without this mismatching, because all of that moves the severity/code set.
+    Only the sentence can differ, and no gate reads the sentence — every
+    protection decision reads the declared values. The fingerprint never
+    covered ``issues`` at all (verified: it hashes
+    ``artifact_schema_version, kind, topology_id, targets, research, authority,
+    authorizes_playback``), so this loosens nothing the digest was holding.
+    """
+
+    return _canonical_json([
         {
-            "severity": "blocker",
-            "code": reason,
-            "message": reason.replace(":", " ").replace("_", " "),
+            "severity": str(issue.get("severity") or ""),
+            "code": str(issue.get("code") or ""),
+            **(
+                {}
+                if str(issue.get("severity") or "") == "warning"
+                else {"message": str(issue.get("message") or "")}
+            ),
         }
-        for reason in issues
+        for issue in (issues if isinstance(issues, list) else [])
+        if isinstance(issue, Mapping)
+    ])
+
+
+def _profile_issue_payload(
+    issues: Sequence[str],
+    warnings: Sequence[Mapping[str, str]] = (),
+) -> list[dict[str, str]]:
+    """The profile's ``issues`` list: every blocker, then every warning.
+
+    Warnings arrive already rendered because their copy names numbers a reason
+    CODE cannot carry (see :func:`_target_low_limit_warnings`); blockers keep
+    the mechanical code-to-prose rendering they have always had. Both live in
+    one list because ``severity`` is what separates them and the schema has
+    carried that field since it shipped -- a parallel ``warnings`` key would be
+    a second place to look for the same kind of fact.
+    """
+
+    return [
+        *(
+            {
+                "severity": "blocker",
+                "code": reason,
+                "message": reason.replace(":", " ").replace("_", " "),
+            }
+            for reason in issues
+        ),
+        *(dict(warning) for warning in warnings),
     ]
 
 
@@ -2143,7 +2493,7 @@ def build_driver_safety_profile(
     """
 
     normalised_manual = _normalise_profile_manual_settings(topology, manual_settings)
-    core, issues = _profile_core(topology, normalised_manual, driver_research)
+    core, issues, warnings = _profile_core(topology, normalised_manual, driver_research)
     fingerprint = _fingerprint(core)
     confirmation: dict[str, Any] | None = None
     if not issues:
@@ -2168,7 +2518,7 @@ def build_driver_safety_profile(
         "profile_fingerprint": fingerprint,
         "status": status,
         "confirmation": confirmation,
-        "issues": _profile_issue_payload(issues),
+        "issues": _profile_issue_payload(issues, warnings),
     }
     evaluation = evaluate_driver_safety_profile(profile, topology)
     if evaluation.status != status:
@@ -2505,9 +2855,9 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         _reject_unknown_keys(
             issue,
             f"driver_safety_profile.issues[{index}]",
-            {"severity", "code", "message"},
+            set(PROFILE_ISSUE_FIELD_MAX_CHARS),
         )
-        for key, max_chars in (("severity", 20), ("code", 160), ("message", 320)):
+        for key, max_chars in PROFILE_ISSUE_FIELD_MAX_CHARS.items():
             _require_canonical_text_field(
                 issue,
                 key,
@@ -2777,12 +3127,14 @@ def evaluate_driver_safety_profile(
             ("driver_safety_profile_target_mismatch",),
         )
     derived_issues: list[str] = []
+    derived_warnings: list[dict[str, str]] = []
     for target in saved_targets:
         derived_issues.extend(_target_issues(target))
+        derived_warnings.extend(_target_low_limit_warnings(target))
     if not saved_targets:
         derived_issues.append("active_driver_targets_missing")
-    expected_issue_payload = _profile_issue_payload(derived_issues)
-    if _canonical_json(profile.get("issues")) != _canonical_json(
+    expected_issue_payload = _profile_issue_payload(derived_issues, derived_warnings)
+    if _comparable_issue_payload(profile.get("issues")) != _comparable_issue_payload(
         expected_issue_payload
     ):
         return DriverSafetyProfileEvaluation(
