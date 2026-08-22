@@ -1243,6 +1243,82 @@ _HARMONICS_NOT_AN_UNCERTAINTY: dict[str, str] = {
 }
 
 
+#: The role block's own fields — the level the rows sit inside.
+#:
+#: Declared separately from the row columns above because they answer a
+#: different question: a row says what was measured AT one frequency, these say
+#: what the whole reading was taken THROUGH. None is an uncertainty, and the
+#: three that decide whether a row may be believed at all (``sweep``, ``drive``,
+#: ``worst_clearance_s``) are the reason this second table exists rather than
+#: being left as self-evident structure.
+_HARMONICS_ROLE_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "role": "which driver's own sweep this block reads. A label",
+    "wav_sha256_12": (
+        "the first 12 hex of the capture's digest — the same identity the "
+        "positions rows and the capture_snr block name a capture by, so a "
+        "reader can join them. An identity, not a measurement"
+    ),
+    "n_sweeps": (
+        "how many of this role's sweep repeats INSIDE this capture the rows "
+        "below were pooled over. A count, and the n that h{order}_repeat_"
+        "spread_db must be judged against — a spread over two repeats is a very "
+        "different statement from one over six"
+    ),
+    "sweep": (
+        "the excitation this reading was taken from, and the provenance that "
+        "says what the numbers could and could not cover. f1_hz/f2_hz are the "
+        "sweep's own bounds and L_s its Novak time constant — the ONE parameter "
+        "every harmonic offset derives from, since order N's image sits exactly "
+        "L*ln(N) ahead of the linear impulse response and is windowed to a "
+        "fraction of the distance to order N+1's centre. read_band_hz is where "
+        "the rows are reported: its bottom is f1 plus a 0.25-octave trim for the "
+        "sweep's fade-in, which is an artefact and not distortion, and its top "
+        "is f2 divided by the LOWEST published order. Each higher order stops "
+        "earlier still, at f2/order, because an order survives the "
+        "deconvolution only while N*f stays inside the sweep's own passband — "
+        "that bound is the passband, NOT Nyquist, and past it the columns are "
+        "null. Provenance, not a measurement"
+    ),
+    "drive": (
+        "the level this reading was taken at, in every reference it has: "
+        "stimulus and effective peak dBFS describe what was PLAYED, capture "
+        "peak and RMS dBFS what was RECORDED, each re its own full scale. NOT "
+        "SPL — no acoustic reference exists anywhere in this corpus. Load-"
+        "bearing rather than housekeeping: distortion is a function of drive, so "
+        "a ratio quoted without this names nothing and two blocks at different "
+        "drives are not comparable. Readings, not spreads"
+    ),
+    "images_clean": (
+        "true when every harmonic window for this role sat in program silence "
+        "rather than reaching back into the previous segment's audio. A verdict "
+        "about the reading's conditions"
+    ),
+    "worst_clearance_s": (
+        "the smallest margin, over this capture's sweeps, between the program "
+        "silence in front of a sweep and what its harmonic windows need. "
+        "NEGATIVE means a window reached into prior audio: the read is still "
+        "returned, because the window's taper is near zero at that edge, but it "
+        "is no longer clean and the reader is told rather than left to assume. "
+        "A duration, not a spread"
+    ),
+    "worst": (
+        "the highest (dirtiest) point of each order that CLEARS the floor, with "
+        "the frequency it sits at — pooled exactly as the rows are, so the "
+        "headline cannot contradict its own table. Null for an order where "
+        "nothing clears its floor, which is the honest reading of 'nothing "
+        "measurable here' and the ordinary answer for a tweeter at a low drive. "
+        "A reduction of the readings, not an uncertainty"
+    ),
+    "floor_limited_fraction": (
+        "the share of the reported grid where this order is floor-limited. Near "
+        "1.0 the order was buried and the block is describing the instrument; "
+        "near 0.0 the reading is the driver's. A coverage fraction — it says how "
+        "much of the curve is trustworthy, never how uncertain a value is"
+    ),
+    "rows": "the per-frequency readings themselves; their columns are declared above",
+}
+
+
 def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
     """The two declaration tables, expanded over the orders actually published.
 
@@ -1267,6 +1343,9 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
     return {
         "fields": dict(sorted(fields.items())),
         "not_uncertainties": dict(sorted(not_uncertainties.items())),
+        # The block above the rows, declared apart from them because it answers
+        # "what was this taken through" rather than "what was measured here".
+        "role_fields": dict(sorted(_HARMONICS_ROLE_NOT_AN_UNCERTAINTY.items())),
         "note": (
             "one spread is published and it is RANDOM, which is a rarer answer "
             "here than it looks: it is random because the repeats it is taken "
@@ -1276,7 +1355,10 @@ def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
             "the capture_snr block names an SNR there. The one uncertainty this "
             "block knows about and does NOT publish is the calibration-slope "
             "systematic on each ratio; it is declared beside the reading it "
-            "affects rather than left for a reader to discover"
+            "affects rather than left for a reader to discover. role_fields "
+            "covers the block each row sits inside — none of those is an "
+            "uncertainty either, and three of them (sweep, drive, "
+            "worst_clearance_s) decide whether a row may be believed at all"
         ),
     }
 

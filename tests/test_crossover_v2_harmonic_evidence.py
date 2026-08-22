@@ -257,6 +257,22 @@ def test_every_published_harmonics_field_is_declared_exactly_once(tmp_path):
     for name, why in not_uncertainties.items():
         assert why.strip(), name
 
+    # The block the rows sit INSIDE is declared too, and asserted the same way.
+    # `sweep` and `drive` are the load-bearing pair: they are what says a row
+    # could be believed and at what level, so leaving them as self-evident
+    # structure would be the easy omission.
+    role_fields = uncertainty["role_fields"]
+    role_published: set[str] = set()
+    for role_block in packet["harmonics"]["roles"]:
+        role_published |= set(role_block)
+    assert role_published, "the fixture published no role block"
+    assert role_published <= set(role_fields), sorted(role_published - set(role_fields))
+    for name, why in role_fields.items():
+        assert why.strip(), name
+    # And no field is filed at both levels, which would give one name two
+    # explanations.
+    assert not set(role_fields) & declared
+
 
 def test_the_one_published_spread_is_random_and_the_declaration_says_why(tmp_path):
     """The honest answer to "which list", and the reason it is that list.
