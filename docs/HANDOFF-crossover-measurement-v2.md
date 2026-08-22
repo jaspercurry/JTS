@@ -4370,15 +4370,31 @@ reachable rather than theoretical: the republish path stamps
 carries a current-era basis beside per-branch numbers stamped under the old
 grid. **Trust the basis, not the neighbourhood.**
 
-A graph already on hardware migrates without action: its own re-proof survives
-as long as the recomputed peak moved less than
-`branch_chain.HEADROOM_MARGIN_DB`, which measures 0.6186 dB worst over a corpus
-of chains the pre-#2758 gate would have admitted (pinned by
-`test_a_graph_the_old_gate_accepted_still_proves_after_the_widening`). A graph
-whose peak lived in the old grid's hole is the exception, and it is the one
-this change exists to catch: it stops proving, `safe_graph_for_current_topology`
-refuses rather than silently selecting the all-muted startup graph, and the
-remedy is `jasper-active-speaker baseline-reemit` — not a recommission.
+**Migration.** A graph already on hardware re-proves against the allowance
+baked into its own bytes, and the condition is the runtime's, not the margin
+alone: `peak_new <= headroom_charge_db(peak_old) + 1e-3`. Two classes come out
+of that:
+
+- **The ordinary chain.** `headroom_charge_db` is peak + `HEADROOM_MARGIN_DB`,
+  so it has the full 1.0 dB of room. Over a corpus of chains the pre-#2758 gate
+  would have admitted, sampled at the fit engine's own per-filter rail, the
+  worst move measures 0.3101 dB at the seed
+  `test_a_graph_the_old_gate_accepted_still_proves_after_the_widening` pins.
+  Other seeds and more clustered populations run higher (a ±12 dB cluster
+  reaches ~0.85 dB), which is why the runtime guard below is the backstop and
+  that corpus is evidence rather than a proof over the whole space.
+- **The near-unity chain.** `headroom_charge_db` returns **0.0** at or under
+  `_PEAK_EPS_DB` (0.01 dB) — a chain that never exceeded unity was charged
+  nothing — so its tolerance is the 1e-3 float slack, not 1.0 dB. Under 1 % of
+  that corpus, and they refuse.
+
+Both refusals, and the two cascades whose peak lived in the old grid's hole,
+land in the same place: the graph stops proving,
+`safe_graph_for_current_topology` **refuses** rather than silently selecting the
+all-muted startup graph (which would be a green deploy onto a silent speaker),
+and the remedy is `jasper-active-speaker baseline-reemit` — not a recommission.
+Having the deploy run that re-emit itself is issue #2847; until then a refused
+box is left with its renderers parked, which is loud on purpose.
 
 #### Per-capture diagnostics — every capture logs its numbers
 

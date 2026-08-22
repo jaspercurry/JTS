@@ -117,16 +117,27 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 #
 # Measured under-READ, all on the grid this module ships:
 #   * two adjacent CENTRES, where near-coincident filters reach more together
-#     than either does alone — <= 0.0391 dB with the adjacent-pair midpoints
-#     in the grid (two +6 dB bells, Q 0.5-2000, separations 0.05-50 %);
+#     than either does alone. **This family has THREE axes and the centre
+#     FREQUENCY is one of them** — quoting a Q and a separation without it
+#     produces two "measurements" that disagree by 0.1 dB and are both right:
+#     two +6 dB bells at Q 500, 0.1 % apart, under-read 0.0000 dB at 1 kHz
+#     (the extremum lands on the unioned midpoint) and 0.0998 dB at 9 kHz
+#     (RBJ digital asymmetry walks it off that midpoint). Searched over
+#     f1 200 Hz - 15 kHz, Q 8 - 500, separations 0.1 - 3 %, the worst FOUND is
+#     0.1913 dB at f1 1000 Hz, Q 118, 0.575 % — a search minimum, so the bound
+#     stated below is deliberately above it;
 #   * two adjacent BACKGROUND bins, outside the centres' own hull — 0.1050 dB
 #     worst over 900 randomized mixed-sign pairs inside the emitter's own
 #     rails (Q <= 8, +-12 dB), and 0.0423 dB on the #2758 cascade. Bounded at
 #     all only because :data:`CHAIN_GRID_HZ` spans the whole evaluated domain:
 #     a background narrower than that domain read that cascade 6.0132 dB low.
-# So the honest ceiling on the sampling term is ~0.15 dB, not the 0.07 an
-# earlier revision of this comment promoted — still an order inside 1.0 dB,
-# which is the claim this margin actually rests on.
+#
+# **The honest ceiling on the sampling term is 0.25 dB**, chosen above every
+# search's output rather than equal to the last one — a hill-climb reports a
+# minimum, never a maximum, and an earlier revision of this comment promoted
+# 0.07 dB on exactly that mistake. 0.25 is a QUARTER of 1.0 dB and not an order
+# inside it; the margin still covers it four times over, which is the claim
+# this constant actually rests on.
 #
 # One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
 # Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW
@@ -207,10 +218,11 @@ _CHAIN_GRID_POINTS_PER_OCTAVE: int = 48
 #
 # The anchor moving 20 Hz -> 1 Hz also moves every background bin's PHASE, so
 # an individual reading can land either side of where it did: over 4000
-# randomized in-band cascades at the emitter's rails, 637 read LOWER (worst
-# drop 0.0697 dB) and the rest the same or higher. That is sampling noise
-# inside the residue bound above, not a direction claim — this change is NOT
-# "every reading rises".
+# randomized in-band cascades at the emitter's rails, ~16 % read LOWER and the
+# rest the same or higher. The worst drop is 0.0697 dB at one seed and
+# 0.1134 dB across four, so treat it as >= 0.15 dB rather than as the single
+# draw. That is sampling noise inside the residue bound above, not a direction
+# claim — this change is NOT "every reading rises".
 #
 # Roughly 6 ms per branch on a laptop for a full 8-filter chain behind a
 # crossover, on a path that runs once per config emit and once per branch at
@@ -264,12 +276,13 @@ def _evaluation_grid(
 
     A CASCADE's peak can sit BETWEEN two centres — two near-coincident bells
     reach more together in the middle than either does at the other's centre —
-    so the geometric midpoint of each adjacent pair goes in too. Measured
-    against a 400 000-point sweep over two +6 dB bells at Q 0.5 to 2000 and
-    separations of 0.1 % to 50 %, the centres alone under-read the true peak by
-    up to 0.58 dB; with the midpoints that falls to 0.0998 dB. Sampling can
-    only ever under-read a continuous maximum — what :data:`HEADROOM_MARGIN_DB`
-    covers is this residue, and it is an order inside it.
+    so the geometric midpoint of each adjacent pair goes in too, which is what
+    takes the centres-alone under-read (up to 0.58 dB over that family) down to
+    the residue :data:`HEADROOM_MARGIN_DB` covers. **That residue has ONE owner
+    and it is that constant's own comment** — including which axes the family
+    has and why two honest measurements of it can differ by 0.1 dB. Sampling
+    can only ever under-read a continuous maximum, which is why the residue is
+    a floor on the margin rather than a two-sided error.
     """
     base = CHAIN_GRID_HZ if grid_hz is None else np.asarray(grid_hz, dtype=np.float64)
     extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ]

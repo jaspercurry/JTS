@@ -175,6 +175,10 @@ def handle_v2_republish(
             fingerprint=banked.fingerprint,
         )
 
+    # Lazy for ``_candidate_summary``'s own stated reason: the fit module pulls
+    # numpy and this one is on the socket-activated wizard's cold-start path.
+    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN
+
     summary = _host._candidate_summary(
         banked.candidate,
         # A republish did not MEASURE this corner — an operator named it by
@@ -183,6 +187,14 @@ def handle_v2_republish(
         # minting session's pin bit is not on the artifact, so the direction
         # that cannot overclaim is the one to take.
         topology_pinned=True,
+        # The SAME direction, for the same reason, about the headroom era. This
+        # candidate was read off disk and may predate #2758's grid widening,
+        # under which the identical filters charge MORE than the number it
+        # carries — so a current-era label here would under-disclose the cost of
+        # a correction the household is about to be offered. The artifact
+        # records no era, and ``unknown`` is what that absence honestly means;
+        # the renderer already has a sentence for it.
+        headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN,
     )
     republished = {
         "candidate_fingerprint": banked.fingerprint,

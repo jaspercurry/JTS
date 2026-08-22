@@ -110,6 +110,37 @@ def test_republish_then_apply_reaches_the_banked_candidate(bank):
     assert v2host._update_current_review(RELAY, candidate.fingerprint, None, {})
 
 
+def test_a_republished_candidate_does_not_wear_a_current_headroom_era(bank):
+    """A candidate read OFF DISK has no recorded era, and may predate #2758.
+
+    Its per-branch charges were stamped under whatever grid its minting build
+    evaluated on, and the widened grid charges MORE for some of those same
+    filters — so a current-era label here would under-disclose the cost of a
+    correction the household is about to be offered, with a stamp saying the
+    number is current. Nothing on ``MeasuredCrossoverCandidate`` records an era
+    (that is what "recorded, never inferred" means), so ``unknown`` is the only
+    honest answer, and the renderer already has a sentence for it.
+
+    Asserted against the MINTING stamp too: if both said the same thing the
+    field would be decoration.
+    """
+    from jasper.active_speaker.linearization_fit import (
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
+        HEADROOM_COST_BASIS_UNKNOWN,
+    )
+
+    candidate = _candidate()
+    _publish(bank, candidate)
+
+    republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
+
+    summary = v2host.load_v2_state()["candidate"]
+    assert summary["headroom_cost_basis"] == HEADROOM_COST_BASIS_UNKNOWN
+    assert v2host._candidate_summary(candidate)["headroom_cost_basis"] == (
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
+    ), "the minting path still stamps its own era, or this pin means nothing"
+
+
 def test_republish_names_the_apply_endpoint_and_discloses_verify_is_not_restored(bank):
     """VERIFY priors belong to the round that ran the fit and cannot be rebuilt.
 

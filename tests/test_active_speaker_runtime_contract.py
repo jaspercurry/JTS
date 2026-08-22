@@ -2246,13 +2246,12 @@ def test_a_graph_that_stops_proving_its_headroom_blocks_instead_of_silencing(
 def test_an_ordinary_mid_commission_box_still_selects_its_startup_graph(
     tmp_path: Path,
 ) -> None:
-    """The control that keeps the guard above narrow.
+    """Control 1: no applied baseline and a graph that is not this box's — the
+    fleet-typical mid-commission state, and a SHAPE refusal.
 
-    Falling to the all-muted startup graph is the NORMAL answer for a box with
-    no applied baseline — the fleet-typical mid-commission state — and for the
-    #2814 identity hold. Only the numeric headroom refusal may turn it red; a
-    guard that fired on "current graph is not usable" would red-deploy most of
-    the fleet.
+    Only the numeric headroom refusal may turn the startup fall red; a guard
+    that fired on "current graph is not usable" would red-deploy most of the
+    fleet.
     """
     topology = _active_topology("mono", "active_2_way")
     current = tmp_path / "not-an-active-graph.yml"
@@ -2270,6 +2269,48 @@ def test_an_ordinary_mid_commission_box_still_selects_its_startup_graph(
 
     assert decision.status == "select_active_startup"
     assert decision.ok is True
+
+
+def test_the_identity_hold_still_selects_its_startup_graph(tmp_path: Path) -> None:
+    """Control 2, and the one the guard could actually have broken.
+
+    The #2814 hold is a DIFFERENT shape from the control above: the box's own
+    approved graph is `allowed=True` and carries no issues at all — the rung is
+    skipped because the household has not re-confirmed which driver hangs on
+    each lane, not because the graph is bad. A migration guard that keyed on
+    "we fell past the approved rungs" rather than on the numeric refusal would
+    turn every re-pinned box's deploy red, which is exactly the state the #2814
+    fall is designed to resolve silently.
+
+    Asserted on the graph's own health as well as the status, so this cannot
+    pass by the graph having become unusable for some unrelated reason.
+    """
+    topology = _identity_cleared(_active_topology("mono", "active_2_way"))
+    current = tmp_path / "active_speaker_baseline.yml"
+    current.write_text(
+        _cd_linearized_baseline({"tweeter": [_cd_peak(6245.0, 3.0)]}),
+        encoding="utf-8",
+    )
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current,
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
+    )
+
+    assert roleful_identity_confirmed(topology) is False
+    assert decision.current_graph is not None
+    assert decision.current_graph.allowed is True, (
+        "the hold must skip a HEALTHY graph, or this control tests nothing"
+    )
+    assert decision.current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    assert decision.status == "select_active_startup"
+    assert decision.ok is True
+    assert decision.issues == ()
 
 
 def _isolated_baseline_yaml(

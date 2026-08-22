@@ -24,6 +24,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     _GRID_EDGE_HI_HZ,
     _GRID_EDGE_LO_HZ,
+    _PEAK_EPS_DB,
     _evaluation_grid,
     branch_chain_peak,
     branch_chain_peak_db,
@@ -36,6 +37,11 @@ from jasper.active_speaker.branch_chain import (
     radiating_band_hz,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
+# The runtime re-proof's own float slack, imported rather than restated so the
+# migration corpus asserts the condition the contract actually applies.
+from jasper.active_speaker.runtime_contract import (
+    _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
+)
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 # --------------------------------------------------------------------------- #
@@ -568,36 +574,83 @@ def _old_gate_composed_db(filters, band_hz):
     ))
 
 
+def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
+    """Why the corpus above asserts the charge and not the margin.
+
+    ``headroom_charge_db`` is a STEP: 0.0 at or under :data:`_PEAK_EPS_DB`, and
+    peak + :data:`HEADROOM_MARGIN_DB` above it. So a chain that sat just under
+    unity was charged NOTHING, and its persisted allowance leaves it the
+    runtime's float slack — 1e-3 dB — before the re-proof refuses. Not the
+    1.0 dB every other chain gets.
+
+    A migration bound stated only as "moved less than the margin" is therefore
+    not the condition, and a corpus asserting it would call this class safe.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        _LINEARIZATION_BOOST_EPS_DB,
+    )
+
+    just_under = _PEAK_EPS_DB - 0.002
+    just_over = _PEAK_EPS_DB + 0.0001
+
+    assert headroom_charge_db(just_under) == 0.0
+    # A chain charged nothing has NEGATIVE room: any reading above unity at all
+    # is already past its own allowance plus the slack.
+    assert headroom_charge_db(just_under) + _LINEARIZATION_BOOST_EPS_DB < just_under
+    # One ten-thousandth of a dB higher and the step pays the whole margin.
+    assert headroom_charge_db(just_over) - just_over == pytest.approx(
+        HEADROOM_MARGIN_DB
+    )
+
+
 def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     """**The migration bound, over a corpus rather than an anecdote.**
 
     Every chain here is one the OLD composed gate would have ADMITTED — the
-    population that is actually on hardware — shaped like a prescription
-    (<= 8 Peaking filters inside the shipped tweeter band, Q <= 8, boosts to
-    the per-filter cap). For each, the re-proof survives the deploy iff the
-    reading moved by no more than the margin already baked into its bytes.
+    population that is actually on hardware — at the FIT ENGINE's own rails
+    (``PER_FILTER_BOOST_CAP_DB``, Q <= 8, <= 8 filters in the shipped tweeter
+    band), because the fit emits to hardware too and its per-filter rail is
+    four times the prescription class's.
 
-    Measured worst over this corpus: 0.6186 dB against a 1.0 dB margin, so the
-    fleet migrates. That is NOT the 0.107 dB an earlier revision of this PR
-    claimed — that number came from a population not restricted to
-    old-gate-accepted chains, and the honest one is five times larger.
+    **The condition asserted here is the RUNTIME's, not a paraphrase of it.**
+    The re-proof compares ``peak_new > headroom_charge_db(peak_old) + 1e-3``,
+    and ``headroom_charge_db`` returns 0.0 for any chain at or under
+    :data:`_PEAK_EPS_DB` — so near unity the tolerance is 1e-3, NOT the 1.0 dB
+    margin. A chain peaking at +0.008 dB emits an allowance of 0.000000 and
+    refuses at +0.0099. Asserting the margin alone would have called that
+    class safe.
+
+    So: every chain carrying a REAL charge must still prove, and the near-unity
+    class is counted rather than waved at. Those refuse into the SF-1
+    blocked-deploy path, which names ``baseline-reemit`` — the correct
+    direction, loudly, and the reason "the fleet migrates untouched" is too
+    strong a sentence for them.
+
+    Numbers are MEASURED AT THIS SEED and are not what the assertions pin: the
+    worst move here is 0.3101 dB against a 1.0 dB margin, and other seeds and
+    more clustered populations run higher (a ±12 dB cluster reaches 0.85 dB).
+    That is why the runtime guard is the backstop and this corpus is evidence,
+    not a proof over the whole space.
     """
     from jasper.active_speaker.crossover_v2.driver_prescription import (
         DRIVER_MAX_COMPOSED_BOOST_DB,
-        DRIVER_MAX_FILTER_BOOST_DB,
         DRIVER_MAX_FILTERS_PER_ROLE,
     )
+    from jasper.active_speaker.linearization_fit import PER_FILTER_BOOST_CAP_DB
 
     band = (1600.0, 20_000.0)
     rng = np.random.default_rng(2758)
     accepted = 0
     worst = 0.0
-    for _ in range(600):
+    near_unity_refusals = 0
+    for _ in range(1200):
         filters = [
             _peaking(
                 float(np.exp(rng.uniform(np.log(band[0]), np.log(band[1])))),
                 float(rng.uniform(0.5, 8.0)),
-                float(rng.uniform(-9.0, DRIVER_MAX_FILTER_BOOST_DB)),
+                float(rng.uniform(
+                    -PER_FILTER_BOOST_CAP_DB, PER_FILTER_BOOST_CAP_DB
+                )),
             )
             for _ in range(int(rng.integers(1, DRIVER_MAX_FILTERS_PER_ROLE + 1)))
         ]
@@ -613,13 +666,24 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
         )
         new = branch_chain_peak_db(filters, sections=_HP_1600, trim_db=trim_db)
         worst = max(worst, new - old)
+        proves = new <= headroom_charge_db(old) + _RUNTIME_BOOST_EPS_DB
+        if old > _PEAK_EPS_DB:
+            assert proves, (
+                f"a graph the old gate accepted peaks {new:.4f} dB against the "
+                f"{headroom_charge_db(old):.4f} dB its own bytes set aside — it "
+                "would boot to a graph its own runtime contract refuses"
+            )
+        elif not proves:
+            near_unity_refusals += 1
 
-    assert accepted > 200, "the corpus must actually contain admissible chains"
+    assert accepted > 150, "the corpus must actually contain admissible chains"
     assert worst <= HEADROOM_MARGIN_DB, (
-        f"a graph the old gate accepted moved {worst:.4f} dB, past the "
-        f"{HEADROOM_MARGIN_DB} dB its own bytes set aside — it would boot to a "
-        "graph its own runtime contract refuses"
+        f"a chain moved {worst:.4f} dB, past the {HEADROOM_MARGIN_DB} dB margin"
     )
+    # Bounded, not forbidden: a chain sitting AT unity was charged nothing, so
+    # any upward movement at all refuses it. Rare — under 1 % of this corpus —
+    # and loud when it happens.
+    assert near_unity_refusals <= accepted // 50
 
 
 @pytest.mark.parametrize(
