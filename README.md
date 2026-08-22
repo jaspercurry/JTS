@@ -1042,7 +1042,7 @@ reference. Currently:
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
 - [`llm-native-tuning-workbench-plan.md`](docs/llm-native-tuning-workbench-plan.md)
-  — **Historical design snapshot (2026-07-28)**, superseded 2026-08-21 by
+  — **Historical design plan (proposed 2026-07-28)**, superseded 2026-08-21 by
   `tuning-master-plan.md` above, for the agent-assisted tuning workbench:
   expose existing measurements and DSP capabilities through a factual context
   packet, linked domain-owned evidence, and a reversible cross-layer
@@ -1055,7 +1055,8 @@ reference. Currently:
 - [`tuning-bench-design.md`](docs/tuning-bench-design.md)
   — **Historical design snapshot (2026-07-27)** for the original
   prescriptive tuning-bench shape. Retained for the iLoud-session rationale
-  and audit archaeology; superseded by the LLM-native workbench plan above.
+  and audit archaeology; superseded by the LLM-native workbench plan above —
+  itself superseded; current direction lives in `tuning-master-plan.md`.
 - [`tuning-bench-execution-plan.md`](docs/tuning-bench-execution-plan.md)
   — **Historical execution snapshot (2026-07-27)** for the superseded
   PR-B1..B4 ladder. Retained for repository seams and implementation traps
@@ -1139,7 +1140,9 @@ reference. Currently:
   archaeology, not current behavior.
 - [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
   — **Historical roadmap (owner-ratified 2026-08-14)**, replaced whole
-  2026-08-21 by `tuning-master-plan.md` above, for the audio
+  2026-08-21 by `tuning-master-plan.md` above **except its Ethos section,
+  which stays the program's live guiding principle** (owner re-affirmed
+  2026-08-22; migration tracked as #2865), for the audio
   commissioning program: the ethos rulings (tinker-first/never-nanny,
   rollback reserved for measured regression, probabilistic posture with
   80/20 execution, substrate-over-intervention investment), the pre-run

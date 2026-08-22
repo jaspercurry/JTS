@@ -5,9 +5,9 @@
 > 2026-08-14 and kept taking rulings after that (its Ethos heading below is
 > marked "extended 2026-08-16"). Tagged historical 2026-08-22, superseded by
 > [`tuning-master-plan.md`](tuning-master-plan.md) — "the previous
-> program-wide roadmap for the identical scope. Replaced whole" (that plan's
-> Supersessions section), which is now the planning authority for the
-> measurement/tuning program.
+> program-wide roadmap for the identical scope" (that plan's Supersessions
+> section, which states the one exception below), now the planning authority
+> for the measurement/tuning program.
 >
 > **One carve-out — the
 > [Ethos](#ethos-owner-ratified-2026-08-14-extended-2026-08-16) section below
@@ -18,8 +18,8 @@
 > (`crossover_v2/verification.py` reads its "only the round budget, the
 > plateau, and the safety class end a series" rule;
 > `audio_measurement/program_analysis.py` reads its best-available rule).
-> Migrating the section into the live planning authority is tracked
-> separately. Everything else is preserved for primary-source archaeology —
+> Migrating the section into the live planning authority is tracked as
+> #2865. Everything else is preserved for primary-source archaeology —
 > specific facts (sequencing, wave contents, ratification-pending lists,
 > measurement snapshots) will drift over time. Read the rest for the
 > narrative, not for current state.

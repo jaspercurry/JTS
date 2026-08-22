@@ -263,7 +263,11 @@ the ruling those banners point back to.
 **Superseded (historical-tag or banner + pointer here):**
 
 - `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
-  previous program-wide roadmap for the identical scope. Replaced whole.
+  previous program-wide roadmap for the identical scope. Replaced whole,
+  except the Ethos section — "least bad is still the overall guiding
+  principle", owner re-affirmed 2026-08-22, and three production sites cite
+  that section as their governing rule; migration into this plan is tracked
+  as #2865.
 - `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
   a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
