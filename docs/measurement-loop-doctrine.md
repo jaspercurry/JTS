@@ -67,7 +67,7 @@ component-damage mechanism:
 | # | refusal | file | status |
 |---|---|---|---|
 | a | `BOOST_VERTICALLY_BLIND` | `jasper/active_speaker/crossover_v2/driver_prescription.py` | removal in flight |
-| b | `FC_REJECT_BEAMING` clamps the Fc grid; `candidate_space.py` calls the same prior "guidance, never refuses" (#1675) — self-contradictory | `jasper/active_speaker/crossover_v2/fc_sweep.py` | tracked |
+| b | `FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses" — and section 3 above already files beaming priors as provenance | `jasper/active_speaker/crossover_v2/fc_sweep.py` | tracked |
 | c | `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — refuses on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | tracked |
 | d | `_strategy_gates` score floors; `measurement_evidence_failure`'s fail-severity apply blocker | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | tracked |
 | e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | tracked, most defensible |

@@ -1300,22 +1300,21 @@ heading: what is absent there is a *guard*, not the capture it guards.
    vertical offsets, the household string-and-protractor method does not
    generalize as stated, and the lab arm's elevation capability is undetermined.
    P2 is the consumer that turns that deferral from tidy-later into blocking.
-3. **The forward model and the optimizer — PRESENT since 2026-08-19; a product
-   consumer — MISSING.**
+3. **The forward model — PRESENT since 2026-08-19; the optimizer over it —
+   DELETED, by ruling.**
    The complex-summation predictor is
    [`crossover_v2/forward_model.py`](../jasper/active_speaker/crossover_v2/forward_model.py)
-   (`driver_plants` / `branch_operator` / `predict_sum`), with the candidate it
-   predicts for, and that candidate's legality, in
-   [`crossover_v2/candidate_space.py`](../jasper/active_speaker/crossover_v2/candidate_space.py).
-   Both are pure and fixture-tested, and the enumeration/optimization search
-   over them landed with #2739 as
-   [`crossover_v2/search.py`](../jasper/active_speaker/crossover_v2/search.py);
-   **nothing in the product consumes that search yet**. Two things the
-   predictor's presence does NOT buy, stated here because presence reads as
-   readiness: it has no objective in the grade's own currency, and its delay
-   axis has never been graded against measurement — so it may not yet rank
-   candidates. The bar for that vote is the one the paragraph above sets, and
-   it is unmet.
+   (`driver_plants` / `branch_operator` / `predict_sum`, plus the
+   `XoverCandidate` it predicts for). It is pure and fixture-tested. The
+   enumeration/optimization search over it landed with #2739 and never gained a
+   product consumer; the tuning master plan's ruling R1 deletes it — the
+   candidate space, the objective, and the walk — rather than leaving it to
+   accrete one. What remains is offline **simulated evaluation**: corners are
+   declared by the operator, and the predictor says what a variation of one
+   would measure, at zero capture cost. The two things a ranking would have
+   needed and never had — an objective in the grade's own currency, and a delay
+   axis graded against measurement — are why it may not rank candidates, and
+   why deleting it costs the product nothing it was using.
 4. **A Stage-0 timing acceptance test — MISSING; its bar is declared and its
    precondition is measured.** Pass bar: **relative-phase alignment residual
    ≤ 20 µs (3σ)** — the ~15° at 2 kHz that a ±0.5 dB summation prediction near
@@ -1841,7 +1840,9 @@ answerable by the chain (#2760) trued up gap 3's status line and its
 no-consumer claim, which `crossover_v2/search.py` had falsified since #2739.
 The pass that removed the vertical-plane bar on the owner's 2026-08-21 ruling
 trued up rule 1's last sentence, the P3 table's rows 1 and 4, and the
-paragraph below the table. Every one of those was a claim the change in hand
+paragraph below the table. The pass that deleted the offline search under the
+tuning master plan's ruling R1 trued up gap 3, whose two file links this very
+change made dead. Every one of those was a claim the change in hand
 falsified; none verified anything else here.
 
 Last verified: 2026-08-18

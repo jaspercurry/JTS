@@ -71,7 +71,7 @@ SEARCH_BAND_HZ = (1600.0, 2500.0)
 DECLARED_SLOPE = 24.0
 #: What the speaker is commissioned at today.
 INCUMBENT_HZ = 1648.7
-#: The provenance a real pin carries: the offline search run that proposed it.
+#: The provenance a real pin carries: the banked artifact it was drawn from.
 ARTIFACTS = ("armloop-first-drive-2026-08/offline-fc-search",)
 
 

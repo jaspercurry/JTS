@@ -87,6 +87,7 @@ from jasper.active_speaker.staging import (
 from jasper.active_speaker.test_signal_plan import (
     PROTECTIVE_TWEETER_HP_MULTIPLIER,
     protective_tweeter_highpass_frequency_hz,
+    strictest_crossover_highpass_hz,
 )
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
@@ -773,6 +774,41 @@ def test_declared_floor_reader_takes_the_strictest_highpass_and_nothing_else() -
     assert declared_protection_highpass_floor_hz({
         "required_protection_filters": [{"kind": "highpass", "cutoff_hz": "nope"}]
     }) is None
+
+
+def test_the_crossover_corner_reader_takes_the_highest_because_highpasses_compound(
+) -> None:
+    """``max``, not ``min``: cascaded high-passes compound.
+
+    The preset-side half of the reader pair. The test above pins the
+    DECLARATION's strictest high-pass; this pins the strictest crossover corner
+    that high-passes a role, which is the other number the emit gate compares.
+    A role high-passed at both 800 Hz and 2500 Hz is protected to 2500, so
+    taking the lowest would refuse a fully-protected branch on account of a
+    section that is not the one doing the protecting.
+
+    Ported here by the PR that deleted the offline crossover search. This rule's
+    only direct exercise used to be a candidate-vs-preset corpus that lived
+    beside the search's own candidate-side twin (``candidate_space``'s
+    ``strictest_highpass_hz``), and it went with them; the rule it was covering
+    is on the shipped apply path and stays.
+    """
+
+    topology = mono_output_topology()
+    base = _below_floor_preset(topology)
+    region = base.crossover_regions[0]
+    cascaded = dataclasses.replace(base, crossover_regions=(
+        dataclasses.replace(region, id="lo", fc_hz=800.0, upper_driver="tweeter"),
+        dataclasses.replace(region, id="hi", fc_hz=2500.0, upper_driver="tweeter"),
+    ))
+
+    assert strictest_crossover_highpass_hz(cascaded, "tweeter") == 2500.0
+    # A region whose UPPER driver is someone else high-passes nobody here — the
+    # two-way woofer #2760 is about, which the chain protects outside the split.
+    assert strictest_crossover_highpass_hz(cascaded, "woofer") is None
+    assert strictest_crossover_highpass_hz(
+        dataclasses.replace(base, crossover_regions=()), "tweeter"
+    ) is None
 
 
 def test_floor_comparison_rule_is_greater_or_equal_and_absent_floor_passes() -> None:

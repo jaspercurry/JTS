@@ -4,10 +4,11 @@
 
 """What the speaker will measure, for a candidate nothing has played.
 
-The physics half of the crossover search: measured per-driver responses plus
-one :class:`~jasper.active_speaker.crossover_v2.candidate_space.XoverCandidate`
-give the predicted summed complex response, per angle, with no build and no
-tone.
+Offline simulated evaluation: measured per-driver responses plus one
+:class:`XoverCandidate` give the predicted summed complex response, per angle,
+with no build and no tone. Corners are DECLARED by the operator and this module
+predicts what a variation of one would measure; nothing here ranks candidates
+or recommends a corner.
 
 ``S(f, theta) = sum_role  plant_role(f, theta) * op_role(f)``
 
@@ -27,9 +28,9 @@ re-derivation here would be a defect rather than a convenience.
 **Why the plant is separated.** ``plant = M / P`` divides the emitted
 protection out of the measurement. It is per driver, per angle, and
 CANDIDATE-INDEPENDENT — so it is computed ONCE per capture instead of once per
-candidate, and that is the entire reason a search can run offline. It also puts
-the ill-conditioning rule in one place, evaluated once, rather than in a loop
-that would have to re-decide it thousands of times.
+candidate, and that is the entire reason evaluating a set of variations costs
+no captures. It also puts the ill-conditioning rule in one place, evaluated
+once, rather than in a loop that would have to re-decide it per candidate.
 
 The conditioning policy is shared, not restated:
 :data:`~jasper.audio_measurement.program_analysis.CONFIGURED_PATH_PROTECTION_FLOOR_DB`
@@ -44,8 +45,10 @@ the physical inter-driver gap is already out of the measured pair; phasing that
 pair by the full applied delay counts the gap twice and, in the reverting
 commit's own words, "injects a deep comb into the predicted sum on good
 measurements and fails VERIFY". :attr:`XoverCandidate.delay_us_by_role` is
-therefore a residual in the analysis frame, built through
-:func:`~jasper.active_speaker.crossover_v2.candidate_space.residual_delay_us`.
+therefore a residual in the analysis frame, and the ONE derivation that builds
+one is
+:func:`~jasper.audio_measurement.program_analysis.summed_model_residual_delay_us`
+— call it rather than subtracting by hand.
 At the bare anchor the residual is exactly ``0.0``, and this model then equals
 :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum` at zero
 residual bit for bit — pinned by test, because "the same arithmetic" is a claim
@@ -68,15 +71,77 @@ from jasper.audio_measurement.program_analysis import (
     CONFIGURED_PATH_PROTECTION_FLOOR_DB, ConfiguredPathConditioningError,
 )
 
-from ..branch_chain import chain_response, crossover_response_complex
-from .candidate_space import XoverCandidate
+from ..branch_chain import (
+    CrossoverSection, chain_response, crossover_response_complex,
+)
 
 __all__ = [
     "DriverPlant",
+    "XoverCandidate",
     "branch_operator",
     "driver_plants",
     "predict_sum",
 ]
+
+
+@dataclass(frozen=True)
+class XoverCandidate:
+    """One crossover proposal, in the emitted graph's own vocabulary.
+
+    Five axes over four fields — corner and order share ``sections_by_role`` —
+    all per role, so a three-way is expressible:
+
+    ``sections_by_role``
+        The Linkwitz-Riley sections each branch runs through — corner,
+        order and direction, exactly
+        :func:`~jasper.active_speaker.branch_chain.sections_by_role`'s shape.
+        Slope is ``6 * order`` dB/octave.
+    ``polarity_by_role``
+        ``+1`` or ``-1``, the branch's commanded polarity.
+    ``delay_us_by_role``
+        **RESIDUAL** delay in microseconds, signed, in the analysis frame —
+        never an applied delay. See the module docstring's landmine and
+        :func:`~jasper.audio_measurement.program_analysis.summed_model_residual_delay_us`,
+        which is the one derivation that builds one.
+    ``gain_db_by_role``
+        The emitted per-driver trim in dB, at or below unity.
+
+    Frozen, and EQUAL by content: a caller holding several variations has to be
+    able to say two of them are the same proposal, and comparing mutable objects
+    would make that a claim about object identity rather than about the
+    crossover.
+
+    Not *hashable* by content, and the distinction is worth stating because the
+    docstring this text is descended from claimed it was. The mapping fields are
+    ordinarily ``dict``, so ``frozen=True`` generates a ``__hash__`` that raises
+    ``TypeError: unhashable type: 'dict'`` the moment it is called — measured,
+    not assumed. Deduplicate variations with ``==`` or a list, never a ``set``
+    or a dict key. Wrapping the fields in ``MappingProxyType`` does NOT buy the
+    hash: the proxy delegates to the mapping underneath, so it raises the same
+    way (measured on 3.12). Hashing would need field values that are themselves
+    hashable — sorted tuples of pairs rather than mappings — and a test.
+    """
+
+    sections_by_role: Mapping[str, tuple[CrossoverSection, ...]]
+    polarity_by_role: Mapping[str, int]
+    delay_us_by_role: Mapping[str, float]
+    gain_db_by_role: Mapping[str, float]
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        """Every role this candidate says anything about, sorted.
+
+        The union rather than the intersection: a role carrying a delay but no
+        sections is still a role this candidate asks something about, and
+        :func:`predict_sum` requires every one of them to be present at a pose
+        before it will answer that pose.
+        """
+        return tuple(sorted(
+            set(self.sections_by_role)
+            | set(self.polarity_by_role)
+            | set(self.delay_us_by_role)
+            | set(self.gain_db_by_role)
+        ))
 
 
 @dataclass(frozen=True)
@@ -108,12 +173,15 @@ class DriverPlant:
     left this sentence unchanged; the measured cost was 43 untrusted driven
     bins accepted with the guarantee still claimed.
 
-    **Nothing in this module reads ``trusted``, and that is deliberate rather
-    than an oversight** — said plainly so a reader does not have to work out
-    whether it is dead. Its consumer is the objective, and the contract that
-    consumer must honour is the paragraph above: where a caller narrowed the
-    required band, a grade computed over the predicted sum has to mask by
-    ``trusted`` rather than assume it. That answer is a property of the CAPTURE
+    **No PRODUCTION code reads ``trusted``: not this module, and not any
+    consumer anywhere in the tree** — said plainly so a reader does not have to
+    work out whether it is dead. Its contract is held by test instead
+    (``test_the_trusted_guarantee_holds_over_the_band_that_was_required``), and
+    it is published rather than dropped because it is the honest record of a
+    division this function already performed: where a caller narrows the
+    required band, anything grading the predicted sum has to mask by ``trusted``
+    outside that span rather than assume it, and a grade that assumed it would
+    be reading noise as response. That answer is a property of the CAPTURE
     rather than of any candidate, so it is derived once, here, where the
     division that produced it happens, instead of per candidate by whoever
     grades one.
@@ -178,9 +246,9 @@ def driver_plants(
     is about -30 dB at 4 kHz, inside a woofer's 150-4000 Hz sweep. Every banked
     armrun arm refused that way, for a de-embedding that provably cancels.
     **The narrowing is the caller's to declare, not this function's to assume**,
-    because which band a search depends on is a property of the candidate — and
-    a ``P`` that contains a crossover is the misuse named below, whose honest
-    answer really is a refusal until the caller says which span it needs.
+    because which band an evaluation depends on is a property of the candidate
+    — and a ``P`` that contains a crossover is the misuse named below, whose
+    honest answer really is a refusal until the caller says which span it needs.
 
     ``P`` is the EMITTED protection — what the graph actually ran during this
     capture. On a MEASURE capture that is the per-driver protective high-pass,
@@ -265,15 +333,16 @@ def branch_operator(
     ``linearization_by_role`` carries each role's correction biquads as the
     plain ``{biquad_type, freq, q, gain}`` records
     :func:`~jasper.active_speaker.branch_chain.chain_response` speaks. Absent
-    or empty means ``K = 1``: an uncorrected branch. **Held FIXED across a
-    search** — the shipped sweep re-fits it per candidate, and re-fitting
-    thousands of times is exactly what makes an offline search impossible. The
-    bias that introduces is systematic and named: the model predicts "this
-    crossover with the CURRENT linearization" while an applied round emits
-    "this crossover with a linearization re-fit THROUGH it", and the two differ
-    most near Fc, where the crossover moved most. Scoring a candidate both ways
-    — fitted ``K`` and ``K = 1`` — is what tells a reader whether a win
-    survives the term the model is holding still.
+    or empty means ``K = 1``: an uncorrected branch. **Held FIXED across a set
+    of variations** — the shipped sweep re-fits it per candidate, and a re-fit
+    per candidate is exactly what would put a build back into an evaluation
+    that is meant to cost none. The bias that introduces is systematic and
+    named: the model predicts "this crossover with the CURRENT linearization"
+    while an applied round emits "this crossover with a linearization re-fit
+    THROUGH it", and the two differ most near Fc, where the crossover moved
+    most. Predicting a candidate both ways — fitted ``K`` and ``K = 1`` — is
+    what tells a reader whether a difference survives the term the model is
+    holding still.
 
     The multiplication order is load-bearing at the one place it can be:
     ``polarity`` and the gain are applied so that a unity candidate at zero
@@ -316,9 +385,9 @@ def predict_sum(
     """This candidate's predicted complex sum at every angle in ``plants``.
 
     ``{angle_deg: S(f)}``, complex and on each angle's own grid. Complex rather
-    than dB because the caller decides what to do with it — the objective takes
-    a magnitude, a null-depth check wants the phase, and converting here would
-    throw half of it away.
+    than dB because the caller decides what to do with it — a flatness reading
+    takes a magnitude, a null-depth check wants the phase, and converting here
+    would throw half of it away.
 
     **A pose is answered only when EVERY role the candidate names is present at
     it.** A half-measured angle is dropped rather than summed, because every
@@ -343,9 +412,9 @@ def predict_sum(
 
     **Each branch operator is evaluated once per grid, not once per angle**,
     which is the point of :func:`branch_operator` taking no angle. Six poses on
-    one grid cost two operator evaluations rather than twelve, and a search
-    running thousands of candidates over those poses pays the difference every
-    time. Keyed on the grid's own bytes rather than on object identity, so two
+    one grid cost two operator evaluations rather than twelve, and evaluating a
+    set of variations over those poses pays the difference every time. Keyed on
+    the grid's own bytes rather than on object identity, so two
     equal-but-distinct arrays share correctly and two different grids never
     collide.
     """

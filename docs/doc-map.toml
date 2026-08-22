@@ -899,7 +899,6 @@ requires_docs_when = [
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
   "The v2 crossover commission session (excitation program, phase state machine, session volume plan, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
   "The flat-linearization measurement basis (spatial capture cloud, combining estimator, interference exclusion screen, spec tolerances, or closed-loop policy) changes — scan flat-linearization-plan.md.",
-  "The offline crossover search's ranking authority, its bracket contract, or the prediction document's schema/provenance changes (jasper/active_speaker/crossover_v2/{search,objective,candidate_space,forward_model}.py) — scan measurement-loop-doctrine.md, whose authority model is what the bracket implements.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",

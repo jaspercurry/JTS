@@ -42,27 +42,20 @@ order — so this list is what exists, not a plan:
 * :mod:`.vocabulary` — what the household is told when a round refuses: the
   reason codes, their copy and retry budgets, and the verdict that carries them.
 
-The offline crossover search is four modules that compose in one direction —
-legality, then physics, then worth, then the walk — and each is usable on its
-own:
+Offline evaluation, deliberately not a search:
 
-* :mod:`.candidate_space` — which crossovers a session may be ASKED about: the
-  bounds its declarations imply, and the named refusal for every point outside
-  them.
 * :mod:`.forward_model` — what a candidate nothing has played WILL measure,
-  from per-driver plants and the shipped filter arithmetic.
-* :mod:`.objective` — what a predicted sum is WORTH, in the currency the
-  hardware round grades in, as a per-chunk profile rather than a scalar.
-* :mod:`.search` — the walk over the legal space, returning a BRACKET around
-  the flat minimum rather than a winner, because
-  :data:`~jasper.active_speaker.crossover_v2.search.RANKING_AUTHORITY_BRACKET_ONLY`
-  is all the model has earned.
+  from per-driver plants and the shipped filter arithmetic, together with the
+  :class:`~jasper.active_speaker.crossover_v2.forward_model.XoverCandidate`
+  value it predicts for. Corners are DECLARED by the operator; this module
+  predicts what a variation of one would measure, at zero capture cost, and
+  nothing here ranks candidates or recommends a corner.
 
-Only :mod:`.contracts` is re-exported below, and the four modules above are
-deliberately not added to it: three of them pull ``numpy`` and the measurement
-stack at import, so re-exporting them would make every importer of this package
-pay for a search it is not running. The rest are imported by module path for
-the same reason.
+Only :mod:`.contracts` is re-exported below, and :mod:`.forward_model` is
+deliberately not added to it: it pulls ``numpy`` and the measurement stack at
+import, so re-exporting it would make every importer of this package pay for a
+prediction it is not running. The rest are imported by module path for the
+same reason.
 
 The list above is deliberately unnumbered.  A stated count goes stale the next
 time a module arrives or leaves — as one did in #2291 Phase 5c-iii — and a
