@@ -1129,26 +1129,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       {value: 'compression_horn', label: 'Compression horn'}
     ];
   }
-  // A driver is either a round radiator (diameter matters, feeds the ka
-  // guidance below) or horn-loaded (coverage angle matters instead) or,
-  // for ribbon/AMT, neither simple shape applies. Mutually exclusive by
-  // design -- see design_draft.py's _normalise_driver_common docstring.
-  function driverClassGeometryField(driverClass) {
-    if (driverClass === 'compression_horn') return 'horn';
-    if (driverClass === 'ribbon_amt') return 'none';
-    return 'diameter';
+  // A round radiator has a radiating diameter, and that diameter is what the
+  // ka beaming guidance below reads. Horn-loaded and ribbon/AMT drivers do
+  // not: no simple piston diameter describes either, so the wizard asks for
+  // no geometry at all and the guidance stays silent for that driver.
+  // Waveguide identity and nominal coverage belong in this driver's notes as
+  // prose (#2872) -- there is no structured coverage field, because nothing
+  // ever computed from one. See design_draft.py's _normalise_driver_common.
+  function driverClassHasRadiatingDiameter(driverClass) {
+    return driverClass !== 'compression_horn' && driverClass !== 'ribbon_amt';
   }
   function driverClassGeometryFieldHtml(targetId, setting) {
-    var field = driverClassGeometryField(setting.driver_class || 'unknown');
-    if (field === 'horn') {
-      return driverSafetyNumberField(targetId, setting, 'horn_coverage_deg',
-        'Horn nominal coverage', {min: 1, max: 360, placeholder: 'degrees'});
-    }
-    if (field === 'diameter') {
-      return driverSafetyNumberField(targetId, setting, 'radiating_diameter_mm',
-        'Radiating diameter', {min: 1, placeholder: 'mm'});
-    }
-    return '';
+    if (!driverClassHasRadiatingDiameter(setting.driver_class || 'unknown')) return '';
+    return driverSafetyNumberField(targetId, setting, 'radiating_diameter_mm',
+      'Radiating diameter', {min: 1, placeholder: 'mm'});
   }
   // #1665: an operator-declared in-line pad (L-pad / series resistor / a
   // purchased fixed attenuator). A PHYSICAL fact about how the driver is
@@ -1470,10 +1464,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     driverResearch.editedDriverTargets[targetId] = true;
     invalidateDriverResearchBinding();
     // driver_class/pad_kind each gate which OTHER fields this row shows
-    // (diameter vs horn coverage; resistor inputs vs the direct-dB input) --
-    // unlike every other manual-driver field above, a selection here must
-    // re-render immediately or the newly-relevant field stays hidden until
-    // some unrelated action repaints the page. Mirrors
+    // (a radiating diameter or nothing; resistor inputs vs the direct-dB
+    // input) -- unlike every other manual-driver field above, a selection
+    // here must re-render immediately or the newly-relevant field stays
+    // hidden until some unrelated action repaints the page. Mirrors
     // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
     if (field === 'driver_class' || field === 'pad_kind') render();
   }
@@ -1643,8 +1637,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'recommended_lowpass_hz',
         'do_not_test_below_hz',
         'gain_offset_db',
-        'radiating_diameter_mm',
-        'horn_coverage_deg'
+        'radiating_diameter_mm'
       ].forEach(function(field) {
         var value = manualNumberValue(setting[field]);
         if (value != null) out[field] = value;
@@ -1682,7 +1675,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driver.do_not_test_below_hz != null ||
         driver.gain_offset_db != null ||
         driver.radiating_diameter_mm != null ||
-        driver.horn_coverage_deg != null ||
         driver.driver_class ||
         driver.cabinet ||
         driver.pad ||
@@ -1790,20 +1782,19 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ].forEach(function(field) {
       if (limits[field] != null) setting[field] = limits[field];
     });
-    // #1665: driver_class/radiating_diameter_mm/horn_coverage_deg are
-    // AI-researchable, so this unpacks them the same as every other
-    // researched field above. pad never appears in research JSON (it is
-    // operator-only), but IS present here when `driver` is a persisted
-    // manual_settings.drivers[] record reloaded after a save (ingestDesignDraft
-    // merges the whole record onto `setting` first, so setting.pad already
-    // holds the server-computed attenuation_db/effective_impedance_ohm before
-    // this runs -- see renderDriverPadSettings' read-only readout, which
-    // reads setting.pad directly rather than the pad_* input fields below).
+    // #1665: driver_class/radiating_diameter_mm are AI-researchable, so this
+    // unpacks them the same as every other researched field above. pad never
+    // appears in research JSON (it is operator-only), but IS present here
+    // when `driver` is a persisted manual_settings.drivers[] record reloaded
+    // after a save (ingestDesignDraft merges the whole record onto `setting`
+    // first, so setting.pad already holds the server-computed
+    // attenuation_db/effective_impedance_ohm before this runs -- see
+    // renderDriverPadSettings' read-only readout, which reads setting.pad
+    // directly rather than the pad_* input fields below).
     if (driver.driver_class) setting.driver_class = driver.driver_class;
     if (driver.radiating_diameter_mm != null) {
       setting.radiating_diameter_mm = driver.radiating_diameter_mm;
     }
-    if (driver.horn_coverage_deg != null) setting.horn_coverage_deg = driver.horn_coverage_deg;
     var pad = driver.pad || null;
     if (pad && pad.kind) {
       setting.pad_kind = pad.kind;
@@ -3107,10 +3098,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // grown acoustically large enough to narrow its directivity (ka=1) or beam
   // outright (ka=2) -- a geometry limit no EQ curve can correct. Circular-
   // piston approximation, so only meaningful when the driver has a declared
-  // radiating_diameter_mm (never shown otherwise -- e.g. ribbon/AMT or an
-  // undeclared driver). Bessel beamwidth-vs-horn-coverage matching is
-  // DEFERRED (see driverClassGeometryField above) -- not this slice, #1675
-  // tracks it.
+  // radiating_diameter_mm (never shown otherwise -- e.g. a horn-loaded or
+  // ribbon/AMT driver, or an undeclared one; see
+  // driverClassHasRadiatingDiameter above). This is the whole of #1675, which
+  // closed 2026-08-08: matching a woofer's beamwidth against a waveguide's
+  // rated coverage was never built, and the structured coverage field that
+  // waited for it is gone (#2872).
   function kaBeamingNoteHtml(pair, fcRaw, topology) {
     var target = driverResearchTargets(topology).filter(function(item) {
       return item.role === pair[0];

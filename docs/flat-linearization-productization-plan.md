@@ -643,8 +643,9 @@ and persists/serves its results:
   contract-derived value at the call site (the pure module keeps its
   parameter). The honesty instruments (detector, combiner, null gate,
   this wiring) add **no** class- or device-keyed branches; within this
-  program's new surfaces, `driver_class` / `horn_coverage_deg` inform
-  display copy only. Be aware the *existing* fit stack already
+  program's new surfaces, `driver_class` informs display copy only
+  (`horn_coverage_deg`, named here alongside it, was deleted by #2872).
+  Be aware the *existing* fit stack already
   dispatches on **declared** `driver_class` — `class_prior_limit`'s
   `_CLASS_PRIOR_FULL_TO_HZ` table inside `compose_envelope`, and
   `HF_CONTINUATION_POLICY` in `linearization_fit` — which is

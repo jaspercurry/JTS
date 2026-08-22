@@ -25,6 +25,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology
 
+from ._common import LEGACY_DROPPED_DRIVER_FIELDS
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     HIGH_FREQUENCY_ROLES,
@@ -95,7 +96,6 @@ _MANUAL_DRIVER_FIELDS = {
     # threads manual_settings straight through), so it must accept them too.
     "driver_class",
     "radiating_diameter_mm",
-    "horn_coverage_deg",
     "pad",
 }
 _MANUAL_CANDIDATE_FIELDS = {
@@ -819,17 +819,13 @@ _V2_RESEARCH_DRIVER_FIELDS = {
     "notes",
     "sources",
     # #1665 component entry: build_driver_research_prompt asks for
-    # driver_class and radiating_diameter_mm. horn_coverage_deg is still
-    # accepted here but is no longer requested -- Bessel beamwidth matching
-    # (#1675) is deferred, so nothing computes from it today; a reply that
-    # still carries it normalises exactly as before. pad is not prompted
+    # driver_class and radiating_diameter_mm. pad is not prompted
     # (operator-only fact) but is accepted here too for structural parity
     # with the shared _normalise_driver_common schema -- a v2 result never
     # legitimately carries it, but rejecting it here would just be a second,
     # redundant place that gate could drift.
     "driver_class",
     "radiating_diameter_mm",
-    "horn_coverage_deg",
     "pad",
 }
 _V2_RESEARCH_CANDIDATE_FIELDS = {
@@ -883,7 +879,10 @@ def validate_driver_research_result_shape(raw: Any) -> None:
         _reject_unknown_keys(
             driver,
             f"driver_research.drivers[{index}]",
-            _V2_RESEARCH_DRIVER_FIELDS,
+            # Tolerated, never stored: a persisted v2 result from an older
+            # build (or a chat that still volunteers the key) passes this gate
+            # and is dropped by _normalise_driver_common's explicit output.
+            _V2_RESEARCH_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
         )
         _reject_bool_tree(driver, f"driver_research.drivers[{index}]")
     for index, candidate in enumerate(
@@ -1429,8 +1428,6 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     #                            "Operator research" fallback.
     #   recommended_lowpass_hz-- no computational consumer; an Advanced field
     #                            the operator can type.
-    #   horn_coverage_deg     -- same, and its intended consumer (ka-beaming
-    #                            guidance) is not built yet.
     #   gain_offset_db        -- a guessed level that outranks a derived one.
     #                            The browser tags an imported gain
     #                            "research_estimate", and baseline_profile's
@@ -1691,7 +1688,13 @@ def _normalise_profile_manual_settings(
         field_name = f"manual_settings.drivers[{index}]"
         if not isinstance(raw, Mapping):
             raise DriverSafetyProfileError(f"{field_name} must be an object")
-        _reject_unknown_keys(raw, field_name, _MANUAL_DRIVER_FIELDS)
+        # Tolerated, never stored: same legacy-key contract as design_draft's
+        # own manual-driver gate, which re-validates this record.
+        _reject_unknown_keys(
+            raw,
+            field_name,
+            _MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+        )
         _reject_bool_tree(raw, field_name)
         driver: dict[str, Any] = {
             "role": _text(

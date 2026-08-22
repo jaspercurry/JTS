@@ -22,7 +22,12 @@ from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.output_topology import OutputTopology
-from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, DRIVER_CLASSES, issue as _issue
+from ._common import (
+    ACTIVE_CROSSOVER_ROLE_PAIRS,
+    DRIVER_CLASSES,
+    LEGACY_DROPPED_DRIVER_FIELDS,
+    issue as _issue,
+)
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
@@ -84,14 +89,11 @@ _MANUAL_DRIVER_FIELDS = {
     "cabinet",
     "source",
     # #1665 component entry. driver_class/radiating_diameter_mm are
-    # AI-researchable (see driver_safety's research prompt);
-    # horn_coverage_deg is still accepted but no longer asked for -- Bessel
-    # beamwidth matching (#1675) is deferred; pad is deliberately NOT
-    # researched -- the operator is the only one who knows what resistors
-    # they actually wired in.
+    # AI-researchable (see driver_safety's research prompt); pad is
+    # deliberately NOT researched -- the operator is the only one who knows
+    # what resistors they actually wired in.
     "driver_class",
     "radiating_diameter_mm",
-    "horn_coverage_deg",
     "pad",
 }
 _CANDIDATE_FIELDS = {
@@ -345,13 +347,6 @@ def _driver_class(raw: Any, field_name: str) -> str | None:
     return value
 
 
-def _horn_coverage_deg(raw: Any, field_name: str) -> float | None:
-    value = _positive_float(raw, field_name)
-    if value is not None and value > 360:
-        raise ActiveSpeakerDesignDraftError(f"{field_name} must be <= 360")
-    return value
-
-
 def _normalise_driver_common(
     raw: Any,
     prefix: str,
@@ -422,17 +417,15 @@ def _normalise_driver_common(
         # #1665 component entry: physical facts about the driver itself, not
         # a safety limit. driver_class feeds
         # linearization_envelope.compose_envelope's class_prior_limit term;
-        # radiating_diameter_mm/horn_coverage_deg are the ka-beaming-guidance
-        # inputs (#1675) and are mutually exclusive by driver geometry (a
-        # piston has a diameter, a horn has a coverage angle).
+        # radiating_diameter_mm is the ka-beaming input (#1675, closed
+        # 2026-08-08) behind the /sound/ crossover hint and, on the pinned
+        # prescription path, correction_crossover_v2's disclosure-only beaming
+        # ceiling. pad is the third component-entry field and is parsed below,
+        # outside the safety normaliser, for the reason stated there.
         "driver_class": _driver_class(raw.get("driver_class"), f"{prefix}.driver_class"),
         "radiating_diameter_mm": _positive_float(
             raw.get("radiating_diameter_mm"),
             f"{prefix}.radiating_diameter_mm",
-        ),
-        "horn_coverage_deg": _horn_coverage_deg(
-            raw.get("horn_coverage_deg"),
-            f"{prefix}.horn_coverage_deg",
         ),
     }
     if include_sources:
@@ -481,7 +474,15 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     # chosen for driver safety. New UI-generated sensitivity proposals send
     # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
     raw = _mapping(raw, "manual_settings.driver")
-    _reject_unknown_keys(raw, "manual_settings.driver", _MANUAL_DRIVER_FIELDS)
+    # Tolerated, never stored: a retired key still on disk from an older build
+    # passes the gate and is dropped by the explicit output dict below, so a
+    # draft saved before the deletion stays saveable. See
+    # LEGACY_DROPPED_DRIVER_FIELDS.
+    _reject_unknown_keys(
+        raw,
+        "manual_settings.driver",
+        _MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+    )
     driver = _normalise_driver_common(
         raw,
         "manual_settings.driver",
@@ -890,15 +891,13 @@ _V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
         "crossover_search_band_hz",
         "level_duration_limits",
         "cabinet",
-        # #1665 component entry: driver_class/radiating_diameter_mm/
-        # horn_coverage_deg are researchable, so a stale bound packet must be
-        # caught the same way as any other editable field. pad is never
-        # researched (never present on a research_driver), so this entry is
-        # inert for it -- included anyway for consistency with the other
-        # three allowlists that all gained the same four keys together.
+        # #1665 component entry: driver_class/radiating_diameter_mm are
+        # researchable, so a stale bound packet must be caught the same way as
+        # any other editable field. pad is never researched (never present on
+        # a research_driver), so this entry is inert for it -- included anyway
+        # for consistency with the other allowlists, which carry the same keys.
         "driver_class",
         "radiating_diameter_mm",
-        "horn_coverage_deg",
         "pad",
     })
 

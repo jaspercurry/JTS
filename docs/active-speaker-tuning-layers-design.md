@@ -1068,8 +1068,11 @@ seeds, and from what:
   The collapse to one owner has landed: `crossover_preview.SCHEMA_VERSION` was
   bumped to 2 precisely so a preview saved before it — carrying un-derived
   driver payloads — cannot be reused (#2603). The woofer's breakup ceiling and
-  the horn's coverage bound the choice from above; `radiating_diameter_mm`
-  feeds #1675's ka-beaming hint (`branch_chain.beaming_onset_hz`).
+  the horn's coverage bound the choice from above **as acoustics**, but only
+  the first of the two has a declared field the code reads:
+  `radiating_diameter_mm` feeds #1675's ka-beaming hint
+  (`branch_chain.beaming_onset_hz`), while coverage rides the driver notes as
+  operator prose since #2872 deleted the structured field nothing consumed.
 - **A protection slope, not a crossover order.** Worth separating, because the
   two are easy to conflate: the *crossover* filter's type and order are
   declared, not derived. What the low limit's slope condition derives is the
@@ -1648,10 +1651,12 @@ beryllium_diamond_dome/ribbon_amt/unknown — `DRIVER_CLASSES` in
 feeds the correction-envelope's `class_prior_limit` term, which takes the
 declared class and nothing else; the declared in-line pad
 (`jasper/active_speaker/driver_pad.py`) feeds the effective-sensitivity
-readers (`declared_effective_driver_sensitivities`); `radiating_diameter_mm`
-feeds #1675's simple-v1 ka-beaming crossover hint in `/sound/`; and
-`horn_coverage_deg` is a declaration/display surface only until #1675's
-Bessel beamwidth match lands. **Still open:** the
+readers (`declared_effective_driver_sensitivities`); and
+`radiating_diameter_mm` feeds #1675's ka-beaming crossover hint in `/sound/`.
+A fourth declared field, `horn_coverage_deg`, was collected for a Bessel
+beamwidth match that was never built; #2872 deleted it, and a waveguide's
+identity and rated coverage now travel as operator prose in that driver's
+notes. **Still open:** the
 SPEAKER-level class this table's columns describe (2-way / 3-way / passive)
 is not yet driven by a component-entry step — that routing is #1669/#1671's
 job — and the research-prefill auto-populate + full consumed-value-audit
@@ -1729,10 +1734,10 @@ slice landed 2026-07-24; JTS3 hardware validation and the research-prefill-
 audit portion still open) · #1666 apply promotion · #1667 trim-band bias
 (ripple-optimal solve landed 2026-07-24, Phase 3; JTS3 hardware re-verify
 still open) · #1668 driver linearization (this doc's Phase 2) · #1669 3-way · #1670
-rename · #1671 passive-class UX · #1672 mic HF arbitration · #1675 ka-
-beaming crossover guidance (simple v1 landed alongside #1665; Bessel
-beamwidth-vs-horn-coverage matching and the JTS3 Fc re-tune bench
-experiment remain open).
+rename · #1671 passive-class UX · #1672 mic HF arbitration. (#1675 ka-beaming
+crossover guidance closed 2026-08-08: the `radiating_diameter_mm` hint
+shipped, and the beamwidth-vs-horn-coverage match it once contemplated was
+never built — #2872 has since deleted the coverage field left waiting for it.)
 
 Opened since, and load-bearing for the 2026-08-17 rulings: #2600 blend-window
 instrument blindness · #2603 the driver low-limit's two declared values ·
@@ -1856,7 +1861,7 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, six times
+**The `Last verified:` footer below was deliberately NOT bumped**, nine times
 now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
@@ -1879,7 +1884,11 @@ same ruling (ticket 2.3) trued up the Measurement Program v2 section's
 "currently paused" framing, its PR #2717 bullet, and constraint 1's dangling
 flag pointer, plus Stage P2's STATUS line and lead-in, its ruling-that-gated-it
 and Option (a) paragraphs, its per-angle-per-driver-capture bullet, and the
-per-pose-replay parenthesis below. Every one of those was a claim the change
-in hand falsified; none verified anything else here.
+per-pose-replay parenthesis below. The pass that deleted `horn_coverage_deg`
+(#2872) trued up the two places this file called its Bessel-beamwidth consumer
+pending: the speaker-class section's landed-so-far list, and the issue
+ledger's #1675 entry, which had gone on calling a completed issue open. Every
+one of those was a claim the change in hand falsified; none verified anything
+else here.
 
 Last verified: 2026-08-18
