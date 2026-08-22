@@ -780,7 +780,11 @@ class CamillaController:
         "make it match its siblings" is the tempting wrong edit — but this call
         mutates nothing, and the live-graph boundary
         (``runtime_contract.classify_active_bass_extension_graph``) invokes it
-        from *inside* that lock via ``commissioning_runtime._run_locked``.
+        from *inside* that lock on live paths — among them
+        ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
+        apply) and ``multiroom.follower_config``'s
+        ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``.
+        Those are examples, not an exhaustive set.
 
         What taking the lock would actually cost, stated precisely because an
         earlier version of this note overstated it as a hang: the writer lock is

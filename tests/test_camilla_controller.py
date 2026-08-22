@@ -944,8 +944,11 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     """The canonicalizer must stay lock-free, or live commissioning times out.
 
     ``runtime_contract.classify_active_bass_extension_graph`` calls
-    ``normalize_config_raw`` from INSIDE the DSP writer lock — via
-    ``commissioning_runtime._run_locked``. Its neighbours
+    ``normalize_config_raw`` from INSIDE the DSP writer lock — among them
+    ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
+    apply) and ``multiroom.follower_config``'s
+    ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``; those
+    are examples, not an exhaustive set. Its neighbours
     ``set_active_config_raw`` and ``patch_config`` both take
     ``camilla_graph_mutation``, so making this one "consistent" with them is a
     plausible three-line edit.
