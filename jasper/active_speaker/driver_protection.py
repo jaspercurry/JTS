@@ -347,14 +347,23 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     ``test_signal_plan.declared_protection_floor_hz`` — so a floor BELOW the
     class default now admits a tone the class default used to refuse. That is
     the point: refusing a tone whose protective high-pass sits at the
-    manufacturer's own published figure was the #2603 bug. What bounds the
-    residual is unchanged and lives outside this read: the emitted graph's
-    protective high-pass sits AT that floor and ``graph_safety`` proves it, the
-    ``path_safety`` load gate refuses a below-floor candidate, the preview
+    manufacturer's own published figure was the #2603 bug.
+
+    What bounds the residual sorts into TWO classes, and only the second is
+    independent of the declaration. Moving WITH it: the staged high-pass, the
+    fc-floor refusals, and the band stamps all track the declared number, so a
+    wrong-low declaration relaxes them together — they are consistency, not a
+    stop. Standing INDEPENDENT of it: ``graph_safety``'s absolute
+    ``TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`` corner (which is all that module
+    contributes here — its own SCOPE block routes the per-driver *designed*-Fc
+    question to ``path_safety`` instead, and it never reads a declared floor),
+    :attr:`DriverProtectionProfile.floor_test_frequency_hz`, and the level
+    ceilings plus the operator-gated ramp. The declared floor's own emit-time
+    prover is ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``,
+    with ``path_safety`` refusing a below-floor candidate at load; the preview
     DISCLOSES a declared limit under its class default
-    (``low_limit_below_style_default``), the research-reply intake refuses an
-    implausible figure before it can become one, and the naked-tone level
-    ceiling is untouched.
+    (``low_limit_below_style_default``), and the research-reply intake refuses
+    an implausible figure before it can become one.
 
     ``None`` means *no floor is declared* — never a guessed default. Consumers
     must treat that as "unchanged behaviour", not as "floor of zero" and not as
@@ -630,10 +639,14 @@ def driver_low_limit_plausible(
     Inclusive at both edges. A garbage catcher, never a judgement about whether
     a published number is wise: what actually protects the driver at a low
     declared figure is the derived protective high-pass sitting AT that
-    frequency (proved in the emitted graph by ``graph_safety``), the absolute
-    corner floor that module owns, the commissioning high-pass at a multiple of
-    the crossover corner, the ``path_safety`` load gate, and the excitation
-    level ceilings -- none of which this factor touches.
+    frequency (proved at emit by
+    ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``), the
+    absolute ``graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`` corner (which
+    is that module's whole contribution here — it never reads a declared floor,
+    and its own SCOPE block routes the per-driver *designed*-Fc question to
+    ``path_safety``), the commissioning high-pass at a multiple of the crossover
+    corner, the ``path_safety`` load gate, and the excitation level ceilings --
+    none of which this factor touches.
 
     The one predicate behind both arms of the #2874 author split, which is why
     it answers only *believable?* and never *what happens next?*: an

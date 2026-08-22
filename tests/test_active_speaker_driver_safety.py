@@ -1990,39 +1990,120 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
     """The warning must survive shape validation to be read at all.
 
     ``_validate_driver_safety_profile_shape`` caps an issue's fields, and a
-    message over its cap lands the WHOLE profile ``malformed`` -- the loudest
-    possible way to say nothing. Pinned against the longest render this warning
-    has: the longest registered style name, and an out-of-band value on both
-    sides of the band.
+    message over its cap lands the WHOLE profile ``malformed``, which makes
+    ``build_driver_safety_profile`` refuse the save -- so an overrun does not
+    degrade a disclosure, it REFUSES the out-of-band declaration the disclosure
+    exists to permit.
 
-    The caps are READ from the validator rather than restated here, the same
-    way ``_emittable_reason_codes`` reads the reason vocabulary, so raising or
-    lowering one there cannot leave this test measuring a bound that is gone.
+    ``driver_style`` is FREE-FORM up to 80 characters (``output_topology``
+    accepts any safe id), so this grids an UNREGISTERED maximum-length style,
+    not just the longest registered one, and an absurd hand-edited cutoff --
+    the two operator-reachable inputs that made the rendered length unbounded.
+
+    The caps come from the module's own constant rather than being restated
+    here, so raising or lowering one there cannot leave this test measuring a
+    bound that is gone.
     """
 
-    from jasper.active_speaker.driver_safety import _target_low_limit_warnings
+    from jasper.active_speaker.driver_safety import (
+        PROFILE_ISSUE_FIELD_MAX_CHARS as caps,
+        _target_low_limit_warnings,
+    )
 
-    source = Path(driver_safety_module.__file__).read_text()
-    caps = {
-        field: int(chars)
-        for field, chars in re.findall(
-            r'\("(severity|code|message)", (\d+)\)', source
-        )
-    }
-    assert set(caps) == {"severity", "code", "message"}, caps
+    registered = [style for style, _ in _TWEETER_STYLE_FLOORS]
+    # 80 chars of safe-id, which POST /output-topology accepts verbatim.
+    unregistered_max = "a" + "b" * 79
+    assert len(unregistered_max) == 80
 
-    longest_style = max((style for style, _ in _TWEETER_STYLE_FLOORS), key=len)
-    for cutoff_hz in (1.5, 999999.5):
+    for style in [*registered, unregistered_max, "", "a" * 40]:
+        for cutoff_hz in (1e-6, 1.5, 999999.5, 1.79769e308):
+            target = {
+                "role": "tweeter",
+                "required_protection_filters": [
+                    {"kind": "highpass", "cutoff_hz": cutoff_hz},
+                ],
+            }
+            if style:
+                target["driver_style"] = style
+            warnings = _target_low_limit_warnings(target)
+            assert warnings, (style, cutoff_hz)
+            for field, cap in caps.items():
+                assert len(warnings[0][field]) <= cap, (
+                    field, style, cutoff_hz, len(warnings[0][field]),
+                )
+
+    # ...and the fit is bought by ellipsizing the operator's free text, never by
+    # eating the guidance. On every REGISTERED style at a realistic cutoff the
+    # message renders whole: the style appears verbatim and the closing
+    # instruction survives. A copy change that pushed the ordinary case into the
+    # backstop would fail here rather than silently shipping a cut sentence.
+    for style in registered:
         warnings = _target_low_limit_warnings({
             "role": "tweeter",
-            "driver_style": longest_style,
+            "driver_style": style,
             "required_protection_filters": [
-                {"kind": "highpass", "cutoff_hz": cutoff_hz},
+                {"kind": "highpass", "cutoff_hz": 1.5},
             ],
         })
-        assert warnings, (longest_style, cutoff_hz)
-        for field, cap in caps.items():
-            assert len(warnings[0][field]) <= cap, (field, warnings[0][field])
+        message = warnings[0]["message"]
+        assert style in message, (style, message)
+        assert message.endswith("is right."), message
+        assert "..." not in message, message
+
+    # ...and on the 80-character style the cut lands on the STYLE, not on the
+    # sentence. Both halves matter: an ellipsis proves the free text was
+    # shortened, and the surviving closing instruction proves the guidance was
+    # not what got eaten. Clamping only at the end -- letting the final
+    # cap-fit truncate the tail -- would keep the save working and still lose
+    # the one clause that tells the household what to check.
+    long_style_warning = _target_low_limit_warnings({
+        "role": "tweeter",
+        "driver_style": unregistered_max,
+        "required_protection_filters": [
+            {"kind": "highpass", "cutoff_hz": 1.5},
+        ],
+    })[0]["message"]
+    assert "..." in long_style_warning, long_style_warning
+    assert long_style_warning.endswith("is right."), long_style_warning
+    assert unregistered_max not in long_style_warning, long_style_warning
+
+    # The surface this actually broke: the SAVE. An 80-character style plus an
+    # out-of-band declaration used to render a 334-char message, fail shape
+    # validation, and make the builder raise "incoherent artifact" -- refusing
+    # the declaration outright, and ONLY when it was out of band (the in-band
+    # save on the same topology succeeded). Both must now save.
+    raw = mono_output_topology(card_id=None).to_dict()
+    raw["speaker_groups"][0]["channels"][1]["driver_style"] = unregistered_max
+    long_style_topology = OutputTopology.from_mapping(raw)
+    assert (
+        long_style_topology.speaker_groups[0].channels[1].driver_style
+        == unregistered_max
+    ), "the topology must still accept the style this test is about"
+
+    out_of_band = _manual_settings()
+    tweeter = out_of_band["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 200.0
+    tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
+    tweeter["measurement_band_hz"] = [200.0, 20000.0]
+    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
+
+    for manual, expected_warning in ((out_of_band, True), (_manual_settings(), False)):
+        profile = build_driver_safety_profile(
+            long_style_topology,
+            manual_settings=manual,
+            driver_research=None,
+            saved_at="2026-08-22T12:00:00Z",
+        )
+        assert profile["status"] == "confirmed"
+        warned = any(
+            issue["code"] == "tweeter:low_limit_implausible_for_style"
+            for issue in profile["issues"]
+        )
+        assert warned is expected_warning, profile["issues"]
+        assert evaluate_driver_safety_profile(
+            profile, long_style_topology
+        ).confirmed_and_current is True
 
 
 def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:

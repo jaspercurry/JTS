@@ -536,16 +536,22 @@ picked once a protective high-pass is in place, from that driver's declared
 sensitivity against the low-frequency driver's own limit. The sentence names
 *what* sets the level and quotes no dBFS number, because the bound is now
 per-driver and `driver_protection_policy_view` does not compute it; the view
-stopped emitting an absolute ceiling with the constant's retirement. What does
-reach the page from that view, re-stamped on every design-draft load so a
-persisted copy can never be read back as current policy, is the per-target
-`max_auto_level_dbfs` plus — since #2874 — the **resolved** low limit with its
+stopped emitting an absolute ceiling with the constant's retirement. The view
+is re-stamped on every design-draft load, so a persisted copy can never be read
+back as current policy, and the page keeps no copy of any of it (issue #2192,
+folded into #2195). What the page reads today is `role_class` and
+`max_auto_level_dbfs`.
+
+Since #2874 the view also carries the **resolved** low limit with its
 provenance (`low_limit_hz` / `low_limit_provenance` / `low_limit_summary`),
-which is why the view also takes the operator's visible values: the resolved
-floor is a property of the declaration, not of the topology. It replaced the
-raw class-table `min_highpass_hz` the view used to publish, which sat beside a
-declared figure with nothing saying which one bounds the corner. The page keeps
-no copy of any of it (issue #2192, folded into #2195).
+which is why it takes the operator's visible values: the resolved floor is a
+property of the declaration, not of the topology. That replaced the raw
+class-table `min_highpass_hz` the view used to publish, which sat beside a
+declared figure with nothing saying which one bounds the corner — the reader
+this closes is whoever reads the draft artifact, and the ambiguity was reported
+by two who did. **No page element renders the trio yet**; a "protected above
+N Hz — manufacturer declared" line on the echo-back panel is the natural pickup
+and is deliberately left as follow-on rather than smuggled into a policy PR.
 
 ### Step 3A: manual crossover
 

@@ -4738,8 +4738,11 @@ const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
 const ECHO_WOOFER_CLASS_CEILING_DBFS = 0;
 
 // Shaped like driver_protection_policy_view: target_id + role_class +
-// max_auto_level_dbfs + min_highpass_hz. No `role` -- the view stopped
-// emitting one, because role_class answers every question the page asks.
+// max_auto_level_dbfs + the resolved low limit with its provenance. No `role`
+// -- the view stopped emitting one, because role_class answers every question
+// the page asks. The raw class-table `min_highpass_hz` is gone too (#2874): it
+// sat unlabelled beside a declared figure, and what replaced it says which of
+// the two bounds the corner.
 function echoProtectionPolicy(overrides = {}) {
   return {
     policy_version: "driver_protection_auto_level_v1",
@@ -4748,13 +4751,17 @@ function echoProtectionPolicy(overrides = {}) {
         target_id: "main:woofer",
         role_class: "low_frequency",
         max_auto_level_dbfs: ECHO_WOOFER_CLASS_CEILING_DBFS,
-        min_highpass_hz: null,
+        low_limit_hz: null,
+        low_limit_provenance: null,
+        low_limit_summary: null,
       },
       {
         target_id: "main:tweeter",
         role_class: "high_frequency",
         max_auto_level_dbfs: ECHO_TWEETER_CLASS_CEILING_DBFS,
-        min_highpass_hz: 3000,
+        low_limit_hz: 3000,
+        low_limit_provenance: "style_default",
+        low_limit_summary: "3000 Hz (class fallback; nothing declared)",
       },
     ],
     ...overrides,

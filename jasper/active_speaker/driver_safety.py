@@ -46,6 +46,13 @@ DRIVER_RESEARCH_RESULT_SCHEMA_VERSION = 2
 DRIVER_SAFETY_PROFILE_KIND = "jts_active_speaker_driver_safety_profile"
 DRIVER_SAFETY_PROFILE_SCHEMA_VERSION = 1
 
+#: Field caps for one entry in a profile's ``issues`` list, and the whole
+#: allowed key set. ONE owner because two places need the same numbers: the
+#: shape validator ENFORCES them, and ``_target_low_limit_warnings`` FITS its
+#: rendered message to them. Splitting those is what let a warning grow past the
+#: message cap and take the save down with it -- see that function's docstring.
+PROFILE_ISSUE_FIELD_MAX_CHARS = {"severity": 20, "code": 160, "message": 320}
+
 SUPPORTED_ENCLOSURE_KINDS = {
     "sealed",
     "vented",
@@ -1386,6 +1393,25 @@ def validate_research_result_binding(
 # ``path_safety`` load gate, and the excitation level ceilings.
 
 
+#: How much of a ``driver_style`` one diagnosis sentence may quote verbatim.
+#: The style is FREE-FORM up to 80 characters (``output_topology`` takes any
+#: safe id), while the longest style this build registers is 23
+#: (``horn_compression_driver``) -- so one more than that ellipsizes only a
+#: value no table here describes, and keeps the rendered sentence a bounded
+#: length whatever the household typed into the picker.
+_DIAGNOSIS_STYLE_MAX_CHARS = 24
+
+
+def _ellipsised(text: str, max_chars: int) -> str:
+    """``text`` shortened to ``max_chars``, marked so a reader sees it was cut."""
+
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return "..."[:max_chars]
+    return text[: max_chars - 3] + "..."
+
+
 def _low_limit_implausibility_diagnosis(
     *,
     role: Any,
@@ -1397,6 +1423,13 @@ def _low_limit_implausibility_diagnosis(
     Shared by both arms of the split above so the refusal and the warning
     cannot describe the same number differently. Diagnosis only -- each arm
     appends its own action, because the actions are what differ.
+
+    The interpolated style is ellipsized (:data:`_DIAGNOSIS_STYLE_MAX_CHARS`)
+    because it is operator-supplied free text, not a value from any table here.
+    Quoting it verbatim made the sentence's length an operator input, and the
+    warning arm's message has a schema cap -- so an 80-character style turned a
+    DISCLOSURE into a save that hard-failed, on exactly the out-of-band
+    declaration the disclosure exists to allow.
     """
 
     band = driver_low_limit_plausibility_band_hz(role, driver_style=driver_style)
@@ -1408,7 +1441,10 @@ def _low_limit_implausibility_diagnosis(
     # profile: the band IS that anchor divided and multiplied by the factor, so
     # this cannot quote a number the band edges disagree with.
     anchor_hz = band[0] * LOW_LIMIT_PLAUSIBILITY_FACTOR
-    style = str(driver_style or "").strip() or "undeclared"
+    style = _ellipsised(
+        str(driver_style or "").strip() or "undeclared",
+        _DIAGNOSIS_STYLE_MAX_CHARS,
+    )
     direction = "below" if float(frequency_hz) < band[0] else "above"
     return (
         f"declared {float(frequency_hz):g} Hz is more than "
@@ -2096,6 +2132,16 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     names the number, the band it missed, the anchor that band came from, and
     the two things it is most likely to be. A warning that does not say what to
     check is a nanny that mumbles.
+
+    **The rendered message is FITTED to the schema cap, never merely expected to
+    fit.** An issue message over ``PROFILE_ISSUE_FIELD_MAX_CHARS["message"]``
+    fails shape validation, which lands the whole profile ``malformed`` and
+    makes ``build_driver_safety_profile`` refuse the save outright -- so a
+    length overrun here does not degrade a disclosure, it REFUSES the very
+    out-of-band declaration the disclosure exists to permit, which is the ruling
+    inverted by a rendering concern. The style is ellipsized upstream so the cut
+    lands on operator free text rather than on the guidance, and this final
+    clamp then guarantees the bound for every remaining input.
     """
 
     role = str(target.get("role") or "")
@@ -2110,18 +2156,27 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     )
     if diagnosis is None:
         return []
+    # An undeclared style is judged against the cautious unknown-tweeter
+    # default, which is how a genuinely published 800 Hz on a large-format horn
+    # reads as implausible on a box whose type nobody set. Naming the picker as
+    # the first thing to check keeps that from reading as an accusation about
+    # the datasheet -- the clause the retired JS phrasing carried.
+    check_the_type = (
+        "and set the driver type above -- an undeclared type is judged against "
+        "a cautious default."
+        if not str(style or "").strip()
+        else "and that the driver type above is right."
+    )
+    message = (
+        f"{role}: {diagnosis}. JTS is using it as declared -- confirm it is "
+        f"the datasheet figure and not a transposed digit, {check_the_type}"
+    )
     return [
         {
             "severity": "warning",
             "code": f"{role}:low_limit_implausible_for_style",
-            # Kept inside the schema's 320-character message cap on purpose --
-            # a warning that fails shape validation lands the whole profile
-            # `malformed`, which is the loudest possible way to say nothing.
-            # ``tests`` pins the longest form this can render against that cap.
-            "message": (
-                f"{role}: {diagnosis}. JTS is using it as declared -- confirm "
-                "it is the datasheet figure and not a transposed digit, and "
-                "that the driver type above is right."
+            "message": _ellipsised(
+                message, PROFILE_ISSUE_FIELD_MAX_CHARS["message"]
             ),
         }
     ]
@@ -2744,9 +2799,9 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         _reject_unknown_keys(
             issue,
             f"driver_safety_profile.issues[{index}]",
-            {"severity", "code", "message"},
+            set(PROFILE_ISSUE_FIELD_MAX_CHARS),
         )
-        for key, max_chars in (("severity", 20), ("code", 160), ("message", 320)):
+        for key, max_chars in PROFILE_ISSUE_FIELD_MAX_CHARS.items():
             _require_canonical_text_field(
                 issue,
                 key,
