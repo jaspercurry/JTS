@@ -126,18 +126,28 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 #     f1 200 Hz - 15 kHz, Q 8 - 500, separations 0.1 - 3 %, the worst FOUND is
 #     0.1913 dB at f1 1000 Hz, Q 118, 0.575 % — a search minimum, so the bound
 #     stated below is deliberately above it;
-#   * two adjacent BACKGROUND bins, outside the centres' own hull — 0.1050 dB
-#     worst over 900 randomized mixed-sign pairs inside the emitter's own
-#     rails (Q <= 8, +-12 dB), and 0.0423 dB on the #2758 cascade. Bounded at
-#     all only because :data:`CHAIN_GRID_HZ` spans the whole evaluated domain:
-#     a background narrower than that domain read that cascade 6.0132 dB low.
+#   * two adjacent BACKGROUND bins, outside the centres' own hull. Searched
+#     over the WHOLE evaluated domain rather than the audio band — the axis a
+#     narrower search silently fixes — this term is strongly BAND-DEPENDENT:
+#     0.0860 dB worst over 500 randomized mixed-sign pairs inside the emitter's
+#     rails (Q <= 8, +-12 dB) drawn from 200 Hz - 18 kHz, and 1.7385 dB worst
+#     over the same population drawn from 18 kHz - Nyquist. 0.0423 dB on the
+#     #2758 cascade. Bounded at all only because :data:`CHAIN_GRID_HZ` spans
+#     the whole evaluated domain: a background narrower than that read that
+#     cascade 6.0132 dB low.
 #
-# **The honest ceiling on the sampling term is 0.25 dB**, chosen above every
-# search's output rather than equal to the last one — a hill-climb reports a
-# minimum, never a maximum, and an earlier revision of this comment promoted
-# 0.07 dB on exactly that mistake. 0.25 is a QUARTER of 1.0 dB and not an order
-# inside it; the margin still covers it four times over, which is the claim
-# this constant actually rests on.
+# **The ceiling is 0.25 dB BELOW ~18 kHz, and ~2 dB above it.** Both are chosen
+# above every search's output rather than equal to the last one — a hill-climb
+# reports a minimum, never a maximum, and an earlier revision of this comment
+# promoted 0.07 dB on exactly that mistake. **The same caution applies to the
+# DOMAIN axis**: a search that stops at 19 kHz reports a ceiling for the band it
+# looked at, which is how 0.25 was published as if it were global. Below 18 kHz
+# the margin covers the residue four times over, which is the claim this
+# constant rests on; above it the residue EXCEEDS the margin and the -1.0 dB
+# per-driver soft-clip limiters are the backstop instead. Why that is a residual
+# of a large improvement rather than a regression: before the widening that band
+# had no samples at all and read ~6 dB low. Tracked as issue #2850, to close
+# before the boost caps widen.
 #
 # One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
 # Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW

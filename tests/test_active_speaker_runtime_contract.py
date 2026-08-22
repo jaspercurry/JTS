@@ -2230,7 +2230,13 @@ def test_a_graph_that_stops_proving_its_headroom_blocks_instead_of_silencing(
         topology,
         current_config_path=current,
         **_write_authority(
-            tmp_path, staged=_staged_metadata(topology, staged_path)
+            tmp_path,
+            staged=_staged_metadata(topology, staged_path),
+            # A COMMISSIONED box: the applied-baseline authority points at the
+            # same artifact the statefile loads, so both classifications carry
+            # the identical refusal. That is the shape a real regressed box has,
+            # and the shape where the transcript printed every blocker twice.
+            applied_config=current,
         ),
     )
 
@@ -2238,6 +2244,9 @@ def test_a_graph_that_stops_proving_its_headroom_blocks_instead_of_silencing(
     assert decision.ok is False, "a green deploy onto a silent speaker"
     assert decision.selected_config_path is None
     assert "baseline-reemit" in decision.reason
+    # One line, not two: the current graph and the applied baseline are one
+    # file here, and an operator reading the transcript should be told once.
+    assert decision.preferred_graph is not None
     assert [i["code"] for i in decision.issues] == [
         LINEARIZATION_HEADROOM_UNPROVEN_CODE
     ]

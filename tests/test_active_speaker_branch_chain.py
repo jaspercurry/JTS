@@ -621,16 +621,23 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     class safe.
 
     So: every chain carrying a REAL charge must still prove, and the near-unity
-    class is counted rather than waved at. Those refuse into the SF-1
+    class is counted rather than waved at. Any that refuse do so into the SF-1
     blocked-deploy path, which names ``baseline-reemit`` — the correct
-    direction, loudly, and the reason "the fleet migrates untouched" is too
-    strong a sentence for them.
+    direction, loudly.
+
+    **Two different quantities, kept apart.** The near-unity CLASS is most of
+    this corpus — 184 of 230 accepted chains at this seed, ~80 %, because the
+    -6..0 dB trims put a majority under unity. What that class does is a
+    separate fact: ZERO of them refuse at this seed, and the assertion below
+    caps refusals at 2 % rather than forbidding them, because the tolerance up
+    there is 1e-3 dB and a future sampler will find some.
 
     Numbers are MEASURED AT THIS SEED and are not what the assertions pin: the
-    worst move here is 0.3101 dB against a 1.0 dB margin, and other seeds and
-    more clustered populations run higher (a ±12 dB cluster reaches 0.85 dB).
-    That is why the runtime guard is the backstop and this corpus is evidence,
-    not a proof over the whole space.
+    worst move here is 0.3101 dB against a 1.0 dB margin. A more CLUSTERED
+    population runs higher — drawing all filters within ±5 % of one centre at
+    the same rails reaches 0.3143 dB — and a wider search than any run here may
+    find more still. That is why the runtime guard is the backstop and this
+    corpus is evidence, not a proof over the whole space.
     """
     from jasper.active_speaker.crossover_v2.driver_prescription import (
         DRIVER_MAX_COMPOSED_BOOST_DB,
@@ -681,8 +688,9 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
         f"a chain moved {worst:.4f} dB, past the {HEADROOM_MARGIN_DB} dB margin"
     )
     # Bounded, not forbidden: a chain sitting AT unity was charged nothing, so
-    # any upward movement at all refuses it. Rare — under 1 % of this corpus —
-    # and loud when it happens.
+    # any upward movement at all refuses it. Zero at this seed; the cap is 2 %
+    # so a sampler that finds one does not read as a regression, and the SF-1
+    # path is what makes each of them loud.
     assert near_unity_refusals <= accepted // 50
 
 

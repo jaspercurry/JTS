@@ -4701,14 +4701,26 @@ def _linearization_headroom_regression(
     So a caller can ask "did this box's own active graph regress on the
     headroom arithmetic?" without re-deriving the condition, and a new refusal
     reason cannot silently start firing a migration guard written for this one.
+
+    DE-DUPLICATED, order-preserving, because on a commissioned box the two
+    graphs asked here are usually the SAME FILE: the applied-baseline authority
+    points at the artifact the statefile already loads, so both classifications
+    carry the identical refusal and the deploy transcript printed every blocker
+    twice. Keyed on the whole issue rather than on the code, so two branches
+    that genuinely both regressed still report one line each — the message
+    names the role and the numbers, which is exactly what a reader needs when
+    the woofer and the tweeter fail differently.
     """
-    return tuple(
-        issue
-        for graph in graphs
-        if graph is not None
-        for issue in graph.issues
-        if issue.get("code") == LINEARIZATION_HEADROOM_UNPROVEN_CODE
-    )
+    seen: list[dict[str, str]] = []
+    for graph in graphs:
+        if graph is None:
+            continue
+        for issue in graph.issues:
+            if issue.get("code") != LINEARIZATION_HEADROOM_UNPROVEN_CODE:
+                continue
+            if issue not in seen:
+                seen.append(issue)
+    return tuple(seen)
 
 
 def safe_graph_for_current_topology(

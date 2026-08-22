@@ -4380,13 +4380,17 @@ of that:
   would have admitted, sampled at the fit engine's own per-filter rail, the
   worst move measures 0.3101 dB at the seed
   `test_a_graph_the_old_gate_accepted_still_proves_after_the_widening` pins.
-  Other seeds and more clustered populations run higher (a ±12 dB cluster
-  reaches ~0.85 dB), which is why the runtime guard below is the backstop and
-  that corpus is evidence rather than a proof over the whole space.
+  A more clustered population runs higher — all filters within ±5 % of one
+  centre at the same rails reaches 0.3143 dB — and a wider search may find more,
+  which is why the runtime guard below is the backstop and that corpus is
+  evidence rather than a proof over the whole space.
 - **The near-unity chain.** `headroom_charge_db` returns **0.0** at or under
   `_PEAK_EPS_DB` (0.01 dB) — a chain that never exceeded unity was charged
-  nothing — so its tolerance is the 1e-3 float slack, not 1.0 dB. Under 1 % of
-  that corpus, and they refuse.
+  nothing — so its tolerance is the 1e-3 float slack, not 1.0 dB. This class is
+  MOST of that corpus (~80 % at the pinned seed; the trims put a majority under
+  unity), and what it does is a separate fact: **no** member of it refuses at
+  that seed, and the test caps refusals at 2 % rather than forbidding them,
+  because at a 1e-3 tolerance a future sampler will find some.
 
 Both refusals, and the two cascades whose peak lived in the old grid's hole,
 land in the same place: the graph stops proving,
