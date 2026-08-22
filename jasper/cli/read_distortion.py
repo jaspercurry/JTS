@@ -110,7 +110,10 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "the round's flow state; its gain_plan_db and candidate.program_id "
-            "are what the MEASURE program is rebuilt from and proved against"
+            "are what the MEASURE program is rebuilt from and proved against. "
+            "That proof is program-vs-STATE only: pass a state from a DIFFERENT "
+            "round than <bundle-dir> and the drive comes out wrong with no "
+            "refusal, so pass the one belonging to this round"
         ),
     )
     parser.add_argument(

@@ -65,9 +65,12 @@ Neither gate above says which CAPTURES belong to the program.  Gate 1 proves
 the program matches the state; gate 2's fields are every one of them
 amplitude-invariant.  So a capture from a neighbouring round, read against this
 round's program, publishes that program's drive — silently, and wrongly.
-:func:`_scope_captures` is the gate for that, and it REFUSES rather than
-guessing: see its docstring for the measured size of the error and why the ring
-of the shipped corpus is the case that proves it.
+:func:`_scope_captures` is the gate for the CAPTURE half of that, and it
+REFUSES rather than guessing.  It does **not** close the STATE half — a caller
+handing it a scope from one round and a flow state from another mis-attributes
+drive through every gate cleanly — and that residual is named in full in its
+docstring, along with the one change that retires it.  Read it before treating
+this module as all-clear.
 
 **Provenance of the method.**  This is the promotion of
 ``scripts/harmonic-distortion-replay.py``, which established both gates, the
@@ -369,6 +372,20 @@ def rebuild_measure_program(
     )
 
 
+def _state_relay_session_id(state: Mapping[str, Any]) -> str | None:
+    """The flow state's own session id — a RELAY id, not the ring's bundle id.
+
+    Two namespaces that look alike and are not: this is
+    ``wired-dBetH8WEDOn8zCl5JMeAjQ``-shaped, while a ring sidecar stamps
+    ``79679a65c207``. Nothing banked maps between them, which is why this is
+    recorded for audit rather than compared for a refusal — see
+    :func:`_scope_captures` for the seam it makes auditable and what would
+    close it.
+    """
+    value = state.get("session_id")
+    return value if isinstance(value, str) and value else None
+
+
 def _crossover_fc_hz(state: Mapping[str, Any]) -> float:
     """The round's declared crossover corner, read out of its own flow state.
 
@@ -493,6 +510,31 @@ def _scope_captures(
     identity is readable. The shipped corpus is the case worth naming — its
     ring holds three distinct sessions, and reading it unscoped pooled all
     three against one program.
+
+    **What this does NOT guard, stated because it is the only unguarded seam
+    left that can publish a wrong number.** The ``state`` is TRUSTED to belong
+    to the scope. Nothing here checks that the flow state the program was
+    rebuilt from describes the same round the ``session_id`` selects, so a
+    caller passing a scope from one round and a state from another still
+    mis-attributes drive by exactly the mechanism above — and it does so
+    through every gate cleanly: 5/5 fidelity, zero refusals, and a
+    ``captures.scope`` block that looks authoritative. Reproduced on the
+    shipped corpus at scope ``79679a65c207`` with a neighbouring round's state,
+    which published ``-10.2/-30.2`` dBFS against a capture whose own program
+    says ``-6.0/-26.0``.
+
+    It is not guardable today, and the reason is specific rather than a
+    shrug: the state's own ``session_id`` is a RELAY id
+    (``wired-dBetH8WEDOn8zCl5JMeAjQ``) while the ring stamps the BUNDLE id
+    (``79679a65c207``) — different namespaces, no mapping between them in any
+    banked artifact — and the capture's ``provenance`` block, which would carry
+    the ``program_id`` that settles it outright, is empty on every sidecar in
+    both shipped corpora. **What retires this is the capture banking its own
+    program_id**; a reader could then compare it against the rebuilt one per
+    capture and refuse the mismatch, and this whole scope dance would become
+    redundant. Until then the state's relay id is at least RECORDED in the
+    artifact's ``program`` block, so a mis-scoped read is auditable after the
+    fact even though it cannot be refused at the time.
     """
     if session_id is not None:
         return (
@@ -992,6 +1034,16 @@ def read_round_harmonics(
             "solved_downstream_gain_db": downstream_db,
             "solved_courtesy_prelude": prelude,
             "crossover_fc_hz": round(fc_hz, 1),
+            # WHICH round's state this program was rebuilt from, in the state's
+            # own namespace. It cannot be compared against `captures.scope`
+            # (that is a BUNDLE id, this is a RELAY id, and nothing banked maps
+            # between them), so it guards nothing at read time — it is here so
+            # that the one seam `_scope_captures` cannot refuse is at least
+            # AUDITABLE afterwards: a reader who suspects a mis-scoped read can
+            # check this against the round the scope names. ``None`` when the
+            # state carries no id, which is itself the answer to "can I audit
+            # this one?".
+            "state_relay_session_id": _state_relay_session_id(state),
         },
         "captures": {
             # WHICH captures this reading is of, and by what rule they were

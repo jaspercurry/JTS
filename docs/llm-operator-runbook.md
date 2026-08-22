@@ -359,6 +359,18 @@ in `info.json`, and captures from more than one session in the ring) is
 pooled. If you see that refusal, the bundle is missing its session id — it is
 not telling you the captures are bad.
 
+**The counterweight, because that scoping is not a proof of correctness.** The
+tool trusts that the `--state` you passed describes the same round the bundle
+scopes to, and nothing checks it. Point it at one round's bundle and another
+round's state and the drive comes out several dB wrong with **5/5 fidelity,
+zero refusals, and a scope block that looks authoritative** — the two ids live
+in different namespaces (the state's is a relay id, the ring's is a bundle id)
+and no banked artifact maps between them. So: pass the `--state` from the same
+round as the `<bundle-dir>`, and if a drive figure looks wrong for the box,
+check `program.state_relay_session_id` in the artifact against the round you
+meant — it is recorded precisely so a mis-scoped read is auditable after the
+fact, since it cannot be refused at the time.
+
 **What the number is.** `h2_below_fundamental_db` is that order's level **minus
 the fundamental's at the same excitation frequency** — the conventional "HD2 is
 46 dB down" reading, negative for a well-behaved driver. More negative is
