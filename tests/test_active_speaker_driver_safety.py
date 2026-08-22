@@ -7,7 +7,6 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
-import math
 from pathlib import Path
 import re
 
@@ -44,7 +43,6 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -101,7 +99,6 @@ def _manual_settings() -> dict:
                     }
                 ],
                 "measurement_band_hz": [35, 4500],
-                "crossover_search_band_hz": [1200, 3500],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24,
                     "max_sweep_duration_s": 4,
@@ -128,7 +125,6 @@ def _manual_settings() -> dict:
                     }
                 ],
                 "measurement_band_hz": [5000, 20000],
-                "crossover_search_band_hz": [5000, 8000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
                     "max_sweep_duration_s": 3,
@@ -165,7 +161,6 @@ def _research_result(request: dict) -> dict:
                     }
                 ],
                 "measurement_band_hz": [35, 4500],
-                "crossover_search_band_hz": [1200, 3500],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24,
                     "max_sweep_duration_s": 4,
@@ -190,7 +185,6 @@ def _research_result(request: dict) -> dict:
                     }
                 ],
                 "measurement_band_hz": [5000, 20000],
-                "crossover_search_band_hz": [5000, 8000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
                     "max_sweep_duration_s": 3,
@@ -207,7 +201,6 @@ def _research_result(request: dict) -> dict:
             "hard_excitation_band_hz",
             "required_protection_filters",
             "measurement_band_hz",
-            "crossover_search_band_hz",
             "level_duration_limits",
             "cabinet",
         )
@@ -382,7 +375,6 @@ def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     assert request["build_notes"] == "Sealed bench cabinet"
     assert "Legacy per-driver note that is no longer editable" not in prompt
     assert "Sealed bench cabinet" in prompt
-    assert "crossover_search_band_hz is a protocol choice" in prompt
     assert "Never infer physical installation choices" in prompt
     assert "Treat operator_declared_context as authoritative" in prompt
     assert "preserving any operator-declared enclosure choice" in prompt
@@ -553,7 +545,6 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
         "recommended_highpass_slope_db_per_octave",
         "hard_excitation_band_hz",
         "measurement_band_hz",
-        "crossover_search_band_hz",
         "level_duration_limits",
         "cabinet",
         "driver_class",
@@ -1080,9 +1071,8 @@ def test_a_legacy_artifact_carrying_blocking_issues_never_reads_as_current() -> 
     reaches the ``needs_confirmation`` compatibility branch. That ordering is
     the entire safety property: hoist the branch above the issues gate and a
     half-declared profile reads ``confirmed`` -- the measurement loop would then
-    run against a declaration with no crossover search band and no level or
-    duration ceiling. Nothing in the branch itself says so, so this is the test
-    that says it.
+    run against a declaration carrying no level or duration ceiling at all.
+    Nothing in the branch itself says so, so this is the test that says it.
 
     The artifact is the one the hoist would wave through: a stored
     ``needs_confirmation`` status whose ``issues`` are CORRECTLY derived and
@@ -1093,7 +1083,6 @@ def test_a_legacy_artifact_carrying_blocking_issues_never_reads_as_current() -> 
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
     for driver in manual["drivers"]:
-        driver.pop("crossover_search_band_hz", None)
         driver.pop("level_duration_limits", None)
 
     incomplete = build_driver_safety_profile(
@@ -1105,9 +1094,7 @@ def test_a_legacy_artifact_carrying_blocking_issues_never_reads_as_current() -> 
     assert incomplete["status"] == "incomplete"
     codes = {issue["code"] for issue in incomplete["issues"]}
     assert codes == {
-        "woofer:crossover_search_band_missing",
         "woofer:level_duration_limits_missing",
-        "tweeter:crossover_search_band_missing",
         "tweeter:level_duration_limits_missing",
     }
 
@@ -1137,12 +1124,13 @@ def test_profile_refuses_stale_topology_and_fingerprint_tampering() -> None:
     assert stale.status == "stale"
     assert stale.confirmed_and_current is False
 
-    # Tampering with a field the low limit does NOT own is caught by the
-    # fingerprint. (It used to be pinned on hard_excitation_band_hz; since
-    # #2603 that field is DERIVED, so it is caught earlier and by a more
-    # specific name -- pinned separately below.)
+    # Tampering with a value the low limit does NOT own is caught by the
+    # fingerprint. The analysis window's UPPER edge is that value: since #2603
+    # its LOWER edge is DERIVED from the declared low limit (so a tampered one
+    # is caught earlier and by a more specific name -- pinned separately
+    # below), while the ceiling stays a plain stored declaration.
     tampered = deepcopy(profile)
-    tampered["targets"][1]["crossover_search_band_hz"][1] = 9000.0
+    tampered["targets"][1]["measurement_band_hz"][1] = 9000.0
     malformed = evaluate_driver_safety_profile(tampered, topology)
     assert malformed.status == "malformed"
     assert malformed.reasons == ("driver_safety_profile_fingerprint_mismatch",)
@@ -1239,16 +1227,20 @@ def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> 
     """jts3's own shape, minimised: stale AND unconfirmable in one step.
 
     Deriving the low limit raises the hard band's lower edge to the declared
-    owner, which can leave an already-declared crossover-search band sitting
-    below its own hard band -- and ``build_driver_safety_profile`` REFUSES to
-    confirm while that stands. The stale name alone cannot tell /sound/ that,
-    so the button was offered on a profile whose rebuild raises and the
-    operator's first click came back a bare reason code.
+    owner, which can leave another declared value outside the band it must nest
+    in -- and ``build_driver_safety_profile`` REFUSES to confirm while that
+    stands. The stale name alone cannot tell /sound/ that, so the button was
+    offered on a profile whose rebuild raises and the operator's first click
+    came back a bare reason code.
 
     Verified against jts3's real stored artifacts during the fix round: its
-    tweeter declares 2000 Hz while its bands and search band were nested
-    against the old 1600, so it lands exactly here. Reproduced with the shipped
-    fixture rather than the box's file, which is not this repo's to carry.
+    tweeter declares 2000 Hz while its bands were nested against the old 1600,
+    so it lands exactly here. Reproduced with the shipped fixture rather than
+    the box's file, which is not this repo's to carry.
+
+    WHICH value the rebuild trips on moved with #2870 -- it was the declared
+    crossover-search band, and that field is gone. See the fixture note below
+    for why the shape still has to be covered against the bounds that survive.
     """
 
     topology = mono_output_topology(card_id=None)
@@ -1264,9 +1256,16 @@ def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> 
     # jts3's exact shape: a stored profile target carries no owner field, so the
     # low limit is inferred from its protective high-pass -- and that cutoff
     # sits ABOVE the floor its own bands were nested against. jts3 reads 2000
-    # from the filter with bands and search band nested at 1600; the fixture
-    # reads 6000 with both at 5000.
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 6000.0
+    # from the filter with its bands nested at 1600; the fixture reads 21000
+    # against bands nested at 5000.
+    #
+    # The cutoff was 6000 until #2870. Deriving 6000 used to push the declared
+    # crossover-search band under its own hard band, and that was the rebuild's
+    # blocker; with the search band deleted, 6000 rebuilds cleanly and the
+    # fixture would have silently become a duplicate of the CONTROL below.
+    # 21000 keeps the shape that has to stay covered -- a stale profile whose
+    # rebuild really is blocked -- against the bounds that survive.
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 21000.0
 
     evaluation = evaluate_driver_safety_profile(split, topology)
 
@@ -1274,15 +1273,18 @@ def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> 
     assert evaluation.confirmed_and_current is False
     # Still named first, so the "re-confirm" remedy still renders...
     assert evaluation.reasons[0] == "driver_safety_profile_low_limit_stale"
-    # ...and the rebuild's own blocker rides with it, in the `<role>:<code>`
+    # ...and the rebuild's own blockers ride with it, in the `<role>:<code>`
     # vocabulary the page already knows how to phrase.
-    assert "tweeter:search_band_below_hard_band" in evaluation.reasons
+    assert "tweeter:measurement_band_outside_hard_band" in evaluation.reasons
 
     # The claim that this REALLY is unusable, rather than a reason string
-    # nobody checked: the rebuild lands the same code as a blocking issue.
+    # nobody checked: the rebuild lands the same codes as blocking issues.
     manual = deepcopy(_manual_settings())
-    manual["drivers"][1]["recommended_highpass_hz"] = 6000.0
-    assert _blocked_codes(topology, manual) == {"tweeter:search_band_below_hard_band"}
+    manual["drivers"][1]["recommended_highpass_hz"] = 21000.0
+    assert _blocked_codes(topology, manual) == {
+        "tweeter:measurement_band_outside_hard_band",
+        "tweeter:low_limit_implausible_for_style",
+    }
 
 
 def test_a_stale_profile_that_would_rebuild_cleanly_offers_no_blocker() -> None:
@@ -1306,6 +1308,194 @@ def test_a_stale_profile_that_would_rebuild_cleanly_offers_no_blocker() -> None:
     evaluation = evaluate_driver_safety_profile(split, topology)
 
     assert evaluation.reasons == ("driver_safety_profile_low_limit_stale",)
+
+
+def test_a_profile_carrying_a_retired_field_is_named_not_called_corrupt() -> None:
+    """#2870 hazard 1, and the migration this PR deliberately does NOT automate.
+
+    ``crossover_search_band_hz`` was part of the hashed profile core, so every
+    speaker confirmed before the ruling carries it and every one of them reads
+    ``malformed`` until it is saved again. That is accepted — the fleet is lab
+    boxes — but it must be LOUD and ACTIONABLE rather than silent, and it must
+    not read as damage: the generic answer here is
+    ``driver_safety_profile_schema_invalid``, which /sound phrases as "JTS could
+    not read these limits" and which names no remedy.
+
+    So the retired field gets its own name, exactly as the #2603 stale-low-limit
+    case does, and /sound phrases it as "save them again". No auto-migration is
+    written: a rebuild re-derives every target from the values the operator can
+    see, and silently rewriting a confirmed safety declaration behind their back
+    is the wrong direction for a declaration whose whole point is that a human
+    made it.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_manual_settings(),
+        driver_research=None,
+        saved_at="2026-07-13T12:00:00Z",
+    )
+    assert profile["status"] == "confirmed"
+
+    # A profile as a box confirmed it before the ruling: identical in every
+    # respect except that its targets still carry the retired field.
+    legacy = deepcopy(profile)
+    for target in legacy["targets"]:
+        target["crossover_search_band_hz"] = [1200.0, 3500.0]
+
+    evaluation = evaluate_driver_safety_profile(legacy, topology)
+    assert evaluation.status == "malformed"
+    assert evaluation.confirmed_and_current is False
+    assert evaluation.reasons == (
+        driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,
+    )
+
+    # The control, and the reason this is a NAME rather than a widening: an
+    # unknown field that is NOT a retired one still reads as schema-invalid.
+    corrupt = deepcopy(profile)
+    corrupt["targets"][0]["not_a_field_this_build_ever_had"] = 1
+    assert evaluate_driver_safety_profile(corrupt, topology).reasons == (
+        "driver_safety_profile_schema_invalid",
+    )
+
+    # And saving really does clear it: the remedy the copy names is the remedy.
+    rebuilt = build_driver_safety_profile(
+        topology,
+        manual_settings=_manual_settings(),
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    assert evaluate_driver_safety_profile(rebuilt, topology).confirmed_and_current
+
+
+#: A REAL pre-#2870 box's saved draft, kept verbatim under
+#: ``tests/fixtures/active_speaker_protection_floor_20260814/``. All four of its
+#: drivers carry ``crossover_search_band_hz``, because origin/main REQUIRED the
+#: field -- ``crossover_search_band_missing`` blocked confirmation -- so this is
+#: what every box confirmed before the ruling actually looks like on disk. It is
+#: the specimen, not a hand-built approximation of one.
+_PRE_2870_REAL_BOX_DRAFT = (
+    Path(__file__).parent / "fixtures" / "active_speaker_protection_floor_20260814"
+    / "design-draft-2000hz-below-floor.json"
+)
+
+
+def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> None:
+    """#2870 hazard 1's other half, and the one that would have bricked boxes.
+
+    Deleting the field from ``_MANUAL_DRIVER_FIELDS`` made every gate that
+    RE-VALIDATES a stored driver record raise on it. Two of those gates sit on
+    paths a household cannot avoid: the crossover-preview SAVE
+    (``design_draft.normalise_manual_settings``) and the crossover ACCEPT
+    (``build_driver_safety_profile``'s own manual gate, which
+    ``apply_measured_crossover_geometry`` runs with ``durable=True`` --
+    mid-measurement, after the round has already been paid for).
+
+    So the field joins :data:`LEGACY_DROPPED_DRIVER_FIELDS`: TOLERATED at every
+    re-validating gate and DROPPED by every normaliser, exactly as
+    ``horn_coverage_deg`` is (#2872/#2877). One vocabulary, one set -- a second
+    tolerance list would be a second answer to "which keys may a stored record
+    still carry".
+
+    Tolerated is not stored: the normalisers' explicit output dicts never emit
+    it again, so a box that saves once is clean afterwards. That is what makes
+    the re-save the whole migration.
+    """
+
+    draft = json.loads(_PRE_2870_REAL_BOX_DRAFT.read_text())
+    manual = draft["manual_settings"]
+    carriers = [
+        driver for driver in manual["drivers"]
+        if "crossover_search_band_hz" in driver
+    ]
+    # The premise, asserted rather than assumed: if the specimen ever stops
+    # carrying the field this test would silently prove nothing.
+    assert carriers, "the specimen no longer carries the retired field"
+
+    # SAVE: the crossover-preview seam.
+    saved = normalise_manual_settings(manual)
+    assert saved is not None
+    assert all(
+        "crossover_search_band_hz" not in driver for driver in saved["drivers"]
+    ), "tolerated on the way in, but it must never be stored again"
+
+    # ACCEPT: the seam a measured crossover adopts through.
+    topology = mono_output_topology(card_id=None)
+    accept_manual = deepcopy(_manual_settings())
+    for driver in accept_manual["drivers"]:
+        driver["crossover_search_band_hz"] = [1200.0, 3500.0]
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=accept_manual,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    assert profile["status"] == "confirmed"
+    assert all(
+        "crossover_search_band_hz" not in target for target in profile["targets"]
+    )
+    # …and the rebuilt profile is immediately usable, which is the point of
+    # tolerating rather than refusing.
+    assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
+
+    # THE STORED RESEARCH REQUEST, re-validated on every save. Its
+    # ``operator_declared_context`` is built by the same normaliser as the
+    # driver records above, so a request persisted by an older build carries the
+    # retired field too -- and ``design_draft.build_design_draft`` re-runs
+    # ``validate_driver_research_request`` on it at every save, which would
+    # refuse the draft on a seam nothing else covers.
+    inputs = {
+        "target_models": {
+            driver["target_id"]: driver.get("model") or "M"
+            for driver in accept_manual["drivers"]
+        }
+    }
+    request = build_driver_research_request(
+        topology, inputs, manual_settings=accept_manual,
+    )
+    for target in request["targets"]:
+        context = target.get("operator_declared_context")
+        if isinstance(context, dict):
+            context["crossover_search_band_hz"] = [1200.0, 3500.0]
+    validated = validate_driver_research_request(
+        request, topology, inputs, accept_manual,
+    )
+    assert all(
+        "crossover_search_band_hz" not in (
+            target.get("operator_declared_context") or {}
+        )
+        for target in validated["targets"]
+    ), "tolerated on the way in, but it must never be stored again"
+
+    # The eval reason still fires for a profile that has NOT been re-saved --
+    # tolerance at the write gates must not quietly confirm a stale artifact.
+    legacy_profile = deepcopy(profile)
+    for target in legacy_profile["targets"]:
+        target["crossover_search_band_hz"] = [1200.0, 3500.0]
+    evaluation = evaluate_driver_safety_profile(legacy_profile, topology)
+    assert evaluation.confirmed_and_current is False
+    assert evaluation.reasons == (
+        driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,
+    )
+
+
+def test_the_sound_page_phrases_the_retired_field_reason_by_name() -> None:
+    """The server's name and /sound's copy are one contract across two files.
+
+    The reason exists only so the household is told a remedy, so a name the
+    page cannot phrase falls back to "JTS could not read these limits" and buys
+    nothing. Pinned like the low-limit-stale name it mirrors.
+    """
+
+    js = _SOUND_MAIN_JS.read_text()
+    assert (
+        f"'{driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON}'"
+        in js
+    )
+    # …and the copy says what to do, rather than only what happened.
+    assert "no longer uses" in js
+    assert "save them" in js
 
 
 def test_evaluation_recomputes_issues_instead_of_trusting_serialized_status() -> None:
@@ -1531,7 +1721,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 1800.0
     tweeter["hard_excitation_band_hz"] = [1800.0, 22000.0]
     tweeter["measurement_band_hz"] = [1800.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 1800.0
     accepted = build_driver_safety_profile(
         compression,
@@ -1550,7 +1739,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
     assert "tweeter:low_limit_implausible_for_style" in _blocked_codes(
         compression, unsafe_highpass
@@ -1567,8 +1755,9 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     the veto to 2000 Hz. Since the 2026-08-17 ruling the class figure is not a
     veto at all -- what clears the plan is declaring the driver's own published
     minimum recommended crossover, which for the DE250 is B&C's 1.6 kHz. That
-    is the collapse: one declared number, and the protective high-pass, the
-    hard band's floor, and the search band's floor all follow it.
+    is the collapse: one declared number, and both the protective high-pass
+    and the hard band's floor follow it. (A third follower, the crossover
+    search band's floor, went with the field in #2870.)
 
     driver_style still matters, and this test still pins it -- as the
     plausibility anchor and as the ``code_owned_policy`` the profile freezes.
@@ -1578,7 +1767,6 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     tweeter["recommended_highpass_hz"] = 1600.0
     tweeter["hard_excitation_band_hz"] = [1500.0, 22000.0]
     tweeter["measurement_band_hz"] = [1700.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [1800.0, 2500.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000.0
 
     # Undeclared style is no longer a deadlock: the plausibility band for an
@@ -1620,259 +1808,10 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     assert evaluation.confirmed_and_current is True
 
 
-# --- #2191: the search band's lower edge, and who owns it ---------------------
-#
-# The shipped excitation floor (#1654, resolve_driver_excitation_ceilings) drops
-# measurement_band[0] for a high-frequency role on the program_admission path --
-# the path every crossover search runs on. The store-time validator has to agree
-# with it, or the wizard refuses to store a band MEASURE will happily sweep.
-
-
-def _jts3_shaped_manual(
-    *,
-    tweeter_search: list[float],
-    tweeter_measurement: list[float] | None = None,
-    tweeter_hard: list[float] | None = None,
-) -> dict:
-    """The PRE-EDIT jts3 declaration shape #2191 was found on, parameterised.
-
-    hard=[1600, 20000] / measurement=[2000, 18000] is the exact asymmetry
-    ``resolve_driver_excitation_ceilings`` names in its "Low-side asymmetry"
-    paragraph, and 2000 Hz is also that speaker's configured Fc.
-
-    A fixture, not a reading: that box's declaration has since been edited and
-    re-confirmed (its analysis window was widened alongside the search band,
-    the interim two-field unblock #2191 describes). This shape is kept because
-    it is the one the defect was measured on and the one a household that edits
-    only the search band still lands in.
-
-    Since the one-owner collapse (#2603) the shape is declared the honest way:
-    ``recommended_highpass_hz`` carries B&C's published 1.6 kHz Recommended
-    Crossover for the DE250, and the protective high-pass cutoff DERIVES from
-    it rather than being typed separately as the unpublished 2000. The stored
-    numbers are otherwise identical, which is the point -- the asymmetry this
-    family exercises (hard floor 1600 under an analysis window at 2000) is a
-    real declaration, and it survives the collapse because the analysis window
-    is a separate published fact.
-    """
-
-    manual = _manual_settings()
-    tweeter = manual["drivers"][1]
-    tweeter["recommended_highpass_hz"] = (
-        tweeter_hard[0] if tweeter_hard else 1600.0
-    )
-    tweeter["hard_excitation_band_hz"] = tweeter_hard or [1600.0, 20000.0]
-    tweeter["measurement_band_hz"] = tweeter_measurement or [2000.0, 18000.0]
-    tweeter["crossover_search_band_hz"] = tweeter_search
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = (
-        tweeter["recommended_highpass_hz"]
-    )
-    return manual
-
-
 def _issue_codes(profile: dict) -> set[str]:
     return {issue["code"] for issue in profile["issues"]}
 
 
-def test_the_owner_ruled_search_repair_is_storable_and_measurable() -> None:
-    """#2191's headline: widening the tweeter's search band down to its declared
-    hard floor -- ONE field, [2000, 2500] -> [1600, 2500], measurement window
-    untouched at [2000, 18000] -- must land a profile the speaker can measure
-    against.
-
-    Before this repair it landed ``incomplete``, which is the one status that
-    still stops the measurement loop, so the ruled one-field edit had no way to
-    be applied.
-
-    The box the defect was found on took #2191's documented interim unblock
-    instead (widening the analysis window too), so this is the form that stays
-    blocked for any OTHER household until this validator change ships -- which
-    is why the test asserts the one-field edit rather than that box's history.
-    """
-
-    topology = _topology_with_tweeter_style("compression_driver")
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_jts3_shaped_manual(tweeter_search=[1600.0, 2500.0]),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    assert profile["issues"] == []
-    assert profile["status"] == "confirmed"
-    evaluation = evaluate_driver_safety_profile(profile, topology)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
-
-
-def test_the_stored_search_floor_is_exactly_the_shipped_excitation_floor() -> None:
-    """The one rule, two owners. ``driver_safety`` restates #1654's floor because
-    ``excitation_safety_plan`` imports it and cannot be imported back, so this
-    pins the restatement to the original by construction: the lowest search edge
-    the validator ACCEPTS is exactly the floor MEASURE derives, and the largest
-    float below it is refused. Either side drifting by one ULP fails this.
-
-    Run twice, because the shipped floor is a ``max()`` of two terms and one
-    fixture can only exercise whichever term wins in it. With hard=[1600, ...]
-    the declared hard floor owns the edge; with hard=[10, ...] --
-    physically absurd for a tweeter, which is the point -- the global
-    ``MIN_DRIVER_TEST_FREQUENCY_HZ`` term owns it instead, and dropping that
-    term from the restatement stops being invisible.
-    """
-
-    topology = _topology_with_tweeter_style("compression_driver")
-
-    def shipped_floor_hz(hard: list[float], seed_search: list[float]) -> float:
-        """Read MEASURE's derived floor for this declaration, then pin the
-        validator's accepted edge to it from both sides."""
-
-        def build(search: list[float]) -> dict:
-            return build_driver_safety_profile(
-                topology,
-                manual_settings=_jts3_shaped_manual(
-                    tweeter_search=search, tweeter_hard=hard
-                ),
-                driver_research=None,
-                saved_at="2026-08-06T12:00:00Z",
-            )
-
-        # seed_search is legal under any candidate floor, so reading the shipped
-        # value never depends on the value being read.
-        confirmed = build(seed_search)
-        tweeter = next(t for t in confirmed["targets"] if t["role"] == "tweeter")
-        permitted, _ = resolve_driver_excitation_ceilings(
-            confirmed,
-            tweeter["target_fingerprint"],
-            program_admission=True,
-        )
-        assert build([permitted.lower_hz, 2500.0])["issues"] == [], hard
-        just_below = build([math.nextafter(permitted.lower_hz, 0.0), 2500.0])
-        assert _issue_codes(just_below) == {
-            "tweeter:search_band_below_hard_band"
-        }, hard
-        return permitted.lower_hz
-
-    # 1. The declared hard floor owns the edge, below the declared analysis
-    #    window -- otherwise this test would pass without the asymmetry
-    #    existing at all.
-    declared_floor = shipped_floor_hz([1600.0, 20000.0], [1600.0, 2500.0])
-    assert declared_floor < 2000.0
-
-    # 2. The global test-frequency minimum owns the edge, ABOVE the declared
-    #    hard floor -- the case a bare ``float(hard[0])`` restatement gets wrong.
-    #
-    #    Pinned against the validator DIRECTLY since #2603, not through a
-    #    profile round-trip. The hard band's floor is now DERIVED from the
-    #    declared low limit, and the plausibility band keeps any tweeter's low
-    #    limit at or above anchor/4 (500 Hz for a compression driver) -- so a
-    #    declaration that puts the hard floor under the 20 Hz global minimum is
-    #    no longer reachable through a storable profile. The term it guards is
-    #    still live in the expression, and dropping it must still fail, so it is
-    #    exercised where it can be: on the function that holds the restatement.
-    assert driver_safety_module._search_band_issues(
-        "tweeter",
-        [MIN_DRIVER_TEST_FREQUENCY_HZ - 1.0, 2500.0],
-        [2000.0, 18000.0],
-        [10.0, 20000.0],
-    ) == ["tweeter:search_band_below_hard_band"]
-    assert (
-        driver_safety_module._search_band_issues(
-            "tweeter",
-            [MIN_DRIVER_TEST_FREQUENCY_HZ, 2500.0],
-            [2000.0, 18000.0],
-            [10.0, 20000.0],
-        )
-        == []
-    )
-
-
-def test_a_search_band_below_the_hard_band_is_refused_for_every_role() -> None:
-    """The relationship the relaxation must never touch. The hard band is the
-    operator-confirmed datasheet minimum; a search band reaching under it is
-    refused whether or not the role gets the analysis-window relaxation.
-    """
-
-    topology = _topology_with_tweeter_style("compression_driver")
-    tweeter_under = build_driver_safety_profile(
-        topology,
-        manual_settings=_jts3_shaped_manual(tweeter_search=[1599.0, 2500.0]),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    assert tweeter_under["status"] == "incomplete"
-    assert "tweeter:search_band_below_hard_band" in _issue_codes(tweeter_under)
-
-    # The woofer's hard band starts at 25 Hz and its analysis window at 35 Hz,
-    # so this reaches under BOTH and the unchanged subset rule refuses it.
-    woofer_under = _manual_settings()
-    woofer_under["drivers"][0]["crossover_search_band_hz"] = [20.0, 3500.0]
-    profile = build_driver_safety_profile(
-        mono_output_topology(card_id=None),
-        manual_settings=woofer_under,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    assert profile["status"] == "incomplete"
-    assert "woofer:search_band_outside_measurement_band" in _issue_codes(profile)
-
-
-def test_a_low_frequency_role_still_may_not_search_below_its_analysis_window(
-) -> None:
-    """The relaxation is high-frequency-only. For a woofer ``measurement_band[0]``
-    is a real excursion hedge -- the shipped floor keeps it, so this validator
-    keeps it too, even well inside the declared hard band.
-    """
-
-    manual = _manual_settings()
-    # hard=[25, 5000], measurement=[35, 4500]: 30 Hz is inside the hard band and
-    # below the analysis window, which is exactly what a tweeter may now declare.
-    manual["drivers"][0]["crossover_search_band_hz"] = [30.0, 3500.0]
-    profile = build_driver_safety_profile(
-        mono_output_topology(card_id=None),
-        manual_settings=manual,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    assert profile["status"] == "incomplete"
-    assert _issue_codes(profile) == {"woofer:search_band_outside_measurement_band"}
-
-
-def test_the_relaxation_never_reaches_the_upper_edge() -> None:
-    """Scope. #1654 widened a FLOOR; nothing about it widens the top, so a
-    high-frequency search band above the declared analysis window is refused
-    with exactly the code it always was.
-    """
-
-    profile = build_driver_safety_profile(
-        _topology_with_tweeter_style("compression_driver"),
-        manual_settings=_jts3_shaped_manual(tweeter_search=[1600.0, 18001.0]),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    assert _issue_codes(profile) == {"tweeter:search_band_outside_measurement_band"}
-
-
-def test_a_high_frequency_role_without_a_hard_band_keeps_the_stricter_rule(
-) -> None:
-    """Fail-closed: the relaxation binds to the hard band, so a declaration with
-    no hard band to bind to does not lose its floor -- it falls back to the
-    unchanged subset rule (alongside the missing-band issue it already raises).
-    """
-
-    manual = _jts3_shaped_manual(tweeter_search=[1600.0, 2500.0])
-    manual["drivers"][1].pop("hard_excitation_band_hz")
-    profile = build_driver_safety_profile(
-        _topology_with_tweeter_style("compression_driver"),
-        manual_settings=manual,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    codes = _issue_codes(profile)
-    assert "tweeter:hard_excitation_band_missing" in codes
-    assert "tweeter:search_band_outside_measurement_band" in codes
 
 
 _SOUND_MAIN_JS = (
@@ -1883,21 +1822,22 @@ _SOUND_MAIN_JS = (
     / "js"
     / "main.js"
 )
-# ``driver_safety`` emits reason codes three structurally different ways, and a
-# code escaping through ANY of them reaches ``evaluation.reasons`` and therefore
-# /sound's copy. A scan that saw one shape would go quiet exactly when the hole
-# it exists to catch reopened -- and the newest shape, a bare ``return [...]``,
-# is the one that now owns band relationships. So each shape is matched on its
-# own and each is required to have contributed: a pattern that silently stops
-# matching fails loudly instead of shrinking the derived set.
+# ``driver_safety`` emits reason codes two structurally different ways, and a
+# code escaping through EITHER of them reaches ``evaluation.reasons`` and
+# therefore /sound's copy. A scan that saw one shape would go quiet exactly when
+# the hole it exists to catch reopened. So each shape is matched on its own and
+# each is required to have contributed: a pattern that silently stops matching
+# fails loudly instead of shrinking the derived set.
+#
+# A third shape, a bare ``return [...]``, existed for ``_search_band_issues``
+# alone and went with it when #2870 deleted the crossover search band. Restore
+# it here if a checker is ever written that returns its own list again.
 _REASON_CODE_SHAPES = {
-    # _target_issues' per-target checks, and _search_band_issues' HF branch.
+    # _target_issues' per-target checks.
     "reasons.append": re.compile(r'\breasons\.append\(\s*f?"([^"]+)"'),
     # _profile_core's profile-wide issue and evaluate_driver_safety_profile's
     # re-derivation of it, whose lists are named `issues` / `derived_issues`.
     "issues.append": re.compile(r'\b\w*issues\.append\(\s*f?"([^"]+)"'),
-    # _search_band_issues returns its own list instead of appending to one.
-    "return [...]": re.compile(r'\breturn\s+\[\s*f?"([^"]+)"'),
 }
 
 
@@ -1937,8 +1877,8 @@ def test_the_sound_page_can_phrase_every_reason_that_is_not_a_missing_value():
 
     /sound splits an ``incomplete`` profile into "a value is missing" (every
     code ending ``_missing``) and "something does not line up" (a phrase per
-    code). A NEW non-missing code with no phrase -- introduced through ANY of
-    the three emission shapes ``_REASON_CODE_SHAPES`` enumerates -- would
+    code). A NEW non-missing code with no phrase -- introduced through EITHER of
+    the emission shapes ``_REASON_CODE_SHAPES`` enumerates -- would
     silently fall back to "Some safety limits are still missing", reintroducing
     exactly the copy #2191 was filed about. Exact set equality both ways, so a
     dead phrase is caught too.
@@ -2406,7 +2346,6 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
                 "recommended_highpass_slope_db_per_octave"
             ],
             "measurement_band_hz": driver["measurement_band_hz"],
-            "crossover_search_band_hz": driver["crossover_search_band_hz"],
             "level_duration_limits": driver["level_duration_limits"],
         },
     ]
@@ -2856,7 +2795,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
                 "minimum_slope_db_per_octave": 24,
             }],
             "measurement_band_hz": [100, 8000],
-            "crossover_search_band_hz": [1500, 3500],
             # Protocol discipline, not a datasheet fact.
             "level_duration_limits": {
                 "max_effective_peak_dbfs": -20,
@@ -2881,7 +2819,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
             "minimum_slope_db_per_octave": 24,
         }],
         "measurement_band_hz": [4500, 18000],
-        "crossover_search_band_hz": [4500, 6000],
         "level_duration_limits": {
             "max_effective_peak_dbfs": tweeter_peak_dbfs,
             "max_sweep_duration_s": 4,
@@ -3266,32 +3203,20 @@ def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itsel
             "tweeter:max_effective_peak_above_code_policy",
         ),
         # Nesting: a measurement band reaching outside the hard excitation
-        # band. The UPPER edge, since #2603: the analysis window's LOWER edge
-        # is now DERIVED (clamped up into the allowed band by
+        # band. Since #2870 deleted the crossover search band this is the ONLY
+        # nesting relationship left, so it carries the whole clamp on its own.
+        #
+        # The UPPER edge, since #2603: the analysis window's LOWER edge is now
+        # DERIVED (clamped up into the allowed band by
         # ``apply_driver_low_limit``), so a below-the-floor analysis window is
         # structurally impossible rather than merely refused. The upper edge is
         # still declared, still unnested-able, and still refused by name.
+        # Deleting this clamp left every test in the suite green before #2186,
+        # so it is pinned here rather than assumed.
         (
             "measurement_band_hz",
             [4500, 25000],
             "tweeter:measurement_band_outside_hard_band",
-        ),
-        # Nesting, inner half: a crossover-search band escaping its declared
-        # bounds. Deleting this clamp left every test in the suite green before
-        # #2186, so it is pinned here rather than assumed.
-        #
-        # WHICH bound this mutation escapes changed with #2194 (the #1654/#2191
-        # HF-floor asymmetry), and the expected code moved with it. A tweeter's
-        # two search-band edges now answer to different authorities: the LOWER
-        # edge to ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])`` -- here
-        # 4500 Hz -- and the UPPER edge still to ``measurement_band[1]``. So
-        # 4000 Hz is refused for reaching under the declared hard floor, while
-        # 6000 Hz sits legally inside the 18000 Hz analysis ceiling. The clamp
-        # is intact; only the name it is refused by moved.
-        (
-            "crossover_search_band_hz",
-            [4000, 6000],
-            "tweeter:search_band_below_hard_band",
         ),
     ],
 )
@@ -3348,63 +3273,3 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
         evaluate_driver_safety_profile(profile, topology).confirmed_and_current
         is False
     )
-
-
-def test_both_search_band_edges_are_reported_when_both_are_bad() -> None:
-    """The two search-band checks are INDEPENDENT: neither may suppress the other.
-
-    Since #2194 (the #1654 / #2191 HF-floor asymmetry) a high-frequency role's
-    two search-band edges answer to DIFFERENT authorities -- the LOWER edge to
-    ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``, the UPPER edge still to
-    ``measurement_band[1]``. ``_search_band_issues`` therefore evaluates them as
-    two unconditional ``append``s into one list rather than as a chain, so a
-    declaration that breaks both bounds is told about both.
-
-    Pinned because the property was doubted rather than measured. #2199 and
-    #2194 landed within a day of each other and ``main`` went red on one stale
-    assertion; the circulating diagnosis was that #2194's new floor check "fires
-    first and shadows" the older ceiling check. It does not, and it never did --
-    but nothing in the suite would have caught it if it had. Rewriting the second
-    ``if`` as an ``elif`` is precisely the regression this test exists to fail
-    on, and the cost of that regression is paid by the operator: they would fix
-    the one edge they were told about, re-save, and be refused a second time by
-    the edge that had been hidden.
-
-    ``[4000, 19000]`` breaks both bounds of the CX120 dome tweeter at once --
-    4000 Hz reaches under its declared hard floor of 4500 Hz, and 19000 Hz
-    escapes its 18000 Hz analysis ceiling. Each edge alone is already covered
-    (``test_the_relaxation_never_reaches_the_upper_edge`` for the ceiling, the
-    ``crossover_search_band_hz`` case above for the floor); the conjunction is
-    what was untested.
-    """
-
-    topology = _topology_with_tweeter_style("dome_tweeter")
-    raw_drivers = [
-        {
-            "target_id": f"mono:{role}",
-            "role": role,
-            "model": _CX120_MODELS[role],
-            **_cx120_safety(role),
-        }
-        for role in ("woofer", "tweeter")
-    ]
-    tweeter_raw = next(d for d in raw_drivers if d["role"] == "tweeter")
-    tweeter_raw["crossover_search_band_hz"] = [4000, 19000]
-    manual = normalise_manual_settings(
-        {"drivers": raw_drivers, "crossover_candidates": []}
-    )
-    assert manual is not None
-
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=manual,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    codes = _issue_codes(profile)
-    # Ordered so an ``elif`` regression -- which suppresses the floor code,
-    # because the ceiling check runs first -- fails on the edge it hid.
-    assert "tweeter:search_band_below_hard_band" in codes, codes
-    assert "tweeter:search_band_outside_measurement_band" in codes, codes
-    assert profile["status"] == "incomplete"

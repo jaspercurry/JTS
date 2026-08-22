@@ -420,16 +420,13 @@ of. That profile distinguishes:
 
 - the hard minimum and maximum excitation frequencies;
 - required high/low-pass protection, including cutoff and minimum slope;
-- a conservative measurement band inside the hard excitation band;
-- a crossover-search band inside the measurement band, with one deliberate
-  asymmetry: a high-frequency role's search band may start below the
-  measurement band's lower edge, bounded instead by the declared hard
-  excitation floor. That mirrors the excitation floor MEASURE actually derives
-  for such a role on the proven-high-pass path — where the graph carries the
-  driver's crossover high-pass by construction, so the sub-window region
-  reaches the driver attenuated rather than naked (#1654). Without the
-  asymmetry the wizard refuses to store a band MEASURE would legitimately
-  sweep (#2191). The hard band still bounds both edges, for every role;
+- a conservative measurement band inside the hard excitation band — the ONE
+  nesting relationship the profile declares. A third band, `crossover_search_band_hz`,
+  used to nest inside the measurement band and bound where the speaker could be
+  crossed; the 2026-08-22 owner ruling deleted it (#2870) because it named no
+  damage mechanism and its only remaining effect was to refuse corners both
+  drivers' declared hard bands admit. Where a speaker may be crossed is now
+  bounded by those hard bands alone;
 - bounded level, duration, repeat, and cooldown policy; and
 - cabinet/radiator capability needed for any low-frequency reconstruction.
 

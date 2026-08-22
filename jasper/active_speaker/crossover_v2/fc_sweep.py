@@ -15,15 +15,20 @@ is opened at it?**
 household declared, or at the one an operator pinned; nothing here ranks one
 corner against another.  :func:`_fc_rejection` is the single owner of "is this
 corner admissible", so a pinned corner and a declared one are judged on
-identical terms rather than by two spellings of the same three comparisons, and
+identical terms rather than by two spellings of the same comparisons, and
 :func:`recornered_preset` is the single owner of "what does this speaker look
 like at that corner", so the preset a session opens at can never disagree with
 the declaration it will be graded against.
 
-:func:`resolve_fc_search_band` is the declaration side of the same question: a
-two-way crossover puts BOTH drivers at ``Fc``, so the binding band is the
-intersection of what every participating role permits, and the intersection is
-the fail-closed direction.
+**Only a damage stop refuses a corner.**  The two bounds :func:`_fc_rejection`
+applies are the two drivers' declared HARD EXCITATION bands — the upper
+driver's low edge and the lower driver's high edge — and each names a
+component-damage mechanism the manufacturer or the household declared.  A third
+bound used to sit beside them, an invented ``crossover_search_band_hz`` that
+narrowed where a speaker *may* be crossed without naming any mechanism; the
+owner deleted it on 2026-08-22 (#2870) because a corner the drivers' own bands
+admit is a corner the operator is entitled to ask for.  Do not reintroduce a
+bound here that cannot name what it protects.
 
 **The filename is historical.**  This module also held R17's corner sweep — a
 candidate set, a per-corner evaluation, a compute budget and an adjudication —
@@ -39,17 +44,13 @@ nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, replace
-from typing import Any, Mapping
+from dataclasses import replace
+from typing import Any
 
 __all__ = [
     "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
     "FC_REJECT_BELOW_DECLARED_FLOOR",
-    "FC_REJECT_OUTSIDE_SEARCH_BAND",
-    "FcSearchBand",
     "recornered_preset",
-    "resolve_fc_search_band",
 ]
 
 # Why a corner was refused. Named codes, never a bare number, because every one
@@ -65,128 +66,25 @@ __all__ = [
 # at equality, so there was no math to repair -- only conservatism to drop.
 FC_REJECT_BELOW_DECLARED_FLOOR = "below_declared_floor"
 FC_REJECT_ABOVE_LOWER_DRIVER_BAND = "above_lower_driver_band"
-FC_REJECT_OUTSIDE_SEARCH_BAND = "outside_declared_search_band"
-
-# Half a display digit. A corner is spelled to one decimal everywhere it is
-# declared, pinned or displayed, so a band-edge comparison must not refuse a
-# value that rounding put onto the edge it is being checked against. The
-# tolerance is measured from the DECLARED edge, which is the only edge there is.
-_FC_GRID_EPS_HZ = 0.05
 
 
 def _fc_rejection(
     fc_hz: float,
     hf_hard_floor_hz: float,
     lower_driver_hard_ceiling_hz: float,
-    search_band_hz: tuple[float, float] | None,
 ) -> str | None:
-    """The FIRST bound ``fc_hz`` violates, hardest first, or ``None``."""
+    """The FIRST bound ``fc_hz`` violates, hardest first, or ``None``.
+
+    Both bounds are hard excitation edges — the upper driver's low edge and the
+    lower driver's high edge — so both name a damage mechanism.  There is no
+    third, softer bound: see this module's docstring on the search band the
+    2026-08-22 ruling deleted.
+    """
     if fc_hz < float(hf_hard_floor_hz):
         return FC_REJECT_BELOW_DECLARED_FLOOR
     if fc_hz > float(lower_driver_hard_ceiling_hz):
         return FC_REJECT_ABOVE_LOWER_DRIVER_BAND
-    if search_band_hz is not None and not (
-        float(search_band_hz[0]) - _FC_GRID_EPS_HZ
-        <= fc_hz
-        <= float(search_band_hz[1]) + _FC_GRID_EPS_HZ
-    ):
-        return FC_REJECT_OUTSIDE_SEARCH_BAND
     return None
-
-
-@dataclass(frozen=True)
-class FcSearchBand:
-    """Which declared search band binds a corner, and who narrowed it.
-
-    ``band_hz`` is ``None`` when the declarations admit no corner at all; the
-    caller translates that into its own refusal, because the same ``None``
-    handed to :func:`_fc_rejection` would mean the opposite — "no declared band
-    constrains this" (see
-    :func:`~.topology_prescription._declared_frequency_refusal`, which makes
-    exactly that translation).
-
-    ``lo_role`` / ``hi_role`` name a role whose own declaration set each
-    surviving edge. They are the whole point of this type: with one number per
-    edge and no owner, a household that has declared a stale band sees only
-    "this corner is not admissible" and has nowhere to go. With the owner named,
-    the disclosure can say WHICH driver's declaration is the binding one — the
-    operator edits that declaration, which is where the fact lives.
-
-    There is deliberately no "do the roles disagree?" boolean. In a two-way the
-    intersection is narrower than somebody's declaration almost every time, so
-    such a flag would read ``True`` on nearly every session and mean nothing;
-    and a flag comparing only the two EDGE OWNERS misses the live jts3 case
-    outright, where both roles declare the same upper limit and the
-    disagreement is entirely on the lower one. The two role names carry the
-    actionable fact without either failure mode.
-    """
-
-    band_hz: tuple[float, float] | None
-    lo_role: str | None
-    hi_role: str | None
-    undeclared_roles: tuple[str, ...]
-
-
-def resolve_fc_search_band(
-    declared_band_hz_by_role: Mapping[str, tuple[float, float] | None],
-) -> FcSearchBand:
-    """Intersect the participating roles' declared crossover search bands.
-
-    **The rule, stated once.** A two-way crossover at ``Fc`` puts BOTH drivers
-    at ``Fc`` — the lower driver is low-passed there and the upper driver is
-    high-passed there — so an ``Fc`` is only admissible when EVERY participating
-    role's declaration admits it. The binding band is therefore the
-    intersection, and it is the fail-closed direction: a tweeter's declared low
-    limit is an excursion claim, and the cost of honouring a stale one is a
-    corner refused, while the cost of ignoring it is a driver asked to cross
-    below what its declaration permits.
-
-    **A participating role with no declared band yields ``None``** — no
-    admissible corner, disclosed via ``undeclared_roles``.
-    ``crossover_search_band_hz`` is a required declaration
-    (``driver_safety._target_issues`` refuses a target without one), so absence
-    here is an anomaly, and the safe reading of an anomaly is "this role has
-    told us nothing about where it may be crossed", never "this role permits
-    everything".
-
-    **An empty intersection also yields ``None``** with both edge owners still
-    named, because "your woofer says at-or-below 1500 and your tweeter says
-    at-or-above 2000" is precisely the actionable sentence, and losing the two
-    role names to a bare ``None`` would throw it away.
-
-    Not a safety gate on its own: :func:`_fc_rejection` still applies the
-    declared floor and the lower driver's ceiling on top of whatever this
-    returns. This narrows where a speaker may be crossed; it never widens it.
-    """
-    lo_hz = -math.inf
-    hi_hz = math.inf
-    lo_role: str | None = None
-    hi_role: str | None = None
-    undeclared: list[str] = []
-    for role in sorted(declared_band_hz_by_role):
-        band = declared_band_hz_by_role[role]
-        if band is None:
-            undeclared.append(role)
-            continue
-        role_lo, role_hi = float(band[0]), float(band[1])
-        # Strict ">" / "<" keep the FIRST role to set an edge as its owner, so
-        # two roles declaring the same limit name the one that sorts first
-        # rather than whichever happened to be iterated last. Sorted iteration
-        # above is what makes that deterministic; a tie means both roles
-        # declared that limit, so either name is equally true.
-        if role_lo > lo_hz:
-            lo_hz, lo_role = role_lo, role
-        if role_hi < hi_hz:
-            hi_hz, hi_role = role_hi, role
-    if undeclared or lo_role is None or hi_role is None or lo_hz >= hi_hz:
-        return FcSearchBand(
-            band_hz=None, lo_role=lo_role, hi_role=hi_role,
-            undeclared_roles=tuple(undeclared),
-        )
-    return FcSearchBand(
-        band_hz=(lo_hz, hi_hz), lo_role=lo_role, hi_role=hi_role,
-        undeclared_roles=(),
-    )
 
 
 def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) -> Any:

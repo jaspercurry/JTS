@@ -53,7 +53,6 @@ def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.
     common = {
         "hard_excitation_band_hz": [500, 20_000],
         "measurement_band_hz": [500, 10_000],
-        "crossover_search_band_hz": [1500, 2500],
     }
     settings = {
         "drivers": [

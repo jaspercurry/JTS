@@ -59,7 +59,6 @@ def test_production_driver_captures_build_exact_complete_isolated_evidence(
     common = {
         "hard_excitation_band_hz": [500, 20_000],
         "measurement_band_hz": [500, 10_000],
-        "crossover_search_band_hz": [4000, 6000],
         "level_duration_limits": {
             "max_effective_peak_dbfs": -65,
             "max_sweep_duration_s": 4,

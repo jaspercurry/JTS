@@ -294,7 +294,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             "model": f"model-{role}",
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
-            "crossover_search_band_hz": [1500, 2500],
             # #2603: the tweeter declares its low limit once, and its hard
             # floor derives from it rather than sharing the woofer's 500 Hz.
             **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
@@ -443,7 +442,6 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             "model": f"model-{role}",
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
-            "crossover_search_band_hz": [1500, 2500],
             # #2603: the tweeter declares its low limit once, and its hard
             # floor derives from it rather than sharing the woofer's 500 Hz.
             **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),

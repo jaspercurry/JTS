@@ -4757,10 +4757,11 @@ function echoProtectionPolicy(overrides = {}) {
 // citation (a datasheet is usually a NAME), an entry with no citation, and a
 // consumed value with no provenance entry at all.
 //
-// It also carries all three fields the FIRST cut of this panel left unechoed
-// (measurement_band_hz, crossover_search_band_hz, cabinet). All three are
+// It also carries the fields the FIRST cut of this panel left unechoed. Two of
+// the three it originally missed survive — measurement_band_hz and cabinet, both
 // frozen into the confirmed safety profile by _profile_core, so a panel that
-// claims completeness at the confirmation gate has to name them.
+// claims completeness at the confirmation gate has to name them. The third,
+// crossover_search_band_hz, was deleted outright by #2870.
 function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
   return {
     artifact_schema_version: 2,
@@ -4807,7 +4808,6 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
         role: "tweeter",
         model: "Dayton CX120-8",
         hard_excitation_band_hz: [2500, 20000],
-        crossover_search_band_hz: [2800, 4000],
         required_protection_filters: [{
           kind: "highpass",
           cutoff_hz: 3000,
@@ -4827,12 +4827,6 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
             confidence: "medium",
             basis: "independent measurement",
             source: "Dayton CX120-8 datasheet, p.2",
-            sources: [],
-          },
-          crossover_search_band_hz: {
-            confidence: "low",
-            basis: "estimated: one octave above Fs",
-            source: "estimated from the declared high-pass",
             sources: [],
           },
           required_protection_filters: {
@@ -4861,7 +4855,6 @@ function echoManualSettings(research) {
       model: driver.model,
       hard_excitation_band_hz: driver.hard_excitation_band_hz,
       measurement_band_hz: driver.measurement_band_hz,
-      crossover_search_band_hz: driver.crossover_search_band_hz,
       required_protection_filters: driver.required_protection_filters,
       level_duration_limits: driver.level_duration_limits,
       sensitivity_db_2v83_1m: driver.sensitivity_db_2v83_1m,
@@ -4918,9 +4911,10 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
   }
 
   // What we're RUNNING WITH, per value, read out of the working setting.
-  // The last three are the completeness fix: every one is frozen into the
-  // confirmed safety profile by _profile_core, and the first cut of this panel
-  // echoed none of them while claiming to echo everything.
+  // The last two are what survives of the completeness fix: both are frozen
+  // into the confirmed safety profile by _profile_core, and the first cut of
+  // this panel echoed neither while claiming to echo everything. Its third
+  // field, the crossover-search band, was deleted by #2870.
   for (const expected of [
     "Never test outside",
     "30 Hz to 5.0 kHz",
@@ -4933,8 +4927,6 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
     "+89.2 dB",
     "Measure inside",
     "40 Hz to 3.0 kHz",
-    "Try crossovers inside",
-    "2.8 kHz to 4.0 kHz",
     "Cabinet geometry",
     "1 radiator, 116 mm effective diameter, 200 mm baffle",
   ]) {
@@ -4967,10 +4959,10 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
 
   // Badges are DERIVED from confidence: high and medium assert a published
   // figure, low does not, and neither does silence. `cabinet` is the silence
-  // case among the newly-echoed three.
+  // case among the newly-echoed pair.
   const confirmed = (panel.match(/>confirmed</g) || []).length;
   const estimated = (panel.match(/>estimated</g) || []).length;
-  if (confirmed !== 3 || estimated !== 5) {
+  if (confirmed !== 3 || estimated !== 4) {
     fail("badge derivation must follow confidence (high/medium -> confirmed)", {
       confirmed, estimated, panel,
     });
@@ -8212,7 +8204,7 @@ async function testStaleLowLimitWithABlockerNamesTheCauseAndTheFix() {
     confirmed_and_current: false,
     reasons: [
       "driver_safety_profile_low_limit_stale",
-      "tweeter:search_band_below_hard_band",
+      "tweeter:measurement_band_outside_hard_band",
     ],
   });
   const html = harness.elements.get("view-body").innerHTML;
@@ -8225,7 +8217,7 @@ async function testStaleLowLimitWithABlockerNamesTheCauseAndTheFix() {
     fail("the copy must name WHY the declaration went unusable", { callout });
   }
   if (!callout.includes(
-    "the tweeter&#39;s crossover search band starts below its hard excitation band"
+    "the tweeter&#39;s measurement band reaches outside its hard excitation band"
   )) {
     fail("the copy must name the blocker a save has to clear first", { callout });
   }
@@ -8261,6 +8253,38 @@ async function testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy() {
   return { staleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy: true };
 }
 
+// #2870. A profile written before a field was RETIRED is not corrupt, and the
+// generic malformed copy ("JTS could not read these limits") reads as damage
+// and names no remedy. Every box confirmed before that ruling lands here, so
+// the copy is the whole migration story the household ever sees — pinned on the
+// RENDERED DOM, mirroring the #2603 pair above, because a reason the server
+// names and the page cannot phrase buys nothing.
+async function testRetiredFieldNamesTheSaveAsTheRemedyAndNotCorruption() {
+  const harness = await harnessWithSafetyEvaluation({
+    status: "malformed",
+    confirmed_and_current: false,
+    reasons: ["driver_safety_profile_retired_field"],
+  });
+  const html = harness.elements.get("view-body").innerHTML;
+  const calloutAt = html.indexOf('id="confirm-safety-limits"');
+  if (calloutAt < 0) {
+    fail("a retired-field profile still needs the explanation", { html });
+  }
+  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
+  if (!callout.includes("no longer uses")) {
+    fail("the copy must name WHY the declaration stopped reading", { callout });
+  }
+  if (!callout.includes("save them again")) {
+    fail("the copy must name the save as the remedy", { callout });
+  }
+  // The load-bearing half: it must NOT fall through to the generic unreadable
+  // sentence, which is what the reason exists to replace.
+  if (callout.includes("could not read these limits")) {
+    fail("a retired field must not be reported as unreadable", { callout });
+  }
+  return { retiredFieldNamesTheSaveAsTheRemedyAndNotCorruption: true };
+}
+
 async function testIncompleteFromABandRelationshipNamesTheRelationship() {
   // Issue #2191. 'incomplete' is also reached with every value present — the
   // owner's tweeter repair hit exactly this — and "add the missing limits"
@@ -8268,7 +8292,7 @@ async function testIncompleteFromABandRelationshipNamesTheRelationship() {
   const harness = await harnessWithSafetyEvaluation({
     status: "incomplete",
     confirmed_and_current: false,
-    reasons: ["tweeter:search_band_below_hard_band"],
+    reasons: ["tweeter:measurement_band_outside_hard_band"],
   });
   const html = harness.elements.get("view-body").innerHTML;
   const calloutAt = html.indexOf('id="confirm-safety-limits"');
@@ -8283,7 +8307,7 @@ async function testIncompleteFromABandRelationshipNamesTheRelationship() {
     fail("the copy must contradict the missing-values reading", { callout });
   }
   if (!callout.includes(
-    "the tweeter&#39;s crossover search band starts below its hard excitation band"
+    "the tweeter&#39;s measurement band reaches outside its hard excitation band"
   )) {
     fail("the copy must name which relationship does not line up", { callout });
   }
@@ -8301,7 +8325,7 @@ async function testIncompleteFromABandRelationshipNamesTheRelationship() {
     status: "incomplete",
     confirmed_and_current: false,
     reasons: [
-      "tweeter:search_band_below_hard_band",
+      "tweeter:measurement_band_outside_hard_band",
       "woofer:max_sweep_duration_s_missing",
     ],
   });
@@ -8455,6 +8479,7 @@ results.push(await testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl())
 results.push(await testIncompleteSafetyProfileHoistsTheReviewCallout());
 results.push(await testStaleLowLimitWithABlockerNamesTheCauseAndTheFix());
 results.push(await testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy());
+results.push(await testRetiredFieldNamesTheSaveAsTheRemedyAndNotCorruption());
 results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());

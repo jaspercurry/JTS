@@ -84,7 +84,6 @@ _MANUAL_DRIVER_FIELDS = {
     "hard_excitation_band_hz",
     "required_protection_filters",
     "measurement_band_hz",
-    "crossover_search_band_hz",
     "level_duration_limits",
     "cabinet",
     "source",
@@ -888,7 +887,6 @@ _V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
         "hard_excitation_band_hz",
         "required_protection_filters",
         "measurement_band_hz",
-        "crossover_search_band_hz",
         "level_duration_limits",
         "cabinet",
         # #1665 component entry: driver_class/radiating_diameter_mm are

@@ -12254,14 +12254,11 @@ _PIN_ORDER = 4
 
 #: The fixture speaker's own declarations, quoted once. ``_roles()`` supplies
 #: the two role bands (woofer 150-6000 Hz, tweeter 300-20000 Hz), so the gate's
-#: declared floor is 300.0 and its lower-driver ceiling is 6000.0; these three
-#: are the declarations ``_roles()`` does not carry. The two search bands
-#: intersect to 1000-4000 Hz, which is what makes 2400.0 admissible and 5500.0
-#: — still inside BOTH role bands — refusable for the search band alone.
-_DECLARED_SEARCH_BAND_BY_ROLE = {
-    "woofer": (800.0, 4000.0),
-    "tweeter": (1000.0, 4000.0),
-}
+#: declared floor is 300.0 and its lower-driver ceiling is 6000.0; these two are
+#: the declarations ``_roles()`` does not carry. Those role bands are the WHOLE
+#: frequency gate since #2870 deleted the crossover search band, which is what
+#: makes 2400.0 admissible and 6500.0 — past the woofer's own declared ceiling —
+#: refusable.
 _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 24.0
 _DECLARED_WOOFER_DIAMETER_MM = 114.0
 
@@ -12329,7 +12326,6 @@ def _pinnable_context() -> SimpleNamespace:
         fc_hz=FC_HZ,
         roles_bands=tuple(_roles()),
         radiating_diameter_mm_by_role={"woofer": _DECLARED_WOOFER_DIAMETER_MM},
-        crossover_search_band_hz_by_role=dict(_DECLARED_SEARCH_BAND_BY_ROLE),
         safety_profile=_PIN_SAFETY_PROFILE,
         role_targets={"woofer": "fp-woofer", "tweeter": "fp-tweeter"},
         driver_caps_dbfs=dict(CAPS),
@@ -12522,8 +12518,8 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     ignoring it: one extra key anywhere in the banked block turns the whole
     record into ``None``, and a "is not None" assertion would not see a gate
     stamp quietly dropped on the way through. The record is taken from the REAL
-    request gate rather than hand-built, so the five ``checked_against_*``
-    stamps and the beaming disclosure the gate writes are all in the block being
+    request gate rather than hand-built, so the ``checked_against_*`` stamps and
+    the beaming disclosure the gate writes are all in the block being
     round-tripped.
     """
     accepted = _stage_1_prescription_taps(
@@ -12531,7 +12527,8 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     )["topology"]
     # The gate's own stamps are present, which is what makes the round trip
     # below a demanding one rather than four fields wide.
-    assert accepted.checked_against_search_band_hz == (1000.0, 4000.0)
+    assert accepted.checked_against_floor_hz == 300.0
+    assert accepted.checked_against_ceiling_hz == 6000.0
     assert accepted.checked_against_slope_db_per_octave == (
         _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
     )
@@ -12640,11 +12637,16 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
 ):
     """Fail-closed, at the untrusted-input boundary, costing nothing.
 
-    5500 Hz is inside BOTH role bands (the tweeter declares from 300 Hz, the
-    woofer to 6000 Hz) and outside the 1000-4000 Hz band the two declared
-    search bands intersect to, so the SEARCH BAND is the only bound that can
-    refuse it — a one-reason fixture, asserted on the reason CONSTANT rather
-    than on wording no test owns.
+    6500 Hz is past the woofer's own declared 6000 Hz ceiling and comfortably
+    inside the tweeter's band (which declares from 300 Hz), so the LOWER
+    DRIVER'S CEILING is the only bound that can refuse it — a one-reason
+    fixture, asserted on the reason CONSTANT rather than on wording no test
+    owns.
+
+    The one-reason fixture used to be 5500 Hz, refused by a declared search
+    band the two roles intersected to 1000-4000 Hz. #2870 deleted that band, so
+    5500 Hz is now admissible — both drivers' hard bands allow it — and the
+    fixture moved to the surviving damage stop rather than the deleted nanny.
 
     "At the tap" is the half that matters operationally: an operator walking a
     tournament must learn at the request, not after a ten-minute measurement
@@ -12658,7 +12660,7 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
     provenance — so a refusal can only be the corner.
     """
     from jasper.active_speaker.crossover_v2.fc_sweep import (
-        FC_REJECT_OUTSIDE_SEARCH_BAND,
+        FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     )
 
     _arm_stage_1(monkeypatch)
@@ -12666,15 +12668,15 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         v2host.prepare_v2_session(
-            {"topology_prescription": _topology_pin(fc_hz=5500.0)},
+            {"topology_prescription": _topology_pin(fc_hz=6500.0)},
             status={}, run_async=None, camilla_factory=None,
         )
 
-    assert FC_REJECT_OUTSIDE_SEARCH_BAND in str(excinfo.value)
+    assert FC_REJECT_ABOVE_LOWER_DRIVER_BAND in str(excinfo.value)
     # Never clamped to the nearest legal corner and quietly measured: the
     # operator asked for a candidate, and a silently different candidate is
     # worse than none because its receipt would carry the candidate's name.
-    assert "5500" in str(excinfo.value)
+    assert "6500" in str(excinfo.value)
     assert v2host.load_v2_state() is None
 
 

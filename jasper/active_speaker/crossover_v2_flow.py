@@ -1496,7 +1496,7 @@ def _shape_from_kwargs(
 # Corner admissibility (plan §4.2 / #1894 / #1675)
 #
 # #2291 Phase 5a-v(b) moved the declaration half — the rejection vocabulary and
-# the search-band intersection — into ``crossover_v2.fc_sweep``, because a pure
+# the admissibility predicate — into ``crossover_v2.fc_sweep``, because a pure
 # organ cannot import this module (the dependency runs one way: flow →
 # crossover_v2, never back). They are re-exported here under their historical
 # names, exactly as the Phase 2 planner constants above are, so every existing
@@ -1524,11 +1524,7 @@ def _shape_from_kwargs(
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_OUTSIDE_SEARCH_BAND as FC_REJECT_OUTSIDE_SEARCH_BAND,
-    FcSearchBand as FcSearchBand,
-    _FC_GRID_EPS_HZ as _FC_GRID_EPS_HZ,
     _fc_rejection as _fc_rejection,
-    resolve_fc_search_band as resolve_fc_search_band,
 )
 
 # Two more doors, on the same terms, opened by Phase 5a-v(c): the candidate
@@ -4998,9 +4994,6 @@ class CrossoverV2Session:
         verify_pilot_transfer_prior: Mapping[str, Any] | None = None,
         driver_class_by_role: Mapping[str, str] | None = None,
         radiating_diameter_mm_by_role: Mapping[str, float] | None = None,
-        crossover_search_band_hz_by_role: Mapping[
-            str, tuple[float, float] | None
-        ] | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ] | None = None,
@@ -5146,15 +5139,6 @@ class CrossoverV2Session:
         # is no conservative default diameter.
         self._radiating_diameter_mm_by_role = (
             dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
-        )
-        # Each participating role's declared crossover search band. An EMPTY map
-        # is not "no constraint" — ``resolve_fc_search_band`` reads a role that
-        # is absent here exactly as a role that declared nothing, so a caller
-        # which passes none admits no corner at all. That is the fail-closed
-        # direction that function documents.
-        self._crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = (
-            dict(crossover_search_band_hz_by_role)
-            if crossover_search_band_hz_by_role else {}
         )
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
