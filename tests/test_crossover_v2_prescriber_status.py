@@ -300,9 +300,31 @@ def test_every_printed_url_follows_the_configured_hostname(
 
     assert payload["speaker"]["hostname"] == hostname
     assert payload["speaker"]["crossover_url"] == f"http://{hostname}/sound/crossover/"
+    assert payload["speaker"]["declaration_url"] == f"http://{hostname}/sound/setup/"
     assert f"http://{hostname}/sound/crossover/" in out
     for other in {"jts.local", "jts3.local", "kitchen.local"} - {hostname}:
         assert f"http://{other}" not in out
+
+
+def test_a_speaker_with_no_declaration_is_handed_the_page_that_makes_one(
+    tmp_path, capsys, monkeypatch
+):
+    """Every human handoff point, not just the one that runs rounds.
+
+    ``--drivers`` is a path away for a speaker that HAS a design draft; a
+    speaker that was never commissioned has no path to point harder at, and the
+    page that writes the draft is the only useful thing to say to its operator.
+    """
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts5.local")
+    session, _ = _speaker_dirs(tmp_path, classification=_classification())
+
+    _, payload = _status([str(session)], capsys)
+
+    assert payload["declared"]["available"] is False
+    assert any(
+        "http://jts5.local/sound/setup/" in action
+        for action in payload["next_actions"]
+    )
 
 
 def test_the_handoff_url_survives_an_unset_hostname(tmp_path, capsys, monkeypatch):
@@ -331,6 +353,24 @@ def test_the_handoff_page_is_the_one_the_household_actually_opens():
 
     hrefs = {key: href for key, _label, href in SECTIONS}
     assert cli.CROSSOVER_PAGE_PATH == hrefs["crossover"]
+
+
+@pytest.mark.parametrize(
+    "path", [cli.CROSSOVER_PAGE_PATH, cli.SOUND_SETUP_PAGE_PATH]
+)
+def test_every_path_this_tool_prints_is_a_route_nginx_serves(path):
+    """A URL an operator cannot open is worse than no URL at all.
+
+    They follow it once, get a 404, and conclude the speaker is broken. The
+    deployed nginx config is the authority on what is actually reachable, so
+    the paths this tool hands out are checked against it rather than against a
+    second list somebody would have to remember to update.
+    """
+    conf = (
+        Path(__file__).resolve().parents[1] / "deploy" / "nginx-jasper.conf"
+    ).read_text()
+
+    assert f"location {path} {{" in conf
 
 
 # --------------------------------------------------------------------------- #

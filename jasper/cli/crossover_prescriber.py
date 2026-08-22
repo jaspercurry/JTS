@@ -93,10 +93,15 @@ EXIT_EVIDENCE_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
-#: Where a human goes to run, apply, or undo a crossover round. Named once
-#: because every sentence this tool prints that hands the operator to a browser
-#: hands them to this page.
+#: Where a human goes to run, apply, or undo a crossover round.
 CROSSOVER_PAGE_PATH = "/sound/crossover/"
+
+#: Where a human DECLARES the speaker — drivers, their safety profile, the
+#: corner. A second page rather than a second spelling of the first: the
+#: per-driver bound comes from the design draft that page writes, and an
+#: operator whose speaker has never been commissioned cannot satisfy
+#: ``--drivers`` by pointing harder at a file that does not exist yet.
+SOUND_SETUP_PAGE_PATH = "/sound/setup/"
 
 #: What happens to a document sitting in the spool, said once. ``stage`` says it
 #: at the moment of banking and ``status`` says it to an operator who arrived
@@ -691,7 +696,11 @@ def _status_sections(
 
 
 def _next_actions(
-    sections: dict[str, Any], *, state_supplied: bool, crossover_url: str
+    sections: dict[str, Any],
+    *,
+    state_supplied: bool,
+    crossover_url: str,
+    declaration_url: str,
 ) -> list[str]:
     """What this speaker can do next, derived from what it does and does not have.
 
@@ -732,10 +741,15 @@ def _next_actions(
                 f"{', '.join(declared['roles'])}"
             )
         elif not declared["available"]:
+            # Both halves, because the reason tells the two apart and the
+            # operator may not be able to act on either alone: a draft that
+            # exists is a path away, and a speaker that was never commissioned
+            # has no path to point harder at yet.
             out.append(
                 f"no declared driver band is available ({declared['reason']}) — "
-                "pass --drivers <design draft JSON>; without it a per-driver "
-                "prescription has no bound and is refused by name"
+                "pass --drivers <design draft JSON>, or declare the drivers at "
+                f"{declaration_url}; without it a per-driver prescription has "
+                "no bound and is refused by name"
             )
         else:
             out.append(
@@ -800,11 +814,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
         packet_error = str(exc)
 
     crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
+    declaration_url = _speaker_url(SOUND_SETUP_PAGE_PATH)
     sections = _status_sections(packet, packet_error)
     payload: dict[str, Any] = {
         "speaker": {
             "hostname": read_identity().hostname,
             "crossover_url": crossover_url,
+            "declaration_url": declaration_url,
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "packet_error": packet_error or None,
@@ -813,6 +829,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
             sections,
             state_supplied=bool(args.state),
             crossover_url=crossover_url,
+            declaration_url=declaration_url,
         ),
     }
 
