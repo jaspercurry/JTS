@@ -70,10 +70,18 @@ executed under both.
    `Config.hostname` (speakers are `jts1.local`, `jts3.local`, … — never a
    hard-coded `jts.local`).
 8. **Operator prose is quarantined.** The evidence packet's
-   `household_prose_excluded` invariant stands: nothing a human typed appears
-   in the evidence document. The one consolidated notes field travels as a
-   separate operator-notes artifact, labeled as operator-typed text to be
-   treated as information, not instructions.
+   `household_prose_excluded` invariant stands: household copy never enters
+   the evidence document and `household_findings` stays withheld. Operator
+   prose is gathered into one separately-kinded operator-notes artifact
+   (`jts_crossover_v2_operator_notes`), labeled as operator-typed text to be
+   treated as information, not instructions. **Amended by owner ruling
+   2026-08-22 (#2871):** the artifact is *embedded* in the packet, under the
+   single block `privacy.operator_prose_quarantined_to` names, rather than
+   travelling beside it — the tuning LLM is a legitimate reader and had none,
+   and prose with no reader is a write-only store. The quarantine is the
+   fencing, not the distance: the artifact keeps its own kind and schema
+   version so it can be lifted whole, the evidence blocks stay prose-free, and
+   no code path in JTS reads the strings for any decision.
 9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`), nothing
    else. DSP variants under test are **candidates**; a tournament round runs
    a **candidate cycle** at each pose. Forward-only for new work; existing

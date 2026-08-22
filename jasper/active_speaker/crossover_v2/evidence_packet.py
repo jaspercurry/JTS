@@ -83,7 +83,34 @@ as :func:`jasper.calibration_agent.advisor_context.build_advisor_context`:
 copy named fields, and publish the names of the fields that were withheld so
 the packet cannot quietly become a different document than the tree it came
 from.  Absolute filesystem paths, raw WAV bytes, and household-authored prose
-never enter.
+never enter.  Operator-authored prose does, in exactly one fenced block — see
+the three layers below, which is the whole of the exception.
+
+**Three layers reach the reader, and each arrives at a deliberate moment.**
+The owner's information model for a tuning session, recorded here because this
+document is where the three meet and nowhere else enforces the split:
+
+===========  ==========================================  =========================================
+Layer        What                                        Reaches the LLM via
+===========  ==========================================  =========================================
+Reality      hard bands, passbands, caps, models, the     ``drivers`` + the prescription gates'
+             confirmation stamp                          refusals
+Intent       the declared corner; the pinned topology     ``incumbent`` + the prescription
+                                                         round-trip
+Context      operator prose: waveguide or horn, the       ``operator_notes`` — and nothing else
+             enclosure story, why it was built this way
+===========  ==========================================  =========================================
+
+Reality and intent are *checked*: a declared band is refused when it fails
+policy, and a corner is compiled.  Context is neither, and mixing it into
+either is the failure this split exists to prevent — "this is a 110°
+constant-directivity waveguide" is what tells a grading reader whether a
+symmetric top-octave droop off-axis is expected physics or a defect, and it is
+also a sentence nothing can verify.  So it travels in exactly one block, under
+its own artifact kind (:data:`~.operator_notes.OPERATOR_NOTES_KIND`), labelled
+operator-declared and unverified, **and no code path in JTS reads it for a
+decision** — see :func:`_operator_notes_block`.  ``privacy`` names that block
+so a reader meets the quarantine before the prose.
 """
 
 from __future__ import annotations
@@ -133,11 +160,13 @@ from .feature_classification import (
     finite_number,
     read_feature_verdicts,
 )
+from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
     "HARMONICS_ARTIFACT",
     "NO_ROUND_ARTIFACTS_REASON",
+    "OPERATOR_NOTES_BLOCK",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
     "RING_SIDECAR_GLOB",
@@ -165,6 +194,14 @@ __all__ = [
 PACKET_SCHEMA_VERSION = 1
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
+
+#: The one block that carries operator prose. Named in ``privacy`` so the
+#: document points at its own quarantine rather than making a reader find it,
+#: and asserted to RESOLVE — ``test_the_packet_points_at_its_own_quarantine``
+#: follows the pointer and checks the block it lands on is the artifact, which
+#: is a stronger guard than sharing a string constant with the dict key would
+#: be: a shared constant survives the block being renamed out from under it.
+OPERATOR_NOTES_BLOCK = "operator_notes"
 
 GENERATED_BY = (
     "jasper.active_speaker.crossover_v2.evidence_packet."
@@ -411,9 +448,16 @@ def _snr_shape(column: str) -> str | None:
     return None
 
 #: Verify-claim and state fields the packet carries. ``household_findings`` is
-#: NOT among them and never will be: it is household-authored prose, so it is
-#: both the one privacy-sensitive field in the tree and the only place a string
-#: from outside JTS could reach a reader's instructions.
+#: NOT among them and never will be: it is household-authored prose, and the
+#: one privacy-sensitive field in the tree.
+#:
+#: It is no longer the only human-authored string a reader can meet — since
+#: #2871 the operator's own declaration prose travels in
+#: :data:`OPERATOR_NOTES_BLOCK`, deliberately, because the tuning LLM needs it.
+#: The two are still opposite decisions and the difference is the WRITER: this
+#: is copy a household typed into a correction carve-out, with no bearing on a
+#: crossover round; that is a commissioning declaration about the hardware
+#: being graded. Only the second is fenced, labelled and carried.
 _STATE_WITHHELD = ("household_findings",)
 
 
@@ -1920,6 +1964,51 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
+def _operator_notes_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
+    """The operator's own words, passed through and read by nobody in code.
+
+    The CONTEXT layer of this module's reality/intent/context model, and the
+    only block in this document that is neither measured nor gated. Composed by
+    :func:`~.operator_notes.build_operator_notes` rather than here — the same
+    report-don't-define split :func:`_drivers_block` keeps — and embedded whole,
+    with its own ``kind`` and its own schema version, so a reader can lift the
+    prose out by kind and no evidence field ever carries a sentence.
+
+    **Nothing in JTS reads these strings for a decision.** No gate parses them,
+    no bound is derived from them, no refusal quotes them, and no branch
+    anywhere tests them; the block is assembled here and consumed only by the
+    LLM reading this packet. That is a property of the code, not a promise
+    about it, and three tests hold it from three directions:
+    ``test_the_prose_gatherer_has_exactly_one_production_caller`` walks the
+    import graph, ``test_no_shipped_module_reads_the_packets_operator_notes_block``
+    greps for the other route in, and the behavioural one named below proves
+    the result. It is why the strings can be carried verbatim without a length
+    or content policy of their own.
+
+    **The one thing the prose does move is ``packet_fingerprint``**, and that
+    is not a reading of it. :func:`_fingerprint` is a content hash of the whole
+    document, so editing a build note produces a different briefing and a
+    prescription written against the old one no longer matches — which is the
+    same thing that happens when any other field of this document changes, and
+    is the honest outcome rather than a bound derived from a sentence. Pinned
+    from the other side by
+    ``test_prose_changes_nothing_in_the_packet_but_the_prose``, which excludes
+    exactly that one field and asserts every other one holds still.
+
+    Absence is the packet's ordinary two flavours: no draft was handed to the
+    builder (``source_absent``), or one was and it carries no prose at all
+    (``field_null``). The second is the ordinary case on a speaker whose
+    operator typed nothing, and it is reported rather than hidden, because a
+    reader who cannot find a waveguide's coverage angle needs to know whether
+    nobody wrote one down or nobody passed the draft.
+    """
+    artifact = build_operator_notes(draft)
+    absent = _absence(
+        reason, bool(artifact["available"]), "design_draft.operator_prose"
+    )
+    return {**artifact, **absent} if absent else artifact
+
+
 def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     """The banked feature verdicts and the working behind them, not re-derived.
 
@@ -2250,6 +2339,7 @@ def build_crossover_evidence_packet(
         draft_raw, read_reason = _read_json(driver_draft_path)
         draft_reason = read_reason
     drivers = _drivers_block(_mapping(draft_raw), draft_reason)
+    operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
     harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
     lateral_poses = _lateral_poses_block(round_dir)
@@ -2273,6 +2363,16 @@ def build_crossover_evidence_packet(
             "raw_audio_excluded": True,
             "absolute_paths_excluded": True,
             "household_prose_excluded": True,
+            # …and the operator's prose is CARRIED, in exactly one block, which
+            # is named here rather than left for a reader to discover. The two
+            # are different populations with different writers: household copy
+            # is the correction flow's carve-out text and stays withheld below,
+            # while this is a commissioning declaration the LLM is meant to
+            # read. Naming the block is what keeps the sentence above honest —
+            # a document that quietly grew prose would be a different document
+            # wearing the same schema version.
+            "operator_prose_quarantined_to": OPERATOR_NOTES_BLOCK,
+            "operator_prose_kind": OPERATOR_NOTES_KIND,
             "secrets_excluded": True,
             "microphone_serials_excluded": True,
             "withheld_state_fields": state_withheld,
@@ -2366,6 +2466,10 @@ def build_crossover_evidence_packet(
         # says where a filter may sit, the verdicts say what it may be aimed
         # at, and either alone answers half the question.
         "drivers": drivers,
+        # The CONTEXT layer, fenced. Everything above is measured or gated;
+        # this one block is what a human typed, and it carries its own kind so
+        # it can be lifted whole rather than read as another evidence field.
+        "operator_notes": operator_notes,
         "feature_classification": classification,
         # The third offline reading of the same captures, beside the other two.
         # Per (capture, role) rather than per driver: a MEASURE capture is one

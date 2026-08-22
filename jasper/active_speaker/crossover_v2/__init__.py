@@ -69,6 +69,8 @@ order — so this list is what exists, not a plan:
   banked verdict and nothing else.
 * :mod:`.refusal_copy` — what the household is told when a round refuses: the
   reason codes, their copy and retry budgets, and the verdict that carries them.
+* :mod:`.operator_notes` — everything a human typed, gathered into one labelled
+  artifact that no code path reads for a decision.
 
 Offline evaluation, deliberately not a search:
 
