@@ -38,7 +38,7 @@ record already on disk.  :data:`DEFECT_CUTTABLE` is
 
 **A defect verdict is necessary and NOT sufficient, and the run log says so in
 its own words.**  Run-log §9.2: *"``defect-*`` says EQ is not structurally
-barred.  It does NOT say EQ will help."*  Every EQ arm played that night
+barred.  It does NOT say EQ will help."*  Every EQ candidate played that night
 measured worse against the frozen reference.  So a caller must read
 :func:`defect_cuttable_at` and :func:`defect_boostable_at` as *bars*, never as
 recommendations — they remove the features that sign of filter is the wrong

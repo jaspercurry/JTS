@@ -535,19 +535,20 @@ def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkey
     round's delay may have come from an explicit, bounded, provenance-carrying
     prescription rather than from the aligner's own search, and the stage that
     GRADES the round has to be able to say what that number was derived from —
-    an adoption record naming an arm without naming its measured basis is the
-    unauditable half of the thing. Same producer, same consumer, same channel
-    as the fifth; ``None`` on every ordinary round, which is what makes an
-    empty provenance block on a receipt mean exactly one thing.
+    an adoption record naming a candidate without naming its measured basis is
+    the unauditable half of the thing. Same producer, same consumer, same
+    channel as the fifth; ``None`` on every ordinary round, which is what makes
+    an empty provenance block on a receipt mean exactly one thing.
 
     **Deliberate widening (#2662): ``alignment_objective``.** The eleventh, and
     the OUTCOME half of the tenth. A prescription alone records what a round
     ASKED for; there is a reachable rail on which the machinery commits the
-    estimator's own seed while the round still carries the arm's name, and a
-    receipt that could not tell those apart would let an arm that never ran be
-    graded "measured better". Its own key rather than a field inside the
-    prescription because the two are written at different moments by different
-    owners, and a round that prescribed nothing still has an objective.
+    estimator's own seed while the round still carries the prescribed
+    candidate's name, and a receipt that could not tell those apart would let a
+    candidate that never ran be graded "measured better". Its own key rather
+    than a field inside the prescription because the two are written at
+    different moments by different owners, and a round that prescribed nothing
+    still has an objective.
 
     **Deliberate widening (A9): ``blend_prescription``.** The twelfth, and the
     tenth's blend-region twin — the round's SHAPE correction may likewise have
@@ -734,7 +735,7 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
 
     The read half is the reason the durable key exists at all — the stage that
     GRADES a round builds a fresh session and holds nothing stage 1 measured,
-    so an adopted arm could otherwise reach its adoption record with no basis
+    so an adopted candidate could otherwise reach its adoption record with no basis
     named. VALUES, not key presence, for ``commanded_delta``'s reason.
     """
     prepared = v2host.prepare_v2_session(
@@ -762,7 +763,7 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
         # measured against, and the corner is nowhere else in the block.
         "checked_at_fc_hz": pytest.approx(2500.0),
         "lobe_us": pytest.approx(200.0),
-        # The optional basin pin, absent on this delay-only arm — banked as an
+        # The optional basin pin, absent on this delay-only candidate — banked as an
         # explicit ``None`` rather than an absent key so a reader of the receipt
         # can tell "this round left the basin to the fit" from "this receipt
         # predates the field".
@@ -779,7 +780,7 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     stage_2, _ = _stage_2(monkeypatch)
     assert stage_2.alignment_prescription_record["basis_delay_us"] == -405.7
     # The OUTCOME crosses beside the request. Without it the grading stage can
-    # bank an arm's provenance for a round that committed the estimator's seed.
+    # bank a candidate's provenance for a round that committed the estimator's seed.
     assert stage_2.measure_alignment_objective == "explicit_prescription_committed"
 
 
@@ -807,7 +808,7 @@ def test_a_pinned_basin_crosses_the_same_boundary_and_reaches_the_priors(monkeyp
 def test_an_unpinned_prescription_hands_down_no_basin(monkeypatch):
     """The control: today's shipped callers must reach the automatic path.
 
-    ``None`` here is what keeps every delay-only arm byte-identical, so it is
+    ``None`` here is what keeps every delay-only candidate byte-identical, so it is
     asserted rather than assumed.
     """
     prepared = v2host.prepare_v2_session(
@@ -839,10 +840,10 @@ def test_an_unknown_basin_refuses_the_session_before_it_opens(value):
 def test_an_out_of_lobe_prescription_refuses_the_session_before_it_opens(monkeypatch):
     """Fail-closed at the tap, not after a ten-minute capture.
 
-    The ``0 µs`` control arm is the honest fixture here: against the measured
+    The ``0 µs`` control candidate is the honest fixture here: against the measured
     basis it leaves 405.7 µs of residual, outside the half-period lobe at this
     rig's corner, and it is refused with its reason named rather than clamped
-    onto the boundary and measured under the arm's name.
+    onto the boundary and measured under the candidate's name.
     """
     del monkeypatch
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
@@ -904,7 +905,7 @@ def test_a_committed_candidate_teaches_the_session_which_commitment_it_was(
     candidate, so the commit seam reads the SAME answer the candidate's
     fingerprint covers rather than a second reading of a live analysis. If it
     read nothing, every round receipt would report ``committed: None`` and the
-    arm-ran question would be permanently unanswerable.
+    candidate-ran question would be permanently unanswerable.
     """
     import dataclasses
 

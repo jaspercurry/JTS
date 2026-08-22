@@ -3286,7 +3286,11 @@ New bundles use schema v5 and write an `artifact_manifest.json` beside
 - relative path and artifact kind (`raw_capture`,
   `session_metadata`, `analysis_result`, `position_analysis`,
   `mic_calibration_raw`, `mic_calibration_metadata`,
-  `camilladsp_config`, etc.);
+  `camilladsp_config`, etc.). These predate kind namespacing and are
+  grandfathered; a **new** kind is named `jts_<owner>_<name>`. The rule and
+  the reader's side of it live in
+  [HANDOFF-audio-measurement-core.md](HANDOFF-audio-measurement-core.md)
+  "Artifact-kind namespacing";
 - artifact schema/version where applicable;
 - SHA-256 checksum and byte size;
 - manifest record timestamp;

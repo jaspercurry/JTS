@@ -243,7 +243,7 @@ def driver_plants(
     The whole-band check refuses a capture whenever ``P`` contains a crossover:
     a sweep necessarily runs past the corner, and an LR4 low-pass at 1648.7 Hz
     is about -30 dB at 4 kHz, inside a woofer's 150-4000 Hz sweep. Every banked
-    armrun arm refused that way, for a de-embedding that provably cancels.
+    armrun candidate refused that way, for a de-embedding that provably cancels.
     **The narrowing is the caller's to declare, not this function's to assume**,
     because which band an evaluation depends on is a property of the candidate
     — and a ``P`` that contains a crossover is the misuse named below, whose

@@ -901,7 +901,7 @@ Four, each from evidence this section cites rather than restates:
    2026-08-22 rather than merely gated. The 2026-08-18 lateral-statistic
    redesign study set a re-introduction bar: (i) candidate dependence enters
    through the *operator*, not through the band; (ii) the rank-1-versus-rank-2
-   gap exceeds same-arm repeat noise; (iii) band-edge neutrality; (iv)
+   gap exceeds same-candidate repeat noise; (iii) band-edge neutrality; (iv)
    immunity to a zero-offset pose. Nothing banked ever cleared it — every such
    statistic is exactly candidate-blind — and the enabling change would have
    been banking `branch_operator_by_role` per candidate
@@ -1546,7 +1546,7 @@ better, it can only stop one specific way of making it worse. Rule 1's bar
 turns "a reader believes this is a driver defect" into "a classifier said so
 and the verdict is on the receipt"; it does not classify anything, and a
 `defect-*` verdict says only that EQ is not structurally barred there — run-log
-§9.2, and every EQ arm played that night still measured worse.
+§9.2, and every EQ candidate played that night still measured worse.
 
 **Two rulings the prescribed path forced, recorded here because they are stage
 decisions rather than module details.**

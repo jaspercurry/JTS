@@ -10,9 +10,17 @@ here rather than under any one layer's package. Extracted verbatim from
 ``jasper.correction`` (which used to be their home and still consumes them); the
 DSP math is unchanged.
 
+Every module in this package is listed below, and
+``test_package_enumeration_contract.py`` fails by name when one is not — an
+enumeration that silently goes partial is worse than none, because a reader
+takes the omission for "no such thing".
+
 Modules:
   - :mod:`~jasper.audio_measurement.sweep` — synchronized swept-sine (ESS)
     generation + WAV I/O.
+  - :mod:`~jasper.audio_measurement.excitation` — the digital excitation
+    contract shared by automatic measurements: the one source peak the level
+    tone and the ESS it calibrates must agree on.
   - :mod:`~jasper.audio_measurement.program` — the crossover session's
     excitation-program model (pure-data schedule dataclasses), the CHECK /
     MEASURE / VERIFY composers, and deterministic PCM rendering / WAV writing.
@@ -22,6 +30,8 @@ Modules:
     session flow.
   - :mod:`~jasper.audio_measurement.deconv` — regularized FFT deconvolution
     (impulse-response extraction) + magnitude response.
+  - :mod:`~jasper.audio_measurement.distortion` — harmonic-distortion read-out
+    (H2/H3) from a synchronized-sweep capture.
   - :mod:`~jasper.audio_measurement.gating` — impulse-response gating (first-
     reflection detection, the reflection-free window) and the low-frequency
     validity floor it implies, plus the classification ledger of early
@@ -31,10 +41,15 @@ Modules:
     of its trusted validity range with the band the DUT radiates, and the
     single writer of the sentence that distinguishes "a reflection was found
     and removed" from "nothing was found; the window was capped".
+  - :mod:`~jasper.audio_measurement.room_boundary` — the room-correction band
+    ceiling, and its seam with the gated speaker spec.
   - :mod:`~jasper.audio_measurement.analysis` — fractional-octave smoothing,
     log resampling, spatial averaging, deviation metrics.
   - :mod:`~jasper.audio_measurement.calibration` — measurement-mic calibration
     registry, parser, and vendor lookup.
+  - :mod:`~jasper.audio_measurement.mic_identity` — the measurement-microphone
+    model registry: which mics JTS knows, and how to recognise one as
+    measurement-class hardware.
   - :mod:`~jasper.audio_measurement.quality` — capture-quality assessment
     (``assess_capture``) driven by a threshold profile.
   - :mod:`~jasper.audio_measurement.quality_model` — the parameterized
@@ -47,6 +62,10 @@ Modules:
   - :mod:`~jasper.audio_measurement.ramp` — the settle-based level-match
     ``RampController`` (muted-at-floor → audible gain ramp → audible-evidence
     confirmation) that drives main-volume-affecting playback.
+  - :mod:`~jasper.audio_measurement.level_solver` — the closed-loop
+    measurement-level solver that lands a capture at its target level.
+  - :mod:`~jasper.audio_measurement.wired_level_meter` — the live RMS/peak
+    meter over a wired measurement mic; the level ramp's feed.
   - :mod:`~jasper.audio_measurement.excitation_admission` — the pure,
     identity-bound allow/refuse contract for requested frequency band,
     effective peak, duration, repeats, and current protection evidence.
@@ -58,8 +77,14 @@ Modules:
     the policy-free WAV emitter.
   - :mod:`~jasper.audio_measurement.bundles` — the neutral artifact-manifest
     writer/reader shared by feature-owned Room and Active evidence bundles.
+  - :mod:`~jasper.audio_measurement.evidence_identity` — the strict pure
+    identities for measurement artifacts, captures, and replay.
   - :mod:`~jasper.audio_measurement.playback` — production WAV/tone emission,
     cancellation, and process cleanup after feature-owned admission.
+  - :mod:`~jasper.audio_measurement.correction_lane` — the fan-in ALSA lane
+    shared by correction and commissioning playback.
+  - :mod:`~jasper.audio_measurement.wired_capture` — wired measurement-mic
+    capture: the Pi records its own excitation.
   - :mod:`~jasper.audio_measurement.null_walk` — the geometry-bounded,
     timing-locked delay search contract and bounded coarse-plus-refinement
     schedule shared by active-speaker and bass alignment; it consumes repeated
@@ -83,6 +108,10 @@ Modules:
     dump-ring capture against the wired capture chain's own definition of
     clean (frame accounting, ALSA gaps, FIFO dropouts, the reconciled frame
     ledger), for a laptop-side banking script to refuse a dirty round on.
+  - :mod:`~jasper.audio_measurement.frame_ledger` — end-to-end frame
+    accounting for the phone-mic capture chain, which the gate above reconciles.
+  - :mod:`~jasper.audio_measurement.timeline_slip` — detection of one discrete
+    step in a capture's own clock.
   - :mod:`~jasper.audio_measurement.frame_fit` — the FRAME between two
     magnitude curves the flow is about to difference: a least-squares
     ``offset + tilt·log2(f)``, two scalars, fitted and DISCLOSED so a

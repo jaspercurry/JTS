@@ -12,9 +12,15 @@ order — so this list is what exists, not a plan:
   intervention proposal, plan refusal, verification result, adoption decision,
   round receipt) with their construction-time invariants and fingerprints.
 * :mod:`.intervention` — the side-effect-free prescription planner.
+* :mod:`.proposal` — the :class:`~.contracts.InterventionProposal` a round
+  receipt identifies, assembled.
 * :mod:`.verification` — realization / benefit / spec grading and the adoption
   decision over them.
 * :mod:`.round_evidence` — the two measurements a round compares, reduced.
+* :mod:`.round_views` — the round-grading comparison views a laptop campaign
+  had been re-deriving by hand.
+* :mod:`.round_anchor` — what an apply displaced, what it put live, and whether
+  it still is.
 * :mod:`.journey` — the phase walk, its transitions, and the stage capability
   declarations.
 * :mod:`.coordinator` — the round's verify-then-adopt tail, behind typed ports.
@@ -28,17 +34,39 @@ order — so this list is what exists, not a plan:
   speaker's declarations, and what its preset looks like re-cornered there.
 * :mod:`.topology_prescription` — ONE crossover corner and order, pinned for one
   round: the request gate, its admissibility bounds, and the durable read-back.
+* :mod:`.driver_prescription` — ONE driver's full-band shape correction,
+  prescribed from outside this process.
+* :mod:`.blend_prescription` — ONE blend-region shape correction, prescribed
+  from outside this process.
+* :mod:`.alignment_prescription` — ONE inter-driver delay, and optionally its
+  polarity basin, prescribed from a named measurement.
+* :mod:`.prescription_spool` — ONE accepted prescription, waiting for the round
+  it was written for.
+* :mod:`.blend_correction` — the blend region's summed-response-owned shape
+  correction.
 * :mod:`.planning` — one candidate assembled: the eligibility gate, the
   planner request its own sections imply, and the emitted candidate.
 * :mod:`.admission` — one position's attempt ledger, and whether the next
   ``begin_capture`` may start on it.
+* :mod:`.position_cycle` — N takes at ONE pose: how they are staged, and how
+  they read back.
 * :mod:`.capture_dispatch` — which screens an anchor capture (CHECK, MEASURE,
   VERIFY) must clear, and in what order.
+* :mod:`.capture_source` — the capture-source seam: what any capture provider
+  owes the conductor.
 * :mod:`.attempt_grading` — whether a VERIFY capture is a new *tuning* attempt,
   and whether the loop may grade it.
 * :mod:`.commanded` — what an apply asks the summed response to CHANGE: the
   applied graph's predicted sum minus the predicted sum of the graph it
   replaces, which is the delta probe's commanded axis.
+* :mod:`.evidence_packet` — one round's banked evidence, gathered into one
+  document a reader can answer from.
+* :mod:`.harmonic_evidence` — H2/H3 read out of one round's banked MEASURE
+  captures, and filed.
+* :mod:`.feature_classifier` — what KIND of feature is that, measured from a
+  round's own banked captures.
+* :mod:`.feature_classification` — what KIND of feature is that, read from a
+  banked verdict and nothing else.
 * :mod:`.refusal_copy` — what the household is told when a round refuses: the
   reason codes, their copy and retry budgets, and the verdict that carries them.
 
@@ -59,7 +87,12 @@ same reason.
 
 The list above is deliberately unnumbered.  A stated count goes stale the next
 time a module arrives or leaves — as one did in #2291 Phase 5c-iii — and a
-count that disagrees with the list is worse than no count at all.
+count that disagrees with the list is worse than no count at all.  It is,
+however, COMPLETE: every module in this package appears above, and
+``test_package_enumeration_contract.py`` fails by name when one does not.  A
+list that quietly goes partial is worse than no list, because a reader takes
+the omission for "no such thing" — this one had drifted to fourteen unnamed
+modules before that guard existed.
 
 Dependency direction: this package imports no ``jasper.web`` and nothing from
 :mod:`jasper.active_speaker.crossover_v2_flow`.  The flow imports these

@@ -13,8 +13,8 @@ the crossover *topology* — where the branches split, and how steeply.
 **Why a prescription exists at all.**  The automatic path crosses WHERE the
 household declared and never at a shape it chose (#1894), and nothing anywhere
 ranks topologies.  So a household that wants to hear one named corner at one
-named order — a pre-registered Fc/slope tournament, an arm per candidate,
-graded against each other — had no door at all.  Every existing knob declares a
+named order — a pre-registered Fc/slope tournament of candidates, graded
+against each other — had no door at all.  Every existing knob declares a
 corner without pinning one.  This is the door:
 the round solves AT the named topology, and its trims, its linearization and
 its delay re-solve underneath.
@@ -32,8 +32,8 @@ the exact incoherence the series-2 diagnosis found in the automatic path.
 **Admissibility, not excursion.**  The delay prescription's bound is a bounded
 excursion from a declared measured basis, because a delay HAS a measured basis.
 A pinned corner does not: an excursion bound anchored on the incumbent would
-refuse a tournament by construction (that is what a tournament is — arms far
-from the incumbent), and there is no measured ranking to anchor on instead.  So
+refuse a tournament by construction (that is what a tournament is — candidates
+far from the incumbent), and there is no measured ranking to anchor on instead.  So
 every bound here is an ADMISSIBILITY bound — a declaration the household or the
 manufacturer already made about what this hardware may be asked to do — and
 each one is asked of the module that already owns it:
@@ -51,11 +51,11 @@ applies it.  The 24 dB/octave clamp a household declares for its tweeter is read
 by the COMMISSIONING admission path (``graph_safety``) and by the derived
 protection filter; crossover apply compares corner FREQUENCIES only
 (``driver_protection.protection_highpass_floor_satisfied``, the shared floor
-predicate, which has no slope term).  An order-2 arm at a legal corner would
-therefore have run with less sub-Fc attenuation than the tweeter's own
-declaration asks for, silently and with a receipt carrying the arm's name.  It
-is refused here, by name, with the declared number in the message — which is
-what makes a tournament's order-2 arm produce evidence (a receipted refusal)
+predicate, which has no slope term).  An order-2 candidate at a legal corner
+would therefore have run with less sub-Fc attenuation than the tweeter's own
+declaration asks for, silently and with a receipt carrying the candidate's name.
+It is refused here, by name, with the declared number in the message — which is
+what makes a tournament's order-2 candidate produce evidence (a receipted refusal)
 rather than an unsafe measurement.
 
 **The beaming ceiling is disclosed, never enforced.**  #1675 defines it as
@@ -63,8 +63,8 @@ guidance to warn on rather than a fence, so no admissibility bound anywhere
 reads it — :func:`.fc_sweep._fc_rejection` carries no beaming term for the
 automatic path either.  A pinned corner is the configured corner of its own
 round, so enforcing it here would be stricter than that path is about the very
-same speaker.  It rides the record instead, so a receipt can say the arm was
-above it.
+same speaker.  It rides the record instead, so a receipt can say the candidate
+was above it.
 
 **No polarity, and that absence is a contract.**  Polarity is
 :mod:`.alignment_prescription`'s field, pinned there and translated there into
@@ -74,8 +74,8 @@ refuses the word outright rather than ignoring it, so a prescriber that put it
 here learns at the tap.
 
 **Fail-closed, never clamped, never inherited — one rule, three edges.**  The
-operator asked for a NAMED arm, so a silently different arm is worse than no
-arm: its receipt would carry the name of an arm that did not run.  That single
+operator asked for a NAMED candidate, so a silently different candidate is worse
+than none: its receipt would carry the name of one that did not run.  That single
 sentence is the reason for all three of these, and they are stated together so
 it is not restated three times.  An inadmissible pin raises rather than being
 pulled to the nearest legal corner (every refusal below names its reason).  An
@@ -83,8 +83,8 @@ unfittable one refuses rather than degrading.  And ``None`` from
 :func:`read_topology_prescription` is the automatic path with every byte of the
 ordinary selection unchanged — never a value inherited from a lapsed session's
 durable state the way the session tier deliberately is (#2639), because a
-"measure again" that re-ran an arm nobody asked for would put that arm's name
-on a round at a corner this speaker is not commissioned for.
+"measure again" that re-ran a candidate nobody asked for would put that
+candidate's name on a round at a corner this speaker is not commissioned for.
 
 **One parser, two gate policies.**  :func:`read_topology_prescription` is the
 REQUEST gate — shape, provenance, and every bound — and it is the only place a
@@ -264,7 +264,8 @@ class TopologyPrescription:
     two halves had different orders would not sum.
 
     ``basis_artifacts`` names where the corner came from, and is required: a
-    pinned arm whose proposal nobody can find is a receipt with a number on it.
+    pinned candidate whose proposal nobody can find is a receipt with a number
+    on it.
     ``basis_note`` is the human line beside it (what argument the corner came
     from, and what that argument weighed) and is optional — it is what a
     reader wants and not something a validator can meaningfully check, so
@@ -294,8 +295,8 @@ class TopologyPrescription:
     checked_against_search_band_hz: tuple[float, float] | None = None
     checked_against_slope_db_per_octave: float | None = None
     #: The ka/beaming onset this corner was compared to, DISCLOSED and never
-    #: enforced (#1675). Present and above ``fc_hz`` means the arm is below the
-    #: onset; present and below it means the arm is above it and the receipt
+    #: enforced (#1675). Present and above ``fc_hz`` means the candidate is
+    #: below the onset; present and below it means it is above and the receipt
     #: says so. ``None`` means the lower driver declared no diameter, which is
     #: an absent prior rather than a satisfied one.
     beaming_ceiling_hz: float | None = None
@@ -371,7 +372,7 @@ def _read_order(value: Any) -> int:
     a filter this system does not build.  A float is refused rather than
     truncated for :func:`_finite_number`'s reason — ``int(4.7)`` is ``4``, and
     an order that quietly became a different order is exactly the silently
-    different arm this module exists to prevent.
+    different candidate this module exists to prevent.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         raise TopologyPrescriptionRefused(
@@ -565,7 +566,7 @@ def _declared_frequency_refusal(
     The predicate carries no beaming term, and that absence is #1675's ruling
     rather than an omission: the ka onset is guidance to warn on, not a fence.
     It rides :attr:`TopologyPrescription.beaming_ceiling_hz` as disclosure
-    instead, so a receipt can say an arm was above it.
+    instead, so a receipt can say a candidate was above it.
 
     **A ``None`` band is translated HERE, and it is the one thing the shared
     predicate cannot be asked.**  ``resolve_fc_search_band`` returns ``None`` for
@@ -622,7 +623,7 @@ def read_topology_prescription(
     the sharpest version of it: unlike the delay gate, NONE of these rest on a
     number the requester supplied — every one is a declaration the household or
     the manufacturer made about this hardware.  A caller that forgot one would
-    lose the hardware's own opinion about an arm it is about to play, and never
+    lose the hardware's own opinion about a candidate it is about to play, and never
     know, which is exactly the failure a defaulted keyword hides.  ``None`` is
     still a legal VALUE for the three that admit it, and it means the same thing
     each time: that bound was not declared, so there is nothing to gate on —
@@ -689,7 +690,7 @@ def read_topology_prescription(
         )
     if reason is not None:  # pragma: no cover - defensive
         # Unreachable while ``_fc_rejection``'s vocabulary is the three codes
-        # ``fc_sweep`` declares, each of which the arms above already name.
+        # ``fc_sweep`` declares, each of which the cases above already name.
         # Kept because the alternative to naming an unhandled code is admitting
         # a pin the shared predicate refused, which is the one outcome this
         # reuse exists to make impossible.
@@ -863,7 +864,7 @@ def topology_prescription_response_format() -> dict[str, Any]:
         "authority_detail": (
             "a pinned corner is an operator's choice from an offline argument, "
             "not a measured ranking: no shipped path scores one topology "
-            "against another, so the round measures the arm you asked for and "
+            "against another, so the round measures the candidate you asked for and "
             "says nothing about whether a different corner would be better"
         ),
         "fields": {

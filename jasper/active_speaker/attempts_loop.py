@@ -53,8 +53,10 @@ bolted in place on 2026-07-31 and written up in
    the mic was bolted in place and the repeats were ~21 s apart, so it bounds
    how far the instrument wanders while nothing moves. It says nothing about a
    pair separated by a microphone being put down and picked up again — the same
-   README calls the remove/replace/re-aim arm unmeasured, and the panel's bound
-   on it (3.2 dB) is an order of magnitude above the floor itself. So
+   README calls the remove/replace/re-aim arm unmeasured — **"arm" here is the
+   statistics sense, one condition of a repeatability study, and is neither the
+   measurement rig nor a DSP candidate under test** — and the panel's bound on
+   it (3.2 dB) is an order of magnitude above the floor itself. So
    :func:`decide_next` refuses to grade a pair the floor's own scope does not
    cover (issue #2081), rather than reporting a claim the study never licensed.
 

@@ -378,7 +378,7 @@ class RoundEvidence:
     #: from, or ``None`` for a round whose delay the aligner chose on its own
     #: (#2662). Banked verbatim, never graded here: it is provenance — what the
     #: prescribed number was derived from — and the adoption record's job is to
-    #: say what an adopted arm's timing rests on so a reader can go and check.
+    #: say what an adopted candidate's timing rests on so a reader can check.
     #: Defaulted, and ``None`` is honest for the overwhelming majority of
     #: rounds, which prescribe nothing.
     alignment_prescription: "AlignmentPrescription | None" = None
@@ -388,14 +388,15 @@ class RoundEvidence:
     #: prescription because the pair is what makes an adoption record honest:
     #: alone, the prescription says only what was ASKED for, and a reachable
     #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
-    #: estimator's seed while the round still carries the arm's name.
+    #: estimator's seed while the round still carries the prescribed
+    #: candidate's name.
     alignment_objective: str = ""
     #: The crossover corner + order this round was PINNED to, or ``None`` for a
     #: round that ran the speaker's commissioned crossover. Banked verbatim and
     #: never graded here, exactly like the delay prescription above: it is
     #: provenance, and the adoption record's job is to say what topology an
-    #: adopted arm's numbers were measured at — without it, two arms of one
-    #: tournament are two receipts a reader cannot tell apart.
+    #: adopted candidate's numbers were measured at — without it, two candidates
+    #: of one tournament are two receipts a reader cannot tell apart.
     topology_prescription: "TopologyPrescription | None" = None
 
 
@@ -565,7 +566,7 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         round_ordinal=evaluation.headroom.evidence.get("round_ordinal"),
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
-        # Decision 10: which arm the blend region took, and how many filters it
+        # Decision 10: which case the blend region took, and how many filters it
         # prescribed. The receipt is the forensic record and is sufficient on
         # its own, but a tail that shows every other verdict and is silent
         # about a stage that CHANGED THE GRAPH reads as a stage that did
@@ -1065,8 +1066,8 @@ def _round_measurements(
     # ``Verdict``, and provenance is neither. It is also not an INSTRUCTION for
     # the next round — unlike ``blend``, which the next round reads back as its
     # incumbent — so it is deliberately absent from ``_round_identity``: each
-    # arm of a delay sweep is prescribed explicitly, and a receipt that carried
-    # one forward would be how an arm gets re-run without being asked for.
+    # candidate of a delay sweep is prescribed explicitly, and a receipt that
+    # carried one forward would be how a candidate gets re-run unasked for.
     prescription = evidence.alignment_prescription
     if prescription is not None:
         objective = str(evidence.alignment_objective or "")
@@ -1080,7 +1081,7 @@ def _round_measurements(
             # never two facts that could disagree. ``None`` is the third
             # answer, and it is not "no": a round whose fit never committed a
             # candidate has no objective to report, and saying ``False`` there
-            # would claim the machinery declined an arm it never reached.
+            # would claim the machinery declined a candidate it never reached.
             "objective": objective,
             "committed": (
                 None if not objective
@@ -1090,8 +1091,8 @@ def _round_measurements(
     # The topology pin's provenance, banked verbatim beside the delay's and for
     # the same reasons — it rides with the NUMBERS rather than on ``round_axes``
     # (which is four ``Verdict``s), and it is deliberately absent from
-    # ``_round_identity`` so a receipt can never carry an arm forward into a
-    # round nobody asked for.
+    # ``_round_identity`` so a receipt can never carry a candidate forward into
+    # a round nobody asked for.
     #
     # No ``committed`` bit beside it, and that asymmetry is the honest one. A
     # delay prescription is a REQUEST the fit may or may not reach, so its

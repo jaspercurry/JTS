@@ -135,7 +135,7 @@ def test_neutral_writer_requires_feature_owned_schema_without_info(
         shared_bundles.record_artifact(
             tmp_path,
             artifact,
-            kind="capture",
+            kind="jts_test_capture",
             sensitivity="private_raw_audio",
             recomputable=False,
             generated_by="test",

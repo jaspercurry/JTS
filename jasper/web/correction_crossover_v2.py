@@ -3928,7 +3928,7 @@ def persist_conductor_state(
                 getattr(conductor, "verify_tracking_curve", None)
             ),
             # #2662's provenance. It crosses for exactly ``commanded_delta``'s
-            # reason — produced by the stage that MEASURES the arm, banked by
+            # reason — produced by the stage that MEASURES the candidate, banked by
             # the stage that GRADES it, and those are different sessions in
             # different processes — and is read the same way, through
             # ``getattr``, so a duck-typed stand-in without the property means
@@ -3970,7 +3970,8 @@ def persist_conductor_state(
                 getattr(conductor, "blend_prescription_sha256", "") or ""
             ),
             # …and WHICH commitment the fit reached, the fact that turns the
-            # block above from "this arm was asked for" into "this arm ran".
+            # block above from "this candidate was asked for" into "this
+            # candidate ran".
             # Its own key rather than a field inside the prescription: the
             # prescription is the REQUEST and this is the OUTCOME, they are
             # written at different moments by different owners, and nesting one
@@ -7323,15 +7324,15 @@ def prepare_v2_session(
     #
     # Never inherited from the lapsed session's durable state the way ``tier``
     # above deliberately is: a prescription is one round's explicit instruction,
-    # and a "measure again" that silently re-ran an arm would put that arm's
-    # name on a round nobody asked for.
+    # and a "measure again" that silently re-ran a candidate would put that
+    # candidate's name on a round nobody asked for.
     #
     # The TOPOLOGY pin is read FIRST, and the order is load-bearing rather than
     # alphabetical: it decides the corner this round runs at, and the delay
     # gate below is a half-period AT that corner. Read the other way round, a
     # 4000 Hz round's delay would be bounded by the incumbent 1648.7 Hz lobe
-    # (303 us) instead of its own (125 us) — a gate that passes arms the round
-    # it is gating cannot support.
+    # (303 us) instead of its own (125 us) — a gate that passes candidates
+    # the round it is gating cannot support.
     #
     # Every bound it applies is a DECLARATION, asked of the module that owns
     # it: the two role bands a corner is admissible within (read positionally,
@@ -7393,7 +7394,7 @@ def prepare_v2_session(
             # supplied — and it already existed as the Fix-3 plausibility
             # screen, ten minutes downstream, wearing household copy that asks
             # the user to move the microphone. Asking it HERE is what stops a
-            # prescribed arm being blamed on a mic.
+            # prescribed candidate being blamed on a mic.
             declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
         )
     except AlignmentPrescriptionRefused as exc:

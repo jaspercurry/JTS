@@ -1026,7 +1026,7 @@ def test_the_classification_check_is_load_bearing_not_decorative(
 def test_a_defect_verdict_is_necessary_and_the_contract_says_not_sufficient():
     """Run-log §9.2, carried into the document a prescriber reads.
 
-    Every EQ arm played on 2026-08-19 measured worse. A contract that offered
+    Every EQ candidate played on 2026-08-19 measured worse. A contract that offered
     the verdict as a recommendation would be inviting the mistake the campaign
     had already made.
     """

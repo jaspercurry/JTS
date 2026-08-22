@@ -445,7 +445,7 @@ def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit(
     assert isinstance(session.last_intervention_proposal, PlanRefusal)
     assert session.last_intervention_proposal.reason == "no_crossover_sections"
     assert session.measure_proposal_fingerprint == "", (
-        "an empty identity is what routes the receipt to its candidate arm"
+        "an empty identity is what routes the receipt to its candidate"
     )
 
 

@@ -330,7 +330,7 @@ def test_with_a_residual_delay_the_two_agree_to_a_stated_numerical_bound():
 
     worst = 0.0
     # Both polarities, because the inverted branch is not a corner case here:
-    # 3 of the banked armrun's arms committed an inverted tweeter, and sign is
+    # 3 of the banked armrun's candidates committed an inverted tweeter, and sign is
     # the factor whose association with the delay term differs between the two
     # expressions.
     for sign in (1, -1):

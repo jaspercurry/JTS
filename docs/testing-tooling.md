@@ -1627,6 +1627,11 @@ permission granted either") — those branches are listed in the report's
 `unavailable_roles`, never counted as passes or failures. `report.json` carries
 `outcome` alongside the per-branch records.
 
+> This section says "arm" for what invariant 9 calls a candidate. Deliberate:
+> here `arm` is also a dataclass field, a structured `arm=` log-event key, and
+> the asserted CLI string `"derived both arms:"`, so prose alone cannot move —
+> see [#2878](https://github.com/jaspercurry/JTS/issues/2878).
+
 The bundle keeps both arms' configs (`control.yml` and `treated.yml`, one
 derivation each — each is rendered twice), **four `.raw` renders**
 (`<arm>.first.raw` and `<arm>.repeat.raw`; the repeat's SHA-256 is what the
@@ -1904,9 +1909,9 @@ all four are stated here:
 The severity split is deliberate rather than historical. A staged prescription
 is an *instruction the next round may follow*: it is banked ahead of time, and a
 round that cannot follow it still measures something real. A request-time
-prescription is *what the round IS* — a named arm — and running a silently
-different arm is worse than running none, because the receipt would carry the
-arm's name. So the first pair fails soft into an unprescribed round and the
+prescription is *what the round IS* — a named candidate — and running a silently
+different candidate is worse than running none, because the receipt would carry
+the candidate's name. So the first pair fails soft into an unprescribed round and the
 second pair refuses the session before any evidence store, relay registration or
 capture happens.
 
@@ -1927,8 +1932,8 @@ Owning modules and their gates:
   predicate, so a pin and a proposal are admissible on identical terms), plus
   the protected role's declared `minimum_slope_db_per_octave`. **Nothing else
   applies that slope to a crossover** — the commissioning admission path reads
-  it, crossover apply compares corner frequencies only — so an order-2 arm at a
-  legal corner was previously admitted silently.
+  it, crossover apply compares corner frequencies only — so an order-2 candidate
+  at a legal corner was previously admitted silently.
 
 Two things a topology pin does that no other prescription does:
 
@@ -1957,7 +1962,7 @@ Two things a topology pin does that no other prescription does:
   six weeks later must not be
   mistakable for a measured verdict.
 
-**Measuring a pinned arm and adopting it are two acts.** The round measures,
+**Measuring a pinned candidate and adopting it are two acts.** The round measures,
 grades and banks at the pinned topology end to end (the session is opened
 there, so the fit, the de-embedding, the emitted graph and VERIFY's design
 target are all that topology's). *Applying* it still needs the saved crossover
@@ -1969,7 +1974,7 @@ before recomposing; a pinned order is not exempt from it.
 
 None of the four is ever inherited from a lapsed session's durable state — the
 way `tier` deliberately is (#2639) — because a "measure again" that silently
-re-ran an arm nobody asked for is the same class of dishonesty as clamping one.
+re-ran a candidate nobody asked for is the same class of dishonesty as clamping one.
 
 The per-driver class carries **both signs**, and every filter must be aimed at
 a feature a banked classification typed as a minimum-phase driver defect of the

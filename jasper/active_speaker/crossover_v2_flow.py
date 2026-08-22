@@ -1753,7 +1753,7 @@ STAGE1_INCLUDES_ENTRY_BASELINE = True
 
 # R16's 6-pose lateral walk (plan §4.4) is NOT a stage-1 group. It ran from R17
 # to feed the lateral robustness term of a corner selector, was paused on
-# 2026-08-18 because that statistic ranked below its own noise — same-arm repeat
+# 2026-08-18 because that statistic ranked below its own noise — same-candidate repeat
 # noise 3.54 dB against a 0.004-2.13 dB rank-1-to-rank-2 gap over 8 banked
 # rounds, none of which it ever moved off the configured Fc — and was retired
 # with the corner hunt it fed. What is NOT in doubt is the measurement: the
@@ -5418,7 +5418,7 @@ class CrossoverV2Session:
         #
         # ``""`` means "this session has proposed nothing yet", which is true
         # of every session before its commit and of a stage-2 re-arm whose
-        # stage 1 predates #2392. The receipt reads it as the candidate arm,
+        # stage 1 predates #2392. The receipt reads it as the candidate,
         # never as a missing proposal.
         self._measure_proposal_fingerprint: str = str(measure_proposal_fingerprint or "")
         # WHICH commitment produced the committed candidate's delay (#2662),
@@ -5427,7 +5427,7 @@ class CrossoverV2Session:
         # that GRADES, and those are different sessions. ``""`` is "no
         # candidate has been committed yet", which is a third answer from
         # either "the prescription was committed" or "it was not" — a round
-        # receipt that collapsed them would let an arm the machinery never ran
+        # receipt that collapsed them would let a candidate the machinery never ran
         # be graded as one that did.
         self._measure_alignment_objective: str = str(measure_alignment_objective or "")
         # The proposal itself, for THIS session only — an
@@ -6248,9 +6248,9 @@ class CrossoverV2Session:
         Read by the host's durable persist and handed back to the stage that
         grades the round, exactly like :attr:`measure_proposal_fingerprint`.
         Its one consumer is the round receipt, which pairs it with the
-        prescription so an adopted arm's record says not only what was ASKED
-        for but whether the machinery actually committed it — the difference
-        between an arm that ran and an arm that silently did not.
+        prescription so an adopted candidate's record says not only what was
+        ASKED for but whether the machinery actually committed it — the
+        difference between a candidate that ran and one that silently did not.
         """
         return self._measure_alignment_objective
 
@@ -9823,8 +9823,8 @@ class CrossoverV2Session:
                 # candidate to derive one from.
                 alignment_prescription=self._alignment_prescription,
                 # …and whether the machinery COMMITTED it. Rehydrated on the
-                # same route, because an arm's provenance without its outcome
-                # is a receipt that can credit a round the arm never ran.
+                # same route, because a candidate's provenance without its
+                # outcome is a receipt that can credit a round it never ran.
                 alignment_objective=self._measure_alignment_objective,
                 # The crossover pin, rehydrated on the identical route and for
                 # the identical reason. It needs no companion outcome field:
@@ -9839,7 +9839,7 @@ class CrossoverV2Session:
                 # that grades a round builds a fresh session and holds no
                 # candidate to derive one from.
                 #
-                # The candidate arm below is the fallback, and it is a real one
+                # The candidate below is the fallback, and it is a real one
                 # rather than a formality: it serves a stage-2 re-arm whose
                 # stage 1 ran before #2392, and a commit whose proposal
                 # assembly was refused. ``_tuning_attempt_id`` leads it for

@@ -212,7 +212,7 @@ def measure_priors(
     and this module could not reach for it even in principle.  **Required and
     undefaulted**, like its six siblings, and for the sharpest version of that
     rule: a caller that forgot it would run the AUTOMATIC alignment while the
-    round, its receipt, and the operator all called it a prescribed arm.
+    round, its receipt, and the operator all called it a prescribed candidate.
 
     It survives :func:`candidate_priors` untouched, which is the behaviour a
     re-pointed corner needs: a prescription is a fact about the drivers'
