@@ -119,10 +119,38 @@ PROGRAM_KIND = "jts_excitation_program"
 PROGRAM_SAMPLE_RATE_HZ = 48_000
 
 # Phase vocabulary. One composer + one analysis entry point per phase.
-PHASE_CHECK = "check"
-PHASE_MEASURE = "measure"
-PHASE_VERIFY = "verify"
-PHASES = frozenset({PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY})
+#
+# **The ``PROGRAM_`` prefix is what keeps this vocabulary apart from the
+# session's** (master plan ticket 2.9). A second, larger ``PHASE_*`` family
+# lives in :mod:`jasper.active_speaker.crossover_v2.journey` and answers a
+# different question: *where is the round in its walk* (eleven phases —
+# ``PHASE_LATERAL``, ``PHASE_REVIEW``, ``PHASE_DONE``, …). This one answers
+# *which composer built this stimulus*, and has exactly the three below.
+# Until the prefix landed both families spelled all three names identically,
+# so an import site could take the wrong one and still typecheck, run, and
+# agree — see ``journey``'s own "Do not conflate the two vocabularies" note
+# above ``PHASE_CLOUD_MEASURE``, which is the same warning from the other side.
+#
+# **The string VALUES stay identical on purpose, and neither family may change
+# them.** They are not free to diverge, because both sets are banked:
+#
+# * here, ``phase`` is hashed into ``program_id`` (:func:`_program_id`) and
+#   serialized by :meth:`ExcitationProgram.to_dict`, and ``from_dict`` /
+#   ``__post_init__`` refuse a phase outside ``PROGRAM_PHASES`` — so a new
+#   value would both re-fingerprint every program and stop every banked
+#   program JSON from loading;
+# * on the journey side the phase is written into retained position records
+#   (``crossover_v2.spatial``) and the persisted ``session_phases``.
+#
+# So the collision was resolved in the NAMES, which nothing has banked, and
+# ``tests/test_audio_measurement_program.py`` pins the two name sets disjoint
+# so it cannot come back.
+PROGRAM_PHASE_CHECK = "check"
+PROGRAM_PHASE_MEASURE = "measure"
+PROGRAM_PHASE_VERIFY = "verify"
+PROGRAM_PHASES = frozenset(
+    {PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE, PROGRAM_PHASE_VERIFY}
+)
 
 # Segment kinds.
 KIND_SILENCE = "silence"
@@ -429,7 +457,7 @@ class ExcitationProgram:
     total_samples: int
 
     def __post_init__(self) -> None:
-        if self.phase not in PHASES:
+        if self.phase not in PROGRAM_PHASES:
             raise ValueError(f"unknown phase: {self.phase!r}")
         if self.sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
@@ -1036,7 +1064,7 @@ def build_check_program(
             segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PHASE_CHECK, channels, segments, cursor)
+    return _finalize(PROGRAM_PHASE_CHECK, channels, segments, cursor)
 
 
 def _occurrence_suffix(index: int) -> str:
@@ -1240,7 +1268,7 @@ def build_measure_program(
             segments, cursor, at_sample=prelude_at, channels=channels,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PHASE_MEASURE, channels, segments, cursor)
+    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor)
 
 
 VERIFY_PILOT_ROLE = "summed"
@@ -1361,7 +1389,7 @@ def build_verify_program(
             segments, cursor, at_sample=prelude_at, channels=1,
             downstream_gain_db=downstream_gain_db,
         )
-    return _finalize(PHASE_VERIFY, 1, segments, cursor)
+    return _finalize(PROGRAM_PHASE_VERIFY, 1, segments, cursor)
 
 
 def segment_stimulus(segment: ProgramSegment):

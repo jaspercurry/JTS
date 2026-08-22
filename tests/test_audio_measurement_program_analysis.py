@@ -50,7 +50,7 @@ from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_SWEEP,
-    PHASE_MEASURE,
+    PROGRAM_PHASE_MEASURE,
     RoleBand,
     _finalize,
     _occurrence_suffix,
@@ -1196,7 +1196,7 @@ def test_diagnostic_summary_names_the_band_behind_each_driver_snr_pair():
     assert worst["band_id"] == "mid"
 
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["woofer_snr_band"] == worst["band_id"]
@@ -1222,7 +1222,7 @@ def test_diagnostic_summary_snr_band_is_none_not_a_stand_in_label():
         validity_floor_hz=None,
     )
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["tweeter_snr_band"] is None
@@ -1249,7 +1249,7 @@ def test_diagnostic_summary_alignment_snr_trio_is_none_when_the_block_predates_i
         validity_floor_hz=None,
     )
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["tweeter_alignment_snr_db"] is None
@@ -1390,7 +1390,7 @@ def _build_old_shaped_measure_program():
     segments.append(_silence("tail", cursor, tail_n))
     cursor += tail_n
 
-    return _finalize(PHASE_MEASURE, 2, segments, cursor)
+    return _finalize(PROGRAM_PHASE_MEASURE, 2, segments, cursor)
 
 
 def test_measure_repeat_responses_recover_the_primary_magnitude():
@@ -2011,7 +2011,7 @@ def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
         discontinuity_after_segment="",
     )
     analysis = program_analysis.ProgramAnalysis(
-        phase=PHASE_MEASURE, program_id="test", locations=(), drift=drift,
+        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(), drift=drift,
     )
     summary = analysis_diagnostic_summary(analysis)
     assert summary["discontinuity_samples"] == program_analysis.DISCONTINUITY_UNRESOLVED
@@ -4358,7 +4358,10 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
 #
 # The shipped CHECK program is 12 s of ambient silence at [0, 12 s) followed
 # IMMEDIATELY by the courtesy prelude — 0.6 s of -18 dBFS beeps at
-# [12.0, 12.6) s (`courtesy_prelude_for_phase(PHASE_CHECK)` is True — CHECK
+# [12.0, 12.6) s (`courtesy_prelude_for_phase(journey.PHASE_CHECK)` is True.
+# The name is qualified because that rule is asked of the SESSION phase — the
+# `jasper.active_speaker.crossover_v2.journey` family — and not of
+# `program.PROGRAM_PHASE_CHECK`, the stimulus phase this file imports. CHECK
 # opens stage 1, so it is one of the phases that keeps the prelude). A
 # window whose end is computed from the CLAMPED start walks forward onto those
 # beeps on a capture that began late. Measured on that shipped geometry over a

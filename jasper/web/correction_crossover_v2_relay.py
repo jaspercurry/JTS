@@ -168,7 +168,7 @@ def program_phase_schedule(
     from jasper.audio_measurement.program import (
         AMBIENT_SEGMENT_ID,
         KIND_COURTESY_TONE,
-        PHASE_CHECK,
+        PROGRAM_PHASE_CHECK,
         STIMULUS_KINDS,
     )
 
@@ -211,7 +211,7 @@ def program_phase_schedule(
                     # answer "no warning played, do not ask" on the
                     # mid-session captures whose window has to be quiet.
                     "quiet_requested": (
-                        str(getattr(program, "phase", "")) != PHASE_CHECK
+                        str(getattr(program, "phase", "")) != PROGRAM_PHASE_CHECK
                     ),
                 },
             )
