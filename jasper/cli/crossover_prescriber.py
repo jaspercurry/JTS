@@ -13,6 +13,13 @@ model client, no API key, no spend cap and no network here, which is what keeps
 the harness usable with a human doing the reasoning, with a laptop agent over
 SSH, or with a paste into a browser.
 
+``status`` is the fourth verb and the odd one out: it writes nothing and gates
+nothing. Sequencing in this loop is a set of artifact-dependency refusals
+rather than a workflow engine, which is cheap to run and expensive to be
+dropped into the middle of — so one verb says where a speaker currently
+stands, and it derives that from the SAME builders the three doors read rather
+than from a second walk of the same tree.
+
 ``propose`` and ``stage`` run the SAME gate on the same document; the only
 difference is that ``stage`` banks the result. That is deliberate — a staging
 verb with a laxer check would be the second, weaker reader this design exists to
@@ -74,13 +81,53 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     FeatureVerdict,
 )
 from jasper.active_speaker.crossover_v2.prescription_spool import (
+    prescription_spool_path,
     stage_prescription,
+    staged_prescription_pending,
 )
+from jasper.identity import read_identity
 
 EXIT_OK = 0
 EXIT_EVIDENCE_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
+
+#: Where a human goes to run, apply, or undo a crossover round. Named once
+#: because every sentence this tool prints that hands the operator to a browser
+#: hands them to this page.
+CROSSOVER_PAGE_PATH = "/sound/crossover/"
+
+#: What happens to a document sitting in the spool, said once. ``stage`` says it
+#: at the moment of banking and ``status`` says it to an operator who arrived
+#: later and found one waiting — the same fact at two moments, so a second
+#: wording here would be a second answer to "what becomes of this file".
+STAGED_LIFECYCLE_NOTE = (
+    "the next round takes it once and consumes it; an Undo withdraws it unrun"
+)
+
+
+def speaker_url(path: str) -> str:
+    """A handoff URL for THIS speaker, from the hostname it is configured with.
+
+    Through :func:`jasper.identity.read_identity` — the repository's single
+    speaker-identity reader, which exists (its own words) "so consumers ...
+    stop reconstructing identity ad-hoc and drifting from each other" — rather
+    than an ``os.environ`` read of ``JASPER_HOSTNAME`` spelled a second time
+    here. It is TOTAL and never raises, which is what a status verb needs:
+    a speaker whose identity files are unreadable still gets a URL, at the
+    documented default.
+
+    Deliberately NOT ``Config.from_env``, whose ``hostname`` field says the
+    same thing: that constructor refuses outright when no voice provider is
+    configured and validates two dozen unrelated knobs on the way past, so an
+    orientation verb built on it would fail on a bench speaker that has never
+    been given an API key.
+
+    Why this exists at all: speakers are ``jts1.local``, ``jts3.local``, …, and
+    a printed ``http://jts.local/...`` sends its reader to a different box —
+    silently, because that name usually resolves to something.
+    """
+    return f"http://{read_identity().hostname}{path}"
 
 
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
@@ -265,6 +312,27 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _band_phrase(lo: float, hi: float) -> str:
+    """One frequency span, spelled the one way this tool spells it.
+
+    Named because ``status`` prints the crossover region and ``propose`` prints
+    the band a blend prescription was bounded by, and those are the same span
+    read at two moments — two format strings would drift the day one of them
+    gained a decimal.
+    """
+    return f"{lo:.1f}-{hi:.1f} Hz"
+
+
+def _passband_phrase(role: str, lo: float, hi: float) -> str:
+    """One role's declared band. Same reason as :func:`_band_phrase`.
+
+    Coarser than the region on purpose: a driver's declared band is a
+    manufacturer figure rounded to whole hertz, and printing it to a tenth
+    would suggest a precision the declaration does not have.
+    """
+    return f"{role} {lo:.0f}-{hi:.0f} Hz"
+
+
 def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
     """What this prescription's filters were bounded BY, in one phrase.
 
@@ -275,11 +343,11 @@ def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
     """
     if isinstance(prescription, DriverPrescription):
         return ", ".join(
-            f"{role} {lo:.0f}-{hi:.0f} Hz"
+            _passband_phrase(role, lo, hi)
             for role, lo, hi in prescription.passbands_hz
             if role in prescription.roles
         )
-    return f"{prescription.band_hz[0]:.1f}-{prescription.band_hz[1]:.1f} Hz"
+    return _band_phrase(prescription.band_hz[0], prescription.band_hz[1])
 
 
 def _print_prescription(
@@ -395,18 +463,341 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     else:
         _print_prescription(prescription, "staged", qualifier=f" for round {ordinal}")
         print(f"  {path}", file=sys.stderr)
-        print(
-            "  the next round takes it once and consumes it; an Undo withdraws "
-            "it unrun",
-            file=sys.stderr,
-        )
+        print(f"  {STAGED_LIFECYCLE_NOTE}", file=sys.stderr)
     return EXIT_OK
 
 
-#: What ``--state`` is, said once. The two verbs differ only in whether they
-#: can proceed without it, so the sentence that describes the FILE has one owner
-#: and each verb appends its own requirement — a shared "Optional" on a verb
-#: that hard-refuses without it is a `--help` that contradicts the command.
+# --------------------------------------------------------------------------- #
+# status
+# --------------------------------------------------------------------------- #
+
+
+def _block(packet: dict[str, Any] | None, name: str) -> dict[str, Any]:
+    """One of the packet's own blocks, or an empty one when there is no packet."""
+    block = (packet or {}).get(name)
+    return block if isinstance(block, dict) else {}
+
+
+def _reason(block: dict[str, Any], packet_error: str) -> str:
+    """Why a section has nothing to report, from whichever layer knows.
+
+    The packet builder's failure wins when there is one, because then no block
+    was built at all and the block's own silence would be reported as the
+    round's rather than as the bundle's. Below that, the block's own
+    ``_absence`` reason — ``source_absent`` and ``field_null`` are different
+    facts and this verb passes both through untranslated. "not reported" only
+    when a block says unavailable and names no reason; inventing one would be
+    this tool asserting something the packet declined to.
+    """
+    if packet_error:
+        return packet_error
+    reason = block.get("reason")
+    return str(reason) if reason else "not reported"
+
+
+def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
+    """One side of the packet's incumbent block, classified but not reconciled.
+
+    The packet reports each side either as the correction itself or as an
+    absence, and deliberately makes no judgement between its two records — so
+    neither does this. A status line that preferred one would hide exactly the
+    round where the receipt and the applied profile disagreed, which is the
+    thing reporting them side by side exists to catch.
+
+    An empty list is ``available`` with zero filters, and that is not pedantry:
+    "the round recorded an incumbent and it was empty" and "no round receipt
+    was readable" are the two facts a prescription author most needs kept
+    apart, because a prescription is a TOTAL and the second means they do not
+    know what they are totalling.
+    """
+    if isinstance(value, list):
+        return {"available": True, "n_filters": len(value)}
+    return {
+        "available": False,
+        "reason": _reason(value if isinstance(value, dict) else {}, packet_error),
+    }
+
+
+def _incumbent_phrase(record: dict[str, Any]) -> str:
+    """One classified incumbent record as the report says it."""
+    return (
+        f"{record['n_filters']} blend filter(s)"
+        if record["available"]
+        else f"none ({record['reason']})"
+    )
+
+
+def _status_sections(
+    packet: dict[str, Any] | None, packet_error: str
+) -> dict[str, Any]:
+    """Declared, banked, staged, applied — through the doors' own readers.
+
+    Every fact here comes from
+    :func:`~.evidence_packet.build_crossover_evidence_packet` and the named
+    readers the gate itself calls
+    (:func:`~.evidence_packet.packet_region_band_hz`,
+    :func:`~.evidence_packet.packet_driver_passbands_hz`,
+    :func:`~.evidence_packet.packet_feature_classifications`), plus the spool's
+    own :func:`~.prescription_spool.staged_prescription_pending`. **No second
+    walk of the bundle.** A status verb with its own tree reader would answer a
+    slightly different question from the door beside it, and the day they
+    disagreed the operator would believe the one that was not enforcing
+    anything.
+
+    All three packet readers tolerate ``None``, so a bundle that could not be
+    read at all needs no special case: every section resolves to unavailable
+    carrying the builder's own error as its reason.
+
+    Each section carries a ``summary`` sentence, and it is the SAME sentence
+    the human report prints — a printer that phrased its own would be a second
+    wording of each fact, and the ``--json`` reader and the terminal reader
+    would end up told different things.
+    """
+    passbands = packet_driver_passbands_hz(packet)
+    region = packet_region_band_hz(packet)
+    verdicts = packet_feature_classifications(packet)
+
+    declared: dict[str, Any] = {
+        "available": bool(passbands),
+        "roles": sorted(passbands),
+        "passbands_hz": {
+            role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
+        },
+        "reason": (
+            None if passbands else _reason(_block(packet, "drivers"), packet_error)
+        ),
+    }
+    declared["summary"] = (
+        ", ".join(
+            _passband_phrase(role, *passbands[role]) for role in declared["roles"]
+        )
+        if passbands
+        else f"no declared driver band ({declared['reason']})"
+    )
+
+    classification = {
+        "available": bool(verdicts),
+        "n_verdicts": len(verdicts) if verdicts else 0,
+        "reason": (
+            None
+            if verdicts
+            else _reason(_block(packet, "feature_classification"), packet_error)
+        ),
+    }
+    region_state = {
+        "available": region is not None,
+        "band_hz": [region[0], region[1]] if region else None,
+        "reason": (
+            None
+            if region
+            else _reason(_block(packet, "crossover_region"), packet_error)
+        ),
+    }
+    round_block = _block(packet, "round")
+    session = _block(packet, "session")
+    banked: dict[str, Any] = {
+        "available": bool(round_block.get("available")),
+        "reason": (
+            None
+            if round_block.get("available")
+            else _reason(round_block, packet_error)
+        ),
+        "bundle_session_id": session.get("bundle_session_id"),
+        "round_id": session.get("round_id"),
+        "region": region_state,
+        "classification": classification,
+    }
+    banked["summary"] = (
+        (
+            f"round {banked['round_id']} in session {banked['bundle_session_id']}"
+            + (
+                f", region {_band_phrase(*region_state['band_hz'])}"
+                if region_state["available"]
+                else f", no region ({region_state['reason']})"
+            )
+            + (
+                f", {classification['n_verdicts']} classified feature(s)"
+                if classification["available"]
+                else f", no classification ({classification['reason']})"
+            )
+        )
+        if banked["available"]
+        else f"no round receipt ({banked['reason']})"
+    )
+
+    pending = staged_prescription_pending()
+    staged = {
+        "pending": pending,
+        "path": str(prescription_spool_path()),
+        "summary": (
+            f"one prescription waiting — {STAGED_LIFECYCLE_NOTE}"
+            if pending
+            else "nothing waiting"
+        ),
+    }
+
+    incumbent_block = _block(packet, "incumbent")
+    from_receipt = _incumbent_record(
+        incumbent_block.get("from_round_receipt"), packet_error
+    )
+    from_profile = _incumbent_record(
+        incumbent_block.get("from_applied_profile"), packet_error
+    )
+    applied = {
+        "from_round_receipt": from_receipt,
+        "from_applied_profile": from_profile,
+        "summary": (
+            f"round receipt: {_incumbent_phrase(from_receipt)}; "
+            f"applied profile: {_incumbent_phrase(from_profile)}"
+        ),
+    }
+
+    return {
+        "declared": declared,
+        "banked": banked,
+        "staged": staged,
+        "applied": applied,
+    }
+
+
+def _next_actions(
+    sections: dict[str, Any], *, state_supplied: bool, crossover_url: str
+) -> list[str]:
+    """What this speaker can do next, derived from what it does and does not have.
+
+    Artifact dependencies, not a workflow: each line is the consequence of one
+    artifact being present or absent, and the tool that would refuse for want
+    of it is named so an operator can tell "not yet" from "broken". Nothing
+    here sequences anything — the refusals do that, and they do it whether or
+    not this verb was ever run.
+    """
+    banked = sections["banked"]
+    declared = sections["declared"]
+    out: list[str] = []
+
+    if not banked["available"]:
+        out.append(
+            f"no round is banked here ({banked['reason']}) — point this verb at "
+            f"a commissioning bundle, or run a round at {crossover_url}"
+        )
+    else:
+        region = banked["region"]
+        classification = banked["classification"]
+        prescribable = False
+        if region["available"]:
+            prescribable = True
+            out.append(
+                "a blend prescription can be written for the crossover region "
+                f"{_band_phrase(*region['band_hz'])}"
+            )
+        else:
+            out.append(
+                f"no crossover region is banked ({region['reason']}), so a blend "
+                "prescription has no bound and is refused by name"
+            )
+        if declared["available"] and classification["available"]:
+            prescribable = True
+            out.append(
+                "a per-driver prescription can be written for "
+                f"{', '.join(declared['roles'])}"
+            )
+        elif not declared["available"]:
+            out.append(
+                f"no declared driver band is available ({declared['reason']}) — "
+                "pass --drivers <design draft JSON>; without it a per-driver "
+                "prescription has no bound and is refused by name"
+            )
+        else:
+            out.append(
+                "no feature classification is banked for this round "
+                f"({classification['reason']}) — run `jasper-classify-features`; "
+                "without it no per-driver filter can be shown to be aimed at a "
+                "driver defect"
+            )
+        if prescribable:
+            out.append(
+                "write one against `packet`, then `propose` to see it judged and "
+                "`stage` to leave it for the next round"
+            )
+
+    if not state_supplied:
+        out.append(
+            "pass --state <flow state JSON>: `stage` refuses without it, and the "
+            "applied profile's own incumbent cannot be read"
+        )
+
+    if sections["staged"]["pending"]:
+        out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
+    out.append(f"run, apply, or undo a round at {crossover_url}")
+    return out
+
+
+def _print_status(payload: dict[str, Any]) -> None:
+    """The report, from the section summaries rather than a second phrasing."""
+    print(f"{'speaker:':9} {payload['speaker']['hostname']}")
+    for name in ("declared", "banked", "staged", "applied"):
+        print(f"{name + ':':9} {payload[name]['summary']}")
+    print("next:")
+    for action in payload["next_actions"]:
+        print(f"  - {action}")
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Where this speaker stands, and what it can do next. Writes nothing.
+
+    **A partial answer beats no answer**, so an unreadable bundle does not stop
+    the report: the packet's failure becomes every evidence section's reason,
+    and the spool — which lives on the speaker, not in the bundle — is reported
+    truthfully regardless. A prescription waiting for the next round is a fact
+    about this speaker whichever directory the operator happened to name.
+
+    The exit code still tells a script which of those two happened:
+    :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could not be built,
+    matching this tool's contract that ``1`` means the evidence could not be
+    read. The report prints either way.
+
+    Unlike its three siblings the human report goes to STDOUT. For them stdout
+    is reserved for a document a pipe consumes and the human gloss goes to
+    stderr so it cannot contaminate it; this verb emits no document unless
+    ``--json`` asks for one, and a report whose only copy went to stderr would
+    be invisible to the SSH agent that is this verb's main reader.
+    """
+    packet: dict[str, Any] | None = None
+    packet_error = ""
+    try:
+        packet = _load_packet(args)
+    except (CrossoverEvidencePacketError, OSError) as exc:
+        packet_error = str(exc)
+
+    crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
+    sections = _status_sections(packet, packet_error)
+    payload: dict[str, Any] = {
+        "speaker": {
+            "hostname": read_identity().hostname,
+            "crossover_url": crossover_url,
+        },
+        "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
+        "packet_error": packet_error or None,
+        **sections,
+        "next_actions": _next_actions(
+            sections,
+            state_supplied=bool(args.state),
+            crossover_url=crossover_url,
+        ),
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_status(payload)
+    return EXIT_EVIDENCE_UNREADABLE if packet_error else EXIT_OK
+
+
+#: What ``--state`` is, said once. The verbs differ only in whether they can
+#: proceed without it — ``stage`` cannot, the other three degrade and say so —
+#: so the sentence that describes the FILE has one owner and each verb appends
+#: its own requirement. A shared "Optional" on a verb that hard-refuses without
+#: it is a `--help` that contradicts the command.
 _STATE_HELP = (
     "the crossover-v2 flow state JSON, banked separately from the bundle"
 )
@@ -456,11 +847,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-crossover-prescriber",
         description=(
-            "Emit one crossover round's evidence packet, and read a "
-            "prescription back through the strict gate."
+            "Emit one crossover round's evidence packet, read a prescription "
+            "back through the strict gate, and say where this speaker stands."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # First, because it is where an operator who has just arrived starts.
+    status = sub.add_parser(
+        "status",
+        help="print declared / banked / staged / applied state and what is next",
+    )
+    _add_evidence_args(status)
+    status.add_argument(
+        "--json", action="store_true", help="emit the report as JSON"
+    )
+    status.set_defaults(func=_cmd_status)
 
     packet = sub.add_parser(
         "packet",
