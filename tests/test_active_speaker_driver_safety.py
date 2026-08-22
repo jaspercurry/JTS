@@ -1928,7 +1928,7 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     # out (a datasheet page, or typing it yourself).
     assert "700 Hz" in str(refused.value)
     assert "1250-20000 Hz" in str(refused.value)
-    assert "5000 Hz class default" in str(refused.value)
+    assert "(class default 5000 Hz)" in str(refused.value)
     assert "Ask again with the datasheet" in str(refused.value)
     assert "by hand under Advanced" in str(refused.value)
 
@@ -1971,7 +1971,7 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     assert warning["severity"] == "warning"
     assert "700 Hz" in warning["message"]
     assert "1250-20000 Hz" in warning["message"]
-    assert "5000 Hz class default" in warning["message"]
+    assert "(class default 5000 Hz)" in warning["message"]
     assert "transposed digit" in warning["message"]
 
     # A warning is not a blocker: the profile it rides on is usable, and the
@@ -2005,18 +2005,33 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
     bound that is gone.
     """
 
+    from jasper.active_speaker.driver_protection import driver_style_is_registered
     from jasper.active_speaker.driver_safety import (
         PROFILE_ISSUE_FIELD_MAX_CHARS as caps,
         _target_low_limit_warnings,
     )
 
-    registered = [style for style, _ in _TWEETER_STYLE_FLOORS]
+    registered = [
+        style for style, _ in _TWEETER_STYLE_FLOORS
+        if driver_style_is_registered(style)
+    ]
+    assert registered, _TWEETER_STYLE_FLOORS
     # 80 chars of safe-id, which POST /output-topology accepts verbatim.
     unregistered_max = "a" + "b" * 79
     assert len(unregistered_max) == 80
+    # Every shape that reaches the LONGER unknown-style branch: the sentinel
+    # `_profile_core` stamps for a box whose type nobody set, a typo, an
+    # oversized custom value, and the (unstorable) empty shape.
+    unregistered = ["unspecified", "compresion_driver", unregistered_max, ""]
+    assert not any(driver_style_is_registered(s) for s in unregistered)
 
-    for style in [*registered, unregistered_max, "", "a" * 40]:
-        for cutoff_hz in (1e-6, 1.5, 999999.5, 1.79769e308):
+    # The reviewers' worst `:g` renders -- 11 and 12 characters, against the
+    # 3 an ordinary declaration spends. Both branches are gridded against them,
+    # because the unknown-style branch carries the longer closing clause and is
+    # now reachable from a saved profile.
+    extreme_hz = (5e-324, 0.000123456, 1e-6, 1.5, 200.0, 999999.5, 1.79769e308)
+    for style in [*registered, *unregistered]:
+        for cutoff_hz in extreme_hz:
             target = {
                 "role": "tweeter",
                 "required_protection_filters": [
@@ -2031,6 +2046,13 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
                 assert len(warnings[0][field]) <= cap, (
                     field, style, cutoff_hz, len(warnings[0][field]),
                 )
+            # The closing instruction survives on BOTH branches, at every
+            # render width. This is what the length budget is FOR -- a message
+            # that fits by losing its last clause passes a cap check and still
+            # fails the household.
+            assert warnings[0]["message"].endswith(
+                ("is right.", "cautious default.")
+            ), (style, cutoff_hz, warnings[0]["message"])
 
     # ...and the fit is bought by ellipsizing the operator's free text, never by
     # eating the guidance. On every REGISTERED style at a realistic cutoff the
@@ -2064,7 +2086,10 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
         ],
     })[0]["message"]
     assert "..." in long_style_warning, long_style_warning
-    assert long_style_warning.endswith("is right."), long_style_warning
+    # The LONGER of the two tails, because an 80-character custom value is not
+    # a style the table describes -- so this is the worst case for both terms
+    # at once, and the instruction still survives.
+    assert long_style_warning.endswith("cautious default."), long_style_warning
     assert unregistered_max not in long_style_warning, long_style_warning
 
     # The surface this actually broke: the SAVE. An 80-character style plus an
@@ -2104,6 +2129,80 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
         assert evaluate_driver_safety_profile(
             profile, long_style_topology
         ).confirmed_and_current is True
+
+
+def test_an_unknown_driver_type_is_disclosed_on_the_saved_profile() -> None:
+    """The cautious-default caveat, pinned through the SHIPPED path.
+
+    Two things are pinned here and neither survives alone.
+
+    REACHABILITY. This builds a real profile from a topology whose tweeter has
+    no ``driver_style``, and reads the copy off the SAVED artifact -- because
+    that is where the caveat was dead: ``_profile_core`` stamps
+    ``"unspecified"`` and the shape validator requires the field non-empty, so
+    a branch keyed on an EMPTY style never fired in the product. A box whose
+    driver type nobody set shipped the no-caveat sentence, and only the
+    unit-test shape (key absent) reached the clause. A direct call to the
+    warning builder cannot catch that class of bug; this must go through
+    ``build_driver_safety_profile``.
+
+    THE CLAUSE ITSELF. It carries the reason the band is cautious, and it has
+    already vanished once -- it lived in the /sound/ page's
+    ``SAFETY_RELATIONSHIP_TEXT`` map until that entry was retired with the
+    blocker it phrased. Dropping it again passes every other test in this file,
+    so it gets its own assertion.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    assert topology.speaker_groups[0].channels[1].driver_style is None, (
+        "this test is about a box whose driver type nobody set"
+    )
+
+    manual = _manual_settings()
+    tweeter = manual["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 200.0
+    tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
+    tweeter["measurement_band_hz"] = [200.0, 20000.0]
+    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
+    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
+
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    stored = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    assert stored["driver_style"] == "unspecified", (
+        "the seam this pins: an unset type is STAMPED, never stored empty"
+    )
+
+    warning = next(
+        issue for issue in profile["issues"]
+        if issue["code"] == "tweeter:low_limit_implausible_for_style"
+    )
+    message = warning["message"]
+    assert "set the driver type above" in message, message
+    assert "cautious default" in message, message
+    # ...and it still names the number and the band it missed.
+    assert "200 Hz" in message, message
+    assert "1250-20000 Hz" in message, message
+
+    # A declared, REGISTERED type gets the other tail on the same shipped path,
+    # so the caveat is a discrimination rather than boilerplate on every save.
+    declared_topology = _topology_with_tweeter_style("compression_driver")
+    declared_profile = build_driver_safety_profile(
+        declared_topology,
+        manual_settings=manual,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    declared_message = next(
+        issue for issue in declared_profile["issues"]
+        if issue["code"] == "tweeter:low_limit_implausible_for_style"
+    )["message"]
+    assert "cautious default" not in declared_message, declared_message
+    assert declared_message.endswith("is right."), declared_message
 
 
 def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:

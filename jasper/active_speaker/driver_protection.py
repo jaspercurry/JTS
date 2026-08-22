@@ -107,6 +107,25 @@ def normalise_driver_style(style: Any) -> str | None:
     return token or None
 
 
+def driver_style_is_registered(driver_style: Any) -> bool:
+    """Whether the per-style table actually DESCRIBES this driver style.
+
+    ``False`` means the style fell through to the cautious unknown-tweeter
+    default -- so any band or floor derived from it is a fallback, not a figure
+    for the driver the household installed. Callers that DISCLOSE such a
+    fallback need this question rather than a test against one sentinel value,
+    because the sentinel is not the only spelling that lands there: an unset
+    type is stamped ``"unspecified"`` by ``driver_safety._profile_core``, and a
+    typo (``compresion_driver``) or a style from a newer build reaches the same
+    default while looking like a real declaration.
+
+    Normalises first, so the picker's own label (``"Dome Tweeter"``) counts as
+    registered exactly as ``dome_tweeter`` does.
+    """
+
+    return normalise_driver_style(driver_style) in _STYLE_HIGH_PASS_HZ
+
+
 def driver_protection_profile(
     role: Any,
     *,

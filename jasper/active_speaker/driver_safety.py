@@ -33,6 +33,7 @@ from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
+    driver_style_is_registered,
     format_low_limit,
     resolve_driver_low_limit,
 )
@@ -1446,11 +1447,15 @@ def _low_limit_implausibility_diagnosis(
         _DIAGNOSIS_STYLE_MAX_CHARS,
     )
     direction = "below" if float(frequency_hz) < band[0] else "above"
+    # "(class default N Hz)" rather than a clause: the band already IS that
+    # default divided and multiplied by the factor, so the long form spent ~15
+    # characters restating it -- and those characters are the headroom the
+    # warning arm needs under its message cap once the unknown-style branch is
+    # reachable (both review lenses, #2884).
     return (
         f"declared {float(frequency_hz):g} Hz is more than "
         f"{LOW_LIMIT_PLAUSIBILITY_FACTOR:g}x {direction} the {style} class "
-        f"band of {band[0]:g}-{band[1]:g} Hz, anchored on the "
-        f"{anchor_hz:g} Hz class default"
+        f"band of {band[0]:g}-{band[1]:g} Hz (class default {anchor_hz:g} Hz)"
     )
 
 
@@ -2156,15 +2161,23 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     )
     if diagnosis is None:
         return []
-    # An undeclared style is judged against the cautious unknown-tweeter
-    # default, which is how a genuinely published 800 Hz on a large-format horn
-    # reads as implausible on a box whose type nobody set. Naming the picker as
-    # the first thing to check keeps that from reading as an accusation about
-    # the datasheet -- the clause the retired JS phrasing carried.
+    # A style the table does not describe is judged against the cautious
+    # unknown-tweeter default, which is how a genuinely published 800 Hz on a
+    # large-format horn reads as implausible on a box whose type nobody set.
+    # Naming the picker as the first thing to check keeps that from reading as
+    # an accusation about the datasheet -- the clause the retired JS phrasing
+    # carried.
+    #
+    # The question is REGISTERED, not empty. An empty style never reaches here
+    # from a saved profile: ``_profile_core`` stamps ``"unspecified"`` and the
+    # shape validator requires the field non-empty, so a test against emptiness
+    # was dead on the shipped path -- a box whose type nobody set shipped the
+    # no-caveat copy. Asking the table also catches what no sentinel list would:
+    # a typo'd or newer-build style that looks declared and is silently judged
+    # against the same fallback.
     check_the_type = (
-        "and set the driver type above -- an undeclared type is judged against "
-        "a cautious default."
-        if not str(style or "").strip()
+        "and set the driver type above -- unknown types get a cautious default."
+        if not driver_style_is_registered(style)
         else "and that the driver type above is right."
     )
     message = (
