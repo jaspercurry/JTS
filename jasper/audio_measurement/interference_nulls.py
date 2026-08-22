@@ -130,7 +130,7 @@ from jasper.audio_measurement.spatial_combine import (
 # test_smoothing_fills_a_null_far_more_than_it_shaves_a_peak): 1/6-octave
 # smoothing raises the null bottom by **0.13 to 5.98 dB**, i.e. by most of
 # the depth at the top of the band. A depth read off the smoothed curve at
-# both ends would report 3.5 dB where the truth is 10.7 dB.
+# both ends would report 3.7 dB where the truth is 10.7 dB.
 #
 # **The flank may be read smoothed, and should be.** The same sweep shows
 # smoothing lowers a comb *peak* by only **0.027 to 1.044 dB** — a null is a
@@ -157,8 +157,12 @@ from jasper.audio_measurement.spatial_combine import (
 # identified rungs' depths move **-0.029 / +0.026 / -0.004 dB**, tau by
 # 0.074 us, ``r_freq`` by 0.0013, and the rung set is identical. On the
 # six-position tweeter-height cloud the depth-ceiling acquittal's margin
-# moves **2.231 -> 2.179 dB**, i.e. 0.052 dB against that rule's 0.98 dB of
-# one-sided headroom. Both regimes stated because the acquittal is the
+# moves by **0.052 dB**, against that rule's 0.98 dB of one-sided headroom.
+# What that margin IS is deliberately not restated here: the study ran against
+# a baseline #2045's prominence-vote re-gate has since moved (+2.23 -> +3.08 dB),
+# and ``test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling`` hard-asserts the live
+# value — 0.052 dB is what the decimation costs, which is the number this
+# paragraph needs. Both regimes stated because the acquittal is the
 # tightest thing this statistic feeds. The decimation's own worst-bin
 # contract is asserted by
 # test_decimated_and_undecimated_curves_agree in tests/test_spatial_combine.py.
@@ -543,11 +547,18 @@ POSITION_PRESENCE_FRACTION = 0.70
 # a backstop, not a tuning knob, and the distinction is the whole design.**
 # Two populations, measured 2026-07-25:
 #
-# * **Real captures — 23.91 % to 30.85 %.** The S0 families across the four
-#   cloud groupings: 30.85 % on the main leg over 5-19 kHz (the widest,
+# * **Real captures — 23.85 % to 30.74 %.** The S0 families across the four
+#   cloud groupings: 30.74 % on the main leg over 5-19 kHz (the widest,
 #   because that band is the narrowest the family is graded in) and
-#   23.91-25.35 % over 1.2-19 kHz. Re-derived by
-#   test_s0_exclusion_stays_far_below_the_runaway_cap.
+#   23.85-25.35 % over 1.2-19 kHz. These are the 2026-08-02 (#2045) era's, not
+#   the 2026-07-25 originals this comment shipped with: #1991's prominence vote
+#   re-gated ``cloud_04`` and the fractions moved in the third decimal
+#   (30.85 -> 30.74 %, and the wide band's floor 23.91 -> 23.85 %), so the
+#   headroom below GREW. **The live authority is
+#   test_s0_exclusion_stays_far_below_the_runaway_cap**, which hard-asserts
+#   every figure here against the corpus; this block restates them for a reader
+#   who has the module and not the corpus, so re-derive from that test rather
+#   than from these digits.
 # * **Synthetic, deliberately pushed — ceiling 48.24 %**, over a committed
 #   grid of two-path clouds (delays 10-30 samples at 48 kHz, i.e. tau
 #   208-625 us, x r 0.15-0.80 x three analysis bands), re-derived by
@@ -562,7 +573,7 @@ POSITION_PRESENCE_FRACTION = 0.70
 # tops out at. A guard set at 0.50 would therefore refuse a legitimate dense
 # comb, and refusing means refusing **every** identification in the report:
 # an expensive false positive. 0.65 clears the synthetic ceiling by 16.8
-# points and the real one by 34.2.
+# points and the real one by 34.3.
 #
 # **So this constant does not fire on any input either population contains**,
 # and that is stated rather than hidden: it is a bound on a failure class not
