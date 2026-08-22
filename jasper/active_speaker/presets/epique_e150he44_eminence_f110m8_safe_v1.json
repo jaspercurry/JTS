@@ -28,19 +28,15 @@
       "role": "woofer",
       "manufacturer": "Dayton Audio",
       "model": "Epique E150HE-44",
-      "fs_hz": 40,
       "sensitivity_db": 83.3,
-      "rated_power_w": 60,
-      "expected_nearfield_response": "Manufacturer response extends through the bring-up crossover region; measure final baffle and enclosure before final EQ."
+      "bring_up_note": "Manufacturer response extends through the bring-up crossover region; measure final baffle and enclosure before final EQ."
     },
     "tweeter": {
       "role": "tweeter",
       "manufacturer": "Eminence",
       "model": "F110M-8",
-      "fs_hz": 1200,
       "sensitivity_db": 108.4,
-      "rated_power_w": 25,
-      "expected_nearfield_response": "Compression driver must be measured with the final horn or waveguide attached; first bring-up keeps it muted and protected."
+      "bring_up_note": "Compression driver must be measured with the final horn or waveguide attached; first bring-up keeps it muted and protected."
     }
   },
   "crossover_regions": [

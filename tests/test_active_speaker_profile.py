@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from jasper.active_speaker import (
@@ -12,6 +14,9 @@ from jasper.active_speaker import (
     BaselineVerification,
     SpeakerBaselineProfile,
     emit_active_speaker_startup_config,
+)
+from jasper.active_speaker.commissioning_evidence import (
+    region_evidence_preset_fingerprint,
 )
 
 
@@ -43,13 +48,10 @@ def _two_way_preset(layout: str = "mono") -> dict:
             "woofer": {
                 "manufacturer": "Dayton Audio",
                 "model": "Epique E150HE-44",
-                "fs_hz": 40,
-                "rated_power_w": 60,
             },
             "tweeter": {
                 "manufacturer": "B&C Speakers",
                 "model": "DE250",
-                "rated_power_w": 60,
             },
         },
         "crossover_regions": [{
@@ -141,6 +143,81 @@ def test_two_way_active_speaker_preset_round_trips():
     assert preset.crossover_regions[0].fc_hz == 1600
 
     assert ActiveSpeakerPreset.from_mapping(preset.to_dict()) == preset
+
+
+def test_driver_spec_drops_removed_legacy_fields():
+    """``fs_hz``/``rated_power_w``/``expected_nearfield_response`` were removed
+    from ``DriverSpec`` -- schema-complete but never read by any consumer.
+
+    ``DriverSpec.from_mapping`` has no ``_reject_unknown_keys`` call (unlike
+    ``driver_safety.py``'s stricter research/safety-profile schemas), so it
+    does not raise on an unrecognized key -- it just never reads it into the
+    dataclass. A legacy preset dict that still carries these keys therefore
+    keeps parsing; the round-trip through ``to_dict()`` proves the fields no
+    longer survive rather than proving a rejection.
+    """
+    raw = _two_way_preset()
+    raw["drivers"]["woofer"]["fs_hz"] = 40
+    raw["drivers"]["woofer"]["rated_power_w"] = 60
+    raw["drivers"]["woofer"]["expected_nearfield_response"] = "legacy text"
+
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+    woofer = preset.drivers["woofer"]
+
+    assert not hasattr(woofer, "fs_hz")
+    assert not hasattr(woofer, "rated_power_w")
+    assert not hasattr(woofer, "expected_nearfield_response")
+    woofer_dict = preset.to_dict()["drivers"]["woofer"]
+    assert "fs_hz" not in woofer_dict
+    assert "rated_power_w" not in woofer_dict
+    assert "expected_nearfield_response" not in woofer_dict
+
+
+def test_driver_bring_up_note_is_identity_inert():
+    """A per-driver ``bring_up_note`` string must never change preset identity.
+
+    ``ActiveSpeakerPreset.notes``/``to_dict()`` feed a preset-identity
+    contract several consumers rely on: ``crossover_contract.
+    preset_matches_applied_profile`` compares ``to_dict()`` against a
+    persisted ``recomposition_snapshot``, ``baseline_profile``'s
+    ``measured_candidate_preset_mismatch`` does whole-dataclass ``!=``, and
+    ``commissioning_evidence.region_evidence_preset_fingerprint`` hashes
+    ``to_dict()``. The shipped presets carry human-readable bring-up prose
+    (e.g. "must be measured with the final horn...") as an unrecognized
+    per-driver JSON key, ``bring_up_note``, specifically so it can never
+    reach any of those three -- ``DriverSpec.from_mapping`` drops unknown
+    keys (see ``test_driver_spec_drops_removed_legacy_fields`` above)
+    rather than reading them into the dataclass.
+
+    This test pins that property directly by comparing a preset WITH the
+    key present against the identical preset WITHOUT it. It is
+    mutation-proof: if ``DriverSpec`` were ever extended to parse
+    ``bring_up_note`` into a real field, the "with" preset's dataclass
+    fields (and therefore its ``to_dict()`` and fingerprint) would diverge
+    from the "without" preset's, and every assertion below would fail.
+    """
+    raw_without_note = _two_way_preset()
+    raw_with_note = copy.deepcopy(raw_without_note)
+    raw_with_note["drivers"]["woofer"]["bring_up_note"] = (
+        "Smooth usable response through the planned crossover; suppress "
+        "known upper breakup by crossover design."
+    )
+    raw_with_note["drivers"]["tweeter"]["bring_up_note"] = (
+        "Compression-driver horn response must be measured with the "
+        "final horn or waveguide attached."
+    )
+
+    preset_without_note = ActiveSpeakerPreset.from_mapping(raw_without_note)
+    preset_with_note = ActiveSpeakerPreset.from_mapping(raw_with_note)
+
+    # baseline_profile's measured_candidate_preset_mismatch: whole-dataclass !=
+    assert preset_with_note == preset_without_note
+    # crossover_contract.preset_matches_applied_profile: to_dict() comparison
+    assert preset_with_note.to_dict() == preset_without_note.to_dict()
+    # commissioning_evidence.region_evidence_preset_fingerprint: hash of to_dict()
+    assert region_evidence_preset_fingerprint(
+        preset_with_note
+    ) == region_evidence_preset_fingerprint(preset_without_note)
 
 
 def test_active_speaker_preset_requires_versioned_artifact_metadata():
