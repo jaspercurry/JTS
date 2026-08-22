@@ -3608,8 +3608,8 @@ unready setup.
 | `noisy_room_linearity` | CHECK | 1 | linearity failed *and* the ambient SNR floor failed — room, not phone |
 | `pilot_level_collapse` | MEASURE / cloud / VERIFY | 1 | the quiet pilot never cleared the room's in-band floor, so no level comparison from the pair is evidence — room too loud, or the playback level collapsed (e.g. a correction that dropped the pilot band). Checked BEFORE the linearity branch on all three phases, so a collapsed pair can never surface as the phone's fault (#1810) — and on MEASURE, before the **glitch** branch too (#1838): low SNR causes the glitch signal, so asking the glitch first reported "capture glitched" for a capture nobody could hear |
 | `snr_floor` | CHECK | 1 | room too loud / phone too far; also the quiet pilot's own in-band SNR too low to trust the linearity estimate (gotcha #16). **Third producer:** an *unusable* CHECK ambient window — below `AMBIENT_MIN_USABLE_FRACTION` (0.5) of the scheduled window, e.g. a very late capture start — degrades to an EMPTY band report, which `_snr_floor_ok` reads as False and this code then reports. That case means **"we never heard the room"**, not "the room was loud", and the two are indistinguishable in the code but not to the household; the log (`event=program_analysis.ambient_window_unusable`) carries how much window survived. Fuller explanation in the clips-not-slides section (#1818) above. CHECK-only — the other phases use `pilot_level_collapse` |
-| `anchor_ambiguous` | CHECK | 1 | the analyzer could not decide WHICH scheduled tone the capture's first arrival was, so it cannot say which driver played what. Sits ABOVE `channel_map_mismatch` in the ladder (#2644): a mis-anchored capture reads every per-driver window one pilot spacing from where that driver played, which on 2026-08-16 turned a correctly-wired speaker into a rewire instruction. Fires when the top two anchor hypotheses BOTH clear the locate floor and are within `ANCHOR_DISCRIMINATION_MARGIN` (0.05) of each other; `ambiguous=true` on `event=program_analysis.anchor` is the field to read when triaging one, the `confidence=`/`runner_up=` pair is the margin it judged, and `runner_up_anchor=`/`runner_up_shift_ms=` name the timeline that nearly won. **Not a catch-all for mis-anchoring** — the separation ramps with room level (see "Timeline anchor"), so louder mis-locked captures escape this rung and are refused by the ones below it. Copy names the recording, never the speaker — nothing about the hardware is known to be wrong here |
-| `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room). Since #2644 only reachable behind an anchor the arbitration did NOT flag ambiguous — which is not the same as a confidently-anchored one: a capture whose two candidates both score BELOW the locate floor keeps `ambiguous=false` (there was nothing to corroborate against, so the pre-#2093 reading stands and the capture fails on its own merits) and can still reach this row. See the row above |
+| `anchor_ambiguous` | CHECK | 1 | the analyzer could not decide WHICH scheduled tone the capture's first arrival was, so it cannot say which driver played what. Sits ABOVE `channel_map_mismatch` in the ladder (#2644): a mis-anchored capture reads every per-driver window one pilot spacing from where that driver played, which on 2026-08-16 turned a correctly-wired speaker into a rewire instruction. Fires when the top two anchor hypotheses BOTH clear the locate floor and the winner's witness is less than `ANCHOR_DISCRIMINATION_RATIO` (50x) more PRESENT than the runner-up's; `ambiguous=true` on `event=program_analysis.anchor` is the field to read when triaging one, the `presence=`/`runner_up_presence=` pair is what it judged, and `runner_up_anchor=`/`runner_up_shift_ms=` name the timeline that nearly won. **Not a catch-all for mis-anchoring** — a capture whose runner-up misses the locate floor never reaches this rung and is refused by the ones below it. Copy names the recording, never the speaker — nothing about the hardware is known to be wrong here |
+| `channel_map_mismatch` | CHECK | 0 (hard stop) | drivers played out of order (wiring, or a very noisy/quiet room). Since #2644 only reachable behind an anchor the arbitration did NOT flag ambiguous — which is not the same as a confidently-anchored one. `ambiguous=false` means only "the guard did not fire", and several routes reach it on thin evidence — a capture whose candidates both score BELOW the locate floor is one (nothing to corroborate against, so the pre-#2093 reading stands and the capture fails on its own merits), a runner-up alone below it is another. Any of them can still reach this row. See the row above |
 | `clipped` | MEASURE | 1 | auto quieter retry (gain −3 dB). MEASURE-only: VERIFY replays the *identical* program on every attempt (that invariant is what makes the `verify_level_shift` baseline mean anything), so there is no quieter retry to offer — a clipped VERIFY capture is refused as a capture glitch instead (#1971). This row said "MEASURE / VERIFY" until then; no VERIFY path ever returned this code |
 | `drift_baselines_disagree` | MEASURE / VERIFY | 1 | glitch/dropped-buffer, or woofer-repeat level disagreement — auto retry. One code covers the whole capture-glitch class by design; `glitch_inputs` in the diag says which bound actually tripped on MEASURE (#1765), and `integrity=` says which check tripped on VERIFY (#1971, where the class is a spliced timeline or a clipped run). Since #1838 a merely weakly-located sweep is NOT in this class on either phase — it answers `locate_failed` ahead of this branch |
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
@@ -4357,9 +4357,12 @@ unlike them it fires on EVERY analyzed capture (INFO; WARNING when it
 corrects one) — because the anchor decision was the single unobservable step
 in the chain, and a fabricated failure read exactly like a real one. It
 carries `anchor` (the stimulus segment the whole timeline is pinned to),
-`witness` (the independent segment that corroborated it), `confidence` and
-`runner_up` (the margin between the surviving interpretations),
-`corroborated`, `corrected`, and `shift_ms`. Read it FIRST when a capture
+`witness` (the independent segment that corroborated it), `presence` and
+`runner_up_presence` (how present that witness was under each surviving
+interpretation — the terms the choice is made on), `confidence` and
+`runner_up` (their peakedness margins: `corroborated` grades the WINNER's
+against the locate floor, and the ambiguity guard grades the runner-up's),
+`corroborated`, `corrected`, `ambiguous`, and `shift_ms`. Read it FIRST when a capture
 reports `locate_failed` or `summed_sweep_heard`: `corrected=true` means a
 mis-anchor was caught and repaired, and a `confidence` near `runner_up` with
 `corroborated=false` means the capture gave the analyzer nothing to pin to —
@@ -4615,46 +4618,81 @@ telling the household to check its wiring.
   same shape sits one gap BEFORE a pair's `lo` member. One gap AFTER, CHECK's
   chosen witness `pilot_tweeter_lo` has its own twin `pilot_tweeter_hi`, which
   is where a mis-located arrival puts the rival windows. Both readings then
-  land the witness on a real pilot and score alike: round 3 separated its two
-  candidates by **0.0034** (0.9007 vs 0.8973) against the accepted round's
-  0.818. No witness CHOICE fixes it — CHECK's only non-sibling stimuli are the
-  other role's pair, and both members are twins.
+  land the witness on a real pilot and score alike — the fixture reconstruction
+  separates such a pair by **3.5x**. No witness CHOICE fixes it — CHECK's only
+  non-sibling stimuli are the other role's pair, and both members are twins.
 
 So a third property joins the two above: **it says when it cannot tell.** Two
-candidates both clearing `SWEEP_LOCATE_CONFIDENCE_FLOOR` and separated by less
-than `ANCHOR_DISCRIMINATION_MARGIN` (0.05) leave the committed anchor exactly
+candidates both clearing `SWEEP_LOCATE_CONFIDENCE_FLOOR` whose witness presence
+is within `ANCHOR_DISCRIMINATION_RATIO` (50x) leave the committed anchor exactly
 where it was — a near-tie is not a reason to pick the other one — and set
 `ProgramAnalysis.anchor_ambiguous`, which CHECK's ladder reads at a rung
 ABOVE the channel map and refuses as the retriable `anchor_ambiguous`.
 
-**The margin does not separate two populations, and an earlier version of this
-section said it did.** #2644's adversarial panel falsified that: an
-un-attributed capture's separation is a continuous function of ROOM LEVEL,
-because the witness confidences are still scored FULL-BAND (only the anchor
-locate was band-limited) so both hypotheses fall as the room gets louder, by
-different amounts. The panel's sweep ramped it to **0.6463** on captures that
-had all slid by exactly one pilot spacing, five of them inside the range once
-called empty. Captures escape the margin, and a larger number would not close
-the door.
+**#2644 fixed the locate; 2026-08-21 found that the arbitration ABOVE it was
+scoring the wrong quantity.** A jts3 per-driver MEASURE round failed 3/3 with
+`drift_baselines_disagree` (guard `sweep_schedule`), logging
+`anchor=pilot_woofer_hi confidence=0.7386 runner_up=0.7310 corrected=true
+ambiguous=true shift_ms=-1309.9` — a whole pilot spacing moved on a 0.0076
+lead. `_locate_in_window` was returning only `AlignmentResult.confidence`, the
+peakedness margin `(peak - secondary) / peak`. Over the ~61 ms of lags a
+per-segment search window spans, room noise correlated against a 4 s sweep is
+as sharply peaked as the sweep itself, so that margin **cannot tell an empty
+window from an occupied one**: the winning hypothesis's `sweep_w` window held
+nothing but guard silence and still scored 0.7386. Every sweep then located
+29.92 ms off its schedule against a 5.0 ms ceiling, and the household was
+refused three times about a recording whose own woofer sweep measures 46.1 dB
+SNR.
 
-What makes 0.05 safe is not exhaustiveness but **defence in depth**: the room
-level that widens the gap independently fails the rungs below. The panel built
-~160 flip-controlled captures and found ZERO rows where removing only the
-mis-lock removed the wiring hard stop; the repo fixture's own room ramp agrees
-— it is already past the gain solve's `snr_floor_ok` one step BEFORE its first
-mis-lock, and stays past it. So the margin removes the specific harm #2644
-filed (a household told to rewire on a coin flip) rather than catching every
-mis-locked capture; the ones it misses are refused on other evidence.
-`test_a_mislocking_room_has_already_failed_a_rung_below` is where that claim
-lives. What the constant IS measured against, on quiet-room fixtures only, is a
-floor sanity check: it sits between an attributed capture's separation (0.818
-field / 0.8488 fixture) and the reconstructed incident's (0.0034 / 0.0005).
+The seam now returns **both** of the aligner's scores. Candidates are ranked on
+`presence` — `AlignmentResult.peak`, the normalized correlation similarity,
+which does answer "is the witness here": the same two windows read **0.5394**
+and **0.0025**. `confidence` still grades `corroborated` (is this a locate at
+all, on the quantity that floor was calibrated for), and on the garbage-capture
+fixture it is the *only* thing that stops a move — the two are not redundant.
+
+**The discrimination guard is a RATIO because the ABSOLUTE scale is unusable —
+not because the ratio is invariant.** Presence is normalized by its own
+window's energy, so a correctly-anchored capture reads 0.3572 in a quiet room
+and 0.0018 in a loud one across the fixture's 0.003–0.65 room ramp: no absolute
+number sits above the quiet end and below the loud one. Comparing the two
+readings cancels most of that level term but not all of it — they are different
+slices seconds apart, whose norms measure 13.3% apart on both 2026-08-21
+captures. What justifies 50 is the measured population gap, which stands on its
+own: cannot-discriminate 1.07 / 3.50–3.51 / 12.4 against resolved 197–11500
+(ramp), 214.17 and 404.40 (the two real jts3 captures), 61857 (VERIFY) — 50 is
+the round number nearest its geometric centre, √(12.4×197) ≈ 49.4. Only the
+TWIN side is flat across room level; the resolved side spans 58× over the same
+ramp and a low-SNR capture can walk it below 50, which is a known limit rather
+than a refutation (see the defence in depth below). The full derivation lives
+at `ANCHOR_DISCRIMINATION_RATIO` in `program_analysis.py`, and
+`test_the_ratio_brackets_the_two_measured_populations`,
+`test_the_separation_is_flat_across_room_level`, and
+`test_the_guard_compares_a_ratio_and_not_a_difference` are where the claims are
+pinned. It remains a floor sanity check on the constant, not a claim that the
+populations are clean everywhere.
+
+Defence in depth still holds underneath it and is still worth knowing: the room
+level that degrades the anchor independently fails the rungs below. #2644's
+panel built ~160 flip-controlled captures and found ZERO rows where removing
+only the mis-lock removed the wiring hard stop; the repo fixture's own room ramp
+is already past the gain solve's `snr_floor_ok` one step BEFORE its first
+mis-lock. `test_a_mislocking_room_has_already_failed_a_rung_below` is where that
+claim lives.
 
 Read `ambiguous=` on `event=program_analysis.anchor` when triaging one — the
 line also names the losing interpretation (`runner_up_anchor=`,
 `runner_up_shift_ms=`, on the same baseline as `shift_ms`) so the alternative
-timeline does not have to be re-derived from the banked WAVs. A field
-population of near-ties is how the constant gets re-derived.
+timeline does not have to be re-derived from the banked WAVs. `presence=` and
+`runner_up_presence=` are the terms the choice was made on; `confidence=` and
+`runner_up=` keep their old meaning, so on a POST-fix line `runner_up=`
+exceeding `confidence=` is the 2026-08-21 shape itself — the margin preferred a
+window the presence refused. It cannot appear on a line banked BEFORE the fix:
+the old ranker sorted on `confidence`, so `runner_up <= confidence` was an
+invariant there, and the incident's own line above shows 0.7386 against 0.7310.
+The pre-fix signature to grep for instead is `corrected=true` with a
+`shift_ms=` equal to one pilot spacing. A field population of near-ties is how
+the constant gets re-derived.
 
 **Design note, not yet a change:** the same quietest-first pilot design sits
 close to its own detection floor at real household volumes — 2026-08-03's
@@ -6120,6 +6158,21 @@ quiet-but-correct capture), and the claim that a swap collapses isolation to ~0
 was measured false and replaced — the TARGET floor is the mis-wire catcher; the
 CROSS half guards abnormal cross-band energy. **The date below is deliberately
 NOT bumped**: nothing outside those sections was re-verified.
+
+Addendum 2026-08-21 (the timeline anchor's witness score): a jts3 per-driver
+MEASURE round failed 3/3 on the G2 schedule gate after re-anchoring a full
+pilot spacing, because `_locate_in_window` returned only the aligner's
+PEAKEDNESS margin and that margin cannot tell an empty search window from an
+occupied one. Candidates are now ranked on the aligner's other score, the
+correlation SIMILARITY, and `ANCHOR_DISCRIMINATION_MARGIN` (a 0.05 difference)
+becomes `ANCHOR_DISCRIMINATION_RATIO` (50x); its derivation, including what the
+ratio does and does not buy, lives at that constant in `program_analysis.py`
+and is summarised under "Timeline anchor". Three sections were re-verified
+against the code in the same diff and edited: that discussion (its
+margin-does-not-separate-populations paragraph described the retired quantity),
+the `event=program_analysis.anchor` field list, and both the `anchor_ambiguous`
+and `channel_map_mismatch` rows of the refusal table. **The date below
+is deliberately NOT bumped**: nothing outside those sections was re-verified.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock
