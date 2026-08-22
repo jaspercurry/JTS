@@ -1767,8 +1767,10 @@ through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 under-voltage grep counts), the round's own prediction fields lifted out
 of the flow state before the next round overwrites them
 (`verify_priors.predicted_sum` / `verify_priors.predicted_spec` / etc.;
-a round banked before ticket 2.4 also carries an `fc_selection` no current
-build writes or reads), and the dump-ring captures
+a round banked before ticket 2.4 also carries an `fc_selection` that no current
+build **on the speaker** writes or reads — this laptop-side script still
+snapshots it, deliberately, and so does the incident-fixture tool), and the
+dump-ring captures
 (`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
 and `dumps/sidecar/`). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end

@@ -3093,13 +3093,19 @@ def test_a_passing_crossover_region_is_disclosed_not_silent():
 def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
     """The miss stays visible, and the sentence claims no comparison (2.4).
 
-    This copy used to open "the best measured option from the complete
-    comparison" — a claim about a field of alternatives that the corner selector
-    once produced and no round produces now. The grade behind it is the applied
-    candidate against its OWN forecast and the sound it replaced, so that is
-    what the sentence says. The ``RESULT_VERIFIED_BEST_EVALUATED`` constant is
-    unchanged (it is banked in log events and receipts); only the household
-    sentence moved.
+    Two wrong referents have been through this copy. It used to open "the best
+    measured option from the complete comparison" — a field of alternatives the
+    corner selector once produced and no round produces now. Replacing that with
+    "improved on the sound it replaced" was wrong the other way: the margin is
+    THIS candidate's linearized forecast against THIS SAME candidate's
+    un-linearized one (``accountability`` binds ``before = grade_prediction(
+    raw_predicted_sum)``), never the previously-applied graph — that is
+    ``commanded.py``'s separate instrument.
+
+    So the sentence claims the prediction match and the miss, and nothing else.
+    The assertions below pin BOTH failed referents as negatives, because each
+    one read plausibly enough to ship once. ``RESULT_VERIFIED_BEST_EVALUATED``
+    is unchanged — it is banked in log events and receipts.
     """
     env = build_crossover_envelope_v2(_status(
         phase="done", applied=True,
@@ -3111,11 +3117,11 @@ def test_best_evaluated_keeps_the_target_miss_visible_without_overclaiming():
     ))
     text = env["verdict_text"].lower()
     assert "matched its prediction" in text
-    assert "improved on the sound it replaced" in text
     assert "misses the target by 4.31 db near 1.59 khz" in text
-    # No claim that options were compared — the defect this rewording closes.
+    # Both failed referents, pinned as negatives.
     assert "comparison" not in text
     assert "best measured option" not in text
+    assert "improved on the sound it replaced" not in text
     assert "within spec" not in text
     assert "best achievable" not in text
     assert "perfect" not in text

@@ -4057,19 +4057,29 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     f" by {miss:.2f} dB" + (f" near {hz / 1000:.2f} kHz" if hz else "")
                     if miss is not None else ""
                 )
-                # **Says what was measured, not that options were compared.**
-                # The grade behind this sentence is the applied candidate
-                # against its OWN forecast and the sound it replaced — never a
-                # field of alternatives. No round evaluates one: the corner
-                # selector that did is retired (ticket 2.4), and the earlier
-                # "best measured option from the complete comparison" wording
-                # named a comparison that had already stopped happening. The
-                # ``RESULT_VERIFIED_BEST_EVALUATED`` constant keeps its name —
-                # it is banked in log events and receipts — so only the
-                # household-facing sentence changes.
+                # **Says what was measured, and names no comparison it did not
+                # make.** Two wrong referents have now been through this
+                # sentence, so the honest one is worth stating exactly: the
+                # margin behind this grade is THIS candidate's linearized
+                # forecast against THIS SAME candidate's un-linearized forecast
+                # (``accountability`` binds ``before = grade_prediction(
+                # raw_predicted_sum)``, and ``crossover_v2_flow`` hands it
+                # ``analysis.predicted_sum`` — one analysis, two versions of it).
+                # It is NOT a field of alternatives (the corner selector that
+                # ranked one is retired, ticket 2.4) and it is NOT the
+                # previously-applied graph — that is ``commanded.py``'s separate
+                # instrument, which refuses outright on a corner mismatch.
+                #
+                # So the sentence claims only the prediction match and the miss.
+                # An improvement clause would have to name a linearized-versus-
+                # un-linearized forecast delta, which is not a thing a household
+                # can act on; that it cannot be said meaningfully here is the
+                # reason it is not said at all. ``RESULT_VERIFIED_BEST_EVALUATED``
+                # keeps its name — it is banked in log events and receipts — so
+                # only the household-facing sentence changes.
                 done_verdict = (
-                    "This matched its prediction and improved on the sound it "
-                    f"replaced, but it still misses the target{miss_text}. "
+                    f"This matched its prediction, but it still misses the "
+                    f"target{miss_text}. "
                     "If it sounds worse than before, you can undo."
                 )
         # Every branch above may have promised Undo; the button is gated ~40

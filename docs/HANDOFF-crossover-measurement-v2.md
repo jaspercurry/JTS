@@ -4123,7 +4123,7 @@ while a selector existed grades on its own VERIFY evidence like any other.
 | published candidate (fingerprint) + VERIFY pass | pass | pass | `verified_target` |
 | published candidate + VERIFY pass + material improvement, with both miss numbers stated | pass | fail | `verified_best_evaluated` |
 | tracking failure, a VERIFY regression outside the crossover region, or the forecast's `LEDGER_NOT_AN_IMPROVEMENT` / a sub-bar margin | fail/any | any | `keep_previous` |
-| unevaluable — VERIFY inconclusive, no fingerprint, or a tracking/absolute claim that is neither pass nor fail | any | any | `inconclusive` |
+| unevaluable — VERIFY inconclusive, a VERIFY fail coded `REASON_VERIFY_CROSSOVER_REGION`, an outcome string this build does not recognise, no fingerprint, a tracking/absolute claim that is neither pass nor fail, or **any other evidence combination without the definitive keep/pass evidence above** | any | any | `inconclusive` |
 
 An **un-applied** round reaches none of the four: it publishes no outcome at
 all. Both instruments that could once say a round DELIBERATELY kept the previous
