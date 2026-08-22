@@ -479,7 +479,7 @@ multiply is reproducible in place. Three things to hold about it:
   assumed, not measured, and moves 0.606 m/s per Kelvin — 0.18 % — so a room
   10 K off the assumed 20 °C shifts every distance by 1.8 %. That is the small
   one. The larger is tau's own: on the S0 corpus the fitted ladder tau sat
-  7.058–7.424 % *below* the directly measured arrival tau, and this round's own
+  6.671–7.540 % *below* the directly measured arrival tau, and this round's own
   figure is `null_registry.ladder_arrival_gap`. Nothing banks a σ on tau, so the
   block points at that gap and at each rung's `rung_error_spacings` rather than
   reducing them to a number it cannot justify.

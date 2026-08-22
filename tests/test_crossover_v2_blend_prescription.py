@@ -349,17 +349,21 @@ def test_the_packet_names_every_question_this_round_cannot_answer(packet):
 # --------------------------------------------------------------------------- #
 
 #: A registry with a ladder actually fitted, in the shipped serializer's shape.
-#: The taus are the S0 corpus's own (``interference_nulls``'s
-#: ``LADDER_ARRIVAL_TOLERANCE`` comment: fitted 297.96-298.90 us against
-#: arrival medians of 321.85-321.93 us), so the two differ by the measured
-#: ~7 % and a conversion that read the wrong one is visible in the answer.
+#:
+#: One REAL grouping rather than three round numbers: the S0 main leg's own
+#: re-derived triple (2026-08-22, over ``captures/flat-linearization-20260725``
+#: — the same reading ``tests/test_interference_nulls.py``'s four-way
+#: calibration table hard-asserts as ``main``). Real because the point of the
+#: fixture is that the two taus DIFFER by the measured ~7 %, so a conversion
+#: that read the wrong one is visible in the answer; a made-up pair could be
+#: made to differ by anything and would prove nothing about the corpus.
 _FITTED_LADDER = {
     "classification": "position_invariant",
     "reason": "",
-    "tau_ladder_us": 298.75,
-    "arrival_tau_us": 321.93,
-    "ladder_arrival_gap": -0.0721,
-    "nulls": [{"f_center_hz": 8646.0, "n": 2, "tau_us": 298.75}],
+    "tau_ladder_us": 298.747,
+    "arrival_tau_us": 321.478,
+    "ladder_arrival_gap": -0.07071,
+    "nulls": [{"f_center_hz": 8646.0, "n": 2, "tau_us": 298.747}],
 }
 
 
@@ -389,7 +393,7 @@ def test_the_reflector_path_is_the_ladders_own_delay_times_the_speed_of_sound(
     block = _reflections(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
 
     assert block["available"] is True
-    assert block["tau_ladder_us"] == 298.75
+    assert block["tau_ladder_us"] == 298.747
     assert block["speed_of_sound_m_s"] == DEFAULT_SOUND_SPEED_M_S
     assert block["reflector_path_distance_m"] == round(
         block["tau_ladder_us"] * 1e-6 * block["speed_of_sound_m_s"], 3

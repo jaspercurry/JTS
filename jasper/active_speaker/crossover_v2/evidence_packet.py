@@ -1539,9 +1539,10 @@ _REFLECTOR_PATH_SOURCE = "cloud_verify.json -> null_registry.tau_ladder_us"
 #: Three, for the reason :data:`_SIGMA_DECIMALS` is four. A millimetre of excess
 #: path is 2.9 us of delay, already finer than anything this number
 #: supports: the fitted ladder tau and the directly measured arrival tau
-#: disagree by 7 % on the S0 corpus (about 21 us, or 7 mm, at the ~300 us those
-#: taus were), and the assumed speed of sound moves the answer 1.8 % over a 10 K
-#: room. Digits past the millimetre are arithmetic noise, and this document is
+#: disagree by up to 7.5 % on the S0 corpus (about 22 us, or 8 mm, at the
+#: ~300 us those taus were), and the assumed speed of sound moves the answer
+#: 1.8 % over a 10 K room. Digits past the millimetre are arithmetic noise, and
+#: this document is
 #: content-fingerprinted, so noise digits are a fingerprint that moves for a
 #: reason no reader could point at.
 _REFLECTOR_PATH_DECIMALS = 3
@@ -1568,7 +1569,7 @@ _REFLECTIONS_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "distance here by 1.8 %. That is small next to the error already "
         "banked beside it: the comment on interference_nulls."
         "LADDER_ARRIVAL_TOLERANCE records the fitted ladder tau sitting "
-        "-7.058 % to -7.424 % below the "
+        "6.671 % to 7.540 % BELOW the "
         "directly measured arrival tau across the four S0 groupings, and "
         "null_registry.ladder_arrival_gap carries this round's own figure. "
         "There is no uncertainty ON the distance to publish: nothing banks a "
