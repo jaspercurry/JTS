@@ -2955,18 +2955,27 @@ def _take_staged_angle_walk(
     """This session's staged angle walk as ``(poses, consumer)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
-    ``None`` is every ordinary session, and every refused one.
+    ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
 
-    Guarantees: it NEVER raises, so a staged document can never cost a
-    household its session — the three refusal classes are the spool's
-    ``AngleRequestRefused``, the seam's ``LateralWalkRefused``, and the bare
-    ``CrossoverV2FlowError`` the spool re-raises for a banked stop that no
-    longer satisfies the seam's contract (a hand-edited angle), which that
-    module deliberately does not re-wrap. Every one is journalled with its
-    producing module's own slug. The consumer is always
-    ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here rather than read from the
-    document, because it decides which pose table the walk runs and may have
-    exactly one writer.
+    **A staged walk this session cannot honour REFUSES THE OPEN**
+    (:class:`CrossoverV2Refused`), with the producing module's own slug in the
+    sentence. The three refusal classes are the spool's ``AngleRequestRefused``,
+    the seam's ``LateralWalkRefused``, and the bare ``CrossoverV2FlowError`` the
+    spool re-raises for a banked stop that no longer satisfies the seam's
+    contract (a hand-edited angle), which that module deliberately does not
+    re-wrap.
+
+    It used to journal every one of them and return ``None``, and the session
+    then opened in its ordinary 3-capture shape: an operator who staged a walk
+    got a measurement that silently answered a different question, with the only
+    evidence a WARNING line on a box they were not reading. A refusal costs
+    nothing here — this runs before any state is opened — so the loud direction
+    is also the cheap one. The document is single-use either way, so the
+    operator restages after fixing what was named.
+
+    The consumer is always ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here
+    rather than read from the document, because it decides which pose table the
+    walk runs and may have exactly one writer.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -3001,14 +3010,20 @@ def _take_staged_angle_walk(
         position_angle_deg,
     )
 
-    def refused(reason: str, detail: str) -> None:
+    def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
             logger, "correction.crossover_v2_angle_walk_refused",
             level=logging.WARNING, reason=reason, detail=detail,
             # READ BACK, never asserted: the spool's two unreadable arms
             # deliberately do not consume.
             consumed=not staged_angle_request_pending(),
-            session_continues=True,
+            session_continues=False,
+        )
+        # RETURNED, not raised, so every arm below reads ``raise refused(...)``
+        # — the journal line and the refusal are one statement, and no arm can
+        # log without refusing or refuse without logging.
+        return CrossoverV2Refused(
+            f"the staged angle walk was refused ({reason}): {detail}"
         )
 
     try:
@@ -3028,15 +3043,13 @@ def _take_staged_angle_walk(
             plans_cloud_group=plans_cloud_group,
         )
     except (AngleRequestRefused, LateralWalkRefused) as exc:
-        refused(exc.reason, exc.detail)
-        return None
+        raise refused(exc.reason, exc.detail) from exc
     except CrossoverV2FlowError as exc:
         # The third class: a banked stop the seam can no longer build. The spool
         # re-raises it un-wrapped because ``_validated_angle``'s own sentence
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
-        refused(WALK_STOP_NO_LONGER_VALID, str(exc))
-        return None
+        raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
@@ -6679,6 +6692,13 @@ class V2PreparedSession:
     #: The W3 wizard surface is what will POST this; it exists now because
     #: the held-set walk semantics need a signal source to be complete.
     request_complete: Callable[[], None] | None = None
+    #: The wired session's per-take RETAKE signal — the local stand-in for the
+    #: phone's ``begin_capture {retake: true}``. ``None`` on a relay session,
+    #: whose retake rides the relay protocol's own begin. Routed from
+    #: ``POST /crossover/v2/retake`` through the same slot as
+    #: :attr:`request_complete`, and honoured in the SAME window the relay
+    #: offers its retake in: while the pre-apply group is held open.
+    request_retake: Callable[[], None] | None = None
 
 
 def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
@@ -7087,6 +7107,32 @@ def _resolve_prepare_capture_source() -> tuple[str, Any]:
     return source, device
 
 
+def _hand_released_plan_shape(plan_shape: Any, capture_source: str) -> Any:
+    """The same shape, told whether a PERSON releases each of its begins.
+
+    The one place that pairs the two facts neither half owns alone: the plan
+    shape knows whether a MACHINE advances the walk (its tier), and only the
+    host knows which capture SOURCE is answering. A hand-walked round on the
+    WIRED source is the pair that needs saying — it has no capture page, so
+    nothing there taps, and without a hold the local runner fires every capture
+    back to back while the household is still walking to the next spot. Its
+    begins are therefore held and released by hand
+    (``V2PlanShape.hand_released_positions``), the same
+    ``POST /crossover/v2/position-ready`` an external driver uses.
+
+    Every other pairing is returned untouched, so nothing about a relay session
+    or the arm's remote tier moves: a relay round is paced by the page's own
+    tap, the arm already holds behind its driver's report, and the tier-less
+    recovery re-arm (``plan_shape is None``) is one sweep at the mark with no
+    walk to pace at all.
+    """
+    if plan_shape is None or capture_source != SOURCE_WIRED:
+        return plan_shape
+    if plan_shape.externally_positioned:
+        return plan_shape
+    return dataclasses.replace(plan_shape, hand_released_positions=True)
+
+
 def _mint_source_session(
     source: str,
     wired_device: Any,
@@ -7141,13 +7187,16 @@ def _build_source_run(
     wired_device: Any,
     ceiling_s: float,
     complete_event: threading.Event,
+    retake_event: threading.Event,
 ) -> Callable[[Any, Any], Any]:
     """One provider runner per source, driving the same conductor hooks.
 
     The relay runner takes the phone-phase signal (its progress ladder); the
     wired runner takes the device, the session ceiling (its confirm-wait
-    bound) and the local completion signal. Neither takes the other's
-    extras — the seam's rule that a source's choreography stays private.
+    bound) and the local completion and retake signals. Neither takes the
+    other's extras — the seam's rule that a source's choreography stays
+    private, and the relay's retake needs no signal here because it arrives on
+    the phone's own begin.
     """
     if source == SOURCE_WIRED:
         from jasper.web import correction_crossover_v2_wired as wired
@@ -7160,6 +7209,7 @@ def _build_source_run(
             device=wired_device,
             ceiling_s=ceiling_s,
             complete_event=complete_event,
+            retake_event=retake_event,
             position_gate=position_gate,
             evidence_refs=evidence_refs,
         )
@@ -7371,6 +7421,17 @@ def prepare_v2_session(
         raise CrossoverV2Refused(
             f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
         ) from exc
+    # #2662 W2b: which capture source answers this session's asks. After the
+    # speaker-level gates (they are prior questions), before any state is
+    # opened (an explicit-override refusal must cost nothing) — and BEFORE the
+    # plan below, because the source is half of "does this round hold before
+    # every capture" and a plan built from the other half alone would emit
+    # entries the gate cannot read.
+    capture_source, wired_device = _resolve_prepare_capture_source()
+    # ...which is the whole of what the source changes about the shape. Rebound
+    # ONCE, here, so every surface downstream — the index map, the spec, the
+    # gate — reads one shape rather than a half-updated one.
+    plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
     include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
     # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
     # the cloud flag, rather than passed as a literal below, because an
@@ -7413,25 +7474,30 @@ def prepare_v2_session(
             include_entry_baseline=include_entry_baseline,
             lateral_prompts=lateral_prompts,
         )
-    # #2662 W2b: which capture source answers this session's asks. After the
-    # speaker-level gates (they are prior questions), before any state is
-    # opened (an explicit-override refusal must cost nothing).
-    capture_source, wired_device = _resolve_prepare_capture_source()
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
     complete_event = threading.Event()
-    # The remote tier's position gate — built only for an externally
-    # positioned shape, so a hand-walked session carries no gate at all and
-    # every begin reaches the conductor exactly as it always has.
-    position_gate = PositionGate() if plan_shape.externally_positioned else None
+    retake_event = threading.Event()
+    # The position gate — built for any GATED shape, so a tap-paced session
+    # (every relay round) still carries no gate at all and every begin reaches
+    # the conductor exactly as it always has. Two shapes are gated: the arm's
+    # remote tier, whose driver releases each hold, and a hand-walked round on
+    # the wired source, where a person does.
+    position_gate = PositionGate() if plan_shape.positions_gated else None
     if position_gate is not None:
         log_event(
             logger,
             "correction.crossover_v2_remote_session_open",
             stage=1,
             tier=plan_shape.tier,
+            # WHICH mover releases this session's holds. The event name is the
+            # arm's and stays it — a driver greps it, and the doc names it —
+            # so the second gated shape says so in a field instead of a second
+            # event nothing is watching for. The shape's own field name, not a
+            # second word for it.
+            hand_released=plan_shape.hand_released_positions,
             # The captures this session will ACTUALLY take, off that plan. It
             # logged ``plan_shape.measure_capture_target`` — the cloud-INCLUSIVE
             # shape target, 10 where the shipped stage 1 walks 3. The reader is
@@ -7653,6 +7719,7 @@ def prepare_v2_session(
             wired_device=wired_device,
             ceiling_s=ceiling_s,
             complete_event=complete_event,
+            retake_event=retake_event,
         )
         return rc
 
@@ -7672,6 +7739,9 @@ def prepare_v2_session(
         capture_source=capture_source,
         request_complete=(
             complete_event.set if capture_source == SOURCE_WIRED else None
+        ),
+        request_retake=(
+            retake_event.set if capture_source == SOURCE_WIRED else None
         ),
     )
 
@@ -7794,6 +7864,10 @@ def prepare_v2_verify(
     # under an explicit wired override) costs no side effects (gate S3, both
     # preparers).
     capture_source, wired_device = _resolve_prepare_capture_source()
+    # Stage 1's rebinding, in the same position and for the same reason: this
+    # stage's plan is built from ``plan_shape`` inside ``_open`` below, so the
+    # shape has to know who releases its holds before anything reads it.
+    plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
     evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
     priors_raw = state.get("verify_priors") or {}
     sum_raw = priors_raw.get("predicted_sum") if isinstance(priors_raw, Mapping) else None
@@ -7885,12 +7959,14 @@ def prepare_v2_verify(
     stop_event = threading.Event()
     stop_lock = threading.Lock()
     complete_event = threading.Event()
+    retake_event = threading.Event()
     # Same rule as stage 1's, with one extra case: ``_verify_plan_shape``
     # returns ``None`` for the recovery re-arm, which has no tier and therefore
-    # no gate — it is the one-sweep session a household starts by hand.
+    # no gate — it is the one-sweep session a household starts by hand, at the
+    # mark, with nowhere to walk to.
     position_gate = (
         PositionGate()
-        if plan_shape is not None and plan_shape.externally_positioned
+        if plan_shape is not None and plan_shape.positions_gated
         else None
     )
     if position_gate is not None and plan_shape is not None:
@@ -7899,6 +7975,7 @@ def prepare_v2_verify(
             "correction.crossover_v2_remote_session_open",
             stage=2,
             tier=plan_shape.tier,
+            hand_released=plan_shape.hand_released_positions,
             captures=plan_shape.verify_capture_target,
         )
     holder: dict[str, Any] = {}
@@ -8052,6 +8129,7 @@ def prepare_v2_verify(
             wired_device=wired_device,
             ceiling_s=ceiling_s,
             complete_event=complete_event,
+            retake_event=retake_event,
         )
         return rc
 
@@ -8071,6 +8149,9 @@ def prepare_v2_verify(
         capture_source=capture_source,
         request_complete=(
             complete_event.set if capture_source == SOURCE_WIRED else None
+        ),
+        request_retake=(
+            retake_event.set if capture_source == SOURCE_WIRED else None
         ),
     )
 

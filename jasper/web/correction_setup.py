@@ -166,6 +166,12 @@ _relay_position_gate: Any | None = None
 # set by the wired session's driver/wizard POST. Same claimed-with-the-slot,
 # dropped-when-not-in-flight lifecycle as the two above.
 _relay_complete_request: Callable[[], None] | None = None
+# The active WIRED session's per-take RETAKE signal, or None — the local
+# stand-in for the phone's ``begin_capture {retake: true}``. Same
+# claimed-with-the-slot, dropped-when-not-in-flight lifecycle as the three
+# above, which is what stops a POST arriving after the walk from re-opening a
+# slot nothing is holding.
+_relay_retake_request: Callable[[], None] | None = None
 _RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
 _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
     "finishing",
@@ -459,6 +465,10 @@ _POST_ROUTES = frozenset({
     # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
     # local stand-in for the phone's authenticated completion event.
     "/crossover/v2/complete",
+    # The WIRED session's per-take retake — the local stand-in for the phone's
+    # ``begin_capture {retake: true}``, re-opening the slot that just
+    # completed while the walk is still waiting on a person.
+    "/crossover/v2/retake",
     "/balance/start",
     "/balance/ramp",
     "/balance/meter",
@@ -478,13 +488,14 @@ _POST_ROUTES = frozenset({
 
 def _set_relay_capture(value: dict[str, Any] | None) -> None:
     global _relay_capture, _relay_stop_request, _relay_position_gate
-    global _relay_complete_request
+    global _relay_complete_request, _relay_retake_request
     with _session_lock:
         _relay_capture = value
         if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
             _relay_stop_request = None
             _relay_position_gate = None
             _relay_complete_request = None
+            _relay_retake_request = None
 
 
 def _get_relay_capture() -> dict[str, Any] | None:
@@ -573,6 +584,7 @@ def _begin_relay_capture(
     request_stop: Callable[[], None] | None = None,
     position_gate: Any | None = None,
     request_complete: Callable[[], None] | None = None,
+    request_retake: Callable[[], None] | None = None,
 ) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
@@ -580,7 +592,7 @@ def _begin_relay_capture(
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
     global _relay_capture, _relay_stop_request, _relay_position_gate
-    global _relay_complete_request
+    global _relay_complete_request, _relay_retake_request
     with _session_lock:
         if (
             _relay_capture
@@ -591,6 +603,7 @@ def _begin_relay_capture(
         _relay_stop_request = request_stop
         _relay_position_gate = position_gate
         _relay_complete_request = request_complete
+        _relay_retake_request = request_retake
         return True
 
 
@@ -730,6 +743,9 @@ class RelayCaptureKind:
     #: to POST /crossover/v2/complete via the slot, with the same lifecycle
     #: as ``request_stop``.
     request_complete: Callable[[], None] | None = None
+    #: The wired session's per-take retake signal, or None. Routed to
+    #: POST /crossover/v2/retake via the slot, same lifecycle again.
+    request_retake: Callable[[], None] | None = None
 
 
 def _require_relay_client(client: "RelayClient | None") -> "RelayClient":
@@ -933,6 +949,7 @@ def _run_relay_capture(
         request_stop=kind.request_stop,
         position_gate=kind.position_gate,
         request_complete=kind.request_complete,
+        request_retake=kind.request_retake,
     ):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()
@@ -6086,6 +6103,47 @@ def _handle_crossover_v2_complete(
     return {"ok": True}
 
 
+def _handle_crossover_v2_retake(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /crossover/v2/retake — the wired session's per-take retake.
+
+    The local stand-in for the phone's ``begin_capture {retake: true}``: the
+    household (or the W3 wizard surface) says the take that just completed
+    should be measured again. The walk re-opens THAT slot the next time it is
+    waiting on a person — a held begin, or the held-set window — on the
+    relay's own §2.6 terms.
+
+    **No ``index``, and that is the contract rather than a shortcut.** The
+    relay's own rule is that a retake names the slot which JUST COMPLETED
+    (``retakes_the_just_accepted_slot``: ``index == accepted_count``), and the
+    walk is the only thing that knows that number — it is a worker-thread
+    local, not a published one. Accepting an index here would mint a second
+    answer to "which slot", and the only thing a caller could do with it is
+    disagree. The signal says WHAT the household wants; WHICH slot stays the
+    walk's own fact.
+
+    Only a live WIRED session holds the signal — a relay session's retake
+    rides its own begin, and a finished session drops the signal with the
+    slot — so "nothing waiting" is a conflict (stale caller), the
+    position-ready shape. Whether the retake is then ADMISSIBLE (a take exists
+    to replace, the plan's attempts are not spent, the slot's extras ledger
+    still has room) is the walk's decision, journalled as
+    ``event=correction.crossover_v2_wired_retake_refused``: a refused retake
+    leaves the household with the take they already had, which is why it is
+    never a session death.
+    """
+    _read_json_body(handler)  # no fields consumed; drains the request body
+    with _session_lock:
+        request_retake = _relay_retake_request
+    if request_retake is None:
+        raise ValueError(
+            "no wired measurement is waiting to re-take a spot right now"
+        )
+    request_retake()
+    return {"ok": True}
+
+
 def _handle_crossover_v2_relay(
     handler: BaseHTTPRequestHandler,
     *,
@@ -6144,6 +6202,7 @@ def _handle_crossover_v2_relay(
         position_gate=prepared.position_gate,
         local=wired,
         request_complete=prepared.request_complete,
+        request_retake=prepared.request_retake,
     )
     return {
         "relay": _run_relay_capture(
@@ -7211,6 +7270,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # CONFLICT — a stale caller, not a malformed request.
                 try:
                     self._send_json(_handle_crossover_v2_complete(self))
+                except BadRequest as e:
+                    self._send_client_error(str(e))
+                except ValueError as e:
+                    self._send_json(
+                        {"ok": False, "error": str(e)},
+                        status=HTTPStatus.CONFLICT,
+                    )
+                except (OSError, RuntimeError, TypeError) as e:
+                    logger.exception("%s failed", path)
+                    self._send_json({"ok": False, "error": str(e)}, status=500)
+                return
+
+            if path == "/crossover/v2/retake":
+                # The completion signal's shape exactly, and for the same
+                # reasons: 400 for a malformed body, 409 for a signal no wired
+                # session is waiting for.
+                try:
+                    self._send_json(_handle_crossover_v2_retake(self))
                 except BadRequest as e:
                     self._send_client_error(str(e))
                 except ValueError as e:
