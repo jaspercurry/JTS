@@ -1783,14 +1783,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (limits[field] != null) setting[field] = limits[field];
     });
     // #1665: driver_class/radiating_diameter_mm are AI-researchable, so this
-    // unpacks them the same as every other
-    // researched field above. pad never appears in research JSON (it is
-    // operator-only), but IS present here when `driver` is a persisted
-    // manual_settings.drivers[] record reloaded after a save (ingestDesignDraft
-    // merges the whole record onto `setting` first, so setting.pad already
-    // holds the server-computed attenuation_db/effective_impedance_ohm before
-    // this runs -- see renderDriverPadSettings' read-only readout, which
-    // reads setting.pad directly rather than the pad_* input fields below).
+    // unpacks them the same as every other researched field above. pad never
+    // appears in research JSON (it is operator-only), but IS present here
+    // when `driver` is a persisted manual_settings.drivers[] record reloaded
+    // after a save (ingestDesignDraft merges the whole record onto `setting`
+    // first, so setting.pad already holds the server-computed
+    // attenuation_db/effective_impedance_ohm before this runs -- see
+    // renderDriverPadSettings' read-only readout, which reads setting.pad
+    // directly rather than the pad_* input fields below).
     if (driver.driver_class) setting.driver_class = driver.driver_class;
     if (driver.radiating_diameter_mm != null) {
       setting.radiating_diameter_mm = driver.radiating_diameter_mm;
