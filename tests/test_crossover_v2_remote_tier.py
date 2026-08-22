@@ -969,8 +969,9 @@ def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
         assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
-    # A hand-walked session registers no gate at all, and the same poll must
-    # still enforce the ceiling rather than raise on the missing gate.
+    # A tap-paced session (every relay round) registers no gate at all, and
+    # the same poll must still enforce the ceiling rather than raise on the
+    # missing gate.
     setup._enforce_session_volume_ceiling(stale)
 
 
@@ -1105,7 +1106,9 @@ def test_the_release_route_is_allowlisted_and_matches_the_minted_action():
     assert "/crossover/v2/position-ready" in correction_setup._POST_ROUTES
 
 
-def test_a_hand_walked_session_registers_no_gate_at_all():
+def test_a_tap_paced_session_registers_no_gate_at_all():
+    """A session opened with no gate advertises no hold — the relay round's
+    shape, and the one a household paces with its own taps on the page."""
     from jasper.web import correction_setup
 
     correction_setup._set_relay_capture(None)

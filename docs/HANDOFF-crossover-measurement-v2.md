@@ -245,6 +245,20 @@ parks with no affordance and re-posts the identical begin every 1.5 s, the
 attempt budget is not spent, and the session does not end. Gating is per
 `(index, attempt)`, so a retake re-gates.
 
+**Two shapes are gated, and the arm is only one of them** (#2879). What the
+gate needs is a pose stated as a BEARING — the number it publishes and waits
+for — and that is a separate fact from who advances the walk. `V2PlanShape`
+says them separately: `externally_positioned` is the ADVANCE axis (a machine
+moves, so every entry auto-begins behind the countdown) and `positions_gated`
+is the POSE-STATEMENT one (poses read as angles, entries carry
+`position_deg`/`position_role`, and every begin is held). The arm holds both.
+A **hand-walked round on the wired source** holds only the second: it is
+`hand_released_positions`, set by the host when a hand-walked shape opens on
+the wired capture source, and it keeps the tap because a person is there to
+give one. That combination — degrees plus a tap — is the string-and-protractor
+technique, and no tier can express it, which is why it is a shape fact rather
+than a fourth tier.
+
 **Session start takes THREE human gestures at the capture device, not one.**
 The tier automates the WALK, not the opening of a session. Someone has to open
 `relay.tap_link` in a browser and then:
@@ -293,11 +307,32 @@ default (`JASPER_CAPTURE_SOURCE` overrides in either direction, documented in
 `.env.example`): the Pi plays and records on one host, so there is **no phone,
 no relay dependency, and none of the three capture-device gestures** — the
 walk begins on its own. The position gate is unchanged (step 3–4 exactly as
-above: every begin still holds until `/position-ready`), and one step is new:
-when stage 1's pre-apply group is walked, the held set closes on
-`POST /correction/crossover/v2/complete` (empty body) — the wired stand-in
-for the phone's all-spots-measured confirmation; the wait is bounded by the
-session's wall-clock ceiling and expires as `session_ceiling_expired`. A
+above: every begin still holds until `/position-ready`) — and on the wired
+source a HAND-WALKED round is gated too (#2879), because there is no capture
+page to tap: without the hold the local runner would fire every capture back
+to back while the household was still walking to the next spot. Whoever is
+holding the tape is the one who POSTs `/position-ready`, and the envelope
+publishes the same `position_pending` payload the arm's driver reads.
+
+Two steps are new on this source:
+
+* when stage 1's pre-apply group is walked, the held set closes on
+  `POST /correction/crossover/v2/complete` (empty body) — the wired stand-in
+  for the phone's all-spots-measured confirmation; the wait is bounded by the
+  session's wall-clock ceiling and expires as `session_ceiling_expired`; and
+* `POST /correction/crossover/v2/retake` (empty body) re-opens the take that
+  just completed — the wired stand-in for the phone's
+  `begin_capture {retake: true}`, on the relay's own §2.6 terms. It is served
+  the next time the walk is waiting on a person (a held begin, or the held-set
+  window), spends one ordinary attempt, never advances the accepted count, and
+  leaves the original take standing if the replacement is rejected. WHICH slot
+  is the walk's own fact, so the request names no index. A retake the walk
+  cannot serve — no take yet, the plan's attempts spent, the slot's extras
+  ledger empty — is journalled as
+  `event=correction.crossover_v2_wired_retake_refused` and leaves the
+  household with the take they already had, never a session death.
+
+A
 REJECTED wired capture auto-retries the same position on the next attempt
 (bounded by the plan's own admission budget), so the rejected-capture stall
 below is a relay-session shape. Wired captures carry real frame/gap counters
@@ -467,10 +502,13 @@ says so instead of limping on to the relay link's own expiry and reporting
 `relay_timeout`, a claim about a transport that never failed. The hold cannot
 outlive its session either: the relay slot drops the gate as soon as it leaves
 an in-flight status, and the gate clears its own pending state on both exits.
-Observability: `event=correction.crossover_v2_remote_session_open`,
+Observability: `event=correction.crossover_v2_remote_session_open` — emitted
+for either gated shape, with `hand_released=` naming which mover releases the
+holds; the event keeps the arm's name because drivers grep it —
 `…_position_pending` (with `degrees`), `…_position_released`,
 `…_position_hold_expired`, `…_session_ceiling_expired`,
-`…_geometry_retake_unreachable`.
+`…_geometry_retake_unreachable`, and on the wired source
+`…_wired_retake` / `…_wired_retake_refused`.
 
 **The link is minted to outlive the stage.** A relay link is an absolute clock
 (`TIME_BUDGET_LINK` — minted once, refreshed by nothing), and the shared
