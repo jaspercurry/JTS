@@ -534,6 +534,36 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-22 (#2879, the human release source). Three files, and the third
+    # is the big one — a provider gaining a verb it did not have.
+    #  * `crossover_v2_flow` 13,008 -> 13,056. Two executable lines: one field
+    #    with a default and one property that ORs two facts. Everything else is
+    #    the paragraph each of the two now owes, because the single boolean they
+    #    replace was read by five sites that had no way to say which of its two
+    #    meanings they wanted — and the pair of docstrings is precisely where a
+    #    reader learns that `externally_positioned` is the ADVANCE axis while
+    #    `positions_gated` is the pose-statement one. Three consumers moved from
+    #    one to the other and cost no lines at all.
+    #  * `correction_crossover_v2` 9,386 -> 9,388. Net two, and not for want of
+    #    additions: `_hand_released_plan_shape`, `PositionGate.abandon_hold`, and
+    #    the retake seam all landed here, against deletions the same day. The
+    #    room that IS spent is `abandon_hold`'s own paragraph, which records the
+    #    invariant that made it necessary — `gate` publishes a new `pending` only
+    #    when no hold is open, so a caller that walks away from a held begin has
+    #    to say so or the envelope keeps naming a position nothing is measuring.
+    #  * `correction_crossover_v2_wired` 755 -> 928. The retake, which is this
+    #    provider's own choreography and belongs nowhere else: the seam's rule is
+    #    that a source's choreography stays private, and `_serve_retake` reads
+    #    `plan`, `max_attempts`, `_authorize` and `_capture_one` — four closures
+    #    over the conductor, the gate, the device and the recorder. A sibling
+    #    module would take all four as parameters for one caller, which is a
+    #    worse file, not a smaller one. What the lines buy is the relay contract
+    #    restated where it is IMPLEMENTED (index == accepted, never `+ 1`; the
+    #    count never rewinds; one ordinary attempt; a rejected replacement leaves
+    #    the original standing) plus the three refusals that keep a refused bonus
+    #    from ever being a session death. Stated once each: the duplicate copy in
+    #    `_serve_retake`'s own docstring was cut in the same diff.
+    #
     # 2026-08-22 (#2758/#2759, the headroom-ledger panel's second fix round).
     # Nine lines across two files, both paying for a defect the ratchet's own
     # sibling guards did not cover: `headroom_cost_basis` was stamped as the
@@ -865,7 +895,7 @@ MAX_LINES_BY_PATH = {
     # file its code was shrinking, and again when the fix round's own six prose
     # corrections did the same — so every one of them was rewritten in place.
     # Both are the guard refusing the trade it exists to refuse.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_008,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_056,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1255,7 +1285,7 @@ MAX_LINES_BY_PATH = {
     # result wait went with the sweep whose compute ceiling it published — see
     # `_mint_source_session`, which now states why the page's own 90 s floor
     # governs instead.
-    "jasper/web/correction_crossover_v2.py": 9_386,
+    "jasper/web/correction_crossover_v2.py": 9_388,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1311,7 +1341,7 @@ MAX_LINES_BY_PATH = {
     # #2720 gate round 1 adds +8 (S1's refusal-code precedence argument —
     # the freshest fact wins over a stale rejection stamp, and the comment
     # carries why the relay's inverted twin is flagged-not-changed).
-    "jasper/web/correction_crossover_v2_wired.py": 755,
+    "jasper/web/correction_crossover_v2_wired.py": 928,
     # Born 2026-08-18 (#2662 W2b, capped in the #2720 gate fix round) at
     # exactly this size: the wired capture ENGINE — the measurement-kernel
     # half (device probe, S32 recorder, gap accounting, zero-run scan, WAV
