@@ -959,7 +959,11 @@ def build_driver_research_request(
         # ``manual_settings.drivers[].notes`` predates the single visible Build
         # notes field and may contain either operator prose or an imported
         # research summary. Preserve it in the design/safety record, but never
-        # send invisible legacy text as authoritative prompt context.
+        # send invisible legacy text as authoritative prompt context. Its one
+        # reader is ``crossover_v2.operator_notes``, which carries it to the
+        # TUNING LLM inside the evidence packet's quarantined block and repeats
+        # this ambiguity there as that carrier's ``authored_by`` — the research
+        # prompt still never sees it.
         request_target = {
             "target_id": target_id,
             "target_fingerprint": str(target["target_fingerprint"]),

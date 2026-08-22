@@ -2990,14 +2990,33 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</section>';
     }).join('') + '</div>';
   }
+  // The guided bullets (ticket 1.6). `&#10;` is a literal newline inside the
+  // quoted attribute, which a textarea placeholder renders as a list -- so the
+  // prompt is a shape the operator can fill in rather than a sentence they
+  // have to decompose. Every line asks for a fact no measurement can recover:
+  // which waveguide the tweeter is on (a grader that does not know reads its
+  // beaming as a defect), what the box is, and why it was built that way.
+  var BUILD_NOTES_PLACEHOLDER = [
+    'For example:',
+    '- Horn or waveguide: kind, size, nominal coverage angle',
+    '- Enclosure: sealed or ported, volume, port tuning',
+    '- Amplifier, wiring, padding, mounting',
+    '- Why you built it this way'
+  ].join('&#10;');
+  // This is the ONE free-text field the page offers, and since #2871 it has
+  // two readers: the research assistant when a prompt is copied, and the
+  // tuning assistant, which reads it out of the evidence packet's quarantined
+  // operator_notes block while grading a measured round. The hint says so, and
+  // says what neither reader will do with it -- the field is exactly where
+  // someone would otherwise try to give an order.
   function renderBuildNotes() {
     return '<section class="driver-research__section driver-research__build-notes">' +
       '<div><h3 class="setting-row__title">Build notes</h3>' +
-        '<p class="setting-row__hint">Optional: add any build details or configuration the research assistant should know.</p></div>' +
+        '<p class="setting-row__hint">Optional. Describe what a measurement cannot see. Two assistants read this: the one that researches your drivers, and the one that grades your measurements. Both treat it as information about your build, never as an instruction.</p></div>' +
       '<label class="driver-research__field driver-research__field--wide">' +
         '<span>Additional build information</span>' +
-        '<textarea rows="3" maxlength="1000" data-driver-field="notes" ' +
-          'placeholder="Shared enclosure, passive radiator, amplifier, mounting, or other build details">' +
+        '<textarea rows="6" maxlength="1000" data-driver-field="notes" ' +
+          'placeholder="' + BUILD_NOTES_PLACEHOLDER + '">' +
           escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
       '</label>' +
     '</section>';
