@@ -55,8 +55,12 @@ actually found on the shipped corpus, all carried as
   ``no_per_branch_verify_capture``.  That string is copied through untouched.
   Flattening it to a ``null`` — or worse, to a zero — would turn "we did not
   look" into "we looked and found nothing".
-* **harmonic distortion** is computable but never banked, so no round in the
-  corpus carries one.
+* **harmonic distortion** used to be the third example, on the grounds that it
+  was computable and never banked.  It is banked now — :mod:`.harmonic_evidence`
+  reads H2/H3 out of a round's MEASURE captures and files them, and the
+  ``harmonics`` block carries what it filed — so the entry survives only for a
+  round nobody ran that instrument over, and says so about THAT round rather
+  than about the corpus.
 
 **Absence has two flavours and they are never merged.**  ``source_absent``
 means the artifact was not handed to this builder; ``field_null`` means it was,
@@ -109,6 +113,7 @@ from .feature_classification import (
     LAB_ROW_FIELDS,
     LAB_ROW_NOT_AN_UNCERTAINTY,
     LAB_ROW_UNCERTAINTY,
+    UNCERTAINTY_RANDOM,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
     finite_number,
@@ -117,6 +122,7 @@ from .feature_classification import (
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
+    "HARMONICS_ARTIFACT",
     "NO_ROUND_ARTIFACTS_REASON",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
@@ -211,6 +217,23 @@ _IDENTITY_FIELDS = (
 #: Its absence is an ordinary ``source_absent`` and is reported, never papered
 #: over.
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
+
+#: The round's banked harmonic-distortion reading, beside the classification.
+#:
+#: Same posture as :data:`CLASSIFICATION_ARTIFACT` in every respect, and named
+#: here for the same reason: the instrument that writes it
+#: (``jasper-read-distortion``, over :mod:`.harmonic_evidence`), this packet
+#: that reads it, and the runbook that documents it all resolve one spelling.
+#: No stage of a round writes it automatically — it is an offline run over the
+#: round's banked MEASURE captures — so it is present when somebody read the
+#: round for distortion and absent otherwise, and its absence is an ordinary
+#: reported absence rather than a gap papered over.
+#:
+#: Defined HERE rather than in :mod:`.harmonic_evidence` because that module
+#: imports this one (for :data:`RING_SIDECAR_GLOB`), and a name owned by the
+#: writer would have to travel back the other way. The packet owns the names of
+#: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
+HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
@@ -613,10 +636,14 @@ _CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
     ),
     "n_seats_excluded": (
         "member curves this block could not use — a row with no magnitude_db, "
-        "one whose length does not match the grid, or one carrying a sample "
-        "that is not a real number. Counted rather than dropped quietly, on the "
-        "rule the capture_snr block keeps for the ring leftovers it does not "
-        "publish. A count, not a spread"
+        "one whose length does not match the grid, one carrying a sample that "
+        "is not a real number, or EVERY row when the positions block carried no "
+        "curve grid at all, because with no bins to check a length against no "
+        "row can be read as a curve on this grid. That fourth cause is why the "
+        "count can equal the row total while nothing was individually rejected; "
+        "the block's reason says which case produced it. Counted rather than "
+        "dropped quietly, on the rule the capture_snr block keeps for the ring "
+        "leftovers it does not publish. A count, not a spread"
     ),
 }
 
@@ -658,9 +685,10 @@ def _cross_seat_sigma_block(
 
     **Why the packet computes it instead of copying one.** The combiner already
     forms this exact array —
-    :func:`~jasper.audio_measurement.spatial_combine._band_spread` opens with
-    ``np.std(stacked, axis=0, ddof=1)`` — and then never lets the ARRAY out: it
-    is reduced inside that function to two figures per octave band
+    :func:`~jasper.audio_measurement.spatial_combine._band_spread` computes it
+    as its ``per_bin_sigma``, ``np.std(stacked, axis=0, ddof=1)`` — and then
+    never lets the ARRAY out: it is reduced inside that function to two figures
+    per octave band
     (:class:`~jasper.audio_measurement.spatial_combine.BandSpread`), and no
     caller ever sees the per-bin values.
 
@@ -701,9 +729,12 @@ def _cross_seat_sigma_block(
 
     ``statistics.stdev`` rather than numpy for two reasons that both matter
     here: it RAISES at n < 2 instead of returning a silent ``NaN``, so the
-    ``len(curves) < 2`` guard below cannot fail open the way
+    ``len(curves) < 2`` guard below cannot fail open the way the ``# GUARD:``
+    comment above
     :func:`~jasper.active_speaker.linearization_envelope.compute_sigma_curve`'s
-    docstring warns ``np.std(..., ddof=1)`` does; and it computes in exact
+    own ``return`` warns ``np.std(..., ddof=1)`` does (that function's DOCSTRING
+    carries a different NaN sentence, about ``np.mean`` on an empty slice, which
+    a reader looking for this one will false-match); and it computes in exact
     arithmetic, so a spread too large for a float is an ``OverflowError``
     rather than an ``inf`` that would reach the fingerprint. Do not weaken
     either the guard or the ``except`` on the strength of them being unlikely.
@@ -1118,6 +1149,219 @@ def _capture_snr_block(
     }
 
 
+#: Which harmonics-row columns ARE uncertainties, and of what.
+#:
+#: ``{order}`` is substituted per published order, because the row columns are
+#: composed names (``h2_…``, ``h3_…``) and a table keyed by the composed spelling
+#: would have to be re-edited to publish a third order. The block expands this
+#: over the orders the artifact actually carries, so the declaration and the
+#: data cannot disagree about which orders exist.
+_HARMONICS_UNCERTAINTY: dict[str, dict[str, str]] = {
+    "h{order}_repeat_spread_db": {
+        "kind": UNCERTAINTY_RANDOM,
+        "of": (
+            "how far this order's reading moved across the sweep repeats of one "
+            "role INSIDE ONE CAPTURE — the sample standard deviation over those "
+            "repeats. It is random, and unusually cleanly so: a MEASURE capture "
+            "is one pose, so its repeats share the microphone position, the "
+            "session volume, the graph and the drive, and what is left to differ "
+            "is capture noise. It is the same statistic "
+            "linearization_envelope.compute_sigma_curve owns and the runbook's "
+            "sigma table calls repeatability sigma(f), read here at a distortion "
+            "ratio instead of a magnitude. Like every sample spread it CONVERGES "
+            "as repeats are added rather than shrinking; what falls with more "
+            "repeats is the standard error of the pooled median beneath it. "
+            "Absent (null) below two real repeats, where it is undefined — never "
+            "0.0, which would say the repeats agreed. It is NOT a cross-pose "
+            "spread: pooling two captures would mix this with whatever differs "
+            "between takes, which is why a round with two MEASURE captures "
+            "publishes two role blocks rather than one merged one"
+        ),
+    },
+}
+
+#: Harmonics fields shaped like an uncertainty, or shaped like a claim about
+#: precision, that are NOT uncertainties — and why not.
+#:
+#: The floor is why this list is long. It reads exactly like an error bar and it
+#: is not one, and the capture_snr block already had to say the same thing about
+#: an SNR for the same reason.
+_HARMONICS_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "h{order}_below_fundamental_db": (
+        "this order's level MINUS the fundamental's at the same EXCITATION "
+        "frequency — the conventional 'HD2 sits 46 dB down' reading, negative "
+        "for a well-behaved driver, pooled as the median over the capture's "
+        "repeats. A reading, not a spread about one. It carries a SYSTEMATIC "
+        "error that this block does not publish as a field and will not pretend "
+        "it has bounded: the microphone calibration enters each curve at its own "
+        "acoustic frequency, so the ratio inherits C(N*f) - C(f), the "
+        "calibration curve's own slope across an octave. That error is zero only "
+        "where the calibration is flat across an octave, it does not shrink with "
+        "repeats, and quantifying it needs the calibration file's slope at each "
+        "published frequency — which is the field this block would add if the "
+        "figure were ever read to a tighter tolerance than the roughly 1 dB the "
+        "rows are rounded to"
+    ),
+    "h{order}_floor_below_fundamental_db": (
+        "the measured noise floor in the SAME units as the reading above — what "
+        "a phantom window between the harmonic images reads, so a reading that "
+        "approaches it is describing the instrument rather than the driver. It "
+        "BOUNDS an error without being one, exactly as the capture_snr block's "
+        "figures do, and reading it as a spread that more captures would shrink "
+        "is the mistake the two lists exist to prevent. It is an ESTIMATE and "
+        "not a bound in one further respect the reader is owed: the phantom "
+        "window is narrower than the image window it describes, so the level is "
+        "scaled by the window-length ratio, and that scaling assumes the floor "
+        "is spectrally flat across the window — true for capture noise, "
+        "approximate for the deconvolution's regularization residue"
+    ),
+    "h{order}_floor_limited": (
+        "true where the reading sits within 6 dB of the floor above, by majority "
+        "vote across the capture's repeats. A VERDICT about whether a point "
+        "describes the driver at all, not a quantity: where it is true the "
+        "reading is real only as an upper bound. Points past the order's own "
+        "band edge are null here rather than false, because a comparison against "
+        "a null reading is not a clean point"
+    ),
+    "hz": (
+        "the excitation frequency the row was sampled at — one of a fixed ladder, "
+        "not a per-round choice. A coordinate, not a measurement"
+    ),
+    "fundamental_re_band_median_db": (
+        "the pooled fundamental minus its own band median. Published because "
+        "every ratio in the row divides by the fundamental: a notch at this "
+        "excitation frequency inflates the ratios on this row with no change in "
+        "harmonic energy at all, and a reader without this column would read "
+        "that as distortion. A reading about the response, not a spread"
+    ),
+    "thd_percent": (
+        "the root-sum-square of the published orders over the fundamental, in "
+        "percent, computed on the band where EVERY order is real so a total "
+        "cannot quietly lose a term above one order's edge. A reading. Null "
+        "where the all-orders band does not reach"
+    ),
+}
+
+
+def _harmonics_uncertainty(orders: Iterable[int]) -> dict[str, Any]:
+    """The two declaration tables, expanded over the orders actually published.
+
+    The composed row names (``h2_…``) are generated from the same order list the
+    rows were built from, so a document carrying a third order declares its
+    third order's columns and one carrying two declares two. A declaration
+    table that had to be hand-edited alongside the data is a declaration table
+    that goes stale.
+    """
+    orders = [int(order) for order in orders]
+    fields: dict[str, dict[str, str]] = {}
+    not_uncertainties: dict[str, str] = {}
+    for template, entry in sorted(_HARMONICS_UNCERTAINTY.items()):
+        for order in orders:
+            fields[template.format(order=order)] = dict(entry)
+    for template, why in sorted(_HARMONICS_NOT_AN_UNCERTAINTY.items()):
+        if "{order}" not in template:
+            not_uncertainties[template] = why
+            continue
+        for order in orders:
+            not_uncertainties[template.format(order=order)] = why
+    return {
+        "fields": dict(sorted(fields.items())),
+        "not_uncertainties": dict(sorted(not_uncertainties.items())),
+        "note": (
+            "one spread is published and it is RANDOM, which is a rarer answer "
+            "here than it looks: it is random because the repeats it is taken "
+            "over never left one pose. Everything else in a row is a reading, a "
+            "coordinate, or a verdict, and the floor — the one column that reads "
+            "like an error bar — is named on the second list for the same reason "
+            "the capture_snr block names an SNR there. The one uncertainty this "
+            "block knows about and does NOT publish is the calibration-slope "
+            "systematic on each ratio; it is declared beside the reading it "
+            "affects rather than left for a reader to discover"
+        ),
+    }
+
+
+def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
+    """The round's banked H2/H3 reading, copied through with its declarations.
+
+    Verbatim, like the classification block and for the same reason: the
+    instrument that produced it (``jasper-read-distortion``, over
+    :mod:`.harmonic_evidence`) is the owner of what the numbers mean, and a
+    packet that re-pooled or re-rounded them would be a second opinion nobody
+    asked for. What this adds is the uncertainty declarations the enrichment
+    rule requires and the artifact does not carry.
+
+    **Why the packet does not compute this itself**, when it does compute the
+    cross-seat spread: that spread is a REDUCTION over member curves the packet
+    already carries, and this is an audio job. Reading H2/H3 means re-opening
+    every banked capture WAV and re-deconvolving it at a pre-guard wide enough
+    for the harmonic images to exist — a second or more per capture — and this
+    module publishes ``privacy.raw_audio_excluded`` and is built inside the
+    prescription gates. So the audio stays in the instrument, the reading stays
+    here, and the join is a file on disk.
+
+    Absence is ordinary and reported: the instrument is an offline run nobody is
+    obliged to have made, so a round without the artifact is the common case
+    rather than a broken one.
+    """
+    if not isinstance(raw, dict):
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": reason,
+            "n_roles": 0,
+        }
+    roles = raw.get("roles")
+    roles = [role for role in roles if isinstance(role, dict)] if isinstance(roles, list) else []
+    if not roles:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                "a harmonic-distortion artifact is banked for this round but "
+                "carries no role block, so there is no reading in it to publish"
+            ),
+            "n_roles": 0,
+        }
+    orders = [
+        order for order in (raw.get("orders") or [])
+        if isinstance(order, int) and not isinstance(order, bool)
+    ]
+    captures = _mapping(raw.get("captures"))
+    return {
+        "available": True,
+        "artifact_schema_version": raw.get("artifact_schema_version"),
+        "orders": orders,
+        "n_roles": len(roles),
+        "roles": roles,
+        # What the instrument could NOT read, beside what it could. A round
+        # where three of four captures failed the fidelity gate is a different
+        # round from one where all four passed, and a reader given only the
+        # survivors could not tell them apart.
+        "captures": captures,
+        "program": _mapping(raw.get("program")),
+        # Whether a microphone calibration was applied, under which sign
+        # convention, and from which banked calibration id. Load-bearing rather
+        # than housekeeping: an uncalibrated read carries the microphone's own
+        # response inside every ratio, and a file read under the wrong sign
+        # moves every magnitude without moving one timing diagnostic.
+        "calibration": _mapping(raw.get("calibration")),
+        "source": HARMONICS_ARTIFACT,
+        "uncertainty": _harmonics_uncertainty(orders),
+        "note": (
+            "every dB here is RELATIVE — this order's level minus the "
+            "fundamental's at the same excitation frequency — because the corpus "
+            "banks no SPL anywhere and an absolute distortion figure would be "
+            "invented. Distortion is a function of drive, so each role carries "
+            "the level it was read at; a figure quoted without its drive names "
+            "nothing. Rows are per (capture, role) and are NOT merged across "
+            "captures, because captures are poses. Read a ratio peak against "
+            "fundamental_re_band_median_db before believing it: the ratio rises "
+            "wherever the fundamental dips, with no change in harmonic energy"
+        ),
+    }
+
+
 def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
     """The crossover region a proposal must sit inside.
 
@@ -1353,6 +1597,7 @@ def _not_evaluated(
     lateral_poses_available: bool,
     capture_snr_reason: str,
     cross_seat_sigma_reason: str,
+    harmonics_reason: str,
     findings: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
@@ -1369,13 +1614,6 @@ def _not_evaluated(
                 "the reflection time is narrated inside verify.gate.disclosure "
                 "prose and is not banked as a number anywhere in a round's "
                 "artifacts"
-            ),
-        },
-        {
-            "field": "harmonic_distortion",
-            "reason": (
-                "H2/H3 are computable from banked captures but no round writes "
-                "them; there is no distortion record to carry"
             ),
         },
         # The one place the PRESCRIPTION PATH states this geometry — the remote
@@ -1425,6 +1663,19 @@ def _not_evaluated(
         entries.append({
             "field": "positions.cross_seat_sigma",
             "reason": cross_seat_sigma_reason,
+        })
+    if harmonics_reason:
+        # Was the unconditional "H2/H3 are computable from banked captures but
+        # no round writes them; there is no distortion record to carry". Both
+        # halves of that sentence were about the CORPUS, and the second half is
+        # no longer true: ``jasper-read-distortion`` writes one. Printing it
+        # beside a harmonics block full of rows would be the opposite of the
+        # honesty this block exists for, so what remains — and only when this
+        # round has no artifact — is the narrow statement that THIS round
+        # carries no reading, with the reason it does not.
+        entries.append({
+            "field": "harmonics",
+            "reason": harmonics_reason,
         })
     if not classification_available:
         # Was unconditional until a round could carry banked verdicts. Stating
@@ -1534,6 +1785,7 @@ def build_crossover_evidence_packet(
     classification_raw, classification_reason = _read_json(
         round_dir / CLASSIFICATION_ARTIFACT
     )
+    harmonics_raw, harmonics_reason = _read_json(round_dir / HARMONICS_ARTIFACT)
     receipt = _mapping(receipt_raw)
     cloud = _mapping(cloud_raw)
     findings = _mapping(findings_raw)
@@ -1553,6 +1805,7 @@ def build_crossover_evidence_packet(
         draft_reason = read_reason
     drivers = _drivers_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
+    harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
     lateral_poses = _lateral_poses_block(round_dir)
 
     capture_snr = _capture_snr_block(dump_ring_dir, info_raw.get("session_id"))
@@ -1660,6 +1913,10 @@ def build_crossover_evidence_packet(
         # at, and either alone answers half the question.
         "drivers": drivers,
         "feature_classification": classification,
+        # The third offline reading of the same captures, beside the other two.
+        # Per (capture, role) rather than per driver: a MEASURE capture is one
+        # pose, and distortion read at two poses is two readings, not one.
+        "harmonics": harmonics,
         "not_evaluated": _not_evaluated(
             receipt_reason=receipt_reason,
             cloud_reason=cloud_reason,
@@ -1669,6 +1926,7 @@ def build_crossover_evidence_packet(
             lateral_poses_available=bool(lateral_poses.get("available")),
             capture_snr_reason=str(capture_snr.get("reason") or ""),
             cross_seat_sigma_reason=str(cross_seat_sigma.get("reason") or ""),
+            harmonics_reason=str(harmonics.get("reason") or ""),
             findings=findings,
         ),
         # TWO contracts, one per prescription class, each written by the gate

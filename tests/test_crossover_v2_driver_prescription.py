@@ -1473,8 +1473,11 @@ def test_a_boost_may_not_be_deeper_than_the_dip_it_is_aimed_at(tmp_path):
     # admitting one because the subtraction happened to come out favourably.
     (0.0, dp.BOOST_EXCEEDS_FEATURE_DEPTH),
     (-2.0, dp.BOOST_EXCEEDS_FEATURE_DEPTH),
-    # `_finite` rejects bool (it is an int in Python) and non-finite values, so
-    # both arrive as "no depth reported" rather than as a number.
+    # `feature_classification.finite_number` — the reader that fills
+    # `FeatureVerdict.depth_db` — rejects bool (it is an int in Python), strings,
+    # and non-finite values, so each arrives as "no depth reported" rather than
+    # as a number. Named in full because the tree holds a dozen `_finite*`
+    # helpers and a bare name greps to the wrong one.
     (True, dp.FEATURE_DEPTH_UNAVAILABLE),
     (float("inf"), dp.FEATURE_DEPTH_UNAVAILABLE),
     ("3.0", dp.FEATURE_DEPTH_UNAVAILABLE),
@@ -2674,6 +2677,18 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     still says what it said — ``not_evaluated`` for a cloud row's angle — so a
     v1 reader reaches the same conclusion from it; only the sentence explaining
     why got accurate.
+
+    ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
+    additive case again — but it also RENAMED a ``not_evaluated`` entry, from
+    ``harmonic_distortion`` to ``harmonics``, and that is the one change here
+    a v1 reader could notice. It still does not mislead one: the old entry
+    asserted that NO round writes a distortion reading, and a reader acting on
+    it would have concluded the question was unanswerable. It is now answerable,
+    the entry appears only for a round nobody answered it for, and a reader
+    looking for the old name finds no entry — which is the true state of a round
+    that HAS a reading, and for a round without one the new name carries the
+    honest reason. A field whose claim became false is the one case where
+    keeping the spelling would be the misleading choice.
     """
     assert PACKET_SCHEMA_VERSION == 1
     assert packet["artifact_schema_version"] == 1
@@ -2686,6 +2701,7 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     assert packet["capture_snr"]["available"] is False
     assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
     assert packet["positions"]["cross_seat_sigma"]["available"] is True
+    assert packet["harmonics"]["available"] is False
 
 
 def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):

@@ -34,7 +34,7 @@
 | Check that the DSP actually realizes a linearization the way the fit says it will (the shelf-Q class), offline and without a microphone | [Offline emit loop](#offline-emit-loop) |
 | Replay recorded tuning attempts through the S3 improve/stop policy, and see whether the loop would have claimed an improvement that was only noise | [Attempts-loop replay](#attempts-loop-replay) |
 | Find out whether a banked session's cloud null evidence actually *bound* the linearization fit, and what the fit does without it | [Severed-twin replay](#severed-twin-replay) |
-| Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) |
+| Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) — the bench; `jasper-read-distortion` for a banked round, which files the reading the evidence packet carries |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
 | Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
@@ -1264,6 +1264,18 @@ pre-arrival offsets in each deconvolution. The math lives in the product module
 [`jasper/audio_measurement/distortion.py`](../jasper/audio_measurement/distortion.py);
 this script is the lab driver over a banked corpus.
 
+**For a banked ROUND, reach for the product instrument instead.**
+`jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>`
+([`jasper/cli/read_distortion.py`](../jasper/cli/read_distortion.py) over
+[`harmonic_evidence.py`](../jasper/active_speaker/crossover_v2/harmonic_evidence.py))
+is the promotion of this script's method: same two gates (program-id proof,
+analysis-fidelity comparison) and same band arithmetic, but it takes a bundle
+rather than three loose directories, derives the crossover corner and the driver
+gains from the round's own state, and files `harmonic_distortion.json` where the
+evidence packet reads it. This script stays as the exploratory bench — it prints
+a table, takes `--captures`/`--dumps` as separate paths, and reads corpora that
+were never banked as rounds.
+
 ```sh
 PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
   --state captures/xover-series2-2026-08-17/series2-state-r1b-preapply.json \
@@ -2022,9 +2034,11 @@ deterministic trend engine and any by-hand round review both want, and its
 (a cloud position banks no bearing at all, so `positions.angle_deg` refuses —
 the signed bearings that ARE banked belong to a lateral walk's poses and ride
 in `lateral_poses`; the reflection time exists only inside gate-disclosure
-prose; no round banks a distortion reading; every banked capture is horizontal,
-so the vertical plane is disclosed as `vertical_plane_response` rather than
-measured).
+prose; a round carries a distortion reading only once somebody ran
+`jasper-read-distortion` over it, so an absent `harmonics` block means nobody
+read the round rather than that the round was clean; every banked capture is
+horizontal, so the vertical plane is disclosed as `vertical_plane_response`
+rather than measured).
 
 Owners:
 [`evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)

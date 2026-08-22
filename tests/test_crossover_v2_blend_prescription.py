@@ -298,16 +298,26 @@ def test_the_packet_carries_the_region_the_deterministic_solver_was_bounded_by(p
 
 
 def test_the_packet_names_every_question_this_round_cannot_answer(packet):
-    """The honesty block is the packet's first duty, so it is pinned by field."""
+    """The honesty block is the packet's first duty, so it is pinned by field.
+
+    ``harmonics`` replaced ``harmonic_distortion`` when ticket 1.4 gave the
+    corpus an instrument that writes a reading. The old entry was unconditional
+    and its reason said "no round writes them", which was a claim about the
+    CORPUS; the new one appears only for a round nobody read, and says so about
+    that round. This fixture banks no reading, so it is present here — the
+    other half, that it DISAPPEARS when one is banked, is pinned in
+    ``tests/test_crossover_v2_harmonic_evidence.py``.
+    """
     fields = {entry["field"] for entry in packet["not_evaluated"]}
     assert {
         "lateral_poses[].position_deg",
         "capture_snr",
         "first_reflection_ms",
-        "harmonic_distortion",
+        "harmonics",
         "per_bin_minimum_phase_class",
         "vertical_plane_response",
     } <= fields
+    assert "harmonic_distortion" not in fields
     for entry in packet["not_evaluated"]:
         assert entry["reason"].strip(), f"{entry['field']} claims absence with no reason"
 

@@ -1,0 +1,260 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Read one banked round's H2/H3 distortion, and file the reading.
+
+Offline, and the sibling of ``jasper-classify-features`` in every respect: it
+reads captures a round already banked, writes
+``harmonic_distortion.json`` into that round's own artifact directory — where
+the evidence packet looks for it — and touches no Pi, re-measures nothing, and
+re-takes no capture.
+
+``<bundle-dir>`` is a commissioning bundle: the directory holding ``info.json``
+beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
+directory inside it is found by the SAME rule the packet reader uses
+(:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
+so the artifact cannot land where the reader does not look, and a bundle
+carrying more than one round is refused rather than guessed at.
+
+``--dumps`` is the banked capture ring, which lives outside the bundle, and
+``--state`` is the round's flow state — required, because the MEASURE program is
+rebuilt from its ``gain_plan_db`` and proved against its ``candidate.program_id``
+before any capture is read. ``--woofer-band`` / ``--tweeter-band`` supply the
+driver bands the rebuild needs; they default to the shipped MEASURE bands and a
+wrong pair simply fails the program-id proof rather than producing a wrong
+reading.
+
+**Exit codes are the contract**, because the caller is often a script: ``0``
+read and filed, ``1`` the round could not be read, ``2`` the instrument refused
+(the program did not reproduce, no MEASURE capture was banked, or every capture
+failed a fidelity gate), ``3`` the reading could not be written. ``2`` and ``3``
+are separate because they send an operator to different places: ``2`` means fix
+the round, ``3`` means fix the filesystem. A refusal is the instrument working —
+``--json`` prints its named ``reason`` and the evidence behind it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from jasper.atomic_io import atomic_write_text
+
+from jasper.active_speaker.crossover_v2.evidence_packet import (
+    HARMONICS_ARTIFACT,
+    NO_ROUND_ARTIFACTS_REASON,
+    round_artifact_dir,
+)
+from jasper.active_speaker.crossover_v2.harmonic_evidence import (
+    HARMONIC_ORDERS,
+    HarmonicEvidenceRefused,
+    read_round_harmonics,
+)
+
+EXIT_OK = 0
+EXIT_ROUND_UNREADABLE = 1
+EXIT_REFUSED = 2
+EXIT_WRITE_FAILED = 3
+
+#: The shipped MEASURE driver bands, as the flow composes them today.
+#:
+#: Defaults rather than constants: a round measured with different bands is read
+#: by passing them, and a wrong pair cannot produce a wrong reading — it fails
+#: the ``program_id`` proof, which is the whole point of proving the rebuild
+#: instead of asserting it.
+DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
+    "woofer": (150.0, 4000.0),
+    "tweeter": (1600.0, 20000.0),
+}
+
+
+def _band(text: str) -> tuple[float, float]:
+    """``"150:4000"`` as a band. Raises ``argparse``'s own error type."""
+    try:
+        lo, hi = (float(part) for part in str(text).split(":", 1))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected LO:HI in Hz, got {text!r}"
+        ) from None
+    if not 0.0 < lo < hi:
+        raise argparse.ArgumentTypeError(f"band must satisfy 0 < lo < hi, got {text!r}")
+    return lo, hi
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jasper-read-distortion",
+        description=(
+            "Read H2/H3 out of a banked round's MEASURE captures, relative to "
+            "the fundamental, at the drive each capture used."
+        ),
+    )
+    parser.add_argument(
+        "bundle_dir",
+        type=Path,
+        help="commissioning bundle: info.json beside evidence/v1/artifacts/",
+    )
+    parser.add_argument(
+        "--dumps",
+        type=Path,
+        required=True,
+        help="banked capture ring (sidecar JSON beside its WAV)",
+    )
+    parser.add_argument(
+        "--state",
+        type=Path,
+        required=True,
+        help=(
+            "the round's flow state; its gain_plan_db and candidate.program_id "
+            "are what the MEASURE program is rebuilt from and proved against"
+        ),
+    )
+    parser.add_argument(
+        "--woofer-band",
+        type=_band,
+        default=DEFAULT_BANDS_HZ["woofer"],
+        metavar="LO:HI",
+        help="woofer sweep band in Hz (default %(default)s)",
+    )
+    parser.add_argument(
+        "--tweeter-band",
+        type=_band,
+        default=DEFAULT_BANDS_HZ["tweeter"],
+        metavar="LO:HI",
+        help="tweeter sweep band in Hz (default %(default)s)",
+    )
+    parser.add_argument(
+        "--calibration",
+        type=Path,
+        default=None,
+        help=(
+            "microphone calibration file. Applied at each curve's OWN acoustic "
+            "frequency; without one the ratios carry the mic's response"
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            f"write here instead of <round-dir>/{HARMONICS_ARTIFACT}. The "
+            "default is the only path the packet reader looks at."
+        ),
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="machine-readable result on stdout"
+    )
+    return parser
+
+
+def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) -> int:
+    print(message, file=sys.stderr)
+    if as_json:
+        json.dump(payload, sys.stdout, indent=1)
+        sys.stdout.write("\n")
+    return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+
+    round_dir, why = round_artifact_dir(args.bundle_dir)
+    if round_dir is None:
+        message = f"cannot read the round: {why}"
+        if why == NO_ROUND_ARTIFACTS_REASON:
+            message += (
+                " — bundle_dir must hold info.json beside "
+                "evidence/v1/artifacts/crossover_v2/<relay>/"
+            )
+        return _fail(
+            message,
+            {"ok": False, "error": why},
+            as_json=args.json,
+            code=EXIT_ROUND_UNREADABLE,
+        )
+
+    session_id: str | None = None
+    try:
+        info = json.loads((args.bundle_dir / "info.json").read_text())
+        state = json.loads(args.state.read_text())
+        # The file's CONTENTS, not a parsed curve: the sign convention it must
+        # be read under comes from the microphone this round's own captures
+        # recorded through, which only the instrument can see.
+        calibration_text = (
+            args.calibration.read_text() if args.calibration is not None else None
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return _fail(
+            f"cannot read the round: {exc}",
+            {"ok": False, "error": str(exc)},
+            as_json=args.json,
+            code=EXIT_ROUND_UNREADABLE,
+        )
+    if isinstance(info, dict) and isinstance(info.get("session_id"), str):
+        session_id = info["session_id"]
+    if not isinstance(state, dict):
+        return _fail(
+            f"the flow state at {args.state} is not a JSON object",
+            {"ok": False, "error": "state is not a JSON object"},
+            as_json=args.json,
+            code=EXIT_ROUND_UNREADABLE,
+        )
+
+    try:
+        artifact = read_round_harmonics(
+            round_dir,
+            args.dumps,
+            state,
+            {"woofer": args.woofer_band, "tweeter": args.tweeter_band},
+            session_id=session_id,
+            orders=HARMONIC_ORDERS,
+            calibration_text=calibration_text,
+        )
+    except HarmonicEvidenceRefused as refusal:
+        return _fail(
+            f"refused: {refusal.reason}",
+            {"ok": False, "reason": refusal.reason, "detail": refusal.evidence},
+            as_json=args.json,
+            code=EXIT_REFUSED,
+        )
+    except (OSError, ValueError) as exc:
+        return _fail(
+            f"cannot read the round: {exc}",
+            {"ok": False, "error": str(exc)},
+            as_json=args.json,
+            code=EXIT_ROUND_UNREADABLE,
+        )
+
+    destination = args.out or (round_dir / HARMONICS_ARTIFACT)
+    try:
+        # Atomic: this file is durable evidence the packet reads, and a torn
+        # write would be read as a reading rather than as a broken file.
+        atomic_write_text(destination, json.dumps(artifact, indent=1))
+    except OSError as exc:
+        return _fail(
+            f"read, but could not write {destination}: {exc}",
+            {"ok": False, "error": str(exc), "path": str(destination)},
+            as_json=args.json,
+            code=EXIT_WRITE_FAILED,
+        )
+
+    roles = artifact["roles"]
+    captures = artifact["captures"]
+    print(
+        f"read H{'/H'.join(str(order) for order in artifact['orders'])} for "
+        f"{len(roles)} (capture, role) block(s) from {captures['n_read']} "
+        f"capture(s), {captures['n_refused']} refused -> {destination}",
+        file=sys.stderr,
+    )
+    if args.json:
+        json.dump({"ok": True, "path": str(destination), **artifact}, sys.stdout, indent=1)
+        sys.stdout.write("\n")
+    return EXIT_OK
+
+
+if __name__ == "__main__":  # pragma: no cover - module entry point
+    raise SystemExit(main())
