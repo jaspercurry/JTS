@@ -19,14 +19,18 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from jasper.audio_measurement.quality_model import Severity
 from jasper.fanin.status import FANIN_STATUS_SOCKET
 from jasper.memory_policy import memory_headroom_thresholds
 
 SCHEMA_VERSION = 1
 
-Severity = Literal["warn", "fail"]
+# `Severity` is imported, not re-declared: the words live with the thresholds
+# (quality_model, "Verdict vocabulary"). Which subset of them a module emits is
+# a fact about its checks, not about the word set. Kept importable from here
+# because callers already spell it `runtime_integrity.Severity`.
 
 LOAD_PER_CORE_WARN = 1.50
 CAPTURE_EXTRA_SECONDS_WARN = 30.0

@@ -816,26 +816,38 @@ def _crossover_region_nudge(session: Any) -> dict[str, str] | None:
 # _revert_result_text. A successful revert lands the session in IDLE, so the
 # honest success copy lives on the IDLE branch of _verdict_text instead.
 #
-# "surface_quality_gated" is a synthetic key, not a real Verdict value — it
-# is never on session.acceptance["verdict"] (which stays the literal string
-# "surface"). _verdict_text looks it up when verdict["quality_gated"] is True
-# (#2058, B1): the plain "surface" copy below ("the change was too small to
-# be sure") is FALSE for this case — acceptance.gate_on_acoustic_quality only
-# ever downgrades a real ACCEPT, so the measured change was large enough to
-# clear the improvement floor; what's untrusted is the EVIDENCE, not the
-# size of the change. It also skips the numeric _headline() append every
-# other row here gets: those numbers come from session.verify_before_after,
-# the SAME distrusted verify capture the gate just declined to trust, so
-# printing them would contradict the sentence declining to trust them.
+# Keyed by real Verdict values ONLY — every key here is a string that can
+# actually appear on session.acceptance["verdict"].
 _VERDICT_HEADLINE: dict[str, str] = {
     "accept": "Confirmed improved — the room measured better.",
     "surface": "Applied — but the change was too small to be sure. Take a "
     "look and decide.",
-    "surface_quality_gated": "Applied — but the check-measurement was too "
-    "noisy to trust. Re-measure to confirm, or listen and decide.",
     "revert_pending_confirm": "That measured worse. Measure once more to be "
     "sure before we undo it.",
 }
+
+# A quality-gated surface's copy, deliberately NOT a row in the map above.
+#
+# It used to be, under the key "surface_quality_gated" — a string that reads
+# exactly like a Verdict member and is not one: the verdict stays the literal
+# "surface", and this copy is selected by verdict["quality_gated"] being True,
+# never by a verdict value. A synthetic key sitting among real ones is a
+# standing invitation to treat it as real; a module constant cannot be
+# mistaken for a member of a map it is not in.
+#
+# Why the copy differs (#2058, B1): the plain "surface" row above ("the change
+# was too small to be sure") is FALSE for this case —
+# acceptance.gate_on_acoustic_quality only ever downgrades a real ACCEPT, so
+# the measured change was large enough to clear the improvement floor; what's
+# untrusted is the EVIDENCE, not the size of the change. Its caller also skips
+# the numeric _headline() append every _VERDICT_HEADLINE row gets: those
+# numbers come from session.verify_before_after, the SAME distrusted verify
+# capture the gate just declined to trust, so printing them would contradict
+# the sentence declining to trust them.
+_QUALITY_GATED_SURFACE_HEADLINE = (
+    "Applied — but the check-measurement was too noisy to trust. Re-measure "
+    "to confirm, or listen and decide."
+)
 
 # The three truthful revert copies, keyed by what ACTUALLY happened — never
 # by intent. Success is only claimed once reset() completed (outcome "ok").
@@ -988,7 +1000,7 @@ def _verdict_text(
                 # trust. Standalone return: no _headline() append, because
                 # that append's numbers come from the SAME distrusted verify
                 # capture (session.verify_before_after).
-                return _VERDICT_HEADLINE["surface_quality_gated"]
+                return _QUALITY_GATED_SURFACE_HEADLINE
             lead = _VERDICT_HEADLINE.get(verdict_value)
             if lead is not None:
                 headline = _headline(session)

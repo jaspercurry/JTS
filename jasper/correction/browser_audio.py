@@ -12,10 +12,16 @@ reason from the same evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
+from jasper.audio_measurement.quality_model import ReportLevel, Severity
 
-Severity = Literal["info", "warn", "fail"]
+# Both scales are imported, not re-declared: the words live with the
+# thresholds (quality_model, "Verdict vocabulary"). They stay two scales
+# because they answer two questions — `Severity` grades one finding,
+# `ReportLevel` grades the whole report once the findings are reduced.
+# Kept importable from here because callers already spell it
+# `browser_audio.Severity`.
 
 
 @dataclass(frozen=True)
@@ -39,7 +45,7 @@ class BrowserAudioIssue:
 @dataclass(frozen=True)
 class BrowserAudioReport:
     available: bool
-    level: Literal["ok", "warn", "fail"]
+    level: ReportLevel
     summary: str
     expected_sample_rate: int
     input_device: dict[str, Any] | None
@@ -184,7 +190,7 @@ def assess_browser_audio_path(
             message="no measurement-mic calibration was loaded",
         ))
 
-    level: Literal["ok", "warn", "fail"]
+    level: ReportLevel
     if any(issue.severity == "fail" for issue in issues):
         level = "fail"
         summary = "Browser audio path is not safe for measurement."

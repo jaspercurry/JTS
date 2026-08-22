@@ -925,10 +925,13 @@ create a second retention system.
 - ~~**Confidence/quality thresholds are hard-coded per domain with no shared,
   parameterized model.**~~ **CLOSED (2026-07-12).**
   `jasper.audio_measurement.quality_model.QualityModel` now owns the shared
-  capture-quality vocabulary, with `ROOM`, `DRIVER`, and `RAMP` profiles.
+  capture-quality **thresholds**, with `ROOM`, `DRIVER`, and `RAMP` profiles.
   Room SNR and driver-acoustics thresholds remain domain-specific fields on
   those profiles; callers no longer depend on compatibility aliases in
-  `quality.py`.
+  `quality.py`. Since 2026-08-22 the same MODULE (not the dataclass) also owns
+  the **words** those verdicts are reported in — `Severity`, `ReportLevel`,
+  `TrustLevel`, and the `TRUST_UNAVAILABLE` slot beside the last — so a
+  surface imports one alias instead of declaring a seventh copy.
 - ~~**Evidence durability is inconsistent**: correction has schema-versioned
   per-session bundles; active-speaker uses one global JSON state file~~
   **PARTIALLY CLOSED (2026-07-11, active-crossover Slice 0).**

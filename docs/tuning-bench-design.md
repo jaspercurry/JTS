@@ -158,7 +158,7 @@ the same architectural split, and that split is the real asset:
 - **Evidence modules emit codes + numbers only; the domain flow/envelope
   owns the sentence** (`confidence.py` → `_NUDGE_COPY`;
   `interference_nulls.py` → `_carve_out_*_copy`; `flat_spec.py` →
-  `_flatness_details_lines`; `acceptance.py` → `_VERDICT_HEADLINE`).
+  `_flatness_details_lines`; `envelope.py` → `_VERDICT_HEADLINE`).
 - A recurring **general grammar**: closed code→sentence catalogs with
   retryability and one recovery action; measured-vs-expected-with-
   tolerance sentences; "we deliberately did *not* do X, because W"; the

@@ -564,7 +564,11 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     Not joined into one list per feature on purpose: the typed reader drops
     rows, so the two lists do not line up by index, and pairing them by
     frequency is a judgement about which row a verdict came from that this
-    module does not make.
+    module does not make. The same doctrine is why the two can disagree on a
+    COLUMN: an artifact banked before 2026-08-22 spells its confidence
+    ``med``, so ``verdicts[]`` shows the normalised ``medium`` its typed
+    reader produces while ``lab_rows[]`` still shows ``med``, the artifact's
+    own word. That is the split working, not drift.
 
     ``uncertainty`` labels every spread the rows publish. Each is ``random`` or
     ``systematic`` and says what it is a spread of, and the two columns that

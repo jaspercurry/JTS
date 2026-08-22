@@ -32,6 +32,11 @@ from jasper.audio_measurement import (
 )
 from jasper.audio_measurement.calibration import CalibrationRecord
 from jasper.audio_measurement.quality_model import ROOM as _ROOM_QUALITY
+from jasper.audio_measurement.quality_model import (
+    TRUST_UNAVAILABLE,
+    ReportLevel,
+    TrustLevel,
+)
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from ._numbers import round_finite as _round
@@ -257,7 +262,7 @@ def repeatability_from_arrays(
     if first.shape != repeat.shape or first.shape != freqs_hz.shape:
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "repeat and original curves use different shapes",
         }
     # The repeatability band never reaches above the room-correction ceiling
@@ -271,7 +276,7 @@ def repeatability_from_arrays(
     if int(mask.sum()) < 3:
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "not enough points in the repeatability band",
         }
     delta = first[mask] - repeat[mask]
@@ -279,6 +284,7 @@ def repeatability_from_arrays(
     rms_db = float(np.sqrt(np.mean(delta ** 2)))
     p95_abs_db = float(np.percentile(abs_delta, 95))
     max_abs_db = float(np.max(abs_delta))
+    level: TrustLevel
     if rms_db <= 1.5 and p95_abs_db <= 3.0:
         level = "high"
     elif rms_db <= 2.5 and p95_abs_db <= 5.0:
@@ -404,7 +410,7 @@ def analyze_capture(
     )
 
 
-def _level_from_issues(issues: list[dict[str, Any]]) -> str:
+def _level_from_issues(issues: list[dict[str, Any]]) -> ReportLevel:
     if any(issue.get("severity") == "fail" for issue in issues):
         return "fail"
     if any(issue.get("severity") == "warn" for issue in issues):
@@ -429,8 +435,11 @@ def _capture_summary(report: dict[str, Any]) -> dict[str, Any]:
     ]
     band_snrs = [value for value in band_snrs if value is not None]
     min_band_snr = min(band_snrs) if band_snrs else None
+    # TrustLevel words, plus the no-evidence slot beside them. Left unannotated
+    # rather than typed `TrustLevel | str` — that union collapses to `str`, so
+    # it would assert more than it checks.
     if estimated_snr is None:
-        snr_level = "unavailable"
+        snr_level = TRUST_UNAVAILABLE
         issues.append({
             "code": "snr_unavailable",
             "severity": "info",
@@ -557,7 +566,7 @@ def build_acoustic_quality_report(
             ),
         })
 
-    snr_level = "unavailable"
+    snr_level = TRUST_UNAVAILABLE
     min_snr = min(snrs) if snrs else None
     min_band_snr = min(band_snrs) if band_snrs else None
     if min_snr is not None:
@@ -571,7 +580,7 @@ def build_acoustic_quality_report(
     if not isinstance(repeatability, dict):
         repeatability = {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "same-position repeat capture was not recorded",
         }
     for issue in repeatability.get("issues") or []:
@@ -584,9 +593,9 @@ def build_acoustic_quality_report(
     recommended_action = "bundle is ready for read-only review"
     if summary_level == "fail":
         recommended_action = "remeasure before interpreting correction"
-    elif snr_level in {"low", "unavailable"}:
+    elif snr_level in {"low", TRUST_UNAVAILABLE}:
         recommended_action = "remeasure or capture a noise floor before stronger advice"
-    elif repeatability["level"] == "unavailable":
+    elif repeatability["level"] == TRUST_UNAVAILABLE:
         recommended_action = (
             "safe PEQ review is reasonable; repeatability is still required "
             "before assertive or FIR work"

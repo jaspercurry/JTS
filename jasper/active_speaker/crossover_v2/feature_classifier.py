@@ -85,6 +85,7 @@ from jasper.audio_measurement.deconv import (
     regularized_deconvolution_full,
 )
 from jasper.audio_measurement.gating import SEARCH_T_MAX_MS, f_trusted_floor_hz
+from jasper.audio_measurement.quality_model import TrustLevel
 
 from .feature_classification import (
     DEFECT_BOOSTABLE,
@@ -1525,15 +1526,21 @@ def _compose(
     decisive = (egd_verdict == EGD_MIN_PHASE and frac < 0.10 and z_local < 2.0) or (
         egd_verdict == EGD_NON_MIN_PHASE and frac > 0.75
     )
+    # The three words are quality_model's shared TrustLevel — `medium` spelled
+    # in full. This instrument wrote `med` until 2026-08-22, alone against
+    # every sibling that answers "how much do I trust this number?"; a banked
+    # artifact from before then still carries `med` and is normalised on the
+    # way back in by feature_classification.read_feature_verdicts.
+    confidence: TrustLevel
     if classification == UNRESOLVED:
         confidence = "low"
     elif tension:
-        confidence = "med"
+        confidence = "medium"
     elif agree and decisive and resolved_gates >= 2 and timing_available:
         # A `high` reading is not earned while a corroborating test never ran.
         confidence = "high"
     elif agree:
-        confidence = "med"
+        confidence = "medium"
     else:
         confidence = "low"
 

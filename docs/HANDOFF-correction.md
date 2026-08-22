@@ -2593,7 +2593,9 @@ jasper/
 │   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
 │   ├── quality.py                       capture quality gates + issue schema
 │   ├── quality_model.py                 parameterized capture-quality thresholds
-│   │                                    shared across tuning layers
+│   │                                    shared across tuning layers, AND the
+│   │                                    verdict vocabulary they are reported in
+│   │                                    (Severity / ReportLevel / TrustLevel)
 │   ├── playback.py                      policy-free WAV/tone process mechanics;
 │   │                                    explicit device/cache, bounded cleanup
 │   └── ramp.py                          settle-based level-match ramp controller

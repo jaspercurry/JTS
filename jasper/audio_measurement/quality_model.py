@@ -45,10 +45,70 @@ The structural clip / dBFS-floor knobs (``clip_abs_threshold``,
 ``clip_fraction_fail``, ``dbfs_floor``) are shared by every profile — they are
 digital-full-scale facts, not per-layer tuning — but they live on the model too
 so a profile is a complete, self-describing description of one layer's gate.
+
+This module also owns the WORDS those thresholds are reported in — see
+"Verdict vocabulary" below. The numbers and the vocabulary answering the same
+question belong to the same owner; splitting them is how ``med`` got written
+where every sibling wrote ``medium``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+# --------------------------------------------------------------------------
+# Verdict vocabulary — one set of words per question.
+# --------------------------------------------------------------------------
+#
+# The thresholds below were unified into this module first; the words their
+# verdicts are SPELLED in were not, and every surface that reported one
+# declared its own. Copies that agree are still copies, and each one is a
+# chance to disagree — one already had: the crossover-v2 feature classifier
+# wrote ``med`` where ``correction.confidence``, ``correction.spatial``, and
+# ``correction.acoustic_quality`` all wrote ``medium``, so a banked lab
+# artifact and a room-correction report answered one question in two
+# spellings.
+#
+# The rule these three aliases encode is ONE VOCABULARY PER QUESTION — not one
+# vocabulary. They are deliberately three, because they answer three different
+# questions, and a surface picks the alias whose question it is answering:
+#
+#   Severity    — "how bad is this ONE finding?"      info < warn < fail
+#   ReportLevel — "how does the WHOLE report roll up?"  ok < warn < fail
+#   TrustLevel  — "how much do I trust this READING?" low < medium < high
+#
+# Severity and ReportLevel share two of three words and are still distinct: a
+# report with no findings rolls up ``ok``, which is not a severity any single
+# finding can carry, and a single finding can be ``info``, which no report
+# rolls up to.
+#
+# NOT in this vocabulary, deliberately: ``snr_policy``'s per-band
+# ``ok``/``reduced``/``insufficient``/``unknown`` rank. That is a REFUSAL —
+# it carries a ``shortfall_db`` saying how many dB are missing, it is scoped
+# per decision class (the same capture is magnitude-``ok`` and
+# alignment-``insufficient``), and ``program_analysis`` names its worst member
+# ``ALIGNMENT_SNR_REFUSAL_VERDICT``. A refusal that says what would fix it is
+# a different question from a trust label, so it keeps different words on
+# purpose. Do not "unify" it into :data:`TrustLevel`.
+
+#: How bad ONE finding is. Widest of the three: a surface that never emits
+#: ``info`` (``quality``, ``runtime_integrity``) still speaks this vocabulary
+#: — which subset a module happens to emit is a fact about its call sites,
+#: not about the word set.
+Severity = Literal["info", "warn", "fail"]
+
+#: How a WHOLE report rolls up, once its findings are reduced.
+ReportLevel = Literal["ok", "warn", "fail"]
+
+#: How much a reported READING can be trusted — a measured number, but also a
+#: classifier's verdict about one. ``medium`` is spelled in full — see the
+#: ``med`` incident above.
+TrustLevel = Literal["high", "medium", "low"]
+
+#: The no-evidence slot beside :data:`TrustLevel`. Deliberately not a member
+#: of it: "we did not measure this" is not a low reading, and a consumer that
+#: cannot tell them apart will treat a missing noise floor as a bad one.
+TRUST_UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)

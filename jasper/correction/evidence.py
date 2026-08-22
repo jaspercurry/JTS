@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.quality_model import TRUST_UNAVAILABLE, TrustLevel
 from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 
 from . import acoustic_quality, bundles
@@ -126,7 +127,14 @@ def _input_identity(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     return stable or None
 
 
-def _level_for_repeatability(rms_db: float, p95_abs_db: float) -> str:
+def _level_for_repeatability(rms_db: float, p95_abs_db: float) -> TrustLevel:
+    """Cross-BUNDLE repeatability, on the shared trust vocabulary.
+
+    A sibling of ``acoustic_quality.repeatability_from_arrays`` (which grades
+    two captures inside ONE session) with the same four thresholds spelled
+    again above — a duplication this typing does not fix, only stops the WORDS
+    from drifting apart on top of it.
+    """
     if (
         rms_db <= REPEATABILITY_HIGH_RMS_DB
         and p95_abs_db <= REPEATABILITY_HIGH_P95_DB
@@ -150,7 +158,7 @@ def compare_bundle_repeatability(
     if repeat_bundle_dir is None:
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "no same-position repeat bundle was provided",
         }
     result_a = _read_json(bundle_dir / "result.json")
@@ -160,7 +168,7 @@ def compare_bundle_repeatability(
     if curve_a is None or curve_b is None:
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "one or both bundles are missing measured curves",
         }
     freqs_a, mag_a = curve_a
@@ -168,14 +176,14 @@ def compare_bundle_repeatability(
     if freqs_a.shape != freqs_b.shape or not np.allclose(freqs_a, freqs_b):
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "measured curves use different frequency grids",
         }
     mask = (freqs_a >= band_hz[0]) & (freqs_a <= band_hz[1])
     if int(mask.sum()) < 3:
         return {
             "available": False,
-            "level": "unavailable",
+            "level": TRUST_UNAVAILABLE,
             "reason": "not enough points in the repeatability band",
         }
 
@@ -422,13 +430,13 @@ def _missing_evidence(
             "measurement microphone calibration is unavailable",
         )
     acoustic_summary = acoustic_report.get("summary") or {}
-    if acoustic_summary.get("snr_level") in {None, "unknown", "unavailable"}:
+    if acoustic_summary.get("snr_level") in {None, "unknown", TRUST_UNAVAILABLE}:
         add(
             "snr_evidence_missing",
             "warn",
             "pre-sweep noise / SNR evidence is unavailable",
         )
-    if repeatability.get("level") in {None, "unknown", "unavailable"}:
+    if repeatability.get("level") in {None, "unknown", TRUST_UNAVAILABLE}:
         add(
             "repeatability_missing",
             "info",
@@ -487,7 +495,7 @@ def _agent_readiness(
     snr_level = acoustic_summary.get("snr_level")
     if acoustic_level == "fail":
         reasons.append("acoustic quality has blocking failures")
-    elif snr_level in {"low", "unavailable"}:
+    elif snr_level in {"low", TRUST_UNAVAILABLE}:
         reasons.append("SNR evidence is weak or missing")
 
     runtime_level = runtime_summary.get("level")
@@ -507,7 +515,7 @@ def _agent_readiness(
     repeatability_level = repeatability.get("level")
     if repeatability_level == "low":
         reasons.append("same-position repeatability is low")
-    elif repeatability_level == "unavailable":
+    elif repeatability_level == TRUST_UNAVAILABLE:
         reasons.append("same-position repeatability has not been checked")
 
     level = "ready"
@@ -519,9 +527,9 @@ def _agent_readiness(
     recommended_action = "ready for read-only critique"
     if level == "blocked":
         recommended_action = "remeasure or repair bundle evidence first"
-    elif snr_level in {"low", "unavailable"}:
+    elif snr_level in {"low", TRUST_UNAVAILABLE}:
         recommended_action = "collect stronger pre-sweep noise/SNR evidence"
-    elif repeatability_level == "unavailable":
+    elif repeatability_level == TRUST_UNAVAILABLE:
         recommended_action = (
             "safe PEQ critique is reasonable; collect a repeat bundle "
             "before assertive or FIR recommendations"

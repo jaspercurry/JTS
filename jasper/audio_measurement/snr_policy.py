@@ -81,6 +81,17 @@ _ALIGNMENT_BAND_METHODS = frozenset({
 # verdicts to a single "worst" verdict for a frequency window. "unknown" is
 # deliberately absent — it carries no evidence, so it never outranks a real
 # verdict (see worst_band_verdict).
+#
+# These words are NOT quality_model's TrustLevel ("high"/"medium"/"low") and
+# must not be unified into it, however alike the two look — the magnitude
+# class even reads the same two thresholds. A TrustLevel LABELS a number; this
+# REFUSES a decision, ships a `shortfall_db` saying how many dB would clear it,
+# and is scoped per decision class, so one capture is legitimately
+# magnitude-"ok" and alignment-"insufficient" at the same time. Two trust
+# labels contradicting each other on one number would be a bug; two refusals
+# disagreeing about two different decisions is the whole point of the split
+# policy. `program_analysis.ALIGNMENT_SNR_REFUSAL_VERDICT` names the worst
+# member for what it is.
 _VERDICT_RANK: dict[str, int] = {"ok": 0, "reduced": 1, "insufficient": 2}
 
 

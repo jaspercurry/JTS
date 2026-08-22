@@ -19,11 +19,13 @@ import math
 import shutil
 import wave
 from pathlib import Path
+from typing import get_args
 
 import numpy as np
 import pytest
 
 from jasper.audio_measurement.gating import f_trusted_floor_hz
+from jasper.audio_measurement.quality_model import TrustLevel
 
 from jasper.active_speaker.crossover_v2 import feature_classifier as fx
 from jasper.active_speaker.crossover_v2.evidence_packet import (
@@ -517,7 +519,11 @@ def test_the_artifact_conforms_to_the_register(peak_artifact):
         assert verdict.measured_q == row["measured_q"]
         assert verdict.depth_db == row["depth_db"]
         assert verdict.classification in CLASSIFICATIONS
-        assert verdict.confidence in {"low", "med", "high"}
+        # Imported, not restated — same rule as the shape above. This
+        # instrument spelled the middle rank `med` until 2026-08-22, alone
+        # against every sibling answering the same question; reading the set
+        # off the shared vocabulary is what keeps it from drifting back.
+        assert verdict.confidence in set(get_args(TrustLevel))
         # The register's own round-trip: what a packet publishes is readable
         # back through the same reader.
         assert read_feature_verdicts([verdict.to_dict()])[0] == verdict
