@@ -8,7 +8,8 @@ The half the door was missing. ``tests/test_angle_capture_trigger.py`` covers
 staging the document, ``tests/test_angle_capture_seam.py`` covers composing one
 into poses, and this covers the one place a SESSION picks it up: who the walk is
 declared to be for, that a document is spent exactly once whichever way it goes,
-and that a household session opens either way.
+and that a walk the session cannot honour refuses the open rather than quietly
+changing its shape (#2879).
 
 What is deliberately NOT re-asserted here is anything those two files own -- the
 angle bounds, the pose round trip, the three refusals' own arithmetic. The
@@ -92,6 +93,19 @@ def _events(caplog) -> list[str]:
     ]
 
 
+def _refused(shape=None, **kwargs) -> str:
+    """Take a walk that must REFUSE THE OPEN, and hand back its sentence.
+
+    Every refusal arm raises now (#2879): a staged walk the session cannot
+    honour used to journal and return ``None``, and the session then opened in
+    its ordinary 3-capture shape — an operator got a measurement that silently
+    answered a different question. ``pytest.raises`` here IS that pin.
+    """
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        _take(shape, **kwargs)
+    return str(excinfo.value)
+
+
 # --- the ordinary session -----------------------------------------------------
 
 
@@ -149,22 +163,24 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
     assert _take() is None
 
 
-def test_a_refused_walk_is_consumed_and_the_session_still_opens(slot, caplog):
-    """Fail-open on the SESSION, fail-closed on the walk.
+def test_a_refused_walk_refuses_the_open_and_is_consumed(slot, caplog):
+    """Fail-closed on BOTH the walk and the session (#2879).
 
-    A household session is never hostage to an operator's staged file: the
-    refusal is named in the journal, the document is spent so it refuses once
-    rather than every session, and the caller gets ``None`` -- which is the
-    ordinary session it would have had anyway.
+    The refusal is named in the journal AND raised, so an operator who staged a
+    walk this session cannot honour is told rather than handed a measurement
+    that answers a different question. The document is still spent, so the
+    NEXT session is the ordinary one it would have had -- a refusal that
+    repeated forever would be its own kind of trap.
     """
     spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
     with caplog.at_level(logging.WARNING):
-        assert _take(_hand_shape()) is None
+        sentence = _refused(_hand_shape())
 
+    assert ac.WALK_MOVER_MISMATCH in sentence
     line, = _events(caplog)
     assert "crossover_v2_angle_walk_refused" in line
     assert f"reason={ac.WALK_MOVER_MISMATCH}" in line
-    assert "consumed=true" in line and "session_continues=true" in line
+    assert "consumed=true" in line and "session_continues=false" in line
     assert spool.staged_angle_request_pending() is False
     assert _take(_hand_shape()) is None
 
@@ -180,8 +196,9 @@ def test_a_document_the_spool_itself_refuses_is_reported_in_its_own_words(
     """
     spool.angle_request_spool_path().write_text("{not json", encoding="utf-8")
     with caplog.at_level(logging.WARNING):
-        assert _take() is None
+        sentence = _refused()
 
+    assert spool.SPOOL_MALFORMED in sentence
     line, = _events(caplog)
     assert f"reason={spool.SPOOL_MALFORMED}" in line
 
@@ -202,11 +219,12 @@ def test_a_banked_stop_past_the_movers_reach_refuses_at_the_take_too(slot, caplo
     path.write_text(json.dumps(doc), encoding="utf-8")
 
     with caplog.at_level(logging.WARNING):
-        assert _take(_arm_shape()) is None
+        sentence = _refused(_arm_shape())
 
+    assert ac.WALK_OVER_MOVER_ENVELOPE in sentence
     line, = _events(caplog)
     assert f"reason={ac.WALK_OVER_MOVER_ENVELOPE}" in line
-    assert "consumed=true" in line and "session_continues=true" in line
+    assert "consumed=true" in line and "session_continues=false" in line
 
 
 def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog):
@@ -218,8 +236,9 @@ def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog)
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
     with caplog.at_level(logging.WARNING):
-        assert _take(lateral_group_present=True) is None
+        sentence = _refused(lateral_group_present=True)
 
+    assert ac.WALK_LATERAL_GROUP_ALREADY_PLANNED in sentence
     line, = _events(caplog)
     assert f"reason={ac.WALK_LATERAL_GROUP_ALREADY_PLANNED}" in line
     assert "consumed=true" in line
@@ -354,14 +373,15 @@ def test_the_preparer_feeds_map_spec_and_conductor_from_one_take():
 def test_a_stop_the_seam_can_no_longer_build_refuses_instead_of_escaping(
     slot, caplog,
 ):
-    """A hand-edited angle must not cost a household its measurement.
+    """A hand-edited angle reaches the take as the seam's OWN exception.
 
     ``take_staged_angle_request`` deliberately re-raises the seam's own
     ``CrossoverV2FlowError`` un-wrapped for a banked stop that no longer
     satisfies the contract, because ``_validated_angle``'s sentence beats a
     second vocabulary. That is a third refusal class, and it reaches
-    ``prepare_v2_session`` — so it is handled here, journalled with a slug, and
-    the session opens in its ordinary shape.
+    ``prepare_v2_session`` — so it is caught here, given the slug it arrived
+    without, and re-raised as the host's own refusal rather than escaping as a
+    flow error nothing on this path claims.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
     path = spool.angle_request_spool_path()
@@ -370,8 +390,9 @@ def test_a_stop_the_seam_can_no_longer_build_refuses_instead_of_escaping(
     path.write_text(json.dumps(doc), encoding="utf-8")
 
     with caplog.at_level(logging.WARNING):
-        assert _take() is None  # never raises
+        sentence = _refused()
 
+    assert ac.WALK_STOP_NO_LONGER_VALID in sentence
     line, = _events(caplog)
     assert f"reason={ac.WALK_STOP_NO_LONGER_VALID}" in line
     # The producing module's own sentence survives as the detail rather than
@@ -394,8 +415,8 @@ def test_consumed_is_read_back_from_the_spool_not_asserted(slot, caplog):
     os.chmod(path, 0o000)
     try:
         with caplog.at_level(logging.WARNING):
-            assert _take() is None
-            assert _take() is None
+            _refused()
+            _refused()
         assert path.is_file(), "the unreadable arm must not consume"
         assert [line for line in _events(caplog) if "consumed=false" in line]
         assert not [line for line in _events(caplog) if "consumed=true" in line]
@@ -408,10 +429,30 @@ def test_a_taken_walk_still_says_it_was_consumed(slot, caplog):
     so — so ``consumed`` is a read, not a constant in either direction."""
     spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
     with caplog.at_level(logging.WARNING):
-        assert _take(_hand_shape()) is None
+        _refused(_hand_shape())
     line, = _events(caplog)
     assert "consumed=true" in line
     assert spool.staged_angle_request_pending() is False
+
+
+def test_the_silent_shape_change_is_gone_from_the_take(slot):
+    """The pin on the DELETED behaviour, at the source (#2879).
+
+    Every refusal arm used to end in ``return None``, and ``None`` is what the
+    preparer reads as "no walk staged" — so a refused walk and an ordinary
+    session were the same value, and the session opened in its ordinary
+    3-capture shape with only a WARNING nobody was reading to say otherwise.
+    The behavioural pins above cover each arm; this one says the SHAPE cannot
+    come back: exactly one ``return None`` survives, and it is the arm that
+    genuinely means "nothing was staged".
+    """
+    source = inspect.getsource(v2host._take_staged_angle_walk)
+    body = source.split('"""', 2)[-1]
+    assert body.count("return None") == 1
+    assert "if request is None:\n            return None" in body
+    # ...and the journal says so too, rather than claiming the session lives on.
+    assert "session_continues=False" in body
+    assert "session_continues=True" not in body
 
 
 def test_the_take_reads_the_sessions_own_cloud_shape(slot):
@@ -429,7 +470,9 @@ def test_the_take_reads_the_sessions_own_cloud_shape(slot):
     assert _take(base_entries=11, plans_cloud_group=False) is not None
 
     spool.stage_angle_request(ac.per_driver_at(stops))
-    assert _take(base_entries=11, plans_cloud_group=True) is None
+    assert ac.WALK_OVER_RELAY_CAPACITY in _refused(
+        base_entries=11, plans_cloud_group=True,
+    )
 
 
 def test_the_unprefixed_spool_refusal_reasons_name_is_gone():

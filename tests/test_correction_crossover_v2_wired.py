@@ -335,21 +335,28 @@ def test_build_source_run_gives_each_provider_its_own_extras(monkeypatch):
     monkeypatch.setattr(v2host, "build_v2_run_and_consume", _relay_builder)
     device = _device()
     complete = threading.Event()
+    retake = threading.Event()
     signal = object()
     common = dict(
         volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
         position_gate=None, evidence_refs={}, playback_started=signal,
         wired_device=device, ceiling_s=42.0, complete_event=complete,
+        retake_event=retake,
     )
     assert v2host._build_source_run(SOURCE_WIRED, "conductor", **common) == "wired-run"
     assert built["wired"]["device"] is device
     assert built["wired"]["ceiling_s"] == 42.0
     assert built["wired"]["complete_event"] is complete
+    assert built["wired"]["retake_event"] is retake
     assert "playback_started" not in built["wired"]
 
     assert v2host._build_source_run(SOURCE_RELAY, "conductor", **common) == "relay-run"
     assert built["relay"]["playback_started"] is signal
     assert "device" not in built["relay"]
+    # The relay's retake rides the phone's own begin, so the local signal is
+    # NOT one of its extras — the seam's rule that a source's choreography
+    # stays private.
+    assert "retake_event" not in built["relay"]
 
 
 # --------------------------------------------------------------------------- #
