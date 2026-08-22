@@ -338,8 +338,9 @@ figure it is published as `unseparated` with the separation named as pending —
     (today the first is prose inside `gate_disclosure`, the others
     flagged-absent or buried).
 1.6 Notes consolidation + quarantined operator-notes artifact (invariant 8);
-    driver notes fold in; guided placeholder bullets; `horn_coverage_deg`
-    moves into the declarations context or is deleted with it.
+    driver notes fold in; guided placeholder bullets. The `horn_coverage_deg`
+    fork this ticket carried is settled: #2872 deleted the field, so a
+    waveguide's rated coverage rides the driver notes 1.6 already folds in.
 1.7 Entry-time crossover-vocabulary validation: the wizard offers exactly
     what compiles and refuses the rest at entry (kills the silent
     `crossover_preview_filter_unsupported` late block).

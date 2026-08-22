@@ -930,15 +930,20 @@ def test_declared_sensitivities_survive_the_normalised_persisted_draft():
     }
 
 
-# --- #1665 component entry: driver_class / radiating_diameter_mm /
-# horn_coverage_deg / pad -------------------------------------------------
+# --- #1665 component entry: driver_class / radiating_diameter_mm / pad -----
 #
 # Gotcha #1 (coordinator brief): design_draft._MANUAL_DRIVER_FIELDS,
 # driver_safety._MANUAL_DRIVER_FIELDS, driver_safety._V2_RESEARCH_DRIVER_FIELDS,
-# and _validate_v2_research_prefill's `comparable` set must ALL accept the four
-# new keys, or build_design_draft 500s at save time (driver_safety.py
+# and _validate_v2_research_prefill's `comparable` set must ALL accept the
+# component-entry keys, or build_design_draft 500s at save time (driver_safety.py
 # re-validates the SAME normalised manual_settings record design_draft.py just
 # produced). The guard test below pins the regression signature directly.
+#
+# A fourth key, horn_coverage_deg, was deleted by #2872. It is now a tolerated
+# legacy key at every one of those gates -- the same lockstep requirement, in
+# the opposite direction: a gate that forgot to tolerate it 500s the save of a
+# draft written before the deletion. See
+# test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key.
 
 
 def test_build_design_draft_does_not_raise_with_driver_class_set():
@@ -954,7 +959,6 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
                     "role": "tweeter",
                     "model": "B",
                     "driver_class": "compression_horn",
-                    "horn_coverage_deg": 90,
                     "nominal_impedance_ohm": 8,
                     "sensitivity_db_2v83_1m": 108.0,
                     "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
@@ -967,7 +971,6 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
     assert woofer["radiating_diameter_mm"] == 114.0
     assert "driver_class" not in woofer
     assert tweeter["driver_class"] == "compression_horn"
-    assert tweeter["horn_coverage_deg"] == 90.0
     assert tweeter["pad"] == {
         "kind": "l_pad",
         "series_ohm": 6.8,
@@ -1009,16 +1012,91 @@ def test_driver_class_accepts_every_hoisted_value():
         assert payload["manual_settings"]["drivers"][0]["driver_class"] == value
 
 
-def test_horn_coverage_deg_must_not_exceed_360():
+def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
+    tmp_path: Path,
+) -> None:
+    """#2872: a draft written before the deletion must still round-trip.
+
+    ``horn_coverage_deg`` was a wizard-collected number that reached no
+    consumer, so it was deleted rather than kept alive.  An operator who typed
+    a coverage angle before that has the key sitting in their saved draft, on a
+    field /sound/ no longer shows them.  Refusing that record would strand them
+    on a save they cannot fix from the page, so every gate that re-validates a
+    stored driver TOLERATES the key and every normaliser DROPS it: the draft
+    saves, and the value does not come back.
+    """
+
+    path = tmp_path / "active_speaker_design_draft.json"
+    legacy_manual = {
+        "drivers": [
+            {
+                "target_id": "mono:tweeter",
+                "role": "tweeter",
+                "model": "Legacy Horn",
+                "driver_class": "compression_horn",
+                "horn_coverage_deg": 90,
+            }
+        ],
+        "crossover_candidates": [],
+    }
+    # Written the way an older build wrote it -- by hand, because today's
+    # save path can no longer produce this file.
+    path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": 1,
+                "kind": DESIGN_DRAFT_KIND,
+                "status": "ready_for_review",
+                "revision": 3,
+                "operator_inputs": {},
+                "manual_settings": legacy_manual,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_design_draft(path)
+    assert loaded["manual_settings"]["drivers"][0]["horn_coverage_deg"] == 90
+
+    # The re-save the browser performs on the next visit: no refusal, and the
+    # retired key is gone from what lands on disk.
+    saved = save_design_draft(
+        _topology(),
+        manual_settings=loaded["manual_settings"],
+        operator_inputs=loaded["operator_inputs"],
+        expected_revision=loaded["revision"],
+        path=path,
+        created_at="2026-08-22T12:00:00Z",
+    )
+    tweeter = saved["manual_settings"]["drivers"][0]
+    assert "horn_coverage_deg" not in tweeter
+    assert tweeter["driver_class"] == "compression_horn"
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert all(
+        "horn_coverage_deg" not in driver
+        for driver in on_disk["manual_settings"]["drivers"]
+    )
+    # ...and the safety profile built from the same record survived its own
+    # re-validation, which is the second allowlist the key has to clear.
+    assert saved["driver_safety_profile"] is not None
+
+
+def test_unknown_driver_field_is_still_refused():
+    """The legacy tolerance is one named key, not an open door.
+
+    ``_reject_unknown_keys`` is what catches an extension-by-typo before it
+    silently becomes a value nothing reads -- exactly the defect #2872 deleted.
+    """
+
     with pytest.raises(
         ActiveSpeakerDesignDraftError,
-        match=r"horn_coverage_deg must be <= 360",
+        match=r"manual_settings\.driver has unknown fields: horn_coverage_degrees",
     ):
         build_design_draft(
             _topology(),
             manual_settings={
                 "drivers": [
-                    {"role": "tweeter", "model": "B", "horn_coverage_deg": 400}
+                    {"role": "tweeter", "model": "B", "horn_coverage_degrees": 90}
                 ],
                 "crossover_candidates": [],
             },
@@ -1132,9 +1210,9 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
 def test_research_and_manual_drivers_share_the_new_fields_too():
     common = {
         "role": "tweeter",
-        "model": "Shared Horn",
-        "driver_class": "compression_horn",
-        "horn_coverage_deg": 90,
+        "model": "Shared Dome",
+        "driver_class": "soft_dome",
+        "radiating_diameter_mm": 25,
     }
     research = _research()
     research["drivers"] = [common]
@@ -1148,7 +1226,7 @@ def test_research_and_manual_drivers_share_the_new_fields_too():
         manual_settings={"drivers": [common], "crossover_candidates": []},
     )["manual_settings"]["drivers"][0]
 
-    for field in ("driver_class", "horn_coverage_deg"):
+    for field in ("driver_class", "radiating_diameter_mm"):
         assert research_driver[field] == manual_driver[field] == common[field]
 
 

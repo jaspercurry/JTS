@@ -67,6 +67,22 @@ DRIVER_CLASSES: tuple[str, ...] = (
     "unknown",
 )
 
+# Per-driver keys retired from the component-entry schema that a record saved
+# by an older build can still carry. Every gate that re-validates a stored
+# driver record TOLERATES them and every normaliser DROPS them: refusing would
+# make a draft the operator saved before the deletion unsaveable, over a field
+# the wizard no longer shows them. Nothing reads these, and nothing stores them
+# again -- a key here is gone, not deprecated. It shrinks only when no draft in
+# the field can still carry the key, which is not observable from here, so
+# treat the set as append-only.
+#
+# horn_coverage_deg (#2872): collected by /sound/setup/ for the Bessel
+# beamwidth matcher #1675 was going to build. #1675 closed 2026-08-08 having
+# built ka beaming guidance off the woofer's radiating_diameter_mm instead, so
+# the coverage angle never gained a reader. Waveguide identity and coverage now
+# travel as operator prose in the driver notes.
+LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({"horn_coverage_deg"})
+
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 

@@ -504,13 +504,15 @@ def test_prompt_states_the_crossover_vocabulary_the_saver_accepts() -> None:
 
 
 def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
-    """The ask is a strict subset of what the parser accepts. Four fields were
-    dropped: three have no computational consumer — they prefill an Advanced
-    field the operator can type (recommended_lowpass_hz, horn_coverage_deg) or
-    are display-only with a fallback (manufacturer) — and one asserts level
+    """The ask is a strict subset of what the parser accepts. Three fields were
+    dropped from it: two have no computational consumer — one prefills an
+    Advanced field the operator can type (recommended_lowpass_hz), the other is
+    display-only with a fallback (manufacturer) — and one asserts level
     authority that belongs to measurement and the operator (gain_offset_db).
-    Acceptance is unchanged;
-    ``test_dropped_ask_fields_are_still_accepted_and_normalised`` pins that."""
+    Acceptance is unchanged for those three;
+    ``test_dropped_ask_fields_are_still_accepted_and_normalised`` pins it. The
+    tuple below carries two more keys that are absent from the ask for their
+    own reasons, each noted inline."""
 
     topology = mono_output_topology(card_id=None)
     prompt = build_driver_research_prompt(
@@ -520,8 +522,13 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
 
     for dropped in (
         "recommended_lowpass_hz",
-        "horn_coverage_deg",
         "gain_offset_db",
+        # #2872: DELETED, not merely unasked or retired. It was a horn's
+        # nominal coverage angle, collected for a Bessel beamwidth matcher
+        # that was never built; nothing ever read it. Tolerated on load and
+        # dropped, never stored --
+        # test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped.
+        "horn_coverage_deg",
         # #2603: retired, not merely unasked. It was an optional SECOND
         # declaration of the driver's low limit; the owner
         # (recommended_highpass_hz) is what the ask carries now, and nothing
@@ -665,9 +672,9 @@ def test_passive_full_range_component_has_research_only_physical_target() -> Non
 def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
     """#1665: driver_class/radiating_diameter_mm are AI-researchable and must
     appear in the result-shape JSON; pad is operator-only and must never be
-    prompted for.  ``horn_coverage_deg`` was researchable too but is no longer
-    asked for — it has no computational consumer today — while staying
-    accepted; see ``test_prompt_asks_only_for_fields_with_a_consumer``."""
+    prompted for.  ``horn_coverage_deg`` was researchable too, until #2872
+    deleted it for never having gained a reader; see
+    ``test_prompt_asks_only_for_fields_with_a_consumer``."""
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_request(topology, _operator_inputs(), _manual_settings())
     prompt = build_driver_research_prompt(request)
@@ -684,7 +691,7 @@ def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
 
 
 def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
-    """The ask shrank; acceptance did not.  A reply that still carries the four
+    """The ask shrank; acceptance did not.  A reply that still carries the
     fields the prompt stopped asking for — an older chat, a more thorough
     model, a hand-edited paste — must validate and normalise exactly as before,
     or slimming the prompt would have silently become a schema change."""
@@ -699,7 +706,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     verbose = {
         "manufacturer": "Example Acoustics",
         "recommended_lowpass_hz": 3000,
-        "horn_coverage_deg": 90,
         "gain_offset_db": -6,
         "gain_offset_db_provenance": "research_estimate",
     }
@@ -727,11 +733,69 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     for driver in draft["driver_research"]["drivers"]:
         assert driver["manufacturer"] == "Example Acoustics"
         assert driver["recommended_lowpass_hz"] == 3000.0
-        assert driver["horn_coverage_deg"] == 90.0
         assert driver["gain_offset_db"] == -6.0
         assert driver["gain_offset_db_provenance"] == "research_estimate"
     for field in verbose:
         assert field in _V2_RESEARCH_DRIVER_FIELDS
+
+
+def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
+    """#2872: the retired key survives the gates but not the record.
+
+    A v2 research result persisted before the deletion — or a chat that still
+    volunteers the key — reaches the same three allowlists a stored manual
+    driver does.  Refusing it there would make an existing draft unsaveable
+    over a field nothing reads, so the gates tolerate it and the normalisers
+    drop it.  The schema itself no longer carries the key: that is what makes
+    this tolerance a migration and not a quiet second definition.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(
+        topology,
+        _operator_inputs(),
+        _manual_settings(),
+    )
+    research = _research_result(request)
+    for driver in research["drivers"]:
+        driver["horn_coverage_deg"] = 90
+    manual_settings = _manual_settings()
+    for driver in manual_settings["drivers"]:
+        driver["horn_coverage_deg"] = 90
+
+    # Gate 1: the v2 result-shape allowlist.
+    validate_driver_research_result_shape(research)
+    # Gates 2 and 3: design_draft's manual-driver allowlist and driver_safety's
+    # re-validation of the same normalised record.
+    draft = build_design_draft(
+        topology,
+        driver_research_request=request,
+        driver_research=research,
+        manual_settings=manual_settings,
+        operator_inputs=_operator_inputs(),
+    )
+
+    for driver in draft["driver_research"]["drivers"]:
+        assert "horn_coverage_deg" not in driver
+    for driver in draft["manual_settings"]["drivers"]:
+        assert "horn_coverage_deg" not in driver
+    assert draft["driver_safety_profile"] is not None
+    assert "horn_coverage_deg" not in _V2_RESEARCH_DRIVER_FIELDS
+
+    # build_design_draft normalises manual_settings before handing them on, so
+    # the draft path alone never puts a raw legacy record in front of gate 3.
+    # This exported builder does: it is the public entry point, and a caller
+    # with a stored record reaches its allowlist directly.
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=manual_settings,
+        driver_research=None,
+        saved_at="2026-08-22T12:00:00Z",
+    )
+    assert profile["issues"] == []
+    assert all(
+        "horn_coverage_deg" not in target for target in profile["targets"]
+    )
 
 
 def test_v2_research_refuses_stale_request_or_target_binding() -> None:
@@ -2174,24 +2238,47 @@ def test_later_confirmation_records_confirmation_time_not_draft_creation(
 def test_component_entry_fields_present_in_all_four_allowlist_gates():
     """Drift guard for the four independent allowlist copies (#1665).
 
-    ``driver_class``/``radiating_diameter_mm``/``horn_coverage_deg``/``pad``
-    must be accepted by every gate that re-validates the same driver record:
-    the two save-path allowlists (whose drift 500s a save), the AI-research
-    paste-back allowlist, and the research staleness-comparison set.  One
-    superset assertion per copy so the next field lands in all four or fails
-    loudly here.
+    ``driver_class``/``radiating_diameter_mm``/``pad`` must be accepted by
+    every gate that re-validates the same driver record: the two save-path
+    allowlists (whose drift 500s a save), the AI-research paste-back
+    allowlist, and the research staleness-comparison set.  One superset
+    assertion per copy so the next field lands in all four or fails loudly
+    here.
     """
     from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
 
-    new_fields = {"driver_class", "radiating_diameter_mm", "horn_coverage_deg", "pad"}
+    new_fields = {"driver_class", "radiating_diameter_mm", "pad"}
     assert new_fields <= set(dd._MANUAL_DRIVER_FIELDS)
     assert new_fields <= set(ds._MANUAL_DRIVER_FIELDS)
     # pad is deliberately NOT researchable; the research gates carry the
-    # three researchable fields only.
+    # two researchable fields only.
     researchable = new_fields - {"pad"}
     assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
     assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)
+
+
+def test_deleted_component_entry_field_is_gone_from_every_schema_copy():
+    """The same drift guard, in the deletion direction (#2872).
+
+    ``horn_coverage_deg`` was a fourth component-entry field.  Deleting it
+    from three of the four copies and forgetting the fourth would leave a
+    schema that still accepts and stores a value nothing reads — the exact
+    state the deletion was for.  It survives in one place only: the named
+    legacy set the gates tolerate and the normalisers drop.
+    """
+    from jasper.active_speaker import design_draft as dd
+    from jasper.active_speaker import driver_safety as ds
+    from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS
+
+    for schema in (
+        dd._MANUAL_DRIVER_FIELDS,
+        ds._MANUAL_DRIVER_FIELDS,
+        ds._V2_RESEARCH_DRIVER_FIELDS,
+        dd._V2_RESEARCH_COMPARABLE_FIELDS,
+    ):
+        assert "horn_coverage_deg" not in schema
+    assert "horn_coverage_deg" in LEGACY_DROPPED_DRIVER_FIELDS
 
 
 # --- #2186: the estimate-friendly research contract -------------------------
