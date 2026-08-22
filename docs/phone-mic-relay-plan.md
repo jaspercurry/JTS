@@ -959,10 +959,13 @@ mode for a tool whose entire job is a trustworthy result.
   by #1384) and that site is **not reachable from any live household flow
   today**: it runs only when `ambient_duration_s` is supplied, and **both**
   remaining suppliers are dead, each for a different reason:
-  1. the commissioning capture producer — `RawCaptureTransport` is a `TypeAlias`
-     for an async callable, and no production code ever supplies one (the
-     service's `capture_next` / `capture_post_apply` entry points have no
-     production caller, and non-test construction passes `None`);
+  1. the commissioning capture producer — **deleted 2026-08-22 (#2362)**, where
+     it was previously only unwired. `RawCaptureTransport` was a `TypeAlias` for
+     an async callable no production code ever supplied; the service's
+     `capture_next` / `capture_post_apply` entry points and the host's
+     `capture_next_with_runtime` are now gone, and `CommissioningEvidenceHost`
+     no longer accepts a transport, so this supplier can no longer arm the gate
+     at all;
   2. the web capture chain `correction_crossover_backend.record_driver_capture`
      → `web_measurement.record_driver_capture` →
      `commissioning_capture.record_driver_acoustic_capture` — dead because #1688

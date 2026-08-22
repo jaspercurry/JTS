@@ -945,8 +945,7 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
 
     ``runtime_contract.classify_active_bass_extension_graph`` calls
     ``normalize_config_raw`` from INSIDE the DSP writer lock — via
-    ``commissioning_runtime._run_locked`` and
-    ``commissioning_verification._capture_current_graph``. Its neighbours
+    ``commissioning_runtime._run_locked``. Its neighbours
     ``set_active_config_raw`` and ``patch_config`` both take
     ``camilla_graph_mutation``, so making this one "consistent" with them is a
     plausible three-line edit.

@@ -676,18 +676,14 @@ _ENDPOINT_EXEMPT_CALL_SITES = {
     # The isolated producer is fingerprint-ONLY: its ``normal_raw`` is loaded to
     # compute ``active_raw_fingerprint`` and the text is then discarded.
     "jasper/active_speaker/commissioning_isolated_producer.py",
-    # The host is NOT fingerprint-only, and an earlier version of this comment
-    # said it was. Its ``normal_active_raw`` is fingerprinted AND rides into
-    # ``SummedGraphRequest`` -> ``commissioning_runtime`` (which mutates only
-    # ``devices["volume_limit"]``) -> ``port.apply_active_raw`` ->
-    # ``camilla.set_active_config_raw``, so the snapshot's ``devices:`` block
-    # would reach a live CamillaDSP verbatim. It stays exempt because it is BOTH
-    # halves — moving its endpoint without moving the stored fingerprints is the
-    # coupled decision above — and because the chain is not wired today:
-    # ``CommissioningCaptureService.capture_next`` has no production caller, so
-    # nothing reaches the apply. Wiring a handler to it re-opens this — tracked
-    # as #2362.
-    "jasper/active_speaker/commissioning_host.py",
+    # ``jasper/active_speaker/commissioning_host.py`` USED to sit here (#2362):
+    # its ``normal_active_raw`` was fingerprinted AND rode into
+    # ``SummedGraphRequest`` -> ``commissioning_runtime`` -> ``port.apply_active_raw``
+    # -> ``camilla.set_active_config_raw``, so the snapshot's ``devices:`` block
+    # would have reached a live CamillaDSP verbatim. The exemption rested on the
+    # chain being unwired. That seam is now DELETED rather than derived: the host
+    # no longer recomposes a baseline at all, so it is no longer a call site and
+    # the walk below holds nothing back for it.
     # ``jasper/active_speaker/web_commissioning.py`` USED to sit here (#2344): it
     # WRITES the automatic-summed measurement graph and loads it into CamillaDSP
     # to play the excitation, so inheriting the snapshot's lane swept a ring-armed

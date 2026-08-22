@@ -90,7 +90,9 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   the shared writer lock and uses Shared's exact DSP-state identity for fresh
   readback and restoration; Shared still owns no candidate, apply, receipt, or
   Room policy. Active now uses the same admitted playback/capture primitives
-  for three current-graph post-apply repeats and persists its own receipt.
+  for three current-graph post-apply repeats and persists its own receipt
+  (the post-apply half was retired by #2362 on 2026-08-22 — see "The gaps"
+  below).
 - `evidence_identity.py` adds neutral `ArtifactIdentity`, `CaptureIdentity`, and
   `ReplayIdentity` values. They bind exact feature-owned files, raw captures,
   replay inputs, admission artifacts, algorithm id/version, geometry, placement,
@@ -130,7 +132,8 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   bounded attempt/journal mutation APIs. Production isolated and summed
   adapters now use that run/store authority; Active's production verification
   service constructs, persists, and strictly reopens the eligibility receipt
-  after all exact targets pass.
+  after all exact targets pass (retired by #2362 on 2026-08-22 — see "The gaps"
+  below; nothing can produce a post-apply capture now).
   The breaking admitted-capture shape and its post-apply/receipt containers are
   all schema version 2; schema version 1 is intentionally rejected because no
   schema-v2 is the only production receipt format.
@@ -385,7 +388,9 @@ and generation-specific signed geometry to that host (retired by W5b on
 2026-07-24 — see "The gaps" below; `kind=summed` is no longer a shipped
 capture kind). Active, not this shared
 module, now publishes the candidate, performs exact apply/readback, evaluates
-three post-apply repeats, and exposes the receipt-backed Room decision.
+three post-apply repeats, and exposes the receipt-backed Room decision (the
+post-apply repeat/receipt half was retired by #2362 on 2026-08-22 — see "The
+gaps" below).
 The shipped 350 Hz lower crossover exceeds the shared 25-point exhaustive-walk
 budget at the allowed 100 µs maximum step. Shared now represents it with a
 deterministic schedule of 15 symmetric coarse coordinates plus at most two
@@ -877,6 +882,24 @@ create a second retention system.
   duplicate of the `web_measurement` capture path that nothing reached after the
   move — were deleted (Codex-week review C4a-1). See "L1 measured level match"
   below.
+- **The post-apply verification/receipt half is RETIRED (#2362, 2026-08-22),
+  and the Wave 1/Wave 3 paragraphs above still describe it in the present
+  tense.** Those paragraphs were written when the machinery existed and were
+  never re-verified for reachability (see the "NOT re-verified in this pass"
+  note below). It had already been unreachable in production for months —
+  `CommissioningCaptureService.capture_next` / `capture_post_apply` and
+  `CommissioningEvidenceHost.capture_next_with_runtime` had **no production
+  caller** — and #2362 deleted them rather than wiring them, so the removal
+  changed no shipped behaviour. What follows from it: nothing in `jasper/`
+  can write a post-apply repeat capture any more (`_capture_source_path` in
+  `commissioning_verification.py` now has a reader and no writer), so the
+  `applied_unverified` → `verified` transition cannot complete, and the
+  `correction.crossover_verification_{passed,failed}` events declared in that
+  module cannot fire. `CommissioningVerificationService.status()` and the
+  rest of its reopen/verdict surface survive and are still reached from
+  `CommissioningCaptureService.status()`. Re-arming post-apply verification is
+  a new build against the live `web_commissioning` sweep-capture doors, not a
+  revert.
 - ~~**`DriverSpec.sensitivity_db` is stored but never read to set gain.**~~
   **CLOSED.** `baseline_profile._derive_corrections` derives an interim per-driver
   trim from the declared sensitivities (the ~25 dB woofer/horn gap is

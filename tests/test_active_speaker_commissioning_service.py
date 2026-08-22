@@ -9,8 +9,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jasper.active_speaker import commissioning_service as service_module
+from jasper.active_speaker.baseline_profile import (
+    recompose_applied_baseline_yaml,
+    topology_config_fingerprint,
+)
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
@@ -18,11 +23,12 @@ from jasper.active_speaker.commissioning_evidence_store import (
 )
 from jasper.active_speaker.commissioning_evidence import (
     CompleteCommissioningEvidence,
+    active_region_context_fingerprint,
     derive_region_evidence_plan,
 )
 from jasper.active_speaker.commissioning_host import (
+    CommissioningHostAuthoritySnapshot,
     CommissioningHostError,
-    RegionCaptureOperation,
 )
 from jasper.active_speaker.commissioning_lifecycle import CommissioningTransition
 from jasper.active_speaker.commissioning_run import CommissioningRunStore
@@ -31,6 +37,17 @@ from jasper.active_speaker.commissioning_service import (
     CommissioningServiceError,
     commissioning_runtime_port,
 )
+from jasper.active_speaker.driver_safety import (
+    build_driver_safety_profile,
+    evaluate_driver_safety_profile,
+)
+from jasper.active_speaker.measurement import (
+    active_driver_targets,
+    start_active_comparison_set,
+)
+from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.audio_measurement.calibration import CalibrationCurve
+from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_evidence import (
     _Harness,
@@ -41,7 +58,136 @@ from tests.test_active_speaker_commissioning_evidence import (
 from tests.test_active_speaker_commissioning_evidence_store import (
     _materialize_isolated,
 )
-from tests.test_active_speaker_commissioning_host import _plan
+from tests.test_active_speaker_driver_safety import _manual_settings
+from tests.test_active_speaker_profile import _two_way_preset
+
+
+def _plan(
+    tmp_path: Path,
+    evidence_store: CommissioningEvidenceStore,
+    *,
+    owner_id: str,
+    run_store: CommissioningRunStore | None = None,
+    authority: CommissioningHostAuthoritySnapshot | None = None,
+):
+    """Build one exact region-evidence plan and its authority snapshot.
+
+    Lived in ``test_active_speaker_commissioning_host.py`` until #2362 deleted
+    the host's capture-driving surface and emptied that module; this is its only
+    consumer.
+    """
+
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
+    topology = mono_output_topology(mode="active_2_way")
+    if authority is None:
+        safety_profile = build_driver_safety_profile(
+            topology,
+            manual_settings=_manual_settings(),
+            driver_research=None,
+            saved_at="2026-07-14T12:00:00Z",
+        )
+        safety = evaluate_driver_safety_profile(safety_profile, topology)
+        assert safety.confirmed_and_current
+        locks = {
+            target["target_id"]: {
+                "target_id": target["target_id"],
+                "speaker_group_id": target["speaker_group_id"],
+                "role": target["role"],
+                "tone_frequency_hz": (
+                    250.0 if target["role"] == "woofer" else 6250.0
+                ),
+                "tone_peak_dbfs": -24.0,
+                "commissioning_gain_db": 0.0,
+                "locked_main_volume_db": (
+                    -22.0 if target["role"] == "woofer" else -32.0
+                ),
+            }
+            for target in active_driver_targets(topology)
+        }
+        comparison_set = start_active_comparison_set(
+            topology,
+            profile_context_id=str(safety.profile_fingerprint),
+            setup_sha256=_hash("setup"),
+            device_sha256=_hash("device"),
+            calibration_id="test-calibration",
+            driver_level_locks=locks,
+            bundle_session_id=evidence_store.session_id,
+            state_path=tmp_path / "authority-measurements.json",
+            now="2026-07-14T12:00:01Z",
+        )
+        applied_profile = {
+            "artifact_schema_version": 1,
+            "kind": "jts_active_speaker_baseline_profile_candidate",
+            "status": "applied",
+            "baseline_id": "host-baseline",
+            "recomposition_snapshot": {
+                "schema_version": 1,
+                "domain": "full",
+                "topology_id": topology.topology_id,
+                "topology_fingerprint": topology_config_fingerprint(topology),
+                "preset": preset.to_dict(),
+                "playback_device": "hw:Loopback,0",
+                "corrections": {
+                    "woofer": {
+                        "gain_db": 0.0,
+                        "delay_ms": 0.0,
+                        "inverted": False,
+                    },
+                    "tweeter": {
+                        "gain_db": -6.0,
+                        "delay_ms": 0.0,
+                        "inverted": False,
+                    },
+                },
+            },
+        }
+        authority = CommissioningHostAuthoritySnapshot(
+            topology=topology,
+            preset=preset,
+            safety_profile=safety_profile,
+            comparison_set=comparison_set,
+            applied_profile=applied_profile,
+            calibration_id="test-calibration",
+            calibration=CalibrationCurve(
+                freqs_hz=[20.0, 20_000.0],
+                correction_db=[0.0, 0.0],
+            ),
+        )
+    else:
+        assert authority.topology == topology
+        preset = authority.preset
+    safety = evaluate_driver_safety_profile(authority.safety_profile, topology)
+    assert safety.profile_fingerprint is not None
+    store = run_store or CommissioningRunStore(
+        path=tmp_path / "run.json", owner_id=owner_id
+    )
+    run = store.claim_owner() if run_store is not None else store.start(
+        session_id=evidence_store.session_id,
+        session_fingerprint=str(authority.comparison_set["fingerprint"]),
+    )
+    assert run is not None
+    normal_active_raw, issues = recompose_applied_baseline_yaml(
+        topology,
+        applied_profile=authority.applied_profile,
+    )
+    assert normal_active_raw is not None and issues == []
+    context_fingerprint = active_region_context_fingerprint(
+        baseline_active_raw_fingerprint=NormalizedActiveRawIdentity(
+            yaml.safe_load(normal_active_raw)
+        ).active_raw_fingerprint,
+        calibration_id=authority.calibration_id,
+        calibration=authority.calibration,
+    )
+    plan = derive_region_evidence_plan(
+        preset,
+        topology,
+        run=run,
+        protected_safety_profile_fingerprint=safety.profile_fingerprint,
+        comparison_set_fingerprint=str(authority.comparison_set["fingerprint"]),
+        threshold_profile_fingerprint=_hash("thresholds"),
+        context_fingerprint=context_fingerprint,
+    )
+    return store, topology, plan, authority
 
 
 @dataclass(frozen=True)
@@ -259,30 +405,6 @@ def test_out_of_bounds_geometry_is_refused_before_write_once_persistence(
     assert captured.value.code == "geometry_out_of_bounds"
     with pytest.raises(CommissioningEvidenceStoreError):
         harness.evidence_store.identify_artifact(artifact_path)
-
-
-def test_service_composes_geometry_into_the_existing_host_operation_order(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    harness = _service_harness(tmp_path, monkeypatch)
-    target = harness.plan.targets[0]
-    harness.service.attest_geometry(
-        expected_target_fingerprint=target.fingerprint,
-        signed_acoustic_path_difference_mm=-8.0,
-    )
-
-    current = harness.service._current()
-    host = harness.service._host(current, raw_capture_transport=None)
-    operation = host.next_operation()
-
-    assert isinstance(operation, RegionCaptureOperation)
-    assert operation.target == target
-    assert operation.evidence_kind == "normal"
-    assert operation.capture_ordinal == 0
-    assert operation.required_capture_count == 3
-    assert operation.issuance_id is not None
-    assert host.next_operation() == operation
 
 
 def test_measured_status_requires_exact_complete_evidence_readback(

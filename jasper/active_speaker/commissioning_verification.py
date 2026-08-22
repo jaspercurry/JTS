@@ -13,19 +13,15 @@ uses the production admitted recorder path for three fixed-axis repeats.
 from __future__ import annotations
 
 import logging
-import math
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
-from jasper.audio_measurement.correction_lane import correction_play_device
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
-    NormalizedActiveRawIdentity,
     json_fingerprint,
 )
-from jasper.dsp_apply import dsp_writer_lock
 from jasper.log_event import log_event
 
 from .commissioning_evidence_store import (
@@ -56,22 +52,10 @@ from .commissioning_run import (
     CommissioningRunHandle,
     CommissioningRunStore,
 )
-from .commissioning_runtime import (
-    AdmittedCaptureCallbackResult,
-    CommissioningFreshReadback,
-    CommissioningLiveContext,
-    CommissioningRuntimePort,
-    snapshot_exact_dsp_state,
-)
-from .runtime_contract import classify_active_bass_extension_graph
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.null_walk import NullWalkSpec
 
-    from .commissioning_capture_producer import (
-        RawCaptureTransport,
-        SummedCaptureProducer,
-    )
     from .commissioning_evidence import RegionEvidencePlan, RegionEvidenceTarget
 
 POST_APPLY_CAPTURE_SOURCE = "active_speaker_post_apply_verification"
@@ -191,115 +175,6 @@ class PostApplyCaptureOperation:
     @property
     def target_fingerprint(self) -> str:
         return self.required_target.target_fingerprint
-
-
-def _fresh_readback(
-    exact: Any,
-    *,
-    bass_profile_summary: Mapping[str, Any],
-) -> CommissioningFreshReadback:
-    state = exact.state
-    graph = NormalizedActiveRawIdentity(state["normalized_active_raw"])
-    volume = state["listening_volume_db"]
-    if isinstance(volume, bool) or not isinstance(volume, (int, float)):
-        raise CommissioningVerificationError(
-            "applied_readback_invalid", "applied listening volume is unavailable"
-        )
-    value = float(volume)
-    if not math.isfinite(value) or value > 0.0:
-        raise CommissioningVerificationError(
-            "applied_readback_invalid", "applied listening volume is invalid"
-        )
-    return CommissioningFreshReadback(
-        graph=graph,
-        active_raw=str(state["active_raw"]),
-        config_path=str(state["config_path"]),
-        listening_volume_db=value,
-        delay_confirmation=None,
-        bass_profile_summary=bass_profile_summary,
-    )
-
-
-async def _capture_current_graph(
-    *,
-    port: CommissioningRuntimePort,
-    config_dir: str | Path,
-    applied: AppliedCandidateProof,
-    producer: SummedCaptureProducer,
-    operation: PostApplyCaptureOperation,
-) -> AdmittedCaptureProof:
-    """Hold the writer lock and prove the applied graph before both admissions."""
-
-    async with dsp_writer_lock(config_dir, source=POST_APPLY_CAPTURE_SOURCE):
-        from jasper.active_speaker.baseline_profile import baseline_profile_state_path
-        from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
-        from jasper.active_speaker.staging import staged_metadata_path
-        from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
-        from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
-
-        authority_paths = port._bass_extension_authority_paths or {
-            "statefile_path": Path(DEFAULT_CAMILLA_STATEFILE),
-            "applied_baseline_path": baseline_profile_state_path(),
-            "profile_path": DEFAULT_PROFILE_PATH,
-            "intent_path": BASS_EXTENSION_APPLY_INTENT_PATH,
-            "staged_metadata_path": staged_metadata_path(),
-        }
-        authority = await classify_active_bass_extension_graph(
-            producer.topology,
-            read_active_graph_text=port.read_active_raw,
-            canonicalize_graph_text=port.canonicalize_raw,
-            **authority_paths,
-        )
-        bass_profile_summary = authority.details.get(
-            "bass_extension_profile_summary"
-        )
-        if authority.allowed is not True or not isinstance(
-            bass_profile_summary, Mapping
-        ):
-            raise CommissioningVerificationError(
-                "graph_authority_unproven",
-                "live CamillaDSP graph and bass-extension authority could not be proved",
-            )
-
-        initial_exact = await snapshot_exact_dsp_state(port)
-        if initial_exact.fingerprint != applied.fresh_readback_fingerprint:
-            raise CommissioningVerificationError(
-                "applied_readback_stale",
-                "the live graph, config path, or listening volume changed after apply",
-            )
-        initial = _fresh_readback(
-            initial_exact,
-            bass_profile_summary=bass_profile_summary,
-        )
-
-        async def fresh() -> CommissioningFreshReadback:
-            exact = await snapshot_exact_dsp_state(port)
-            if exact.fingerprint != applied.fresh_readback_fingerprint:
-                raise CommissioningVerificationError(
-                    "applied_readback_stale",
-                    "the applied graph changed before admitted playback",
-                )
-            return _fresh_readback(
-                exact,
-                bass_profile_summary=bass_profile_summary,
-            )
-
-        result: AdmittedCaptureCallbackResult[
-            AdmittedCaptureProof
-        ] = await producer.capture_post_apply(
-            operation,
-            CommissioningLiveContext(
-                graph=initial.graph,
-                active_raw=initial.active_raw,
-                config_path=initial.config_path,
-                listening_volume_db=initial.listening_volume_db,
-                delay_confirmation=None,
-                fresh_readback=fresh,
-                bass_profile_summary=bass_profile_summary,
-            ),
-        )
-        await fresh()
-        return result.payload
 
 
 class CommissioningVerificationService:
@@ -784,148 +659,6 @@ class CommissioningVerificationService:
             "failure": None,
             "receipt": None,
         }
-
-    def _operation(
-        self, target: RequiredVerificationTarget, ordinal: int
-    ) -> PostApplyCaptureOperation:
-        from .measurement import active_driver_targets
-
-        regions = tuple(
-            item
-            for item in self.plan.targets
-            if item.speaker_group_id == target.speaker_group_id
-        )
-        if len(regions) != 1:
-            raise CommissioningVerificationError(
-                "launch_scope_unsupported",
-                "post-apply verification requires one 2-way region per group",
-            )
-        region = regions[0]
-        physical = {
-            (str(item["speaker_group_id"]), str(item["role"])): item
-            for item in active_driver_targets(self.target_plan.topology)
-        }
-        lower = physical.get((target.speaker_group_id, region.lower_role))
-        upper = physical.get((target.speaker_group_id, region.upper_role))
-        if lower is None or upper is None:
-            raise CommissioningVerificationError(
-                "verification_target_stale",
-                "post-apply region no longer resolves to its physical drivers",
-            )
-        attempt = self.run_store.reserve_attempt(
-            self.run,
-            target_id=f"post_apply:{target.target_id}",
-            target_fingerprint=target.target_fingerprint,
-            reuse_existing=True,
-        )
-        return PostApplyCaptureOperation(
-            plan_fingerprint=self.plan.fingerprint,
-            target=region,
-            required_target=target,
-            attempt=attempt,
-            placement_fingerprint=target.placement_fingerprint,
-            driver_target_fingerprints=(
-                str(lower["target_fingerprint"]),
-                str(upper["target_fingerprint"]),
-            ),
-            lower_channels=(int(lower["output_index"]),),
-            upper_channels=(int(upper["output_index"]),),
-            capture_ordinal=ordinal,
-            commissioning_context_fingerprint=self.context_fingerprint,
-        )
-
-    async def capture_next(
-        self,
-        port: CommissioningRuntimePort,
-        *,
-        raw_capture_transport: RawCaptureTransport,
-        config_dir: str | Path,
-    ) -> dict[str, Any]:
-        from .commissioning_capture_producer import (
-            CurrentCaptureAuthority,
-            SummedCaptureProducer,
-        )
-        from .test_signal_plan import CROSSOVER_CAPTURE_PLAY_DEADLINE_S
-
-        if self.run_store.lifecycle_state(self.run) != "applied_unverified":
-            raise CommissioningVerificationError(
-                "verification_not_ready",
-                "post-apply capture requires an applied unverified candidate",
-            )
-        current_status = self.status()
-        if current_status["status"] != "applied_unverified":
-            return current_status
-        selected = next(
-            (
-                (target, len(captures) + 1)
-                for target in self.target_plan.targets
-                if len(captures := self._captures(target)) < POST_APPLY_REQUIRED_REPEATS
-            ),
-            None,
-        )
-        if selected is None:
-            return self.status()
-        target, ordinal = selected
-        operation = self._operation(target, ordinal)
-
-        def load_capture_authority() -> CurrentCaptureAuthority:
-            authority = self.load_current_authority()
-            return CurrentCaptureAuthority(
-                safety_profile=authority.safety_profile,
-                calibration=authority.calibration,
-            )
-
-        producer = SummedCaptureProducer(
-            authority=self.plan.authority,
-            plan_fingerprint=self.plan.fingerprint,
-            topology=self.target_plan.topology,
-            evidence_store=self.evidence_store,
-            load_current_authority=load_capture_authority,
-            raw_transport=raw_capture_transport,
-            # The lane's transport reader (P6c-ii): armed boxes verify
-            # through the ring lane, unarmed through the aloop alias.
-            alsa_device=correction_play_device(),
-            playback_timeout_s=CROSSOVER_CAPTURE_PLAY_DEADLINE_S,
-        )
-        with self.run_store.claim_live_execution(self.run):
-            proof = await _capture_current_graph(
-                port=port,
-                config_dir=config_dir,
-                applied=self.applied_candidate,
-                producer=producer,
-                operation=operation,
-            )
-            artifact = self.evidence_store.publish_json_artifact(
-                _capture_source_path(self.run, target, ordinal), proof.to_dict()
-            )
-            reopened = AdmittedCaptureProof.from_mapping(
-                self.evidence_store.reopen_json_artifact(artifact)
-            )
-            if reopened != proof:
-                raise CommissioningVerificationError(
-                    "verification_readback_mismatch",
-                    "post-apply capture changed on exact reopen",
-                )
-            log_event(
-                logger,
-                "correction.active_commissioning_verification_capture_committed",
-                session=self.run.session_id,
-                run_id=self.run.run_id,
-                owner_generation=self.run.owner_generation,
-                group=target.speaker_group_id,
-                capture_ordinal=ordinal,
-                capture_fingerprint=proof.fingerprint,
-                capture_artifact_fingerprint=artifact.fingerprint,
-            )
-        result = self.status()
-        result.update(
-            {
-                "capture_fingerprint": proof.fingerprint,
-                "speaker_group_id": target.speaker_group_id,
-                "capture_ordinal": ordinal,
-            }
-        )
-        return result
 
 
 def read_commissioning_room_authority(

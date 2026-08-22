@@ -780,8 +780,7 @@ class CamillaController:
         "make it match its siblings" is the tempting wrong edit — but this call
         mutates nothing, and the live-graph boundary
         (``runtime_contract.classify_active_bass_extension_graph``) invokes it
-        from *inside* that lock via ``commissioning_runtime._run_locked`` and
-        ``commissioning_verification._capture_current_graph``.
+        from *inside* that lock via ``commissioning_runtime._run_locked``.
 
         What taking the lock would actually cost, stated precisely because an
         earlier version of this note overstated it as a hang: the writer lock is

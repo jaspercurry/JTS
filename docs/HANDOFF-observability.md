@@ -113,12 +113,16 @@ shared chokepoint both the relay flow and `web_measurement` call), and
 name; there is no separate `apply_failed`). Common fields, included when
 available and omitted otherwise: `session`, `group`, `role`, `verdict`,
 `outcome`, `reason`, `snr_db`, `floor_hz`, `graph_fingerprint`,
-`candidate_fingerprint`, `applied_fingerprint`. Post-apply commissioning now
-emits `correction.crossover_verification_passed` or
-`correction.crossover_verification_failed` exactly once from
+`candidate_fingerprint`, `applied_fingerprint`. Post-apply commissioning
+declares `correction.crossover_verification_passed` and
+`correction.crossover_verification_failed` in
 [`commissioning_verification.py`](../jasper/active_speaker/commissioning_verification.py),
-with the exact run, target/applied authority, and receipt or failure artifact
-identity as relevant. Three more names are
+each emitted at most once with the exact run, target/applied authority, and
+receipt or failure artifact identity as relevant — but **neither can fire
+today**. Both branches need accumulated post-apply repeat captures, and the
+only writer of those captures was the commissioning-capture seam deleted in
+#2362; it had no production caller before that deletion either, so this pair
+was already unreachable rather than newly broken. Three more names are
 **reserved but never emitted yet** — declared in
 `commissioning_capture.RESERVED_CROSSOVER_EVENTS` with a docstring naming which
 future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3)
