@@ -5855,18 +5855,6 @@ class V2ConductorContext:
     # it needs no schema or allowlist change. A role absent here simply gets no
     # beaming prior, disclosed as such rather than assuming a diameter.
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
-    # Per-role declared ``crossover_search_band_hz`` — the range each driver
-    # may be crossed over IN, intersected across the participating roles by
-    # ``crossover_v2.fc_sweep.resolve_fc_search_band``. Like the diameter above
-    # it has been a REQUIRED declaration since the safety profile shipped
-    # (``driver_safety._target_issues`` refuses a target without one); without
-    # it a corner below the tweeter's own declaration would read as admissible.
-    # A role maps to ``None`` when its declaration is absent or malformed, which
-    # the resolver turns into "no admissible corner" with that role named —
-    # never "anything goes".
-    crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = field(
-        default_factory=dict
-    )
     # Flat-linearization plan PR-4: the tweeter's confirmed
     # ``measurement_band_hz`` — the contract-derived echo/null analysis band
     # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
@@ -6052,7 +6040,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
-        resolve_driver_crossover_search_band_hz,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
     )
@@ -6164,16 +6151,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         )
     except (ExcitationSafetyPlanError, ValueError):
         tweeter_measurement_band_hz = None
-    # R17: every PARTICIPATING role's declared crossover search band, keyed by
-    # role. Both roles are always present as KEYS — a missing declaration is a
-    # ``None`` VALUE, not an absent key, because the intersection rule needs to
-    # know the role participated in order to fail closed on it.
-    crossover_search_band_hz_by_role = {
-        role: resolve_driver_crossover_search_band_hz(
-            safety_profile, role_targets[role],
-        )
-        for role in role_targets
-    }
     region = preset.crossover_regions[0]
     fc_hz = float(region.fc_hz)
     session_volume_db = derive_session_volume_db(
@@ -6218,7 +6195,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
         radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
-        crossover_search_band_hz_by_role=crossover_search_band_hz_by_role,
         tweeter_measurement_band_hz=tweeter_measurement_band_hz,
     )
 
@@ -7243,9 +7219,6 @@ def prepare_v2_session(
         AlignmentPrescriptionRefused,
         read_alignment_prescription,
     )
-    from jasper.active_speaker.crossover_v2.fc_sweep import (
-        resolve_fc_search_band,
-    )
     from jasper.active_speaker.crossover_v2.topology_prescription import (
         TOPOLOGY_PRESCRIPTION_KEY,
         TopologyPrescriptionRefused,
@@ -7336,13 +7309,13 @@ def prepare_v2_session(
     #
     # Every bound it applies is a DECLARATION, asked of the module that owns
     # it: the two role bands a corner is admissible within (read positionally,
-    # in the order this context builds them — woofer first), the intersected
-    # declared search band, and the upper driver's declared protective
-    # high-pass slope. The ka/beaming onset rides along as DISCLOSURE only
-    # (#1675 makes it guidance, and no admissibility bound anywhere reads it).
+    # in the order this context builds them — woofer first) and the upper
+    # driver's declared protective high-pass slope. The ka/beaming onset rides
+    # along as DISCLOSURE only (#1675 makes it guidance, and no admissibility
+    # bound anywhere reads it).
     #
     # The declarations are gathered ONLY for a request that carries a pin, and
-    # that branch is deliberate rather than an optimisation. Four of this
+    # that branch is deliberate rather than an optimisation. Several of this
     # context's fields are read nowhere else on this path; deriving them
     # unconditionally would make an ORDINARY round's session-open depend on
     # declarations it is not using — including a positional read of
@@ -7361,9 +7334,6 @@ def prepare_v2_session(
                 raw_topology,
                 declared_floor_hz=tweeter_band.lower_hz,
                 lower_driver_ceiling_hz=woofer_band.upper_hz,
-                search_band_hz=resolve_fc_search_band(
-                    context.crossover_search_band_hz_by_role
-                ).band_hz,
                 minimum_slope_db_per_octave=(
                     resolve_driver_protection_slope_db_per_octave(
                         context.safety_profile, context.role_targets["tweeter"],
@@ -7630,11 +7600,6 @@ def prepare_v2_session(
             driver_spacing_m=context.driver_spacing_m,
             driver_class_by_role=context.driver_class_by_role,
             radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-            # R17. Threaded on the MEASURING session only — the verify re-arm
-            # below runs no lateral walk (it maps VERIFY alone), so the Fc
-            # selector cannot fire there and an argument passed to it would be
-            # dead rather than symmetric.
-            crossover_search_band_hz_by_role=context.crossover_search_band_hz_by_role,
             # #2732 P2. From the SAME take the map and the spec above read.
             lateral_consumer=lateral_consumer,
             lateral_prompts=lateral_prompts,

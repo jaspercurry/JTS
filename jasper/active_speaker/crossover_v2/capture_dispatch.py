@@ -450,7 +450,7 @@ def verify_integrity_screens(
 # Private on purpose, and re-exported from the flow under these exact
 # spellings, because the session calls them by those names. The precedent
 # for a private name crossing a module boundary is ``fc_sweep``'s
-# ``_fc_rejection`` / ``_FC_GRID_EPS_HZ``.
+# ``_fc_rejection``.
 # --------------------------------------------------------------------------- #
 
 # Measurement-honesty gate G2 (2026-07-22): an ``event=outputd.xrun`` playback

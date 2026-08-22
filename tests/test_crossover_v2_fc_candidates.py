@@ -1,13 +1,16 @@
 """The declarations that say WHERE this speaker may be crossed (#1894).
 
 Hardware-free throughout, in three parts: the ka/beaming geometry (#1675), the
-declared diameter's route from the draft to the conductor, and the two owners of
-corner admissibility — ``_fc_rejection`` for "is this corner within every
-declared bound" and ``resolve_fc_search_band`` for "which roles' declarations
-bind the band".
+declared diameter's route from the draft to the conductor, and the single owner
+of corner admissibility — ``_fc_rejection``, "is this corner within both
+drivers' declared hard excitation bands".
 
 The corner is executed, not hunted: a round crosses where the household declared
 or where an operator pinned, so nothing here ranks one corner against another.
+And only a damage stop refuses one: the invented ``crossover_search_band_hz``
+that used to narrow the two hard bands was deleted by the 2026-08-22 owner
+ruling (#2870), so the bounds pinned here are exactly the two that name a
+component-damage mechanism.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
 from jasper.active_speaker.crossover_v2_flow import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_OUTSIDE_SEARCH_BAND,
 )
 
 # The JTS3 declaration, so the numbers below are the ones the owner's speaker
@@ -89,59 +91,75 @@ def test_a_corner_exactly_at_the_declared_floor_is_legal():
     epsilon under the floor is still refused, and refused by name.
     """
     assert flow._fc_rejection(
-        JTS3_HF_FLOOR_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
+        JTS3_HF_FLOOR_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) is None
     # One epsilon below is still refused, and refused BY NAME.
     assert flow._fc_rejection(
         math.nextafter(JTS3_HF_FLOOR_HZ, 0.0),
-        JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
+        JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) == FC_REJECT_BELOW_DECLARED_FLOOR
     # jts3's shipped corner was legal before this ruling and stays legal.
     assert JTS3_CONFIGURED_HZ > JTS3_HF_FLOOR_HZ
     assert flow._fc_rejection(
-        JTS3_CONFIGURED_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ, None,
+        JTS3_CONFIGURED_HZ, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
     ) is None
 
 
-@pytest.mark.parametrize("fc, floor, ceiling, search, expected", [
-    (1500.0, 1600.0, 4000.0, None, FC_REJECT_BELOW_DECLARED_FLOOR),
+@pytest.mark.parametrize("fc, floor, ceiling, expected", [
+    (1500.0, 1600.0, 4000.0, FC_REJECT_BELOW_DECLARED_FLOOR),
     # Exact is legal (owner ruling 2026-08-17): AT the floor clears
     # every bound, so it produces no rejection reason at all.
-    (1600.0, 1600.0, 4000.0, None, None),
-    (4500.0, 1600.0, 4000.0, None, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
-    (1800.0, 1600.0, 4000.0, (2000.0, 2500.0), FC_REJECT_OUTSIDE_SEARCH_BAND),
+    (1600.0, 1600.0, 4000.0, None),
+    (4500.0, 1600.0, 4000.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
+    # #2870: 2600 Hz sits between jts3's declared bands and is now ADMITTED.
+    # It was refused ``outside_declared_search_band`` until the search band was
+    # deleted, purely by an invented 2500 Hz ceiling neither driver declared.
+    (2600.0, 1600.0, 4000.0, None),
 ])
-def test_every_bound_has_a_named_reason(fc, floor, ceiling, search, expected):
+def test_every_bound_has_a_named_reason(fc, floor, ceiling, expected):
     """No bare numbers reach a household: each bound is a declaration someone
     confirmed, so each refusal names which one. Ordered hardest-first, so a
     value outside two bounds reports the safety one."""
-    assert flow._fc_rejection(fc, floor, ceiling, search) == expected
+    assert flow._fc_rejection(fc, floor, ceiling) == expected
 
 
-def test_the_band_edge_tolerance_absorbs_one_decimal_of_rounding():
-    """A corner is spelled to one decimal everywhere it is declared, pinned or
-    displayed, so the band check must not refuse a value rounding put ON the
-    edge it is being checked against — while still refusing one genuinely
-    outside.
+def test_only_a_declared_hard_band_can_refuse_a_corner():
+    """#2870's whole content, pinned as a property rather than a table.
 
-    Both directions, because a tolerance is only correct if it has a far side:
-    a one-sided pin would pass just as well against no tolerance at all, or
-    against one wide enough to admit a corner the declaration excludes.
+    Every corner strictly inside both declared hard bands is admissible, with
+    no third bound left that can narrow them. The sweep is what makes this more
+    than a restatement of the two comparisons: before the ruling, a declared
+    search band could refuse any of these, and half of jts3's own range was.
     """
-    band = (2000.0, 2500.0)
-    eps = flow._FC_GRID_EPS_HZ
+    for fc in range(int(JTS3_HF_FLOOR_HZ), int(JTS3_WOOFER_CEILING_HZ) + 1, 50):
+        assert flow._fc_rejection(
+            float(fc), JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
+        ) is None, fc
+    # …and the two edges still bite, one step outside each.
+    assert flow._fc_rejection(
+        JTS3_HF_FLOOR_HZ - 0.1, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
+    ) == FC_REJECT_BELOW_DECLARED_FLOOR
+    assert flow._fc_rejection(
+        JTS3_WOOFER_CEILING_HZ + 0.1, JTS3_HF_FLOOR_HZ, JTS3_WOOFER_CEILING_HZ,
+    ) == FC_REJECT_ABOVE_LOWER_DRIVER_BAND
 
-    # Inside the tolerance at both edges — admitted.
-    for fc in (band[0] - eps, band[1] + eps):
-        assert flow._fc_rejection(fc, 1600.0, 4000.0, band) is None, fc
-    # Past it at both edges — refused by name.
-    for fc in (band[0] - eps * 2, band[1] + eps * 2):
-        assert flow._fc_rejection(fc, 1600.0, 4000.0, band) == (
-            FC_REJECT_OUTSIDE_SEARCH_BAND
-        ), fc
-    # …and the tolerance is half a display digit, not a licence: it may never
-    # reach the 0.1 Hz the spelling itself can move a corner by.
-    assert 0.0 < eps < 0.1
+
+def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
+    """The retired code is gone from the vocabulary, not merely unreachable.
+
+    A constant left defined is a constant something can start returning again,
+    and the ruling deleted the CONCEPT rather than one call site.
+    """
+    from jasper.active_speaker.crossover_v2 import fc_sweep
+
+    assert not hasattr(fc_sweep, "FC_REJECT_OUTSIDE_SEARCH_BAND")
+    assert not hasattr(fc_sweep, "resolve_fc_search_band")
+    assert not hasattr(fc_sweep, "FcSearchBand")
+    assert set(fc_sweep.__all__) == {
+        "FC_REJECT_ABOVE_LOWER_DRIVER_BAND",
+        "FC_REJECT_BELOW_DECLARED_FLOOR",
+        "recornered_preset",
+    }
 
 
 # --- the declared diameter reaches the conductor (#1675's four edits) ---------
@@ -190,130 +208,3 @@ def test_a_draft_without_declarations_yields_no_priors(draft):
     from jasper.web.correction_crossover_v2 import _resolve_radiating_diameter_by_role
 
     assert _resolve_radiating_diameter_by_role(draft) == {}
-
-
-# --- which roles' declarations bind the search band ---------------------------
-#
-# Two declaration SHAPES on this speaker's numbers, not two readings of the box.
-# The pre-repair tweeter band [2000, 2500] is the withdrawn arbitrary-2000
-# remnant; the repair moves its floor down to the tweeter's declared hard floor,
-# so that edge is written as JTS3_HF_FLOOR_HZ — the governing term — rather than
-# as a second free literal. Only the search bands are modelled here, because
-# resolve_fc_search_band reads nothing else.
-#
-# #2191: the earlier version of this block called the pre-repair shape "the jts3
-# declaration as it actually stands" and named its test after "the live
-# declaration". Nothing here can read the box, so that claim could only decay —
-# and it has: the owner's declaration has since been edited and re-confirmed,
-# and its tweeter search band is [1600, 2500], the REPAIRED shape below. What
-# these tests actually pin is the RULE — which role's declaration binds each
-# edge — so they say that instead, and both shapes are fixtures rather than
-# readings. Whether a repaired shape can be STORED and CONFIRMED is a different
-# question with a real in-repo owner: driver_safety's validator, pinned by
-# test_the_owner_ruled_search_repair_is_storable_and_offers_confirmation in
-# tests/test_active_speaker_driver_safety.py.
-PRE_REPAIR_SEARCH_BAND_BY_ROLE = {
-    "woofer": (1200.0, 2500.0),
-    "tweeter": (2000.0, 2500.0),
-}
-REPAIRED_SEARCH_BAND_BY_ROLE = dict(
-    PRE_REPAIR_SEARCH_BAND_BY_ROLE,
-    tweeter=(JTS3_HF_FLOOR_HZ, 2500.0),
-)
-
-
-def test_the_binding_band_is_the_intersection_and_names_who_set_each_edge():
-    """Both drivers sit at Fc, so both declarations must admit it — the band is
-    the intersection. On the pre-repair shape the tweeter owns the low edge,
-    which is the fact an operator needs in order to act."""
-    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
-
-    assert band.band_hz == (2000.0, 2500.0)
-    # The tweeter's 2000 beats the woofer's 1200, so the tweeter owns the low
-    # edge — the fact that explains why nothing downward can be proposed. Both
-    # roles declare 2500, so the upper owner is a tie broken deterministically.
-    assert band.lo_role == "tweeter"
-    assert band.hi_role in ("tweeter", "woofer")
-    assert band.undeclared_roles == ()
-
-
-def test_repairing_the_stale_tweeter_declaration_widens_the_binding_band():
-    """The rule's payoff, and the proof it is the DECLARATION that binds rather
-    than anything hardcoded: widen the tweeter to its declared hard floor and
-    the binding band widens with it, with no other input changed. The control is
-    the sibling above, which pins the same speaker's pre-repair band at
-    ``(2000.0, 2500.0)``.
-    """
-    band = flow.resolve_fc_search_band(REPAIRED_SEARCH_BAND_BY_ROLE)
-
-    # The repaired low edge is the tweeter's declared hard floor exactly — the
-    # search edge the repair moves, the value the owner's re-confirmed
-    # declaration now carries, and the same number driver_safety accepts as a
-    # stored search floor since #2191.
-    assert band.band_hz == (JTS3_HF_FLOOR_HZ, 2500.0)
-    assert band.lo_role == "tweeter"
-
-
-def test_an_undeclared_role_proposes_nothing_rather_than_permitting_everything():
-    """``crossover_search_band_hz`` is a REQUIRED declaration, so absence is an
-    anomaly — and the safe reading of an anomaly is 'this role has told us
-    nothing', never 'this role permits everything'. Fail-closed, and the role
-    is named so the disclosure can say which declaration is missing."""
-    band = flow.resolve_fc_search_band(
-        {"woofer": (1200.0, 2500.0), "tweeter": None}
-    )
-    assert band.band_hz is None
-    assert band.undeclared_roles == ("tweeter",)
-
-
-def test_an_empty_intersection_still_names_both_edge_owners():
-    """The actionable sentence is 'your woofer says at-or-below 1500 and your
-    tweeter says at-or-above 2000' — losing the role names to a bare None would
-    throw exactly that away."""
-    band = flow.resolve_fc_search_band(
-        {"woofer": (1200.0, 1500.0), "tweeter": (2000.0, 2500.0)}
-    )
-    assert band.band_hz is None
-    assert (band.lo_role, band.hi_role) == ("tweeter", "woofer")
-
-
-def test_one_role_can_own_both_edges():
-    """A role declared strictly inside every other role's band owns both edges,
-    and the disclosure then names one driver twice — which is the truth."""
-    band = flow.resolve_fc_search_band(
-        {"woofer": (1200.0, 4000.0), "tweeter": (1600.0, 2500.0)}
-    )
-    assert band.band_hz == (1600.0, 2500.0)
-    assert band.lo_role == "tweeter" and band.hi_role == "tweeter"
-
-
-def test_the_binding_band_never_widens_what_a_role_declared():
-    """The invariant that makes this safe to put in front of the safety bounds:
-    intersection only ever narrows, so no declared limit is escapable."""
-    band = flow.resolve_fc_search_band(PRE_REPAIR_SEARCH_BAND_BY_ROLE)
-    assert band.band_hz is not None
-    for role, declared in PRE_REPAIR_SEARCH_BAND_BY_ROLE.items():
-        assert band.band_hz[0] >= declared[0], role
-        assert band.band_hz[1] <= declared[1], role
-
-
-def test_the_search_band_resolver_reads_the_confirmed_profile_fail_soft():
-    from jasper.active_speaker.excitation_safety_plan import (
-        resolve_driver_crossover_search_band_hz as resolve,
-    )
-
-    profile = {
-        "targets": [
-            {"target_fingerprint": "fp-w", "crossover_search_band_hz": [200, 2500]},
-            {"target_fingerprint": "fp-t", "crossover_search_band_hz": "nonsense"},
-            {"target_fingerprint": "fp-x"},
-        ],
-    }
-    assert resolve(profile, "fp-w") == (200.0, 2500.0)
-    # Malformed, absent, and an unknown target all decline rather than raise:
-    # this bounds where a corner may be OPENED, and refusing a measurement
-    # session over it would be the wrong direction (its sibling
-    # measurement-band resolver raises).
-    assert resolve(profile, "fp-t") is None
-    assert resolve(profile, "fp-x") is None
-    assert resolve(profile, "fp-missing") is None

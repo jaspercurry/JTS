@@ -123,7 +123,6 @@ def _harness(tmp_path: Path, *, layout: str = "mono") -> _Harness:
     for driver in manual["drivers"]:
         driver["hard_excitation_band_hz"] = [3_000, 12_000]
         driver["measurement_band_hz"] = [3_000, 12_000]
-        driver["crossover_search_band_hz"] = [5_000, 7_000]
         driver["level_duration_limits"]["minimum_cooldown_s"] = 0
         if driver["role"] == "woofer":
             driver["required_protection_filters"][0]["cutoff_hz"] = 7_000

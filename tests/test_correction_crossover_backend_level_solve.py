@@ -33,7 +33,6 @@ def _safety_profile_and_targets(
     common = {
         "hard_excitation_band_hz": [20, 20_000],
         "measurement_band_hz": [20, 20_000],
-        "crossover_search_band_hz": [1500, 2500],
         "level_duration_limits": {
             "max_sweep_duration_s": 4,
             "max_repeat_count": 3,

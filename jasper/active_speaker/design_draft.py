@@ -84,7 +84,6 @@ _MANUAL_DRIVER_FIELDS = {
     "hard_excitation_band_hz",
     "required_protection_filters",
     "measurement_band_hz",
-    "crossover_search_band_hz",
     "level_duration_limits",
     "cabinet",
     "source",
@@ -888,7 +887,6 @@ _V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
         "hard_excitation_band_hz",
         "required_protection_filters",
         "measurement_band_hz",
-        "crossover_search_band_hz",
         "level_duration_limits",
         "cabinet",
         # #1665 component entry: driver_class/radiating_diameter_mm are
@@ -1106,6 +1104,46 @@ def _summary(
     }
 
 
+def _rebound_to_restamped_request(
+    driver_research: Any,
+    *,
+    stored: Any,
+    canonical: Mapping[str, Any] | None,
+) -> Any:
+    """Carry a v2 result across a request RE-STAMP, or leave it exactly alone.
+
+    ``validate_driver_research_request`` accepts a request fingerprinted by a
+    build that has since had a per-driver field retired, and re-stamps it to the
+    current shape (see ``_common.LEGACY_DROPPED_DRIVER_FIELDS``).  A v2 result
+    ECHOES the request's fingerprint, and
+    ``driver_safety.validate_research_result_binding`` compares the two -- so
+    re-stamping the request alone orphans the result the same box stored beside
+    it, and the save fails one gate later with "does not match the current
+    request".  Migrating one of a matched pair is not a migration.
+
+    **This module owns the pair**: it is the one that refuses a v2 result with
+    no request at all, and the only place both artifacts are in hand together,
+    so the re-binding is here rather than inside either validator.
+
+    Deliberately narrow. It moves a result ONLY when the request's digest
+    actually changed AND the result echoed the exact pre-stamp digest -- so a
+    genuinely mismatched result is still refused by the binding, which is the
+    check's whole job.
+    """
+
+    if not isinstance(canonical, Mapping) or not isinstance(driver_research, Mapping):
+        return driver_research
+    if not isinstance(stored, Mapping):
+        return driver_research
+    was = stored.get("request_fingerprint")
+    now = canonical.get("request_fingerprint")
+    if not was or not now or was == now:
+        return driver_research
+    if driver_research.get("request_fingerprint") != was:
+        return driver_research
+    return {**driver_research, "request_fingerprint": now}
+
+
 def build_design_draft(
     topology: OutputTopology,
     *,
@@ -1146,6 +1184,11 @@ def build_design_draft(
             )
         except DriverSafetyProfileError as exc:
             raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+        driver_research = _rebound_to_restamped_request(
+            driver_research,
+            stored=driver_research_request,
+            canonical=request,
+        )
     if (
         isinstance(driver_research, Mapping)
         and driver_research.get("artifact_schema_version")

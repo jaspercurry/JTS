@@ -81,7 +81,29 @@ DRIVER_CLASSES: tuple[str, ...] = (
 # built ka beaming guidance off the woofer's radiating_diameter_mm instead, so
 # the coverage angle never gained a reader. Waveguide identity and coverage now
 # travel as operator prose in the driver notes.
-LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({"horn_coverage_deg"})
+#
+# crossover_search_band_hz (#2870): the declared range a driver could be crossed
+# over IN. Introduced to bound R17's corner hunt, it outlived that hunt's
+# deletion and its only remaining effect was to refuse corners both drivers'
+# declared HARD excitation bands admit -- a bound naming no damage mechanism.
+# It differs from the key above in one way that matters here: it was REQUIRED
+# (``crossover_search_band_missing`` blocked confirmation), so EVERY box
+# confirmed before the ruling carries it, not just some.
+#
+# ADDING A KEY HERE IS ONLY HALF THE DECISION. Two other places answer their own
+# questions about a retired key, and neither is reachable from this set:
+#   * ``driver_safety._RETIRED_TARGET_FIELDS`` -- does a stored safety PROFILE
+#     carrying it read as stale-but-fixable, or as corrupt? (Opposite
+#     disposition to this set: reported, never dropped.)
+#   * ``driver_safety.validate_driver_research_request`` -- a stored research
+#     request's ``operator_declared_context`` is FINGERPRINTED, so tolerating
+#     the key in an allowlist is not enough on its own; that digest has to stay
+#     acceptable and be re-stamped.
+# Decide all three, or an old draft passes one gate and is refused at the next.
+LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
+    "horn_coverage_deg",
+    "crossover_search_band_hz",
+})
 
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 

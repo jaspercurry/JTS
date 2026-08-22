@@ -1654,10 +1654,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if ((setting.notes || '').trim()) out.notes = String(setting.notes).trim();
       var hardBand = safetyBandFromSetting(setting, 'hard_excitation');
       var measurementBand = safetyBandFromSetting(setting, 'measurement');
-      var searchBand = safetyBandFromSetting(setting, 'crossover_search');
       if (hardBand) out.hard_excitation_band_hz = hardBand;
       if (measurementBand) out.measurement_band_hz = measurementBand;
-      if (searchBand) out.crossover_search_band_hz = searchBand;
       out.required_protection_filters = protectionFiltersFromSetting(setting);
       var cabinet = cabinetFromSetting(setting);
       if (Object.keys(cabinet).length) out.cabinet = cabinet;
@@ -1680,7 +1678,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driver.pad ||
         driver.hard_excitation_band_hz ||
         driver.measurement_band_hz ||
-        driver.crossover_search_band_hz ||
         driver.required_protection_filters.length ||
         driver.notes;
     });
@@ -1756,7 +1753,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function applyDriverSafetyToSetting(driver, setting) {
     applySafetyBandToSetting(setting, 'hard_excitation', driver.hard_excitation_band_hz);
     applySafetyBandToSetting(setting, 'measurement', driver.measurement_band_hz);
-    applySafetyBandToSetting(setting, 'crossover_search', driver.crossover_search_band_hz);
     (Array.isArray(driver.required_protection_filters)
       ? driver.required_protection_filters : []).forEach(function(filter) {
       if (!filter || (filter.kind !== 'highpass' && filter.kind !== 'lowpass')) return;
@@ -2619,10 +2615,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // relationship and policy codes _target_issues (driver_safety.py) can emit
   // with nothing missing; every other code it emits ends in `_missing`.
   var SAFETY_RELATIONSHIP_TEXT = {
-    search_band_below_hard_band:
-      'crossover search band starts below its hard excitation band',
-    search_band_outside_measurement_band:
-      'crossover search band reaches outside its measurement band',
     measurement_band_outside_hard_band:
       'measurement band reaches outside its hard excitation band',
     highpass_cutoff_outside_hard_band:
@@ -2669,6 +2661,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var SAFETY_LOW_LIMIT_STALE = 'driver_safety_profile_low_limit_stale';
   function driverSafetyLowLimitStale(reasons) {
     return (reasons || []).indexOf(SAFETY_LOW_LIMIT_STALE) >= 0;
+  }
+  // #2870. A profile saved before JTS retired a field is not corrupt — it just
+  // names something this build no longer speaks, and one save rebuilds it.
+  // Named separately so the copy can say that, instead of the generic "JTS
+  // could not read these limits", which reads as damage and names no remedy.
+  var SAFETY_RETIRED_FIELD = 'driver_safety_profile_retired_field';
+  function driverSafetyRetiredField(reasons) {
+    return (reasons || []).indexOf(SAFETY_RETIRED_FIELD) >= 0;
   }
   function renderDriverResearchSummary(options) {
     options = options || {};
@@ -2836,7 +2836,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function renderDriverSafetyLimits(targetId, setting, evidence) {
     return '<section class="driver-research__advanced-group">' +
       '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
-      '<p class="setting-row__hint">Hard limits are never-test-beyond edges. Measurement and crossover-search ranges must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
+      '<p class="setting-row__hint">Hard limits are never-test-beyond edges. The measurement range must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
       '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
       '</div>' +
       '<div class="driver-research__fields">' +
@@ -2852,8 +2852,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'crossover_search_min_hz', 'Try crossovers from', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'crossover_search_max_hz', 'Try crossovers through', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
         driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope (derived)', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
         '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
@@ -3321,9 +3319,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // household reading the panel:
   //   * the five keys the research ask requires a source for
   //     (driver_safety._PROMPT_PROVENANCE_KEYS), and
-  //   * the six fields _profile_core FREEZES into the confirmed safety profile
+  //   * the five fields _profile_core FREEZES into the confirmed safety profile
   //     (its `safety_field_names`).
-  // Eight keys, because three overlap. The panel headline states that union as
+  // Seven keys, because three overlap. The panel headline states that union as
   // its completeness claim, so the two must not drift apart: the tripwire is
   // tests/test_sound_profile_echo_back_contract.py, which also pins every key
   // here inside _V2_RESEARCH_COMPARABLE_FIELDS.
@@ -3368,11 +3366,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         key: 'measurement_band_hz',
         label: 'Measure inside',
         read: function(setting) { return echoBandText(setting, 'measurement'); }
-      },
-      {
-        key: 'crossover_search_band_hz',
-        label: 'Try crossovers inside',
-        read: function(setting) { return echoBandText(setting, 'crossover_search'); }
       },
       {
         key: 'level_duration_limits',
@@ -3588,6 +3581,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         'first: ' + joinListText(stale, {two: ' and ', final: ', and '}) +
         '. Under Advanced, either enter the minimum crossover the datasheet ' +
         'publishes for that driver, or move the range that no longer fits.';
+    }
+    // #2870. Before the generic unreadable copy, for the same reason the
+    // stale-low-limit case sits before the generic 'stale' one: the cause is
+    // specific and so is the fix. These limits name a field this build no
+    // longer has, so one save rewrites them in the shape it does.
+    if (driverSafetyRetiredField(state.reasons)) {
+      return 'These limits name a setting JTS no longer uses. Nothing is ' +
+        'wrong with your speaker — review the visible values, then save them ' +
+        'again to rebuild them.';
     }
     if (state.status === 'stale') {
       return 'The outputs changed since these limits were saved. Review the ' +
