@@ -1583,10 +1583,16 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (String(env.state) === 'failed' && !failure) {
       throw new Error('room-correction failure/state mismatch');
     }
-    // No review-screen exemption any more: it existed for the one failure
-    // code a non-failed session could carry, `measurement_evidence_unsafe`,
-    // and the nanny burn-down retired that code — a doubt about the evidence
-    // now arrives as a warn nudge, not as a failure that withdraws Apply.
+    // No review-screen exemption any more. It was scoped to ONE pairing —
+    // screen `review` carrying `measurement_evidence_unsafe` — and the nanny
+    // burn-down retired that code, so the pairing is unreachable and the
+    // exemption exempted nothing. Deleting it is behaviour-preserving by
+    // construction: the clause it removes evaluated to "throw" for every other
+    // combination already. It is NOT a claim that a non-failed session carries
+    // no failure — `envelope._level_match_refusal_failure` builds one on relay
+    // sessions whose ramp terminal never advances `state` (pinned at
+    // test_correction_envelope's agc_suspected/timeout cases), and those were
+    // outside the exemption before and are outside it now.
     if (failure && String(env.state) !== 'failed') {
       throw new Error('room-correction failure/screen mismatch');
     }

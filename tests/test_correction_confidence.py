@@ -238,7 +238,14 @@ def test_confidence_reports_low_position_variance_level():
     )
 
 
-def test_confidence_blocks_strategy_gates_without_completed_measurement():
+def test_strategy_gates_report_not_allowed_without_completed_measurement():
+    """Named for what it asserts: the gate's ``allowed`` field and its reason.
+
+    It said "blocks" when it was written, and nothing has blocked on this since
+    #2808 deleted ``response._policy_allows`` — the one consumer that dropped
+    an action on ``allowed: False``. Every reader left carries the verdict as
+    advisory data.
+    """
     report = confidence.build_confidence_report(
         total_positions=3,
         completed_positions=0,

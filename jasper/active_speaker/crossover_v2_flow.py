@@ -2187,8 +2187,8 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # threshold's calibration changed; only what crossing it does.
 #
 # What did NOT change, stated because a reader will ask: the trust floor, the
-# delay-plausibility backstop, the SNR/linearity/glitch verdicts and every
-# accountability gate below still REFUSE. This one number stopped being a veto
+# delay-plausibility backstop, the SNR/linearity/glitch verdicts and
+# accountability's item 1 still REFUSE. This one number stopped being a veto
 # because a bad ripple describes how well two branches can sum in this room on
 # this rig — a thing the household cannot act on by moving anything — and not
 # a defect in the capture that measuring again would fix.
@@ -7551,9 +7551,9 @@ class CrossoverV2Session:
         # of sending them to move a microphone that was never the problem, so
         # the reservation changes what the household is TOLD and nothing about
         # what is built, fitted, gated, or applied. Every accountability gate
-        # below (``_assert_accountable``'s level-frame, realized-level and
-        # predicted-improvement refusals) still runs unchanged on this
-        # candidate, which is what keeps "proceed" from meaning "unchecked".
+        # below still runs unchanged on this candidate, which is what keeps
+        # "proceed" from meaning "unchecked" — one of the three still REFUSES
+        # (realized-level); level-frame and predicted-improvement now bank.
         #
         # The candidate presence check is the caller's because reading the
         # ripple off it requires it; the alignment half of the shipped skip
@@ -9050,9 +9050,9 @@ class CrossoverV2Session:
           The finding store is write-once, so a gate-site publish would ask it
           twice for one path and hit a PATH_CONFLICT on the second.
         * **Never for a candidate that does not exist.** A build the household
-          retakes past, or one item 1 or item 2 refuses after the frame gate
-          banked, leaves no finding — which is correct: the record describes
-          the frame behind a specific proposal, and there is no proposal.
+          retakes past, or one item 1 refuses after the frame gate banked,
+          leaves no finding: the record describes the frame behind a specific
+          proposal. Item 2 is not on that list — it no longer refuses.
         * **The citation resolves.** The finding cites the candidate artifact,
           which the line above just published.
 

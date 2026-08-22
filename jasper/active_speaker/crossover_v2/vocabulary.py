@@ -1426,8 +1426,11 @@ def reason_diagnosis(
     return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
 
 
-# Conditions no extra attempt can clear — wiring in the wrong order, a tuning
-# that would not have improved the speaker, a dead link. The bounded-retry
+# Conditions no extra attempt can clear — wiring in the wrong order, two
+# drivers that would not have ended up at matching levels, a dead link. (The
+# example that stood in the middle slot, a tuning that would not have improved
+# the speaker, left this set with its code: item 2 banks that verdict now and
+# the round proceeds.) The bounded-retry
 # ruling (#2086) is a CEILING on retries, not a floor: it stops the flow asking
 # a household for a fifth take of the same spot, and it does not start it asking
 # for a second take of something a second take cannot fix.

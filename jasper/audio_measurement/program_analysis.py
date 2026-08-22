@@ -549,7 +549,7 @@ ALIGNMENT_COMMITMENTS = frozenset({
 #: **It has a SECOND job, and it is numeric** (#2617): ``_build_candidate``
 #: gates the anchor withdrawal on membership here, so a commitment in this set
 #: also ships a summed model that carries NO residual — a decision that reaches
-#: the accountability gate, which can refuse a candidate. The membership rule
+#: the accountability gate (grades) and VERIFY (fails). The membership rule
 #: that makes both jobs one question: a commitment belongs here when THE
 #: CAPTURE'S ALIGNMENT EVIDENCE WAS WHOLLY UNTRUSTED, so neither its polarity
 #: (the wording job) nor its anchor (the withdrawal job) may be spoken for.
@@ -4129,8 +4129,8 @@ def summed_model_residual_delay_us(
     trusted applied delay, and it can be most of a period. Phasing the shipped
     model by it fabricates a comb the emitted graph need not have — and that
     model is read by ``crossover_v2.accountability``'s prediction gate (which
-    can REFUSE a candidate) and becomes VERIFY's tracking reference (which can
-    FAIL a round). Exactly the same argument as the paragraph above, so exactly
+    GRADES a candidate) and becomes VERIFY's tracking reference (which can FAIL
+    a round — the half the consequence now rests on). Same argument, so exactly
     the same answer: the model keeps the independently-aligned frame, and the
     comparison it feeds grades the branches rather than a timing claim the
     capture already withdrew. What is lost is nothing the capture had; what
@@ -6817,10 +6817,10 @@ def _build_candidate(
     # and the anchor came from a capture the SNR policy called unusable FOR
     # ALIGNMENT, so `committed − anchor` measures their disagreement, not the
     # speaker — and this model is not a drawing: it is graded by
-    # `accountability.assess_accountability` (which can REFUSE the candidate)
+    # `accountability.assess_accountability` (which GRADES, no longer refusing)
     # and persisted as VERIFY's tracking reference (which can FAIL the round).
     # Phasing it by that difference would let an untrusted number kill a
-    # correctly-aligned speaker. Withheld here rather than special-cased in
+    # correctly-aligned speaker at VERIFY. Withheld here rather than in
     # those two gates: they must keep grading whatever model they are handed,
     # and the honest model of a round whose timing evidence was refused is the
     # independently-aligned one. `snap_delta_us` still RECORDS the

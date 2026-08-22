@@ -1262,22 +1262,67 @@ def test_a_fail_severity_finding_is_a_warn_nudge_not_a_blocker():
     }
 
 
+def _fail_severity_codes_declared_by_confidence() -> set[str]:
+    """Every ``code`` ``confidence.build_confidence_report`` can emit at ``fail``.
+
+    Read out of the module's own source rather than listed here, because a
+    hand-written roster is exactly what would let a FIFTH fail-severity finding
+    ship unnoticed — and the test below is about the one outcome nobody wants,
+    a doubt that reaches the household through no channel at all.
+
+    Constructed from the AST, not by driving the builder: reaching every arm
+    would need a fixture per arm, and a fixture that stopped triggering its arm
+    would silently shrink the set back to a passing subset.
+    """
+    import ast
+    import pathlib
+
+    from jasper.correction import confidence
+
+    tree = ast.parse(pathlib.Path(confidence.__file__).read_text(encoding="utf-8"))
+    codes: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "ConfidenceFinding":
+            continue
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        severity, code = kwargs.get("severity"), kwargs.get("code")
+        if (
+            isinstance(severity, ast.Constant) and severity.value == "fail"
+            and isinstance(code, ast.Constant) and isinstance(code.value, str)
+        ):
+            codes.add(code.value)
+    return codes
+
+
 def test_every_fail_severity_finding_has_nudge_copy():
     """A fail code with no ``_NUDGE_COPY`` row is dropped silently.
 
-    ``_nudges`` skips a finding whose code it has no canned sentence for, so
-    an unmapped ``fail`` code would leave a household with no failure block
-    (the burn-down removed it) AND no nudge — the doubt gone entirely, which
-    is worse than either state before. The four codes ``build_confidence_report``
-    can emit at ``fail`` are enumerated here against the copy table.
+    ``_nudges`` skips a finding whose code it has no canned sentence for, so an
+    unmapped ``fail`` code would leave a household with no failure block (the
+    nanny burn-down removed it) AND no nudge — the doubt gone entirely, which
+    is worse than either state before it. Every code ``build_confidence_report``
+    declares at ``fail`` severity is derived from that module and required to
+    have copy here, so adding a fifth without one fails at this line.
     """
-    for code in (
+    declared = _fail_severity_codes_declared_by_confidence()
+    # The detector is load-bearing: an empty set would pass the loop below
+    # while proving nothing, exactly the shape `test_lint_contracts`' own
+    # ratchet guard warns about.
+    assert declared >= {
         "no_completed_positions",
         "capture_quality_failed",
         "browser_audio_path_failed",
         "runtime_integrity_failed",
-    ):
-        canned = envelope._NUDGE_COPY[code]
+    }, declared
+
+    for code in sorted(declared):
+        canned = envelope._NUDGE_COPY.get(code)
+        assert canned is not None, (
+            f"{code} is emitted at fail severity and has no nudge copy, so the "
+            "household would be told nothing at all about it"
+        )
         assert canned["severity"] == "warn", code
         assert canned["text"].endswith("."), code
 
