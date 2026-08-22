@@ -3319,7 +3319,7 @@ def _candidate_summary(
     # socket-activated wizard process only pays for it on a path that
     # genuinely has a candidate.
     from jasper.active_speaker.linearization_fit import (
-        HEADROOM_COST_BASIS_REALIZED_PEAK,
+        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
     )
 
     if candidate is None:
@@ -3404,7 +3404,7 @@ def _candidate_summary(
         # ``linearization_fit.HEADROOM_COST_BASIS_*`` for why it is recorded
         # rather than sniffed, and ``crossover_envelope_v2
         # ._candidate_review_payload`` for what an absent basis renders as.
-        "headroom_cost_basis": HEADROOM_COST_BASIS_REALIZED_PEAK,
+        "headroom_cost_basis": HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
     }
 
 

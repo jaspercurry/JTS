@@ -4343,6 +4343,43 @@ number than re-emitting it would charge today — ~22.5 dB vs ~5 on the
 2026-07-28 JTS3 profile. The stamp is deliberately not re-derived on load
 (it records what that graph was emitted with); a recommission replaces it.
 
+**Reading one from before the 2026-08-22 grid widening (#2758) — and the new
+direction.** There are now THREE eras, named by the `headroom_cost_basis`
+stamped beside the number
+(`linearization_fit.HEADROOM_COST_BASIS_*`):
+
+| basis | era | how it can be wrong today |
+|---|---|---|
+| absent → `unknown` | before #1808 | over-states, often by an order (sum of positive gains) |
+| `realized_peak` | #1808 → #2758 | realized peak on a 20 Hz – 20 kHz grid |
+| `realized_peak_full_domain` | #2758 onward | realized peak, whole evaluated domain |
+
+The middle era is the one to read carefully, because it can be wrong in the
+direction the earlier ones never were: its grid had no sample between 20 kHz
+and Nyquist (or below 20 Hz), so a mixed-sign cascade peaking there was
+under-read. A `realized_peak` stamp can therefore be **smaller** than
+re-emitting the identical filters charges today — 1.8596 dB stamped against
+7.8305 dB charged, on the cascade #2758 was filed for.
+
+That matters for a reader, not only for an archivist. `sections_by_role`'s
+docstring calls "a disclosure smaller than its own charge" the impossible
+direction; that sentence is about the role → sections derivation it describes,
+and is not a claim about a stamp read across this boundary. And the pairing is
+reachable rather than theoretical: the republish path stamps
+`headroom_cost_basis` unconditionally, so a candidate reopened after the deploy
+carries a current-era basis beside per-branch numbers stamped under the old
+grid. **Trust the basis, not the neighbourhood.**
+
+A graph already on hardware migrates without action: its own re-proof survives
+as long as the recomputed peak moved less than
+`branch_chain.HEADROOM_MARGIN_DB`, which measures 0.6186 dB worst over a corpus
+of chains the pre-#2758 gate would have admitted (pinned by
+`test_a_graph_the_old_gate_accepted_still_proves_after_the_widening`). A graph
+whose peak lived in the old grid's hole is the exception, and it is the one
+this change exists to catch: it stops proving, `safe_graph_for_current_topology`
+refuses rather than silently selecting the all-muted startup graph, and the
+remedy is `jasper-active-speaker baseline-reemit` — not a recommission.
+
 #### Per-capture diagnostics — every capture logs its numbers
 
 Before this, `event=correction.crossover_v2_result` carried only

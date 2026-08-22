@@ -1075,7 +1075,25 @@ def linearization_filters_by_role(
 # older build carries no stamp at all, and UNKNOWN is the honest reading of
 # that absence. Absent-means-unknown, never a default — the same rule ``tier``
 # and ``echo_band_provenance`` already carry.
+#
+# **#2758 opened a THIRD era, and its direction is the new one.** The grid the
+# realized peak is evaluated on now spans the whole domain the peak is taken
+# over rather than 20 Hz - 20 kHz, so a stamp made under the narrower grid can
+# read SMALLER than re-emitting the identical filters charges today —
+# 1.8596 dB stamped against 7.8305 dB charged, on the cascade #2758 was filed
+# for. Every era before this one only ever over-stated (the sum-of-positives
+# rule was a loose upper bound), which is why ``sections_by_role``'s docstring
+# can still call "disclosure smaller than charge" the impossible direction FOR
+# THE DERIVATION IT DESCRIBES — the role -> sections map — and why that
+# sentence is not a claim about cross-era stamps.
+#
+# Reachable rather than theoretical: the republish path stamps
+# ``headroom_cost_basis`` unconditionally, so a candidate reopened and
+# re-disclosed after the deploy carries a CURRENT-era basis beside a per-branch
+# number stamped under the old grid. The basis is what lets a reader tell them
+# apart, which is why the widening mints a value instead of riding the old one.
 HEADROOM_COST_BASIS_REALIZED_PEAK = "realized_peak"
+HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN = "realized_peak_full_domain"
 HEADROOM_COST_BASIS_UNKNOWN = "unknown"
 
 

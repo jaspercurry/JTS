@@ -107,15 +107,32 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # rather than an analytic stand-in for it (``crossover_response_db``).
 #
 # What remains is the CASCADE's peak between two adjacent SAMPLES, plus the
-# emitter's own 4-decimal YAML rounding of freq/q/gain. Both are an order or
-# more inside 1.0 dB, and the first is bounded in each of its two shapes:
-#   * between two adjacent CENTRES, where near-coincident filters reach more
-#     together than either does alone — measured at <= 0.07 dB with the
-#     adjacent-pair midpoints in the grid;
-#   * between two adjacent BACKGROUND bins, outside the centres' own hull —
-#     measured at 0.04 dB on the #2758 cascade, and only bounded at all
-#     because :data:`CHAIN_GRID_HZ` spans the whole evaluated domain. A
-#     background grid narrower than that domain left this term at 5.01 dB.
+# emitter's own 4-decimal YAML rounding of freq/q/gain.
+#
+# ONE CONVENTION for every number below: under-READ is ``truth - grid read``,
+# the sampling error itself. (Under-CHARGE — ``truth - (read + this margin)``
+# — is that number minus 1.0 dB, and is what a graph would actually clip by.
+# Quoting the two interchangeably is how a 5.01 and a 6.01 end up in one
+# paragraph describing one cascade, which is what #2758's did.)
+#
+# Measured under-READ, all on the grid this module ships:
+#   * two adjacent CENTRES, where near-coincident filters reach more together
+#     than either does alone — <= 0.0391 dB with the adjacent-pair midpoints
+#     in the grid (two +6 dB bells, Q 0.5-2000, separations 0.05-50 %);
+#   * two adjacent BACKGROUND bins, outside the centres' own hull — 0.1050 dB
+#     worst over 900 randomized mixed-sign pairs inside the emitter's own
+#     rails (Q <= 8, +-12 dB), and 0.0423 dB on the #2758 cascade. Bounded at
+#     all only because :data:`CHAIN_GRID_HZ` spans the whole evaluated domain:
+#     a background narrower than that domain read that cascade 6.0132 dB low.
+# So the honest ceiling on the sampling term is ~0.15 dB, not the 0.07 an
+# earlier revision of this comment promoted — still an order inside 1.0 dB,
+# which is the claim this margin actually rests on.
+#
+# One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
+# Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW
+# :data:`_GRID_EDGE_LO_HZ` and so off the grid entirely (1.2937 dB at a 1.8 Hz
+# corner, 6.0 dB at or under 1.0 Hz). Tamper-only today — nothing this repo
+# emits corners a shelf there — and issue #2846 is where it closes.
 #
 # 1.0 dB and not an arbitrary number: it is exactly
 # ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``, so a correction's loudest
@@ -155,6 +172,11 @@ _PEAK_EPS_DB: float = 0.01
 _GRID_EDGE_LO_HZ: float = 1.0
 _GRID_EDGE_HI_HZ: float = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
 
+# The top of the representable band — where a filter may still SIT, which is
+# not where the background samples stop. ``_evaluation_grid`` says why the two
+# are different numbers.
+_NYQUIST_HZ: float = 0.5 * RESPONSE_SAMPLE_RATE_HZ
+
 # The BACKGROUND resolution of the grid below, points per octave — the
 # crossover's smooth shape and whatever a cascade does between its filters'
 # centres. It is NOT what makes a narrow filter's own peak visible:
@@ -174,12 +196,21 @@ _CHAIN_GRID_POINTS_PER_OCTAVE: int = 48
 # BETWEEN an edge and the band. A mixed-sign cascade puts one there: measured
 # on the shipped tweeter band behind a real 1600 Hz LR4 high-pass,
 # ``5x(+3.0 Q0.5)@20000 + 3x(-8.0 Q1.0)@18182`` peaks 6.8728 dB at 21500.6 Hz,
-# which a 20 Hz - 20 kHz background read as 0.8596 — 5.01 dB under-charged,
-# and ultrasonic clipping products alias back into the audible band. The
-# woofer-side mirror is the same hole: ``5x(+3.0 Q0.5)@20 + 3x(-8.0 Q1.0)@22``
-# behind a 1600 Hz LR4 low-pass peaks 3.4196 dB at 9.22 Hz, read as 1.4733.
+# which a 20 Hz - 20 kHz background read as 0.8596 — under-READ by 6.0132 dB
+# and so under-CHARGED by 5.0132 (:data:`HEADROOM_MARGIN_DB`'s convention
+# paragraph carries both), with ultrasonic clipping products aliasing back
+# into the audible band. The woofer-side mirror is the same hole:
+# ``5x(+3.0 Q0.5)@20 + 3x(-8.0 Q1.0)@22`` behind a 1600 Hz LR4 low-pass peaks
+# 3.4196 dB at 9.22 Hz and was read as 1.4733 — under-READ by 1.9463.
 # One span for gate, charge and re-proof is what keeps them one construction,
 # so the hole was shared by all three.
+#
+# The anchor moving 20 Hz -> 1 Hz also moves every background bin's PHASE, so
+# an individual reading can land either side of where it did: over 4000
+# randomized in-band cascades at the emitter's rails, 637 read LOWER (worst
+# drop 0.0697 dB) and the rest the same or higher. That is sampling noise
+# inside the residue bound above, not a direction claim — this change is NOT
+# "every reading rises".
 #
 # Roughly 6 ms per branch on a laptop for a full 8-filter chain behind a
 # crossover, on a path that runs once per config emit and once per branch at
@@ -213,23 +244,38 @@ def _evaluation_grid(
     write this" is not a proof.
 
     A Peaking or shelf filter's extremum is at its own ``freq`` or at a domain
-    edge, both of which this grid contains, so every filter's own peak is
-    sampled exactly whatever its Q.
+    edge, and a centre goes in at its OWN frequency all the way to NYQUIST —
+    not merely up to :data:`_GRID_EDGE_HI_HZ`, which bounds the background
+    sampling and the asymptote sample, never where a filter may sit. The
+    difference is a 4.8 Hz sliver and it is not cosmetic: the bilinear prewarp
+    compresses frequency without bound as it approaches Nyquist, so a +12 dB
+    Q-8 Peaking filter at 23999 Hz delivers its full 12 dB there while
+    measuring 0.0120 dB at 23995.2 Hz. Bounded at the edge it read 0.0120 and
+    proved SAFE against a graph charged nothing; unioned at its own centre it
+    reads 12.0000.
+
+    A centre at or ABOVE Nyquist is left to the background grid, on
+    measurement rather than omission: the digital response mirrors about
+    Nyquist, so such a filter's extremum lands at ``fs - freq`` INSIDE the
+    band, where the 1/48-octave background already reads it to within 0.103 dB
+    (measured at 26 kHz / 30 kHz / 47 kHz, +12 dB Q 8) — the same order as the
+    between-sample residue below. A centre at exactly Nyquist is degenerate and
+    evaluates flat.
 
     A CASCADE's peak can sit BETWEEN two centres — two near-coincident bells
     reach more together in the middle than either does at the other's centre —
     so the geometric midpoint of each adjacent pair goes in too. Measured
     against a 400 000-point sweep over two +6 dB bells at Q 0.5 to 2000 and
     separations of 0.1 % to 50 %, the centres alone under-read the true peak by
-    up to 0.58 dB; with the midpoints that falls to 0.07 dB. Sampling can only
-    ever under-read a continuous maximum — what :data:`HEADROOM_MARGIN_DB`
+    up to 0.58 dB; with the midpoints that falls to 0.0998 dB. Sampling can
+    only ever under-read a continuous maximum — what :data:`HEADROOM_MARGIN_DB`
     covers is this residue, and it is an order inside it.
     """
     base = CHAIN_GRID_HZ if grid_hz is None else np.asarray(grid_hz, dtype=np.float64)
     extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ]
     centres = sorted(
         freq for entry in filters
-        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < _GRID_EDGE_HI_HZ
+        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < _NYQUIST_HZ
     )
     extra.extend(centres)
     extra.extend(
@@ -601,14 +647,41 @@ def branch_chain_peak_db(
     product cannot exceed unity. This keeps every cut-only graph (which is
     every graph before PR-L5) on a numpy-free path.
     """
+    return branch_chain_peak(
+        filters, sections=sections, trim_db=trim_db, grid_hz=grid_hz,
+    )[0]
+
+
+def branch_chain_peak(
+    filters: Sequence[Mapping[str, Any]],
+    *,
+    sections: Sequence[CrossoverSection] = (),
+    trim_db: float = 0.0,
+    grid_hz: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """:func:`branch_chain_peak_db`'s answer AND the frequency it occurs at.
+
+    One evaluation, two facts, because a refusal that names only the dB is a
+    number an operator cannot act on: WHERE a chain peaks is what says whether
+    it is the boost somebody asked for or a cascade extremum nobody predicted
+    (#2758's own peak sits at 21.5 kHz, outside every band its filters name).
+    The runtime contract's refusal and the prescription gate's evidence both
+    report it; ``branch_chain_peak_db`` is this function's first element and
+    stays the reader for everything that only needs the level.
+
+    The frequency is ``nan`` on the cut-only short-circuit, which evaluates no
+    grid and therefore has no frequency to name — never 0.0, which would read
+    as DC. Callers that report it are on the boosted path by construction.
+    """
     if not any(float(f.get("gain") or 0.0) > 0.0 for f in filters):
-        return min(0.0, float(trim_db))
+        return min(0.0, float(trim_db)), math.nan
     grid = _evaluation_grid(filters, grid_hz)
     magnitude_db = 20.0 * np.log10(
         np.maximum(np.abs(chain_response(filters, grid)), 1e-12)
     )
     magnitude_db = magnitude_db + crossover_response_db(grid, sections) + float(trim_db)
-    return float(np.max(magnitude_db))
+    index = int(np.argmax(magnitude_db))
+    return float(magnitude_db[index]), float(grid[index])
 
 
 def headroom_charge_db(peak_db: float) -> float:

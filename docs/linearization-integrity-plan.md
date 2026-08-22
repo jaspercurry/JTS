@@ -321,6 +321,13 @@ order's plain reading and are recorded here rather than only in the code:
   deliberately: it is a record of what that graph was emitted with, and a
   recommission replaces it. The realistic population is one profile.
 
+  (This paragraph names the #1808 boundary only. A THIRD era opened on
+  2026-08-22 when #2758 widened the evaluation grid, and it can be wrong in the
+  opposite direction — an older stamp reading SMALLER than today's charge. The
+  full era table and the migration behaviour live in
+  [`docs/HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md),
+  "Reading one from before the 2026-08-22 grid widening".)
+
 Named tolerances, with their derivations pinned by tests:
 `DELTA_PROBE_TOLERANCE_LOW_DB = 1.5` (below the 1.70 dB the shelf-Q defect
 peaked at, and the same bar `VERIFY_TOLERANCE_DB` already sets),

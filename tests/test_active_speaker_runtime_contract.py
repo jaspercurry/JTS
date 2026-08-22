@@ -43,6 +43,7 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
+    LINEARIZATION_HEADROOM_UNPROVEN_CODE,
     FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
@@ -2153,6 +2154,122 @@ def test_cd_horn_positive_gain_at_taper_slot_fails_closed() -> None:
     payload["filters"][name]["parameters"]["gain"] = 1.0
     graph = _classify_baseline(_dump_baseline(text, payload))
     assert graph.allowed is False
+
+
+# --- #2758 migration: a graph whose headroom no longer proves --------------- #
+#
+# The grid widening made the re-proof read some already-emitted graphs higher
+# than the allowance baked into their own bytes. Two things have to be true for
+# that to be survivable, and both are pinned here: the refusal has to SAY it is
+# arithmetic (an operator sent after a chain-order defect looks in the wrong
+# place), and the selector must not take such a box silently to the all-muted
+# startup graph on a green deploy.
+
+
+def _under_charged_boosted_baseline() -> str:
+    """A boosted baseline whose ``active_baseline_headroom`` is 3 dB short.
+
+    Stands in for a pre-#2758 emission without needing the old grid in the
+    fixture: what makes that graph fail is only that its persisted allowance is
+    below what the re-proof now computes, and lowering the gain by hand says so
+    in one line instead of reconstructing a retired evaluator.
+    """
+    text = _cd_linearized_baseline({"tweeter": [_cd_peak(6245.0, 3.0)]})
+    payload = yaml.safe_load(text)
+    params = payload["filters"]["active_baseline_headroom"]["parameters"]
+    params["gain"] = float(params["gain"]) + 3.0
+    return _dump_baseline(text, payload)
+
+
+def test_the_headroom_refusal_names_the_numbers_not_the_chain_order() -> None:
+    """SF-2/S5: the chain's ORDER is right and a NUMERIC comparison failed.
+
+    Before this the only issue said "does not use the exact ordered emitter
+    chain", which is a different defect with a different remedy. The refusal
+    now carries the peak, the allowance and the FREQUENCY the peak sits at —
+    the last being what tells a cascade extremum nobody predicted from the
+    boost somebody asked for.
+    """
+    graph = _classify_baseline(_under_charged_boosted_baseline())
+
+    assert graph.allowed is False
+    codes = [issue["code"] for issue in graph.issues]
+    assert LINEARIZATION_HEADROOM_UNPROVEN_CODE in codes
+    assert "active_output_driver_chain_unrecognized" not in codes, (
+        "the shape sentence must not ride along with the arithmetic one"
+    )
+    message = next(
+        issue["message"] for issue in graph.issues
+        if issue["code"] == LINEARIZATION_HEADROOM_UNPROVEN_CODE
+    )
+    assert "dB at" in message and "Hz" in message
+    assert "set aside" in message
+
+
+def test_a_graph_that_stops_proving_its_headroom_blocks_instead_of_silencing(
+    tmp_path: Path,
+) -> None:
+    """**SF-1, the migration's load-bearing behaviour.**
+
+    A commissioned box whose own boot graph stops proving used to fall through
+    every roleful rung to the all-muted startup graph — a legal selection, so
+    ``ok`` stayed True, the deploy stayed GREEN and the speaker went SILENT.
+    Sticky, too: the next deploy preserves the all-muted graph it just
+    selected, and no deploy path re-emits the baseline.
+
+    So the selector refuses instead, carrying the numbers, and the operator is
+    pointed at ``baseline-reemit``.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    current = tmp_path / "active_speaker_baseline.yml"
+    current.write_text(_under_charged_boosted_baseline(), encoding="utf-8")
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current,
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
+    )
+
+    assert decision.status == "blocked"
+    assert decision.ok is False, "a green deploy onto a silent speaker"
+    assert decision.selected_config_path is None
+    assert "baseline-reemit" in decision.reason
+    assert [i["code"] for i in decision.issues] == [
+        LINEARIZATION_HEADROOM_UNPROVEN_CODE
+    ]
+
+
+def test_an_ordinary_mid_commission_box_still_selects_its_startup_graph(
+    tmp_path: Path,
+) -> None:
+    """The control that keeps the guard above narrow.
+
+    Falling to the all-muted startup graph is the NORMAL answer for a box with
+    no applied baseline — the fleet-typical mid-commission state — and for the
+    #2814 identity hold. Only the numeric headroom refusal may turn it red; a
+    guard that fired on "current graph is not usable" would red-deploy most of
+    the fleet.
+    """
+    topology = _active_topology("mono", "active_2_way")
+    current = tmp_path / "not-an-active-graph.yml"
+    current.write_text(_flat_yaml(), encoding="utf-8")
+    staged_path = tmp_path / "active_speaker_staged_startup.yml"
+    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current,
+        **_write_authority(
+            tmp_path, staged=_staged_metadata(topology, staged_path)
+        ),
+    )
+
+    assert decision.status == "select_active_startup"
+    assert decision.ok is True
 
 
 def _isolated_baseline_yaml(

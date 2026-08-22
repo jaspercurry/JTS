@@ -2007,12 +2007,12 @@ def test_a_prescribed_boost_discloses_what_the_emitter_charges_for_it(
     assert disclosed > 0.0, "a prescribed boost disclosed as free is the defect"
     charged = linearization_headroom_db(
         linearization_filters_by_role(candidate.linearization),
+        # The candidate's OWN corrections mapping — the one the emitter is
+        # handed — rather than a gain map rebuilt here. A hand-built stand-in
+        # would keep agreeing after the wiring that produces the real one
+        # changed, which is the drift this pin exists to catch.
         branch_context=_branch_context(
-            candidate.source_preset,
-            {
-                role: {"gain_db": float(gain_db)}
-                for role, gain_db in candidate.role_attenuations_db.items()
-            },
+            candidate.source_preset, candidate.driver_corrections()
         ),
     )
     assert disclosed == pytest.approx(charged, abs=1e-9)

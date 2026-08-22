@@ -1051,8 +1051,9 @@ def _composed_grid(
     rather than mirrored: the gate and the charge cannot disagree about where to
     look, because it is one construction.
 
-    *Resolution.* That span's background sampling is 1/48 octave over ten
-    octaves, which is coarser inside one driver's band than a Q-8 filter needs;
+    *Resolution.* That span's background sampling is 1/48 octave over the
+    14.55 octaves from ``_GRID_EDGE_LO_HZ`` to ``_GRID_EDGE_HI_HZ``, which is
+    coarser inside one driver's band than a Q-8 filter needs;
     a dense per-band sweep is unioned in for that. Both halves are needed —
     the span alone under-reads three cases this module pins (a two-bell cascade
     peaking between its centres), and the band alone is the domain hole above.
@@ -1130,29 +1131,40 @@ def _check_composed(
         composed = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
         )
-        worst_cut = float(np.min(composed))
+        # "over its own band" is what this grid is deliberately NOT limited to
+        # — `_composed_grid` reads the CHARGE's whole span, so an extremum can
+        # and does land outside the declared band (measured as low as 1.92 Hz
+        # and as high as 21.5 kHz). Both refusals therefore name the FREQUENCY
+        # rather than an interval the number may not be inside: a reader told
+        # only "at its peak over its own band" goes looking for a filter there
+        # and finds none.
+        worst_cut_index = int(np.argmin(composed))
+        worst_cut = float(composed[worst_cut_index])
         if worst_cut < -DRIVER_MAX_COMPOSED_CUT_DB:
             _refuse(
                 COMPOSED_CUT_EXCEEDED,
                 f"the {role}'s composed cascade cuts {-worst_cut:.2f} dB at its "
-                f"worst over its own band, past the "
+                f"worst ({grid[worst_cut_index]:.1f} Hz), past the "
                 f"{DRIVER_MAX_COMPOSED_CUT_DB:g} dB ceiling",
                 role=role,
                 composed_cut_db=worst_cut,
+                composed_cut_hz=float(grid[worst_cut_index]),
                 max_composed_cut_db=DRIVER_MAX_COMPOSED_CUT_DB,
             )
-        peak_boost = max(0.0, float(np.max(composed)))
+        peak_index = int(np.argmax(composed))
+        peak_boost = max(0.0, float(composed[peak_index]))
         if peak_boost > DRIVER_MAX_COMPOSED_BOOST_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
                 f"the {role}'s composed cascade boosts {peak_boost:.2f} dB at "
-                f"its peak over its own band, past the "
+                f"its peak ({grid[peak_index]:.1f} Hz), past the "
                 f"{DRIVER_MAX_COMPOSED_BOOST_DB:g} dB ceiling. Two filters "
                 "whose skirts overlap deliver more than either alone, and "
                 "every dB above unity is charged against the household's "
                 "maximum SPL",
                 role=role,
                 composed_boost_db=peak_boost,
+                composed_boost_hz=float(grid[peak_index]),
                 max_composed_boost_db=DRIVER_MAX_COMPOSED_BOOST_DB,
                 max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB,
             )
