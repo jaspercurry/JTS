@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import threading
 from types import SimpleNamespace
 
@@ -931,6 +932,214 @@ def test_cancellation_drains_the_walk_before_cleanup(monkeypatch):
     # cleanup — the drain, not a mid-capture abort.
     assert any(e[0] == "consume" for e in conductor.events)
     assert volume.events[-1] == "abandon"
+
+
+# --------------------------------------------------------------------------- #
+# 3b. the per-take RETAKE (#2879) — the relay's own §2.6 terms, locally
+# --------------------------------------------------------------------------- #
+
+
+class _RetakeOnHold:
+    """A gate that holds ONE begin and asks for a retake while it holds.
+
+    The wired analogue of the relay's retake window: the previous slot is
+    accepted and this one has not started, so replacing the previous take is
+    still meaningful. ``hold_index=None`` admits everything.
+    """
+
+    def __init__(self, retake_event, *, hold_index, refuse=None):
+        self._retake = retake_event
+        self._hold_index = hold_index
+        self._refuse = refuse
+        self.held = 0
+
+    def gate(self, index, attempt, entry):
+        if self._refuse is not None and (index, attempt) == self._refuse:
+            raise CaptureBeginRefused("locate_failed", "no")
+        if index == self._hold_index and self.held == 0:
+            self.held += 1
+            self._retake.set()
+            raise CaptureBeginDeferred("awaiting_position", "hold")
+
+
+def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
+    monkeypatch,
+):
+    """The whole contract, in one event list (relay ``session.py`` §2.6).
+
+    The retake names the slot that JUST COMPLETED (``index == accepted``,
+    never ``accepted + 1``); it spends ONE ordinary attempt; and the accepted
+    count never rewinds — capture 2 still runs afterwards and the walk
+    finishes its target.
+
+    The attempt numbers are the pin on the last of those: 1, 2, 3 with no gap.
+    The held begin for slot 2 claimed attempt 2 and was never admitted, so the
+    walk hands that number back; charging it would spell 1, 3, 4 and bill a
+    household two attempts for one retake.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(retake, hold_index=2), retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert [e for e in conductor.events if e[0] != "on_armed"] == [
+        ("authorize", 1, 1),
+        ("consume", 1, 1, {"accepted": True}),
+        ("authorize", 1, 2),       # the retake: the slot that just completed
+        ("consume", 1, 2, {"accepted": True}),
+        ("authorize", 2, 3),       # ...and the walk carries on where it was
+        ("consume", 2, 3, {"accepted": True}),
+    ]
+
+
+def test_a_rejected_retake_leaves_the_original_take_standing(monkeypatch):
+    """"Nothing was dropped on its behalf" — the relay's own words.
+
+    The replacement is REJECTED, so the host never replaces the retained
+    position and the walk moves on to the next slot rather than re-running the
+    one it already has a usable take for.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor(verdicts=[
+        {"accepted": True},
+        {"accepted": False, "code": "locate_failed"},
+        {"accepted": True},
+    ])
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(retake, hold_index=2), retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
+def test_a_retake_with_no_take_to_replace_is_dropped_by_name(monkeypatch, caplog):
+    """An ask that reached a walk which has not measured anything yet.
+
+    Never re-pointed at the capture about to run — that is a DIFFERENT spot,
+    and silently retaking it would be the shape-change this ticket removed
+    from the staged walk.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(retake, hold_index=1), retake_event=retake,
+    )
+    with caplog.at_level(logging.WARNING):
+        _run(runner, plan=_plan(target=1, max_attempts=3))
+
+    assert any(
+        "crossover_v2_wired_retake_refused" in r.getMessage()
+        and "reason=no_take_to_replace" in r.getMessage()
+        for r in caplog.records
+    )
+    # ...and the walk it interrupted still ran, on its own first attempt.
+    assert ("authorize", 1, 1) in conductor.events
+
+
+def test_a_refused_retake_begin_does_not_end_the_session(monkeypatch):
+    """The per-slot extras ledger running out is the ordinary way this arm is
+    reached, and it must leave the household with the take they already had —
+    a bonus was asked for, not a teardown."""
+    terminal = []
+    retake = threading.Event()
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        terminal=terminal, retake_event=retake,
+        position_gate=_RetakeOnHold(retake, hold_index=2, refuse=(1, 2)),
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert terminal == []
+    assert volume.events == ["open", "close"]
+    # The refused retake spent its attempt and nothing else; slot 2 followed.
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (2, 3),
+    ]
+
+
+def test_a_retake_past_the_plans_attempt_budget_is_refused_not_fatal(
+    monkeypatch, caplog,
+):
+    """The plan's own ``max_attempts`` is the only budget a retake spends —
+    there is no second one to reason about, and running out keeps the set."""
+    retake = threading.Event()
+    conductor = FakeConductor(awaiting_confirm=True)
+    volume = VolumeRecorder()
+    complete_event = threading.Event()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        retake_event=retake, complete_event=complete_event,
+    )
+
+    async def _drive():
+        session = _wired_session(_plan(target=1, max_attempts=1))
+        task = asyncio.create_task(runner(None, session))
+        await asyncio.sleep(0.15)
+        retake.set()
+        await asyncio.sleep(0.15)
+        complete_event.set()
+        await task
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(_drive())
+
+    assert any(
+        "reason=plan_attempts_spent" in r.getMessage() for r in caplog.records
+    )
+    # The set still closed on the household's own signal.
+    assert ("confirm",) in conductor.events
+
+
+def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch):
+    """The relay holds the set open so "the just-accepted slot is still
+    retakeable on exactly the terms above" — the same sentence, locally."""
+    retake = threading.Event()
+    conductor = FakeConductor(awaiting_confirm=True)
+    volume = VolumeRecorder()
+    complete_event = threading.Event()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        retake_event=retake, complete_event=complete_event,
+    )
+
+    async def _drive():
+        session = _wired_session(_plan(target=1, max_attempts=4))
+        task = asyncio.create_task(runner(None, session))
+        await asyncio.sleep(0.15)
+        retake.set()
+        await asyncio.sleep(0.2)
+        complete_event.set()
+        await task
+
+    asyncio.run(_drive())
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2),
+    ]
+    assert ("confirm",) in conductor.events
+
+
+def test_a_session_with_no_retake_signal_is_byte_identical(monkeypatch):
+    """The default: a runner built without the signal never looks for one, so
+    every walk that shipped before this seam runs exactly as it did."""
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(threading.Event(), hold_index=2),
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (2, 2),
+    ]
 
 
 # --------------------------------------------------------------------------- #
