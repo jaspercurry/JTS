@@ -62,8 +62,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_APPLY_FAILED,
     REASON_CHANNEL_MAP_MISMATCH,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_CORRECTION_MODEL_ERROR,
+    REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
@@ -1188,7 +1188,7 @@ def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypat
 
     def refuse_measure(index, attempt, result, entry=None):
         if index == 2:
-            raise conductor._refuse(REASON_CORRECTION_NOT_AN_IMPROVEMENT)
+            raise conductor._refuse(REASON_DRIVER_LEVELS_DISAGREE)
         return real_consume(index, attempt, result, entry)
 
     monkeypatch.setattr(conductor, "consume_capture", refuse_measure)
@@ -1198,10 +1198,10 @@ def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypat
 
     event = backend.host_events[session.session_id][-1]
     assert (event["phase"], event["index"], event["code"]) == (
-        "capture_result", 2, REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+        "capture_result", 2, REASON_DRIVER_LEVELS_DISAGREE,
     )
     assert _persisted_failure(v2host.load_v2_state()) == {
-        "code": REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+        "code": REASON_DRIVER_LEVELS_DISAGREE,
     }
     assert volume.events == ["open", "abandon"]
 
@@ -1239,7 +1239,7 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
     assert conductor.relay_published_refusal is False
     slot = conductor._slot_of_index(2)
     conductor._slot_attempts[slot] = _flow.SlotAttempts(admitted=1)
-    conductor._last_reason[slot] = REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    conductor._last_reason[slot] = REASON_DRIVER_LEVELS_DISAGREE
 
     with pytest.raises(CaptureBeginRefused):
         _run(_build_runner(conductor, VolumeRecorder()), client, session)
@@ -1247,7 +1247,7 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
     assert conductor.relay_published_refusal is True
     last = backend.host_events[session.session_id][-1]
     assert (last["phase"], last["index"], last["code"]) == (
-        "capture_refused", 2, REASON_CORRECTION_NOT_AN_IMPROVEMENT,
+        "capture_refused", 2, REASON_DRIVER_LEVELS_DISAGREE,
     ), backend.host_events[session.session_id]
 
 
@@ -4654,42 +4654,56 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     assert prediction["reference_db"] is None
 
 
-def test_a_refused_correction_still_reaches_the_wire_with_its_verdict(caplog):
-    """The 4th reachable ``prediction`` state: report present, curve absent.
+def test_a_pre_burn_down_refusal_still_reaches_the_wire_with_its_verdict(caplog):
+    """The 4th ``prediction`` state: report present, curve absent.
 
     The verdict is stashed BEFORE the improvement gate runs, while
-    ``_measure_predicted_sum`` is assigned only after that gate returns — so a
-    ``correction_not_an_improvement`` refusal persists the report with
-    ``predicted_sum`` still ``None``. Honest rather than leaky: the spec
-    verdict genuinely evaluated that prediction, and the gate refused on a
-    different question (insufficient improvement over the correction's own
-    pre-fit model). Pinned because it is the state a review screen is most
-    likely to render wrong — ``overall_passed`` here is a REAL ``False``, not
-    the ``None`` that means unknown, and there is no curve to draw beside it.
+    ``_measure_predicted_sum`` is assigned only after that gate returns — so
+    while item 2 still refused, a ``correction_not_an_improvement`` refusal
+    persisted the report with ``predicted_sum`` still ``None``. That refusal is
+    gone (the nanny burn-down, doctrine deviation (c)) and no live path
+    produces the pairing from THAT cause any more, so the state is built here
+    rather than walked into. It is still worth pinning, twice over: a speaker
+    that ran a round before the burn-down has exactly these bytes on disk, and
+    any later refusal between the stash and ``commit_intervention_proposal``
+    reproduces the shape.
 
-    Fixture is the shipped refusal case: a comb far denser than the 8-filter
-    budget, in both drivers so the shared level frame has nothing to fix.
+    The rendering is what must not regress. ``overall_passed`` is a REAL
+    ``False``, not the ``None`` that means unknown, and there is no curve to
+    draw beside it — the state a review screen is most likely to get wrong.
+
+    **The retired code is tolerated, not honoured.** ``post_apply_grade`` used
+    to read this exact literal into a ``keep_previous`` outcome; that clause
+    went with the refusal, so the same bytes now yield no outcome claim at all
+    — which is the honest reading of a not-applied round with no selector
+    evidence, and specifically not a crash or a fabricated verdict.
     """
     from tests.crossover_v2_fixtures import (
-        _LINEARIZABLE_FREQS_HZ,
         FakeSeams,
         _cloud_conductor,
         _eligible_measure_analysis,
-        _walk_measure_cloud_to_close,
     )
 
-    comb_db = 9.0 * np.sin(
-        2.0 * np.pi * np.log2(_LINEARIZABLE_FREQS_HZ / 200.0) * 5.0
-    )
     fakes = FakeSeams()
-    fakes.measure = lambda program: _eligible_measure_analysis(
-        program, woofer_db=comb_db, tweeter_db=comb_db,
-    )
+    fakes.measure = lambda program: _eligible_measure_analysis(program)
     conductor = _cloud_conductor(fakes)
-    with pytest.raises(CaptureBeginRefused):
-        _walk_measure_cloud_to_close(conductor)
-
-    # The speaker was left untouched — no candidate, no persisted curve.
+    # The pre-burn-down pairing, stated directly: item 2 graded the prediction
+    # and stashed the report, then refused before any curve was committed.
+    conductor._measure_predicted_spec_report = {
+        "overall_passed": False,
+        "reference_db": 0.0,
+        "bands": [{
+            "f_lo_hz": 200.0, "f_hi_hz": 2000.0, "tolerance_db": 3.0,
+            "max_deviation_db": 4.0, "max_deviation_hz": 1000.0,
+            "rms_deviation_db": 2.0, "n_bins": 100, "n_excluded": 0,
+            "evaluable": True, "passed": False,
+        }],
+        "comparison": {
+            "reason": "correction_not_an_improvement",
+            "baseline_rms_db": 2.0, "selected_rms_db": 2.0,
+            "improvement_db": 0.0, "required_db": 0.5,
+        },
+    }
     assert conductor.candidate is None
     assert conductor.measure_predicted_sum is None
     with caplog.at_level(logging.INFO, logger=v2host.__name__):
@@ -4710,11 +4724,13 @@ def test_a_refused_correction_still_reaches_the_wire_with_its_verdict(caplog):
     assert prediction["overall_passed"] is False
     assert prediction["spec_bands"]
     assert prediction["reference_db"] is not None
-    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
-        "keep_previous"
-    )
-    assert caplog.text.count("event=correction.crossover_v2_result_classified") == 1
-    assert "outcome=keep_previous" in caplog.text
+    grade = v2host.crossover_v2_status_block()["post_apply_grade"]
+    assert grade["state"] == "not_applied"
+    assert grade["graded"] is True
+    # No outcome, and therefore no classification line: the round is graded as
+    # not-applied, and there is nothing left that claims to know what it meant.
+    assert "outcome" not in grade
+    assert "event=correction.crossover_v2_result_classified" not in caplog.text
 
 
 def test_a_candidate_persisted_now_records_which_headroom_era_stamped_it():
@@ -5306,7 +5322,7 @@ def _honest_result_state(
             "comparison": {
                 "reason": (
                     "improved" if improvement >= 0.5
-                    else "correction_not_an_improvement"
+                    else "not_an_improvement"
                 ),
                 "baseline_rms_db": 2.0, "selected_rms_db": 2.0 - improvement,
                 "improvement_db": improvement, "required_db": 0.5,

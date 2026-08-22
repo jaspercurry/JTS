@@ -258,7 +258,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     measurement_stopped: {text: "Measurement stopped.", retryable: true},
     test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
     measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},
-    measurement_evidence_unsafe: {text: "This measurement did not pass its safety checks. Measure again.", retryable: true},
     correction_update_failed: {text: "The correction could not be applied. Check the current correction before trying again.", retryable: true},
     correction_restore_failed: {text: "The previous sound could not be confirmed restored. The correction may still be applied.", retryable: true},
     correction_auto_revert_failed: {text: "That measured worse, but the correction could not be removed automatically. It is STILL APPLIED. Use Reset to remove it.", retryable: true},
@@ -1584,8 +1583,17 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (String(env.state) === 'failed' && !failure) {
       throw new Error('room-correction failure/state mismatch');
     }
-    if (failure && String(env.state) !== 'failed' &&
-        (env.screen !== 'review' || failure.code !== 'measurement_evidence_unsafe')) {
+    // No review-screen exemption any more. It was scoped to ONE pairing —
+    // screen `review` carrying `measurement_evidence_unsafe` — and the nanny
+    // burn-down retired that code, so the pairing is unreachable and the
+    // exemption exempted nothing. Deleting it is behaviour-preserving by
+    // construction: the clause it removes evaluated to "throw" for every other
+    // combination already. It is NOT a claim that a non-failed session carries
+    // no failure — `envelope._level_match_refusal_failure` builds one on relay
+    // sessions whose ramp terminal never advances `state` (pinned at
+    // test_correction_envelope's agc_suspected/timeout cases), and those were
+    // outside the exemption before and are outside it now.
+    if (failure && String(env.state) !== 'failed') {
       throw new Error('room-correction failure/screen mismatch');
     }
     if (failure && env.next_action !== null && !(

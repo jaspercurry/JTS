@@ -1945,7 +1945,6 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_CORRECTION_LEVEL_SHORTFALL as REASON_CORRECTION_LEVEL_SHORTFALL,
     REASON_CORRECTION_MEASURED_REGRESSION as REASON_CORRECTION_MEASURED_REGRESSION,
     REASON_CORRECTION_MODEL_ERROR as REASON_CORRECTION_MODEL_ERROR,
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT as REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_CORRECTION_ROLLBACK_FAILED as REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_SPATIALLY_COSTLY as REASON_CORRECTION_SPATIALLY_COSTLY,
     REASON_CORRECTION_UNPROVEN_BOOST as REASON_CORRECTION_UNPROVEN_BOOST,
@@ -1959,8 +1958,6 @@ from jasper.active_speaker.crossover_v2.vocabulary import (
     REASON_LOW_ALIGNMENT_CONFIDENCE as REASON_LOW_ALIGNMENT_CONFIDENCE,
     REASON_NOISY_ROOM_LINEARITY as REASON_NOISY_ROOM_LINEARITY,
     REASON_PILOT_LEVEL_COLLAPSE as REASON_PILOT_LEVEL_COLLAPSE,
-    REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT
-    as REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_PROGRAM_PROFILE_INCOMPLETE as REASON_PROGRAM_PROFILE_INCOMPLETE,
     REASON_PROGRAM_PROFILE_MISSING as REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED as REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -2026,16 +2023,17 @@ from jasper.active_speaker.crossover_v2.attempt_grading import (
 #: one exists because that figure is a POOLED-RMS improvement and a per-driver
 #: prescription is by construction a narrow high-Q filter aimed at ONE banked
 #: feature: 0.077-0.152 dB pooled on realistic fixtures even when it is exactly
-#: right, so the fitted bar would refuse the class before its first hardware
-#: exercise rather than judge it. Named and defined HERE, beside the reader that
-#: chooses between the two,
+#: right, so the fitted bar would file the whole class as no improvement before
+#: its first hardware exercise rather than judge it. Named and defined HERE,
+#: beside the reader that chooses between the two,
 #: because the choice is this module's (see ``_assert_accountable``) and the
 #: gate it is handed to never branches on either.
 #:
-#: 0.0 rather than "no gate at all": a model cannot settle whether a narrow cut
-#: helps, but it CAN settle that a proposal is predicted to make the speaker
-#: worse, and spending the household's speaker on that is the one thing worth
-#: refusing before measuring.
+#: 0.0 rather than "no bar at all": a model cannot settle whether a narrow cut
+#: helps, but it CAN say a proposal is predicted to make the speaker worse, and
+#: that is worth writing down. It is a LEDGER boundary, not a stop — neither
+#: bar refuses since the nanny burn-down (docs/measurement-loop-doctrine.md
+#: deviation (c)) — deciding ``improved`` against ``not_an_improvement``.
 PRESCRIBED_NON_WORSENING_DB: float = 0.0
 
 
@@ -2189,8 +2187,8 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # threshold's calibration changed; only what crossing it does.
 #
 # What did NOT change, stated because a reader will ask: the trust floor, the
-# delay-plausibility backstop, the SNR/linearity/glitch verdicts and every
-# accountability gate below still REFUSE. This one number stopped being a veto
+# delay-plausibility backstop, the SNR/linearity/glitch verdicts and
+# accountability's item 1 still REFUSE. This one number stopped being a veto
 # because a bad ripple describes how well two branches can sum in this room on
 # this rig — a thing the household cannot act on by moving anything — and not
 # a defect in the capture that measuring again would fix.
@@ -7553,9 +7551,9 @@ class CrossoverV2Session:
         # of sending them to move a microphone that was never the problem, so
         # the reservation changes what the household is TOLD and nothing about
         # what is built, fitted, gated, or applied. Every accountability gate
-        # below (``_assert_accountable``'s level-frame, realized-level and
-        # predicted-improvement refusals) still runs unchanged on this
-        # candidate, which is what keeps "proceed" from meaning "unchecked".
+        # below still runs unchanged on this candidate, which is what keeps
+        # "proceed" from meaning "unchecked" — one of the three still REFUSES
+        # (realized-level); level-frame and predicted-improvement now bank.
         #
         # The candidate presence check is the caller's because reading the
         # ripple off it requires it; the alignment half of the shipped skip
@@ -9052,9 +9050,9 @@ class CrossoverV2Session:
           The finding store is write-once, so a gate-site publish would ask it
           twice for one path and hit a PATH_CONFLICT on the second.
         * **Never for a candidate that does not exist.** A build the household
-          retakes past, or one item 1 or item 2 refuses after the frame gate
-          banked, leaves no finding — which is correct: the record describes
-          the frame behind a specific proposal, and there is no proposal.
+          retakes past, or one item 1 refuses after the frame gate banked,
+          leaves no finding: the record describes the frame behind a specific
+          proposal. Item 2 is not on that list — it no longer refuses.
         * **The citation resolves.** The finding cites the candidate artifact,
           which the line above just published.
 
@@ -9238,7 +9236,7 @@ class CrossoverV2Session:
         Copy comes from :func:`reason_message`, not from ``spec`` directly
         (#2085), so a refusal built here renders the same sentence the
         capture's own relay verdict did. No code routed through this method is
-        evidence-keyed TODAY — the accountability refusals hold literals — but
+        evidence-keyed TODAY — the accountability refusal holds a literal — but
         every other render path now asks the selector, and leaving one that
         does not is how the two accounts diverge again the first time a
         refusal code grows a fact to branch on.
@@ -9272,9 +9270,11 @@ class CrossoverV2Session:
         household as its own sentence rather than as "the measurement link
         timed out" (see :meth:`_refuse`).
 
-        The three inputs the gate is TOLD rather than reaches for are the
-        prediction threshold and the two household reason codes; that module's
-        docstring records why each stays owned here.
+        The two inputs the gate is TOLD rather than reaches for are the
+        prediction threshold and item 1's household reason code; that module's
+        docstring records why each stays owned here. It used to be three:
+        item 2 was handed a reason code to refuse under, and the nanny
+        burn-down took both the code and the refusal.
 
         **Write-then-say, and the ordering that matters.** The stash is
         installed before the journal is emitted, which differs from the
@@ -9300,25 +9300,26 @@ class CrossoverV2Session:
           is by construction a narrow high-Q filter aimed at ONE banked feature:
           on realistic fixtures such a filter predicts 0.077-0.152 dB of pooled
           improvement even when it is exactly the right correction, so the
-          fitted bar would refuse the whole class before its first hardware
-          exercise. It is not the same question
+          fitted bar would file the whole class as no improvement before its
+          first hardware exercise. It is not the same question
           being asked more leniently — it is the same question asked of a
           proposal that already carries its OWN admission evidence (the
           classification verdict bar, the per-filter depth cap, the composed
           cap, and a digest proving the accepted bytes ran). What adjudicates a
           prescription is the measured round with its pre-registered
           keep/rollback, not a model-vs-model screen sized for another class.
-          Non-worsening is the floor that still refuses the one thing a model
-          CAN settle before spending the speaker: a correction predicted to make
-          it worse.
 
-        The gate itself never learns any of this — it is handed a number and a
-        code, per its own docstring — so the journal line carries ``required_db``
-        and the two are told apart on the wire by the value that decided.
+        **Neither bar stops anything any more** (the nanny burn-down, doctrine
+        deviation (c)). The bar used to decide a refusal; it now chooses which
+        LEDGER value the round banks — ``improved`` or ``not_an_improvement``
+        — and the round proceeds to the measurement that decides. The field
+        evidence that overruled the non-worsening arm's "worth refusing before
+        measuring" argument is on :mod:`~.crossover_v2.accountability`.
+
+        The gate itself never learns any of this — it is handed a number, per
+        its own docstring — so the journal line carries ``required_db`` and the
+        two bars are told apart on the wire by the value that decided.
         """
-        # One branch, one owner. The pair moves together: a household reading
-        # "the tuning JTS worked out" about a document an operator wrote would
-        # be sent to re-check driver details that are not what is wrong.
         prescribed_graph = bool(prescribed)
         decision = _accountability.assess_accountability(
             predicted_sum=predicted_sum,
@@ -9330,10 +9331,6 @@ class CrossoverV2Session:
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
             reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
-            reason_not_an_improvement=(
-                REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT if prescribed_graph
-                else REASON_CORRECTION_NOT_AN_IMPROVEMENT
-            ),
         )
         if decision.spec_report_written:
             self._measure_predicted_spec_report = decision.spec_report
@@ -12966,7 +12963,6 @@ __all__ = [
     "REASON_AGC_BEHAVIORAL_FAIL",
     "REASON_NOISY_ROOM_LINEARITY",
     "REASON_PILOT_LEVEL_COLLAPSE",
-    "REASON_PRESCRIBED_CORRECTION_NOT_AN_IMPROVEMENT",
     "PRESCRIBED_NON_WORSENING_DB",
     "REASON_SNR_FLOOR",
     "REASON_CHANNEL_MAP_MISMATCH",
@@ -12996,7 +12992,6 @@ __all__ = [
     "REASON_POSITION_TARGET_MISSING",
     "REASON_SESSION_CEILING_EXPIRED",
     "REASON_DRIVER_LEVELS_DISAGREE",
-    "REASON_CORRECTION_NOT_AN_IMPROVEMENT",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "spec_report_for_predicted_sum",

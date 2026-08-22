@@ -23,7 +23,6 @@ import logging
 from jasper.active_speaker.crossover_v2 import accountability, intervention
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
 from jasper.active_speaker.crossover_v2.vocabulary import (
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_DRIVER_LEVELS_DISAGREE,
 )
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
@@ -68,25 +67,30 @@ def _match(*, matched, difference_db=0.2):
 
 
 def _consistency(*, suspect, worst_delta_db=5.799):
-    """A :class:`LevelConsistency` verdict, or ``None`` for "no owner in hand".
+    """A :class:`LevelConsistency` verdict — suspect or agreed.
 
     Not a re-derivation of :func:`~.intervention.check_level_consistency` —
     these tests exercise how ``assess_accountability`` handles the verdict,
     not how the verdict itself is computed, so the fixture states its shape
-    directly.
+    directly. ``None`` — "the session produced no verdict at all" — is a third
+    state and is passed to :func:`_state` explicitly rather than spelled as
+    ``suspect=False``, which the ledger's tri-state flag distinguishes.
     """
-    if not suspect:
-        return None
     return intervention.LevelConsistency(
-        suspect=True,
-        reason=intervention.LEVEL_ESTIMATOR_SUSPECT_REASON,
+        suspect=suspect,
+        reason=intervention.LEVEL_ESTIMATOR_SUSPECT_REASON if suspect else "",
         tolerance_db=TOLERANCE_DB,
-        worst_delta_db=worst_delta_db,
-        estimator_delta_db={"woofer": worst_delta_db},
+        worst_delta_db=worst_delta_db if suspect else 0.4,
+        estimator_delta_db={"woofer": worst_delta_db if suspect else 0.4},
     )
 
 
-def _state(*, suspect=False, matched=True, linearized=("f", "m")):
+_UNSET = object()
+
+
+def _state(
+    *, suspect=False, matched=True, linearized=("f", "m"), consistency=_UNSET,
+):
     return LinearizationState(
         outcome="fitted",
         # Tuples on purpose — see the GateRecord fidelity pin below.
@@ -95,7 +99,10 @@ def _state(*, suspect=False, matched=True, linearized=("f", "m")):
                        "radiating_band_hz": (0.0, 1282.3)},
         },
         trim_band_estimate_db={"woofer": 0.1},
-        level_consistency=_consistency(suspect=suspect),
+        level_consistency=(
+            _consistency(suspect=suspect) if consistency is _UNSET
+            else consistency
+        ),
         linearized_predicted_sum=linearized,
         realized_level_match=_match(matched=matched),
     )
@@ -109,7 +116,6 @@ def _assess(state, **over):
         grade_prediction=lambda _sum: _report(True),
         material_improvement_db=IMPROVEMENT_DB,
         reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
-        reason_not_an_improvement=REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     )
     kwargs.update(over)
     return accountability.assess_accountability(**kwargs)
@@ -139,22 +145,48 @@ def test_a_refusal_arm_never_carries_a_stash():
     assert decision.spec_report is None
 
 
-def test_a_graded_refusal_DOES_carry_its_stash():
-    """Item 2 stashes and then refuses — the stash survives the refusal.
+def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
+    """The nanny burn-down, at the gate — doctrine deviation (c).
 
-    The other direction of the pin above, and the one that makes it a
-    discrimination rather than a blanket "refusals write nothing": the
-    prediction the household is refused ON is the prediction the host
-    persists, so a reader can see what was graded.
+    Item 2 used to refuse here under ``correction_not_an_improvement``. It was
+    a forecast vetoing the measurement that would have settled the question,
+    which the doctrine's authority model forbids: "Predictions and heuristics
+    PROPOSE… They never veto an in-band experiment. Measurements DISPOSE."
+    Tonight's shape exactly: the linearized model grades WORSE than its own
+    pre-fit baseline, so ``improvement_db`` is negative against a bar it
+    cannot meet.
+
+    Three things are asserted, and each is the burn-down's own promise. The
+    round is not refused. The stash a downstream reader persists carries the
+    forecast in full — both residuals, the delta, and the bar it was judged
+    against — so nothing the veto used to compute is lost. And the ledger
+    names the verdict, so "the forecast said worse" and "the forecast was
+    never run" stay distinguishable in the journal.
+
+    **Mutation guard.** Restoring the veto — a ``refusal_reason`` on this
+    path — fails the first assertion.
     """
     decision = _assess(
         _state(), grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    assert decision.refusal_reason is None
     assert decision.spec_report_written is True
     assert decision.spec_report is not None
-    assert decision.spec_report["comparison"]["reason"] == REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    comparison = decision.spec_report["comparison"]
+    assert comparison["reason"] == accountability.LEDGER_NOT_AN_IMPROVEMENT
+    # Graded against itself, so both residuals are 2.0 and the delta is 0.0 —
+    # under the 0.5 dB bar, which is what makes this the refusing shape.
+    assert comparison["baseline_rms_db"] == 2.0
+    assert comparison["selected_rms_db"] == 2.0
+    assert comparison["improvement_db"] == 0.0
+    assert comparison["required_db"] == IMPROVEMENT_DB
+    ledger = decision.journal[-1]
+    assert ledger.event == accountability.EVENT_PREDICTION_GATE
+    assert ledger.level == logging.WARNING
+    assert ledger.fields["reason"] == accountability.LEDGER_NOT_AN_IMPROVEMENT
+    assert ledger.fields["improvement_db"] == 0.0
+    assert ledger.fields["required_db"] == IMPROVEMENT_DB
 
 
 def test_an_ungradeable_prediction_clears_the_stash_rather_than_leaving_it():
@@ -222,19 +254,49 @@ def test_the_baseline_is_graded_only_when_the_verdict_turns_on_it():
     assert calls == [("f", "m"), ("f", "raw")], "a failing one needs both"
 
 
-def test_a_refusal_never_banks_a_finding():
-    """A banked finding describes a proposal; a refusal leaves none.
+def test_a_distrusted_forecast_rides_WITH_the_prediction_it_produced():
+    """The two lines that sat next to each other in the field, now linked.
 
-    Reachable: the level-consistency verdict can be suspect, bank a finding,
-    and then item 2 can still refuse.
+    On 2026-08-22 the estimator-consistency finding reported the two
+    per-driver level estimates 11.635 dB apart against a 3.0 dB tolerance, and
+    the very next line was a prediction gate refusing on numbers built from
+    them. Nothing in either line said they were about the same forecast, and
+    the one that refused was the one with the weaker claim.
+
+    Two things now say it. The finding is banked rather than dropped — it used
+    to be discarded whenever item 2 refused, which threw away the diagnosis of
+    the forecast that did the refusing — and the ledger itself carries
+    ``level_estimator_suspect``, so a reader of the prediction line learns
+    the forecast's inputs were in dispute without correlating by session.
+    The magnitude is deliberately NOT copied here: it has one owner, the
+    finding and the estimator journal line above.
     """
     decision = _assess(
         _state(suspect=True, matched=True),
         grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    assert decision.finding is None
+    assert decision.refusal_reason is None
+    assert decision.finding is not None
+    assert decision.finding["worst_delta_db"] == 5.799
+    ledger = decision.journal[-1]
+    assert ledger.fields["level_estimator_suspect"] is True
+    assert decision.spec_report["comparison"]["level_estimator_suspect"] is True
+
+
+def test_an_undisputed_forecast_says_so_rather_than_staying_silent():
+    """The other two states of the same flag.
+
+    ``False`` is a real answer — the estimators were checked and agreed — and
+    is not the same as ``None``, which is a session that produced no
+    consistency verdict at all. A single boolean would make a candidate built
+    without a fit look like one whose estimators passed.
+    """
+    agreed = _assess(_state(suspect=False))
+    assert agreed.journal[-1].fields["level_estimator_suspect"] is False
+
+    unverdicted = _assess(_state(consistency=None))
+    assert unverdicted.journal[-1].fields["level_estimator_suspect"] is None
 
 
 def test_the_journal_is_in_emission_order_estimator_finding_then_ledger():

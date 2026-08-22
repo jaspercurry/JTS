@@ -59,18 +59,21 @@ heuristics, prediction-engine rankings — is **provenance**, not a gate: it
 rides with the data into the evidence packet for the prescriber (human or
 LLM) to weigh. It must never refuse an experiment on its own.
 
-### Known deviations at 2026-08-21
+### Known deviations at 2026-08-21, and where each stands
 
-Four live, tested refusals sit outside the list above, none naming a
-component-damage mechanism:
+Five tested refusals sat outside the list above when this doc was ratified,
+none naming a component-damage mechanism. **Four are now closed and one is
+retained by ruling, so this table tracks nothing outstanding.** Rows are struck
+as they close and a struck row stays, so a reader meeting one of these names in
+an old round or an old commit can tell it was retired on purpose:
 
 | # | refusal | file | status |
 |---|---|---|---|
-| a | `BOOST_VERTICALLY_BLIND` | `jasper/active_speaker/crossover_v2/driver_prescription.py` | removal in flight |
+| ~~a~~ | ~~`BOOST_VERTICALLY_BLIND`~~ | `jasper/active_speaker/crossover_v2/driver_prescription.py` | **CLOSED** — removed in #2805; a boost admitted on a horizontal capture now owes a measurement, not a plane |
 | ~~b~~ | ~~`FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses"~~ | — | **CLOSED 2026-08-21.** The refusal only ever bound the corner hunt's proposal grid, and the hunt was deleted with `fc_sweep`'s sweep half (plan ticket 2.3). No admissibility bound reads the ka onset now; it rides the receipt as provenance, which is what section 3 asked for. |
-| c | `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — refuses on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | tracked |
-| d | `_strategy_gates` score floors; `measurement_evidence_failure`'s fail-severity apply blocker | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | tracked |
-| e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | tracked, most defensible |
+| ~~c~~ | ~~`REASON_CORRECTION_NOT_AN_IMPROVEMENT`~~ — refused on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | **CLOSED** — it vetoed jts3's first prescribed-boost round on 2026-08-22 (`improvement_db=-0.703`, one line after disclosing its own inputs 11.635 dB apart); the forecast now banks `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds |
+| ~~d~~ | ~~`_strategy_gates` score floors~~; ~~`measurement_evidence_failure`'s fail-severity apply blocker~~ | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | **CLOSED** — the score floors' only veto (`response._policy_allows`) went in #2808 and every remaining reader was already disclosure; the apply blocker is deleted, and a `fail`-severity finding now reaches the household as a `warn` nudge |
+| e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | **RETAINED by ruling R8** (`docs/tuning-master-plan.md`): "Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver)" — a stated limit of the instrument, not a prior about the outcome |
 
 ## 4. The nanny test
 
@@ -104,4 +107,9 @@ place only by naming the component-damage mechanism it guards against —
 
 ---
 
-Last verified: 2026-08-21
+Scope of this verification: the deviation table above was re-derived against
+the tree — every row's named symbol grepped for a live producer — and rows (a),
+(c), and (d) closed; row (b) closed separately the same day (#2853) and its
+account is that PR's. Sections 1-3, 4, and 5 were re-read and stand unchanged.
+
+Last verified: 2026-08-22

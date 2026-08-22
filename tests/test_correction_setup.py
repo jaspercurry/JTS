@@ -3615,7 +3615,20 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
         server.server_close()
 
 
-def test_e2e_apply_rejects_failed_measurement_evidence_before_dsp(monkeypatch):
+def test_e2e_apply_reaches_the_dsp_despite_failed_measurement_evidence(monkeypatch):
+    """The nanny burn-down at ``/apply`` — doctrine deviation (d).
+
+    This used to assert a 422 with ``measurement_evidence_unsafe``, raised
+    before ``_camilla()`` was ever reached. That blocker refused a reversible,
+    measurable experiment on a judgement about how good the evidence was, and
+    no cause it fires on — a failed capture-quality, browser-audio-path, or
+    runtime-integrity check — is on the doctrine's closed hard-stop list. The
+    doubt now reaches the household as a ``warn`` nudge on the envelope
+    (``test_correction_envelope``) and the apply proceeds to the graph.
+
+    **Mutation guard.** Restoring the pre-check makes ``_camilla`` unreachable
+    and fails the ``reached`` assertion.
+    """
     sess = SimpleNamespace(
         confidence_report={
             "findings": [{
@@ -3625,24 +3638,24 @@ def test_e2e_apply_rejects_failed_measurement_evidence_before_dsp(monkeypatch):
             }],
         },
     )
+    reached: list[str] = []
+
+    def _reached_dsp():
+        reached.append("camilla")
+        raise RuntimeError("stop here — the DSP itself is not this test's subject")
+
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(
-        correction_setup,
-        "_camilla",
-        lambda: pytest.fail("unsafe evidence must reject before DSP access"),
-    )
+    monkeypatch.setattr(correction_setup, "_camilla", _reached_dsp)
     server, base = _start_server()
     try:
-        e = request_with_csrf(
+        request_with_csrf(
             base,
             "/apply",
             b"{}",
             content_type="application/json",
-            expect_status=422,
+            expect_status=500,
         )
-        body = json.loads(e.read().decode())
-        assert body["failure"]["code"] == "measurement_evidence_unsafe"
-        assert "raw runtime diagnostic" not in str(body)
+        assert reached == ["camilla"]
     finally:
         server.shutdown()
         server.server_close()

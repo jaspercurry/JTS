@@ -584,10 +584,51 @@ def _fill_segments(session: Any) -> list[dict[str, Any]]:
 #
 # Each confidence-report finding code we surface maps to one plain-English
 # sentence. Copy tone (§0.2, §3.2): measurement-quality nudges inform, they do
-# not gate. Unknown codes and `fail` findings are omitted here: the former are
-# diagnostics until Room assigns safe copy, while the latter belong to the
-# blocking/failure path and must never be softened into an optional warning.
+# not gate. Unknown codes are still omitted — they are raw diagnostics until
+# Room assigns safe copy. `fail` findings are NOT: they used to be omitted
+# here because they belonged to the blocking/failure path, and the nanny
+# burn-down retired that path, so every one of them needs a row (see
+# :func:`_nudges`). "Never a block" now covers the whole table rather than
+# describing what was left after the blocking codes were taken out.
 _NUDGE_COPY: dict[str, dict[str, str]] = {
+    # The four ``fail``-severity confidence findings. They are ``warn`` — the
+    # strongest nudge — and not a block, per the nanny burn-down documented on
+    # :func:`_nudges`. Each names the doubt and the one action that removes
+    # it, and each says out loud that continuing is allowed, because the copy
+    # they replaced ("This measurement did not pass its safety checks") read
+    # as a stop and reserved the word "safety" for something that is not on
+    # the doctrine's component-damage list.
+    "no_completed_positions": {
+        "severity": "warn",
+        "text": (
+            "No measurement finished, so there is nothing measured to build "
+            "a correction from. Measure at least one spot."
+        ),
+    },
+    "capture_quality_failed": {
+        "severity": "warn",
+        "text": (
+            "Some spots had recording problems JTS could not work around, so "
+            "this result may not describe your room. You can continue, but "
+            "measuring those spots again is the surer fix."
+        ),
+    },
+    "browser_audio_path_failed": {
+        "severity": "warn",
+        "text": (
+            "Your browser changed the sound on its way in, so this result may "
+            "not describe your room. You can continue, but measuring again "
+            "from another device or browser is the surer fix."
+        ),
+    },
+    "runtime_integrity_failed": {
+        "severity": "warn",
+        "text": (
+            "JTS could not confirm the speaker stayed as it was during the "
+            "measurement, so this result may not describe your room. You can "
+            "continue, but measuring again is the surer fix."
+        ),
+    },
     "uncalibrated_mic": {
         "severity": "info",
         "text": (
@@ -700,6 +741,19 @@ def _nudges(session: Any) -> list[dict[str, str]]:
     come first (in the report's own most-impactful-first order); the
     design-report crossover-region nudge is appended after. A session with a
     design report but no confidence report still surfaces the crossover nudge.
+
+    **``fail``-severity findings are nudges too, since the nanny burn-down**
+    (docs/measurement-loop-doctrine.md deviation (d)). This used to skip them,
+    because a fail finding became a blocking ``failure`` block instead —
+    ``measurement_evidence_failure``, which refused ``/apply`` with a 422 and
+    withdrew the Apply button. Under the doctrine's closed hard-stop list none
+    of the four fail codes names a component-damage mechanism: a capture whose
+    quality checks did not pass is evidence about the MEASUREMENT, and the way
+    to settle whether a correction built on it helps is to apply it and
+    measure, not to forbid the attempt. So the doubt keeps its full weight —
+    ``warn``, the strongest nudge, one per finding — and stops being a veto.
+    A fail code with no :data:`_NUDGE_COPY` row would be dropped silently by
+    the guard below, so every one of them has a row.
     """
     nudges: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -717,8 +771,6 @@ def _nudges(session: Any) -> list[dict[str, str]]:
             if not code or code in seen:
                 continue
             seen.add(code)
-            if finding.get("severity") == "fail":
-                continue
             canned = _NUDGE_COPY.get(code)
             if canned is None:
                 continue
@@ -1366,12 +1418,6 @@ def build_envelope(
             failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
         else:
             failure = session_failure(getattr(session, "error", None))
-    elif screen == SCREEN_REVIEW:
-        from .failures import measurement_evidence_failure
-
-        failure = measurement_evidence_failure(
-            getattr(session, "confidence_report", None),
-        )
     elif transport == "relay":
         failure = _level_match_refusal_failure(session)
     if failure is not None and session.state.value != "failed":

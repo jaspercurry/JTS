@@ -38,6 +38,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2 import planning
 from jasper.active_speaker.crossover_v2.intervention import (
@@ -117,7 +118,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLAIM_PASS,
     verify_absolute_tolerance_db,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_CORRECTION_NOT_AN_IMPROVEMENT,
     REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
@@ -8649,41 +8649,6 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
 
 
 
-def _neutralize_improvement_floor(monkeypatch) -> None:
-    """Take item 2's material-improvement floor out of a test's way.
-
-    **Why five fit/anchor tests need this since #2609.** Deleting PR-L5's
-    ``level_frame_offset_db`` moved this fixture's anchored tweeter ~2.2 dB
-    (the two per-driver estimates are identical here at -1.773 dB, so the
-    anchor's BASE never moved — only the deleted offset did). A louder tweeter
-    predicts a smaller improvement, and these fixtures then trip
-    ``correction_not_an_improvement`` before reaching what they are about.
-
-    **That refusal has since been un-flipped, and the neutralize stays anyway.**
-    The band-matched give-back lands this fixture's pair exactly level, so it
-    clears the floor on its own again — see
-    ``test_a_correctly_levelled_pair_clears_the_improvement_floor``, which now
-    pins the SHIPPING half and explains why the old rule's 1.835 dB-dull pair
-    was what dragged the prediction under. The floor's refusal arm keeps its
-    coverage where the decision is owned
-    (``test_crossover_v2_accountability.py``) and where it is spoken
-    (``test_correction_crossover_v2_endpoints.py``).
-
-    Kept rather than deleted because these five still have nothing to say about
-    the floor, and a fixture that clears it by only 0.24 dB against a 0.5 dB bar
-    could stop clearing it on any unrelated fit change — which would fail five
-    tests for a reason none of them is about. The neutralize is what makes that
-    impossible.
-
-    Neutralizing it HERE rather than re-deriving these five to expect a refusal
-    keeps each one testing its own subject — the wild-drift guard, the rejected
-    scan, the normalize shift, the trim-rejected outcome, the linearized
-    predicted sum. This is the fixture author's own rule, already stated in
-    ``test_anchored_normalization_shift_prevents_a_positive_trim``'s docstring:
-    a test should not ride "a floor it has nothing to say about".
-    """
-    monkeypatch.setattr(flow, "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB", 0.0)
-
 def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkeypatch):
     """#1668 anchored give-back, guard pair (b): when the ripple-optimal tweeter
     scan drifts implausibly far from the ANCHOR, the guard fires and the
@@ -8708,7 +8673,6 @@ def test_wild_scan_drift_falls_back_to_anchored_pair_with_warning(caplog, monkey
 
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
-    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8796,7 +8760,6 @@ def test_a_rejected_scan_is_not_committed_however_well_it_levels(caplog, monkeyp
     monkeypatch.setattr(
         iv, "realized_level_match", _match,
     )
-    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -8927,7 +8890,12 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
         raw tweeter trim dB   0.0    -0.5   -1.0   -1.5  -1.773   -2.0   -3.0
         baseline rms dB     0.647   0.708  0.792  0.895   0.957  1.012  1.284
         improvement dB      0.347   0.408  0.492  0.595   0.657  0.712  0.984
-        verdict            refuse  refuse refuse accept  accept accept accept
+        ledger verdict      under   under  under   over    over   over   over
+
+    (The three left-hand columns REFUSED when this table was measured; since
+    the nanny burn-down the same rows bank ``not_an_improvement`` and the
+    round proceeds. The arithmetic is unchanged, which is what the table is
+    about.)
 
     So the honest value for a fixture field nobody had derived is: don't
     override it. Using ``_FIXTURE_RAW_TRIM_DB`` — solved from the same branch
@@ -8943,7 +8911,6 @@ def test_anchored_normalization_shift_prevents_a_positive_trim(monkeypatch):
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
     raw_trim = dict(_FIXTURE_RAW_TRIM_DB)
-    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -9079,8 +9046,9 @@ def test_prediction_gate_verdict_does_not_depend_on_the_room(pre_apply_scale):
     The first cut compared the model's residual against the MEASURED in-room
     cloud's, which made the verdict a function of the ROOM: holding the
     correction constant and varying only the pre-apply measurement flipped a
-    passing session into ``correction_not_an_improvement``, and every BETTER
-    room refused harder. Both of the gate's terms are now the same instrument
+    passing session into the gate's failing arm (a refusal at the time; a
+    ``not_an_improvement`` ledger entry since the nanny burn-down), and every
+    BETTER room fared worse. Both of the gate's terms are now the same instrument
     at the same position, so scaling the room's own measured response — the
     only thing this parametrization changes — must not move the verdict at
     all."""
@@ -9100,11 +9068,20 @@ def test_prediction_gate_verdict_does_not_depend_on_the_room(pre_apply_scale):
     )
 
 
-def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
-    """PR-L4 item 2, and the deliberate amendment to PR-6b's unconditional
-    auto-apply: a prediction that still fails the spec and does not materially
-    better its own pre-fit model refuses at the confirm seam, and the speaker is
-    never touched.
+def test_prediction_gate_banks_a_correction_that_does_not_improve_and_proceeds(caplog):
+    """PR-L4 item 2, after the nanny burn-down (doctrine deviation (c)).
+
+    This used to REFUSE at the confirm seam and leave the speaker untouched.
+    It was a forecast vetoing the measurement that would have settled the
+    question — it took jts3's first prescribed-boost round on 2026-08-22 with
+    it — and the doctrine's authority model puts a prediction on the proposing
+    side of that line. So the gate now banks its verdict and the round
+    proceeds: the ledger says ``not_an_improvement``, the household is not
+    told its speaker was left alone, and what decides the correction's fate is
+    the measured round that follows.
+
+    **Mutation guard.** Restoring the veto makes `_walk_measure_cloud_to_close`
+    raise ``CaptureBeginRefused`` and fails the first assertion here.
 
     Driven through the REAL threshold by a realistic bad correction — a driver
     pair whose fit cannot help, so the linearized model lands essentially on top
@@ -9131,7 +9108,7 @@ def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
     genuine improvement (it now lands in spec). At 9 dB / 5 cycles per octave
     the comb is un-correctable on its own merits — ~35 notches against an
     8-filter budget — and the ledger reads a 0.001 dB improvement."""
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     freqs = _LINEARIZABLE_FREQS_HZ
     comb_db = 9.0 * np.sin(2.0 * np.pi * np.log2(freqs / 200.0) * 5.0)
     fakes = FakeSeams()
@@ -9140,15 +9117,17 @@ def test_prediction_gate_refuses_a_correction_that_does_not_improve(caplog):
     )
     c = _cloud_conductor(fakes)
 
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        _walk_measure_cloud_to_close(c)
+    verdict = _walk_measure_cloud_to_close(c)
 
-    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    assert "reason=correction_not_an_improvement" in caplog.text
-    # The speaker is untouched: nothing stashed, nothing published, and no
-    # payload carrying auto_apply ever came back.
-    assert c.candidate is None
-    assert fakes.published_candidates == []
+    # No refusal, and the round produced a real candidate to measure.
+    assert verdict["candidate_fingerprint"]
+    assert c.candidate is not None
+    assert c.last_failure_code is None
+    # The verdict the forecast reached is on the record, at WARNING, with the
+    # numbers a reader needs to weigh it.
+    assert "reason=not_an_improvement" in caplog.text
+    assert "required_db=0.5" in caplog.text
+    assert "improvement_db=" in caplog.text
 
 
 def test_prediction_gate_tolerance_is_the_models_own_tracking_error():
@@ -9438,15 +9417,23 @@ def test_an_accountability_refusal_names_itself_to_the_host():
     assert c.last_failure_code != REASON_RELAY_TIMEOUT
 
 
-def test_reason_registry_covers_both_accountability_refusals():
+def test_reason_registry_covers_the_accountability_refusal():
     """Every refusal this flow can raise has household copy and a screen — a
-    bare code must never reach a phone (§5.10)."""
-    for code in (REASON_DRIVER_LEVELS_DISAGREE, REASON_CORRECTION_NOT_AN_IMPROVEMENT):
-        spec = REASON_REGISTRY[code]
-        assert spec.template == TEMPLATE_HARD_STOP
-        assert spec.retry_budget == 0
-        assert spec.message and spec.message.endswith(".")
-        assert code not in TRANSIENT_AUTO_RETRY_CODES
+    bare code must never reach a phone (§5.10).
+
+    One code, not two, since the nanny burn-down: item 2 stopped refusing, so
+    ``correction_not_an_improvement`` and its prescribed sibling have no
+    sentence to own and are gone from the registry. Their absence is asserted
+    too — a registry row for a refusal nothing raises is copy that can never
+    be read, and re-adding one is how the veto would come back quietly.
+    """
+    spec = REASON_REGISTRY[REASON_DRIVER_LEVELS_DISAGREE]
+    assert spec.template == TEMPLATE_HARD_STOP
+    assert spec.retry_budget == 0
+    assert spec.message and spec.message.endswith(".")
+    assert REASON_DRIVER_LEVELS_DISAGREE not in TRANSIENT_AUTO_RETRY_CODES
+    assert "correction_not_an_improvement" not in REASON_REGISTRY
+    assert "prescribed_correction_not_an_improvement" not in REASON_REGISTRY
 
 
 # --------------------------------------------------------------------------- #
@@ -9591,7 +9578,6 @@ def test_candidate_built_linearization_field_trim_rejected(caplog, monkeypatch):
         iv, "solve_ripple_optimal_trim",
         lambda *a, **k: (k["seed_trim_db"] - 20.0, 0.0, k["seed_trim_db"]),
     )
-    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -9799,7 +9785,6 @@ def test_measure_predicted_sum_uses_linearized_branches_when_trim_rejected(monke
 
     monkeypatch.setattr(iv, "solve_ripple_optimal_trim", _spy)
 
-    _neutralize_improvement_floor(monkeypatch)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -10418,7 +10403,7 @@ def test_a_cut_only_journey_on_the_same_fixture_places_no_boost():
     assert _emitted_boosts(c.candidate) == []
 
 
-def test_the_ruling_lets_a_candidate_pass_that_cut_only_refused_as_no_improvement():
+def test_the_ruling_lets_a_candidate_pass_that_cut_only_graded_as_no_improvement():
     """**An intended behaviour change, pinned as intent rather than discovered
     as a regression** (#2106, conductor ruling).
 
@@ -10430,15 +10415,20 @@ def test_the_ruling_lets_a_candidate_pass_that_cut_only_refused_as_no_improvemen
     adjudicated downstream by post-apply ``VERIFY``, household listening, and
     retained Undo rather than by withholding the vocabulary.
 
+    **The gate stopped refusing entirely** with the nanny burn-down (doctrine
+    deviation (c)), so what the cut-only arm demonstrates now is the LEDGER
+    verdict rather than a raised refusal. #2106's ruling is unaffected: it was
+    about which candidates the vocabulary can reach, and that is still what
+    separates the two arms.
+
     ``_healthy_crossed_over_pair`` is the case, and it is a real one rather
     than a contrivance: its only defects are two in-band DIPS. A cut-only fit
-    cannot fill a dip at any depth (#1809's own doctrine), so it had nothing
-    material to offer and was refused — twice over, in both arms of
-    ``test_healthy_drivers_whose_declared_bands_cross_fc_are_not_refused``.
+    cannot fill a dip at any depth (#1809's own doctrine), so it has nothing
+    material to offer.
 
     Both arms here run the same session; only the gate differs. This is also
     the mutation evidence for the gate itself: restoring the cut-only
-    vocabulary restores the refusal.
+    vocabulary restores the no-improvement verdict.
     """
     woofer_db, tweeter_db, trim_db = _healthy_crossed_over_pair()
 
@@ -10451,12 +10441,13 @@ def test_the_ruling_lets_a_candidate_pass_that_cut_only_refused_as_no_improvemen
         _run_phase(c, 1, 1)
         return c
 
-    # --- cut-only: refused, with nothing material to offer ---
+    # --- cut-only: nothing material to offer, and the ledger says so ---
     cut_only = session(post_apply_verifies=False)
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        _run_phase(cut_only, 2, 2)
-    assert excinfo.value.code == REASON_CORRECTION_NOT_AN_IMPROVEMENT
-    assert cut_only.candidate is None
+    _run_phase(cut_only, 2, 2)
+    assert (
+        cut_only.measure_predicted_spec_report["comparison"]["reason"]
+        == accountability.LEDGER_NOT_AN_IMPROVEMENT
+    )
 
     # --- the shipped driver-only gate: the same session completes ---
     boosted = session()
@@ -12172,14 +12163,14 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     its job on a corrupted input.
 
     **What this test no longer covers, and where that lives instead.** It no
-    longer exercises the floor's REFUSAL arm. That arm keeps its coverage at
+    longer exercises the floor's failing arm. That arm keeps its coverage at
     the layer that owns the decision —
-    ``test_crossover_v2_accountability.py`` pins
-    ``decision.refusal_reason == REASON_CORRECTION_NOT_AN_IMPROVEMENT`` — and
-    its household-copy/journal surface is pinned in
-    ``test_correction_crossover_v2_endpoints.py``. Nothing was dropped by
-    flipping this one; it was always a FIXTURE-flip test, and the fixture
-    flipped back for a reason worth stating.
+    ``test_crossover_v2_accountability.py`` pins the
+    ``LEDGER_NOT_AN_IMPROVEMENT`` verdict and the disclosure that rides with
+    it. (Until the nanny burn-down that arm REFUSED, and the same test pinned
+    ``decision.refusal_reason``.) Nothing was dropped by flipping this one; it
+    was always a FIXTURE-flip test, and the fixture flipped back for a reason
+    worth stating.
     """
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
 
@@ -12195,9 +12186,18 @@ def test_a_correctly_levelled_pair_clears_the_improvement_floor(
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
 
-    # No refusal: the candidate ships.
+    # The floor is CLEARED, not merely un-enforced. (Before the nanny burn-down
+    # this asserted the absence of a refusal code, which no longer
+    # discriminates — nothing refuses on this path any more.) On this fixture
+    # the levelled pair clears it a fortiori: the prediction meets the flat
+    # spec outright, so the gate settles at ``predicted_in_spec`` without ever
+    # needing an improvement argument. What must never appear is the failing
+    # verdict the mis-levelled pair produced.
     _run_phase(c, 2, 2)
-    assert c.last_failure_code != REASON_CORRECTION_NOT_AN_IMPROVEMENT
+    assert (
+        c.measure_predicted_spec_report["comparison"]["reason"]
+        == accountability.LEDGER_PREDICTED_IN_SPEC
+    )
 
     # Leg 1 — WHY it ships: the committed pair lands EXACTLY level. This is the
     # band-matched give-back's invariant showing up end-to-end in the planner,

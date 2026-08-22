@@ -855,7 +855,17 @@ MAX_LINES_BY_PATH = {
     # is an operator's topology pin; and four sites still narrated a sweep
     # scoring six corners. A ceiling that refused those would be buying a
     # smaller number with a falser file.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_013,
+    #
+    # 2026-08-22, the nanny burn-down, stacking on the cut above: 13,013 ->
+    # 13,008. Deleting item 2's refusal takes the two-code selection branch, the
+    # extra `assess_accountability` argument, two vocabulary re-exports and two
+    # `__all__` entries with it; the account of WHY it went lives on the module
+    # that owns the gate, and this file points at it rather than restating it.
+    # The ratchet caught that PR TWICE — first when its explanation grew the
+    # file its code was shrinking, and again when the fix round's own six prose
+    # corrections did the same — so every one of them was rewritten in place.
+    # Both are the guard refusing the trade it exists to refuse.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_008,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic

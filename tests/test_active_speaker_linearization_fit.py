@@ -3615,7 +3615,8 @@ def test_the_blind_zone_disclosure_changes_no_emitted_filter():
     single-branch fit: on the repo's conductor fixture the hole
     (1255.8-2020.0 Hz) contains a -7.821 dB cut sitting on +7.821 dB of that
     branch's OWN measured excess, and dropping it turns a passing correction
-    into `correction_not_an_improvement`. See `_blind_zone_placements`.
+    into the accountability gate's `not_an_improvement` verdict (a refusal
+    when this was measured). See `_blind_zone_placements`.
     """
     resp, envelope = _blind_zone_woofer()
     silent = fit_driver_linearization(resp, envelope)

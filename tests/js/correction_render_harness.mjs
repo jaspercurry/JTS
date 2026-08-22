@@ -1571,28 +1571,10 @@ await (async () => {
     }),
     makeEnvelope({ state: "failed", next_action: null, failure: null }),
     makeEnvelope({
-      failure: {
-        code: "measurement_evidence_unsafe",
-        text: "This measurement did not pass its safety checks. Measure again.",
-        retryable: true,
-        recovery_action: null,
-      },
-      next_action: null,
-    }),
-    makeEnvelope({
       screen: "review", state: "ready", sections: ["measurement-review"],
       next_action: null,
       failure: {
         code: "future_failure", text: "raw", retryable: true,
-        recovery_action: null,
-      },
-    }),
-    makeEnvelope({
-      screen: "review", state: "ready", sections: ["measurement-review"],
-      failure: {
-        code: "measurement_evidence_unsafe",
-        text: "This measurement did not pass its safety checks. Measure again.",
-        retryable: true,
         recovery_action: null,
       },
     }),
@@ -1688,30 +1670,35 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// 29aa. A review evidence failure is a valid non-terminal failure envelope:
-//       it drives the visible verdict, withholds Apply, and suppresses tuning.
+// 29aa. Failed measurement evidence on the review screen arrives as a WARN
+//       NUDGE, not as a failure: Apply stays live and tuning stays offered.
+//       The nanny burn-down (docs/measurement-loop-doctrine.md deviation (d))
+//       retired `measurement_evidence_unsafe`, which used to drive the verdict,
+//       withhold Apply, and suppress tuning on a judgement about how good the
+//       evidence was. This is the same doubt at full weight with the decision
+//       left where it belongs.
 {
-  const evidenceText =
-    "This measurement did not pass its safety checks. Measure again.";
   renderEnvelope(makeEnvelope({
     screen: "review", state: "ready",
     sections: ["measurement-review"],
-    verdict_text: "raw verdict must not win",
-    next_action: null,
-    failure: {
-      code: "measurement_evidence_unsafe",
-      text: evidenceText,
-      retryable: true,
-      recovery_action: null,
-    },
-    tuning_llm: {offered: false, available: true},
+    next_action: { label: "Apply room correction", endpoint: "/apply" },
+    failure: null,
+    nudges: [
+      { code: "runtime_integrity_failed", severity: "warn",
+        text: "JTS could not confirm the speaker stayed as it was during the "
+          + "measurement, so this result may not describe your room. You can "
+          + "continue, but measuring again is the surer fix." },
+    ],
+    tuning_llm: {offered: true, available: true},
   }));
-  assert(wizVerdict().textContent === evidenceText,
-    "review evidence failure drives typed verdict copy");
-  assert(wizNext().classList.contains("hidden"),
-    "review evidence failure withholds Apply");
-  assert(getOrMake("tuning-actions").classList.contains("hidden"),
-    "review evidence failure suppresses tuning actions");
+  assert(nudgeRows().length === 1,
+    "failed evidence is disclosed as a nudge", { got: nudgeRows().length });
+  assert(nudgeRows()[0].className.indexOf("warn") !== -1,
+    "failed evidence keeps warn weight, the strongest nudge tone");
+  assert(!wizNext().classList.contains("hidden") && wizNext().disabled === false,
+    "failed evidence no longer withholds Apply");
+  assert(!getOrMake("tuning-actions").classList.contains("hidden"),
+    "failed evidence no longer suppresses tuning actions");
 }
 
 // 29a. Blocked idle renders only the typed Room copy and owner-supplied local

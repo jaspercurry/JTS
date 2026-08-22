@@ -2502,8 +2502,9 @@ def _blind_zone_placements(
     woofer cut at 1708.0 Hz sitting on **+7.821 dB** of the branch's own
     measured excess, a -3.406 dB cut at 1365.7 Hz on +6.28 dB, and the
     tweeter's -2.286 dB cut at 1570.6 Hz — and turns that fixture's PASSING
-    correction into ``correction_not_an_improvement`` (before 2.233 dB rms,
-    after 2.377, improvement -0.144 against 0.5 required). Clamping to each
+    correction into the accountability gate's ``not_an_improvement`` verdict
+    (before 2.233 dB rms, after 2.377, improvement -0.144 against 0.5
+    required; a refusal when this was measured). Clamping to each
     branch's own core band instead is the same rule wearing a different band
     and additionally reverses #1809's measured ruling that a cut past the
     handoff is ordinary useful work: it breaks four further pinned promises,
