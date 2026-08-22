@@ -439,12 +439,25 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #:    cascade at 3.58 dB that the emitter charged 10.75 dB for, because the two
 #:    were measuring different intervals. A premise can be true and the
 #:    conclusion still false when they are about different domains.
-#: 4. The remaining terms in the emitted branch — the crossover sections and the
-#:    per-driver trim — are non-positive to within 1e-9 dB (measured and
-#:    pinned; the LR sections reach a small POSITIVE maximum of order 1e-10 dB,
-#:    worst measured +4.150e-10 at LR8 / 41.5 Hz lowpass over a 600-corner
-#:    sweep, which is what the pin's ``<= 1e-9`` bar encodes). So the emitter's
-#:    peak cannot exceed the gate's by anything this arithmetic resolves.
+#: 4. The emitter's peak cannot exceed the gate's, for TWO reasons that are both
+#:    needed — the second was missing from an earlier revision of this list, and
+#:    it turns out to be the larger term:
+#:
+#:    * the remaining terms in the emitted branch (the crossover sections and
+#:      the per-driver trim) are non-positive to within 1e-8 dB, so
+#:      ``cascade + sections <= cascade`` pointwise at any scale this system
+#:      resolves. Measured and pinned: an LR section reaches a small POSITIVE
+#:      maximum — floating-point residue from cascading up to eight biquads —
+#:      that grows as the corner drops toward ~20 Hz. Worst **+8.4154e-10 dB**
+#:      on ``CHAIN_GRID_HZ`` (the domain the emitter actually charges over) and
+#:      **+1.1654e-09 dB** on the denser grid the pin stress-tests with, both at
+#:      LR8 near 20 Hz. Search minima, so the pin's bar sits an order above
+#:      them;
+#:    * the emitter evaluates on ``_evaluation_grid(filters, CHAIN_GRID_HZ)``,
+#:      which is a strict SUBSET of :func:`_composed_grid` (verified over 200
+#:      random filter sets) — the gate adds a dense per-band sweep on top of the
+#:      same base. A maximum over a subset cannot exceed the maximum over the
+#:      superset.
 #:
 #: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision.
 #:
@@ -470,10 +483,22 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #: 12.088 composed, which would have been charged 13.067.
 #:
 #: Those two charge figures are the EMITTER's and run a little under
-#: ``gate peak + 1.0`` (12.861 against 12.916), because the branch the emitter
-#: prices also carries the crossover high-pass, which subtracts 0.0554 dB at
-#: that cascade's peak. That is step 4 above, observed rather than assumed — and
-#: it is one measured instance of it, not a demonstration of the general claim.
+#: ``gate peak + 1.0`` (12.861 against 12.916). The gap is **0.0547 dB**, and it
+#: splits the way step 4's two reasons predict — measured on that fixture, not
+#: reasoned:
+#:
+#: * **0.0211 dB** is the crossover high-pass, which reads -0.021120 dB at the
+#:   gate's peak (6752.603 Hz);
+#: * **0.0336 dB** is the GRID, and it is the larger half: the emitter's coarser
+#:   subset does not contain 6752.603 Hz at all and takes its maximum at
+#:   6728.254 Hz instead.
+#:
+#: The peak does NOT relocate because the section is applied — checked on a
+#: fixed grid, where adding the high-pass leaves the maximum at 6752.603 Hz.
+#: The two frequencies differ because the two readings are on different grids,
+#: which is a distinction worth keeping: one is a property of the filter, the
+#: other of the sampling. One measured instance of step 4, not a demonstration
+#: of the general claim.
 #:
 #: Imported rather than restated because it is a CONSEQUENCE of the charge
 #: formula, not a policy this gate re-validates: a margin that moved must move
@@ -1235,14 +1260,15 @@ def _check_composed(
     bound reading low only ever refuses less, and it is now consistent.
 
     Both are read WITHOUT the crossover sections and WITHOUT the branch trim,
-    and BOTH of those terms are non-positive to within 1e-9 dB — the trim by
+    and BOTH of those terms are non-positive to within 1e-8 dB — the trim by
     construction (``intervention.anchor_trims`` normalizes it, pinned) and the
     LR sections by measurement. Not exactly zero, which the old wording
     ("maxes at +0.000000000 dB") implied by rounding: a section's true maximum
-    is a small POSITIVE number of order 1e-10 dB, worst measured +4.150e-10 at
-    LR8 / 41.5 Hz lowpass over a 600-corner sweep. 1e-9 dB is what the pin
-    asserts and the honest ceiling to quote; it is a billionth of the 1.0 dB
-    margin, so the inference below is unaffected. So this reading is an UPPER
+    is a small POSITIVE floating-point residue, worst measured +8.4154e-10 dB
+    on the emitter's own grid and +1.1654e-09 dB on a denser one, both at LR8
+    near a 20 Hz corner. 1e-8 dB is what the pin asserts and the honest ceiling
+    to quote; it is a hundred-millionth of the 1.0 dB margin, so the inference
+    below is unaffected. So this reading is an UPPER
     bound on what the emitter
     will charge, which is the direction a gate's number has to err.
 

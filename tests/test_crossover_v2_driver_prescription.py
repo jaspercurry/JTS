@@ -1738,12 +1738,28 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     of corners, and the trim's own non-positive clamp is pinned by
     `tests/test_crossover_v2_single_datum_owner.py`.
 
-    **The bar is ``<= 1e-9``, not ``<= 0``, and that is deliberate**: a section's
-    true maximum is a small POSITIVE number of order 1e-10 dB rather than an
-    exact zero. A 40 Hz corner was added when a 600-corner sweep put the worst
-    at LR8 / 41.5 Hz lowpass (+4.150e-10 dB) — BELOW the 80 Hz that had been
-    this pin's lowest corner, so the sampled set was missing the region that
-    maximises the term it exists to bound.
+    **The bar is ``<= 1e-8``, not ``<= 0``, and that is deliberate**: a section's
+    true maximum is a small POSITIVE number rather than an exact zero — the
+    floating-point residue of evaluating a cascade of up to eight biquads — and
+    it GROWS sharply as the corner drops toward ~20 Hz. On THIS test's grid the
+    worst over the corners below is **+1.1654e-09 dB at LR8 / 20 Hz lowpass**,
+    and a 200-corner sweep over 10 Hz-20 kHz peaks at +1.0790e-09 near 18.4 Hz.
+    Below that it turns negative again (-1.94e-09 at 15 Hz).
+
+    **The bar moved 1e-9 -> 1e-8, and the reason is worth stating rather than
+    burying.** 20 Hz and 40 Hz corners were added because this pin's lowest was
+    80 Hz — it had never sampled the region that maximises the term it exists to
+    bound, and each sweep floor found its worst at or near the floor itself. The
+    added corner then exceeded the old bar. So the old 1e-9 was calibrated
+    against an under-sampled measurement, not violated by a regression: nothing
+    about the crossover changed. The new bar sits an order above the measured
+    residue on the densest domain tried.
+
+    That is still an extraordinarily tight guard for its actual job, which is
+    catching a real SIGN error — a crossover term that genuinely adds level
+    would be ~0.001 dB at the very least, five orders above this bar. And it
+    remains a search minimum: a denser grid may find slightly more, which is
+    exactly how the previous bar was found to be too low.
     """
     import numpy as np
 
@@ -1757,11 +1773,11 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     ]))
     for order in SUPPORTED_LR_ORDERS:
         for highpass in (True, False):
-            for fc in (40.0, 80.0, 400.0, 1600.0, 3000.0, 8000.0):
+            for fc in (20.0, 40.0, 80.0, 400.0, 1600.0, 3000.0, 8000.0):
                 worst = float(np.max(crossover_response_db(
                     grid, (CrossoverSection(fc, order, highpass),)
                 )))
-                assert worst <= 1e-9, f"LR{order} hp={highpass} fc={fc} -> {worst}"
+                assert worst <= 1e-8, f"LR{order} hp={highpass} fc={fc} -> {worst}"
 
 
 def test_the_composed_grid_change_moved_no_pinned_number(tmp_path):

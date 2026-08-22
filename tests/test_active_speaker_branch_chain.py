@@ -623,15 +623,17 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     onto the same 12.0 dB rail; the rails are EQUAL now, and this corpus is
     drawn at them either way.
 
-    **R8 re-drew this corpus, and the re-draw only ADDED chains.** The admission
-    filter below is ``DRIVER_MAX_COMPOSED_BOOST_DB``, which R8 moved 4.0 -> 12.0,
-    so the population went 230 -> 900 accepted at this seed. That is a strict
-    SUPERSET — every chain the pre-R8 corpus held is still admitted — so the
-    migration claim is now tested over more of the space, not less. It also
-    means the figures below are NOT comparable to the pre-R8 ones as "the same
-    corpus moved differently": the filter change alters which draws survive, so
-    it is a different corpus, and the smaller worst move is a property of the
-    new draw rather than evidence the widening helped anything.
+    **R8 re-drew this corpus into a different one, not a bigger one.** The
+    admission filter below is ``DRIVER_MAX_COMPOSED_BOOST_DB``, which R8 moved
+    4.0 -> 12.0, so the population went 230 -> 900 accepted at this seed — but
+    only **8** of the 230 pre-R8 chains appear in the 900, and 222 are gone. The
+    cap is not a filter over a fixed sample: it ``continue``s BEFORE the
+    ``trim_db`` draw, so acceptance decides whether that draw is consumed, and
+    the two runs' RNG streams diverge at the first iteration where they disagree
+    (iteration 1 at this seed). Every later chain differs. So the figures below
+    are NOT comparable to the pre-R8 ones as "the same corpus moved
+    differently", and the smaller worst move is a property of the new draw
+    rather than evidence the widening helped anything.
 
     **The condition asserted here is the RUNTIME's, not a paraphrase of it.**
     The re-proof compares ``peak_new > headroom_charge_db(peak_old) + 1e-3``,
@@ -667,11 +669,20 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
 
     Numbers are MEASURED AT THIS SEED and are not what the assertions pin: the
     worst move here is 0.0727 dB against a 1.0 dB margin, and across four seeds
-    (2758, 1, 7, 99) it ranges 0.0727-0.1718 dB. A more CLUSTERED population
-    runs higher — drawing all filters within ±5 % of one centre at the same
-    rails reaches 0.2980 dB over three seeds — and a wider search than any run
-    here may find more still. That is why the runtime guard is the backstop and
-    this corpus is evidence, not a proof over the whole space.
+    (2758, 1, 7, 99) it ranges 0.0727-0.1718 dB — the uniform draw this test
+    actually runs.
+
+    **No clustered figure is quoted, deliberately.** A population with its
+    filters bunched near one centre runs materially higher, but the number is
+    strongly dependent on a construction the docstring would have to specify in
+    full to be reproducible: exploratory draws over cluster windows of ±0.5 % to
+    ±5 % across three seeds span 0.058-0.474 dB with no monotone trend in the
+    window, and a reviewer's differently-shaped construction reached higher
+    still. An earlier revision quoted "0.2980 dB over three seeds" as if it
+    bounded that family; it bounded one window at three seeds. Until someone
+    studies it properly there is no honest single number, which is itself the
+    point: the runtime guard is the backstop and this corpus is evidence, not a
+    proof over the whole space.
     """
     from jasper.active_speaker.crossover_v2.driver_prescription import (
         DRIVER_MAX_COMPOSED_BOOST_DB,
