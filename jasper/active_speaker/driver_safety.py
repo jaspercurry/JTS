@@ -1439,6 +1439,17 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     #                            that same reply's sensitivities would have
     #                            produced through a physical model. Level
     #                            authority is measurement's and the operator's.
+    # The crossover vocabulary the KEY GUIDE states is READ from the compiler,
+    # never spelled here: the reply is refused against exactly these sets when
+    # it is saved (design_draft._normalise_candidate), and a prompt that asked
+    # for a vocabulary the saver would reject is a deadlock nobody can see from
+    # either end. Imported inside the call because this module is the research
+    # surface, not an audio-graph consumer.
+    from .staging import (
+        supported_declaration_filter_types,
+        supported_declaration_slopes_db_per_octave,
+    )
+
     # The result shape is fenced because a chat UI's copy button copies the
     # code block's contents, not the prose around it.
     target_count = len(request.get("targets", []))
@@ -1550,6 +1561,16 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             + ". Each entry is confidence + basis (12 words or fewer) + source (one citation, 12 words or fewer) + at most 2 source URLs.",
             "- sources: at most 3 URLs you actually consulted for that driver.",
             "- notes: one sentence, 15 words or fewer.",
+            "- crossover_candidates[].filter_type is one of: "
+            + ", ".join(supported_declaration_filter_types())
+            + ". crossover_candidates[].slope_db_per_octave is one of: "
+            + ", ".join(
+                f"{slope:g}" for slope in supported_declaration_slopes_db_per_octave()
+            )
+            + ". Anything else is refused when the reply is saved. This is the "
+            "crossover this build compiles, and is a different question from "
+            "the slope condition a datasheet states for "
+            "recommended_highpass_slope_db_per_octave above.",
             "- crossover_candidates[].rationale: 15 words or fewer.",
             "",
             "STOP",

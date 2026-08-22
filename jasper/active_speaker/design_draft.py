@@ -238,6 +238,64 @@ def _polarity(raw: Any, field_name: str) -> str | None:
     return value
 
 
+def _crossover_filter_type(raw: Any, field_name: str) -> str | None:
+    """A declared ``filter_type`` the compiler can build, or a refusal.
+
+    Entry-time half of the crossover vocabulary. Anything the compiler cannot
+    build is refused HERE, where the operator (or the research packet) named
+    it, rather than reaching ``staging``'s
+    ``crossover_preview_filter_unsupported`` blocker several screens later with
+    nothing left pointing at the field that caused it.
+
+    ``staging`` is asked rather than answered for: it owns the declared
+    spellings in both directions, so accepted-here and compilable-there are one
+    answer by construction. Imported inside the call because it is the compiler
+    and this module is a persistence layer -- the same reason
+    ``crossover_declaration`` reaches for it this way.
+    """
+
+    from .staging import (
+        declared_filter_type_compiles,
+        supported_declaration_filter_types,
+    )
+
+    if raw is None or raw == "":
+        return None
+    value = _text(raw, field_name, max_chars=80)
+    if value is None:
+        return None
+    if not declared_filter_type_compiles(value):
+        supported = ", ".join(supported_declaration_filter_types())
+        raise ActiveSpeakerDesignDraftError(f"{field_name} must be one of: {supported}")
+    return value
+
+
+def _crossover_slope_db_per_octave(raw: Any, field_name: str) -> float | None:
+    """A declared slope the compiler can build, or a refusal.
+
+    The slope half of :func:`_crossover_filter_type`'s refusal, and the reason
+    the pair exists: 18 dB/octave is a perfectly ordinary number that no
+    supported filter order compiles to.
+    """
+
+    from .staging import (
+        declared_slope_db_per_octave_compiles,
+        supported_declaration_slopes_db_per_octave,
+    )
+
+    value = _positive_float(raw, field_name)
+    if value is None:
+        return None
+    if not declared_slope_db_per_octave_compiles(value):
+        supported = ", ".join(
+            f"{slope:g}" for slope in supported_declaration_slopes_db_per_octave()
+        )
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be one of: {supported} dB/octave"
+        )
+    return value
+
+
 def _delay_ms(raw: Any, field_name: str) -> float | None:
     out = _finite_float(raw, field_name)
     if out is not None and not 0.0 <= out <= 20.0:
@@ -489,12 +547,11 @@ def _normalise_candidate(raw: Any) -> dict[str, Any]:
             raw.get("frequency_hz"),
             "crossover_candidate.frequency_hz",
         ),
-        "filter_type": _text(
+        "filter_type": _crossover_filter_type(
             raw.get("filter_type"),
             "crossover_candidate.filter_type",
-            max_chars=80,
         ),
-        "slope_db_per_octave": _positive_float(
+        "slope_db_per_octave": _crossover_slope_db_per_octave(
             raw.get("slope_db_per_octave"),
             "crossover_candidate.slope_db_per_octave",
         ),

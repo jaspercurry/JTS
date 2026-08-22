@@ -467,6 +467,42 @@ def test_prompt_projects_targets_without_the_server_hardware_block() -> None:
         assert f'"{key}"' in targets_block
 
 
+def test_prompt_states_the_crossover_vocabulary_the_saver_accepts() -> None:
+    """The ask and the refusal read the same sets.
+
+    ``design_draft`` refuses a ``crossover_candidates`` entry outside the
+    compiler's vocabulary, and the prompt used to give only a shape example —
+    so a researcher could return a filter or slope the save would reject with
+    nothing in the ask having said so. Derived from the same accessors the
+    entry gate and the wizard pickers read, so a widened
+    ``SUPPORTED_CROSSOVER_TYPES`` / ``SUPPORTED_LR_ORDERS`` reaches this
+    surface too.
+    """
+    from jasper.active_speaker.staging import (
+        supported_declaration_filter_types,
+        supported_declaration_slopes_db_per_octave,
+    )
+
+    prompt = build_driver_research_prompt(
+        build_driver_research_request(
+            mono_output_topology(card_id=None), _operator_inputs(), _manual_settings()
+        )
+    )
+
+    filters = ", ".join(supported_declaration_filter_types())
+    slopes = ", ".join(
+        f"{slope:g}" for slope in supported_declaration_slopes_db_per_octave()
+    )
+    assert f"crossover_candidates[].filter_type is one of: {filters}." in prompt
+    assert (
+        f"crossover_candidates[].slope_db_per_octave is one of: {slopes}." in prompt
+    )
+    # The neighbouring order-to-slope instruction teaches 18 dB/octave for a
+    # DIFFERENT key (a datasheet's protection-slope condition). The new line
+    # must say which question it answers, or it reads as a contradiction.
+    assert "recommended_highpass_slope_db_per_octave above" in prompt
+
+
 def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
     """The ask is a strict subset of what the parser accepts. Four fields were
     dropped: three have no computational consumer — they prefill an Advanced

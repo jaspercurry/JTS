@@ -578,9 +578,25 @@ function setupHarness(fetchHandler, options = {}) {
     elements.set(id, makeEl(id));
   }
   const island = makeEl("sound-page-data");
+  // Mirrors jasper/web/sound_setup.py:_sound_page_island. The crossover
+  // vocabulary the editor may offer is SERVED, not hardcoded in the page, so
+  // the harness has to serve it too. That the served lists are the compiler's
+  // own is pinned on the Python side (tests/test_sound_setup.py); scenarios
+  // narrow or drop this fixture to exercise the page's own refusals.
   island.textContent = options.islandText !== undefined
     ? options.islandText
-    : JSON.stringify({ mode: pageMode, follower: !!options.follower });
+    : JSON.stringify({
+      mode: pageMode,
+      follower: !!options.follower,
+      crossover_vocabulary: options.crossoverVocabulary !== undefined
+        ? options.crossoverVocabulary
+        : {
+          filter_types: ["Linkwitz-Riley"],
+          slopes_db_per_octave: [12, 24, 48],
+          default_filter_type: "Linkwitz-Riley",
+          default_slope_db_per_octave: 24,
+        },
+    });
   elements.set("sound-page-data", island);
   if (pageMode === "setup" || options.follower) {
     // Setup and follower pages omit the content-EQ chrome. Making those ids
@@ -3862,6 +3878,150 @@ async function testManualCrossoverDelayWithoutTargetBlocksSaveClientSide() {
     fail("The blocked save should surface an inline hint", { html });
   }
   return { manualCrossoverDelayWithoutTargetBlocksSaveClientSide: true };
+}
+
+// The crossover pickers offer exactly what the compiler builds, and offer it
+// from the island rather than from a list in the page. Before this the filter
+// select offered Butterworth (which no supported target_type compiles to) and
+// the slope was a free `step="6"` number field, so 18 dB/oct was one keystroke
+// away — both only refused later, by staging's
+// crossover_preview_filter_unsupported blocker.
+async function testCrossoverPickersOfferOnlyTheServedVocabulary() {
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": () => Promise.resolve(response({
+      status: "not_saved", summary: {}, operator_inputs: {},
+    })),
+  });
+  const harness = setupHarness(fetchHandler, {
+    crossoverVocabulary: {
+      filter_types: ["Linkwitz-Riley", "Bessel"],
+      slopes_db_per_octave: [12, 24],
+      default_filter_type: "Linkwitz-Riley",
+      default_slope_db_per_octave: 24,
+    },
+  });
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes("Butterworth")) {
+    fail("the filter picker must not offer a filter the compiler does not build", { html });
+  }
+  if (!html.includes('<select data-manual-crossover="woofer:tweeter" data-manual-field="slope_db_per_octave">')) {
+    fail("slope must be picked from the served set, not typed freely", { html });
+  }
+  // The served set, whatever it is — a widened SUPPORTED_CROSSOVER_TYPES
+  // reaches the page with no edit in main.js.
+  for (const expected of [
+    '<option value="Bessel">Bessel</option>',
+    '<option value="Linkwitz-Riley" selected>Linkwitz-Riley</option>',
+    '<option value="12">12 dB/oct</option>',
+    '<option value="24" selected>24 dB/oct</option>',
+  ]) {
+    if (!html.includes(expected)) {
+      fail("the pickers must render exactly the served vocabulary", { expected, html });
+    }
+  }
+  if (html.includes('value="48"')) {
+    fail("a slope outside the served set must not be offered", { html });
+  }
+  return { crossoverPickersOfferOnlyTheServedVocabulary: true };
+}
+
+// A value the pickers can no longer produce can still arrive from a draft
+// saved earlier. The control must SHOW it — a picker that silently displayed a
+// neighbouring offered value would put a number on screen that neither the
+// model nor the refusal is talking about, and re-picking the displayed value
+// fires no change event, so there would be no way to clear it. It must also
+// not reach the server as a save that design_draft.py will refuse: the page
+// names the pair and the offer first.
+async function testStoredUnsupportedCrossoverSlopeBlocksSaveClientSide() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+      }
+      return Promise.resolve(response({
+        status: "ready_for_review",
+        summary: {},
+        operator_inputs: { woofer: "Manual Woofer", tweeter: "Manual Tweeter" },
+        manual_settings: {
+          drivers: [],
+          crossover_candidates: [{
+            between_roles: ["woofer", "tweeter"],
+            frequency_hz: 2000,
+            filter_type: "Linkwitz-Riley",
+            slope_db_per_octave: 18,
+            confidence: "medium",
+          }],
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!html.includes('<option value="18" selected>18 dB/oct (not supported)</option>')) {
+    fail("the stored value must be visible and selected, labelled unsupported", { html });
+  }
+  if (html.includes('<option value="24" selected>')) {
+    fail("an unsupported stored slope must not be coerced onto a neighbour", { html });
+  }
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 0) {
+    fail("a crossover the compiler cannot build must block the save client-side", { designSaves });
+  }
+  const blockedHtml = harness.elements.get("view-body").innerHTML;
+  if (!blockedHtml.includes("JTS cannot build a 18 dB/oct crossover") ||
+      !blockedHtml.includes("12, 24, 48 dB/oct")) {
+    fail("the blocked save should name the refused slope and the offer", { blockedHtml });
+  }
+  return { storedUnsupportedCrossoverSlopeBlocksSaveClientSide: true };
+}
+
+// The vocabulary guard is scoped to layouts that HAVE a crossover to author.
+// A passive layout never renders the pickers, so a damaged island must not
+// stop its save over a vocabulary it does not use.
+async function testAPassiveLayoutSavesWithNoCrossoverVocabularyServed() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(
+      passiveWithSubwooferTopologyPayload()
+    )),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler, { crossoverVocabulary: {} });
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-target": "main:full_range" }, "Example FR8");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) {
+    fail("a passive layout must save without a crossover vocabulary", { designSaves });
+  }
+  const html = harness.elements.get("view-body").innerHTML;
+  if (html.includes("crossover filter and slope options could not be read")) {
+    fail("a layout with no crossover must not be told to reload for one", { html });
+  }
+  return { aPassiveLayoutSavesWithNoCrossoverVocabularyServed: true };
 }
 
 // Reload round-trip: polarity and delay live directly in the single Advanced
@@ -8240,6 +8400,9 @@ results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());
 results.push(await testManualCrossoverDelayWithoutTargetBlocksSaveClientSide());
+results.push(await testCrossoverPickersOfferOnlyTheServedVocabulary());
+results.push(await testStoredUnsupportedCrossoverSlopeBlocksSaveClientSide());
+results.push(await testAPassiveLayoutSavesWithNoCrossoverVocabularyServed());
 results.push(await testManualCrossoverAlignmentIsAlwaysVisibleOnSavedDelay());
 results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings());
 results.push(await testDriverResearchImportToleratesFencesAndProse());

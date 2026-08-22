@@ -169,6 +169,29 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 
   function el(id) { return document.getElementById(id); }
+  // The crossover filters and slopes this page may OFFER, served on the island
+  // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
+  // (jasper/active_speaker/profile.py's SUPPORTED_CROSSOVER_TYPES /
+  // SUPPORTED_LR_ORDERS, spelled by staging). Deliberately NOT re-stated here:
+  // a literal list would be a second answer to "what can JTS build", and the
+  // editor would go on offering a filter or slope the compiler refuses several
+  // screens later. An island that carries none leaves the pickers empty and
+  // blocks the save with a named reason rather than guessing a vocabulary.
+  function crossoverVocabularyFromIsland(raw) {
+    var island = raw && typeof raw === 'object' ? raw : {};
+    var filterTypes = Array.isArray(island.filter_types) ? island.filter_types : [];
+    var slopes = Array.isArray(island.slopes_db_per_octave) ?
+      island.slopes_db_per_octave : [];
+    return {
+      filterTypes: filterTypes.map(String),
+      slopes: slopes.map(Number).filter(function(value) {
+        return isFinite(value) && value > 0;
+      }),
+      defaultFilterType: island.default_filter_type == null ?
+        '' : String(island.default_filter_type),
+      defaultSlope: Number(island.default_slope_db_per_octave) || null
+    };
+  }
   // nginx selects one renderer mode on the same backend. EQ owns profiles and
   // Match Loudness; Setup owns output controls and local commissioning.
   var pageData = (function() {
@@ -181,21 +204,25 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       text = node && node.textContent ? node.textContent.trim() : '';
       legacyFollowerIsland = !!text;
     }
-    if (!text) return {mode: 'eq', follower: false};
+    if (!text) {
+      return {mode: 'eq', follower: false, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
+    }
     try {
       var parsed = JSON.parse(text);
       return {
         mode: parsed.mode === 'setup' || legacyFollowerIsland ? 'setup' : 'eq',
-        follower: parsed.follower === true
+        follower: parsed.follower === true,
+        crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
       };
     } catch (e) {
       // Split pages without EQ chrome must stay on the local-setup side if the
       // tiny island is damaged; attempting EQ would dereference absent tabs.
-      return {mode: 'setup', follower: true};
+      return {mode: 'setup', follower: true, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
     }
   })();
   var pageMode = pageData.mode;
   var followerMode = pageData.follower;
+  var crossoverVocabulary = pageData.crossoverVocabulary;
   // jsonHeaders is imported from /assets/shared/js/http.js — the one
   // cross-page owner of the CSRF/JSON plumbing. A conventions guard in
   // tests/test_web_wizard_conventions.py keeps a local re-declaration from
@@ -1484,6 +1511,43 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return 'Pick which driver is delayed for ' +
       humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
   }
+  // The pickers only ever offer what the compiler builds, so an operator
+  // cannot author a refused crossover. A value can still arrive from outside
+  // the pickers — a draft saved before the vocabulary narrowed, or an imported
+  // research packet — and design_draft.py refuses that at the door. Name it
+  // here, with the pair and the offer, instead of letting the operator meet it
+  // as a server error or (before entry-time validation) as a staging blocker
+  // three screens later. Only pairs that will actually be saved are checked:
+  // manualSettingsPayload omits a pair with no frequency.
+  function manualCrossoverVocabularyValidationError(topology) {
+    // Layout first: a passive layout has no crossover to author, so a damaged
+    // island must not block its save over a vocabulary it never uses.
+    var pairs = activeCrossoverPairs(topology);
+    if (!pairs.length) return '';
+    if (!crossoverVocabulary.filterTypes.length || !crossoverVocabulary.slopes.length) {
+      return 'The crossover filter and slope options could not be read. Reload this page before saving.';
+    }
+    var offending = '';
+    pairs.forEach(function(pair) {
+      if (offending) return;
+      var setting = crossoverSetting(pair);
+      if (manualNumberValue(setting.frequency_hz) == null) return;
+      var name = humanRole(pair[0]) + ' / ' + humanRole(pair[1]);
+      var filterType = String(setting.filter_type || crossoverVocabulary.defaultFilterType);
+      if (crossoverVocabulary.filterTypes.indexOf(filterType) < 0) {
+        offending = 'JTS cannot build a ' + filterType + ' crossover for ' + name +
+          '. Pick one of: ' + crossoverVocabulary.filterTypes.join(', ') + '.';
+        return;
+      }
+      var slope = manualNumberValue(setting.slope_db_per_octave);
+      if (slope == null) slope = crossoverVocabulary.defaultSlope;
+      if (crossoverVocabulary.slopes.indexOf(slope) < 0) {
+        offending = 'JTS cannot build a ' + String(slope) + ' dB/oct crossover for ' +
+          name + '. Pick one of: ' + crossoverVocabulary.slopes.join(', ') + ' dB/oct.';
+      }
+    });
+    return offending;
+  }
   function safetyBandFromSetting(setting, prefix) {
     var low = manualNumberValue(setting[prefix + '_min_hz']);
     var high = manualNumberValue(setting[prefix + '_max_hz']);
@@ -1635,8 +1699,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var candidate = {
         between_roles: pair,
         frequency_hz: frequency,
-        filter_type: setting.filter_type || 'Linkwitz-Riley',
-        slope_db_per_octave: manualNumberValue(setting.slope_db_per_octave) || 24,
+        filter_type: setting.filter_type || crossoverVocabulary.defaultFilterType,
+        slope_db_per_octave:
+          manualNumberValue(setting.slope_db_per_octave) || crossoverVocabulary.defaultSlope,
         confidence: 'medium',
         rationale: 'Operator-entered crossover setting.'
       };
@@ -3062,6 +3127,29 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         ' — EQ cannot fix that, only geometry (a smaller or horn-loaded driver) can.';
     return '<p class="setting-row__hint">' + escapeHtml(text) + '</p>';
   }
+  // One picker builder for both crossover-vocabulary selects. A stored value
+  // outside the offer gets its own clearly-labelled option, the same way
+  // tweeterStyleFieldHtml carries an off-list driver style: without it the
+  // control would DISPLAY the first offered value while the model still held
+  // the stored one, so no control on the page would contain what is actually
+  // set — and re-picking the value already shown fires no change event, which
+  // leaves the operator no way to clear it. Nothing is coerced;
+  // manualCrossoverVocabularyValidationError still refuses the save.
+  function crossoverOptionsHtml(values, selected, labelFor) {
+    var chosen = selected == null ? '' : String(selected);
+    var offered = values.map(String);
+    var offList = chosen && offered.indexOf(chosen) < 0
+      ? '<option value="' + escapeHtml(chosen) + '" selected>' +
+        escapeHtml((labelFor ? labelFor(selected) : chosen) + ' (not supported)') +
+        '</option>'
+      : '';
+    return offList + values.map(function(value) {
+      var raw = String(value);
+      return '<option value="' + escapeHtml(raw) + '"' +
+        (raw === chosen ? ' selected' : '') + '>' +
+        escapeHtml(labelFor ? labelFor(value) : raw) + '</option>';
+    }).join('');
+  }
   function renderManualCrossoverSettings(topology) {
     var pairs = activeCrossoverPairs(topology);
     if (!pairs.length) {
@@ -3087,19 +3175,22 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
         '<label class="driver-research__field">' +
           '<span>Slope</span>' +
-          '<input type="number" inputmode="numeric" min="6" step="6" data-manual-crossover="' + escapeHtml(key) + '" ' +
-            'data-manual-field="slope_db_per_octave" value="' +
-            escapeHtml(setting.slope_db_per_octave == null ? '24' : String(setting.slope_db_per_octave)) +
-            '" placeholder="24">' +
+          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="slope_db_per_octave">' +
+            crossoverOptionsHtml(
+              crossoverVocabulary.slopes,
+              setting.slope_db_per_octave == null ?
+                crossoverVocabulary.defaultSlope : setting.slope_db_per_octave,
+              function(value) { return String(value) + ' dB/oct'; }
+            ) +
+          '</select>' +
         '</label>' +
         '<label class="driver-research__field">' +
           '<span>Filter</span>' +
           '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="filter_type">' +
-            ['Linkwitz-Riley', 'Butterworth'].map(function(value) {
-              return '<option value="' + escapeHtml(value) + '"' +
-                ((setting.filter_type || 'Linkwitz-Riley') === value ? ' selected' : '') +
-                '>' + escapeHtml(value) + '</option>';
-            }).join('') +
+            crossoverOptionsHtml(
+              crossoverVocabulary.filterTypes,
+              setting.filter_type || crossoverVocabulary.defaultFilterType
+            ) +
           '</select>' +
         '</label>' +
         renderManualCrossoverAlignment(pair, key, setting) +
@@ -3653,8 +3744,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       var setting = crossoverSetting(pair);
       var frequency = currentCrossoverFrequency(pair);
       var detail = frequency == null ? 'Waiting for researched or advanced values' :
-        fmtFreq(frequency) + ', ' + (setting.filter_type || 'Linkwitz-Riley') +
-        ', ' + String(setting.slope_db_per_octave || 24) + ' dB/oct';
+        fmtFreq(frequency) + ', ' +
+        (setting.filter_type || crossoverVocabulary.defaultFilterType) + ', ' +
+        String(setting.slope_db_per_octave || crossoverVocabulary.defaultSlope) + ' dB/oct';
       var alignment = crossoverAlignmentDetailText(setting, pair);
       if (alignment) detail += ', ' + alignment;
       return '<div><dt>' + escapeHtml(humanRole(pair[0]) + ' / ' +
@@ -6480,10 +6572,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Load output hardware before updating the working setup.', true);
       return false;
     }
-    var delayError = manualCrossoverDelayValidationError(currentOutputTopology());
-    if (delayError) {
-      driverResearch.error = delayError;
-      status(delayError, true);
+    var manualTopology = currentOutputTopology();
+    var manualError = manualCrossoverDelayValidationError(manualTopology) ||
+      manualCrossoverVocabularyValidationError(manualTopology);
+    if (manualError) {
+      driverResearch.error = manualError;
+      status(manualError, true);
       render();
       return false;
     }

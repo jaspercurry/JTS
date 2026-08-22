@@ -26,6 +26,10 @@ from jasper.active_speaker.design_draft import (
     declared_driver_sensitivities,
     declared_effective_driver_sensitivities,
 )
+from jasper.active_speaker.staging import (
+    supported_declaration_filter_types,
+    supported_declaration_slopes_db_per_octave,
+)
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -691,6 +695,74 @@ def test_normalise_candidate_zero_delay_ms_is_not_dropped():
 
     assert out["delay_ms"] == 0.0
     assert out["delay_target_role"] == "tweeter"
+
+
+# --- Entry-time crossover vocabulary ---------------------------------------
+#
+# A crossover the compiler cannot build is refused HERE, where whoever named it
+# can still see the field, instead of reaching staging's
+# ``crossover_preview_filter_unsupported`` blocker several screens later. The
+# accepted set is the compiler's own, so it cannot drift from what compiles.
+
+
+def test_normalise_candidate_accepts_every_offered_filter_type_and_slope():
+    for filter_type in supported_declaration_filter_types():
+        for slope in supported_declaration_slopes_db_per_octave():
+            out = _normalise_candidate(
+                _candidate(filter_type=filter_type, slope_db_per_octave=slope)
+            )
+            assert out["filter_type"] == filter_type
+            assert out["slope_db_per_octave"] == slope
+
+
+def test_normalise_candidate_accepts_a_household_spelling_the_compiler_reads():
+    # Acceptance is wider than the OFFER on purpose — the offer is the
+    # canonical spellings, a hand-written or researched declaration may not be.
+    out = _normalise_candidate(_candidate(filter_type="LR", slope_db_per_octave=24))
+
+    assert out["filter_type"] == "LR"
+
+
+def test_normalise_candidate_rejects_a_filter_the_compiler_cannot_build():
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="crossover_candidate.filter_type must be one of: Linkwitz-Riley",
+    ):
+        _normalise_candidate(_candidate(filter_type="Butterworth"))
+
+
+def test_normalise_candidate_rejects_a_slope_no_supported_order_builds():
+    # 18 dB/octave is an ordinary number and a third-order filter; no supported
+    # Linkwitz-Riley order compiles to it.
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match=r"crossover_candidate.slope_db_per_octave must be one of: "
+        r"12, 24, 48 dB/octave",
+    ):
+        _normalise_candidate(_candidate(slope_db_per_octave=18))
+
+
+def test_normalise_candidate_leaves_an_undeclared_filter_and_slope_absent():
+    # Absent-in -> absent-out: the preview fills its own default, and that
+    # default is pinned to the offer in tests/test_crossover_declaration.py.
+    out = _normalise_candidate(_candidate())
+
+    assert "filter_type" not in out
+    assert "slope_db_per_octave" not in out
+
+
+def test_driver_research_crossover_vocabulary_is_refused_at_the_same_door():
+    # The preview may choose a RESEARCH candidate over the operator's, so a
+    # packet validated only for shape would walk the same value past the same
+    # entry and into the same late blocker.
+    research = _research()
+    research["crossover_candidates"][0]["slope_db_per_octave"] = 18
+
+    with pytest.raises(
+        ActiveSpeakerDesignDraftError,
+        match="crossover_candidate.slope_db_per_octave must be one of",
+    ):
+        build_design_draft(_topology(), driver_research=research)
 
 
 def test_normalise_candidate_rejects_unsupported_polarity():
