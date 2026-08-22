@@ -15,7 +15,12 @@ import math
 from typing import Any
 
 from ._common import issue as _issue
-from .driver_protection import driver_protection_payload, driver_protection_profile
+from .driver_protection import (
+    driver_protection_payload,
+    driver_protection_profile,
+    format_low_limit,
+    tone_gate_low_limit,
+)
 from .profile import ActiveSpeakerPreset, crossover_edges_for_role
 
 DRIVER_TEST_SIGNAL_PLAN_KIND = "jts_active_speaker_driver_test_signal_plan"
@@ -283,6 +288,7 @@ def driver_test_signal_plan(
             preset,
             role_id,
         ),
+        declared_low_limit_hz=declared_protection_floor_hz(preset, role_id),
         driver_style=driver_style,
         edge_margin_ratio=edge_margin_ratio,
         crossover_edge_source="preset.crossover_regions",
@@ -296,6 +302,7 @@ def driver_test_signal_plan_from_edges(
     crossover_highpass_hz: Any = None,
     crossover_lowpass_hz: Any = None,
     protective_highpass_hz: Any = None,
+    declared_low_limit_hz: Any = None,
     driver_style: Any = None,
     edge_margin_ratio: float = EDGE_MARGIN_RATIO,
     crossover_edge_source: str = "compiled_active_speaker_edges",
@@ -307,11 +314,21 @@ def driver_test_signal_plan_from_edges(
     add-ons once the product flow emits their low-pass edge. The current
     production adapter above feeds it from ``ActiveSpeakerPreset`` for 2/3-way
     main speakers.
+
+    ``declared_low_limit_hz`` is this driver's own declared low limit. It sets
+    the ``driver_protection_minimum`` edge below and anchors the tone gate; an
+    absent one falls back to the style default, which is the only tone-gate job
+    the class table keeps (#2874).
     """
 
     role_id = str(role or "").strip().lower()
     margin = _finite_positive(edge_margin_ratio) or EDGE_MARGIN_RATIO
     profile = driver_protection_profile(role_id, driver_style=driver_style)
+    low_limit = tone_gate_low_limit(
+        role_id,
+        driver_style=driver_style,
+        declared_low_limit_hz=declared_low_limit_hz,
+    )
 
     highpass_edges: list[dict[str, Any]] = []
     lowpass_edges: list[dict[str, Any]] = []
@@ -350,12 +367,25 @@ def driver_test_signal_plan_from_edges(
     if protective_hp is not None:
         highpass_edges.append(protective_hp)
 
-    protection_hp = _edge(
-        kind="driver_protection_minimum",
-        frequency_hz=profile.min_highpass_hz,
-        source="driver_protection_profile",
-        reason="driver protection policy recommended minimum test frequency",
-        direction="highpass",
+    # The driver's OWN low limit, not the class table's figure (#2874). This
+    # edge is inside the ``max`` that sets the staged high-pass, so anchoring
+    # it on the class default let a code default raise a commissioning tone
+    # above the frequency the manufacturer published -- the same class-over-
+    # declaration inversion the tone gate carried. An undeclared driver still
+    # gets the class default, through the fallback in ``tone_gate_low_limit``.
+    protection_hp = (
+        _edge(
+            kind="driver_protection_minimum",
+            frequency_hz=low_limit.frequency_hz,
+            source=f"driver_low_limit:{low_limit.provenance}",
+            reason=(
+                "the driver's own low limit, "
+                f"{format_low_limit(low_limit)}"
+            ),
+            direction="highpass",
+        )
+        if low_limit is not None
+        else None
     )
     if protection_hp is not None:
         highpass_edges.append(protection_hp)
@@ -441,6 +471,7 @@ def driver_test_signal_plan_from_edges(
             if profile.role_class == "high_frequency" else None
         ),
         band_limit=band_limit if band_type != "unknown" else None,
+        declared_low_limit_hz=declared_low_limit_hz,
     )
     issues.extend(
         issue

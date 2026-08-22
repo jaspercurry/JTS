@@ -466,10 +466,14 @@ the code-owned bounds the reply must clear, and its
 worked example fills itself in from those same bounds — both read from
 `driver_protection_profile` rather than restated, so an estimate can land on
 the first try and the example is never a worked answer the gate refuses for the
-tweeter style actually installed. What did not move is the bound itself: `_target_issues` refuses
-an out-of-bounds value however impeccable its provenance, and refuses it **by
-name** rather than silently clamping it, so the operator sees the bound and
-decides.
+tweeter style actually installed. What did not move is the bound itself: a
+**reply** carrying an out-of-bounds value is refused however impeccable its
+provenance, and refused **by name** rather than silently clamped, so the
+operator sees the bound and decides — the peak ceiling and band nesting by
+`_target_issues` on the save, the per-style low-limit band by
+`validate_research_low_limit_plausibility` at the paste. The same low-limit
+band over a value a *human* typed became a warning in #2874; the bound the ask
+names is still the bound a reply must clear.
 
 The operator is the arbiter, so `/sound/` echoes the reply back before anything
 is confirmed: "What JTS is running with" names every value the ask required a
@@ -531,12 +535,17 @@ echo-back panel says so in the operator's own words — the level is left to JTS
 picked once a protective high-pass is in place, from that driver's declared
 sensitivity against the low-frequency driver's own limit. The sentence names
 *what* sets the level and quotes no dBFS number, because the bound is now
-per-driver and `driver_protection_policy_view` — which is topology-only — cannot
-compute it; the view stopped emitting an absolute ceiling with the constant's
-retirement. The per-target class default still reaches the page from that view,
-re-stamped on every design-draft load so a persisted copy can never be read back
-as current policy; the page keeps no copy of it (issue #2192, folded into
-#2195).
+per-driver and `driver_protection_policy_view` does not compute it; the view
+stopped emitting an absolute ceiling with the constant's retirement. What does
+reach the page from that view, re-stamped on every design-draft load so a
+persisted copy can never be read back as current policy, is the per-target
+`max_auto_level_dbfs` plus — since #2874 — the **resolved** low limit with its
+provenance (`low_limit_hz` / `low_limit_provenance` / `low_limit_summary`),
+which is why the view also takes the operator's visible values: the resolved
+floor is a property of the declaration, not of the topology. It replaced the
+raw class-table `min_highpass_hz` the view used to publish, which sat beside a
+declared figure with nothing saying which one bounds the corner. The page keeps
+no copy of any of it (issue #2192, folded into #2195).
 
 ### Step 3A: manual crossover
 
@@ -1644,10 +1653,15 @@ conservative default for an undeclared/unrecognised style. Since the
 2026-08-17 ruling (#2603) that figure does **not** bound what the *declaration*
 may say: the driver's low limit has one declared owner — the manufacturer's
 minimum recommended crossover frequency — and a sourced figure wins outright,
-including below the style number. The table's two remaining jobs are the
-default answer when a manufacturer publishes nothing and a plausibility anchor
-that refuses an unbelievable declaration by name
-(`<role>:low_limit_implausible_for_style`). The derivation and its rationale
+including below the style number. The table's three remaining jobs are the
+default answer when a manufacturer publishes nothing; the plausibility anchor;
+and the commissioning-tone gate's fallback for a driver that declares nothing
+(`tone_gate_low_limit`). Since the 2026-08-22 ruling (#2874) the anchor's
+answer depends on who wrote the number: an unbelievable figure in a *research
+reply* is refused at intake, while an unbelievable *typed* one saves under a
+loud warning (`<role>:low_limit_implausible_for_style`, severity `warning`) —
+a class table may prefill, disclose, and serve as fallback, but never refuse a
+declaration or gate a tone past one. The derivation and its rationale
 are owned by
 [`driver_protection.py`](../jasper/active_speaker/driver_protection.py)
 (`resolve_driver_low_limit` / `apply_driver_low_limit`); this doc does not
