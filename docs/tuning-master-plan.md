@@ -1,9 +1,11 @@
 # Tuning master plan — declared-design executor, linearization tournaments, LLM operator
 
-> **Status: adopted plan (owner-ratified direction, 2026-08-21), pre-implementation.**
+> **Status: adopted plan (owner-ratified direction, 2026-08-21), execution in progress.**
 > This document is the planning authority for the measurement/tuning program;
 > the prior plans it supersedes are listed in "Supersessions and standing
-> docs" below. Wave 0 is in flight; Waves 1+ are unstarted. The 2026-08-21
+> docs" below. Wave 0 landed 2026-08-21 (all five PRs merged); Waves 1–2 are
+> underway (tracking: epics #2824/#2825 carry per-ticket state — not
+> enumerated here; one planning authority, one tracker). The 2026-08-21
 > adversarial gate review of this document returned 1 blocker and 7
 > should-fixes, all folded into this revision (see Provenance).
 
