@@ -19,6 +19,14 @@ The reader half was already true by construction — no consumer branched on a
 kind value in a way that could raise. True by construction is not the same as
 true on purpose: nothing stopped the next reader from writing ``KINDS[kind]``.
 These tests are what makes it a contract.
+
+**Known bound:** the source scan walks ``jasper/`` only and reads ``kind=``
+literals only, so a manifest writer living outside that tree, or one passing a
+computed kind, is invisible to it. Verified empty as of 2026-08-22 — every
+writer is under ``jasper/``, and the single computed site
+(``correction/artifacts.py``'s three-value capture-kind dict) is matched from
+the source text instead. The runtime guard in :func:`validate_artifact_kind`
+is what covers a computed kind on a path this scan cannot see.
 """
 
 from __future__ import annotations

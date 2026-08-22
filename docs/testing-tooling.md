@@ -1627,6 +1627,11 @@ permission granted either") — those branches are listed in the report's
 `unavailable_roles`, never counted as passes or failures. `report.json` carries
 `outcome` alongside the per-branch records.
 
+> This section says "arm" for what invariant 9 calls a candidate. Deliberate:
+> here `arm` is also a dataclass field, a structured `arm=` log-event key, and
+> the asserted CLI string `"derived both arms:"`, so prose alone cannot move —
+> see [#2878](https://github.com/jaspercurry/JTS/issues/2878).
+
 The bundle keeps both arms' configs (`control.yml` and `treated.yml`, one
 derivation each — each is rendered twice), **four `.raw` renders**
 (`<arm>.first.raw` and `<arm>.repeat.raw`; the repeat's SHA-256 is what the
@@ -2338,7 +2343,7 @@ Read the journal, not the code, to find out what happened:
 | `crossover_v2_lateral_walk_closed` | `session_id`, `consumer`, `planned`, `captured`, `mark_return_drift_db` — fires on every lateral walk; publishes nothing else |
 
 **Six refusals.** The session opens in its ordinary shape after every one, and
-the document is consumed — except on the spool's two unreadable paths, which
+the document is consumed — except on the spool's two unreadable arms, which
 deliberately do not consume so a permissions mistake cannot destroy the evidence
 of itself. The `consumed=` field says which happened; do not assume it.
 

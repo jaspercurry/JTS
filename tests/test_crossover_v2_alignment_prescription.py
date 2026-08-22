@@ -280,8 +280,7 @@ def test_the_bound_is_measured_from_the_basis_not_from_the_incumbent():
 
 @pytest.mark.parametrize("fc_hz", (0.0, -1648.7, float("nan"), float("inf"), True, "x"))
 def test_an_unusable_corner_is_its_own_refusal(fc_hz):
-    """A corner the bound is undefined at never reads as an out-of-lobe
-    candidate.
+    """A corner the bound is undefined at never reads as an out-of-lobe candidate.
 
     Two different problems, and reporting the second would send an operator to
     re-derive a number that was fine.

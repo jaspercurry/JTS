@@ -690,7 +690,7 @@ def read_topology_prescription(
         )
     if reason is not None:  # pragma: no cover - defensive
         # Unreachable while ``_fc_rejection``'s vocabulary is the three codes
-        # ``fc_sweep`` declares, each of which the branches above already name.
+        # ``fc_sweep`` declares, each of which the cases above already name.
         # Kept because the alternative to naming an unhandled code is admitting
         # a pin the shared predicate refused, which is the one outcome this
         # reuse exists to make impossible.

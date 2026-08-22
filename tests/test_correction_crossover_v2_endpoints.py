@@ -12301,6 +12301,9 @@ def _topology_pin(**overrides: Any) -> dict[str, Any]:
         "artifact_schema_version": 1,
         "fc_hz": _PIN_FC_HZ,
         "order": _PIN_ORDER,
+        # The `arm-2.json` filename is banked history, not prose: it is a real
+        # path under a real receipts tree and is left exactly as recorded.
+        # Invariant 9's rename is forward-only for identifiers and paths.
         "basis_artifacts": ["captures/offline-fc-search/arm-2.json"],
         "basis_note": "candidate 2 of a pre-registered Fc/slope tournament",
     }

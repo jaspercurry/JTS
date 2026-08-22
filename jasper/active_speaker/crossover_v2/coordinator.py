@@ -388,7 +388,8 @@ class RoundEvidence:
     #: prescription because the pair is what makes an adoption record honest:
     #: alone, the prescription says only what was ASKED for, and a reachable
     #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
-    #: estimator's seed while the round still carries the candidate's name.
+    #: estimator's seed while the round still carries the prescribed
+    #: candidate's name.
     alignment_objective: str = ""
     #: The crossover corner + order this round was PINNED to, or ``None`` for a
     #: round that ran the speaker's commissioned crossover. Banked verbatim and
@@ -565,7 +566,7 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         round_ordinal=evaluation.headroom.evidence.get("round_ordinal"),
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
-        # Decision 10: which branch the blend region took, and how many filters it
+        # Decision 10: which case the blend region took, and how many filters it
         # prescribed. The receipt is the forensic record and is sufficient on
         # its own, but a tail that shows every other verdict and is silent
         # about a stage that CHANGED THE GRAPH reads as a stage that did

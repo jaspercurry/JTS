@@ -221,7 +221,7 @@ def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) ->
     the same equality: the recompiled preset carries the declaration's slope, so
     an order-2 candidate measured against an order-4 declaration is a candidate
     that MEASURES and grades honestly and is refused at apply until the saved
-    crossover names that order.  Measuring an arm and adopting it are two acts
+    crossover names that order.  Measuring a candidate and adopting it are two acts
     here; this function serves the first.
     """
     moved: dict[str, Any] = {"fc_hz": float(fc_hz)}

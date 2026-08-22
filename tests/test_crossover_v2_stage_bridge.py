@@ -543,12 +543,12 @@ def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkey
     **Deliberate widening (#2662): ``alignment_objective``.** The eleventh, and
     the OUTCOME half of the tenth. A prescription alone records what a round
     ASKED for; there is a reachable rail on which the machinery commits the
-    estimator's own seed while the round still carries the candidate's name,
-    and a receipt that could not tell those apart would let a candidate that
-    never ran be graded "measured better". Its own key rather than a field
-    inside the
-    prescription because the two are written at different moments by different
-    owners, and a round that prescribed nothing still has an objective.
+    estimator's own seed while the round still carries the prescribed
+    candidate's name, and a receipt that could not tell those apart would let a
+    candidate that never ran be graded "measured better". Its own key rather
+    than a field inside the prescription because the two are written at
+    different moments by different owners, and a round that prescribed nothing
+    still has an objective.
 
     **Deliberate widening (A9): ``blend_prescription``.** The twelfth, and the
     tenth's blend-region twin — the round's SHAPE correction may likewise have

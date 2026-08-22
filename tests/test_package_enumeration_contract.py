@@ -24,6 +24,12 @@ re-exporting :mod:`~jasper.active_speaker.crossover_v2.forward_model`.
 Scope is these two packages by name. This is not a repo-wide convention —
 most packages have no such list and owe none. Extending it is one entry in
 ``ENUMERATING_PACKAGES``.
+
+**Known bound:** a ``:mod:`` reference counts wherever it appears in the
+docstring, so an entry buried in a prose paragraph rather than the module list
+still satisfies the check. Verified empty as of 2026-08-22 — every reference in
+both packages sits in the list — but a future editor should know the guard
+proves "named somewhere", not "listed in the right place".
 """
 
 from __future__ import annotations
