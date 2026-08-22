@@ -1896,9 +1896,9 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
             "match_a_cut_to_its_feature": (
                 "the packet's classification block reports each feature's own "
-                "measured Q. A filter wider than its target spends most of its "
-                "action on the skirts, which the 2026-08-19 round measured as "
-                "damage there"
+                "measured Q in feature_classification.verdicts[]. A filter "
+                "wider than its target spends most of its action on the "
+                "skirts, which the 2026-08-19 round measured as damage there"
             ),
         },
         "boosts": {
@@ -1949,9 +1949,11 @@ def driver_prescription_response_format() -> dict[str, Any]:
         },
         "classification_bar": {
             "note": (
-                "every filter must be aimed at a feature the packet's "
-                "classification block typed as a minimum-phase, speaker-own "
-                "defect of the MATCHING sign. Interference nulls, room "
+                "every filter must be aimed at a feature "
+                "feature_classification.verdicts[] typed as a minimum-phase, "
+                "speaker-own defect of the MATCHING sign — that list is what "
+                "this bar reads, never the lab_rows[] working beside it. "
+                "Interference nulls, room "
                 "arrivals and unresolved features are barred either way: a cut "
                 "aimed at a cancellation lowers the direct sound and the "
                 "delayed copy together, a boost aimed at one feeds it, and a "

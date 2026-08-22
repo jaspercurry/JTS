@@ -310,7 +310,9 @@ Two rules ride with it, both load-bearing:
 ### What you infer (heuristics — never a veto)
 
 Fields available today, per feature, in `feature_classification.json` (26
-columns; the packet publishes 7 of them until ticket 1.1 widens it):
+columns; the packet publishes all of them as
+`feature_classification.lab_rows[]`, beside the 7-key `verdicts[]` a gate
+reads — and labels each of the uncertainties among them random or systematic):
 `classification`, `egd_verdict`, `gate_verdict`, `measured_q`, `depth_db`,
 `is_dip`, `frac_of_nmp`, `z_local`, `centre_shift_oct`, `gate_slack`,
 `resolved_gates`, `controls_ok`, `timing_corroborated`, and the

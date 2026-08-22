@@ -80,7 +80,11 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
     INTERFERENCE_BARRED,
+    LAB_ROW_FIELDS,
+    LAB_ROW_NOT_AN_UNCERTAINTY,
+    LAB_ROW_UNCERTAINTY,
     ROOM,
+    UNCERTAINTY_KINDS,
     UNRESOLVED,
     VERDICT_MATCH_TOLERANCE_OCTAVES,
     defect_boostable_at,
@@ -151,8 +155,9 @@ def _verdict(
         "gate_verdict": "STABLE",
         "confidence": "high",
         "measured_q": 5.1,
-        # A lab row carries thirty-odd more columns; the reader takes what it
-        # needs and the rest ride along, which is what this pair proves.
+        # A lab row carries every column in ``LAB_ROW_FIELDS``; the typed reader
+        # takes the seven it needs and the rest ride along, which is what this
+        # pair proves.
         "z_local": 4.2,
         "frac_of_nmp": 0.11,
     }
@@ -422,6 +427,171 @@ def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path
     block = packet["feature_classification"]
     assert block["n_rows_banked"] == 4
     assert block["n_rows_readable"] == 1
+
+
+def _lab_row(hz: float, **over: Any) -> dict[str, Any]:
+    """A banked row carrying EVERY column the register enumerates.
+
+    Built FROM :data:`LAB_ROW_FIELDS` rather than spelled out, so it cannot
+    become a second, staler list of the row's shape. The values are
+    placeholders: what these tests are about is whether the whole row reaches
+    the packet intact, not what any one number means. The two the typed reader
+    needs to accept a row at all are real.
+    """
+    row: dict[str, Any] = dict.fromkeys(LAB_ROW_FIELDS, "<placeholder>")
+    row["hz"] = hz
+    row["classification"] = DEFECT_CUTTABLE
+    row.update(over)
+    return row
+
+
+def test_the_packet_carries_the_whole_lab_row_beside_the_gate_view(tmp_path):
+    """Both views, neither one standing in for the other.
+
+    ``verdicts[]`` stays exactly the seven keys the register types — that is
+    what a gate acts on and widening it would put the classifier's working in
+    front of a decision the classifier already made. ``lab_rows[]`` carries the
+    artifact's own row, column for column, for a READER auditing how the
+    verdict was reached.
+    """
+    row = _lab_row(WOOFER_FEATURE_HZ)
+    packet = _speaker(tmp_path, classification=_classification([row]))
+    block = packet["feature_classification"]
+
+    # Imported, not restated: the gate view is whatever the register types.
+    assert block["verdicts"] == [read_feature_verdicts([row])[0].to_dict()]
+    assert len(block["verdicts"][0]) == 7
+    # …and every column of the artifact's own row, unchanged.
+    assert block["lab_rows"] == [row]
+    assert block["redacted_fields"] == []
+
+
+def test_a_lab_column_outside_the_allowlist_is_withheld_and_named(tmp_path):
+    """The packet's allowlist rule reaches the lab rows too.
+
+    A classification artifact can be an operator's own banked lab result rather
+    than this product's output, so an unknown column is copied nowhere and its
+    NAME is published — the same posture ``positions[]`` already keeps, and the
+    reason ``wav_path`` never reaches a reader from anywhere else in this packet.
+    """
+    row = _lab_row(WOOFER_FEATURE_HZ)
+    path = "/var/lib/jasper/captures/verify-0001.wav"
+    packet = _speaker(tmp_path, classification=_classification([
+        {**row, "wav_path": path},
+    ]))
+    block = packet["feature_classification"]
+
+    assert block["lab_rows"] == [row]
+    # The NAME is published — that is the point of an allowlist that reports
+    # what it dropped — and the VALUE reaches nowhere in the document.
+    assert block["redacted_fields"] == ["wav_path"]
+    assert path not in json.dumps(packet)
+
+
+def test_a_row_the_typed_reader_dropped_keeps_its_working_and_reaches_no_gate(
+    tmp_path,
+):
+    """Why a row was dropped is readable; the dropped row still vouches for nothing.
+
+    ``lab_rows`` is the artifact's record and carries a row the typed reader
+    refused, which is how a reader sees WHAT was wrong with it. It reaches no
+    gate because no gate reads that key — ``packet_feature_classifications`` is
+    the one door, and it goes through ``verdicts``.
+    """
+    packet = _speaker(tmp_path, classification=_classification([
+        _lab_row(TWEETER_FEATURE_HZ),
+        _lab_row(WOOFER_FEATURE_HZ, classification="   "),
+        "not even a row",
+    ]))
+    block = packet["feature_classification"]
+
+    assert block["n_rows_banked"] == 3
+    assert block["n_rows_readable"] == 1
+    assert len(block["verdicts"]) == 1
+    # Two row OBJECTS were banked; the string is not a row and carries none.
+    assert [row["hz"] for row in block["lab_rows"]] == [
+        TWEETER_FEATURE_HZ, WOOFER_FEATURE_HZ,
+    ]
+    assert block["lab_rows"][1]["classification"] == "   "
+
+    classifications = packet_feature_classifications(packet)
+    assert classifications is not None
+    assert [verdict.freq_hz for verdict in classifications] == [TWEETER_FEATURE_HZ]
+
+
+def test_every_published_uncertainty_labels_itself_random_or_systematic(packet):
+    """The Wave-1 rule, on the block that publishes the numbers it governs.
+
+    Each spread the rows carry says which KIND it is and what it is a spread
+    of, and the columns that merely look like one say why they are not. The two
+    kinds are never pooled into a single published figure, which is why
+    ``gate_slack`` — the larger of a fixed floor and a random 3-sigma — is on
+    the second list rather than labelled as either.
+    """
+    uncertainty = packet["feature_classification"]["uncertainty"]
+    fields = uncertainty["fields"]
+    not_uncertainties = uncertainty["not_uncertainties"]
+
+    assert fields and not_uncertainties
+    for name, entry in fields.items():
+        assert name in LAB_ROW_FIELDS, name
+        assert entry["kind"] in UNCERTAINTY_KINDS, name
+        assert entry["of"].strip(), name
+    # Both kinds are live. A vocabulary with one unused half is a vocabulary
+    # whose distinction nothing has had to make yet.
+    assert {entry["kind"] for entry in fields.values()} == set(UNCERTAINTY_KINDS)
+
+    for name, why in not_uncertainties.items():
+        assert name in LAB_ROW_FIELDS, name
+        assert why.strip(), name
+    assert not set(fields) & set(not_uncertainties)
+    assert "gate_slack" in not_uncertainties
+
+    # The packet publishes the register's answer, and cannot be a route to
+    # editing it: a caller holding the packet holds a copy.
+    fields["excursion_sd_us"]["kind"] = "mutated"
+    not_uncertainties["gate_slack"] = "mutated"
+    assert LAB_ROW_UNCERTAINTY["excursion_sd_us"]["kind"] != "mutated"
+    assert LAB_ROW_NOT_AN_UNCERTAINTY["gate_slack"] != "mutated"
+
+
+def test_a_non_finite_lab_column_becomes_null_and_is_named(tmp_path):
+    """A NaN the instrument really writes must not cost the round its packet.
+
+    ``_compose`` emits ``float("nan")`` for ``z_local`` when a feature's
+    neighbourhood scatter is zero and for ``frac_of_nmp`` when the control scale
+    is, and ``json.dumps`` banks both verbatim. The packet's fingerprint refuses
+    a non-finite number, so a row copied straight through would raise
+    ``CrossoverEvidencePacketError`` — no packet at all for a round that
+    classified fine. It becomes ``null``, its column is named, and the nested
+    per-gate tables are reached too.
+
+    ``clean`` rides along to pin the claim that a BOOLEAN column needs no guard
+    of its own: ``bool`` subclasses ``int``, never ``float``, so it is passed
+    through rather than mistaken for a number.
+    """
+    packet = _speaker(tmp_path, classification=_classification([
+        _lab_row(
+            WOOFER_FEATURE_HZ,
+            z_local=float("nan"),
+            frac_of_nmp=float("inf"),
+            excess_loss_vs_null={"3": float("nan"), "7": 0.0},
+            clean=True,
+            is_dip=False,
+        ),
+    ]))
+    block = packet["feature_classification"]
+
+    assert block["lab_rows"][0]["z_local"] is None
+    assert block["lab_rows"][0]["frac_of_nmp"] is None
+    assert block["lab_rows"][0]["excess_loss_vs_null"] == {"3": None, "7": 0.0}
+    assert block["lab_rows"][0]["clean"] is True
+    assert block["lab_rows"][0]["is_dip"] is False
+    assert block["non_finite_fields"] == [
+        "excess_loss_vs_null", "frac_of_nmp", "z_local",
+    ]
+    # …and the document is still exact JSON, which is the whole point.
+    assert packet["packet_fingerprint"]
 
 
 def test_the_two_contracts_sit_side_by_side_and_neither_reads_the_round(tmp_path):
@@ -862,6 +1032,21 @@ def test_a_defect_verdict_is_necessary_and_the_contract_says_not_sufficient():
     bar = driver_prescription_response_format()["classification_bar"]
 
     assert "does not say EQ will help" in bar["necessary_not_sufficient"]
+
+
+def test_the_contract_names_the_row_list_a_bar_actually_reads():
+    """"the classification block reports…" stopped being unambiguous.
+
+    The block carries two row lists since the packet widened, and BOTH report a
+    ``measured_q`` — so an instruction that named only the block left a model to
+    guess which one a bar reads. It reads ``verdicts[]``, never the ``lab_rows[]``
+    working beside it, and both instruction points say so by name.
+    """
+    contract = driver_prescription_response_format()
+
+    assert "verdicts[]" in contract["bounds"]["match_a_cut_to_its_feature"]
+    assert "verdicts[]" in contract["classification_bar"]["note"]
+    assert "lab_rows[]" in contract["classification_bar"]["note"]
 
 
 def test_the_nearest_verdict_decides_and_a_further_cuttable_one_cannot_vouch():
@@ -1963,8 +2148,8 @@ def test_no_bar_reads_a_vertical_blindness_flag_off_a_row(tmp_path):
 def test_an_older_reader_tolerates_the_new_field_and_a_row_without_it(tmp_path):
     """Unknown-field tolerance, both directions: the reader takes what it needs.
 
-    A row carrying thirty-odd lab columns it has never heard of reads fine, and
-    so does one predating ``depth_db`` — which is every row on disk today.
+    A row carrying lab columns it has never heard of reads fine, and so does one
+    predating ``depth_db`` — which is every row on disk today.
     """
     rows = read_feature_verdicts([
         {"hz": 900.0, "classification": DEFECT_CUTTABLE, "z_local": 4.2},
@@ -2467,15 +2652,24 @@ def test_a_new_class_does_not_bump_the_blend_classs_schema_version(tmp_path):
 def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     """The rule: bump when a reader that understood v1 would MISREAD v2.
 
-    Two blocks and one contract were ADDED. Every v1 field is unchanged and a v1
+    Two blocks and one contract were ADDED, and ``feature_classification`` was
+    later WIDENED with the classifier's own lab rows beside the gate view it
+    already published. Every v1 field is unchanged in all four cases and a v1
     reader ignores what it does not know, so nothing is misread — the version
     stays where it is rather than invalidating every banked packet.
+
+    The widening is the case worth naming, because "the block a v1 reader
+    already read grew" sounds like the misreading case and is not one: the seven
+    keys of ``verdicts[]`` still say exactly what they said, and a reader that
+    never looks at ``lab_rows`` reaches every conclusion it reached before.
     """
     assert PACKET_SCHEMA_VERSION == 1
     assert packet["artifact_schema_version"] == 1
     assert packet["response_format"]["artifact_schema_version"] == (
         PRESCRIPTION_SCHEMA_VERSION
     )
+    assert packet["feature_classification"]["lab_rows"]
+    assert len(packet["feature_classification"]["verdicts"][0]) == 7
 
 
 def test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it(tmp_path):

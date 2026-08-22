@@ -40,6 +40,9 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     EGD_NON_MIN_PHASE,
     GATE_STABLE,
     INTERFERENCE_BARRED,
+    LAB_ROW_FIELDS,
+    LAB_ROW_NOT_AN_UNCERTAINTY,
+    LAB_ROW_UNCERTAINTY,
     ROOM,
     UNRESOLVED,
     defect_boostable_at,
@@ -518,6 +521,48 @@ def test_the_artifact_conforms_to_the_register(peak_artifact):
         # The register's own round-trip: what a packet publishes is readable
         # back through the same reader.
         assert read_feature_verdicts([verdict.to_dict()])[0] == verdict
+
+
+def test_the_register_enumerates_exactly_the_columns_this_instrument_writes(
+    peak_artifact, dip_artifact,
+):
+    """``LAB_ROW_FIELDS`` is the packet's allowlist, so drift silently narrows it.
+
+    The evidence packet copies a banked row field by field through that tuple.
+    A column this instrument starts writing that nobody adds there would be
+    withheld from every reader — visible only as a name in ``redacted_fields``,
+    which is honest but is not what anyone intended. The reverse drift is worse
+    in a quieter way: a name left in the tuple after the instrument stops
+    emitting it makes the register describe a row that no longer exists.
+
+    Equality, both directions, against a real run rather than a fixture — the
+    instrument's own output is the only thing that can settle what it writes.
+    Order too: the tuple documents itself as the order the columns are written
+    in, and a claim about order that nothing checks is a claim that rots.
+    """
+    for artifact in (peak_artifact, dip_artifact):
+        for row in artifact["rows"]:
+            assert tuple(row) == LAB_ROW_FIELDS
+
+
+def test_every_uncertainty_the_register_labels_is_a_column_that_exists(
+    peak_artifact,
+):
+    """Labels for columns, not for hopes.
+
+    Both maps key on real row columns and never on each other's, so ``random``
+    versus ``systematic`` stays a statement about numbers a reader can actually
+    see, and no column is both an uncertainty and not one.
+    """
+    row = peak_artifact["rows"][0]
+    labelled = set(LAB_ROW_UNCERTAINTY) | set(LAB_ROW_NOT_AN_UNCERTAINTY)
+
+    assert labelled <= set(row)
+    assert not set(LAB_ROW_UNCERTAINTY) & set(LAB_ROW_NOT_AN_UNCERTAINTY)
+    for name in LAB_ROW_UNCERTAINTY:
+        # A labelled uncertainty is a NUMBER. A label on a verdict string or a
+        # per-gate table would be a category error the map's own shape invites.
+        assert isinstance(row[name], float), name
 
 
 def test_the_instrument_stamps_no_vertical_blindness_field(

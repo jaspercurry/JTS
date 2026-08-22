@@ -69,7 +69,13 @@ __all__ = [
     "GATE_MOVED",
     "GATE_STABLE",
     "INTERFERENCE_BARRED",
+    "LAB_ROW_FIELDS",
+    "LAB_ROW_NOT_AN_UNCERTAINTY",
+    "LAB_ROW_UNCERTAINTY",
     "ROOM",
+    "UNCERTAINTY_KINDS",
+    "UNCERTAINTY_RANDOM",
+    "UNCERTAINTY_SYSTEMATIC",
     "UNRESOLVED",
     "VERDICT_MATCH_TOLERANCE_OCTAVES",
     "FeatureVerdict",
@@ -166,6 +172,146 @@ CLASSIFICATIONS = frozenset({
 VERDICT_MATCH_TOLERANCE_OCTAVES = 1.0 / 6.0
 
 
+# --------------------------------------------------------------------------- #
+# the lab row — every column, and which of them are uncertainties
+# --------------------------------------------------------------------------- #
+
+#: Every column a classification row carries, in the order the instrument
+#: writes them.
+#:
+#: :class:`FeatureVerdict` is the seven-key GATE view of this row; these are
+#: all of it — the two component verdicts' own working, the excess-group-delay
+#: numbers the phase call was made on, and the per-gate retention table the
+#: gate call was made on. The list lives here rather than in
+#: :mod:`.feature_classifier` because this module owns the row schema and that
+#: one fills it in, which is the same split the verdict strings already keep.
+#:
+#: It is a READER'S allowlist as much as an enumeration: the evidence packet
+#: copies a banked row field by field through it and publishes the names of
+#: anything it held back, because a classification artifact can be an
+#: operator's own banked lab result rather than this product's output, and a
+#: packet that passed unknown keys straight through would stop being an
+#: allowlist. ``tests/test_crossover_v2_feature_classifier.py`` pins this
+#: tuple against a real :func:`~.feature_classifier.classify_round` run, so a
+#: column the instrument adds cannot silently fall outside it.
+LAB_ROW_FIELDS: tuple[str, ...] = (
+    "hz",
+    "classification",
+    "egd_verdict",
+    "egd_verdict_raw",
+    "gate_verdict",
+    "confidence",
+    "measured_q",
+    "depth_db",
+    "pooled_db",
+    "is_dip",
+    "excursion_us",
+    "excursion_sd_us",
+    "nbhd_sd_us",
+    "p2p_us",
+    "nmp_scale_us",
+    "frac_of_nmp",
+    "z_local",
+    "lead_sensitivity_us",
+    "clean",
+    "resolved_gates",
+    "excess_loss_vs_null",
+    "gate_slack",
+    "centre_shift_oct",
+    "gate_notes",
+    "controls_ok",
+    "timing_corroborated",
+)
+
+#: The two kinds an uncertainty can be, and the reason a published one always
+#: says which it is.
+#:
+#: A RANDOM uncertainty is repeat scatter: measure again and it averages down.
+#: A SYSTEMATIC one is a choice or a bias the repeats all share, so measuring
+#: again does not move it. Adding one to the other produces a number that is
+#: neither, and a reader deciding whether to take more captures needs to know
+#: which half of a spread more captures would actually shrink.
+UNCERTAINTY_RANDOM = "random"
+UNCERTAINTY_SYSTEMATIC = "systematic"
+
+#: The closed set, so a reader can say "that is not a kind I know" rather than
+#: treating an unrecognised label as one of the two.
+UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
+
+#: Which :data:`LAB_ROW_FIELDS` columns ARE uncertainties, and of what.
+#:
+#: All three are microsecond figures qualifying the same row's ``excursion_us``,
+#: and each says which kind it is and what it is a spread OF, because they are
+#: not interchangeable: the two random ones describe noise, whose effect on a
+#: pooled reading averaging can reduce, and the systematic one is a bias that
+#: repetition does not touch at all. No number here adds one to another.
+#:
+#: **None of the three is itself a quantity that shrinks with more captures, and
+#: an earlier draft of these strings said two of them were.** Both random
+#: entries are standard DEVIATIONS, which converge on a population value as
+#: captures are added rather than falling; the quantity that falls as
+#: ``1/sqrt(n)`` is the standard ERROR of the pooled mean, which this block does
+#: not publish and cannot be used to form, because it does not publish ``n``.
+LAB_ROW_UNCERTAINTY: dict[str, dict[str, str]] = {
+    "excursion_sd_us": {
+        "kind": UNCERTAINTY_RANDOM,
+        "of": (
+            "capture-to-capture scatter of this row's excursion_us: the sample "
+            "standard deviation over the round's captures, published as 0.0 at "
+            "one capture, where it is undefined. It CONVERGES as captures are "
+            "added rather than shrinking — going from one capture to two "
+            "typically moves it up off 0.0. What falls with more captures is "
+            "the standard error of the pooled mean, sd/sqrt(n), and this block "
+            "does not publish n"
+        ),
+    },
+    "nbhd_sd_us": {
+        "kind": UNCERTAINTY_RANDOM,
+        "of": (
+            "the excess-group-delay trace's own scatter across the feature's "
+            "+/-1/3-octave neighbourhood with the feature band excluded, "
+            "averaged over the round's captures. It is the local noise floor "
+            "this row's z_local divides by, and being a mean of per-capture "
+            "scatters it likewise converges rather than shrinking"
+        ),
+    },
+    "lead_sensitivity_us": {
+        "kind": UNCERTAINTY_SYSTEMATIC,
+        "of": (
+            "how far excursion_us moves when the phase window's 1 ms pre-peak "
+            "lead is taken away — the same captures read through one different "
+            "analysis choice. Repetition does not reduce it, which is the whole "
+            "difference between this row's kind and the two above"
+        ),
+    },
+}
+
+#: Columns shaped like an uncertainty that are NOT one, and why not.
+#:
+#: Named rather than left out. Both read like a spread and sit in the same row
+#: as three that ARE uncertainties, and ``gate_slack`` is the reason this second
+#: list exists at all: it is the LARGER of a fixed floor and a random 3-sigma,
+#: which is exactly the shape that mixes the two kinds in a single figure. It is
+#: not an uncertainty, and saying so is the only way to publish it without
+#: breaking the rule above.
+LAB_ROW_NOT_AN_UNCERTAINTY: dict[str, str] = {
+    "p2p_us": (
+        "peak-to-peak of the excess-group-delay trace across the whole "
+        "+/-1/3-octave neighbourhood — the BROAD detector run beside the local "
+        "one, because a gentle all-pass lifts a neighbourhood together and the "
+        "local metric reads that as flat. It is a signal, not a spread about a "
+        "reading"
+    ),
+    "gate_slack": (
+        "the per-gate DECISION threshold excess_loss_vs_null is tested "
+        "against: the larger of the instrument's fixed retention slack and "
+        "three times the paired retention standard error. It bounds a verdict "
+        "rather than quantifying one, and reading it as an uncertainty would "
+        "pool a systematic floor with a random scale"
+    ),
+}
+
+
 def _finite(value: Any) -> float | None:
     """One real number out of banked JSON, or ``None`` — never a coercion.
 
@@ -188,13 +334,15 @@ def _finite(value: Any) -> float | None:
 class FeatureVerdict:
     """One classified feature, as a gate reads it.
 
-    A deliberate SUBSET of the lab row, which carries thirty-odd columns of
-    working (per-gate retention, null-model scales, z-scores, centre shifts).
-    Those are how the verdict was reached and they belong in the artifact; a
-    gate that read them would be re-deriving a decision the classifier already
-    made, with none of its controls. What is kept is the verdict, the two
-    tests behind it, how confident the classifier was, and the two measurements
-    a prescriber's own bounds are taken from.
+    A deliberate SUBSET of the lab row — :data:`LAB_ROW_FIELDS` is all of it,
+    and the rest is working (per-gate retention, null-model scales, z-scores,
+    centre shifts). That working is how the verdict was reached and it belongs
+    in the artifact, and the evidence packet publishes it beside this view for
+    a reader who wants to audit the call; a GATE that read it would be
+    re-deriving a decision the classifier already made, with none of its
+    controls. What is kept here is the verdict, the two tests behind it, how
+    confident the classifier was, and the two measurements a prescriber's own
+    bounds are taken from.
     """
 
     #: The feature's centre frequency.

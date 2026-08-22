@@ -61,6 +61,7 @@ never enter.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,13 @@ from .driver_prescription import (
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
 )
-from .feature_classification import FeatureVerdict, read_feature_verdicts
+from .feature_classification import (
+    LAB_ROW_FIELDS,
+    LAB_ROW_NOT_AN_UNCERTAINTY,
+    LAB_ROW_UNCERTAINTY,
+    FeatureVerdict,
+    read_feature_verdicts,
+)
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
@@ -95,9 +102,16 @@ __all__ = [
 ]
 
 #: Bumped when a reader that understood the previous version would misread this
-#: one. :func:`~.blend_prescription.read_blend_prescription` refuses a proposal
-#: answering a version it does not speak, so this number is load-bearing rather
-#: than decorative.
+#: one — never merely because the document grew. Added blocks, and a widened
+#: block whose existing fields are untouched, leave every v1 field saying what
+#: it said, so they stay at 1; that rule is pinned by
+#: ``test_added_packet_blocks_do_not_bump_the_packet_schema_version``.
+#:
+#: It is the EVIDENCE document's version and nothing else. A prescription
+#: answering this packet carries its own separate
+#: :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`, and THAT is the
+#: number :func:`~.blend_prescription.read_blend_prescription` refuses an
+#: unknown value of.
 PACKET_SCHEMA_VERSION = 1
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
@@ -462,15 +476,101 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
-def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
-    """The banked feature verdicts, typed but not re-derived.
+def _lab_row_value(value: Any, column: str, non_finite: set[str]) -> Any:
+    """One lab-row value as exact JSON, naming any number that was not.
 
-    Copied through :func:`~.feature_classification.read_feature_verdicts`, which
-    drops a row it cannot type rather than admitting it as ``ambiguous`` — so
-    the count this block reports is the count a gate can actually use, and a
-    half-readable artifact cannot look fuller than it is. ``n_rows_banked``
-    beside it is the raw count, because a denominator that moved silently is a
-    different measurement wearing the same number.
+    A classification row legitimately carries ``NaN``. The instrument writes one
+    for ``z_local`` when a feature's neighbourhood scatter is zero, for
+    ``frac_of_nmp`` when the control scale is, and into ``excess_loss_vs_null``
+    when a gate's reference reading is — and ``jasper-classify-features`` banks
+    the artifact with a plain ``json.dumps``, which writes ``NaN`` verbatim and
+    reads it back as a float.
+    :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint` refuses
+    a non-finite number, so copying one through would leave a round that
+    classified perfectly well with NO packet at all: this module's one hard
+    failure, thrown for a value that is merely absent.
+
+    So a non-finite number becomes ``null`` — the same answer
+    :func:`~.feature_classification.read_feature_verdicts` already gives for one
+    — and its COLUMN is named in the block's ``non_finite_fields``, because
+    "not computable" and "not carried" are different facts and the packet's
+    rule is that neither is silently the other. Recursive because three columns
+    are per-gate tables and one is a list, not scalars.
+
+    The four branches are exactly what ``json.loads`` can produce that
+    ``_freeze_json`` cares about, and no more. There is deliberately no ``bool``
+    guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
+    (``clean``, ``is_dip``, ``controls_ok``) falls through to the passthrough
+    already — unlike in :func:`~.feature_classification._finite`, which needs one
+    because its check includes ``int``.
+
+    Deliberately scoped to the lab rows, which is where the failure was
+    observed. The sibling exposure is real but NARROW, and was measured rather
+    than assumed: the receipt, the cloud evidence and the finding set are banked
+    through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
+    which passes ``allow_nan=False`` and refuses a non-finite value at write
+    time, so they structurally cannot carry one here. Two inputs are written
+    with a plain ``json.dumps`` and can:
+    ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
+    state, where all four fields this packet copies —
+    ``verify.claims``, ``fc_selection``, ``pre_apply_profile.blend_correction``
+    and ``evidence.calibration`` — kill the packet; and
+    :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
+    ``driver_safety_profile.confirmation`` is copied whole and does the same.
+    The draft's passbands do NOT, because
+    :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
+    drops a non-finite bound. Repairing those two is their writers' change, not
+    this reader's — see the follow-up issue linked from PR #2833.
+    """
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        non_finite.add(column)
+        return None
+    if isinstance(value, dict):
+        return {
+            key: _lab_row_value(item, column, non_finite)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_lab_row_value(item, column, non_finite) for item in value]
+    return value
+
+
+def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
+    """The banked feature verdicts and the working behind them, not re-derived.
+
+    TWO views of one artifact, side by side and deliberately not joined.
+
+    ``verdicts`` is the gate's: copied through
+    :func:`~.feature_classification.read_feature_verdicts`, which drops a row it
+    cannot type rather than admitting it as ``ambiguous`` — so the count this
+    block reports is the count a gate can actually use, and a half-readable
+    artifact cannot look fuller than it is. ``n_rows_banked`` beside it is the
+    raw count, because a denominator that moved silently is a different
+    measurement wearing the same number.
+
+    ``lab_rows`` is the artifact's own: every banked row object, copied field by
+    field through :data:`~.feature_classification.LAB_ROW_FIELDS` on this
+    module's ordinary allowlist rule, with the names of anything held back
+    published as ``redacted_fields`` and of any column that was not exact JSON
+    as ``non_finite_fields``. It carries the working a gate must not
+    act on but a READER of this packet needs to audit a verdict — how far the
+    excursion sat from a real cancellation's scale, what each shorter gate did
+    to the feature, which gates resolved it. Rows the typed reader dropped keep
+    their working here, which is how a reader sees WHY one was dropped; they
+    reach no gate, because no gate reads this key.
+
+    Not joined into one list per feature on purpose: the typed reader drops
+    rows, so the two lists do not line up by index, and pairing them by
+    frequency is a judgement about which row a verdict came from that this
+    module does not make.
+
+    ``uncertainty`` labels every spread the rows publish. Each is ``random`` or
+    ``systematic`` and says what it is a spread of, and the two columns that
+    merely LOOK like uncertainties say why they are not — ``gate_slack`` most of
+    all, since it is the larger of a fixed floor and a random 3-sigma and would
+    pool the two kinds in one figure if it were read as one.
     """
     absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
@@ -486,16 +586,47 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
         }
     verdicts = read_feature_verdicts(raw)
     banked = raw.get("rows") if isinstance(raw, dict) else raw
+    lab_rows: list[dict[str, Any]] = []
+    withheld: set[str] = set()
+    non_finite: set[str] = set()
+    for entry in banked if isinstance(banked, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        kept, dropped = _copy_allowed(entry, LAB_ROW_FIELDS)
+        withheld.update(dropped)
+        lab_rows.append({
+            column: _lab_row_value(value, column, non_finite)
+            for column, value in kept.items()
+        })
     return {
         "available": bool(verdicts),
         "n_rows_banked": len(banked) if isinstance(banked, list) else 0,
         "n_rows_readable": len(verdicts),
         "verdicts": [verdict.to_dict() for verdict in verdicts],
+        "lab_rows": lab_rows,
+        "redacted_fields": sorted(withheld),
+        "non_finite_fields": sorted(non_finite),
+        "uncertainty": {
+            "fields": {
+                field: dict(entry)
+                for field, entry in sorted(LAB_ROW_UNCERTAINTY.items())
+            },
+            "not_uncertainties": dict(sorted(LAB_ROW_NOT_AN_UNCERTAINTY.items())),
+            "note": (
+                "a random and a systematic uncertainty are never pooled into "
+                "one number here. Each field above names its own kind: more "
+                "captures shrink a random one and do not touch a systematic "
+                "one, which is what a reader deciding whether to re-measure "
+                "needs to know"
+            ),
+        },
         "source": CLASSIFICATION_ARTIFACT,
         "note": (
             "a 'defect-*' verdict says EQ is not structurally BARRED at that "
             "feature. It does not say EQ will help — the round that follows is "
-            "what answers that, by measuring"
+            "what answers that, by measuring. verdicts[] is the gate's view "
+            "and lab_rows[] is the artifact's own working behind it; the gate "
+            "reads only the first"
         ),
     }
 
