@@ -51,8 +51,8 @@ places a request; the next measurement session takes it, once. ``plan`` is the
 dry run -- the only way to see what a stated walk resolves to, in the units the
 session will use -- and ``stage`` gives the request a durable, single-use home
 instead of a shell variable. What a taken walk then does, and what it
-deliberately does not adjudicate, is
-``docs/testing-tooling.md`` ("Angle-walk door").
+deliberately does not publish, is ``docs/testing-tooling.md``
+("Angle-walk door").
 """
 
 from __future__ import annotations

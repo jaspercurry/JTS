@@ -103,17 +103,16 @@ def test_no_staged_walk_is_an_ordinary_session(slot, caplog):
 
 
 def test_the_shipped_stage_1_still_plans_no_lateral_group(slot):
-    """The pause is untouched by the take existing.
+    """The retirement is untouched by the take existing.
 
-    With no staged document the session's own flag decides, and it is still off
-    -- so the shipped map is the 3-entry shape and the walk's indexes are not in
+    With no staged document the session ships no lateral group at all -- so
+    the shipped map is the 3-entry shape and the walk's indexes are not in
     it. This is the control every claim below rests on.
     """
-    assert flow.STAGE1_INCLUDES_LATERAL is False
     shipped = flow.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     assert PHASE_LATERAL not in shipped.values()
@@ -128,7 +127,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
 
     Any walk an operator stages is evidence for the offline forward model. A
     document field would be a second writer of the one fact that decides
-    whether #2711's paused statistic runs, and this is the writer.
+    which pose table the walk runs, and this is the writer.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
     with caplog.at_level(logging.INFO):
@@ -144,7 +143,6 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
     assert "stops=5" in line
     assert "angles=+0,+7,-7,+22,-22" in line
     assert f"consumer={LATERAL_CONSUMER_FORWARD_MODEL}" in line
-    assert "fc_statistic_paused=true" in line
 
     # Single-use: the next session is an ordinary one. The document is spent by
     # the take, not by the session succeeding.

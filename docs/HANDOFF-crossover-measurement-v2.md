@@ -159,30 +159,30 @@ between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 | 2 | `measure` | design-axis anchor, per-driver |
 | 3 | `entry_baseline` | summed sweep at the mark — the round's measured "before" |
 
-Which phases stage 1 walks is three flags in the flow file, not a guess:
-`STAGE1_INCLUDES_ENTRY_BASELINE` is `True`, and `STAGE1_INCLUDES_CLOUD_MEASURE`
-and `STAGE1_INCLUDES_LATERAL` are `False`, so a shipped session emits no
-`cloud_measure` phase and no `lateral` phase of its own — an operator's staged
-angle walk is the one way `lateral` indexes reach a plan (#2732, and they
-adjudicate nothing). The entry baseline is
+Which phases stage 1 walks is stated in the flow file, not a guess:
+`STAGE1_INCLUDES_ENTRY_BASELINE` is `True` and `STAGE1_INCLUDES_CLOUD_MEASURE`
+is `False`, and no stage-1 plan builds a `lateral` group at all — an operator's
+staged angle walk is the one way `lateral` indexes reach a plan (#2732, and its
+close publishes nothing). The entry baseline is
 **last** on purpose: the less the room, the mic and the household have moved
 between it and the graph change, the more of the before→after difference is
 the graph.
 
-**The 6-pose `lateral` walk is PAUSED, not retired (2026-08-18).** It ran as
-indexes 3–8 from R17 until the pause. The flag comment on
-`STAGE1_INCLUDES_LATERAL` carries the owner-ratified evidence; in short, over
-the 8 banked rounds it was 59.4% of all session audio, never changed an
-outcome, and the scalar it feeds adjudicates below its own 3.54 dB repeat
-noise. The pose measurements themselves are sound, so every piece of the walk
-stays in place — prompts, screens, ladder, curve builder, relay arithmetic —
-and forcing the flag back to `True` restores the 9-capture shape unchanged.
-It re-enables when a redesigned lateral statistic shows rank separation above
-its measured noise floor. **The R17 Fc candidate sweep pauses with it**: the
-sweep fires only for a walk whose consumer adjudicates, which the paused stage-1
-walk is and a staged angle walk is not — so a shipped round commits its
-configured Fc without scoring alternatives, the verdict all 8 banked rounds
-reached anyway.
+**The 6-pose `lateral` walk is no longer a stage-1 group (2026-08-18 pause,
+retired 2026-08-21).** It ran as indexes 3–8 from R17 until the pause. The
+owner-ratified evidence: over the 8 banked rounds it was 59.4% of all session
+audio, never changed an outcome, and the scalar it fed ranked below its own
+3.54 dB repeat noise. **The R17 Fc candidate sweep went with it** — plan ruling
+R1, `docs/tuning-master-plan.md` ticket 2.3 — so a round commits the corner the
+household declared or an operator pinned, which is the verdict all 8 banked
+rounds reached anyway.
+
+The pose measurements themselves are sound, so every piece of the walk stays in
+place — prompts, screens, ladder, curve builder, relay arithmetic — and an
+operator's staged angle walk runs all of it as evidence for the offline P2
+forward model. What is gone is the stage-1 arming and the adjudicating close.
+The relay capacity guard counts those six poses **unconditionally**, because a
+staged walk can add them to any session.
 
 The set is held open past its capture target until the phone posts
 `complete_capture_set` — the household's "Continue". That signal closes the
@@ -650,7 +650,7 @@ the module, not a second copy here.
 | [`crossover_v2/priors.py`](../jasper/active_speaker/crossover_v2/priors.py) | What the analyzer is TOLD about each capture — every function a decision about what to withhold. |
 | [`crossover_v2/spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py) | What a capture-consuming phase decides about one take: the three screen ladders, the geometry-retake rule, the retained records. |
 | [`crossover_v2/candidates.py`](../jasper/active_speaker/crossover_v2/candidates.py) | What one candidate build produced, as values that travel without `self`. |
-| [`crossover_v2/fc_sweep.py`](../jasper/active_speaker/crossover_v2/fc_sweep.py) | Which crossover corners may be asked about, what each costs to score, and which one the evidence recommends. Also the single owner of re-cornering — `candidate_sections` and `recornered_preset`. |
+| [`crossover_v2/fc_sweep.py`](../jasper/active_speaker/crossover_v2/fc_sweep.py) | Whether a crossover corner is admissible for this speaker's declarations — `_fc_rejection`'s three bounds and `resolve_fc_search_band`'s intersection — and the single owner of re-cornering a preset, `recornered_preset`. |
 | [`crossover_v2/topology_prescription.py`](../jasper/active_speaker/crossover_v2/topology_prescription.py) | ONE crossover corner and order, pinned for ONE round: the request gate, its admissibility bounds, and the durable read-back. |
 | [`crossover_v2/planning.py`](../jasper/active_speaker/crossover_v2/planning.py) | One candidate assembled: the eligibility gate, the planner request, and the emitted candidate. |
 | [`crossover_v2/admission.py`](../jasper/active_speaker/crossover_v2/admission.py) | Who may start one more capture and what it costs — the bounded-retry meter, `MAX_EXTRA_ATTEMPTS_PER_POSITION`. |
@@ -857,13 +857,12 @@ the module, not a second copy here.
     de-embedding, the emitted graph and VERIFY's design target are that
     topology's rather than the incumbent's — and stage 2 must rehydrate the pin
     or it would grade an applied graph for not being the crossover it replaced.
-    And a pinned round **closes the Fc search and publishes no selector
-    verdict** (`fc_selection` is `None`; the journal says
-    `fc_adjudication=suppressed fc_statistic_paused=true`), because reporting a
-    verdict for a comparison that never ran is the same dishonesty as
-    `polarity_agrees_with_sum` reporting disagreement for one. None of the four
-    is inherited from a lapsed session's durable state the way `tier`
-    deliberately is (#2639).
+    And a pinned round **publishes no selector verdict** — `fc_selection` is
+    `None`, as it is on every round since the corner hunt was deleted (ticket
+    2.3), because reporting a verdict for a comparison that never ran is the
+    same dishonesty as `polarity_agrees_with_sum` reporting disagreement for
+    one. None of the four is inherited from a lapsed session's durable state
+    the way `tier` deliberately is (#2639).
 
 ## Debugging — where to look first
 
@@ -1578,11 +1577,11 @@ between them (two-stage commission work order D1/D2, PR-T3). Both use
 (`jasper/capture_relay/session.py`) in each.
 
 **Stage 1 — 3 captures at either tier.** `STAGE1_INCLUDES_ENTRY_BASELINE` is
-`True` (#2291 Phase 3c), and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) and
-`STAGE1_INCLUDES_LATERAL` are both `False`, so a shipped session runs the
-anchor pair, then one summed capture at the mark, and emits no `cloud_measure`
-phase and no `lateral` phase of its own (a staged angle walk adds one — see
-"Only a walk the FIT reads" below). Production passes
+`True` (#2291 Phase 3c) and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) is
+`False`, and no stage-1 plan builds a `lateral` group, so a shipped session runs
+the anchor pair, then one summed capture at the mark, and emits no
+`cloud_measure` phase and no `lateral` phase of its own (a staged angle walk
+adds one — see "Only a walk the FIT reads" below). Production passes
 the same resolved protection mapping to the protected-neutral emitter and
 configured-path analysis. Stage 2 is unchanged. (R15's two-capture stage 1 —
 `check` then `measure`, hardware-proven 2026-08-05 — is what this replaced.)
@@ -1612,6 +1611,11 @@ the machinery below is intact and unmodified — this is a paused producer
 awaiting a redesigned statistic, not a retired one. **The Fc candidate sweep
 is dormant with it**, since it fires only for a walk whose consumer
 adjudicates.
+
+> **Superseded 2026-08-21.** The sweep was deleted, not left dormant, and the
+> stage-1 arming with it — see the spine's "Stage 1" section and
+> `docs/tuning-master-plan.md` ticket 2.3. The pose machinery below is still
+> what an operator's staged angle walk runs.
 
 Everything from here to the end of this subsection describes the walk **as it
 runs when the flag is forced back to `True`** — indexes 3–8, stage 1 back to
@@ -1689,6 +1693,10 @@ publishes at its own accept, `_close_lateral_walk` suppresses itself by name
 (`event=correction.crossover_v2_lateral_close_suppressed`), and R17's candidate
 sweep never arms. Every OTHER statement about the walk in this subsection —
 above and below — is the selector walk's, and unchanged.
+
+> **Superseded 2026-08-21.** Both walks now close the same way: one event,
+> `correction.crossover_v2_lateral_walk_closed`, and nothing published. See the
+> spine's "Stage 1" section.
 
 **Deployed pre-R15 Stage 1 (`POST /crossover/v2/session`), 10 captures at Full:**
 
@@ -3322,14 +3330,13 @@ final `capture_result` before the page's ~250 ms poll reads it.
 
 ### Recommending an Fc
 
-> **The sweep that RECOMMENDS an Fc is dormant since 2026-08-18.** It fires
-> only for a lateral walk whose consumer adjudicates, and the one walk that has
-> that consumer is paused (see "Stage 1" above and the
-> `STAGE1_INCLUDES_LATERAL` flag comment). An operator's staged angle walk
-> declares the forward-model consumer instead, so it does not re-arm this
-> either: a shipped round produces no `fc_selection` and never renders
-> **Use N Hz and apply**.
-> Nothing here was removed: re-arming the walk re-arms all of it.
+> **DELETED 2026-08-21 — read this section as archaeology only.** The sweep
+> that recommended an Fc, its candidate set, its compute budget and its
+> adjudication are gone (`docs/tuning-master-plan.md` plan ruling R1, ticket
+> 2.3). A round crosses at the corner the household declared or an operator
+> pinned; no round produces an `fc_selection` or renders **Use N Hz and
+> apply**. What survives in `fc_sweep.py` is corner ADMISSIBILITY — the spine's
+> file map says what. Everything below described the sweep while it existed.
 >
 > **The apply path below is NOT gated on that record** (2026-08-19). It asks
 > the candidate being applied what crossover it carries and compares that with
@@ -3826,9 +3833,13 @@ modelled on the wrong corner omits a term measured at up to 5.88 dB against a
 section named only the first and called the second benign:
 
 1. the household edits Fc in `/sound` between rounds;
-2. the alternative-Fc sweep, where `priors.candidate_priors` re-points the
-   composition at every SWEPT corner, so each non-configured candidate's
-   branches carry a crossover the applied profile never ran.
+2. an operator's topology pin, which opens the session AT the pinned corner
+   (`apply_topology_pin`), so the round's branches carry a crossover the applied
+   profile never ran.
+
+(A third door, the alternative-Fc sweep, closed with the corner hunt on
+2026-08-21 — `docs/tuning-master-plan.md` ticket 2.3. The guard below is
+unchanged: it was never counting doors, it compares corners.)
 
 `commanded.profile_crossover_fc_hz` reads the applied graph's own corner off its
 snapshot preset and `CrossoverV2Session._previous_graph_predicted_sum` refuses

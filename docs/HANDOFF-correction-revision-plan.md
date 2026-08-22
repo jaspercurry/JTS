@@ -1051,8 +1051,10 @@ owed_on_device: the boost path is STILL OWED. An earlier reading of this
                 driver-only fit placed no boosts at this mark, plausibly
                 because the gated responses carried no in-band deficit above
                 the envelope's bar — the ~-4.5 dB dip is crossover
-                integration, which boost does not fix — so the selector rounds
-                should confirm boost engages when a genuine deficit exists.
+                integration, which boost does not fix. The selector rounds
+                that would have confirmed this are cancelled, not merely
+                paused (see the six-pose walk entry below) — this stays an
+                open observation with no round left to verify it.
                 Correction record: #1894 (2026-08-05 late). Also owed, all
                 owner-run: the new-floor CHECK/MEASURE slice (~3 min), which
                 exercises R18 on hardware for the first time; the #2233
@@ -1063,9 +1065,10 @@ owed_on_device: the boost path is STILL OWED. An earlier reading of this
                 load path only. Every one of these is EVIDENCE debt — no
                 round is waiting on code. The six-pose selection walk was owed
                 here too, exercising R16/R17 on hardware; it was PAUSED on
-                2026-08-18 (`STAGE1_INCLUDES_LATERAL`), so that debt is
-                deferred with it rather than outstanding — it comes back with
-                the redesigned lateral statistic, not before
+                2026-08-18 (`STAGE1_INCLUDES_LATERAL`) and retired outright on
+                2026-08-22 along with fc_sweep.py's sweep half
+                (tuning-master-plan.md ruling R1, ticket 2.3) — that debt is
+                CANCELLED, not deferred, and does not come back
 follow_ups:     #2099 owns the fit / spatial-grade / bass-room seam; #2100
                 owns honest Full-stage progress and recovery disclosure.
                 Closed by the campaign: #2098 (by #2242), #2106, #2107,

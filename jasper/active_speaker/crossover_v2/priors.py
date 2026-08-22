@@ -111,16 +111,12 @@ def candidate_required_band_hz(
     a candidate graded against a band it was never given.
 
     **The single owner, as of #2291 Phase 5a-v (the #2336 gate's N2).**  This
-    expression had two writers: :func:`measure_priors` below at the session's
-    configured corner, and the Fc sweep's per-candidate re-pointing at a
-    swept one.  Before 5a-iii they were two call sites in one module; after it
-    they were two call sites in two modules, which is the shape where a pair
-    drifts without either side looking wrong.  Both now ask here, so the
-    session corner and every candidate corner are answered by one formula.
+    expression once had two writers, in two modules — the shape where a pair
+    drifts without either side looking wrong.  Everything that needs the band
+    asks here, so one formula answers whatever corner a round runs at.
 
-    ``fc_hz`` is coerced rather than trusted: the sweep hands a corner it
-    derived, and the two callers' float-ness should not be able to move a
-    published band.
+    ``fc_hz`` is coerced rather than trusted: a caller's float-ness should not
+    be able to move a published band.
     """
     overlap = overlap_band_hz(float(fc_hz))
     return {

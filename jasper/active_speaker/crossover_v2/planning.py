@@ -7,8 +7,8 @@ Phase 5a-v(c)).
 
 A sibling of :mod:`.programs`, :mod:`.priors`, :mod:`.spatial`,
 :mod:`.candidates` and :mod:`.fc_sweep`.  :mod:`.candidates` owns the *values*
-one build returns; :mod:`.fc_sweep` owns which corners are worth building at
-all.  This one owns the build itself: the eligibility gate, the planner request
+one build returns; :mod:`.fc_sweep` owns which corners this speaker may be
+crossed at.  This one owns the build itself: the eligibility gate, the planner request
 this candidate's own sections imply, the cloud evidence its envelope consumed,
 and the assembly of the emitted
 :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate`.
@@ -27,8 +27,8 @@ here, so a class- or instance-level substitution of
 — six on the class, three on an instance) or ``_exclusion_evidence_json`` still
 binds on production instead of addressing a name production no longer routes
 through (issue #2354).
-:func:`ineligible_reason` is the counter-case and follows :mod:`.fc_sweep`'s own
-rule: nothing substitutes it, so :func:`build_candidate` calls it directly and
+:func:`ineligible_reason` is the counter-case and follows the same rule from the
+other side: nothing substitutes it, so :func:`build_candidate` calls it directly and
 the session's delegate calls the same function — one derivation either way.
 
 ``exclusion_evidence`` is a port for the second reason that module names: it is
@@ -137,9 +137,8 @@ EVENT_FIT_FAILED_JOURNAL_DROPPED = (
 )
 
 #: The exceptions :func:`build_candidate`'s own ``journal`` call is guarded
-#: against — the same 8-exception family as ``intervention._PORT_ERRORS``
-#: and ``fc_sweep._SWEEP_ERRORS``, and a superset of
-#: ``coordinator._SEAM_ERRORS`` (whose 6 omit ``ArithmeticError`` and
+#: against — the same 8-exception family as ``intervention._PORT_ERRORS``,
+#: and a superset of ``coordinator._SEAM_ERRORS`` (whose 6 omit ``ArithmeticError`` and
 #: ``IndexError``). Enumerated rather than a blind ``except Exception``
 #: (ruff BLE, and the repository's frozen broad-except budget). ``OSError``
 #: is in the set for the same reason it is in theirs: the port is a logging
@@ -591,8 +590,8 @@ def plan_for_candidate(
     must do so AFTER the section set has been judged: the two section refusals
     are the more specific answer.
 
-    ``plan_linearization`` is the pure planner itself, injected for the reason
-    :mod:`.fc_sweep` injects ``select_fc``: three sites in
+    ``plan_linearization`` is the pure planner itself, injected for the ordinary
+    ports-not-patches reason: three sites in
     ``test_crossover_v2_planner_wiring`` substitute the flow module's own
     ``plan_linearization`` name by string, and importing it here instead would
     leave those patches addressing a name production no longer routes through

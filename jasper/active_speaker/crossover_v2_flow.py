@@ -39,10 +39,10 @@ plan change cannot reach them. The spatial cloud replaced the original three:
       → fit + candidate → [the household reviews, then POSTs the apply]
       → VERIFY → the post-apply position group → done
 
-The 6-pose lateral walk sat between MEASURE and the entry baseline from R17
-until it was paused on 2026-08-18; ``STAGE1_INCLUDES_LATERAL`` carries why, and
-forcing it back to ``True`` restores that arm of the diagram and the 9-capture
-stage 1 unchanged.
+A 6-pose lateral walk sat between MEASURE and the entry baseline from R17 until
+it was paused on 2026-08-18 and retired with the corner hunt it fed.  An
+operator's staged angle walk still runs those poses as evidence for the forward
+model; no stage-1 plan builds one.
 
 **Owner decision (2026-07-27): the fit is the last thing before the apply.**
 The candidate used to be built the moment MEASURE was accepted, which put it
@@ -181,7 +181,6 @@ from jasper.active_speaker.crossover_v2 import attempt_grading as _grading
 from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import commanded as _commanded
-from jasper.active_speaker.crossover_v2 import fc_sweep as _fc
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
@@ -230,14 +229,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
-    lateral_adjudicates,
     validated_lateral_consumer,
 )
-from jasper.active_speaker.fc_selector import (
-    FcCandidateEvaluation,
-    FcSelection,
-    select_fc,
-)
+from jasper.active_speaker.fc_selector import FcSelection
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
@@ -413,11 +407,11 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 #     ------------------------------------------------------------------
 #     N=12 -> 33, N=11 -> 32 = MAX_CAPTURE_PLAN_ATTEMPTS
 #
-# The guard itself is flag-aware, so with the walk paused it computes 26 at
-# N=11 and this ceiling has six indexes of slack. Do NOT spend that slack:
-# ``STAGE1_INCLUDES_LATERAL`` is paused, not retired, and raising N on the
-# strength of the paused count would make re-arming the walk a capacity refusal
-# mid-session rather than a flag flip.
+# No stage-1 plan builds that walk any more, so the guard computes 26 at N=11
+# and this ceiling has six indexes of slack. Do NOT spend that slack: an
+# operator's staged angle walk still runs six poses through the same index
+# space, and raising N on the strength of the stage-1 count would turn one of
+# those walks into a capacity refusal mid-session.
 #
 # Nothing shipped changes: ``DEFAULT_CLOUD_MEASURE_POSITIONS`` is 9 and stage 1
 # does not run the pre-apply cloud at all (``STAGE1_INCLUDES_CLOUD_MEASURE``).
@@ -1491,56 +1485,41 @@ def _shape_from_kwargs(
 
 
 # --------------------------------------------------------------------------- #
-# R17 Fc candidate set (plan §4.2 / #1894 / #1675)
+# Corner admissibility (plan §4.2 / #1894 / #1675)
 #
-# #2291 Phase 5a-v(b) moved the whole declaration half — the candidate set, the
-# rejection vocabulary, the search-band intersection, and the empty-evaluation
-# refusal — into ``crossover_v2.fc_sweep`` alongside the sweep that reads them,
-# because a pure organ cannot import this module (the dependency runs one way:
-# flow → crossover_v2, never back). They are re-exported here under their
-# historical names, exactly as the Phase 2 planner constants above are, so every
-# existing importer keeps resolving to the single definition rather than growing
-# a second copy.
+# #2291 Phase 5a-v(b) moved the declaration half — the rejection vocabulary and
+# the search-band intersection — into ``crossover_v2.fc_sweep``, because a pure
+# organ cannot import this module (the dependency runs one way: flow →
+# crossover_v2, never back). They are re-exported here under their historical
+# names, exactly as the Phase 2 planner constants above are, so every existing
+# importer keeps resolving to the single definition rather than growing a second
+# copy.
 #
 # These ARE doors, and unlike Phase 2b's two they are doors somebody walks
-# through: ``tests/test_fc_selector.py`` and
-# ``tests/test_crossover_v2_fc_candidates.py`` reach the declaration half by
-# these names. That is the difference Phase 2b's own note turns on — it removed
-# the imports no caller used, not the ones that carry a caller. Everything the
-# move orphaned outright is gone from the import block above instead, and the
-# four names only a *test* still read there were repointed at their owners
-# rather than left as doors this module does not use.
+# through: ``tests/test_crossover_v2_fc_candidates.py`` reaches the declaration
+# half by these names. That is the difference Phase 2b's own note turns on — it
+# removed the imports no caller used, not the ones that carry a caller.
 #
 # The ``X as X`` spelling is the explicit-re-export form, which is why no lint
 # suppression appears here: a plain ``import X`` would read as dead, and a
 # suppression marker would spend the repository's frozen budget
 # (``test_lint_contracts.test_noqa_debt_does_not_grow``) on something that is
-# not a suppression at all. ``_fc_refusal`` cannot use it — it is a RENAME to
-# the historical private name — so it is an ordinary assignment below.
+# not a suppression at all.
 #
 # **These doors are READ-ONLY.** Substituting one of them here — a
-# ``monkeypatch.setattr(flow, "fc_candidate_set", …)`` — rebinds this module's
+# ``monkeypatch.setattr(flow, "_fc_rejection", …)`` — rebinds this module's
 # name and NOTHING else: production reaches the declaration half through
 # ``_fc``/``crossover_v2.fc_sweep``, so the patch would be vacuous while
-# looking applied. Patch the owning module, or inject through the session's
-# ports (``_fc_candidate_set`` and friends), which is what the sweep takes them
-# as precisely so a substitution still binds (#2354).
+# looking applied. Patch the owning module instead.
 # --------------------------------------------------------------------------- #
 
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND as FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR as FC_REJECT_BELOW_DECLARED_FLOOR,
-    FC_REJECT_BEAMING as FC_REJECT_BEAMING,
-    FC_CORNER_COMPUTE_COST_S as FC_CORNER_COMPUTE_COST_S,
     FC_REJECT_OUTSIDE_SEARCH_BAND as FC_REJECT_OUTSIDE_SEARCH_BAND,
-    FC_SWEEP_COMPUTE_BUDGET_S as FC_SWEEP_COMPUTE_BUDGET_S,
-    MAX_PROPOSED_FC_CANDIDATES as MAX_PROPOSED_FC_CANDIDATES,
-    FcCandidateSet as FcCandidateSet,
     FcSearchBand as FcSearchBand,
     _FC_GRID_EPS_HZ as _FC_GRID_EPS_HZ,
     _fc_rejection as _fc_rejection,
-    fc_candidate_set as fc_candidate_set,
-    fc_sweep_budget_s as fc_sweep_budget_s,
     resolve_fc_search_band as resolve_fc_search_band,
 )
 
@@ -1558,8 +1537,6 @@ from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_MIN_PAIRED_OCCURRENCES as LINEARIZATION_MIN_PAIRED_OCCURRENCES,
 )
 
-_fc_refusal = _fc.refusal
-
 
 def relay_plan_attempts_required(
     *,
@@ -1574,22 +1551,24 @@ def relay_plan_attempts_required(
     THIS Pi will actually run"). The two questions differ; the arithmetic must
     not, so they pass arguments here rather than each adding their own terms.
 
-    R16's walk counts **when its flag is on** — 23 → 29 at the doctor's defaults
-    the moment it flips, no second edit. Before one producer, the guard added
-    the poses unconditionally and the doctor did not, so a flipped build would
-    under-report by six and pass a Pi whose Worker ceiling sat in [23, 28]:
-    green in the diagnostic, refused mid-walk.
+    R16's walk counts UNCONDITIONALLY, and that is the honest worst case rather
+    than a leftover: no stage-1 plan arms it, but an operator's staged angle
+    walk builds one on any session and its poses ride the same blob-index space.
+    A term guarded on a stage-1 flag would have said 0 for exactly the shape
+    that still runs six of them.
 
-    #2291's entry baseline is one more stage-1 entry and counts on exactly the
-    same terms — flag-guarded here so the guard and the doctor cannot disagree
-    about it either.
+    #2291's entry baseline is one more stage-1 entry and counts here —
+    flag-guarded in one place so the guard and the doctor cannot disagree about
+    it. Before one producer the two added their stage-1 terms separately, and a
+    build that changed one would under-report and pass a Pi whose Worker ceiling
+    sat just under the real count: green in the diagnostic, refused mid-session.
     """
     return (
         cloud_plan_max_attempts(
             cloud_measure_positions=cloud_measure_positions,
             cloud_verify_positions=cloud_verify_positions,
         )
-        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+        + len(LATERAL_POSE_PROMPTS)
         + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     )
 
@@ -1608,15 +1587,16 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     """
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
-    # R16's walk and #2291's entry baseline are stage-1 entries too. Flag-aware
-    # via the shared producer below, so this and jasper-doctor can never
-    # disagree about the number.
+    # R16's walk and #2291's entry baseline are entries too — the walk
+    # unconditionally, for the reason the shared producer above gives. Both
+    # counted through that one producer's rules, so this and jasper-doctor can
+    # never disagree about the number.
     entries = (
         cloud_capture_target(
             cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
             cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
         )
-        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
+        + len(LATERAL_POSE_PROMPTS)
         + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     )
     if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
@@ -1745,53 +1725,6 @@ def cloud_plan_max_attempts(
 # chooser cannot advertise a walk the session does not take (#2098's pattern).
 STAGE1_INCLUDES_CLOUD_MEASURE = False
 
-# R16 (plan §4.4, Gate 0 2026-08-05): does stage 1 walk the lateral poses after
-# the anchor? Its own flag rather than a reuse of the one above, because the two
-# groups answer different questions and are separately authorized — the
-# pre-apply cloud stays off either way.
-#
-# ON at R17 (#2173), which landed the consumer Gate 0 requires: the lateral
-# robustness term in ``fc_selector.score_candidate``, the only evidence in a
-# session about whether a candidate's handoff survives OFF the design axis.
-#
-# **OFF since 2026-08-18 — PAUSED, not retired**, pending a redesign of the
-# statistic it feeds. Owner-ratified on a recompute over the 8 banked rounds
-# that have an ``fc_selection`` (armrun control/a250/a350/a450/a550/adopt350,
-# series2 r1b/r2):
-#   * It is the session's largest cost — 59.4% of all banked session audio
-#     (1,649 of 2,776 s: six verbatim replays of the ~39.5 s MEASURE program at
-#     the loudest solved level) and the largest single retake source (9 of the
-#     corpus's 13 rejected captures).
-#   * It has never changed an outcome: all 8 rounds committed the configured
-#     Fc with the walk on.
-#   * The statistic adjudicates BELOW ITS OWN NOISE. Same-arm repeat noise is
-#     3.54 dB (a350 vs adopt350, both -350 us — the run log's own free
-#     repeatability check) while the rank-1-to-rank-2 excess gap is 0.004-2.13
-#     dB in all 8 rounds. In 4 of them the argmax pose is frequently the
-#     CLOSING AT-MARK REPEAT — a zero-offset pose — so the term substantially
-#     reports repeat noise rather than off-axis behaviour.
-#   * What is NOT in doubt is the measurement: inter-driver drift runs
-#     0.6-1.9 dB against a 0.09-0.32 dB mark-return floor, and +-40 cm is
-#     ~2.2x the +-12 cm pair in 8 of 8. The poses are clean; it is the max-over-
-#     poses reduction into one scalar that cannot separate candidates.
-# Re-enable when a redesigned lateral statistic demonstrates rank separation
-# above its measured noise floor on the banked rounds.
-#
-# **The R17 candidate sweep pauses with it.** Since #2732 there are TWO
-# deciders, not one: a walk must be in the plan AND its consumer must adjudicate
-# (``_adjudicating_walk``, read by the sweep's arm and by ``_close_lateral_walk``
-# alike). This flag governs the first; an operator's staged walk declares the
-# second and never adjudicates. With neither, MEASURE publishes the configured
-# Fc — the same verdict all 8 banked rounds reached with the walk on.
-#
-# Everything else stays: the pose table, the prompts, the per-pose screens and
-# ladder, ``lateral_pose_curve``, ``lateral_mark_return_drift_db``, the relay
-# capacity arithmetic, and this flag. Forcing it True restores the full walk.
-# Applied at the PRODUCTION seams (``_stage1_capture_target``,
-# ``prepare_v2_session``), not as a builder default — the two builders keep
-# whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
-STAGE1_INCLUDES_LATERAL = False
-
 # #2291's minimum new measurement: stage 1 takes ONE summed sweep at the mark
 # immediately before the household applies, so the round has a "before" to
 # grade its "after" against. Its own flag beside the two above, and ON, for the
@@ -1810,12 +1743,25 @@ STAGE1_INCLUDES_LATERAL = False
 STAGE1_INCLUDES_ENTRY_BASELINE = True
 
 
+# R16's 6-pose lateral walk (plan §4.4) is NOT a stage-1 group. It ran from R17
+# to feed the lateral robustness term of a corner selector, was paused on
+# 2026-08-18 because that statistic ranked below its own noise — same-arm repeat
+# noise 3.54 dB against a 0.004-2.13 dB rank-1-to-rank-2 gap over 8 banked
+# rounds, none of which it ever moved off the configured Fc — and was retired
+# with the corner hunt it fed. What is NOT in doubt is the measurement: the
+# poses are clean (inter-driver drift 0.6-1.9 dB against a 0.09-0.32 dB
+# mark-return floor), which is why an operator's staged angle walk still runs
+# them as evidence for the forward model. The pose table, the prompts, the
+# per-pose screens and ladder, ``lateral_pose_curve`` and
+# ``lateral_mark_return_drift_db`` all serve that walk; only the stage-1 arming
+# is gone, so the two builders below still take ``include_lateral`` from
+# whatever a caller asks for, exactly like ``STAGE1_INCLUDES_CLOUD_MEASURE``.
 def _stage1_capture_target(shape: Any) -> int:
     """Stage 1's REAL capture count, not the cloud-inclusive shape target."""
     return len(build_v2_cloud_index_phase_map(
         plan_shape=shape,
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ))
 
@@ -4321,11 +4267,9 @@ def carve_outs_by_band(
 # --------------------------------------------------------------------------- #
 #
 # The three values a build's product travels on. They moved to the package in
-# #2291 Phase 5a-v because they are the Fc sweep's blocking dependency —
-# ``_evaluate_fc_candidate`` consumes a build product and, through it, the
-# other two — and 5a-iii deferred the sweep on exactly that. Re-bound here
-# under their historical private names so every call site in this module, and
-# the prose that cites them, keeps resolving.
+# #2291 Phase 5a-v, which is where the machinery that reads them went. Re-bound
+# here under their historical private names so every call site in this module,
+# and the prose that cites them, keeps resolving.
 _CloudFitEvidence = _candidates.CloudFitEvidence
 _LinearizationState = _candidates.LinearizationState
 _SpeculativeClose = _candidates.SpeculativeClose
@@ -5193,18 +5137,16 @@ class CrossoverV2Session:
         self._radiating_diameter_mm_by_role = (
             dict(radiating_diameter_mm_by_role) if radiating_diameter_mm_by_role else {}
         )
-        # R17: each participating role's declared crossover search band. An
-        # EMPTY map is not "no constraint" — ``_fc_candidate_set`` reads a role
-        # that is absent here exactly as a role that declared nothing, so a
-        # caller which passes none gets no proposal at all. That is the
-        # fail-closed direction ``resolve_fc_search_band`` documents.
+        # Each participating role's declared crossover search band. An EMPTY map
+        # is not "no constraint" — ``resolve_fc_search_band`` reads a role that
+        # is absent here exactly as a role that declared nothing, so a caller
+        # which passes none admits no corner at all. That is the fail-closed
+        # direction that function documents.
         self._crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = (
             dict(crossover_search_band_hz_by_role)
             if crossover_search_band_hz_by_role else {}
         )
-        self._fc_evaluations: tuple[Any, ...] = ()
         self._fc_selection: Any = None
-        self._fc_selected_evaluation: Any = None
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
@@ -6024,18 +5966,6 @@ class CrossoverV2Session:
 
     def _entry_baseline_priors(self) -> MeasurementPriors:
         return _priors.entry_baseline_priors(fc_hz=self._fc_hz)
-
-    def _fc_candidate_set(self) -> FcCandidateSet:
-        return _fc.candidate_set(
-            configured_hz=self._fc_hz,
-            hf_hard_floor_hz=self._tweeter.band.lower_hz,
-            lower_driver_hard_ceiling_hz=self._woofer.band.upper_hz,
-            search_band_hz_by_role=self._crossover_search_band_hz_by_role,
-            lower_driver_diameter_mm=self._radiating_diameter_mm_by_role.get(
-                self._woofer.role
-            ),
-            topology_pinned=self._topology_prescription is not None,
-        )
 
     # --- journey delegation --------------------------------------------------
 
@@ -7028,24 +6958,6 @@ class CrossoverV2Session:
             verdict = self._consume_check(analysis)
         elif phase == PHASE_MEASURE:
             verdict = self._consume_measure(analysis)
-            # R17's candidate sweep, HERE and nowhere later: ``result`` is the
-            # raw capture, and it is alive only inside this call. What the
-            # session retains past it are derived ``DriverResponse``s, which
-            # §4.2's conditioning policy refuses to un-compose. Only on an
-            # accepted MEASURE an ADJUDICATING walk will follow — a rejected
-            # capture has no evidence to adjudicate from, and a session without
-            # such a walk has no close to adjudicate at.
-            #
-            # Since the 2026-08-18 lateral pause, no walk is the SHIPPED stage-1
-            # session: this sweep does not run and ``fc_selection`` stays
-            # ``None``, so the round commits its configured Fc — the verdict all
-            # 8 banked rounds reached with the walk on. Re-arming the walk
-            # (``STAGE1_INCLUDES_LATERAL``) re-arms the sweep with it; that
-            # flag's comment carries why the pause sits on the walk.
-            # Not the phase alone: an evidence walk has no close to spend a
-            # candidate set at.
-            if verdict.accepted and self._adjudicating_walk:
-                self._sweep_fc_candidates(program, result, analysis)
         elif phase == PHASE_LATERAL:
             verdict = self._consume_lateral_pose(index, attempt, analysis, result)
         elif phase in GROUP_PHASES:
@@ -7378,10 +7290,12 @@ class CrossoverV2Session:
         Caller holds ``_close_lock``.
         """
         if self._journey.plan.is_last_index_of_group(phase, index):
-            # R16: a dropped LAST pose must still close the walk, or a session
-            # whose final capture could not be measured would end with no
-            # candidate at all — the anchor's coefficients were never the poses'
-            # to withhold. Same "settled looks accepted on the wire" contract.
+            # R16: a dropped LAST pose must still close the walk, so the journal
+            # records that the walk ENDED rather than leaving its absence to be
+            # read as a walk that never finished. Nothing is published either
+            # way — MEASURE already published the round's candidate, and the
+            # anchor's coefficients were never the poses' to withhold. Same
+            # "settled looks accepted on the wire" contract.
             if phase == PHASE_LATERAL:
                 return PhaseVerdict(
                     True, payload={**self._close_lateral_walk(), **payload}
@@ -7704,24 +7618,18 @@ class CrossoverV2Session:
         # will ever read is not free on a 1 GB Pi (see the field's own comment
         # in ``__init__`` for the measurement). Exactly one is ever held; a
         # MEASURE re-arm overwrites it, and the group close releases it.
-        # R16 adds a THIRD deferring shape to the two below. The rule in bold
-        # above is the invariant, not the cloud's name in it: once a lateral
-        # walk follows the anchor, MEASURE is no longer the last capture before
-        # the apply, and fitting here would put a proposal on the review screen
-        # that predates five minutes of evidence the household was just asked to
-        # produce — the exact defect the 2026-07-27 decision removed for the
-        # cloud. The lateral group's last accepted pose closes it instead.
-        #
-        # The stated reason — the walk is the fit's INPUT — is false of an
-        # evidence walk, whose close never publishes anything to wait for.
-        if PHASE_CLOUD_MEASURE in self._journey.plan.phases or self._adjudicating_walk:
+        # A lateral walk is NOT a deferring shape. It was one while its close
+        # adjudicated a corner; an operator's staged angle walk produces
+        # evidence for the forward model and its close publishes nothing the fit
+        # waits for, so MEASURE is still the last capture the proposal depends
+        # on and fitting here ages nothing.
+        if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
             self._measure_analysis = analysis
             return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
-        # The no-deferral shape — and since the 2026-08-18 lateral pause it is
-        # the SHIPPED stage-1 branch again, not the dormant one it was between
-        # R17 and that pause: with both group flags off ``prepare_v2_session``
-        # builds ``CHECK, MEASURE, ENTRY_BASELINE``, so the configured Fc's
-        # candidate is published right here.
+        # The no-deferral shape, and the SHIPPED stage-1 branch: with the cloud
+        # flag off ``prepare_v2_session`` builds ``CHECK, MEASURE,
+        # ENTRY_BASELINE``, so the configured Fc's candidate is published right
+        # here.
         #
         # #2291's entry baseline follows MEASURE without joining the condition
         # above, and deliberately: it is not the fit's input — it is the "before"
@@ -7758,20 +7666,6 @@ class CrossoverV2Session:
         """
         return _spatial.group_position_floor(
             phase, min_resolved_cloud_positions=MIN_RESOLVED_CLOUD_POSITIONS,
-        )
-
-    @property
-    def _adjudicating_walk(self) -> bool:
-        """This session runs a lateral group AND that group reads itself.
-
-        Both halves, because a reader that checks only the phase is the bug this
-        guards. ``True`` turns on the three behaviours
-        :func:`~jasper.active_speaker.crossover_v2.journey.lateral_adjudicates`
-        names.
-        """
-        return (
-            PHASE_LATERAL in self._journey.plan.phases
-            and lateral_adjudicates(self._lateral_consumer)
         )
 
     def _consume_lateral_pose(
@@ -7874,202 +7768,40 @@ class CrossoverV2Session:
         )
 
     def _close_lateral_walk(self) -> dict[str, Any]:
-        """Build the candidate the household reviews, once the walk is done.
+        """Record that the walk finished. Publishes nothing.
 
-        The lateral shape's counterpart to
-        :meth:`_close_measure_cloud_candidate`, and deliberately the smaller of
-        the two: no combine, no geometry retake, no confirm screen to wait for,
-        so the walk's last accepted pose is simply the last capture before the
-        apply and this folds the candidate into its verdict exactly as the
-        pre-cloud 3-entry shape folds it into MEASURE's.
-
-        ``cloud=None`` is the same honest ``None`` the cloud path passes when
-        its pipeline did not become available: this session ran no pre-apply
-        cloud, so the envelope's spatial terms have no evidence — §4.2's
-        recorded, accepted risk for the driver-only path, not something the
-        lateral walk quietly substitutes for. §4.4 is explicit that side
-        evidence may not become the fit target.
+        The poses are evidence for the forward model — an operator's staged
+        angle walk is the only shape that runs them — and that evidence is read
+        off the banked round rather than off this close. So the close has no
+        candidate to fold into its verdict: MEASURE already published the
+        configured corner's, and §4.4 is explicit that side evidence may not
+        become the fit target.
 
         A walk where nothing was captured still closes: the anchor already owns
         the coefficients (see :meth:`_group_position_floor`).
 
-        Returns ``{}`` for a walk that does not adjudicate, and journals why.
-        Decided HERE, not at either route in (an accepted last pose, a settled
-        one), so a third route cannot miss it.
+        Returns ``{}`` at both routes in (an accepted last pose, a settled one),
+        so a third route cannot come to a different conclusion about whether
+        there is anything to add.
         """
-        if not self._adjudicating_walk:
-            log_event(
-                logger, "correction.crossover_v2_lateral_close_suppressed",
-                session_id=self.session_id,
-                reason=f"lateral_consumer_{self._lateral_consumer}",
-                planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
-                captured=len(self._lateral_poses),
-                mark_return_drift_db=self.lateral_mark_return_drift_db(),
-                fc_adjudication="suppressed",
-                fc_statistic_paused=True,
-            )
-            return {}
-        if self._measure_analysis is None:
-            raise CrossoverV2FlowError(
-                "lateral walk closed with no retained MEASURE analysis"
-            )
-        analysis, self._measure_analysis = self._measure_analysis, None
-        # R17 adjudicates HERE — §4.4's rule that anything reading the whole
-        # walk waits for the whole walk. Before the candidate build below, so
-        # a selector bug cannot be blamed on the published candidate, and it
-        # writes nothing the build reads.
-        #
-        # It is UNGUARDED, and it is not total: the candidate-set derivation,
-        # the selector kernel and the journal port can each raise, so a raise
-        # here fails the walk close instead of publishing a candidate whose
-        # recommendation blew up. (An earlier version of this comment claimed
-        # the call "cannot raise" — it never could not.) The contrast with
-        # ``_sweep_fc_candidates``'s own guard is the PHASE, not the risk: the
-        # sweep runs at capture-consume, where a refused advisory would cost a
-        # household the MEASURE they had already completed.
-        self._adjudicate_fc()
         log_event(
             logger, "correction.crossover_v2_lateral_walk_closed",
             session_id=self.session_id,
+            consumer=self._lateral_consumer,
             planned=len(self._journey.plan.group_offsets(PHASE_LATERAL)),
             captured=len(self._lateral_poses),
             mark_return_drift_db=self.lateral_mark_return_drift_db(),
         )
-        selected = self._fc_selected_evaluation
-        self._fc_selected_evaluation = None
-        if selected is not None:
-            return self._commit_fc_candidate(selected)
-        # Preserve the configured winner's established publication path.
-        return self._publish_measure_candidate(analysis, None)
-
-    # --- R17: the Fc candidate sweep -----------------------------------------
-
-    # Thin argument lists over :mod:`jasper.active_speaker.crossover_v2.fc_sweep`
-    # and :mod:`~jasper.active_speaker.crossover_v2.priors`, which own R17's
-    # decisions — which corners are proposable, what each one does to the
-    # sections and the priors, and what a candidate's model is. What is left
-    # here is this object's own reading of its session state, plus the ports
-    # that keep a substituted attribute binding on production (#2354).
-    #
-    # Three siblings that used to sit here — ``_fc_candidate_sections``,
-    # ``_fc_candidate_priors``, ``_fc_branch_operators`` — were deleted in
-    # #2291 phase 5c-iv: the sweep organ binds those arguments itself, so the
-    # methods had no production caller and no port, and only test convenience
-    # kept them alive. The equivalent bindings live beside the tests that want
-    # them, in ``tests/crossover_v2_fixtures.py``.
-
-    def _evaluate_fc_candidate(
-        self, fc_hz: float, anchor: Any, program: Any, result: Any,
-    ) -> FcCandidateEvaluation:
-        """One candidate, fitted and reduced to its retained record — see
-        :func:`~jasper.active_speaker.crossover_v2.fc_sweep.evaluate_candidate`.
-
-        The two callables that look like plain state are the point of the
-        signature: ``predicted_spec_report`` and ``sweep_bounds`` are read
-        AFTER the build, and the build writes the spec report, so a value
-        captured here would be the previous candidate's.
-        """
-        return _fc.evaluate_candidate(
-            fc_hz, anchor,
-            analyze=lambda priors: self._seams.analyze(
-                program, result, priors, self._geometry, phase=PHASE_MEASURE,
-            ),
-            build=self._build_measure_candidate,
-            measure_priors=self._measure_priors,
-            sweep_bounds=self._measure_sweep_bounds,
-            predicted_spec_report=lambda: self._measure_predicted_spec_report,
-            ineligible_reason=self._linearization_ineligible_reason,
-            commanded_delta=self._commanded_delta_for,
-            declared_transfer=self._declared_transfer_for,
-            configured_fc_hz=self._fc_hz,
-            preset=self._preset,
-            tweeter_role=self._tweeter.role,
-            protection_sections_by_role=(
-                self._measurement_protection_sections_by_role
-            ),
-            grid=lateral_evidence_grid_hz(),
-        )
-
-    def _fc_evaluation_budget_s(self, planned: int) -> float:
-        """The wall budget for this one-time serial computation, sized by plan.
-
-        ``planned`` is how many corners the sweep is about to attempt, so a set
-        the household's declarations narrowed asks for less wall than a full
-        one — see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.fc_sweep_budget_s`,
-        which owns the sizing rule.
-        """
-        return fc_sweep_budget_s(planned)
-
-    def _sweep_fc_candidates(self, program: Any, result: Any, anchor: Any) -> None:
-        """Evaluate the proposable Fc set against THIS capture, then release —
-        see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.sweep_candidates`,
-        which owns the budget forecast, the refusal containment, and the
-        "never raises" promise.
-
-        The three seams are passed as bound attributes rather than reached for
-        inside the organ, so a substituted ``_evaluate_fc_candidate``,
-        ``_fc_candidate_set`` or ``_fc_evaluation_budget_s`` still binds on
-        production — including the two whose raise the organ must catch INSIDE
-        its own guard (#2354).
-        """
-        self._fc_evaluations = _fc.sweep_candidates(
-            program, result, anchor,
-            evaluate=self._evaluate_fc_candidate,
-            candidate_set_of=self._fc_candidate_set,
-            budget_s_of=self._fc_evaluation_budget_s,
-            journal=self._journal_linearization,
-            configured_fc_hz=self._fc_hz,
-            protection_declared=(
-                self._measurement_protection_sections_by_role is not None
-            ),
-        )
-
-    def _adjudicate_fc(self) -> None:
-        """Turn the retained per-candidate evidence into ONE recommendation —
-        see :func:`~jasper.active_speaker.crossover_v2.fc_sweep.adjudicate`.
-
-        The evaluations are released here, before the judgement runs: the
-        selection is what the review screen renders, and the evidence behind it
-        has done its job. ``select_fc`` is passed rather than imported by the
-        organ so the flow module's own name stays the one production resolves.
-
-        The disclosure is said LAST, after both fields are published — the
-        pre-extraction order, kept because a journal that raises should cost a
-        log line rather than the recommendation it was about.
-        """
-        evaluations, self._fc_evaluations = self._fc_evaluations, ()
-        if not evaluations:
-            return
-        adjudication = _fc.adjudicate(
-            evaluations,
-            [pose.curves for pose in self._lateral_poses],
-            select=select_fc,
-            candidate_set_of=self._fc_candidate_set,
-            configured_fc_hz=self._fc_hz,
-            topology_pinned=self._topology_prescription is not None,
-        )
-        self._fc_selection = adjudication.selection
-        # Gated on the RECOMMENDATION, not on the match: a verdict that names a
-        # corner whose evaluation cannot be found must CLEAR the field, not
-        # leave whatever was there. The two cases differ only in a shape that
-        # cannot arise today (nothing else writes this field before the close),
-        # and pinning the legacy condition costs one line rather than a trace
-        # argument about why it cannot.
-        #
-        # ``is not None`` on the selection itself is the topology-pinned round,
-        # where there is no verdict to read a recommendation off — see
-        # ``fc_sweep.adjudicate``. It reads as a null-guard and it is one; the
-        # decision it guards was taken in the organ.
-        if (adjudication.selection is not None
-                and adjudication.selection.recommended_hz is not None):
-            self._fc_selected_evaluation = adjudication.selected_evaluation
-        self._journal_linearization(adjudication.record)
+        return {}
 
     @property
     def fc_selection(self) -> FcSelection | None:
-        """This session's Fc RECOMMENDATION, or ``None`` if no sweep ran.
+        """This session's Fc recommendation. Always ``None``.
 
-        Review accepts through Sound, then applies this exact candidate.
+        Nothing writes it: a round crosses at the corner the household declared
+        or an operator pinned, so there is no comparison to recommend from. The
+        field is still read by the review surface and by readers of rounds
+        banked while a corner selector existed.
         """
         return self._fc_selection
 
@@ -9116,7 +8848,7 @@ class CrossoverV2Session:
 
         Both commit sites — the configured-Fc walk
         (:meth:`_commit_measure_candidate`) and the alternative-Fc selection
-        (:meth:`_commit_fc_candidate`) — install a candidate through here, so
+        (:meth:`_commit_measure_candidate`) — install a candidate through here, so
         Phase 2 has a single place to hollow rather than two near-duplicate
         inline blocks that had already drifted.
 
@@ -9148,9 +8880,7 @@ class CrossoverV2Session:
         re-identify the *candidate*, which is exactly the confusion #2392
         closed.  ``realized_branch_level`` is the argument #2291 Phase 5c-iii
         removed with the write-only facade and this issue re-supplies: the walk
-        reads it off its build's :class:`_LinearizationState`, the selection
-        off the retained
-        :class:`~jasper.active_speaker.fc_selector.FcCandidateEvaluation`.
+        reads it off its build's :class:`_LinearizationState`.
 
         **Assembly cannot fail this commit.**
         :func:`~jasper.active_speaker.crossover_v2.proposal.plan_intervention_proposal`
@@ -9208,35 +8938,6 @@ class CrossoverV2Session:
         self._seams.publish_candidate(candidate)
         self._publish_level_frame_finding(level_frame_finding)
 
-    def _commit_fc_candidate(self, evaluation: FcCandidateEvaluation) -> dict[str, Any]:
-        from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
-
-        if evaluation.candidate is None or evaluation.predicted_sum is None:
-            raise CrossoverV2FlowError("selected Fc has no executable candidate")
-        candidate = MeasuredCrossoverCandidate.from_mapping(evaluation.candidate)
-        self._measure_predicted_spec_report = dict(
-            evaluation.predicted_spec_report or {}) or None
-        self.commit_intervention_proposal(
-            candidate,
-            predicted_sum=evaluation.predicted_sum,
-            commanded_delta=evaluation.commanded_delta,
-            declared_transfer=evaluation.declared_transfer,
-            level_frame_finding=evaluation.level_frame_finding,
-            # #2392 re-supplies what 5c-iii removed. The selection's copy is the
-            # one the sweep retained on the evaluation — read from there rather
-            # than re-derived, so the proposal quotes the verdict that belongs
-            # to THIS candidate rather than to whichever build ran last.
-            realized_branch_level=evaluation.realized_branch_level,
-        )
-        log_event(
-            logger, "correction.crossover_v2_candidate_built",
-            session_id=self.session_id, candidate_fingerprint=candidate.fingerprint,
-            linearization=candidate.linearization_outcome,
-            selected_fc_hz=round(evaluation.fc_hz, 1), cloud_evidence=False,
-            excluded_bands=0, cloud_positions=0)
-        return {"candidate_fingerprint": candidate.fingerprint,
-                "headroom_cost_db": worst_headroom_cost_db(candidate.linearization)}
-
     def _commit_measure_candidate(self, built: _SpeculativeClose) -> dict[str, Any]:
         """Make a built candidate REAL: stash it, publish it, disclose it.
 
@@ -9267,8 +8968,7 @@ class CrossoverV2Session:
             declared_transfer=self._declared_transfer_for(analysis, predicted_sum),
             level_frame_finding=built.level_frame_finding,
             # #2392's other half of the same one-line re-supply: the walk reads
-            # the verdict off its own build's state, the same accessor
-            # ``_sweep_fc_candidates`` retains onto its evaluations.
+            # the verdict off its own build's state.
             realized_branch_level=built.linearization.realized_branch_level,
         )
         log_event(
@@ -11824,11 +11524,10 @@ class CrossoverV2Session:
         """HARD GATE for the Layer-1a fit path, as a named reason or ``None`` —
         see :func:`~jasper.active_speaker.crossover_v2.planning.ineligible_reason`.
 
-        Kept as a session attribute because the Fc sweep already passes it as
-        a port (:meth:`_evaluate_fc_candidate`'s ``ineligible_reason=``). The
-        build calls the module function directly, per the sibling rule that a
-        seam nothing substitutes is called directly — both routes resolve to the
-        one definition.
+        A session attribute rather than a bare module call so a substitution
+        binds on production, per the sibling rule (#2354). The build calls the
+        module function directly, since nothing substitutes it there — both
+        routes resolve to the one definition.
         """
         return _planning.ineligible_reason(
             analysis,
@@ -11900,8 +11599,7 @@ class CrossoverV2Session:
         split or empty section set is the more specific answer and is what the
         SF2 line's ``reason=`` should name. ``plan_linearization`` is passed
         rather than imported by the organ so THIS module's name stays the one
-        production resolves — the same reason ``select_fc`` is passed to the Fc
-        adjudication (#2354).
+        production resolves (#2354).
 
         **The ``journal_dropped`` notice stays HERE and cannot move.** It reports
         on the journal port itself, so saying it through that port would lose it
@@ -12820,7 +12518,7 @@ def _tier_display_info_cached() -> dict[str, dict[str, int]]:
         stage1 = build_v2_capture_plan(
             _DISPLAY_ROLES_BANDS, _DISPLAY_FC_HZ, plan_shape=shape,
             include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-            include_lateral=STAGE1_INCLUDES_LATERAL,
+            include_lateral=False,
             include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
         )
         stage2 = build_v2_verify_capture_plan(_DISPLAY_FC_HZ, plan_shape=shape)
@@ -13225,7 +12923,6 @@ __all__ = [
     "LateralPoseCurve",
     "lateral_evidence_grid_hz",
     "lateral_pose_curve",
-    "STAGE1_INCLUDES_LATERAL",
     "PHASE_ENTRY_BASELINE",
     "REFERENCE_MARK_DESIGN_AXIS",
     "STAGE1_INCLUDES_ENTRY_BASELINE",

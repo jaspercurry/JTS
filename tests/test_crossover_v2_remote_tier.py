@@ -115,7 +115,7 @@ def _stage1(tier):
         flow._DISPLAY_FC_HZ,
         plan_shape=resolve_plan_shape(tier),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
@@ -262,22 +262,29 @@ def test_the_remote_walks_are_the_specified_bearings():
     """The acceptance criterion, stated as the angles a driver will be asked
     for — and read back off the PLAN, not off the helper that builds it.
 
-    Stage 1's own walk is PAUSED (2026-08-18, ``STAGE1_INCLUDES_LATERAL``), so
-    the shipped remote stage 1 asks a positioner for nothing but the axis. The
-    bearings it asks for WHEN ARMED are still the acceptance criterion — a
-    positioner-driven walk that quietly stopped matching ``STAGE1_ANGLES``
-    while the flag was off would be discovered by the first re-armed run — so
-    they are asserted under a forced flag rather than deleted with the pause.
+    No stage-1 plan builds the lateral group any more, so the shipped remote
+    stage 1 asks a positioner for nothing but the axis. The bearings it would
+    ask for if one WERE included are still the acceptance criterion — an
+    operator's staged angle walk feeds a positioner the same table, and a walk
+    that quietly stopped matching ``STAGE1_ANGLES`` would be discovered by the
+    first one taken — so they are asserted against a directly-built
+    lateral-included plan rather than deleted with the group.
     """
     stage1 = [int(e.screen[POSITION_DEG_KEY]) for e in _stage1(TIER_REMOTE).entries]
     stage2 = [int(e.screen[POSITION_DEG_KEY]) for e in _stage2(TIER_REMOTE).entries]
     # Shipped: CHECK, MEASURE and the entry baseline, every one on the axis.
     assert stage1 == [0, 0, 0]
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
-        armed = [
-            int(e.screen[POSITION_DEG_KEY]) for e in _stage1(TIER_REMOTE).entries
-        ]
+    lateral_included_plan = build_v2_capture_plan(
+        flow._DISPLAY_ROLES_BANDS,
+        flow._DISPLAY_FC_HZ,
+        plan_shape=resolve_plan_shape(TIER_REMOTE),
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+    )
+    armed = [
+        int(e.screen[POSITION_DEG_KEY]) for e in lateral_included_plan.entries
+    ]
     # CHECK and MEASURE are design-axis captures ahead of the walk itself.
     assert armed[:2] == [0, 0]
     assert tuple(armed[2:-1]) == STAGE1_ANGLES

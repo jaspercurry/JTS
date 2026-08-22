@@ -941,22 +941,20 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
     stated angle, and POSTs ``/crossover/v2/position-ready``.
     """
     from jasper.active_speaker.crossover_v2_flow import (
-        LATERAL_POSE_PROMPTS,
         POSITION_DEG_KEY,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
-        STAGE1_INCLUDES_LATERAL,
         TIER_REMOTE,
     )
     from jasper.web.correction_crossover_v2 import PositionGate
 
     shape = resolve_plan_shape(TIER_REMOTE)
     # The SHIPPED stage-1 composition, exactly as ``prepare_v2_session`` builds
-    # it — the anchor pair plus the entry baseline, no pre-apply cloud and, since
-    # the 2026-08-18 pause, no lateral walk.
+    # it — the anchor pair plus the entry baseline, no pre-apply cloud and no
+    # lateral group (no stage-1 plan builds one any more).
     stage_flags = dict(
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     spec = build_v2_session_spec(
@@ -964,13 +962,13 @@ def test_a_remote_session_holds_every_capture_until_its_driver_reports_position(
         **stage_flags,
     )
     plan = spec.capture_plan
-    # DERIVED from the same flags, so this moves with a flip instead of going
-    # stale. What is under test is that EVERY capture is held until its driver
-    # reports position — a property of the gate, not of how many captures there
-    # are. The multi-angle armed walk is pinned in the remote-tier suite.
+    # DERIVED from the surviving flag, so this moves with a flip instead of
+    # going stale. What is under test is that EVERY capture is held until its
+    # driver reports position — a property of the gate, not of how many
+    # captures there are. The multi-angle armed walk is pinned in the
+    # remote-tier suite.
     assert plan.capture_target == (
         2
-        + (len(LATERAL_POSE_PROMPTS) if STAGE1_INCLUDES_LATERAL else 0)
         + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     ) == 3
     wanted = [int(e.screen[POSITION_DEG_KEY]) for e in plan.entries]
@@ -1031,7 +1029,6 @@ def test_a_position_hold_that_expires_is_named_not_blamed_on_the_transport():
         REASON_RELAY_TIMEOUT,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
-        STAGE1_INCLUDES_LATERAL,
         TIER_REMOTE,
     )
     from jasper.web.correction_crossover_v2 import (
@@ -1042,7 +1039,7 @@ def test_a_position_hold_that_expires_is_named_not_blamed_on_the_transport():
     shape = resolve_plan_shape(TIER_REMOTE)
     stage_flags = dict(
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     spec = build_v2_session_spec(
@@ -2821,15 +2818,17 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
 def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
     """R17, on the SAME predicate and for the same reason as the finding below.
 
-    The Fc recommendation is produced at the lateral walk's close, which only a
-    MEASURING session runs — and, since the 2026-08-18 pause, only one that
-    forces the walk back on. The carry-forward this pins is what re-arming
-    depends on, so it is asserted directly on the conductor rather than through
-    a shipped stage-1 session. Stage 2 is a different session whose conductor
-    has no ``fc_selection`` at all, so without the carry-forward it persists
-    ``None`` over the recommendation — the household reads "your crossover
-    could be 1750 Hz" while deciding, and then nothing once the tuning is
-    applied. That is the half where they would act on it.
+    The Fc recommendation used to be produced at the lateral walk's close,
+    back when a corner selector existed; that selector is retired, so no live
+    session produces a fresh one any more. A round banked while it did still
+    carries an ``fc_selection`` in its persisted state, though, and that value
+    must survive stage 2 unchanged — so it is asserted directly on the
+    conductor rather than through a shipped stage-1 session. Stage 2 is a
+    different session whose conductor has no ``fc_selection`` at all, so
+    without the carry-forward it persists ``None`` over the recommendation —
+    the household reads "your crossover could be 1750 Hz" while deciding, and
+    then nothing once the tuning is applied. That is the half where they
+    would act on it.
 
     The converse is asserted too: a session that DOES measure writes its own
     value, ``None`` included, so a fresh measurement clears a superseded
@@ -5359,28 +5358,27 @@ def _no_sweep_state(*, fc_selection=None):
 
     The stage-1 phases are DERIVED from the stage-1 flags, so this IS the
     shipped shape rather than a hand-written guess at it. What the tests below
-    turn on is the absent ``fc_selection``: the sweep fires only in a session
-    that walks the lateral poses, so since the 2026-08-18 pause no shipped
-    session banks a selection at all.
+    turn on is the absent ``fc_selection``: no stage-1 plan builds a lateral
+    group any more, and the sweep that used to fire off one is retired, so no
+    session — shipped or otherwise — banks a fresh selection.
 
-    Deliberately NOT asserting which phases came back. Re-arming the walk
-    changes the shape here — and one of the two tests below is about a
-    behaviour that must hold in EVERY state of that flag, so pinning the shape
-    in the shared fixture would make it fail for a reason it is not about. The
-    shipped shape has its own pin in ``test_crossover_v2_lateral_evidence.py``.
+    Deliberately NOT asserting which phases came back. One of the two tests
+    below is about a behaviour that must hold whether or not ``fc_selection``
+    is present at all, so pinning the shape in the shared fixture would make
+    it fail for a reason it is not about. The shipped shape has its own pin in
+    ``test_crossover_v2_lateral_evidence.py``.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         PHASE_VERIFY,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
-        STAGE1_INCLUDES_LATERAL,
         build_v2_cloud_index_phase_map,
     )
 
     stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
         tier="express",
         include_cloud_measure=STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
     ).values()))
     # …then stage 2's own session, which is what carries the household past the
@@ -5430,10 +5428,7 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     afterwards". VERIFY answered it here; no selector was consulted, and none
     had to be.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_ENTRY_BASELINE,
-        STAGE1_INCLUDES_LATERAL,
-    )
+    from jasper.active_speaker.crossover_v2_flow import PHASE_ENTRY_BASELINE
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
@@ -5441,7 +5436,6 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     # This test is specifically about the SHIPPED shape, so it says so here
     # rather than in the shared fixture: stage 1 walks no poses, which is
     # exactly why no sweep runs and no selection is banked.
-    assert STAGE1_INCLUDES_LATERAL is False
     state = _no_sweep_state()
     assert state["session_phases"][:3] == [
         PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE,

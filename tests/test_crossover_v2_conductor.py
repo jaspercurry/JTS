@@ -1454,16 +1454,14 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     """
     info = flow.tier_display_info()
     assert flow.STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # DERIVED from the three stage-1 flags rather than hardcoded, so the
+    # DERIVED from the surviving stage-1 flag rather than hardcoded, so the
     # chooser is pinned to whatever stage 1 actually runs and this test moves
-    # with a flag flip instead of going stale — which it has now done twice,
-    # for R17's flip on and the 2026-08-18 pause back off. The walk is off and
-    # #2291's entry baseline is on, so this is 3.
-    expected_stage1 = (
-        2
-        + (len(flow.LATERAL_POSE_PROMPTS) if flow.STAGE1_INCLUDES_LATERAL else 0)
-        + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
+    # with a flag flip instead of going stale — which it has done twice now,
+    # for R17's lateral flip on and the 2026-08-18 pause back off, before the
+    # walk was retired outright. No stage-1 plan builds a lateral group any
+    # more, so that term is gone rather than held at a flag-derived 0; only
+    # #2291's entry baseline is still flag-driven, and it's on, so this is 3.
+    expected_stage1 = 2 + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
     # The tiers genuinely no longer differ in stage 1 — so the numbers must not
     # imply that they do. (The lateral walk would not change that: it is the
     # ANCHOR's own robustness sample, not a spatial cloud, so it is the same
@@ -5743,7 +5741,7 @@ def test_tier_display_info_minutes_hold_across_plausible_topologies():
             stage1 = build_v2_capture_plan(
                 roles, fc_hz, plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_lateral=False,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             )
             stage2 = build_v2_verify_capture_plan(fc_hz, plan_shape=shape)
@@ -6149,7 +6147,7 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     shipped = build_v2_capture_plan(
         _roles(), FC_HZ,
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     baseline = next(e for e in shipped.entries if e.kind_label == "entry_baseline")
@@ -6234,7 +6232,7 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
 @pytest.mark.parametrize("lateral_armed", [False, True])
 @pytest.mark.parametrize("tier", [TIER_FULL, TIER_EXPRESS, TIER_REMOTE])
 def test_the_consent_beeps_sentence_matches_what_the_session_plays(
-    tier, lateral_armed, monkeypatch,
+    tier, lateral_armed,
 ):
     """The consent screen's beeps sentence, checked against the PROGRAMS.
 
@@ -6251,19 +6249,22 @@ def test_the_consent_beeps_sentence_matches_what_the_session_plays(
     rule change that moves the announced set without moving the copy (or the
     reverse) fails here whichever way it drifts.
 
-    **Both lateral states, and the ARMED one is the case that binds.** With the
-    walk paused (2026-08-18) stage 1 is three captures at the mark, so it is not
-    a guided walk and renders no beeps sentence at all — which would leave the
-    two-announcement shape unexercised and this pin quietly vacuous. The walk is
-    paused, not retired: re-arming it is a flag flip, and the sentence it will
-    then render is the one that was WRONG when the gate found it.
+    **Both lateral states, and the ARMED one is the case that binds.** No
+    stage-1 plan builds the lateral group any more, so the shipped stage 1 is
+    three captures at the mark: not a guided walk, and it renders no beeps
+    sentence at all — which would leave the two-announcement shape unexercised
+    and this pin quietly vacuous. ``lateral_armed=True`` is driven straight
+    into the builders below rather than through a flag, because that is
+    exactly the shape an operator's staged angle walk produces for THIS
+    session (``prepare_v2_session`` sets the same local ``True`` once a walk
+    is taken) — and the sentence it renders is the one that was WRONG when the
+    gate found it.
     """
     from jasper.audio_measurement.program import KIND_COURTESY_TONE
     from jasper.active_speaker.capture_geometry import (
         CLOUD_WALK_PLACEMENT_POLICY_ID,
     )
 
-    monkeypatch.setattr(flow, "STAGE1_INCLUDES_LATERAL", lateral_armed)
     shape = resolve_plan_shape(tier)
     stages = (
         (
@@ -6271,13 +6272,13 @@ def test_the_consent_beeps_sentence_matches_what_the_session_plays(
                 _roles(), FC_HZ, acknowledgement_binding="b" * 24,
                 plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_lateral=lateral_armed,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             ),
             build_v2_cloud_index_phase_map(
                 plan_shape=shape,
                 include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-                include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+                include_lateral=lateral_armed,
                 include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
             ),
         ),
@@ -6578,11 +6579,11 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     )
     # …and the two stage-1 groups the cloud arithmetic above does not count.
     #
-    # Asserted with the lateral walk ARMED, which is the case that binds: the
-    # walk is PAUSED (2026-08-18) and not retired, so the ceiling still has to
-    # carry it. Reading the flag here instead would let the six indexes the
-    # pause freed be spent on something else, and re-arming the walk would then
-    # refuse a blob index mid-session rather than being a flag flip.
+    # The walk counts UNCONDITIONALLY: no stage-1 plan arms it, but an
+    # operator's staged angle walk builds one on any session and its six
+    # poses ride the same blob-index space, so the ceiling still has to carry
+    # it. A term guarded on a flag would have reported 0 here for exactly the
+    # shape that still spends six of them.
     worst = dict(
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
@@ -6590,18 +6591,12 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     #
     # Both numbers came down by one on 2026-08-18 when
     # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` moved to its floor. Stated as a bound
-    # PLUS the number rather than as an equality with the ceiling: the
-    # walk-armed case used to saturate it exactly, and an assertion that reads
-    # "the guard is designed to sit at 32" invites spending the difference.
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
-        assert flow.relay_plan_attempts_required(
-            **worst
-        ) == 31 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
-    # What the paused build actually draws — the walk's six indexes are slack
-    # held in reserve for re-arming, not headroom for a new entry.
-    assert flow.STAGE1_INCLUDES_LATERAL is False
-    assert flow.relay_plan_attempts_required(**worst) == 25
+    # PLUS the number rather than as an equality with the ceiling: this case
+    # used to saturate it exactly, and an assertion that reads "the guard is
+    # designed to sit at 32" invites spending the difference.
+    assert flow.relay_plan_attempts_required(
+        **worst
+    ) == 31 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
@@ -6624,10 +6619,11 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     # RE-DERIVED (work order D2): each STAGE arms its own ceiling from its own
     # plan. This call takes no include_* args, so it exercises the FUNCTION's
     # own bare defaults (cloud_measure on, lateral/entry_baseline off) --
-    # NOT the shipped Full tier's own stage 1, which runs the opposite flags
-    # (STAGE1_INCLUDES_LATERAL/_ENTRY_BASELINE) for 9 captures and 2,520 s
-    # (see HANDOFF-crossover-measurement-v2.md "The capture flow" / "What it
-    # is" -- tier_display_info() is the derivation of record for that number).
+    # NOT the shipped Full tier's own stage 1, which runs cloud measure OFF
+    # and #2291's entry baseline ON (no stage-1 plan builds the lateral group)
+    # for 9 captures and 2,520 s (see HANDOFF-crossover-measurement-v2.md "The
+    # capture flow" / "What it is" -- tier_display_info() is the derivation of
+    # record for that number).
     # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
     # 2640 s. Both scenarios are HAND-WALKED shapes, which ride the 900 s relay
     # default; neither number fits inside it and this test must not be read as

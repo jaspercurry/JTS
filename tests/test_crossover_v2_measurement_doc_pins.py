@@ -43,7 +43,7 @@ set):
    etc), referenced by NAME at the construction call site -- sometimes
    inside a ternary (`EVENT_LEVEL_FRAME_FINDING if banked else
    EVENT_LEVEL_FRAME_REFUSED`), sometimes by keyword
-   (`GateRecord(event=EVENT_SWEEP, ...)` in `fc_sweep.py`). Resolved
+   (`GateRecord(event=SOME_EVENT, ...)` by keyword). Resolved
    per-module (a name is looked up in the SAME file's own constants --
    every case found ties a reference to a same-file definition; this
    deliberately does not chase imports).
@@ -143,7 +143,7 @@ def _event_call_argument(node: ast.Call, index: int) -> ast.AST | None:
 
     `log_event`'s `name` parameter is positional-only (can never be a
     keyword), but `emit()` and the three record dataclasses are ordinary
-    Python -- `fc_sweep.py` calls `GateRecord(event=EVENT_SWEEP, ...)` by
+    Python -- some modules call `GateRecord(event=SOME_EVENT, ...)` by
     keyword, so a positional-only lookup would silently miss it.
     """
     if len(node.args) > index:

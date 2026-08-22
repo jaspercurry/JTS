@@ -1915,15 +1915,20 @@ Owning modules and their gates:
 
 Two things a topology pin does that no other prescription does:
 
-- It **closes the Fc search and suppresses the selector** for that round. There
-  is one corner, an operator chose it, and a selector verdict about a
-  comparison that never ran is the same dishonesty as reporting polarity
-  disagreement for a comparison that never ran. `fc_selection` is `None` and the
-  journal says `fc_adjudication=suppressed fc_statistic_paused=true`.
+- It **closes the Fc search.** There is one corner, an operator chose it, and
+  the only remaining question is admissibility, not ranking — `fc_sweep.py`'s
+  surviving `_fc_rejection` checks the pin against the same three declared
+  bounds a proposal would face. There is no selector left to suppress:
+  `fc_sweep.py`'s candidate sweep and `STAGE1_INCLUDES_LATERAL` are deleted
+  ([tuning-master-plan.md](tuning-master-plan.md) ruling R1, ticket 2.3), so
+  `fc_selection` is `None` for every round, pinned or not, and neither
+  `fc_adjudication` nor `fc_statistic_paused` is published by anything any
+  more.
 - Its receipt carries an **authority caveat** (`operator_pinned_no_measured_ranking`).
-  No shipped path ranks one topology against another — the offline candidate
-  search has no production caller — so a pinned corner is an operator's choice
-  from an offline argument, and a receipt read six weeks later must not be
+  No shipped path ranks one topology against another, or one corner against
+  another — the offline candidate search was deleted with the hunt — so a pinned
+  corner is an operator's choice from an offline argument, and a receipt read
+  six weeks later must not be
   mistakable for a measured verdict.
 
 **Measuring a pinned arm and adopting it are two acts.** The round measures,
@@ -2278,11 +2283,16 @@ that session's lateral group. Every accepted pose banks its raw WAV plus a
 sidecar carrying `position_deg`, `offset_cm`, `at_mark`, `regime` and
 `lateral_consumer`.
 
-**A taken walk is EVIDENCE: its last pose adjudicates nothing.** The
-lateral-walk statistic paused on 2026-08-18 runs only for the fixed stage-1
-selector walk. A staged walk declares the forward-model consumer, so the walk's
-close is suppressed — the [#2711](https://github.com/jaspercurry/JTS/issues/2711)
-bar is untouched, and the ruling behind that split is recorded in
+**A taken walk is EVIDENCE: its last pose adjudicates nothing — and as of
+2026-08-22, no lateral walk's close ever does.** The stage-1 selector walk
+this once distinguished itself from is retired: `fc_sweep.py`'s candidate
+sweep and `STAGE1_INCLUDES_LATERAL` are deleted
+([tuning-master-plan.md](tuning-master-plan.md) ruling R1, ticket 2.3), so
+there is nothing left for a staged walk's close to be suppressed against —
+every lateral walk, staged or (historically) stage-1, closes the same way.
+The [#2711](https://github.com/jaspercurry/JTS/issues/2711) bar is moot, not
+untouched: the statistic it guarded no longer exists. The ruling behind the
+old suppress-vs-adjudicate split, and its retirement, are recorded in
 [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
 under "Stage P2".
 
@@ -2292,7 +2302,7 @@ Read the journal, not the code, to find out what happened:
 |---|---|
 | `crossover_v2_angle_walk_taken` | stops, angles, mover, regimes, consumer |
 | `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
-| `crossover_v2_lateral_close_suppressed` | `planned`/`captured`, and `fc_statistic_paused=true` |
+| `crossover_v2_lateral_walk_closed` | `session_id`, `consumer`, `planned`, `captured`, `mark_return_drift_db` — fires on every lateral walk; publishes nothing else |
 
 **Six refusals.** The session opens in its ordinary shape after every one, and
 the document is consumed — except on the spool's two unreadable arms, which
@@ -2323,7 +2333,9 @@ Hardware-free coverage: the mailbox and the CLI in
 the composition and its refusals in
 [`tests/test_angle_capture_seam.py`](../tests/test_angle_capture_seam.py), the
 take in [`tests/test_angle_capture_take.py`](../tests/test_angle_capture_take.py),
-and the suppression pins in
+and the unified-close pins (every lateral walk closes the same way and
+publishes nothing — no separate "suppressed" name, since there is no
+alternative left to be suppressed against) in
 [`tests/test_crossover_v2_lateral_evidence.py`](../tests/test_crossover_v2_lateral_evidence.py).
 
 ---

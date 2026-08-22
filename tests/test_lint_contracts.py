@@ -836,7 +836,19 @@ MAX_LINES_BY_PATH = {
     # split, which claimed 3 + 6 for the pre-round +9 when it was 4 + 5.) The
     # metric itself is `program_analysis`'s, at the end of this dict; this file
     # only reports it.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_299,
+    # 2026-08-22 corner-hunt deletion (plan ticket 2.3): 13,299 -> 12,996,
+    # LOWERED with the cut rather than left as slack. Out went the Fc candidate
+    # sweep's four session methods and its commit path, the candidate-set
+    # delegate, the `_adjudicating_walk` predicate, the lateral walk's
+    # adjudicating close, and `STAGE1_INCLUDES_LATERAL` with its evidence block.
+    # The ratchet's rule is that room freed by a deletion is returned, so the
+    # next diff that wants it has to say what earned it. Two of the 303 lines
+    # freed were spent back: `_settled_group_verdict`'s R16 comment said a
+    # dropped last pose must close the walk "or the session would end with no
+    # candidate at all", which the same deletion falsified — MEASURE publishes
+    # the candidate now, and what the close still owes is the journal record
+    # that the walk ENDED rather than never finished.
+    "jasper/active_speaker/crossover_v2_flow.py": 12_996,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1221,7 +1233,12 @@ MAX_LINES_BY_PATH = {
     #       the prefix and not the five
     # Net +43 against 23 lines removed: the extraction pays for a third of
     # itself, which is what distinguishes it from a third transcription.
-    "jasper/web/correction_crossover_v2.py": 9_398,
+    # 2026-08-22 corner-hunt deletion (plan ticket 2.3): 9,398 -> 9,386,
+    # LOWERED with the cut rather than left as slack. The Pi-minted per-capture
+    # result wait went with the sweep whose compute ceiling it published — see
+    # `_mint_source_session`, which now states why the page's own 90 s floor
+    # governs instead.
+    "jasper/web/correction_crossover_v2.py": 9_386,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

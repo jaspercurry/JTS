@@ -13,7 +13,7 @@ seams, flipped, and a green run is now the acceptance evidence that the
 incident **cannot** reproduce.
 
 They drive real production code — ``_build_candidate`` at the exact keyword
-pair ``_evaluate_fc_candidate`` hands it — so this is the *wired* path, not the
+pair a caller hands it — so this is the *wired* path, not the
 planner in isolation (which
 ``tests/test_crossover_v2_intervention_dual_run.py`` covers).
 
@@ -240,7 +240,7 @@ def _incident_fit(role: str) -> LinearizationFit:
 def _session_preset() -> ActiveSpeakerPreset:
     """The preset the SESSION ran, rebuilt from the candidate's own copy.
 
-    ``_evaluate_fc_candidate`` publishes each candidate with the session preset
+    The build publishes each candidate with the session preset
     re-cornered at that candidate's Fc (id and ``fc_hz`` are the only fields it
     touches), so the banked candidate preset sits at 1648.7 Hz. Putting the
     corner back at the banked ``configured_fc_hz`` recovers the session's own.
@@ -499,7 +499,7 @@ def _run_replay(
         replace(region, fc_hz=candidate_fc_hz)
         for region in conductor._preset.crossover_regions
     ))
-    # ``_build_candidate``, with the exact keyword pair ``_evaluate_fc_candidate``
+    # ``_build_candidate``, with the exact keyword pair a candidate build
     # hands it for a non-configured corner — the seam where the prescription is
     # computed. Its caller ``_build_measure_candidate`` adds one further gate,
     # which grades the LINEARIZED predicted sum against the raw one; that gate

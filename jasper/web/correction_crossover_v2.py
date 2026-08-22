@@ -108,7 +108,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
 )
-from jasper.active_speaker.crossover_v2.fc_sweep import fc_sweep_result_wait_s
 from jasper.active_speaker.crossover_v2.topology_prescription import (
     candidate_topology,
 )
@@ -2231,13 +2230,12 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     fc = fc if isinstance(fc, Mapping) else {}
     fc_verdict = str(fc.get("verdict") or "")
     comparison_complete = fc.get("comparison_complete") is True
-    # **A sweep that never ran is ABSENT, not incomplete** (2026-08-18, the
-    # lateral pause). Two gates below — ``comparison_complete`` and
-    # ``authorized_winner`` — encode "the Fc comparison finished, and the corner
-    # on the speaker is the one it authorized". Neither question EXISTS when no
-    # candidate sweep ran: the sweep fires only for a lateral walk whose
-    # consumer adjudicates, so ``fc_selection`` is absent on every shipped
-    # session — with the pause, and with an operator's staged walk too.
+    # **A comparison that never ran is ABSENT, not incomplete.** Two gates
+    # below — ``comparison_complete`` and ``authorized_winner`` — encode "the Fc
+    # comparison finished, and the corner on the speaker is the one it
+    # authorized". Neither question EXISTS on a round that executes its declared
+    # corner rather than hunting one, so ``fc_selection`` is absent on every
+    # session; only rounds banked while a corner selector existed carry one.
     # Reading that absence as an unfinished comparison made
     # ``RESULT_VERIFIED_TARGET``/``_BEST_EVALUATED`` structurally unreachable —
     # a successful commission told the household "not enough complete evidence
@@ -2990,8 +2988,8 @@ def _take_staged_angle_walk(
     module deliberately does not re-wrap. Every one is journalled with its
     producing module's own slug. The consumer is always
     ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here rather than read from the
-    document, because it decides whether #2711's paused statistic runs and may
-    have exactly one writer.
+    document, because it decides which pose table the walk runs and may have
+    exactly one writer.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -3069,7 +3067,6 @@ def _take_staged_angle_walk(
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
-        fc_statistic_paused=True,
     )
     return prompts, LATERAL_CONSUMER_FORWARD_MODEL
 
@@ -5937,22 +5934,21 @@ class V2ConductorContext:
     # A role absent here fits under the conservative "unknown" class default.
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
     # Per-role declared effective radiating diameter in mm (#1665 component
-    # entry), the ka/beaming prior R17's Fc selector reads (#1675 owner
-    # ruling). Collected since #1665 and, until this field, consumed by
-    # nothing in Python — the value reaches the conductor by the SAME draft
-    # path ``driver_class_by_role`` takes, which is why wiring it needs no
-    # schema or allowlist change. A role absent here simply gets no beaming
-    # prior; the selector discloses that rather than assuming a diameter.
+    # entry), the ka/beaming prior (#1675 owner ruling), which is DISCLOSURE
+    # and never a bound. Collected since #1665; the value reaches the conductor
+    # by the SAME draft path ``driver_class_by_role`` takes, which is why wiring
+    # it needs no schema or allowlist change. A role absent here simply gets no
+    # beaming prior, disclosed as such rather than assuming a diameter.
     radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
     # Per-role declared ``crossover_search_band_hz`` — the range each driver
-    # may be crossed over IN, which R17's Fc selector intersects across the
-    # participating roles (``crossover_v2.fc_sweep.resolve_fc_search_band``). Like
-    # the diameter above it has been a REQUIRED declaration since the safety
-    # profile shipped (``driver_safety._target_issues`` refuses a target
-    # without one) and had no Python reader; without it the candidate set would
-    # propose an Fc below the tweeter's own declaration. A role maps to
-    # ``None`` when its declaration is absent or malformed, which the resolver
-    # turns into "no proposal" with that role named — never "anything goes".
+    # may be crossed over IN, intersected across the participating roles by
+    # ``crossover_v2.fc_sweep.resolve_fc_search_band``. Like the diameter above
+    # it has been a REQUIRED declaration since the safety profile shipped
+    # (``driver_safety._target_issues`` refuses a target without one); without
+    # it a corner below the tweeter's own declaration would read as admissible.
+    # A role maps to ``None`` when its declaration is absent or malformed, which
+    # the resolver turns into "no admissible corner" with that role named —
+    # never "anything goes".
     crossover_search_band_hz_by_role: dict[str, tuple[float, float] | None] = field(
         default_factory=dict
     )
@@ -6081,9 +6077,9 @@ def _resolve_radiating_diameter_by_role(draft: Mapping[str, Any]) -> dict[str, f
     raised. A diameter is a beaming PRIOR, so a bad one must cost that one
     role its prior, never the session.
 
-    Deliberately no default: absent means "not declared", which the selector
-    discloses. Substituting a nominal diameter would manufacture a beaming
-    ceiling out of nothing, and #1675 is explicit that this is geometry
+    Deliberately no default: absent means "not declared", and the receipt says
+    so. Substituting a nominal diameter would manufacture a beaming ceiling out
+    of nothing, and #1675 is explicit that this is geometry
     guidance derived from a declared dimension.
     """
     manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
@@ -6212,7 +6208,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     # into the conductor construction sites below so the Layer-1a
     # linearization fit (compose_envelope's class_prior_limit term) sees it.
     driver_class_by_role = _resolve_driver_class_by_role(draft)
-    # #1675: the ka/beaming prior, off the SAME draft path, for R17's selector.
+    # #1675: the ka/beaming prior, off the SAME draft path, as disclosure.
     radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)
     roles_bands = []
     caps: dict[str, float] = {}
@@ -7211,14 +7207,19 @@ def _mint_source_session(
     return_url: str,
     plan_shape: Any,
     ceiling_s: float,
-    result_wait_s: int | None = None,
 ) -> Any:
     """Mint one session on the selected source (#2662 W2b).
 
     Both mints answer the same shape (``pi_session`` + ``tap_link``); only
-    the relay's talks to a network. The TTL policy and the phone's
-    per-capture ``result_wait_s`` (#2706) are relay-private — a wired
-    session has no link to expire and no phone waiting on a result.
+    the relay's talks to a network. The TTL policy is relay-private — a wired
+    session has no link to expire.
+
+    **No Pi-minted per-capture result wait.** The wait #2706 put on the spec was
+    the Fc sweep's compute ceiling plus its measured overhead; with no sweep to
+    bound, the Pi publishes nothing and ``resultWaitMs`` falls back to the
+    page's own 90 s floor — the wall every banked round was measured against,
+    and 8.7 s clear of the slowest observed round (81.28 s), which did strictly
+    more work than any round runs now.
     """
     if source == SOURCE_WIRED:
         from jasper.web import correction_crossover_v2_wired as wired
@@ -7233,7 +7234,6 @@ def _mint_source_session(
         capture_origin=capture_origin,
         return_url=return_url,
         ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
-        result_wait_s=result_wait_s,
     )
 
 
@@ -7344,7 +7344,6 @@ def prepare_v2_session(
         LATERAL_CONSUMER_FC_SELECTOR,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
-        STAGE1_INCLUDES_LATERAL,
         CrossoverV2Session,
         CrossoverV2FlowError,
         V2ConductorSnapshot,
@@ -7421,13 +7420,11 @@ def prepare_v2_session(
     # it is gating cannot support.
     #
     # Every bound it applies is a DECLARATION, asked of the module that owns
-    # it: the two role bands the automatic candidate set is bounded by (the
-    # same two the session's own ``_fc_candidate_set`` reads, positionally, in
-    # the order this context builds them — woofer first), the intersected
+    # it: the two role bands a corner is admissible within (read positionally,
+    # in the order this context builds them — woofer first), the intersected
     # declared search band, and the upper driver's declared protective
     # high-pass slope. The ka/beaming onset rides along as DISCLOSURE only
-    # (#1675 makes it guidance, and a pinned corner is its round's configured
-    # corner, which ``FcCandidateSet`` already exempts).
+    # (#1675 makes it guidance, and no admissibility bound anywhere reads it).
     #
     # The declarations are gathered ONLY for a request that carries a pin, and
     # that branch is deliberate rather than an optimisation. Four of this
@@ -7439,8 +7436,7 @@ def prepare_v2_session(
     raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
     topology_prescription = None
     if raw_topology is not None:
-        # Woofer first, tweeter second — the order this context builds them in
-        # and the order the session's own ``_fc_candidate_set`` reads them.
+        # Woofer first, tweeter second — the order this context builds them in.
         woofer_band, tweeter_band = (
             context.roles_bands[0].band, context.roles_bands[1].band,
         )
@@ -7491,9 +7487,11 @@ def prepare_v2_session(
             f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
         ) from exc
     include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
-    # R16's lateral walk (plan §4.4). Read here beside the cloud flag so the
-    # spec and the conductor's index map below are built from ONE decision.
-    include_lateral = STAGE1_INCLUDES_LATERAL
+    # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
+    # the cloud flag, rather than passed as a literal below, because an
+    # operator's staged angle walk flips it and the spec and the conductor's
+    # index map must be built from ONE decision either way.
+    include_lateral = False
     # #2291's entry baseline. Same reason, same place: the emitted plan and the
     # conductor's index→phase map are two surfaces that must agree about which
     # captures this session runs, and reading the flag twice is how they get to
@@ -7629,11 +7627,6 @@ def prepare_v2_session(
             return_url=return_url,
             plan_shape=plan_shape,
             ceiling_s=ceiling_s,
-            # The Fc sweep runs inside THIS session's capture consume, so the
-            # phone's per-capture result wait is this flow's to publish — see
-            # ``fc_sweep_result_wait_s``. A page that predates the field keeps
-            # its own floor. Relay-only: the wired source has no phone waiting.
-            result_wait_s=fc_sweep_result_wait_s(),
         )
         # The conductor + publishers bind to the MINTED provider session id
         # (the seam's identity rule — the wired id rides the same key).
@@ -8054,11 +8047,6 @@ def prepare_v2_verify(
             return_url=return_url,
             plan_shape=plan_shape,
             ceiling_s=ceiling_s,
-            # The Fc sweep runs inside THIS session's capture consume, so the
-            # phone's per-capture result wait is this flow's to publish — see
-            # ``fc_sweep_result_wait_s``. A page that predates the field keeps
-            # its own floor. Relay-only: the wired source has no phone waiting.
-            result_wait_s=fc_sweep_result_wait_s(),
         )
         relay_session_id = rc.pi_session.session_id
         # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain

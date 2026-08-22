@@ -71,10 +71,10 @@ logger = logging.getLogger(__name__)
 PROPOSAL_CREATED_EVENT = "correction.crossover_v2_intervention_proposal"
 PROPOSAL_REFUSED_EVENT = "correction.crossover_v2_intervention_proposal_refused"
 
-# The exceptions an assembly can raise from malformed planner output. Mirrors
-# the tuple ``_sweep_fc_candidates`` already uses around ``_evaluate_fc_
-# candidate`` rather than a blind ``except Exception`` (ruff BLE, and the
-# repository's frozen broad-except budget).
+# The exceptions an assembly can raise from malformed planner output. An
+# enumeration rather than a blind ``except Exception`` (ruff BLE, and the
+# repository's frozen broad-except budget), and the same family this package's
+# sibling port guards name.
 _ASSEMBLY_ERRORS = (
     ArithmeticError,
     AttributeError,

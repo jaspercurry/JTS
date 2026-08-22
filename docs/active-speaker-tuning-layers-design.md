@@ -870,42 +870,46 @@ measured across the day's ten banked walk journals — not a stopwatch on a
 built flow. When it is built, `CapturePlan.estimated_minutes()` owns the
 number, exactly as it does today.
 
-**The machinery this reuses is built, and currently paused.** Stage 1's
-lateral walk replays the MEASURE program verbatim at 0°, ±7°, ±22°, 0° —
-`LATERAL_POSE_PROMPTS`' six poses, each a representative ~41.6 s at the
-display constants (`_DISPLAY_ROLES_BANDS` / `_DISPLAY_FC_HZ`; the exact
-duration is topology-dependent), and `lateral` is absent from
+**The machinery this reuses is built; the stage-1 arming that once gated it is
+retired.** Stage 1's lateral walk replays the MEASURE program verbatim at 0°,
+±7°, ±22°, 0° — `LATERAL_POSE_PROMPTS`' six poses, each a representative
+~41.6 s at the display constants (`_DISPLAY_ROLES_BANDS` / `_DISPLAY_FC_HZ`;
+the exact duration is topology-dependent), and `lateral` is absent from
 `SUMMED_SWEEP_PHASES`, so those poses are per-driver captures. **The D half of
-this grid exists in the tree**, and [PR #2717](https://github.com/jaspercurry/JTS/pull/2717)
-pauses it behind one flag rather than deleting it — the poses, the prompts,
-and `position_angle_deg`'s bearings all stay, and that PR records that forcing
-the flag back on reproduces the shipped plan byte for byte. That is a
-*stronger* footing for v2 than a shipped walk would be: what v2 needs is
-already written and merely gated, and its own evidence says the poses are
-clean while the reduction over them is not. What v2 adds on top is the **S
-half at every angle** (today only the at-mark entry baseline is summed before
-apply — `SUMMED_SWEEP_PHASES` again), the session-level one-timers, the
-explicit repeat and noise-floor structure, and a schedule that stops paying
-per-capture relay cost at every pose.
+this grid exists in the tree**: [PR #2717](https://github.com/jaspercurry/JTS/pull/2717)
+first paused it behind one flag rather than deleting it, but ticket 2.3
+([tuning-master-plan.md](tuning-master-plan.md) ruling R1) has since deleted
+that flag, `STAGE1_INCLUDES_LATERAL`, along with the candidate sweep it fed —
+forcing it back on is no longer possible, because it no longer exists. What
+survives is the poses, the prompts, and `position_angle_deg`'s bearings; an
+operator's staged angle walk runs them today as forward-model evidence (see
+Stage P2 below). That is still a *stronger* footing for v2 than building from
+nothing: what v2 needs is already written, just no longer reachable by
+flipping a stage-1 flag, and its own evidence says the poses are clean while
+the max-over-poses reduction that once read them was not. What v2 adds on top
+is the **S half at every angle** (today only the at-mark entry baseline is
+summed before apply — `SUMMED_SWEEP_PHASES` again), the session-level
+one-timers, the explicit repeat and noise-floor structure, and a schedule
+that stops paying per-capture relay cost at every pose.
 
 ### Constraints carried forward
 
 Four, each from evidence this section cites rather than restates:
 
-1. **Off-axis pose data must not feed a selector statistic** until it clears
-   the re-introduction bar set by the 2026-08-18 lateral-statistic redesign
-   study: (i) candidate dependence enters through the *operator*, not through
-   the band; (ii) the rank-1-versus-rank-2 gap exceeds same-arm repeat noise;
-   (iii) band-edge neutrality; (iv) immunity to a zero-offset pose. Nothing
-   computable from what is banked today clears it — every such statistic is
-   exactly candidate-blind — and the **enabling change is banking
-   `branch_operator_by_role` per candidate**
+1. **Off-axis pose data must not feed a selector statistic** — moot as of
+   2026-08-22 rather than merely gated. The 2026-08-18 lateral-statistic
+   redesign study set a re-introduction bar: (i) candidate dependence enters
+   through the *operator*, not through the band; (ii) the rank-1-versus-rank-2
+   gap exceeds same-arm repeat noise; (iii) band-edge neutrality; (iv)
+   immunity to a zero-offset pose. Nothing banked ever cleared it — every such
+   statistic is exactly candidate-blind — and the enabling change would have
+   been banking `branch_operator_by_role` per candidate
    ([#2711](https://github.com/jaspercurry/JTS/issues/2711), which holds the
    study's finding and the retention-guard caveat). The switch this bar
-   governs is `STAGE1_INCLUDES_LATERAL`, and
-   [PR #2717](https://github.com/jaspercurry/JTS/pull/2717) records the
-   re-enable condition on the flag itself as the canonical place — point
-   there, do not restate it.
+   governed, `STAGE1_INCLUDES_LATERAL`, and the statistic it fed,
+   `fc_sweep.py`'s candidate sweep, are both deleted — cancelling the #2717
+   re-flip it had planned — so #2711's bar now has nothing left to gate
+   ([tuning-master-plan.md](tuning-master-plan.md) ruling R1, ticket 2.3).
 2. **Inter-driver phase read off these captures is contaminated** by per-role
    integer-sample alignment quantization (±20.833 µs at 48 kHz) —
    [#2710](https://github.com/jaspercurry/JTS/issues/2710). It is to be located
@@ -963,12 +967,15 @@ difference is the point:
 - **Superseded** — the cloud 6→5 trim and the courtesy-prelude grouping
   ([PR #2715](https://github.com/jaspercurry/JTS/pull/2715)): this schedule
   replaces the walk they trim.
-- **Reversed** — the lateral walk's pause
-  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717), in flight
-  2026-08-18). v2 reinstates off-axis measurement, which is what that PR
-  switches off; it does not supersede it, and until v2 ships the pause is what
-  moves the baseline above. The pause is deliberately reversible for this
-  reason — one flag, nothing deleted.
+- **Reversed, then retired.** The lateral walk's pause
+  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717), landed
+  2026-08-18) was deliberately reversible — one flag, nothing deleted — for
+  exactly the reason above: v2 would reinstate off-axis measurement by
+  flipping it back. Ticket 2.3
+  ([tuning-master-plan.md](tuning-master-plan.md) ruling R1) deleted that
+  flag and the candidate sweep it fed on 2026-08-22, so the pause is no
+  longer reversible by flag; any future off-axis schedule (v2 or otherwise)
+  now has to be built, not un-paused.
 - **Subsumed** — the shape the walk was to return as: a 4-capture per-driver
   off-axis **reporter, never a score term**, which is the redesign study's
   conclusion as recorded in
@@ -1091,15 +1098,16 @@ why P2 exists.
 
 **STATUS: method ratified; the at-mark measurement substrate EXISTS, per-angle
 replay RUNS when an operator stages a walk, the automatic per-angle schedule is
-PAUSED, and the search and its guards are MISSING.** No crossover parameter is
-chosen by measurement today. But the per-driver complex capture this stage
-consumes is already shipped **at the mark** — see "how much of it already
-exists" below — so the gap is narrower and differently shaped than a reading of
-"P2 is unbuilt" suggests. Off the mark there are **two** routes and only one of
-them is gated: un-pausing the lateral WALK is a flag flip plus a cleared
-re-introduction bar, while capturing per-driver responses at angles as
-**forward-model input** needs neither, because it computes no pose-ratio
-statistic for the bar to govern. Since 2026-08-19 the second route has a seam —
+RETIRED (ticket 2.3), and the search and its guards are MISSING.** No
+crossover parameter is chosen by measurement today. But the per-driver complex
+capture this stage consumes is already shipped **at the mark** — see "how much
+of it already exists" below — so the gap is narrower and differently shaped
+than a reading of "P2 is unbuilt" suggests. Off the mark there is now **one**
+route: capturing per-driver responses at angles as **forward-model input**,
+which computes no pose-ratio statistic and so needs no re-introduction bar.
+The automatic lateral WALK route is gone with its flag, not merely gated —
+there is nothing left to un-pause. Since 2026-08-19 the forward-model route
+has a seam —
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py) resolves
 `{per-driver | summed} x {angles} x {arm | human-guided}` onto the shipped
 program, pose and gate machinery — and, since the same day, a **door**: an
@@ -1111,36 +1119,49 @@ for a session to take — and, since 2026-08-19, the **take**: the next
 `/correction/crossover/v2/session` open consumes that document, walks its stops
 as the session's lateral group, and banks every accepted pose's raw WAV with an
 angle-stamped sidecar. So per-driver data off the mark is now capturable, and
-the fourth bullet below records what still is not: the fixed stage-1 walk stays
-paused, and nothing captures off-axis unless an operator stages a walk.
+the fourth bullet below records what still is not: the fixed stage-1 walk is
+retired, not merely paused, and nothing captures off-axis unless an operator
+stages a walk.
 
 **The ruling that gated it, recorded.** A per-driver stop at a pose is a real,
 shipped capture path — the conductor's `_consume_lateral_pose` screens it,
-builds its per-driver curves and retains it — but that path is reached only
-through `PHASE_LATERAL`, and the walk's **last** index runs
-`_close_lateral_walk`, where R17's paused selector adjudicates. A session wired
-naively onto that machinery would reach the statistic
+builds its per-driver curves and retains it — and that path is reached only
+through `PHASE_LATERAL`. The walk's **last** index runs `_close_lateral_walk`,
+which used to route a stage-1 walk into R17's selector-adjudication and route
+an evidence walk around it. A session wired naively onto that machinery would
+have reached the statistic
 [#2711](https://github.com/jaspercurry/JTS/issues/2711) bars, which is precisely
 the bar-dodge #2732 built the seam to avoid. Two ways out were on the table:
 (a) suppress the close for a walk that is not a stage-1 lateral walk, or
 (b) give the walk its own group phase.
 
-**Option (a) was ratified and is what shipped.** A lateral group now declares
-its **consumer** — `LATERAL_CONSUMER_FC_SELECTOR` for the fixed stage-1 walk,
-`LATERAL_CONSUMER_FORWARD_MODEL` for a taken evidence walk
+**Option (a) shipped, then ticket 2.3 collapsed the fork it was dodging.** A
+lateral group still declares its **consumer** —
+`LATERAL_CONSUMER_FC_SELECTOR` for the walk over the ratified stage-1 table,
+`LATERAL_CONSUMER_FORWARD_MODEL` for a taken evidence walk over an operator's
+own stated angles
 ([`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py))
-— and one derived predicate decides everything that reads the walk as a whole:
-MEASURE's candidate deferral, R17's candidate sweep, and both routes into
-`_close_lateral_walk`. An evidence walk takes none of them, and the suppression
-is a named journal line rather than a silence
+— but the two now differ only in **which pose table** they run, not in who
+reads the result. `lateral_adjudicates()` is deleted along with R17's
+candidate sweep it gated
+([tuning-master-plan.md](tuning-master-plan.md) ruling R1, ticket 2.3): no
+walk's close adjudicates any more, so `_close_lateral_walk` publishes nothing
+for either consumer. There is one close event,
+`correction.crossover_v2_lateral_walk_closed`
+(`session_id`, `consumer`, `planned`, `captured`, `mark_return_drift_db`),
+fired on every lateral walk — the earlier suppress-vs-adjudicate split
 (`event=correction.crossover_v2_lateral_close_suppressed`,
-`fc_statistic_paused=true`). Why (a) over (b): a second group phase would have
-duplicated the whole per-driver-at-a-pose ladder — screens, curve build,
-retention, retry and settle bookkeeping — to change one thing about who reads
-the result, and the two walks measure the same thing at the same poses with the
-same program. #2711's bar is untouched: the statistic did not move, gain a
-caller, or become reachable by a new path; it lost one. The search and its
-guards are unaffected either way and are neither free nor already done.
+`fc_statistic_paused=true`) is gone with the branch it recorded. Why the
+consumer tag was still worth keeping rather than collapsing to nothing: a
+second group phase would have duplicated the whole per-driver-at-a-pose
+ladder — screens, curve build, retention, retry and settle bookkeeping — to
+change one thing about who reads the result, and the two walks measure the
+same thing at the same poses with the same program.
+`LATERAL_CONSUMER_FC_SELECTOR`'s string is kept only because it is banked on
+every round that ran one; new operator-staged walks take the forward-model
+consumer. #2711's bar is now moot for this flag rather than merely untouched:
+the statistic it guarded is deleted, not reachable-but-blocked. The search
+and its guards remain a separate, still-unbuilt concern.
 
 **The goal, stated as a stopping condition.** Drive the non-EQ parameters —
 polarity, per-branch delay, Fc, slopes/order, and branch gains — to the point
@@ -1186,22 +1207,28 @@ because they are easy to re-derive wrongly:
   "replays MEASURE's program"
   ([`spatial.py`](../jasper/active_speaker/crossover_v2/spatial.py)), and since
   2026-08-19 an operator can point it at stated angles by staging a walk with
-  `jasper-angle-capture` (the take, above). What is still off is the AUTOMATIC
-  route: `STAGE1_INCLUDES_LATERAL` is `False`
-  ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)), and
-  [`fc_selector.py`](../jasper/active_speaker/fc_selector.py) opens by saying so
-  in its own words — "**No stage-1 session feeds this today.** The lateral walk
-  that produces `poses` was paused on 2026-08-18." A staged angle walk is
-  per-driver but declares the forward-model consumer, so it feeds no selector;
-  and the multi-position walks that run *automatically* yield nothing
-  per-driver, because every cloud phase sits in `SUMMED_SWEEP_PHASES`
+  `jasper-angle-capture` (the take, above). There is no AUTOMATIC route any
+  more: `STAGE1_INCLUDES_LATERAL` was paused `False` on 2026-08-18 and ticket
+  2.3 deleted it outright on 2026-08-22
+  ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py),
+  [tuning-master-plan.md](tuning-master-plan.md) ruling R1), along with the
+  candidate sweep it fed. [`fc_selector.py`](../jasper/active_speaker/fc_selector.py)
+  now opens by saying so in its own words — "**Nothing feeds this.** The
+  lateral walk that produced `poses` was paused on 2026-08-18 for ranking
+  below its own noise, and the corner sweep that gathered the per-candidate
+  evidence was deleted with it." A staged angle walk is per-driver but
+  declares the forward-model consumer, so it feeds no selector; and the
+  multi-position walks that run *automatically* yield nothing per-driver,
+  because every cloud phase sits in `SUMMED_SWEEP_PHASES`
   ([`programs.py`](../jasper/active_speaker/crossover_v2/programs.py)) — and
   `STAGE1_INCLUDES_CLOUD_MEASURE` is `False` besides. Measurement Program v2's
-  own "The machinery this reuses is built, and currently paused" paragraph above
-  owns that story, and un-pausing is gated on its constraint 1 re-introduction
-  bar ([#2711](https://github.com/jaspercurry/JTS/issues/2711)) — which the same
-  section says nothing banked today clears. **An implementer scoping P2 should
-  read the angle schedule as work, not as a given.**
+  own "The machinery this reuses is built; the stage-1 arming that once gated
+  it is retired" paragraph above owns that story: there is no flag left to
+  re-enable, and its constraint 1 — the re-introduction bar
+  ([#2711](https://github.com/jaspercurry/JTS/issues/2711)) — is now a record
+  of why the deleted statistic never cleared, not a live gate. **An
+  implementer scoping P2 should read the angle schedule as work, not as a
+  given.**
 
 **Branch muting is not the route, and must not be proposed as one.** A
 commission-mute overlay would break the graph classifier:
@@ -1784,11 +1811,12 @@ injection)". That was wrong on both halves, verified at HEAD: `program.py`'s
 ONE capture routed by channel (its module docstring is quoted in the stage), so
 `DriverResponse.complex_tf`, an exact A/B common time origin, `DriftEstimate`
 and `anchor_delay_us` all ship — **at the mark automatically**, since
-`spatial.py`'s per-pose replay of that program runs only when an operator stages
-an angle walk (`STAGE1_INCLUDES_LATERAL` is `False`, `fc_selector.py` says "No
-stage-1 session feeds this today", and the cloud walk that runs on its own is
-summed-only), a distinction a later pass had to add after this paragraph first
-over-claimed it;
+`spatial.py`'s per-pose replay of that program runs only when an operator
+stages an angle walk (`STAGE1_INCLUDES_LATERAL` was `False` at this pass and
+is deleted as of 2026-08-22 — no stage-1 plan builds that walk at all —
+`fc_selector.py` now says "Nothing feeds this", and the cloud walk that runs
+on its own is summed-only), a distinction a later pass had to add after this
+paragraph first over-claimed it;
 and branch muting is not merely unnecessary but *contraindicated*, because
 `camilla_yaml.protected_neutral_program_origin` classifies the program origin
 only while every commission-mute filter is exactly pass-through
@@ -1842,7 +1870,12 @@ The pass that removed the vertical-plane bar on the owner's 2026-08-21 ruling
 trued up rule 1's last sentence, the P3 table's rows 1 and 4, and the
 paragraph below the table. The pass that deleted the offline search under the
 tuning master plan's ruling R1 trued up gap 3, whose two file links this very
-change made dead. Every one of those was a claim the change in hand
-falsified; none verified anything else here.
+change made dead. The pass that deleted `fc_sweep`'s sweep half under that
+same ruling (ticket 2.3) trued up the Measurement Program v2 section's
+"currently paused" framing, its PR #2717 bullet, and constraint 1's dangling
+flag pointer, plus Stage P2's STATUS line and lead-in, its ruling-that-gated-it
+and Option (a) paragraphs, its per-angle-per-driver-capture bullet, and the
+per-pose-replay parenthesis below. Every one of those was a claim the change
+in hand falsified; none verified anything else here.
 
 Last verified: 2026-08-18

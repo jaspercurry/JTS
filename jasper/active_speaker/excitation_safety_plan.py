@@ -688,10 +688,10 @@ def resolve_driver_crossover_search_band_hz(
 ) -> tuple[float, float] | None:
     """The confirmed ``crossover_search_band_hz`` for one driver, or ``None``.
 
-    The declared range this driver may be crossed over IN — read by R17's Fc
-    selector (``crossover_v2.fc_sweep.resolve_fc_search_band``), which intersects
-    the participating roles' bands because a two-way Fc puts BOTH drivers at
-    that frequency.
+    The declared range this driver may be crossed over IN — read by
+    ``crossover_v2.fc_sweep.resolve_fc_search_band``, which intersects the
+    participating roles' bands because a two-way Fc puts BOTH drivers at that
+    frequency.
 
     **Returns ``None`` rather than raising**, unlike its sibling
     :func:`resolve_driver_measurement_band_hz` above, and the difference is

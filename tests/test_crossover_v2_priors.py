@@ -13,8 +13,8 @@ cannot support.  So these pin the ABSENCES, not the presences.
 The presences are covered elsewhere and better: the dual-run in this PR compares
 every field of all six phases against the pre-extraction conductor, and the
 suites that consume the priors (``test_crossover_v2_entry_baseline.py``,
-``test_crossover_v2_lateral_evidence.py``, ``test_crossover_v2_fc_selector_wiring.py``)
-grade what the analyzer does with them.
+``test_crossover_v2_lateral_evidence.py``) grade what the analyzer does with
+them.
 """
 
 from __future__ import annotations
@@ -207,13 +207,13 @@ def test_the_required_band_covers_both_declarations_without_widening():
 
 
 def test_both_priors_paths_ask_the_owner_rather_than_re_spelling_it():
-    """The session corner and a swept corner answer from one formula.
+    """Whatever corner a round runs at, the band answers from one formula.
 
-    ``measure_priors`` is the configured-corner caller and
-    ``candidate_priors`` is the swept-corner one.  This pins the first
-    against the owner directly; the second is pinned at six corners by
-    ``test_crossover_v2_fc_selector_wiring``'s ``REQUIRED_BAND_WOOFER_HI_HZ``
-    golden, which is literal and therefore not self-referential.
+    ``measure_priors`` is the configured-corner caller, pinned here against the
+    owner directly.  ``candidate_priors`` re-points the same expression at
+    another corner and has no production caller since the corner hunt was
+    deleted (plan ticket 2.3); it survives for the pinned-corner claim
+    ``test_crossover_v2_alignment_prescription`` makes about it.
     """
     got = priors.measure_priors(
         fc_hz=FC_HZ, source_preset=PRESET,
@@ -412,8 +412,8 @@ class CrossoverV2Session:
     def _check_priors(self):
         return _priors.check_priors(fc_hz=self._fc_hz)
 
-    def _fc_candidate_set(self):
-        return ()
+    def _measure_sweep_bounds(self):
+        return (None, None)
 
     def _check_priors(self):
         return MeasurementPriors(crossover_fc_hz=self._fc_hz)

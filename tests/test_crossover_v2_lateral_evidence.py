@@ -125,7 +125,7 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
 
 
-# --- the shipped stage-1 shape, now that the walk is paused -------------------
+# --- the shipped stage-1 shape --------------------------------------------------
 
 
 def _stage1(**flags):
@@ -143,30 +143,26 @@ def _stage1(**flags):
 def _shipped_flags():
     return dict(
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
-        include_lateral=flow.STAGE1_INCLUDES_LATERAL,
+        include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
 
-def test_the_walk_is_paused_and_stage_1_is_the_pinned_three_capture_shape():
-    """The walk is PAUSED (2026-08-18), so a household is no longer walked:
-    stage 1 is the anchor pair plus #2291's one held-still capture at the mark.
+def test_stage_1_is_the_pinned_three_capture_shape():
+    """A household is not walked: stage 1 is the anchor pair plus #2291's one
+    held-still capture at the mark.
 
-    Same guard as the two states before it, one state over — the shape is
-    written out INDEPENDENTLY of the flags, so a build that flipped a flag and
-    also changed the shape some other way still fails. (R17's assertion was
-    ``… is True`` over a 2,692-byte plan; R16's dormant one was ``… is False``
-    over a 794-byte plan, which is NOT this shape — #2291's entry baseline
-    landed in between.)
+    The shape is written out INDEPENDENTLY of the flags, so a build that flipped
+    a flag and also changed the shape some other way still fails.
 
-    Why the walk is off, in one line: over the 8 banked rounds it was 59.4% of
-    all session audio, never changed an outcome, and fed a statistic whose
+    Why no walk, in one line: over the 8 banked rounds it was 59.4% of all
+    session audio, never changed an outcome, and fed a statistic whose
     rank-1-to-rank-2 gaps (0.004–2.13 dB) sit under its own 3.54 dB repeat
-    noise. ``STAGE1_INCLUDES_LATERAL`` carries the full record, and
-    :func:`test_forcing_the_walk_back_on_restores_it_byte_for_byte` is the
-    executable half of the promise that this is a pause and not a deletion.
+    noise. It was paused on 2026-08-18 and retired with the corner hunt it fed;
+    :func:`test_a_walk_still_builds_r17s_shape_byte_for_byte` is the executable
+    half of the promise that the walk MACHINERY an operator's staged angle walk
+    runs is untouched.
     """
-    assert flow.STAGE1_INCLUDES_LATERAL is False
     assert flow.STAGE1_INCLUDES_ENTRY_BASELINE is True
 
     index_phase, plan, spec = _stage1(**_shipped_flags())
@@ -203,22 +199,24 @@ def test_the_walk_is_paused_and_stage_1_is_the_pinned_three_capture_shape():
     assert not any("of the mark" in note for note in notes)
 
 
-def test_forcing_the_walk_back_on_restores_it_byte_for_byte():
-    """The PAUSE-not-DELETE promise, executable.
+def test_a_walk_still_builds_r17s_shape_byte_for_byte():
+    """The MACHINERY-not-DELETED promise, executable.
 
-    Every piece of the walk stays in the tree, so setting the flag back to
-    ``True`` must reproduce R17's shipped stage 1 EXACTLY — same phases, same
-    entry labels, same capture target, and the same wire bytes the phone
-    rendered before the pause (2,692 / ``7737d2b3…``, carried over verbatim
-    from the pin this file kept while the walk shipped on). A refactor that
-    quietly ate a prompt, a screen or a plan entry while the walk was dark
-    fails here rather than on the first re-armed household.
+    Every piece of the walk stays in the tree for an operator's staged angle
+    walk, so asking the builders for one must reproduce R17's shipped stage 1
+    EXACTLY — same phases, same entry labels, same capture target, and the same
+    wire bytes the phone rendered (2,692 / ``c5cfa51f…``, carried over verbatim
+    from the pin this file kept while stage 1 shipped the walk on). A refactor
+    that quietly ate a prompt, a screen or a plan entry fails here rather than
+    on the first operator who stages a walk.
+
+    ``include_lateral=True`` is asked of the builders directly, which is what
+    ``prepare_v2_session`` itself does once it has taken a staged walk.
     """
     poses = len(flow.LATERAL_POSE_PROMPTS)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
-        index_phase, plan, spec = _stage1(**_shipped_flags())
-        assert flow._stage1_capture_target(resolve_plan_shape("full")) == 3 + poses
+    index_phase, plan, spec = _stage1(
+        **{**_shipped_flags(), "include_lateral": True}
+    )
 
     assert index_phase == (
         {1: PHASE_CHECK, 2: PHASE_MEASURE}
@@ -233,12 +231,12 @@ def test_forcing_the_walk_back_on_restores_it_byte_for_byte():
 
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
     # RE-DERIVED 2026-08-18 (session trims), same cause and same byte length as
-    # the paused shape above: MEASURE and every pose that replays it budget one
+    # the shipped shape above: MEASURE and every pose that replays it budget one
     # prelude less. R17's plan SHAPE is what this pins — entry count, order and
     # copy — and none of that moved.
     assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
         2692, "c5cfa51f34c770aa83b9907c6a66b6d75a006b8f84a0f58eb888400739b76da2",
-    ), "re-arming the walk no longer reproduces the plan R17 shipped"
+    ), "a walk no longer reproduces the plan R17 shipped"
 
     # The consent copy comes back with it — the household is told they will be
     # moved, which is the whole reason that note exists.
@@ -247,17 +245,12 @@ def test_forcing_the_walk_back_on_restores_it_byte_for_byte():
 
 
 def test_a_session_with_no_lateral_group_still_folds_the_candidate_into_measure():
-    """The fit-timing deferral keys off ``PHASE_LATERAL`` being in the journey's
-    walk, so a session built WITHOUT the walk keeps MEASURE as the last capture
-    before the apply — and R17's sweep, which fires on the same condition, does
-    not run.
+    """A session built WITHOUT the walk keeps MEASURE as the last capture
+    before the apply.
 
-    ``include_lateral=False`` is written out rather than read off
-    ``STAGE1_INCLUDES_LATERAL`` — and stays written out now that the pause has
-    made it the flag's value too. Pinning the SHAPE rather than the flag is
-    what keeps this test answering the same question in all three of this
-    flag's states: it asked it while the walk was dormant, kept asking it while
-    R17 shipped the walk on, and asks it unchanged today.
+    ``include_lateral=False`` is written out rather than read off a flag.
+    Pinning the SHAPE rather than the flag is what kept this test answering the
+    same question through every state of the stage-1 arming it outlived.
     """
     fakes = FakeSeams()
     c = _conductor(
@@ -415,47 +408,39 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
         assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
-def test_the_relay_capacity_guard_counts_the_lateral_walk_when_it_is_on():
-    """The guard reads the SAME flag-aware producer ``jasper-doctor`` does, so
-    the two can never disagree. ``ceiling`` is re-derived to sit strictly
-    between the cloud-only and cloud-plus-walk cases, so a guard that stopped
-    counting the poses would pass there — and, walk off, must still pass.
+def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
+    """The guard reads the SAME producer ``jasper-doctor`` does, so the two can
+    never disagree — and it counts the poses whatever a stage-1 plan arms.
+
+    No stage-1 plan builds the walk, but an operator's staged angle walk builds
+    one on any session and its poses ride the same blob-index space. A term
+    guarded on a stage-1 flag would have reported 0 for exactly the shape that
+    still runs six of them, so the count is unconditional and this pins that.
     """
     import jasper.capture_relay.spec as spec
 
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds as shipped, walk PAUSED
+    flow.assert_cloud_plan_fits_relay_capacity()  # holds as shipped
     worst = dict(
         cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
+    with_walk = flow.relay_plan_attempts_required(**worst)
+    assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
+        "the shipped relay ceiling no longer carries the worst-case plan"
+    )
+    # The poses are IN the number: subtracting them must leave a strictly
+    # smaller count, so a build that stopped counting them is visible here.
+    without_walk = with_walk - LATERAL_COUNT
+    assert without_walk < with_walk
+
+    # A ceiling that fits the walk-less plan but not the walk must REFUSE, which
+    # is the whole point of counting the poses.
+    ceiling = without_walk + 1
+    assert ceiling < with_walk, "the walk must be long enough to be countable"
     with pytest.MonkeyPatch.context() as mp:
-        # Both cases are established under an explicit patch, so this test says
-        # the same thing in every state of the flag — it has been the shipped
-        # value (pre-R17), the patched one (R17), and is the shipped value
-        # again since the pause.
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
-        cloud_only = flow.relay_plan_attempts_required(**worst)
-    ceiling = cloud_only + 1
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", True)
-        with_walk = flow.relay_plan_attempts_required(**worst)
-        assert with_walk == cloud_only + LATERAL_COUNT
-        assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
-            "the shipped relay ceiling no longer carries the worst-case plan"
-        )
-        assert ceiling < with_walk, "the walk must be long enough to be countable"
         mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
-    with pytest.MonkeyPatch.context() as mp:
-        # The control: at the SAME reduced ceiling, a build whose walk is off
-        # must still pass — otherwise the failure above would prove only that
-        # the ceiling is small, not that the poses are counted. The flag is
-        # patched rather than read even though it agrees today, so this control
-        # cannot quietly become a no-op the next time the flag moves.
-        mp.setattr(flow, "STAGE1_INCLUDES_LATERAL", False)
-        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", ceiling)
-        flow.assert_cloud_plan_fits_relay_capacity()
 
 
 def test_a_lateral_only_stage_1_still_consents_to_a_walk():
@@ -504,15 +489,20 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
     none of them, which is what leaves its retained curve as ``M``.
     """
     fakes = FakeSeams()
+    # A protected-neutral session's anchor really is composed, and MEASURE now
+    # builds its candidate right there — so the fake has to say so or the fitter
+    # refuses the capture before a pose is ever analyzed.
+    fakes.measure = lambda program: replace(
+        _measure_analysis(program), configured_path_composed=True,
+    )
     c = _lateral_conductor(
         fakes,
         measurement_protection_sections_by_role={"woofer": (), "tweeter": ()},
     )
     _walk(c, through=FIRST_LATERAL_INDEX)
-    # FIRST call per phase, not last: R17's candidate sweep re-analyzes this
-    # same capture once per proposable Fc, all of them under ``PHASE_MEASURE``,
-    # so a last-wins read would compare a pose against a CANDIDATE's priors
-    # instead of the anchor's.
+    # FIRST call per phase, not last: a phase may analyze its capture more than
+    # once under one phase name, so a last-wins read could compare a pose
+    # against something other than the anchor's priors.
     by_phase: dict[str, object] = {}
     for phase, _pp, _r, priors, _g in fakes.analyzed:
         by_phase.setdefault(phase, priors)
@@ -750,18 +740,20 @@ def test_an_unmeasurable_pose_is_dropped_and_the_walk_continues():
     assert len(c.lateral_poses) == LATERAL_COUNT - 1
 
 
-# --- the walk is the last capture before the apply ----------------------------
+# --- the candidate is built at the anchor -------------------------------------
 
 
-def test_the_candidate_is_built_at_the_walks_close_not_at_the_anchor():
+def test_the_candidate_is_built_at_the_anchor_even_under_a_walk():
+    """MEASURE is the last capture the proposal depends on, walk or no walk.
+
+    The walk deferred the build while its close adjudicated a corner; the poses
+    are evidence for the offline forward model now, and their close publishes
+    nothing, so deferring would only age the proposal the household reviews.
+    """
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)
-    results = _walk(c, through=LAST_LATERAL_INDEX - 1)
-    assert c.candidate is None
-    assert fakes.published_candidates == []
-    assert all("candidate_fingerprint" not in r for r in results)
-    closing = _run_phase(c, LAST_LATERAL_INDEX, 1)
-    assert "candidate_fingerprint" in closing
+    anchor = _walk(c, through=FIRST_LATERAL_INDEX - 1)[-1]
+    assert "candidate_fingerprint" in anchor
     assert c.candidate is not None
     assert len(fakes.published_candidates) == 1
 
@@ -776,7 +768,6 @@ def test_a_dropped_final_pose_still_closes_the_walk():
     for attempt in range(1, 2 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION):
         last = _run_phase(c, LAST_LATERAL_INDEX, attempt)
     assert last is not None and last["accepted"] is True
-    assert "candidate_fingerprint" in last
     assert c.candidate is not None
 
 
@@ -973,10 +964,10 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
 
 # --- the consumer: who a lateral group is FOR (#2732 P2) ----------------------
 #
-# The one new fact this section pins. Every test below drives the SAME shipped
-# per-driver-at-a-pose machinery and differs only in who the walk is for, which
-# is the whole claim: an evidence walk is not a second capture path, it is the
-# same path with the paused statistic's reader removed.
+# Every test below drives the SAME shipped per-driver-at-a-pose machinery and
+# differs only in which pose table the walk runs, which is the whole claim: an
+# operator's staged walk is not a second capture path, it is the same path over
+# the poses the operator stated.
 
 
 def _angle_prompts(angles=(0, 7, -7, 22, -22)):
@@ -1011,67 +1002,51 @@ def _evidence_walk(conductor, prompts) -> list[dict]:
     return out
 
 
-def _no_adjudication(mp) -> None:
-    """Make reaching the barred statistic a LOUD test failure, not a silent pass."""
-    def _barred(self):
-        raise AssertionError("the paused Fc statistic must not be reachable")
-
-    mp.setattr(flow.CrossoverV2Session, "_adjudicate_fc", _barred)
-
-
-def test_an_evidence_walk_last_pose_never_adjudicates():
-    """#2711's bar, as a property of the code path rather than of a flag.
-
-    The walk's last accepted pose is the ONE place ``_close_lateral_walk`` runs
-    for an accepted capture, and that method is where ``_adjudicate_fc`` — the
-    paused max-over-poses statistic — is called. An evidence walk must reach the
-    last pose, be accepted at it, and not go there.
+def test_an_evidence_walk_reaches_its_last_pose_and_publishes_nothing():
+    """The walk's last accepted pose is the ONE place ``_close_lateral_walk``
+    runs for an accepted capture, and that close publishes nothing: the poses
+    are evidence an offline model reads off the banked round.
     """
     prompts = _angle_prompts()
     fakes = FakeSeams()
     c = _evidence_conductor(fakes, prompts=prompts)
-    with pytest.MonkeyPatch.context() as mp:
-        _no_adjudication(mp)
-        verdicts = _evidence_walk(c, prompts)
+    verdicts = _evidence_walk(c, prompts)
 
     assert verdicts[-1]["accepted"] is True
     assert len(c.lateral_poses) == len(prompts)
-    # ...and the walk produced no selection at all, which is the same fact from
-    # the other side: nothing read the poses as a whole.
+    # No candidate was published AT the close — MEASURE already published one,
+    # and the close added nothing to its verdict.
+    assert "candidate_fingerprint" not in verdicts[-1]
     assert c.fc_selection is None
 
 
-def test_a_settled_last_pose_suppresses_the_close_too():
+def test_a_settled_last_pose_closes_the_walk_too():
     """The OTHER route into the close, pinned independently.
 
     A last pose that is SETTLED rather than accepted (its slot spent) reaches
-    ``_close_lateral_walk`` through ``_settled_group_verdict``, which exists so
-    a walk whose final capture could not be measured still ends with a
-    candidate. An evidence walk has its candidate already, so this route must
-    suppress too — and it is a different route, so a guard at the accepted path
-    alone would leave it open.
+    ``_close_lateral_walk`` through ``_settled_group_verdict``, so a walk whose
+    final capture could not be measured still ends. It is a different route, so
+    a pin at the accepted path alone would leave it uncovered.
     """
     prompts = _angle_prompts()
     fakes = FakeSeams()
     c = _evidence_conductor(fakes, prompts=prompts)
     last = FIRST_LATERAL_INDEX + len(prompts) - 1
-    with pytest.MonkeyPatch.context() as mp:
-        _no_adjudication(mp)
-        _run_phase(c, 1, 1)
-        _run_phase(c, 2, 1)
-        with c._close_lock:
-            verdict = c._settled_group_verdict(PHASE_LATERAL, last, {"left_out": True})
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+    with c._close_lock:
+        verdict = c._settled_group_verdict(PHASE_LATERAL, last, {"left_out": True})
 
     # Still "accepted" on the wire — the relay's only "move on" signal.
     assert verdict.accepted is True
     assert verdict.payload == {"left_out": True}
 
 
-def test_measure_publishes_immediately_under_an_evidence_walk():
-    """The deferral's stated reason is "the walk is the fit's input", and that
-    is false of a walk feeding an offline model. So MEASURE takes the shipped
-    no-walk branch and publishes right there — otherwise the household would
-    wait on a candidate only the suppressed close publishes.
+def test_measure_publishes_immediately_under_a_walk():
+    """The deferral's stated reason was "the walk is the fit's input", and that
+    is false of a walk feeding an offline model. So MEASURE takes the no-walk
+    branch and publishes right there — otherwise the household would wait on a
+    candidate the close never publishes.
     """
     prompts = _angle_prompts()
     fakes = FakeSeams()
@@ -1082,71 +1057,15 @@ def test_measure_publishes_immediately_under_an_evidence_walk():
     assert c.candidate is not None
     assert fakes.published_candidates, "MEASURE must publish its own candidate"
     # ...and it consumed the analysis rather than holding it for a close that
-    # never comes (the deferring branch's tens-of-megabytes retention).
+    # reads nothing (the deferring branch's tens-of-megabytes retention).
     assert c._measure_analysis is None
-    # The control: the SELECTOR walk still defers, so this is the consumer's
-    # doing and not a change to MEASURE.
-    selector = _lateral_conductor(FakeSeams())
-    _run_phase(selector, 1, 1)
-    _run_phase(selector, 2, 1)
-    assert selector.candidate is None
-    assert selector._measure_analysis is not None
-
-
-def test_the_fc_sweep_never_arms_under_an_evidence_walk():
-    """The barred statistic's PRODUCER, not just its consumer.
-
-    ``_sweep_fc_candidates`` runs at the accepted anchor and builds the
-    candidate set the close would adjudicate over. For an evidence walk there
-    is no close to spend it at, so arming it would be cost with no reader.
-    """
-    prompts = _angle_prompts()
-    swept: list = []
-    fakes = FakeSeams()
-    c = _evidence_conductor(fakes, prompts=prompts)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow.CrossoverV2Session, "_sweep_fc_candidates",
-            lambda self, *a, **k: swept.append(a),
-        )
-        _run_phase(c, 1, 1)
-        _run_phase(c, 2, 1)
-    assert swept == []
-
-    # Control on the same fixture shape: the SELECTOR walk still arms it.
-    armed: list = []
-    selector = _lateral_conductor(FakeSeams())
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow.CrossoverV2Session, "_sweep_fc_candidates",
-            lambda self, *a, **k: armed.append(a),
-        )
-        _run_phase(selector, 1, 1)
-        _run_phase(selector, 2, 1)
-    assert len(armed) == 1
-
-
-def test_the_stage1_walk_keeps_its_close():
-    """The ratified walk is UNCHANGED — the control every suppression pin needs.
-
-    With the default consumer the last pose still runs the close, and the close
-    still adjudicates. If this ever goes green while the tests above do, the
-    suppression has become a deletion of the selector walk instead of a
-    consumer-specific branch.
-    """
-    ran: list = []
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            flow.CrossoverV2Session, "_adjudicate_fc",
-            lambda self: ran.append(self.session_id),
-        )
-        verdicts = _walk(c)
-
-    assert ran == [c.session_id]
-    assert verdicts[-1]["accepted"] is True
-    assert c.candidate is not None
+    # The ratified table's walk answers the same way — the fit timing is not a
+    # property of which poses the walk runs.
+    ratified = _lateral_conductor(FakeSeams())
+    _run_phase(ratified, 1, 1)
+    _run_phase(ratified, 2, 1)
+    assert ratified.candidate is not None
+    assert ratified._measure_analysis is None
 
 
 def test_an_evidence_pose_banks_the_stated_prompt_not_the_ratified_table():
@@ -1159,9 +1078,7 @@ def test_an_evidence_pose_banks_the_stated_prompt_not_the_ratified_table():
     prompts = _angle_prompts()
     fakes = FakeSeams()
     c = _evidence_conductor(fakes, prompts=prompts)
-    with pytest.MonkeyPatch.context() as mp:
-        _no_adjudication(mp)
-        _evidence_walk(c, prompts)
+    _evidence_walk(c, prompts)
 
     assert [p.prompt for p in c.lateral_poses] == [p.text for p in prompts]
     assert [round(p.offset_cm, 1) for p in c.lateral_poses] == [
@@ -1193,9 +1110,7 @@ def test_an_accepted_pose_is_retained_with_its_angle():
             ),
         ),
     )
-    with pytest.MonkeyPatch.context() as mp:
-        _no_adjudication(mp)
-        _evidence_walk(c, prompts)
+    _evidence_walk(c, prompts)
 
     assert [pid for pid, _r, _m in retained] == [
         f"{PHASE_LATERAL}_{FIRST_LATERAL_INDEX + i:02d}"
@@ -1246,33 +1161,30 @@ def test_a_failing_retention_never_rejects_a_good_pose(caplog):
     assert "crossover_v2_position_retain_failed" in caplog.text
 
 
-def test_the_suppressed_close_says_so_by_name(caplog):
-    """A statistic that did not run has to be a POSITIVE journal statement.
+def test_a_closed_walk_says_so_by_name(caplog):
+    """A walk that finished has to be a POSITIVE journal statement.
 
-    The absence of ``crossover_v2_lateral_walk_closed`` is indistinguishable
-    from a walk that never finished, which is the reading an operator would
-    most like to be wrong about.
+    The absence of the line is indistinguishable from a walk that never
+    finished, which is the reading an operator would most like to be wrong
+    about. ONE event covers every walk — the close publishes nothing whichever
+    pose table ran, so a second "suppressed" name would only invite a reader to
+    look for a suppression that has no alternative.
     """
     prompts = _angle_prompts()
     fakes = FakeSeams()
     c = _evidence_conductor(fakes, prompts=prompts)
-    with pytest.MonkeyPatch.context() as mp:
-        _no_adjudication(mp)
-        _run_phase(c, 1, 1)
-        _run_phase(c, 2, 1)
-        with caplog.at_level(logging.INFO):
-            for offset in range(len(prompts)):
-                _run_phase(c, FIRST_LATERAL_INDEX + offset, 1)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 1)
+    with caplog.at_level(logging.INFO):
+        for offset in range(len(prompts)):
+            _run_phase(c, FIRST_LATERAL_INDEX + offset, 1)
 
     line = next(
         rec.getMessage() for rec in caplog.records
-        if "crossover_v2_lateral_close_suppressed" in rec.getMessage()
+        if "crossover_v2_lateral_walk_closed" in rec.getMessage()
     )
-    assert "fc_statistic_paused=true" in line
-    assert "fc_adjudication=suppressed" in line
-    assert f"reason=lateral_consumer_{flow.LATERAL_CONSUMER_FORWARD_MODEL}" in line
+    assert f"consumer={flow.LATERAL_CONSUMER_FORWARD_MODEL}" in line
     assert f"planned={len(prompts)}" in line and f"captured={len(prompts)}" in line
-    assert "crossover_v2_lateral_walk_closed" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -1291,8 +1203,8 @@ def test_the_suppressed_close_says_so_by_name(caplog):
     ids=["unknown-consumer", "table-on-the-selector", "evidence-with-no-table"],
 )
 def test_a_session_refuses_an_incoherent_lateral_declaration(kwargs, fragment):
-    """Fail-closed at construction, because what a mistake reaches is #2711's
-    paused statistic. The refusal is the flow's own error, so a caller that
-    already handles session construction handles this."""
+    """Fail-closed at construction, because what a mistake reaches is a walk
+    banked at poses the microphone never visited. The refusal is the flow's own
+    error, so a caller that already handles session construction handles this."""
     with pytest.raises(flow.CrossoverV2FlowError, match=fragment):
         _lateral_conductor(FakeSeams(), **kwargs)

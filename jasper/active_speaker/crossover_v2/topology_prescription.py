@@ -10,13 +10,12 @@ reader for one prescription the host hands the machinery.  Those two pin the
 *timing* between the drivers and the *shape* of the blend region; this one pins
 the crossover *topology* — where the branches split, and how steeply.
 
-**Why a prescription exists at all.**  The automatic path adjudicates WHERE to
-cross and never what shape to cross with (#1894; ``fc_sweep.candidate_sections``
-moves the corner only), and nothing anywhere ranks topologies.  So a household
-that wants to hear one named corner at one named order — a pre-registered
-Fc/slope tournament, an arm per candidate, graded against each other — had no
-door at all.  Every existing knob either nudges a five-point grid the selector
-then adjudicates, or declares a corner without pinning one.  This is the door:
+**Why a prescription exists at all.**  The automatic path crosses WHERE the
+household declared and never at a shape it chose (#1894), and nothing anywhere
+ranks topologies.  So a household that wants to hear one named corner at one
+named order — a pre-registered Fc/slope tournament, an arm per candidate,
+graded against each other — had no door at all.  Every existing knob declares a
+corner without pinning one.  This is the door:
 the round solves AT the named topology, and its trims, its linearization and
 its delay re-solve underneath.
 
@@ -41,8 +40,8 @@ each one is asked of the module that already owns it:
 
 * ``order`` must be an order the graph can emit
   (:data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`);
-* ``fc_hz`` must clear the three DECLARED frequency bounds the automatic
-  proposal path already applies, asked of that path's own predicate
+* ``fc_hz`` must clear the three DECLARED frequency bounds every corner clears,
+  asked of the shared predicate that owns them
   (see :func:`_declared_frequency_refusal`);
 * ``order * 6`` dB/octave must be at least the protected role's declared
   ``minimum_slope_db_per_octave``.
@@ -60,11 +59,12 @@ what makes a tournament's order-2 arm produce evidence (a receipted refusal)
 rather than an unsafe measurement.
 
 **The beaming ceiling is disclosed, never enforced.**  #1675 defines it as
-guidance to warn on rather than a fence, and :class:`.fc_sweep.FcCandidateSet`
-already exempts the configured corner from it for that reason.  A pinned corner
-is the configured corner of its own round, so enforcing it here would be
-stricter than the automatic path is about the very same speaker.  It rides the
-record instead, so a receipt can say the arm was above it.
+guidance to warn on rather than a fence, so no admissibility bound anywhere
+reads it — :func:`.fc_sweep._fc_rejection` carries no beaming term for the
+automatic path either.  A pinned corner is the configured corner of its own
+round, so enforcing it here would be stricter than that path is about the very
+same speaker.  It rides the record instead, so a receipt can say the arm was
+above it.
 
 **No polarity, and that absence is a contract.**  Polarity is
 :mod:`.alignment_prescription`'s field, pinned there and translated there into
@@ -98,9 +98,8 @@ than raising.  The two share the field parsing outright.
 
 **What the receipt must say about authority, and why it is a field.**  A pinned
 corner has NO measured ranking behind it.  No shipped path scores one topology
-against another — the automatic path's corner selector has no order axis at
-all — so a pin is an operator's choice from an offline argument, not a
-measurement that beat the alternatives.
+against another, or one corner against another — so a pin is an operator's
+choice from an offline argument, not a measurement that beat the alternatives.
 :data:`TOPOLOGY_AUTHORITY_OPERATOR_PINNED` is stamped on every accepted
 prescription so a receipt read six weeks later cannot be mistaken for a ranked
 verdict, exactly as the delay prescription prints the basis it was derived from
@@ -555,38 +554,36 @@ def _declared_frequency_refusal(
     ``fc_sweep._fc_rejection`` is the single owner of "is this corner
     admissible for this speaker", including the hardest-first ordering and the
     :data:`~.fc_sweep._FC_GRID_EPS_HZ` tolerance on the declared band edge.  It
-    is imported by its private name deliberately: a pin and a proposal have to
-    be admissible on *identical* terms — an operator who pins a corner the
-    sweep would have proposed must not be refused, and one who pins a corner the
-    sweep would have rejected must not be admitted — and a second spelling of
-    three comparisons is precisely how those two answers drift apart on one
-    speaker.  ``tests/test_crossover_v2_topology_prescription.py`` pins the two
-    to agree across a grid, so the import cannot quietly become a copy.
+    is imported by its private name deliberately: a pinned corner and a declared
+    one have to be admissible on *identical* terms — an operator who pins the
+    corner their declarations already permit must not be refused, and one who
+    pins a corner those declarations exclude must not be admitted — and a second
+    spelling of three comparisons is precisely how those two answers drift apart
+    on one speaker.  ``tests/test_crossover_v2_topology_prescription.py`` pins
+    the two to agree across a grid, so the import cannot quietly become a copy.
 
-    ``beaming_ceiling_hz`` is passed as ``None`` and not forgotten: #1675 makes
-    the ka onset guidance rather than a fence, ``FcCandidateSet`` already exempts
-    the configured corner from it, and a pinned corner IS its round's configured
-    corner.  It rides :attr:`TopologyPrescription.beaming_ceiling_hz` as
-    disclosure instead.
+    The predicate carries no beaming term, and that absence is #1675's ruling
+    rather than an omission: the ka onset is guidance to warn on, not a fence.
+    It rides :attr:`TopologyPrescription.beaming_ceiling_hz` as disclosure
+    instead, so a receipt can say an arm was above it.
 
     **A ``None`` band is translated HERE, and it is the one thing the shared
     predicate cannot be asked.**  ``resolve_fc_search_band`` returns ``None`` for
-    "no proposal may be made at all" — a participating role that declared
-    nothing, or an intersection that is empty — but the same ``None`` reaching
-    ``_fc_rejection`` means the OPPOSITE, "no declared band constrains this",
-    and the corner would then be bounded only by the excitation bands.  That is
-    the identical translation :func:`.fc_sweep.candidate_set` makes into
-    ``count=0`` and for the identical reason, so this module makes it too rather
-    than passing an ambiguous ``None`` through a predicate that reads it the
-    other way.  Fail-closed: an anomaly means "this speaker has told us nothing
-    about where it may be crossed", never "it permits everything".
+    "the declarations admit no corner at all" — a participating role that
+    declared nothing, or an intersection that is empty — but the same ``None``
+    reaching ``_fc_rejection`` means the OPPOSITE, "no declared band constrains
+    this", and the corner would then be bounded only by the excitation bands.
+    This module is the one that makes the translation, rather than passing an
+    ambiguous ``None`` through a predicate that reads it the other way.
+    Fail-closed: an anomaly means "this speaker has told us nothing about where
+    it may be crossed", never "it permits everything".
 
     The refusal is added AFTER the shared call rather than before it so the
-    hardest-first ordering is still the sweep's own: a corner that also misses
-    the declared floor is told about the floor.
+    hardest-first ordering is still the shared predicate's own: a corner that
+    also misses the declared floor is told about the floor.
     """
     reason = _fc_rejection(
-        fc_hz, declared_floor_hz, lower_driver_ceiling_hz, search_band_hz, None,
+        fc_hz, declared_floor_hz, lower_driver_ceiling_hz, search_band_hz,
     )
     # A ``None`` band is a NO-OP inside that call by construction, which is why
     # the refusal for it is added here instead.
@@ -634,13 +631,11 @@ def read_topology_prescription(
     never-nanny rule.
 
     ``declared_floor_hz`` and ``lower_driver_ceiling_hz`` are the two role
-    bands the automatic candidate set is bounded by
-    (``crossover_v2_flow.CrossoverV2Session._fc_candidate_set``'s own
-    ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz``), and
+    bands a corner is admissible within — :func:`~.fc_sweep._fc_rejection`'s own
+    ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz`` — and
     ``search_band_hz`` is the INTERSECTED declared band
-    :func:`~.fc_sweep.resolve_fc_search_band` returns — its ``None`` meaning
-    "no proposal may be made at all", which for a pin means the same thing it
-    means for a proposal.
+    :func:`~.fc_sweep.resolve_fc_search_band` returns, whose ``None`` means
+    "the declarations admit no corner at all".
 
     ``minimum_slope_db_per_octave`` is the PROTECTED (upper) role's declared
     protection high-pass slope, and only that role's.  A two-way corner
@@ -693,11 +688,11 @@ def read_topology_prescription(
             f"search band ({band})",
         )
     if reason is not None:  # pragma: no cover - defensive
-        # Unreachable while ``_fc_rejection``'s vocabulary is the four codes
-        # ``fc_sweep`` declares and beaming is passed as ``None``. Kept because
-        # the alternative to naming an unhandled code is admitting a pin the
-        # shared predicate refused, which is the one outcome this reuse exists
-        # to make impossible.
+        # Unreachable while ``_fc_rejection``'s vocabulary is the three codes
+        # ``fc_sweep`` declares, each of which the arms above already name.
+        # Kept because the alternative to naming an unhandled code is admitting
+        # a pin the shared predicate refused, which is the one outcome this
+        # reuse exists to make impossible.
         raise TopologyPrescriptionRefused(TOPOLOGY_MALFORMED, reason)
     if minimum_slope_db_per_octave is not None:
         declared_slope = float(minimum_slope_db_per_octave)

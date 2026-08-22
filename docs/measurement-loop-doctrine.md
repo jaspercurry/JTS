@@ -61,13 +61,13 @@ LLM) to weigh. It must never refuse an experiment on its own.
 
 ### Known deviations at 2026-08-21
 
-Five live, tested refusals sit outside the list above, none naming a
+Four live, tested refusals sit outside the list above, none naming a
 component-damage mechanism:
 
 | # | refusal | file | status |
 |---|---|---|---|
 | a | `BOOST_VERTICALLY_BLIND` | `jasper/active_speaker/crossover_v2/driver_prescription.py` | removal in flight |
-| b | `FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses" — and section 3 above already files beaming priors as provenance | `jasper/active_speaker/crossover_v2/fc_sweep.py` | tracked |
+| ~~b~~ | ~~`FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses"~~ | — | **CLOSED 2026-08-21.** The refusal only ever bound the corner hunt's proposal grid, and the hunt was deleted with `fc_sweep`'s sweep half (plan ticket 2.3). No admissibility bound reads the ka onset now; it rides the receipt as provenance, which is what section 3 asked for. |
 | c | `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — refuses on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | tracked |
 | d | `_strategy_gates` score floors; `measurement_evidence_failure`'s fail-severity apply blocker | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | tracked |
 | e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | tracked, most defensible |
