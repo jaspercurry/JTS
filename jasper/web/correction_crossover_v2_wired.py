@@ -658,28 +658,43 @@ def build_v2_wired_run_and_consume(
                     index=index,
                     attempt=attempt,
                 )
-                try:
-                    _authorize(index, attempt, entry, deadline)
-                except CaptureBeginRefused as refusal:
-                    # A refused RETAKE must not end a session that already
-                    # holds a usable take for this slot — the household asked
-                    # for a bonus, not for the set to be torn down, and the
-                    # per-slot extras ledger running out is the ordinary way
-                    # this arm is reached. The two clock deaths are refused
-                    # here too and lose nothing: the walk's own deadline checks
-                    # re-decide them on the very next pass, against the same
-                    # ceiling, with the same registered code.
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_wired_retake_refused",
-                        level=logging.WARNING,
-                        session_id=session_id,
-                        reason="begin_refused",
-                        index=index,
-                        attempt=attempt,
-                        code=str(getattr(refusal, "code", "") or ""),
-                    )
-                    return attempt, False
+                while True:
+                    try:
+                        _authorize(index, attempt, entry, deadline)
+                        break
+                    except _RetakeRequested:
+                        # Asked AGAIN while this retake's own begin was held.
+                        # It can only name the slot already being re-opened, so
+                        # it is the same ask arriving twice and the honest
+                        # answer is to keep waiting for the release. Swallowed
+                        # rather than propagated: this function is reached from
+                        # INSIDE the walk's own handler for that exception, so
+                        # letting it escape would leave nothing to catch it and
+                        # would end a healthy session on ``internal_error``.
+                        # Bounded by the gate's per-hold and ceiling budgets
+                        # exactly as the first wait is.
+                        continue
+                    except CaptureBeginRefused as refusal:
+                        # A refused RETAKE must not end a session that already
+                        # holds a usable take for this slot — the household
+                        # asked for a bonus, not for the set to be torn down,
+                        # and the per-slot extras ledger running out is the
+                        # ordinary way this arm is reached. The two clock
+                        # deaths are refused here too and lose nothing: the
+                        # walk's own deadline checks re-decide them on the very
+                        # next pass, against the same ceiling, with the same
+                        # registered code.
+                        log_event(
+                            logger,
+                            "correction.crossover_v2_wired_retake_refused",
+                            level=logging.WARNING,
+                            session_id=session_id,
+                            reason="begin_refused",
+                            index=index,
+                            attempt=attempt,
+                            code=str(getattr(refusal, "code", "") or ""),
+                        )
+                        return attempt, False
                 verdict = _capture_one(index, attempt, entry)
                 return attempt, verdict.get("terminal") is True
 

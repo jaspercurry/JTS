@@ -1128,6 +1128,49 @@ def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch)
     assert ("confirm",) in conductor.events
 
 
+def test_asking_again_while_the_retake_is_held_keeps_waiting(monkeypatch):
+    """A double-POST during the retake's OWN hold names the same slot.
+
+    It cannot mean anything else — the slot being re-opened is the only one a
+    retake can name — so the walk keeps waiting for the release. Swallowed
+    inside the retake rather than propagated: this path runs from inside the
+    walk's own handler for that signal, so an escape would have nothing to
+    catch it and would end a perfectly healthy session on ``internal_error``.
+    """
+    terminal = []
+    retake = threading.Event()
+
+    class Gate:
+        def __init__(self):
+            self.holds = 0
+
+        def gate(self, index, attempt, entry):
+            if index == 2 and self.holds == 0:
+                self.holds += 1
+                retake.set()
+                raise CaptureBeginDeferred("awaiting_position", "hold")
+            if (index, attempt) == (1, 2) and self.holds == 1:
+                # The retake's own begin, held once — and the household taps
+                # again while it waits.
+                self.holds += 1
+                retake.set()
+                raise CaptureBeginDeferred("awaiting_position", "hold")
+
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        terminal=terminal, position_gate=Gate(), retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert terminal == []
+    assert volume.events == ["open", "close"]
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
 def test_a_session_with_no_retake_signal_is_byte_identical(monkeypatch):
     """The default: a runner built without the signal never looks for one, so
     every walk that shipped before this seam runs exactly as it did."""
