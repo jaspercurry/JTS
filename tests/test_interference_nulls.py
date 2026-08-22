@@ -1325,7 +1325,8 @@ def test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end(s0_main_leg):
     did — the shipped comment carried the 2026-07-26 originals (depths
     -0.029/+0.026/-0.004 dB, tau 0.074 us, r_freq 0.0013, margin 0.052 dB)
     straight through the 2026-07-27 corpus-reader alignment fix and the
-    2026-08-02 (#2045) prominence-vote re-gate that moved every one of them.
+    2026-08-02 (#2045) prominence-vote re-gate that moved the readings
+    behind them.
     This test is the missing pin, so the next era fails here instead of
     quietly leaving a number in prose that no longer describes the code.
 
@@ -1341,9 +1342,13 @@ def test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end(s0_main_leg):
       r_freq                            0.34375 -> 0.34404           +0.00028
       acquittal margin (tweeter ht, 6)  3.0767 -> 3.0504 dB          -0.0263
 
-    Every one is SMALLER than the figure it replaces, so the paragraph's
-    conclusion — the statistic is safe at this bound — survives a fortiori;
-    only the digits were wrong. The acquittal moves because its DEPTH moves;
+    Five of those six moves are SMALLER than the figure they replace and one
+    is LARGER: rung 2's depth move grew, 0.029 -> 0.0329 dB. So the
+    conclusion — the statistic is safe at this bound — does NOT follow a
+    fortiori, and the reason it still holds is worth stating instead of
+    waving at: every move remains hundredths of a dB, and the tightest
+    consumer, the acquittal margin, halved (0.052 -> 0.026 dB).
+    The acquittal moves because its DEPTH moves;
     the ceiling is an arrival-derived quantity and does not move at all, which
     is why the margin's move and the depth's move are the same number.
 
