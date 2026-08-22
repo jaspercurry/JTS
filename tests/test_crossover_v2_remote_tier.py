@@ -951,6 +951,38 @@ def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
     assert f"tier={TIER_FULL}" in opens[0] and "hand_released=true" in opens[0]
 
 
+def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
+    """STAGE 2 through the real preparer (#2879 gate S2).
+
+    The gate is built at TWO construction sites, and a source pin says they
+    read the same predicate — but only a drive proves stage 2 rebinds the shape
+    off the resolved source at all. Its plan is built inside ``_open``, so a
+    rebind that landed one line too late would emit a plan whose entries the
+    gate cannot read.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    prepared = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.position_gate is not None
+    assert prepared.request_retake is not None
+    opens = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+    assert len(opens) == 1, opens
+    assert "stage=2" in opens[0] and "hand_released=true" in opens[0]
+
+
 def test_a_hand_walked_relay_round_still_opens_with_no_gate(caplog, monkeypatch):
     """The control for the pin above: the SOURCE is what changed, not the tier.
 
