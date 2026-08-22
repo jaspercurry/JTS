@@ -82,12 +82,19 @@ executed under both.
    fencing, not the distance: the artifact keeps its own kind and schema
    version so it can be lifted whole, the evidence blocks stay prose-free, and
    no code path in JTS reads the strings for any decision.
-9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`), nothing
-   else. DSP variants under test are **candidates**; a tournament round runs
-   a **candidate cycle** at each pose. Forward-only for new work; existing
-   prose that says "arm" for a DSP variant (`alignment_prescription`'s
-   docstrings, `docs/testing-tooling.md`'s bench sections, the Wave-0 PR
-   bodies) is trued up in ticket 2.8's subject sweep.
+9. **Naming: "arm" means the physical rig** (`jasper-arm-walk`) — never a
+   DSP variant. DSP variants under test are **candidates**; a tournament
+   round runs a **candidate cycle** at each pose. The rule binds this
+   program's vocabulary, not every use of the word: three unrelated senses
+   survive deliberately in the tree and are not violations — a branch or
+   case of a conditional (`outputd`'s "both arms" comments,
+   `program_analysis`'s `None` and low-SNR arms), an arm of a comparison
+   study (`scripts/severed-twin-replay.py`'s three replay arms), and the
+   offline A/B emit bench's welded `arm` field, `arm=` log key, and
+   `"derived both arms:"` CLI string, whose carve-out and rename are
+   #2878's. Forward-only for new work; ticket 2.8's subject sweep trued up
+   the DSP-variant prose it covered (`alignment_prescription` is now at
+   zero) and left the bench family to #2878.
 
 ## The three loops, one substrate
 
@@ -474,6 +481,29 @@ deviation rows as they close.
     seat-level reference + mic sensitivity. Elevation capture — the
     `(azimuth, elevation)` tuple and the string-and-protractor prompts — is
     the follow-on that unlocks the vertical poses and the tilt check. (L)
+    **Superseded for execution** by the conductor's six-issue decomposition
+    (recorded on epic #2826, 2026-08-22). Each issue's body and its binding
+    "Conductor amendments" section are the current scope; the rows below say
+    only which issue covers what. Completion rule, in #2885's words: "Along
+    with the five siblings, this ticket is what ticks 3.7."
+    #2879 — "Human release source for crossover rounds: unweld (degrees,
+    tap), gate hand-walked wired sessions, add the wired retake verb";
+    amended to "lands FIRST of the five".
+    #2880 — "Pose programs as data with an elevation axis: (azimuth,
+    elevation) pose identity, per-mover reach, plan constants become code
+    (3.7)"; amended to depend on #2879, and to pull this ticket's stated
+    elevation follow-on into core — "a deliberate widening, not a reading of
+    the plan as written".
+    #2881 — "Guided round mode on /correction/crossover/: render the minted
+    release action, per-take verdict and retake; promote the walk shell to
+    shared/".
+    #2882 — "The box becomes the whole instrument: local bank, on-box
+    campaigns, live-bundle views, open/verify/apply CLI, installed runbook".
+    #2883 — "Tuning handoff card: box-generated pointer prompt after
+    commissioning (driver-research pattern)".
+    #2885 — "3.7 remainder: pose_id canonical key (+ the position_id publish
+    bug), the LLM program-request door, and absolute-SPL level resolution";
+    the clauses the first five left unowned.
 3.8 Retention: complex-TF loader over banked solos feeding `forward_model`;
     cache policy + budgets; eviction never crosses an active round.
     Cross-capture time anchoring is part of this loader's spec — the wired
