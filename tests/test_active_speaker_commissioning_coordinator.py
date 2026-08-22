@@ -1364,17 +1364,26 @@ def test_host_error_codes_and_household_blocker_codes_stay_disjoint():
     codes are HOUSEHOLD blockers, each mapped to a sentence prescribing a
     remedy a household can carry out.
 
-    `rollback_anchor_missing` was spelled in BOTH — the household one meaning
-    "the current CamillaDSP config path does not exist" (remedy: press Play
-    combined test to retry), the internal one meaning "a restore was recorded
-    with no matching intent" (no remedy; a retry cannot fix an invariant
-    violation). They never collided in behaviour, because nothing wires a host
-    error's code into an issues list. The first reader who does would map an
-    internal defect onto a household retry, so the guarantee is asserted rather
-    than left to that reader noticing.
+    `rollback_anchor_missing` was once spelled in BOTH — the household one
+    meaning "the current CamillaDSP config path does not exist" (remedy: press
+    Play combined test to retry), the internal one meaning "a restore was
+    recorded with no matching intent" (no remedy; a retry cannot fix an
+    invariant violation). They never collided in behaviour, because nothing
+    wires a host error's code into an issues list. The first reader who does
+    would map an internal defect onto a household retry, so the guarantee is
+    asserted rather than left to that reader noticing.
 
-    Mutation: revert the rename in `_runtime_mutation_journal`'s
-    `record_restored` and this fails naming the shared token.
+    The host side is now much smaller than when this guard was written: #2362
+    deleted the dead commissioning-capture seam, and with it the live-mutation
+    journal and restore-abort paths that minted most of these codes — including
+    the `rollback_anchor_missing` twin. Five internal codes remain, so the floor
+    below is a non-vacuity check on the AST walk, not a headcount of the seam.
+    The household half is unchanged and still mints `rollback_anchor_missing`,
+    so the property stays worth asserting for whatever the host mints next.
+
+    Mutation: respell a surviving host code as a household token — e.g. change
+    `host_input_invalid` to `rollback_anchor_missing` in
+    `commissioning_host.py` — and this fails naming the shared token.
     """
 
     import ast
@@ -1395,7 +1404,7 @@ def test_host_error_codes_and_household_blocker_codes_stay_disjoint():
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             host_codes.add(first.value)
 
-    assert len(host_codes) > 40, (
+    assert len(host_codes) >= 4, (
         f"the CommissioningHostError walk found too few codes ({len(host_codes)}) "
         "— this guard would be vacuous"
     )

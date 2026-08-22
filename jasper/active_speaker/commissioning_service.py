@@ -30,7 +30,6 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.null_walk import NullWalkError
 from jasper.log_event import log_event
 from .alignment_walk import driver_delay_walk_spec
-from .commissioning_capture_producer import RawCaptureTransport
 from .commissioning_evidence import (
     REFERENCE_AXIS_GEOMETRY_ID,
     CompleteIsolatedDriverEvidence,
@@ -756,10 +755,7 @@ class CommissioningCaptureService:
                 "candidate_not_measured",
                 f"candidate evaluation requires measured, not {lifecycle_state}",
             )
-        host_status = self._host(
-            current,
-            raw_capture_transport=None,
-        ).status()
+        host_status = self._host(current).status()
         if host_status.get("complete") is not True:
             raise CommissioningServiceError(
                 "complete_evidence_unavailable",
@@ -1123,10 +1119,7 @@ class CommissioningCaptureService:
             # Lifecycle is not a second evidence authority.  Reuse the host's
             # exact complete-artifact reopen + transition-fingerprint check
             # before presenting this run as measured at the Active boundary.
-            host_status = self._host(
-                current,
-                raw_capture_transport=None,
-            ).status()
+            host_status = self._host(current).status()
             if host_status.get("complete") is not True:
                 raise CommissioningServiceError(
                     "complete_evidence_unavailable",
@@ -1311,12 +1304,7 @@ class CommissioningCaptureService:
             ),
         }
 
-    def _host(
-        self,
-        current: _CurrentComposition,
-        *,
-        raw_capture_transport: RawCaptureTransport | None,
-    ) -> CommissioningEvidenceHost:
+    def _host(self, current: _CurrentComposition) -> CommissioningEvidenceHost:
         inputs = self._region_inputs(current.plan)
         if inputs is None:
             raise CommissioningServiceError(
@@ -1330,82 +1318,6 @@ class CommissioningCaptureService:
             evidence_store=self.evidence_store,
             region_inputs=inputs,
             load_current_authority=self.load_current_authority,
-            raw_capture_transport=raw_capture_transport,
-        )
-
-    async def capture_next(
-        self,
-        port: Any,
-        *,
-        raw_capture_transport: RawCaptureTransport,
-        config_dir: str,
-    ) -> Any:
-        """Execute exactly one host-selected real recorder capture."""
-
-        current = self._current()
-        host = self._host(current, raw_capture_transport=raw_capture_transport)
-        return await host.capture_next_with_runtime(port, config_dir=config_dir)
-
-    async def capture_post_apply(
-        self,
-        port: Any,
-        *,
-        raw_capture_transport: RawCaptureTransport,
-        config_dir: str,
-    ) -> dict[str, Any]:
-        """Collect one server-selected repeat from the retained applied graph."""
-
-        from .commissioning_apply import reopen_applied_candidate_proof
-        from .commissioning_runtime import CommissioningRuntimePort
-        from .commissioning_verification import CommissioningVerificationService
-
-        if not isinstance(port, CommissioningRuntimePort):
-            raise TypeError("port must be CommissioningRuntimePort")
-        current = self._current(verify_child_evidence=False)
-        if self.run_store.lifecycle_state(self.run) != "applied_unverified":
-            raise CommissioningServiceError(
-                "verification_not_ready",
-                "post-apply capture requires an applied unverified candidate",
-            )
-        mutation = self.run_store.current_live_mutation(self.run)
-        if mutation is None or mutation.status != "retained":
-            raise CommissioningServiceError(
-                "applied_proof_stale",
-                "post-apply capture has no retained candidate apply",
-            )
-        candidate, _artifact = self._reopen_candidate(
-            current, require_transition=False
-        )
-        target_plan = self._required_target_plan(current)
-        safety = evaluate_driver_safety_profile(
-            current.authority.safety_profile,
-            current.authority.topology,
-        )
-        if not safety.confirmed_and_current or safety.profile_fingerprint is None:
-            raise CommissioningServiceError(
-                "authority_stale", "driver safety authority is no longer current"
-            )
-        proof, _proof_artifact = reopen_applied_candidate_proof(
-            store=self.evidence_store,
-            run=self.run,
-            mutation=mutation,
-            candidate=candidate,
-            target_plan=target_plan,
-            safety_profile_fingerprint=safety.profile_fingerprint,
-        )
-        return await CommissioningVerificationService(
-            run=self.run,
-            run_store=self.run_store,
-            evidence_store=self.evidence_store,
-            plan=current.plan,
-            target_plan=target_plan,
-            applied_candidate=proof,
-            retained_mutation=mutation,
-            load_current_authority=self.load_current_authority,
-        ).capture_next(
-            port,
-            raw_capture_transport=raw_capture_transport,
-            config_dir=config_dir,
         )
 
 

@@ -487,7 +487,9 @@ never redirected.
   positive target authority. Each required target
   must carry a passing post-apply verdict over exactly three distinct,
   excitation-admitted, fixed-reference-axis captures from one commissioning
-  session and threshold profile. The receipt also binds the confirmed driver
+  session and threshold profile (the post-apply capture half was retired by
+  #2362 on 2026-08-22 — nothing can write those captures now, so no receipt
+  can be issued; the receipt *type* and its checks are unchanged). The receipt also binds the confirmed driver
   safety profile, exact applied candidate, expected and freshly read-back
   normalized graph, exact predecessor state, and an honest retained-apply
   rollback outcome bound to that same operation, mutation, and observed applied
@@ -1125,10 +1127,12 @@ never redirected.
   fresh protected graph/path/volume readback before `applied_unverified`.
   Cancellation, mutation/readback failure, or an unproved retained write
   restores the exact predecessor; `/status` exposes retry/finalize/restore as
-  one server-owned next action. Post-apply fixed-axis capture now admits three
-  exact current-graph repeats: all-pass evidence issues the receipt and unlocks
-  Room, while a usable acoustic failure is persisted, stops capture, and keeps
-  Room locked.
+  one server-owned next action. Post-apply fixed-axis capture admitted three
+  exact current-graph repeats: all-pass evidence issued the receipt and
+  unlocked Room, while a usable acoustic failure was persisted, stopped
+  capture, and kept Room locked (retired by #2362 on 2026-08-22 — the seam that
+  produced those repeats had no production caller and was deleted, so this path
+  cannot run today).
   `jasper.active_speaker.web_measurement`
   owns bounded browser WAV evidence plus acoustic-analysis recording.
   This page is also the ownership boundary between manual and automatic

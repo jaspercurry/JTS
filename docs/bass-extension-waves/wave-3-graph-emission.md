@@ -1,5 +1,19 @@
 # Wave 3 — graph emission + contract + apply (Codex prompt)
 
+> **Status: historical — this prompt has been executed.** Snapshot from
+> 2026-08-06 (its last revision callout below), written as the execution
+> contract for Wave 3's graph emission, contract, and apply work. Preserved for
+> primary-source archaeology — read it for what Wave 3 was asked to build and
+> why, not as a live work order and not for current state. Specific facts
+> (file paths, symbol names, test-file names, line numbers) have drifted since
+> it was written, and some name code that has since been deleted: the
+> `commissioning_verification._capture_current_graph` seam it prescribes and
+> the `tests/test_active_speaker_commissioning_verification.py` it names were
+> both removed with the dead commissioning-capture seam in
+> [#2362](https://github.com/jaspercurry/JTS/issues/2362). Current operational
+> truth lives in
+> [HANDOFF-bass-extension-plan.md](../HANDOFF-bass-extension-plan.md).
+
 > **Revision 13 (2026-08-06; live-comparison correction).** Revision 12 and
 > earlier prescribed comparing the live `active_raw` readback against the
 > selected-file **bytes**. That comparison can never match — `active_raw` is
