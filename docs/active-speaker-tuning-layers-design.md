@@ -1212,13 +1212,11 @@ because they are easy to re-derive wrongly:
   2.3 deleted it outright on 2026-08-22
   ([`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py),
   [tuning-master-plan.md](tuning-master-plan.md) ruling R1), along with the
-  candidate sweep it fed. [`fc_selector.py`](../jasper/active_speaker/fc_selector.py)
-  now opens by saying so in its own words — "**Nothing feeds this.** The
-  lateral walk that produced `poses` was paused on 2026-08-18 for ranking
-  below its own noise, and the corner sweep that gathered the per-candidate
-  evidence was deleted with it (plan ruling R1): a round crosses at the corner
-  the household declared or an operator pinned, so no comparison is made and no
-  recommendation is produced." A staged angle walk is per-driver but
+  candidate sweep it fed. `fc_selector.py`, which scored what that sweep
+  gathered, was deleted the same day by ticket 2.4 — a round crosses at the
+  corner the household declared or an operator pinned, so no comparison is made
+  and no recommendation is produced, and there is no module left holding the
+  scoring that would make one. A staged angle walk is per-driver but
   declares the forward-model consumer, so it feeds no selector; and the
   multi-position walks that run *automatically* yield nothing per-driver,
   because every cloud phase sits in `SUMMED_SWEEP_PHASES`
@@ -1815,8 +1813,9 @@ ONE capture routed by channel (its module docstring is quoted in the stage), so
 and `anchor_delay_us` all ship — **at the mark automatically**, since
 `spatial.py`'s per-pose replay of that program runs only when an operator
 stages an angle walk (`STAGE1_INCLUDES_LATERAL` was `False` at this pass and
-is deleted as of 2026-08-22 — no stage-1 plan builds that walk at all —
-`fc_selector.py` now says "Nothing feeds this", and the cloud walk that runs
+is deleted as of 2026-08-22 — no stage-1 plan builds that walk at all, and
+`fc_selector.py`, the consumer that walk fed, is deleted with it — and the
+cloud walk that runs
 on its own is summed-only), a distinction a later pass had to add after this
 paragraph first over-claimed it;
 and branch muting is not merely unnecessary but *contraindicated*, because

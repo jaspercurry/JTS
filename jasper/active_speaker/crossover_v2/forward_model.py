@@ -155,9 +155,7 @@ class DriverPlant:
 
     ``band_hz`` is the DRIVEN band: outside it the excitation put no energy
     into this driver, so the sample there is noise rather than a small
-    response, and :func:`predict_sum` contributes exactly zero from it. This is
-    the same rule ``fc_selector.predict_pose_sum_db`` applies, and for the same
-    reason.
+    response, and :func:`predict_sum` contributes exactly zero from it.
 
     ``trusted`` marks where ``P`` was well-conditioned across the WHOLE grid,
     including outside the driven band.

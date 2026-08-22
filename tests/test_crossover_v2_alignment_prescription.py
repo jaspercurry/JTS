@@ -224,12 +224,18 @@ def test_every_swept_corner_admits_the_same_four_arms():
     """The bound is validated once, at the commissioned corner — and on this
     arm set that choice is not load-bearing.
 
-    An alternative-Fc sweep re-scores the same prescription at other corners,
-    where a tighter half-period could in principle exclude an arm the boundary
-    admitted. It does not here: the tightest corner the r1b sweep evaluated
-    (1847.7 Hz, lobe 270.6 µs) still clears every arm, whose worst residual is
-    155.7 µs. Pinned so a future arm set that DOES straddle a swept corner
-    fails this test rather than surprising a bench session.
+    A FROZEN regression guard over the corners the banked r1b round actually
+    swept, back when an alternative-Fc sweep re-scored the same prescription at
+    each of them. No live path re-scores a prescription at a second corner — a
+    round runs at one corner, and the sweep and the selector that ranked its
+    results are both retired (``docs/tuning-master-plan.md`` tickets 2.3, 2.4).
+    What the guard is still worth: the half-period lobe tightens with frequency,
+    so a corner other than the commissioned one could in principle exclude an
+    arm the boundary admitted. It does not across this banked span — the
+    tightest corner in it (1847.7 Hz, lobe 270.6 µs) still clears every arm,
+    whose worst residual is 155.7 µs. Pinned so a future arm set that DOES
+    straddle one of these corners fails here rather than surprising a bench
+    session.
     """
     per_corner = {}
     for fc_hz in SWEPT_CORNERS_HZ:

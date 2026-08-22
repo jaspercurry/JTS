@@ -2815,26 +2815,25 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
     )
 
 
-def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
-    """R17, on the SAME predicate and for the same reason as the finding below.
+def test_a_persisted_state_write_drops_the_retired_fc_selection():
+    """``fc_selection`` is versioned-ABSENT, not versioned-null (ticket 2.4).
 
-    The Fc recommendation used to be produced at the lateral walk's close,
-    back when a corner selector existed; that selector is retired, so no live
-    session produces a fresh one any more. A round banked while it did still
-    carries an ``fc_selection`` in its persisted state, though, and that value
-    must survive stage 2 unchanged — so it is asserted directly on the
-    conductor rather than through a shipped stage-1 session. Stage 2 is a
-    different session whose conductor has no ``fc_selection`` at all, so
-    without the carry-forward it persists ``None`` over the recommendation —
-    the household reads "your crossover could be 1750 Hz" while deciding, and
-    then nothing once the tuning is applied. That is the half where they
-    would act on it.
+    Stage 2 used to copy a measuring session's Fc recommendation forward across
+    the seam, because a stage-2 conductor never had one and would otherwise
+    persist ``None`` over a live recommendation the household was mid-decision
+    on. The selector that produced recommendations is retired, so there is no
+    live value to protect and nothing left that reads one: the carry-forward
+    went with it.
 
-    The converse is asserted too: a session that DOES measure writes its own
-    value, ``None`` included, so a fresh measurement clears a superseded
-    recommendation rather than replaying it.
+    What replaces it is the honest shape. A persist writes no ``fc_selection``
+    key at ALL — not the key set to ``None``, which would read as "a comparison
+    that produced nothing", and not a copy of a legacy value, which would carry
+    a retired verdict into a record whose version has no such field. A round
+    banked under the old build keeps its payload right up until the next write
+    ages it out, and no reader touches it either way
+    (``test_a_legacy_fc_selection_is_inert_and_never_refuses``).
     """
-    recommendation = {
+    legacy = {
         "verdict": "recommend_alternative", "configured_hz": 2000.0,
         "recommended_hz": 1750.0, "margin_db": 1.4, "evaluated": 6,
         "planned": 6, "limits": {}, "refusals": [], "scores": [],
@@ -2844,16 +2843,16 @@ def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-measured"},
         "applied": True,
-        "fc_selection": recommendation,
+        "fc_selection": legacy,
     })
 
     v2host.persist_conductor_state(
         _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
         failure_code=None,
     )
-    assert v2host.load_v2_state()["fc_selection"] == recommendation
+    assert "fc_selection" not in (v2host.load_v2_state() or {})
 
-    # …and a session that measures owns the answer, including "none".
+    # The same on the measuring side of the seam — no route writes the key.
     v2host.persist_conductor_state(
         _rearm_conductor(
             "cap_fresh_measure",
@@ -2861,7 +2860,7 @@ def test_stage_2_keeps_the_measuring_sessions_fc_recommendation():
         ),
         failure_code=None,
     )
-    assert v2host.load_v2_state()["fc_selection"] is None
+    assert "fc_selection" not in (v2host.load_v2_state() or {})
 
 
 def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
@@ -5278,14 +5277,9 @@ def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
 
 
 def _honest_result_state(
-    *, tracking="pass", absolute="fail", complete=True, improvement=0.8,
-    verdict="keep_configured", baseline=True, applied=True,
+    *, tracking="pass", absolute="fail", improvement=0.8, applied=True,
     verify_outcome=None, absolute_evidence=True,
 ):
-    scores = (
-        [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}]
-        if baseline else [{"fc_hz": 1800.0, "score": 3.2}]
-    )
     absolute_claim = (
         {
             "status": absolute, "max_db": 4.3139 if absolute == "fail" else 0.8,
@@ -5302,11 +5296,6 @@ def _honest_result_state(
         "session_id": "cap_p04", "tier": "express", "applied": applied,
         "session_phases": stage1, "accepted_phases": stage1,
         "candidate": {"fingerprint": "fp-p04"},
-        "fc_selection": {
-            "verdict": verdict, "configured_hz": 2000.0,
-            "recommended_hz": 1800.0 if verdict == "recommend_alternative" else None,
-            "comparison_complete": complete, "scores": scores,
-        },
         "verify": {
             "outcome": verify_outcome or ("fail" if tracking == "fail" else "pass"),
             "claims": {
@@ -5338,26 +5327,22 @@ def _honest_result_state(
         ({}, "verified_best_evaluated"),
         ({"tracking": "fail"}, "keep_previous"),
         ({"improvement": 0.1}, "keep_previous"),
-        ({"verdict": "recommend_alternative"}, "keep_previous"),
-        ({"verdict": "recommend_alternative", "complete": False}, "inconclusive"),
-        ({"tracking": "fail", "complete": False}, "keep_previous"),
-        ({"improvement": 0.1, "complete": False}, "keep_previous"),
-        ({"complete": False}, "inconclusive"),
         ({"absolute": "not_evaluated"}, "inconclusive"),
-        ({"baseline": False}, "inconclusive"),
-        ({"verdict": "future"}, "inconclusive"),
-        ({"verdict": None}, "inconclusive"),
         ({"verify_outcome": "future"}, "inconclusive"),
         ({"absolute_evidence": False}, "inconclusive"),
-        ({"applied": False, "verdict": "recommend_alternative"}, "keep_previous"),
-        ({"applied": False, "verdict": "recommend_alternative", "complete": False}, "inconclusive"),
+        # Not applied: NO route to a verdict is left. A not-an-improvement
+        # refusal stopped refusing when accountability's item 2 became a grade
+        # (#2854), and the corner selector's ``recommend_alternative`` — the
+        # only other cause — is retired here (ticket 2.4). So an un-applied
+        # round publishes no outcome at all rather than inventing one.
+        ({"applied": False}, None),
     ),
 )
 def test_honest_result_truth_table(changes, expected):
     v2host.save_v2_state(_honest_result_state(**changes))
     block = v2host.crossover_v2_status_block()
     grade = block["post_apply_grade"]
-    assert grade["outcome"] == expected
+    assert grade.get("outcome") == expected
     if changes.get("applied", True):
         assert grade["candidate_fingerprint"] == "fp-p04"
     else:
@@ -5375,13 +5360,19 @@ def _no_sweep_state(*, fc_selection=None):
     The stage-1 phases are DERIVED from the stage-1 flags, so this IS the
     shipped shape rather than a hand-written guess at it. What the tests below
     turn on is the absent ``fc_selection``: no stage-1 plan builds a lateral
-    group any more, and the sweep that used to fire off one is retired, so no
-    session — shipped or otherwise — banks a fresh selection.
+    group any more, and both the sweep that used to fire off one and the
+    selector that scored it are retired, so no session — shipped or otherwise —
+    banks a fresh selection.
 
-    Deliberately NOT asserting which phases came back. One of the two tests
-    below is about a behaviour that must hold whether or not ``fc_selection``
-    is present at all, so pinning the shape in the shared fixture would make
-    it fail for a reason it is not about. The shipped shape has its own pin in
+    ``fc_selection`` is still a parameter because a speaker whose last round ran
+    under a build that HAD a selector still carries one in durable state, and
+    the tests below use it to pin that such a payload is inert rather than
+    refused.
+
+    Deliberately NOT asserting which phases came back. The tests below are about
+    behaviour that must hold whether or not ``fc_selection`` is present at all,
+    so pinning the shape in the shared fixture would make them fail for a reason
+    they are not about. The shipped shape has its own pin in
     ``test_crossover_v2_lateral_evidence.py``.
     """
     from jasper.active_speaker.crossover_v2_flow import (
@@ -5472,8 +5463,9 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     assert grade["graded"] is True
     assert grade["complete"] is True
     assert grade["candidate_fingerprint"] == "fp-pause"
-    # The absent sweep is reported as absent rather than as a failed comparison.
-    assert grade["comparison_complete"] is False
+    # The absent sweep is reported as absent rather than as a failed comparison:
+    # no selector fact is published at all, in either direction.
+    assert "comparison_complete" not in grade
     assert block.get("fc_selection") is None
 
     text = build_crossover_envelope_v2({
@@ -5486,39 +5478,70 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     assert "changed nothing automatically" not in text
 
 
-def test_a_sweep_that_ran_and_did_not_finish_is_still_inconclusive():
-    """The other direction, and the scope limit on the exemption above.
+def test_a_legacy_fc_selection_is_inert_and_never_refuses():
+    """Read-back tolerance for the retired field, by NON-CONSUMPTION (2.4).
 
-    ABSENT is not INCOMPLETE. A session that really did evaluate alternatives
-    and did not finish the comparison keeps the verdict it always had — the
-    exemption is for a question that was never asked, not a licence to pass a
-    question that was asked and left unanswered.
+    A speaker whose last round ran under a build that still had a corner
+    selector carries that round's ``fc_selection`` in durable state forever.
+    Nothing in this build parses it — the grade, the status block and the
+    household envelope all reach their answers without touching the field — so
+    no legacy shape, well-formed or not, can refuse or raise. That is what
+    "versioned-absent field, readers degrade gracefully" buys: the tolerance is
+    structural rather than a per-shape guard someone has to maintain.
+
+    Degrading means the round grades on its OWN verification evidence, which is
+    measured fact about the applied tune. It does NOT mean restating a retired
+    comparator's opinion of an alternative — this build cannot check that
+    opinion, and a badge it cannot check is a badge it must not print.
     """
-    v2host.save_v2_state(_no_sweep_state(fc_selection={
-        "verdict": "keep_configured", "configured_hz": 2000.0,
-        "recommended_hz": None, "comparison_complete": False,
-        "scores": [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}],
-    }))
-    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
-        "inconclusive"
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
     )
 
-    # …and the same session with the comparison FINISHED grades, so the
-    # assertion above is about completeness rather than about the fixture.
-    v2host.save_v2_state(_no_sweep_state(fc_selection={
-        "verdict": "keep_configured", "configured_hz": 2000.0,
-        "recommended_hz": None, "comparison_complete": True,
-        "scores": [{"fc_hz": 2000.0, "score": 3.0}, {"fc_hz": 1800.0, "score": 3.2}],
-    }))
-    assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == (
-        "verified_target"
+    legacy_shapes = (
+        # The three verdicts a real selector could reach…
+        {"verdict": "keep_configured", "configured_hz": 2000.0,
+         "recommended_hz": None, "comparison_complete": True,
+         "scores": [{"fc_hz": 2000.0, "score": 3.0},
+                    {"fc_hz": 1800.0, "score": 3.2}]},
+        {"verdict": "recommend_alternative", "configured_hz": 2000.0,
+         "recommended_hz": 1800.0, "margin_db": 1.4, "evaluated": 2,
+         "planned": 2, "attempted": [2000.0, 1800.0], "limits": {},
+         "comparison_complete": True, "scores": [{"fc_hz": 1800.0, "score": 1.6}]},
+        {"verdict": "no_alternative_evaluated", "configured_hz": 2000.0,
+         "recommended_hz": None, "comparison_complete": False, "scores": []},
+        # …the one that used to gate this badge to `inconclusive`, which is the
+        # behaviour change this test is the record of…
+        {"verdict": "keep_configured", "configured_hz": 2000.0,
+         "recommended_hz": None, "comparison_complete": False,
+         "scores": [{"fc_hz": 2000.0, "score": 3.0}]},
+        # …and three shapes no reader may assume anything about: half-written,
+        # wrong types throughout, and not a mapping at all.
+        {"verdict": "keep_configured"},
+        {"verdict": 17, "configured_hz": "two thousand", "scores": {"nope": True},
+         "comparison_complete": "yes", "limits": None},
+        "recommend_alternative",
     )
+    for legacy in legacy_shapes:
+        v2host.save_v2_state(_no_sweep_state(fc_selection=legacy))
+        block = v2host.crossover_v2_status_block()
 
+        # Graded from VERIFY alone, identically to the same round without it.
+        assert block["post_apply_grade"]["outcome"] == "verified_target", legacy
+        assert "comparison_complete" not in block["post_apply_grade"]
+        # Never re-published, so no surface can render a corner the retired
+        # selector once named.
+        assert "fc_selection" not in block, legacy
 
-def test_exact_incident_needs_complete_comparison_for_best_evaluated():
-    for complete, expected in ((True, "verified_best_evaluated"), (False, "inconclusive")):
-        v2host.save_v2_state(_honest_result_state(complete=complete))
-        assert v2host.crossover_v2_status_block()["post_apply_grade"]["outcome"] == expected
+        text = build_crossover_envelope_v2({
+            "active": True,
+            "setup": {"active": True, "status": "ready"},
+            "crossover_v2": block,
+        })["verdict_text"]
+        assert "1800" not in text and "measured better than" not in text
+
+        # The durable payload is untouched by the read — inert, not scrubbed.
+        assert (v2host.load_v2_state() or {})["fc_selection"] == legacy
 
 
 def test_terminal_result_logs_once_with_target_failure_evidence(caplog):

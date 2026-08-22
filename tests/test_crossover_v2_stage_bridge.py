@@ -1505,7 +1505,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "evidence",
     "expected_post_apply_offset_db",
     "failure",
-    "fc_selection",
     "gain_plan_db",
     "kind",
     "measure",

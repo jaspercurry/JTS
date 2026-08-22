@@ -574,78 +574,6 @@ def _verify_claims_lines(status: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _fc_hz_text(value: float | None) -> str:
-    return "" if value is None else f"{value:.1f}".rstrip("0").rstrip(".")
-
-
-def _fc_recommendation_lines(status: Mapping[str, Any]) -> list[str]:
-    """What the measurement says the CROSSOVER should be, and what to do.
-
-    **Keep-configured is a first-class outcome, not silence.** A session that
-    evaluated alternatives and kept the configured Fc has LEARNED something,
-    and printing nothing would be indistinguishable from a session where the
-    selector never ran. The two really are different, so they read differently:
-    no sweep prints nothing at all.
-
-    An incomplete comparison is named and cannot present an alternative. This
-    remains fail-closed for older durable state without the completeness fact:
-    an old recommendation is not proof that every planned candidate ran.
-    """
-    fc = _mapping(_v2(status).get("fc_selection"))
-    if not fc:
-        return []
-    configured = _finite(fc.get("configured_hz"))
-    if configured is None:
-        return []
-    recommended = _finite(fc.get("recommended_hz"))
-    evaluated = fc.get("evaluated")
-    planned = fc.get("planned")
-    attempted = fc.get("attempted")
-    comparison_complete = fc.get("comparison_complete") is True
-    sound_saved = type(_v2(status).get("accepted_sound_revision")) is int
-    lines: list[str] = []
-    if not comparison_complete:
-        lines.append(
-            f"crossover comparison incomplete — leave the configured "
-            f"{configured:.0f} Hz crossover as it is; no alternative was selected"
-        )
-    elif recommended is not None:
-        margin = _finite(fc.get("margin_db"))
-        recommended_text = _fc_hz_text(recommended)
-        lines.append(
-            f"crossover: {recommended_text} Hz measured better than the "
-            f"{configured:.0f} Hz you have"
-            + (f", by {margin:.2f} dB through the handoff" if margin else "")
-        )
-        lines.append(
-            f"{recommended_text} Hz is already saved in Sound but is not "
-            "confirmed applied; retry uses this same measured candidate."
-            if sound_saved else
-            "Apply will save this choice in Sound before loading it."
-        )
-    else:
-        lines.append(
-            f"crossover: {configured:.0f} Hz is the best of what could be "
-            "measured — nothing beat it, so leave it as it is"
-        )
-    attempted_count = len(attempted) if isinstance(attempted, list) else evaluated
-    if isinstance(attempted_count, int) and isinstance(planned, int):
-        # The BOUND edges, named by the declaration that set them, so a
-        # household seeing "1 compared" knows which number to widen. The
-        # selector's own ``limits`` carry them; the two that bind in practice
-        # are the declared search band and the beaming ceiling.
-        bound = _finite(_mapping(fc.get("limits")).get("search_lo_hz"))
-        lines.append(
-            f"attempted {attempted_count} of {planned} crossover points"
-            + (
-                f" (nothing below {bound:.0f} Hz — that is what your drivers "
-                "are declared to allow)"
-                if planned <= 1 and bound is not None else ""
-            )
-        )
-    return lines
-
-
 def _verify_frame_lines(
     status: Mapping[str, Any], *, raw_already_shown: bool,
 ) -> list[str]:
@@ -1576,31 +1504,22 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     prediction = v2.get("prediction")
     prediction = prediction if isinstance(prediction, Mapping) else None
     fingerprint = str(candidate.get("fingerprint") or "")
-    # This predicate answers "will Apply move the declared crossover?", and
-    # since the 2026-08-19 apply-path change it is a SECOND reading of that
-    # question: `handle_v2_apply` derives the answer from the candidate's own
-    # preset (`crossover_declaration.declaration_change_for_candidate`), not
-    # from this record. They agreed on every shape reachable while the Fc sweep
-    # was the only producer of a candidate crossing somewhere other than the
-    # declaration, because it wrote `fc_selection` in the same breath. That
-    # producer is gone (`docs/tuning-master-plan.md` ticket 2.3) and the live one
-    # is an operator's TOPOLOGY PIN, which writes no `fc_selection` at all — so
-    # this second reading can now under-claim a declaration write the apply is
-    # about to make. The apply itself is unaffected: `handle_v2_apply` derives
-    # from the candidate's own preset and is the authority. What can be short is
-    # this BUTTON's copy on a pinned round. Closing it needs the review-time
-    # producer PR-4 owns; do not close it here with a third reading.
-    fc_selection = _mapping(v2.get("fc_selection"))
-    recommended_hz = _finite(fc_selection.get("recommended_hz"))
-    uses_alternative = (
-        fc_selection.get("verdict") == "recommend_alternative"
-        and fc_selection.get("comparison_complete") is True
-        and recommended_hz is not None)
-    sound_saved = uses_alternative and type(v2.get("accepted_sound_revision")) is int
+    # **One label, because nothing here re-answers "will Apply move the declared
+    # crossover?".** This screen used to name a corner in the button — "Use 2750
+    # Hz and apply" — by reading the Fc selector's banked recommendation. That
+    # was a SECOND reading of a question `handle_v2_apply` already answers from
+    # the candidate's own preset
+    # (`crossover_declaration.declaration_change_for_candidate`), and the
+    # selector is retired (`docs/tuning-master-plan.md` ticket 2.4) along with
+    # the corner hunt that fed it. The live producer of a candidate crossing
+    # somewhere other than the declaration is an operator's TOPOLOGY PIN, which
+    # publishes no recommendation, so the second reading had already stopped
+    # tracking the apply and could only under-claim. A round banked while a
+    # selector existed still carries the record; this screen no longer reads it,
+    # so a stale recommendation cannot name a corner the apply is not about to
+    # write. Giving the button a corner again needs the review-time producer
+    # PR-4 owns; do not restore it here with a third reading.
     apply_label = "Apply and verify"
-    if uses_alternative:
-        apply_label = ("Retry applying " if sound_saved else "Use ") + (
-            f"{_fc_hz_text(recommended_hz)} Hz" + ("" if sound_saved else " and apply"))
     # A proposal with no fingerprint cannot be applied even in principle: the
     # apply endpoint's first gate is `expected_candidate_fingerprint`, and it
     # refuses outright without one.
@@ -1660,6 +1579,12 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     # evidence behind a proposal that is otherwise fine.
     nudges.extend(_ripple_reservation_nudges(status))
     apply_issue = _mapping(v2.get("apply_blocked"))
+    # Gated on the fact the sentence is about: Sound holds a saved revision and
+    # the DSP apply behind it is not confirmed. It used to ALSO require the Fc
+    # selector's banked recommendation, which was the only review-time route to
+    # a saved revision at the time; with the selector retired (ticket 2.4) that
+    # term could only suppress the warning on rounds it now applies to.
+    sound_saved = type(v2.get("accepted_sound_revision")) is int
     if sound_saved and apply_issue:
         nudges.append({"code": str(apply_issue.get("id") or "apply_blocked"),
                        "severity": "warn", "text": str(apply_issue.get(
@@ -1752,7 +1677,6 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
         expert_details=(
             _flatness_details_lines(status)
             + _ripple_reservation_lines(status)
-            + _fc_recommendation_lines(status)
         ),
         prediction=prediction,
         # CC1: this is the screen the #1949 ruling took a sentence away from.

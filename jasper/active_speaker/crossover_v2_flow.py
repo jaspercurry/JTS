@@ -231,7 +231,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     JourneyPlan,
     validated_lateral_consumer,
 )
-from jasper.active_speaker.fc_selector import FcSelection
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
@@ -5136,8 +5135,10 @@ class CrossoverV2Session:
             dict(driver_class_by_role) if driver_class_by_role else {}
         )
         # #1675 owner ruling: the declared effective radiating diameter per
-        # role, the ka/beaming prior the Fc selector reads. Collected since
-        # #1665 and consumed by nothing in Python until R17 — it reaches here
+        # role, the ka/beaming prior. Collected since #1665; the Fc selector
+        # that read it is retired (ticket 2.4) along with the corner hunt whose
+        # proposal grid it clamped, so the diameter rides the receipt as
+        # provenance and no admissibility bound reads it — it reaches here
         # by the SAME draft path ``driver_class_by_role`` takes. Empty means
         # undeclared, which a consumer must DISCLOSE rather than fill in: there
         # is no conservative default diameter.
@@ -5153,7 +5154,6 @@ class CrossoverV2Session:
             dict(crossover_search_band_hz_by_role)
             if crossover_search_band_hz_by_role else {}
         )
-        self._fc_selection: Any = None
         self._geometry = MeasurementGeometry(
             driver_spacing_m=float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
@@ -7801,17 +7801,6 @@ class CrossoverV2Session:
         )
         return {}
 
-    @property
-    def fc_selection(self) -> FcSelection | None:
-        """This session's Fc recommendation. Always ``None``.
-
-        Nothing writes it: a round crosses at the corner the household declared
-        or an operator pinned, so there is no comparison to recommend from. The
-        field is still read by the review surface and by readers of rounds
-        banked while a corner selector existed.
-        """
-        return self._fc_selection
-
     def _consume_cloud_position(
         self,
         phase: str,
@@ -8551,10 +8540,12 @@ class CrossoverV2Session:
         last moment before the speaker is touched, and it is where the two
         load-bearing assertions live — the realized inter-driver level (item 1)
         and the spec-graded prediction (item 2). Both run AFTER the build and
-        BEFORE ``self._candidate`` is set and ``publish_candidate`` fires, so a
-        refusal leaves no candidate for anything downstream to apply, and the
-        confirm seam's ``CaptureBeginRefused`` arm persists a named reason with
-        its own household copy.
+        BEFORE ``self._candidate`` is set and ``publish_candidate`` fires, so an
+        item-1 refusal leaves no candidate for anything downstream to apply, and
+        the confirm seam's ``CaptureBeginRefused`` arm persists a named reason
+        with its own household copy. Item 2 GRADES rather than refuses (#2854),
+        so it reaches the same seam without ever being the reason nothing
+        published.
 
         They live here and not inside :meth:`_build_candidate` on purpose: that
         method's SF2 arm catches a fit-engine failure and degrades to the
