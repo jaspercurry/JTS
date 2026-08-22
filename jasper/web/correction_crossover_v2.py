@@ -3312,9 +3312,7 @@ def _candidate_octave_reasons(
 
 
 def _candidate_summary(
-    candidate: Any,
-    *,
-    topology_pinned: bool = False,
+    candidate: Any, *, topology_pinned: bool = False,
     headroom_cost_basis: str | None = None,
 ) -> dict[str, Any] | None:
     # Lazy, like ``_candidate_headroom_cost_db``'s own import below it: this
@@ -3325,15 +3323,11 @@ def _candidate_summary(
         HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
     )
 
-    # WHICH era stamped the per-branch charges this summary reduces, supplied by
-    # the CALLER because only the caller knows. The default is this build's era
-    # and is correct for the minting path — a candidate reaching it was built by
-    # this process, so its fits carry this build's rule by construction. It is
-    # NOT correct for a candidate read off disk: nothing on
-    # ``MeasuredCrossoverCandidate`` records an era (that is the whole point of
-    # "recorded, never inferred"), so the republish path passes UNKNOWN rather
-    # than letting a pre-#2758 candidate wear a current-era label over numbers
-    # the widened grid would now charge more for.
+    # WHICH era stamped the per-branch charges below, supplied by the CALLER
+    # because only the caller knows. The default is this build's era, true on
+    # the minting path; a candidate read OFF DISK records none of its own, so
+    # republish passes UNKNOWN rather than letting a pre-#2758 candidate wear a
+    # current label over numbers the widened grid now charges more for.
     stamped_basis = headroom_cost_basis or HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
 
     if candidate is None:
@@ -3410,13 +3404,11 @@ def _candidate_summary(
         # field is missing or the cost is nothing.
         "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
         # WHICH derivation the number above was stamped under (#1808 /
-        # two-stage commission D3), from the caller — see ``stamped_basis``
-        # above for why this is not written unconditionally. A candidate
-        # persisted by an older build carries no era of its own, and ``unknown``
-        # is the only honest reading of that absence: see
-        # ``linearization_fit.HEADROOM_COST_BASIS_*`` for why it is recorded
-        # rather than sniffed, and ``crossover_envelope_v2
-        # ._candidate_review_payload`` for what an unknown basis renders as.
+        # two-stage commission D3) — see ``stamped_basis`` above for why it
+        # comes from the caller, ``linearization_fit.HEADROOM_COST_BASIS_*``
+        # for why an era is recorded rather than sniffed, and
+        # ``crossover_envelope_v2._candidate_review_payload`` for what an
+        # unknown one renders as.
         "headroom_cost_basis": stamped_basis,
     }
 

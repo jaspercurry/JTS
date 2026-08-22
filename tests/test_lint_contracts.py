@@ -534,6 +534,22 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-22 (#2758/#2759, the headroom-ledger panel's second fix round).
+    # Nine lines across two files, both paying for a defect the ratchet's own
+    # sibling guards did not cover: `headroom_cost_basis` was stamped as the
+    # CURRENT era unconditionally, so a candidate republished off disk under-
+    # disclosed its cost wearing a current-era label.
+    #  * `correction_crossover_v2` 9,393 -> 9,398. One keyword argument, one
+    #    local, and the sentence saying why the era comes from the CALLER: only
+    #    the caller knows whether it built the fits this process or read them
+    #    off disk, and nothing on the candidate records that. A default that
+    #    was right for one of its two callers is exactly how this shipped.
+    #  * `crossover_envelope_v2` 4,289 -> 4,293. The reader now distinguishes
+    #    THREE eras rather than two, and the lines are the tuple it checks
+    #    against plus the one paragraph a household-copy file owes: the two
+    #    peak eras disagree in the direction #2758 opened, so collapsing them
+    #    would render a pre-widening number as a current figure.
+    #
     # 2026-08-17 (#2603): +11 on top of the two bumps above, and the ratchet
     # catching its own author again. The representative RoleBand pair at
     # `_DISPLAY_ROLES_BANDS` was flagged as a fourth declaration of a driver's
@@ -1205,7 +1221,7 @@ MAX_LINES_BY_PATH = {
     #       the prefix and not the five
     # Net +43 against 23 lines removed: the extraction pays for a third of
     # itself, which is what distinguishes it from a third transcription.
-    "jasper/web/correction_crossover_v2.py": 9_393,
+    "jasper/web/correction_crossover_v2.py": 9_398,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
@@ -1342,7 +1358,7 @@ MAX_LINES_BY_PATH = {
     # comments alone and was cut by roughly two-thirds on the "point, never
     # re-teach" rule; the long forms live in PR #2836 and in
     # HANDOFF-crossover-measurement-v2.md, and this file points at them.
-    "jasper/active_speaker/crossover_envelope_v2.py": 4_289,
+    "jasper/active_speaker/crossover_envelope_v2.py": 4_293,
     # 2026-08-18 (D7, series-2 diagnosis): +82 net on `program_analysis.py`
     # (95 added, 13 removed), counted rather than estimated —
     #   40  the argument written next to `GLITCH_RESIDUAL_SAMPLES`
