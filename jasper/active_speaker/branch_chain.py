@@ -161,6 +161,21 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # exposure is wider after R8 than before it, which is the honest statement of
 # what widening the caps did to this margin.
 #
+# **What actually keeps the honest loop out of that band is the CLASSIFIER's
+# vouching ceiling, and it is producer-side only.** A boost is admitted only
+# against a banked `defect-boostable` verdict near its centre, and the highest
+# frequency the classifier can ever vouch for is
+# `feature_classifier.classifiable_band_hz((_, TRUSTED_CEILING_HZ))[1]`
+# (16 kHz trimmed by the +-1/3-octave neighbourhood -> 12699.2 Hz) widened by
+# `feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES` (1/6 octave) =
+# **14254.4 Hz** — comfortably below the ~18 kHz where this margin stops
+# covering the residue. So no verdict the measurement loop can PRODUCE reaches
+# the exposed band. The gate itself does not enforce this: hand-inject a 19 kHz
+# boostable verdict and it is admitted. `tests/test_active_speaker_branch_chain
+# .py::test_the_classifier_cannot_vouch_into_the_under_read_band` pins the
+# arithmetic so that raising the classifier's ceiling later trips a test
+# instead of silently opening this band.
+#
 # One shape is OUTSIDE that ceiling and is tracked rather than budgeted for: a
 # Lowshelf cornered below ~1.9 Hz, whose extreme is an asymptote BELOW
 # :data:`_GRID_EDGE_LO_HZ` and so off the grid entirely (1.2937 dB at a 1.8 Hz

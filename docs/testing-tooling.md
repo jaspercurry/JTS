@@ -1954,7 +1954,8 @@ additionally owes **one** thing a cut does not: that verdict must report a
 `depth_db`, and the boost may not exceed it. The matching-sign requirement
 above is not that thing — a cut owes it identically.
 Its cost is maximum SPL rather than safety (the graph attenuates
-before the split), bounded at 5.0 dB by a per-role composed budget. It needs
+before the split), bounded at 13.0 dB by a per-role composed budget — 5.0 dB
+until ruling R8 widened the boost caps to 12 dB on 2026-08-22. It needs
 two pieces of evidence, and they arrive by **different routes** — one flag,
 one file:
 

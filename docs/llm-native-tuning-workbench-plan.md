@@ -253,7 +253,8 @@ existing owner.
 > correctly, so what the gate adds is admission — a nearest banked
 > `defect-boostable` verdict that reported its own depth, no deeper than that
 > depth, inside a per-role composed budget that bounds the maximum-SPL spend
-> at 5.0 dB. The cost is max SPL, not safety: the graph attenuates before the
+> at 13.0 dB (5.0 dB until ruling R8 widened the boost caps to 12 dB on
+> 2026-08-22). The cost is max SPL, not safety: the graph attenuates before the
 > split, so a boosted graph is never louder at any frequency than an
 > unboosted one at full scale.
 >

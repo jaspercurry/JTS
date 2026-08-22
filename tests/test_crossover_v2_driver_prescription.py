@@ -1737,6 +1737,13 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     crossover response is checked across every supported LR order and a range
     of corners, and the trim's own non-positive clamp is pinned by
     `tests/test_crossover_v2_single_datum_owner.py`.
+
+    **The bar is ``<= 1e-9``, not ``<= 0``, and that is deliberate**: a section's
+    true maximum is a small POSITIVE number of order 1e-10 dB rather than an
+    exact zero. A 40 Hz corner was added when a 600-corner sweep put the worst
+    at LR8 / 41.5 Hz lowpass (+4.150e-10 dB) — BELOW the 80 Hz that had been
+    this pin's lowest corner, so the sampled set was missing the region that
+    maximises the term it exists to bound.
     """
     import numpy as np
 
@@ -1750,7 +1757,7 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     ]))
     for order in SUPPORTED_LR_ORDERS:
         for highpass in (True, False):
-            for fc in (80.0, 400.0, 1600.0, 3000.0, 8000.0):
+            for fc in (40.0, 80.0, 400.0, 1600.0, 3000.0, 8000.0):
                 worst = float(np.max(crossover_response_db(
                     grid, (CrossoverSection(fc, order, highpass),)
                 )))
@@ -2154,15 +2161,22 @@ def test_the_composed_tolerance_absorbs_only_the_evaluators_own_noise():
     """The tolerance R8's equal caps made necessary, bounded at both ends.
 
     Untolerated, a filter AT the per-filter rail is admitted or refused by the
-    biquad's low bits (+-7.8e-14 dB, sign depending on centre and Q), so the
-    published ceiling would refuse at its own value. The tolerance must be big
-    enough to cover that and far too small to hide a real cascade.
+    biquad's low bits — sign depending on centre and Q — so the published
+    ceiling would refuse at its own value. The tolerance must be big enough to
+    cover that and far too small to hide a real cascade.
+
+    The residue is a SWEPT figure: worst |residue| 2.416e-13 dB at 2015.4 Hz /
+    Q 6.89 over 4 000 random draws at the rail, ~3x the largest value a
+    hand-picked grid finds (7.8e-14) and 4 139x under the tolerance. The lower
+    bound below is set against the swept number, not the hand-picked one.
     """
     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 
     assert dp._COMPOSED_BOOST_EVAL_TOL_DB == 1e-9
-    # Covers the measured evaluator residue with ~5 orders to spare...
-    assert dp._COMPOSED_BOOST_EVAL_TOL_DB > 1e-12
+    # Covers the SWEPT evaluator residue (2.416e-13) with ~4 orders to spare.
+    # The bar sits above that measurement rather than at it, because a search
+    # reports a minimum of the worst case, never a maximum.
+    assert dp._COMPOSED_BOOST_EVAL_TOL_DB > 1e-11
     # ...and is orders below the 4-decimal precision every charge is published
     # at, so the 13.0 dB bound is unmoved at every digit anyone reads.
     assert dp._COMPOSED_BOOST_EVAL_TOL_DB < 0.5e-4

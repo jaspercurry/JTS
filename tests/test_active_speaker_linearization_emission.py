@@ -588,11 +588,19 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
     Nothing about the prescription reaches this proof — it reads the emitted
     filters, the emitted crossover and the emitted headroom gain — so an
     admitted boost has to survive a re-derivation that never saw the gate.
+
+    Driven at ``DRIVER_MAX_FILTER_BOOST_DB`` rather than a literal, because
+    since R8 that IS the emitter's own rail: the headline benefit of the ruling
+    is that a prescription written at the ceiling survives emission instead of
+    being accepted at the gate and refused downstream, and this is the
+    downstream half of that claim.
     """
     topology = _active_topology("mono", "active_2_way")
     text = emit_active_speaker_baseline_config(
         _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6245.0, 3.0, q=8.0)]},
+        linearization={
+            "tweeter": [_peak(6245.0, DRIVER_MAX_FILTER_BOOST_DB, q=8.0)]
+        },
     )
 
     graph = classify_camilla_graph(topology=topology, text=text)
@@ -602,11 +610,14 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
 
 
 def test_the_emitter_still_refuses_a_boost_past_its_own_rail():
-    """The gate's 3.0 dB ceiling is the FIRST of two, never the only one.
+    """The gate's ceiling is the FIRST of two, never the only one.
 
-    PR-A opens a narrower permission inside a rail that already existed and is
-    unchanged: the emitter raises rather than clamps at 12 dB, whatever any
-    intake accepted.
+    PR-A opened a NARROWER permission (3.0 dB) inside a rail that already
+    existed; R8 moved the gate onto that same 12 dB rail, so the two now
+    coincide rather than nest. The independence is what survives and what this
+    pins: the emitter raises rather than clamps past 12 dB, whatever any intake
+    accepted — it re-validates instead of trusting the gate, so the two agreeing
+    on a number is not the same as the emitter deferring to it.
     """
     with pytest.raises(ActiveSpeakerConfigError):
         emit_active_speaker_baseline_config(

@@ -99,7 +99,8 @@ ceilings above it.  **It was not always**: until 2026-08-22 both boost ceilings
 came from the sibling ``blend_prescription`` class (3.0 and 4.0) on the owner's
 2026-08-18 ruling that "a new permission should not open at the ceiling of an
 old one", whose stated reason was that the fit's 12 dB rests on a closed-loop
-delta probe and "a prescription has no such prediction".  Ruling **R8** of
+delta probe and — as R8 quotes it — "a prescription has no such prediction".
+Ruling **R8** of
 ``docs/tuning-master-plan.md`` overturns that on its own terms — under the
 tournament every candidate banks a pre-registered expected delta before the
 round measures it, which IS that closed-loop prediction — and the per-filter
@@ -364,8 +365,9 @@ DRIVER_MIN_CUT_DB = 0.5
 #: one", which opened this class at its sibling ``blend_prescription.
 #: PRESCRIPTION_MAX_FILTER_BOOST_DB`` (3.0) instead. That ruling's stated reason
 #: was that the fit's 12 dB rests on a closed-loop delta probe grading what the
-#: fit predicted against what the speaker did, and "a prescription has no such
-#: prediction". Ruling **R8** of ``docs/tuning-master-plan.md`` (owner-ratified
+#: fit predicted against what the speaker did, and — as R8 quotes it — "a
+#: prescription has no such prediction". Ruling **R8** of
+#: ``docs/tuning-master-plan.md`` (owner-ratified
 #: 2026-08-21) overturns it ON ITS OWN TERMS: under the tournament every
 #: candidate carries a **pre-registered expected delta**, banked before the round
 #: measures it, which is exactly the closed-loop prediction whose absence was the
@@ -422,8 +424,12 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #:    any peak above ``_PEAK_EPS_DB`` (0.01 dB). That is the whole charge
 #:    formula — one addition, no other term.
 #: 2. :func:`_check_composed` refuses any role whose evaluated cascade peak
-#:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB`, so an ACCEPTED document has
-#:    ``peak <= 12.0`` on the gate's own reading.
+#:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by more than
+#:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an ACCEPTED document has
+#:    ``peak <= 12.0 + 1e-9`` on the gate's own reading. The tolerance is
+#:    carried through the rest of this derivation rather than dropped: it
+#:    lands on the bound as 13.000000001 dB, which is 13.0 at every digit
+#:    anything here publishes.
 #: 3. **The span clause** — the step the whole proof rests on. That reading is
 #:    taken on :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
 #:    IMPORTED (the charge's own span) unioned with a dense sweep of the role's
@@ -434,10 +440,13 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #:    were measuring different intervals. A premise can be true and the
 #:    conclusion still false when they are about different domains.
 #: 4. The remaining terms in the emitted branch — the crossover sections and the
-#:    per-driver trim — are non-positive everywhere (measured and pinned), so
-#:    the emitter's peak cannot exceed the gate's.
+#:    per-driver trim — are non-positive to within 1e-9 dB (measured and
+#:    pinned; the LR sections reach a small POSITIVE maximum of order 1e-10 dB,
+#:    worst measured +4.150e-10 at LR8 / 41.5 Hz lowpass over a 600-corner
+#:    sweep, which is what the pin's ``<= 1e-9`` bar encodes). So the emitter's
+#:    peak cannot exceed the gate's by anything this arithmetic resolves.
 #:
-#: Therefore ``charge <= 12.0 + 1.0 = 13.0``.
+#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision.
 #:
 #: **The bound is ATTAINED, not approached**: one filter at
 #: :data:`DRIVER_MAX_FILTER_BOOST_DB`, at any Q, composes to exactly 12.000000
@@ -449,7 +458,11 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #: pinned seed: of 2 000 sets of 1-4 Peaking filters, 1 538 are admitted and
 #: their worst charge is 12.999377 dB, never crossing 13.0. That is EVIDENCE
 #: over a sample, not a proof over the space — the proof is the four steps
-#: above; the sweep is what would catch them being wrong. And the STRADDLE,
+#: above; the sweep is what would catch them being wrong. Its SHAPE is narrow
+#: on purpose and the limits are worth knowing before leaning on it: Peaking
+#: filters only, positive gains only, at most four of them, one band. Shelves,
+#: mixed-sign cascades and the eight-filter ceiling are covered by the
+#: dedicated refusal tests around it rather than by this draw. And the STRADDLE,
 #: pinned end to end through the EMITTER in
 #: ``tests/test_active_speaker_linearization_emission.py`` — two +9.0 dB Q-8
 #: boosts 0.1233 octaves apart compose to 11.916 here and are charged 12.861 by
@@ -458,8 +471,9 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 #:
 #: Those two charge figures are the EMITTER's and run a little under
 #: ``gate peak + 1.0`` (12.861 against 12.916), because the branch the emitter
-#: prices also carries the crossover high-pass and that term only subtracts.
-#: That is step 4 above, observed rather than assumed.
+#: prices also carries the crossover high-pass, which subtracts 0.0554 dB at
+#: that cascade's peak. That is step 4 above, observed rather than assumed — and
+#: it is one measured instance of it, not a demonstration of the general claim.
 #:
 #: Imported rather than restated because it is a CONSEQUENCE of the charge
 #: formula, not a policy this gate re-validates: a margin that moved must move
@@ -479,12 +493,20 @@ MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 #: Needed only because ruling R8 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
 #: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
 #: per-filter rail composes to that rail exactly in arithmetic, and the biquad
-#: evaluates it to within +-7.8e-14 dB of it with a sign that depends on the
-#: centre frequency and Q. Untolerated, +12.0 dB at Q 3 / 6245 Hz is admitted
+#: evaluates it to within a small residue whose SIGN depends on the centre
+#: frequency and Q. Untolerated, +12.0 dB at Q 3 / 6245 Hz is admitted
 #: (-5.3e-15) while +12.0 dB at Q 5 / 1600 Hz is refused (+7.8e-14) — the
 #: published per-filter ceiling refusing at its own value, decided by low bits.
 #:
-#: 1e-9 dB is ~5 orders above that residue and ~7 below the 4-decimal precision
+#: **The residue's size is a swept figure, not the first one measured.** Those
+#: two examples come from a hand-picked grid; over 4 000 random (freq, Q) draws
+#: at the rail plus that grid, the worst |residue| is **2.416e-13 dB** at
+#: 2015.4 Hz / Q 6.89 — about 3x the largest hand-picked value, and still
+#: 4 139x under this tolerance. Quoting the hand-picked 7.8e-14 as if it bounded
+#: the family would have been the narrow-fact-universal-tail mistake.
+#:
+#: 1e-9 dB is ~4 orders above that swept residue and ~7 below the 4-decimal
+#: precision
 #: every charge in this system is reported at, so it cannot absorb a real
 #: cascade: :data:`MAX_SPL_SPEND_BOUND_DB` still bounds the charge to 13.0 dB at
 #: every digit anything published carries.
@@ -1213,10 +1235,15 @@ def _check_composed(
     bound reading low only ever refuses less, and it is now consistent.
 
     Both are read WITHOUT the crossover sections and WITHOUT the branch trim,
-    and BOTH of those terms are non-positive everywhere — the trim by
+    and BOTH of those terms are non-positive to within 1e-9 dB — the trim by
     construction (``intervention.anchor_trims`` normalizes it, pinned) and the
-    LR sections by measurement (every supported order and corner maxes at
-    +0.000000000 dB). So this reading is an UPPER bound on what the emitter
+    LR sections by measurement. Not exactly zero, which the old wording
+    ("maxes at +0.000000000 dB") implied by rounding: a section's true maximum
+    is a small POSITIVE number of order 1e-10 dB, worst measured +4.150e-10 at
+    LR8 / 41.5 Hz lowpass over a 600-corner sweep. 1e-9 dB is what the pin
+    asserts and the honest ceiling to quote; it is a billionth of the 1.0 dB
+    margin, so the inference below is unaffected. So this reading is an UPPER
+    bound on what the emitter
     will charge, which is the direction a gate's number has to err.
 
     That inference is only sound because the span is now the charge's own. It
