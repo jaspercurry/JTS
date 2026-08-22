@@ -193,11 +193,26 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
 
 
 def _print_walk(payload: dict[str, Any]) -> None:
-    """The same walk a person reads, one line per stop."""
+    """The same walk a person reads, one line per stop.
+
+    The gate line says WHO arms it, because since #2879 that is two different
+    answers. An arm walk can only run in a gated session, and it declares each
+    target itself -- so the ``gate N deg`` column below is populated and this
+    walk is gated by construction. A person's walk is gated when the SESSION
+    holds (a hand-walked round on the wired capture source), and the request
+    cannot know that, so it declares no target and the column is empty. Saying
+    only the first would tell a human operator their walk has no gate, which
+    was true before that change and is not now.
+    """
     mover = payload["mover"]
     print(
         f"{len(payload['stops'])} stops, moved by {mover}"
-        f"{' (position gate armed)' if payload['externally_positioned'] else ''}"
+        + (
+            " (position gate armed; each stop declares its own target below)"
+            if payload["externally_positioned"]
+            else " (the SESSION decides the gate: a wired round holds every"
+            " begin at the bearing below, a phone round taps)"
+        )
     )
     for stop in payload["stops"]:
         banks = stop["banks_as"]
@@ -336,7 +351,8 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         choices=sorted(MOVERS),
         help=(
             "who moves the microphone: human (string and protractor; each stop "
-            "waits for a tap) or arm (each stop auto-begins behind the "
+            "waits for a tap, and the session holds it at that bearing when it "
+            "is a wired round) or arm (each stop auto-begins behind the "
             "countdown and declares the angle the position gate waits for)"
         ),
     )

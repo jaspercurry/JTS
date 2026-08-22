@@ -235,6 +235,49 @@ def test_plan_exits_two_on_a_refusal_and_zero_on_a_walk(capsys):
     assert cli._cmd_plan(parser.parse_args(["plan", "--angles", "0,7"])) == cli.EXIT_OK
 
 
+def test_the_preview_says_who_arms_the_gate_for_both_movers(capsys):
+    """The `plan` dry run is the operator's ONLY preview, so it may not state
+    an arm-only fact as the whole truth (#2879 gate S1).
+
+    It printed nothing about a gate for a person's walk, which read as "this
+    walk has no hold" -- true before the pose-statement axis was split off the
+    advance axis, and false after: a hand-walked round on the wired source
+    holds every begin at exactly the bearing this preview lists.
+    """
+    parser = cli.build_parser()
+
+    assert cli._cmd_plan(
+        parser.parse_args(["plan", "--angles", "0,-7", "--mover", "human"])
+    ) == cli.EXIT_OK
+    human = capsys.readouterr().out
+    assert "the SESSION decides the gate" in human
+    assert "wired round holds every begin" in human
+    # The per-stop target column stays EMPTY for a person, and that is the
+    # seam's contract rather than an omission: whether the begins are held is
+    # the session's fact, so the request may not guess one.
+    assert "gate " not in human
+    assert "advance tap" in human
+
+    assert cli._cmd_plan(
+        parser.parse_args(["plan", "--angles", "0,-7", "--mover", "arm"])
+    ) == cli.EXIT_OK
+    arm = capsys.readouterr().out
+    assert "position gate armed" in arm
+    assert "gate -7 deg" in arm
+
+
+def test_the_mover_help_does_not_claim_the_gate_is_the_arms_alone(capsys):
+    """The same claim, in the flag's own help — the other half of gate S1.
+
+    Read off the `plan` SUBPARSER, which is where `--mover` lives; the
+    top-level help never lists it.
+    """
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["plan", "--help"])
+    mover = " ".join(capsys.readouterr().out.split()).split("--mover", 1)[1]
+    assert "the session holds it at that bearing when it is a wired round" in mover
+
+
 def test_plan_writes_nothing(slot):
     path, _ = slot
     cli._cmd_plan(cli.build_parser().parse_args(["plan", "--angles", "0,7,-7"]))
