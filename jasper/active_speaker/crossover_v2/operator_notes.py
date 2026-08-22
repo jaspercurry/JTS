@@ -215,10 +215,13 @@ _DRIVER_ROW_FIELDS = ("target_id", "role", "notes")
 
 _CONTEXT_ROW_FIELDS = ("target_id", "operator_notes")
 
-#: The prose-shape NAME test, spelled once. Both the scan and the derivation
-#: below ask it, so "what counts as prose-shaped" cannot come to have two
-#: answers in one module.
 def _is_prose_key(name: str) -> bool:
+    """The prose-shape NAME test: ``notes``, or anything ``*_notes``.
+
+    Spelled once because both :func:`_prose_keys` and the derivation below ask
+    it, and "what counts as prose-shaped" answering differently in those two
+    places would let a key be claimed that the scan never offered.
+    """
     return name == "notes" or name.endswith("_notes")
 
 
