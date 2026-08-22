@@ -2046,8 +2046,10 @@ deterministic trend engine and any by-hand round review both want, and its
 `not_evaluated` block is the fastest way to see what a round **cannot** answer
 (a cloud position banks no bearing at all, so `positions.angle_deg` refuses —
 the signed bearings that ARE banked belong to a lateral walk's poses and ride
-in `lateral_poses`; the reflection time exists only inside gate-disclosure
-prose; a round carries a distortion reading only once somebody ran
+in `lateral_poses`; the reflection time and the gate's own movement are banked
+as numbers beside the gate-disclosure sentence, so the entry that used to say
+they lived only inside prose now fires only for a round whose records predate
+those writers; a round carries a distortion reading only once somebody ran
 `jasper-read-distortion` over it, so an absent `harmonics` block means nobody
 read the round rather than that the round was clean; every banked capture is
 horizontal, so the vertical plane is disclosed as `vertical_plane_response`

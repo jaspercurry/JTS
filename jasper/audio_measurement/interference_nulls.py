@@ -45,7 +45,7 @@ The method, and the two independent instruments it insists agree:
 4. **Ladder fit** — the best single-tau ladder ``f_n = (n + 1/2) / tau`` with
    **tau free**, requiring at least ``MIN_LADDER_RUNGS`` *consecutive* rungs.
    Free rather than anchored on the arrival because the two disagree by a
-   measured 7.06-7.42 % on the S0 corpus (see ``LADDER_ARRIVAL_TOLERANCE``);
+   measured 6.67-7.54 % on the S0 corpus (see ``LADDER_ARRIVAL_TOLERANCE``);
    consecutive because a non-adjacent pair pins nothing (see
    ``MIN_LADDER_RUNGS``).
 5. **Corroboration, both ways.** The fitted ``tau`` must land within
@@ -347,15 +347,28 @@ MIN_LADDER_RUNGS = 2
 #
 # **The band must admit a measured gap, and this is the constant the plan
 # warned about.** On the S0 corpus the ladder tau sits systematically *below*
-# the directly measured arrival tau: -7.193 % (main leg, all 10), -7.153 %
-# (tweeter height, 6), -7.424 % (a hand-width low, 4), -7.058 % (desk front
+# the directly measured arrival tau: -7.071 % (main leg, all 10), -6.671 %
+# (tweeter height, 6), -7.540 % (a hand-width low, 4), -7.058 % (desk front
 # edge, 3) — fitted taus of 297.96-298.90 us against arrival medians of
-# 321.85-321.93 us. The plan's own framing is that the S0 report saw
+# 320.27-322.26 us. The plan's own framing is that the S0 report saw
 # 293-308 us implied by the null frequencies against a 321.5 us median
 # arrival, "consistent ... at this resolution", and that a real rim wave is
 # not an ideal single-delay reflector. A band of the 1/6-octave smoothing
 # bandwidth alone (about +-6 %) would refuse every one of the four.
-# 0.15 clears the worst by 2.02x.
+# 0.15 clears the worst by 1.99x.
+#
+# RE-DERIVED 2026-08-22: the four gaps above are the 2026-08-02 (#2045) era's,
+# not the 2026-07-25 originals this comment shipped with, and the difference is
+# real rather than cosmetic — the widest reading moved 7.424 -> 7.540 % and the
+# narrowest 7.153 -> 6.671 %, so a reader quoting this block as a bound on the
+# fitted tau's error was understating it at BOTH ends. Only the gap and arrival
+# columns moved (the corpus-reader alignment fix, then #1991's prominence vote);
+# ``desk edge`` contains neither re-gated capture and is byte-identical across
+# both, which is the control. **The live authority is
+# ``tests/test_interference_nulls.py``'s four-way calibration table**, which
+# hard-asserts every figure here against the corpus and carries the era notes;
+# this block restates them for a reader who has the module and not the corpus,
+# so re-derive from that test rather than from these digits.
 #
 # **Symmetric, though the measurement is not.** All four readings are
 # negative, and consistently so; that direction is recorded as an observation

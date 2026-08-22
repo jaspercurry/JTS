@@ -4172,7 +4172,10 @@ copy dead-ended in an off-by-default operator sidecar and the position-evidence
 copy in bundle artifacts, both dropped by every projection a screen reads. It
 now travels like the frame above — `_gate_record` composes it once at verdict
 time, the host persists it as `verify.gate`
-(`{disclosure, reflection_measured}`), and `_verify_gate_lines` renders the
+(`{disclosure, reflection_measured, moved_rms_db, reflection_delay_ms}` — the
+screens read only the first pair; the two numbers were added by tuning-plan
+ticket 1.5 so a READER of the banked round gets them without parsing the
+sentence), and `_verify_gate_lines` renders the
 sentence **verbatim** into `expert_details` on the verify_fail and done
 screens, on every outcome including a pass. Verbatim is the contract:
 re-phrasing the fields at a render site is how the two states started printing

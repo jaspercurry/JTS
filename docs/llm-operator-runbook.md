@@ -434,6 +434,60 @@ bundle's own session identity claims are published — the ring rolls over and
 can hold an earlier round's — and the leftovers are counted rather than
 dropped.
 
+### Reading the gate and the reflector path honestly
+
+Three numbers that used to exist only inside a sentence, or not at all.
+
+**The gate's own two numbers ride every capture.** `positions[]` rows carry
+`gate_moved_rms_db` and `gate_reflection_delay_ms`, and `verify.gate` carries
+the same pair as `moved_rms_db` / `reflection_delay_ms`. Both are derivations of
+the one typed reader that writes `gate_disclosure`'s sentence, so the digits in
+the prose and the digits in the fields are the same derivation — read either,
+never reassemble one from the other.
+
+**`gate_moved_rms_db` is meaningless without `gate_floor_source`.** The same
+small number means opposite things: beside `measured_reflection` it says a
+reflection was found and removing it barely changed the response — the capture
+is genuinely clean. Beside `search_span_bound` it says the gate did essentially
+nothing and **nothing was proven about reflections**. A 7 ms window prints
+identically in both states, which is the whole of issue #1966. `null` means no
+band could price the gate at all — an ungateable capture, or a program that
+declared no radiated band — never "the gate changed nothing".
+
+**`gate_reflection_delay_ms` is a DELAY, not the gating block's
+`first_reflection_ms`.** That field is an absolute time inside the analysed
+impulse response, an artifact of the deconvolution window's origin, and means
+nothing on its own; what is published is its distance from the direct arrival.
+It is `null` — never `0.0` — on a capture whose window was capped at the search
+ceiling, because nothing was found to time.
+
+**The reflector path is the ladder's tau times the speed of sound.** The
+`reflections` block publishes `reflector_path_distance_m` alongside the
+`tau_ladder_us` it converted and the `speed_of_sound_m_s` it used, so the
+multiply is reproducible in place. Three things to hold about it:
+
+- **It is an EXCESS path length, not a distance to a surface.** It says how much
+  further the delayed copy travelled than the direct sound. A mirror-image
+  bounce off a wall *d* away from a coincident source and mic travels 2*d*
+  further, so halving it is your call and needs geometry no round banks.
+- **It is the LADDER's tau, never the arrival's.** `arrival_tau_us` sits beside
+  it on the same registry and is deliberately not converted: on a
+  `no_corroborating_arrivals` refusal it still carries whatever a sub-minimum
+  cluster held. The ladder's tau exists only after a frequency-domain fit and an
+  independent time-domain arrival agreed.
+- **No error bar is published, and two things bound it.** The speed of sound is
+  assumed, not measured, and moves 0.606 m/s per Kelvin — 0.18 % — so a room
+  10 K off the assumed 20 °C shifts every distance by 1.8 %. That is the small
+  one. The larger is tau's own: on the S0 corpus the fitted ladder tau sat
+  6.671–7.540 % *below* the directly measured arrival tau, and this round's own
+  figure is `null_registry.ladder_arrival_gap`. Nothing banks a σ on tau, so the
+  block points at that gap and at each rung's `rung_error_spacings` rather than
+  reducing them to a number it cannot justify.
+
+An absent block refuses by name — no fitted ladder means `tau_ladder_us` is the
+0.0 sentinel, and 0.0 metres would say the reflector is at the microphone. Do
+not read the absence as a near reflector.
+
 ## Reading σ honestly
 
 Three different spreads, three different meanings, and they must never pool:

@@ -2759,6 +2759,115 @@ def test_a_measured_reflection_is_recorded_as_one():
     assert "reflection measured" in c.verify_gate["disclosure"]
 
 
+def _gate_block(
+    *,
+    direct_peak_ms: float = 10.40,
+    first_reflection_ms: float = 15.73,
+    rms_db: float | None = 2.59,
+    floor_source: str = gating.FLOOR_MEASURED,
+) -> dict:
+    """A gating block with the two absolute times AND the priced delta on it.
+
+    The fixture ``_driver_response_diag`` builds carries neither, because the
+    consumers it was written for read only ``window_ms``/``floor_source``.
+    Ticket 1.5's numbers come off the other fields, so they need a block that
+    has them — and one where ``first_reflection_ms`` differs from the DELAY by
+    a lot, so a helper that returned the absolute time by mistake could not
+    pass by coincidence.
+    """
+    delta = None if rms_db is None else {
+        "rms_db": rms_db, "max_db": 6.1, "eval_band_hz": [357.0, 20000.0],
+    }
+    return {
+        "applied": True,
+        "window_ms": 5.33,
+        "floor_source": floor_source,
+        "direct_peak_ms": direct_peak_ms,
+        "first_reflection_ms": first_reflection_ms,
+        "pre_post_gate_delta": delta,
+    }
+
+
+def test_the_gate_record_banks_the_two_numbers_its_sentence_narrates():
+    """Ticket 1.5. The sentence was the only copy of both, and prose is not a
+    number: the evidence packet's ``not_evaluated`` block said in so many words
+    that the reflection time "is narrated inside verify.gate.disclosure prose
+    and is not banked as a number anywhere in a round's artifacts".
+
+    Equality against ``build_gate_disclosure``'s own derivations, not a
+    recomputation — same discipline as the sentence's own test above. A record
+    that assembled these from the raw block would be a second derivation of a
+    fact that has one owner, and the digits in the prose and the digits in the
+    fields could then disagree.
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.audio_measurement import gate_disclosure as gd
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    block = _gate_block()
+    response = dataclasses.replace(
+        _driver_response_diag("summed"), gating=block,
+    )
+    typed = gd.build_gate_disclosure(block)
+    record = _gate_record(response)
+
+    assert record is not None
+    assert record["moved_rms_db"] == typed.delta_rms_db == 2.59
+    assert record["reflection_delay_ms"] == typed.reflection_delay_ms
+    # A DELAY, not the absolute time the gating block spells
+    # ``first_reflection_ms`` — whose origin is the deconvolution window's, and
+    # which ``GateDisclosure.reflection_delay_ms`` calls meaningless to a
+    # reader on its own. 15.73 - 10.40, never 15.73.
+    assert record["reflection_delay_ms"] == pytest.approx(5.33)
+    assert record["reflection_delay_ms"] != block["first_reflection_ms"]
+    # The screen's two facts are untouched beside them.
+    assert record["reflection_measured"] is True
+    assert record["disclosure"] == gd.describe_gate(block)
+
+
+def test_a_ceiling_capped_gate_banks_no_reflection_delay_at_all():
+    """Null, never 0.0. Nothing was found, so there is nothing to time — and a
+    0.0 there would say the reflection arrived with the direct sound.
+
+    The delta survives, which is the whole point of ``SMALL_DELTA_RMS_DB``'s
+    two readings: a capped gate still moved the spectrum, and that number means
+    "nothing was proven about reflections" rather than "clean".
+    """
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    response = dataclasses.replace(
+        _driver_response_diag("summed"),
+        gating=_gate_block(
+            first_reflection_ms=None, floor_source=gating.FLOOR_SEARCH_BOUND,
+        ),
+    )
+    record = _gate_record(response)
+
+    assert record is not None
+    assert record["reflection_delay_ms"] is None
+    assert record["moved_rms_db"] == 2.59
+    assert record["reflection_measured"] is False
+
+
+def test_an_unpriceable_gate_banks_no_movement_rather_than_a_zero():
+    """``pre_post_gate_delta`` is ``None`` when no band could price the gate —
+    an ungateable capture, or a program that declared no radiated band, which
+    is exactly the over-report ``evaluation_band_hz`` refuses to make. A 0.0
+    here would claim the gate changed nothing, which is a measurement."""
+    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from tests.crossover_v2_fixtures import _driver_response_diag
+
+    response = dataclasses.replace(
+        _driver_response_diag("summed"), gating=_gate_block(rms_db=None),
+    )
+    record = _gate_record(response)
+
+    assert record is not None
+    assert record["moved_rms_db"] is None
+    assert record["reflection_delay_ms"] == pytest.approx(5.33)
+
+
 def test_the_gate_is_recorded_on_a_passing_verify_too():
     """On EVERY outcome, like the graded band and the frame beside it: a pass
     is exactly when nobody would otherwise ask how much of the response the
@@ -11285,6 +11394,62 @@ def test_every_retained_position_carries_its_gate_provenance_as_a_sentence():
          "floor_source": gating.FLOOR_SEARCH_BOUND}
     )
     assert _gate_disclosure(None) is None
+
+
+def test_every_retained_position_carries_the_numbers_behind_that_sentence():
+    """Ticket 1.5, at the same surface and for the same reason #1966 was.
+
+    The sentence fixed the record for a PERSON; a reader mining the banked
+    round for numbers still had to regex English out of it, which the evidence
+    packet refuses to do and said so in its ``not_evaluated`` block. So the two
+    numbers ride beside the sentence on every retained take — derived by the
+    same single typed reader, never assembled here.
+
+    This is the SIDECAR's half: the record handed to ``retain_position`` is
+    ``cloud_position_record``'s own dict, so both keys are on every take
+    whatever their values. The separate allowlist between that record and the
+    CLOUD artifact's rows (``position_evidence._RECORD_FIELDS``, which drops a
+    key whose value is ``None``) is pinned in
+    ``tests/test_attribution_persistence.py``.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        _gate_moved_rms_db,
+        _gate_reflection_delay_ms,
+    )
+    from jasper.audio_measurement import gate_disclosure as gd
+
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            fakes.seams(),
+            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+        ),
+        index_phase_map=CLOUD_MAP,
+    )
+    attempt = _walk(c, (1, 2), 1)
+    _walk(c, CLOUD_MEASURE_INDEXES, attempt)
+    assert retained, "the walk must have retained positions to check"
+    # Present as KEYS on every take, whatever their values: absent-because-
+    # unmeasurable and absent-because-nobody-banks-it are different facts and
+    # the record must be able to say the first.
+    for meta in retained:
+        assert "gate_moved_rms_db" in meta
+        assert "gate_reflection_delay_ms" in meta
+
+    # …and both are the typed reader's own derivations, on a block that has
+    # something to derive. 15.73 - 10.40 = 5.33; the absolute 15.73 must not
+    # be what comes back.
+    block = _gate_block()
+    response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
+    typed = gd.build_gate_disclosure(block)
+    assert _gate_moved_rms_db(response) == typed.delta_rms_db == 2.59
+    assert _gate_reflection_delay_ms(response) == typed.reflection_delay_ms
+    assert _gate_reflection_delay_ms(response) == pytest.approx(5.33)
+    assert _gate_moved_rms_db(None) is None
+    assert _gate_reflection_delay_ms(None) is None
 
 
 def test_measure_diag_names_the_binding_gate_and_its_floor_source(caplog):

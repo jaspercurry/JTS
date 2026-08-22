@@ -679,6 +679,8 @@ def cloud_position_record(
     gate_window_ms: float | None,
     gate_floor_source: str | None,
     gate_disclosure: str | None,
+    gate_moved_rms_db: float | None,
+    gate_reflection_delay_ms: float | None,
     validity_floor_hz: float | None,
     gating_applied: bool,
     summed_ripple_db: float | None,
@@ -709,6 +711,21 @@ def cloud_position_record(
     ``gate_disclosure`` is the same fact as a sentence, so a reader does not
     have to know the enum's vocabulary to read the record honestly.
 
+    ``gate_moved_rms_db`` and ``gate_reflection_delay_ms`` are the two NUMBERS
+    that sentence narrates (ticket 1.5), banked beside it because prose was
+    their only copy: the evidence packet's ``not_evaluated`` block used to say
+    the reflection time "is narrated inside verify.gate.disclosure prose and is
+    not banked as a number anywhere in a round's artifacts", and a reader is
+    owed the figure without regex over English.  Both come from
+    :mod:`~jasper.audio_measurement.gate_disclosure`'s one typed record, so the
+    digits here and the digits in the sentence are the same derivation.  Both
+    are ``None`` on an ungateable capture, and the delay is ``None`` — never
+    0.0 — on a window capped at the search ceiling, where no reflection was
+    found to time.  The delay is RELATIVE to the direct arrival, not the gating
+    block's absolute ``first_reflection_ms``: see
+    :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
+    for why the absolute time is meaningless to a reader.
+
     ``wav_sha256`` is the capture's content digest — the VERIFIER for a replay,
     never the index (§6's rule that "content hashing stays the verifier; it must
     stop being the index").  Recorded whether or not any store retained the
@@ -732,6 +749,8 @@ def cloud_position_record(
         "gate_window_ms": gate_window_ms,
         "gate_floor_source": gate_floor_source,
         "gate_disclosure": gate_disclosure,
+        "gate_moved_rms_db": gate_moved_rms_db,
+        "gate_reflection_delay_ms": gate_reflection_delay_ms,
         "validity_floor_hz": validity_floor_hz,
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,

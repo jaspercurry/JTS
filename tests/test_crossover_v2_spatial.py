@@ -361,6 +361,7 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
         attempt=7, prompt="stand here", wide=False, role="onax",
         captured_at=1.0, session_id="sess", gate_window_ms=12.0,
         gate_floor_source="reflection", gate_disclosure="a wall",
+        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
         validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
         glitch_detected=False, wav_sha256="abc",
     )
