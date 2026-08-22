@@ -78,9 +78,9 @@ from jasper.audio_measurement.program import (
     KIND_PILOT,
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
-    PHASE_CHECK,
-    PHASE_MEASURE,
-    PHASE_VERIFY,
+    PROGRAM_PHASE_CHECK,
+    PROGRAM_PHASE_MEASURE,
+    PROGRAM_PHASE_VERIFY,
     STIMULUS_KINDS,
     ExcitationProgram,
     ProgramSegment,
@@ -6059,16 +6059,16 @@ def analyze_program_capture(
     )
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
-    if program.phase == PHASE_CHECK:
+    if program.phase == PROGRAM_PHASE_CHECK:
         analysis = _analyze_check(
             program, capture, sample_rate, global_offset, locations, priors,
         )
-    elif program.phase == PHASE_MEASURE:
+    elif program.phase == PROGRAM_PHASE_MEASURE:
         analysis = _analyze_measure(
             program, capture, sample_rate, global_offset, locations,
             calibration, geometry, priors,
         )
-    elif program.phase == PHASE_VERIFY:
+    elif program.phase == PROGRAM_PHASE_VERIFY:
         analysis = _analyze_verify(
             program, capture, sample_rate, global_offset, locations,
             calibration, priors, frame_ledger,

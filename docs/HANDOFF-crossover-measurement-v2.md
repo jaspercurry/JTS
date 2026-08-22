@@ -492,14 +492,27 @@ carries no `xovr` role at all. The done screen discloses that once
 measurement — it never blocks. Read an absent vertical as *unsampled*, never as
 flat.
 
-**The phase vocabulary is data, in one place.** `PHASE_*`, `CAPTURE_PHASES`
-and `GROUP_PHASES` live in
+**The SESSION phase vocabulary is data, in one place.** `PHASE_*`,
+`CAPTURE_PHASES` and `GROUP_PHASES` live in
 [`crossover_v2/journey.py`](../jasper/active_speaker/crossover_v2/journey.py),
 with `JourneyPlan` (index map → ordered walk → group index spans →
 `post_apply_verifies`) and `CommissionJourney` (the `accept` / `mark_applied`
 transitions). `GROUP_PHASES` are the three whose accepted-capture bookkeeping
 is per *index* rather than per phase, because one phase spans many prompted
 positions: `cloud_measure`, `cloud_verify`, `lateral`.
+
+"Session" is load-bearing in that heading. A **second** phase vocabulary — the
+STIMULUS one — lives in
+[`audio_measurement/program.py`](../jasper/audio_measurement/program.py) and
+answers a different question: which composer built the excitation being played
+(`PROGRAM_PHASE_CHECK` / `_MEASURE` / `_VERIFY`, and `PROGRAM_PHASES`). The two
+are not interchangeable — every cloud position is its own *session* phase but
+plays the VERIFY-shaped program, so its `program.phase` is `verify`. They used
+to share all three NAMES as well as their string values, which let an import
+site take the wrong family silently; the `PROGRAM_` prefix is what separates
+them now. The values still coincide, deliberately and permanently: both sets
+are banked (the stimulus phase is hashed into `program_id`; the session phases
+are persisted in the flow state), so neither may be renamed on the wire.
 
 **The fit is the last thing before the apply.** Building the candidate at the
 group's close rather than at MEASURE's accept is what lets it consume the

@@ -48,8 +48,8 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import (
-    PHASE_CHECK,
-    PHASE_MEASURE,
+    PROGRAM_PHASE_CHECK,
+    PROGRAM_PHASE_MEASURE,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
@@ -493,7 +493,7 @@ def _map_safety_plan_error(exc: ExcitationSafetyPlanError) -> ProgramAdmissionRe
 def _validate_program(program: ExcitationProgram) -> None:
     if not isinstance(program, ExcitationProgram):
         raise ProgramAdmissionError("program must be an ExcitationProgram")
-    if program.phase not in {PHASE_CHECK, PHASE_MEASURE}:
+    if program.phase not in {PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE}:
         raise ProgramAdmissionError(
             "program admission only covers CHECK/MEASURE programs; VERIFY rides "
             "the applied production graph"

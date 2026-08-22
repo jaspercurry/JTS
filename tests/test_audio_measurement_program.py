@@ -44,9 +44,9 @@ from jasper.audio_measurement.program import (
     KNOWN_AUDIBLE_KINDS,
     MEASURE_SWEEP_F_HI_HZ,
     MESM_GAP_FLOOR_S,
-    PHASE_CHECK,
-    PHASE_MEASURE,
-    PHASE_VERIFY,
+    PROGRAM_PHASE_CHECK,
+    PROGRAM_PHASE_MEASURE,
+    PROGRAM_PHASE_VERIFY,
     PILOT_AMBIENT_WINDOW_S,
     PROGRAM_SAMPLE_RATE_HZ,
     STIMULUS_KINDS,
@@ -89,7 +89,7 @@ def test_check_program_layout_and_gains():
         _roles(), ambient_s=2.0, pilot_duration_s=0.6,
         pilot_levels_db=(-10.0, 0.0),
     )
-    assert prog.phase == PHASE_CHECK
+    assert prog.phase == PROGRAM_PHASE_CHECK
     assert prog.channels == 2
     assert prog.sample_rate_hz == PROGRAM_SAMPLE_RATE_HZ
 
@@ -135,7 +135,7 @@ def test_measure_program_layout_is_n3_interleaved_repeats_bit_identical():
     prog = build_measure_program(
         _gain_plan(), _roles(), sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
-    assert prog.phase == PHASE_MEASURE
+    assert prog.phase == PROGRAM_PHASE_MEASURE
     assert prog.channels == 2
     ids = [s.segment_id for s in prog.segments]
     assert ids == [
@@ -244,7 +244,7 @@ def test_measure_requires_two_drivers_and_all_gains():
 
 def test_verify_program_is_mono_full_band():
     prog = build_verify_program(1600.0, sweep_s=1.0)
-    assert prog.phase == PHASE_VERIFY
+    assert prog.phase == PROGRAM_PHASE_VERIFY
     assert prog.channels == 1
     sweep = prog.segment("sweep_verify")
     assert sweep.kind == KIND_SUMMED_SWEEP
@@ -921,3 +921,80 @@ def test_worst_case_measure_with_prelude_stays_under_capture_wav_cap():
     wav_bytes = 44 + 2 * (program.total_samples + margin_samples)
     assert wav_bytes < CROSSOVER_CAPTURE_MAX_WAV_BYTES
     assert CROSSOVER_CAPTURE_MAX_WAV_BYTES - wav_bytes > 512 * 1024
+
+
+# --------------------------------------------------------------------------- #
+# one vocabulary per question: stimulus phase vs journey phase (ticket 2.9)
+# --------------------------------------------------------------------------- #
+
+
+def _phase_names(module) -> set[str]:
+    """Every module-level name carrying the word PHASE.
+
+    A NAME scan, deliberately, and not a value scan: what collided was the
+    SPELLING, and a value scan structurally cannot see it — the values are
+    identical on purpose and must stay that way (the second test below).
+    """
+    return {name for name in vars(module) if "PHASE" in name}
+
+
+def test_program_phase_names_stay_disjoint_from_journey_phase_names():
+    """The two PHASE families must never spell a name the same way again.
+
+    ``jasper.audio_measurement.program`` answers *which composer built this
+    stimulus* (three phases). ``jasper.active_speaker.crossover_v2.journey``
+    answers *where is the round in its walk* (twelve — ``PHASE_LATERAL``,
+    ``PHASE_REVIEW``, ``PHASE_DONE``, …). Until master-plan ticket 2.9 both
+    spelled ``PHASE_CHECK`` / ``PHASE_MEASURE`` / ``PHASE_VERIFY`` — identical
+    names AND identical string values for different concepts — so an import
+    site could take the wrong family and still typecheck, run, and agree.
+    ``jasper.web.correction_crossover_v2_relay`` imports one name from each and
+    is where a wrong pick would have been read first.
+
+    **The honest bound:** this compares NAMES on the two modules, so a third
+    surface answering either question — under other names, or with bare
+    ``"check"`` / ``"verify"`` literals — is invisible to it. What it catches
+    is the collision returning where it actually lived.
+    """
+    from jasper.active_speaker.crossover_v2 import journey
+    from jasper.audio_measurement import program
+
+    collisions = _phase_names(program) & _phase_names(journey)
+    assert not collisions, (
+        f"PHASE vocabularies collided again: {sorted(collisions)} is declared "
+        "by BOTH jasper.audio_measurement.program (the stimulus phase) and "
+        "jasper.active_speaker.crossover_v2.journey (the session phase). Give "
+        "one family a distinguishing prefix — and do NOT resolve it by "
+        "changing a string value: both value sets are banked (see the note "
+        "above PROGRAM_PHASE_CHECK)."
+    )
+
+
+def test_program_and_journey_phase_values_stay_identical():
+    """The two families share three VALUES on purpose — neither may change.
+
+    This is the other half of the rename, and it is a tripwire rather than a
+    tidiness pin: the obvious way to "finish" ticket 2.9 is to make the string
+    values differ too, and that would break banked data on BOTH sides.
+
+    * **Stimulus side.** ``phase`` is hashed into ``program_id``
+      (:func:`~jasper.audio_measurement.program._program_id`) and serialized by
+      :meth:`~jasper.audio_measurement.program.ExcitationProgram.to_dict`;
+      ``from_dict`` / ``__post_init__`` refuse a phase outside
+      ``PROGRAM_PHASES``. A new value would re-fingerprint every program — and
+      ``program_id`` equality IS #2291's before→after benefit check — and would
+      stop every banked program JSON from loading.
+    * **Journey side.** The values land in ``session_phases`` /
+      ``accepted_phases`` in the on-disk flow state
+      (``correction_crossover_v2.DEFAULT_V2_STATE_PATH``), which
+      ``_phase_from_state`` reads back.
+
+    So if this fails, the question is not "which spelling is nicer" but "what
+    migrates the artifacts already on disk".
+    """
+    from jasper.active_speaker.crossover_v2 import journey
+    from jasper.audio_measurement import program
+
+    assert program.PROGRAM_PHASE_CHECK == journey.PHASE_CHECK
+    assert program.PROGRAM_PHASE_MEASURE == journey.PHASE_MEASURE
+    assert program.PROGRAM_PHASE_VERIFY == journey.PHASE_VERIFY
