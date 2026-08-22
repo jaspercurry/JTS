@@ -242,9 +242,9 @@ UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 #:
 #: All three are microsecond figures qualifying the same row's ``excursion_us``,
 #: and each says which kind it is and what it is a spread OF, because they are
-#: not interchangeable: the two random ones describe scatter that averaging over
-#: captures can reduce, and the systematic one is not reduced by repetition at
-#: all. No number here adds one to another.
+#: not interchangeable: the two random ones describe noise, whose effect on a
+#: pooled reading averaging can reduce, and the systematic one is a bias that
+#: repetition does not touch at all. No number here adds one to another.
 #:
 #: **None of the three is itself a quantity that shrinks with more captures, and
 #: an earlier draft of these strings said two of them were.** Both random

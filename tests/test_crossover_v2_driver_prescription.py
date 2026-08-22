@@ -1034,6 +1034,21 @@ def test_a_defect_verdict_is_necessary_and_the_contract_says_not_sufficient():
     assert "does not say EQ will help" in bar["necessary_not_sufficient"]
 
 
+def test_the_contract_names_the_row_list_a_bar_actually_reads():
+    """"the classification block reports…" stopped being unambiguous.
+
+    The block carries two row lists since the packet widened, and BOTH report a
+    ``measured_q`` — so an instruction that named only the block left a model to
+    guess which one a bar reads. It reads ``verdicts[]``, never the ``lab_rows[]``
+    working beside it, and both instruction points say so by name.
+    """
+    contract = driver_prescription_response_format()
+
+    assert "verdicts[]" in contract["bounds"]["match_a_cut_to_its_feature"]
+    assert "verdicts[]" in contract["classification_bar"]["note"]
+    assert "lab_rows[]" in contract["classification_bar"]["note"]
+
+
 def test_the_nearest_verdict_decides_and_a_further_cuttable_one_cannot_vouch():
     """Two features inside the radius: the CLOSEST claim owns the frequency.
 
