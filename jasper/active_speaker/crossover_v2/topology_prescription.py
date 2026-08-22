@@ -12,13 +12,13 @@ the crossover *topology* — where the branches split, and how steeply.
 
 **Why a prescription exists at all.**  The automatic path adjudicates WHERE to
 cross and never what shape to cross with (#1894; ``fc_sweep.candidate_sections``
-moves the corner only), and the offline candidate search that could rank
-topologies has no production caller.  So a household that wants to hear one
-named corner at one named order — a pre-registered Fc/slope tournament, an arm
-per candidate, graded against each other — had no door at all.  Every existing
-knob either nudges a five-point grid the selector then adjudicates, or declares
-a corner without pinning one.  This is the door: the round solves AT the named
-topology, and its trims, its linearization and its delay re-solve underneath.
+moves the corner only), and nothing anywhere ranks topologies.  So a household
+that wants to hear one named corner at one named order — a pre-registered
+Fc/slope tournament, an arm per candidate, graded against each other — had no
+door at all.  Every existing knob either nudges a five-point grid the selector
+then adjudicates, or declares a corner without pinning one.  This is the door:
+the round solves AT the named topology, and its trims, its linearization and
+its delay re-solve underneath.
 
 **A constraint on the SOLVE, not a stamp on the answer.**  The same sentence
 :mod:`.alignment_prescription` makes about a pinned polarity basin, and it is
@@ -51,7 +51,8 @@ each one is asked of the module that already owns it:
 applies it.  The 24 dB/octave clamp a household declares for its tweeter is read
 by the COMMISSIONING admission path (``graph_safety``) and by the derived
 protection filter; crossover apply compares corner FREQUENCIES only
-(``candidate_space``'s floor predicate).  An order-2 arm at a legal corner would
+(``driver_protection.protection_highpass_floor_satisfied``, the shared floor
+predicate, which has no slope term).  An order-2 arm at a legal corner would
 therefore have run with less sub-Fc attenuation than the tweeter's own
 declaration asks for, silently and with a receipt carrying the arm's name.  It
 is refused here, by name, with the declared number in the message — which is
@@ -96,13 +97,14 @@ shape (a hand-edited state file is still refused) and returns ``None`` rather
 than raising.  The two share the field parsing outright.
 
 **What the receipt must say about authority, and why it is a field.**  A pinned
-corner has NO measured ranking behind it.  The offline candidate search that
-proposes corners has zero production callers and no hardware validation, so a
-pin is an operator's choice from an offline argument — not a measurement that
-beat the alternatives.  :data:`TOPOLOGY_AUTHORITY_OPERATOR_PINNED` is stamped on
-every accepted prescription so a receipt read six weeks later cannot be mistaken
-for a ranked verdict, exactly as the delay prescription prints the basis it was
-derived from rather than leaving provenance to a doc.  It has one value today
+corner has NO measured ranking behind it.  No shipped path scores one topology
+against another — the automatic path's corner selector has no order axis at
+all — so a pin is an operator's choice from an offline argument, not a
+measurement that beat the alternatives.
+:data:`TOPOLOGY_AUTHORITY_OPERATOR_PINNED` is stamped on every accepted
+prescription so a receipt read six weeks later cannot be mistaken for a ranked
+verdict, exactly as the delay prescription prints the basis it was derived from
+rather than leaving provenance to a doc.  It has one value today
 because that is the honest state of the world; it is a field rather than a
 sentence in a doc because the receipt is what outlives the session.
 """
@@ -264,10 +266,10 @@ class TopologyPrescription:
 
     ``basis_artifacts`` names where the corner came from, and is required: a
     pinned arm whose proposal nobody can find is a receipt with a number on it.
-    ``basis_note`` is the human line beside it (which search, which objective,
-    what it scored) and is optional — it is what a reader wants and not
-    something a validator can meaningfully check, so requiring it would buy
-    ceremony rather than trust.
+    ``basis_note`` is the human line beside it (what argument the corner came
+    from, and what that argument weighed) and is optional — it is what a
+    reader wants and not something a validator can meaningfully check, so
+    requiring it would buy ceremony rather than trust.
 
     ``authority`` is stamped by the gate, never chosen: see this module's
     docstring for why a pinned corner must say out loud that no measurement

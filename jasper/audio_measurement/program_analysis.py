@@ -132,8 +132,8 @@ ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding
 # must agree where that becomes dishonest — `_compose_configured_path_ir` below,
 # which composes the measured IR onto the configured crossover, and
 # `active_speaker.crossover_v2.forward_model.driver_plants`, which divides the
-# same protection out in the transfer-function domain so an offline search can
-# apply a different crossover per candidate. One number, one owner.
+# same protection out in the transfer-function domain so a candidate crossover
+# can be evaluated offline, without a build. One number, one owner.
 CONFIGURED_PATH_PROTECTION_FLOOR_DB: float = -12.0
 
 

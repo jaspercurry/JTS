@@ -672,15 +672,13 @@ def _not_evaluated(
         },
         # The one place the PRESCRIPTION PATH states this geometry — the remote
         # tier's own disclosures (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``,
-        # ``crossover_envelope_v2._REMOTE_VERTICAL_NUDGE``) and the unwired
-        # search modules (``search.py``'s ``vertical_polar``, ``objective.py``)
-        # each carry theirs, about their own artifacts. It is a property of the
-        # CORPUS — every shape a round banks is horizontal, whoever wrote the
-        # artifact — so it belongs here rather than as a per-row flag two
-        # producers spell differently (#2783). It DISCLOSES; it refuses
-        # nothing: the owner's
-        # 2026-08-21 ruling opened the boost door on exactly this risk, which is
-        # a correction that may not generalise off-axis vertically — reversible
+        # ``crossover_envelope_v2._REMOTE_VERTICAL_NUDGE``) carry theirs, about
+        # their own artifacts. It is a property of the CORPUS — every shape a
+        # round banks is horizontal, whoever wrote the artifact — so it belongs
+        # here rather than as a per-row flag two producers spell differently
+        # (#2783). It DISCLOSES; it refuses nothing: the owner's 2026-08-21
+        # ruling opened the boost door on exactly this risk, which is a
+        # correction that may not generalise off-axis vertically — reversible
         # and measurable — and not a component-safety one.
         {
             "field": "vertical_plane_response",
