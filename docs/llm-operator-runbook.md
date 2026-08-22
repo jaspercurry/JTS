@@ -146,15 +146,20 @@ has no `withdraw` verb. To clear the slot, stage over it or restore.
 
 ## The doors, and what they refuse
 
-Four prescription doors, one refusal vocabulary each, counted at HEAD:
+Five prescription doors, one refusal vocabulary each, counted at HEAD:
 
 | Door | Refusal reasons | Vocabulary constant |
 |---|---|---|
-| alignment | 8 | `alignment_prescription.PRESCRIPTION_REFUSAL_REASONS` |
+| alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
 | topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
-| blend | 19 | `blend_prescription.PRESCRIPTION_REFUSAL_REASONS` |
+| blend | 19 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
 | driver | 25 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
-| spool | 4 | `prescription_spool.SPOOL_REFUSAL_REASONS` |
+| spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
+
+The topology door lost `outside_declared_search_band` when
+[#2870](https://github.com/jaspercurry/JTS/issues/2870) deleted the crossover
+search band; its two surviving frequency refusals are both drivers' declared
+hard excitation edges.
 
 Two shape what you can even ask for, and both are about **boosts**:
 

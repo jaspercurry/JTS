@@ -81,7 +81,18 @@ DRIVER_CLASSES: tuple[str, ...] = (
 # built ka beaming guidance off the woofer's radiating_diameter_mm instead, so
 # the coverage angle never gained a reader. Waveguide identity and coverage now
 # travel as operator prose in the driver notes.
-LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({"horn_coverage_deg"})
+#
+# crossover_search_band_hz (#2870): the declared range a driver could be crossed
+# over IN. Introduced to bound R17's corner hunt, it outlived that hunt's
+# deletion and its only remaining effect was to refuse corners both drivers'
+# declared HARD excitation bands admit -- a bound naming no damage mechanism.
+# It differs from the key above in one way that matters here: it was REQUIRED
+# (``crossover_search_band_missing`` blocked confirmation), so EVERY box
+# confirmed before the ruling carries it, not just some.
+LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
+    "horn_coverage_deg",
+    "crossover_search_band_hz",
+})
 
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 

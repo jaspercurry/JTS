@@ -558,8 +558,8 @@ verbose reply is not rejected). The operator pastes the assistant's reply —
 fence markers and surrounding prose are tolerated — and selects
 **Load information**. A compact proposed-crossover
 summary appears before a single collapsed **Advanced** editor. Advanced groups
-driver specifications, hard never-test-beyond frequency edges, narrower
-measurement and crossover-search bands, required high/low-pass cutoff and
+driver specifications, hard never-test-beyond frequency edges, the narrower
+measurement band, required high/low-pass cutoff and
 slope, cabinet geometry, level/duration limits, trim, crossover candidates,
 provenance, and unknowns. All editable values and research evidence are rendered
 as labeled sections directly inside Advanced; it contains no second-level
