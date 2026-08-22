@@ -128,8 +128,15 @@ def _stage1(tier):
     return _stage1_of(resolve_plan_shape(tier))
 
 
+def _stage2_of(shape):
+    """The shipped stage-2 plan for a RESOLVED shape — the twin of
+    :func:`_stage1_of`, and the only builder that reaches
+    ``_positioned_prompt`` in a shipped shape (stage 1's cloud group is off)."""
+    return build_v2_verify_capture_plan(FC_HZ, plan_shape=shape)
+
+
 def _stage2(tier):
-    return build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape(tier))
+    return _stage2_of(resolve_plan_shape(tier))
 
 
 def _entry(degrees, role=POSITION_ROLE_ONAX):
@@ -800,6 +807,56 @@ def test_a_hand_released_shape_states_bearings_and_keeps_the_tap():
         assert entry.screen[POSITION_ROLE_KEY] == POSITION_ROLE_ONAX
     baseline, = [e for e in plan.entries if e.kind_label == "entry_baseline"]
     assert "0°" in baseline.screen["title"]
+
+
+def test_a_hand_released_stage_2_states_its_SPOTS_as_bearings():
+    """The pose-statement axis where it is actually READ (#2879 gate S2).
+
+    ``_positioned_prompt`` is reached by exactly one shipped builder — stage
+    2's post-apply group — because stage 1's cloud group is off
+    (``STAGE1_INCLUDES_CLOUD_MEASURE``) and its lateral walk is opt-in. So a
+    stage-1-only test cannot see it, and welding that read back to
+    ``externally_positioned`` passed the entire suite while flipping a
+    household's copy to a tape-measure instruction against a gate publishing
+    degrees. This asserts the COPY, which is the half the machine keys cannot
+    stand in for: the two are the same statement in two vocabularies, and a
+    session that says one thing to a person and another to the gate is the
+    whole defect the split exists to prevent.
+    """
+    plan = _stage2_of(_hand_released())
+    prompted = [e for e in plan.entries if int(e.screen[POSITION_DEG_KEY]) != 0]
+    assert prompted, "a Full stage 2 walks prompted spots off the axis"
+    for entry in prompted:
+        degrees = int(entry.screen[POSITION_DEG_KEY])
+        side = "LEFT" if degrees < 0 else "RIGHT"
+        # The copy names the SAME bearing the gate will publish and wait for.
+        assert f"Turn the microphone to {degrees:+d}°" in entry.screen["title"]
+        assert f"{abs(degrees)}° {side} of the design axis" in entry.screen["title"]
+        # ...and it is a tap, not a countdown: a person is holding the tape.
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+        assert "countdown_s" not in entry.screen
+    assert [int(e.screen[POSITION_DEG_KEY]) for e in plan.entries] == list(
+        STAGE2_ANGLES
+    )
+
+
+def test_a_hand_released_stage_2_anchor_reads_in_degrees_and_keeps_its_confirm():
+    """The second unpinned read: stage 2's ANCHOR copy (#2879 gate S2).
+
+    Its title/body follow the pose statement (a gated operator is given the
+    bearing) while its confirm tap follows the advance policy (only a
+    machine-advanced session has no hand to answer one). Welding the first back
+    to ``externally_positioned`` also passed the whole suite.
+    """
+    anchor = _stage2_of(_hand_released()).entries[0].screen
+    assert "design axis (0°)" in anchor["title"]
+    assert f"{flow.MARK_DISTANCE_M:g} m out" in anchor["body"]
+    # The hand keeps its confirm — byte-identical to every tap-paced shape.
+    assert anchor["confirm_title"] == "Back on the mark, holding still?"
+    # ...which the ARM still does not get, because there is no hand to answer.
+    assert "confirm_title" not in _stage2(TIER_REMOTE).entries[0].screen
+    # ...and a tap-paced shape keeps the tape-measure copy verbatim.
+    assert "Back at the mark" in _stage2(TIER_FULL).entries[0].screen["title"]
 
 
 def test_the_gate_can_read_a_hand_released_plans_own_entries():
