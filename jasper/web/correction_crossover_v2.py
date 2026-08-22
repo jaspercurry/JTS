@@ -6631,6 +6631,43 @@ class PositionGate:
         with self._lock:
             self._session_ceiling_expired = True
 
+    def abandon_hold(self) -> None:
+        """Forget the hold that is open — nothing is running it any more.
+
+        A hold's identity is the ``(index, attempt)`` its begin named, and
+        :meth:`gate` publishes a NEW ``pending`` only when no hold is open
+        (``_opened_at is None``). That is what makes a re-posted begin
+        idempotent: the same begin re-entering an open hold must not restart
+        its clock or re-announce it.
+
+        The one caller that walks AWAY from a held begin — the wired runner
+        abandoning it to re-open the previous slot as a retake — has to say so,
+        or the next begin is treated as a continuation of the abandoned one:
+        the envelope keeps naming the position nobody is measuring any more,
+        the operator is asked to walk to the wrong spot, and a release for the
+        begin that IS running is refused as a stale index. The hold then spends
+        its whole :data:`REMOTE_POSITION_HOLD_BUDGET_S` on a target nothing is
+        waiting for.
+
+        Idempotent, and safe with no hold open. It deliberately does NOT touch
+        ``_released`` (a release already given stays given) or the
+        ceiling latch (a walk that ran out of time has still run out of time).
+        """
+        with self._lock:
+            if self._pending is None and self._opened_at is None:
+                return
+            abandoned = self._pending
+            self._pending = None
+            self._opened_at = None
+        if abandoned:
+            log_event(
+                logger,
+                "correction.crossover_v2_position_hold_abandoned",
+                index=int(abandoned["index"]),
+                attempt=int(abandoned["attempt"]),
+                degrees=int(abandoned["degrees"]),
+            )
+
     def release(self, index: int | None = None) -> dict[str, Any]:
         """Report the microphone in place for the pending capture.
 

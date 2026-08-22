@@ -506,6 +506,12 @@ def build_v2_wired_run_and_consume(
                     # walk decides what to do about it — this loop only stops
                     # waiting for a release nobody is coming to give.
                     if _retake_wanted():
+                        # Say so before leaving: a hold nobody is running must
+                        # stop being the position the envelope advertises, or
+                        # the operator is sent to the wrong spot and the
+                        # retake's own target is never published.
+                        if position_gate is not None:
+                            position_gate.abandon_hold()
                         raise _RetakeRequested from None
 
         def _mint_answer(recording: Any) -> WiredCaptureAnswer:

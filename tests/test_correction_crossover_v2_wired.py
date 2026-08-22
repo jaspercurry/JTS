@@ -34,6 +34,7 @@ import asyncio
 import io
 import logging
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -952,6 +953,7 @@ class _RetakeOnHold:
         self._hold_index = hold_index
         self._refuse = refuse
         self.held = 0
+        self.abandoned = 0
 
     def gate(self, index, attempt, entry):
         if self._refuse is not None and (index, attempt) == self._refuse:
@@ -960,6 +962,10 @@ class _RetakeOnHold:
             self.held += 1
             self._retake.set()
             raise CaptureBeginDeferred("awaiting_position", "hold")
+
+    def abandon_hold(self):
+        """The real gate's method, so this double cannot hide the call."""
+        self.abandoned += 1
 
 
 def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
@@ -979,12 +985,16 @@ def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
     """
     retake = threading.Event()
     conductor = FakeConductor()
+    gate = _RetakeOnHold(retake, hold_index=2)
     runner = _build(
         conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
-        position_gate=_RetakeOnHold(retake, hold_index=2), retake_event=retake,
+        position_gate=gate, retake_event=retake,
     )
     _run(runner, plan=_plan(target=2, max_attempts=5))
 
+    # The abandoned begin was declared abandoned, so the gate stops
+    # advertising a position nothing is measuring any more.
+    assert gate.abandoned == 1
     assert [e for e in conductor.events if e[0] != "on_armed"] == [
         ("authorize", 1, 1),
         ("consume", 1, 1, {"accepted": True}),
@@ -1128,6 +1138,98 @@ def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch)
     assert ("confirm",) in conductor.events
 
 
+def test_the_real_gate_publishes_the_retakes_own_target(monkeypatch):
+    """Against the REAL PositionGate, not a double — the join a fake hides.
+
+    Abandoning a held begin to serve a retake leaves the gate holding state
+    for the begin nobody is running any more. If that is not cleared, the gate
+    treats the retake's own hold as a CONTINUATION: it publishes no new
+    ``pending``, so the envelope keeps naming the abandoned position, the
+    person is asked for the wrong spot, and a release for the retake's index
+    is refused as stale — the hold then spins until the 600 s budget kills it.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        POSITION_DEG_KEY, POSITION_ROLE_KEY,
+    )
+    from jasper.web.correction_crossover_v2 import PositionGate
+
+    gate = PositionGate()
+    retake = threading.Event()
+    plan = CapturePlan(
+        capture_target=2,
+        max_attempts=5,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(
+                index=i, kind_label="verify", duration_ms=200,
+                screen={
+                    POSITION_DEG_KEY: str(i * 22),
+                    POSITION_ROLE_KEY: "onax",
+                },
+            )
+            for i in range(2)
+        ),
+    )
+    seen: list = []
+
+    abandoned_hold_had_to_be_released = []
+
+    def _release_in_the_background() -> None:
+        """Play the person: release what the gate asks for, except once.
+
+        At capture 2's hold — the moment capture 1 is banked and nothing new
+        has started — they decide take 1 was bad and ask for a retake instead
+        of walking on. They then refuse to release capture 2's position,
+        because they are not standing there: they are walking back to take 1's
+        spot. If the gate is still advertising the abandoned hold, that refusal
+        is the deadlock, and the fallback below records it before breaking it
+        so the test fails on the FACT rather than on a wall-clock timeout.
+        """
+        asked_at = None
+        while not stop.is_set():
+            pending = gate.pending()
+            if pending is None:
+                stop.wait(0.01)
+                continue
+            key = (pending["index"], pending["attempt"])
+            if not seen or seen[-1] != key:
+                seen.append(key)
+            if key == (2, 2) and asked_at is None:
+                asked_at = time.monotonic()
+                retake.set()
+                stop.wait(0.02)
+                continue
+            if key == (2, 2) and (1, 2) not in seen:
+                if time.monotonic() - asked_at < 0.5:
+                    stop.wait(0.02)
+                    continue
+                abandoned_hold_had_to_be_released.append(key)
+            gate.release(pending["index"])
+            stop.wait(0.01)
+
+    stop = threading.Event()
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=gate, retake_event=retake,
+    )
+    releaser = threading.Thread(target=_release_in_the_background, daemon=True)
+    releaser.start()
+    try:
+        _run(runner, plan=plan)
+    finally:
+        stop.set()
+        releaser.join(timeout=5)
+
+    # The retake's own (index, attempt) reached the person, and it did so
+    # WITHOUT them first having to release a position the walk had abandoned.
+    assert abandoned_hold_had_to_be_released == []
+    assert seen == [(1, 1), (2, 2), (1, 2), (2, 3)]
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
 def test_asking_again_while_the_retake_is_held_keeps_waiting(monkeypatch):
     """A double-POST during the retake's OWN hold names the same slot.
 
@@ -1143,6 +1245,7 @@ def test_asking_again_while_the_retake_is_held_keeps_waiting(monkeypatch):
     class Gate:
         def __init__(self):
             self.holds = 0
+            self.abandoned = 0
 
         def gate(self, index, attempt, entry):
             if index == 2 and self.holds == 0:
@@ -1155,6 +1258,9 @@ def test_asking_again_while_the_retake_is_held_keeps_waiting(monkeypatch):
                 self.holds += 1
                 retake.set()
                 raise CaptureBeginDeferred("awaiting_position", "hold")
+
+        def abandon_hold(self):
+            self.abandoned += 1
 
     conductor = FakeConductor()
     volume = VolumeRecorder()

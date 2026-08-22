@@ -1036,6 +1036,34 @@ def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
     setup._enforce_session_volume_ceiling(stale)
 
 
+def test_an_abandoned_hold_stops_being_the_advertised_position():
+    """A hold whose begin nobody is running any more must not be published.
+
+    ``gate`` publishes a NEW ``pending`` only when no hold is open — the
+    idempotence that lets a re-posted begin re-enter its own hold without
+    restarting the clock. So a caller that walks AWAY from a held begin (the
+    wired runner, abandoning one to re-open the previous slot as a retake) has
+    to say so, or the next begin reads as a continuation and the envelope keeps
+    naming a position nothing is measuring.
+    """
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(2, 2, _entry(22, POSITION_ROLE_OFFAX))
+    assert gate.pending()["index"] == 2
+
+    gate.abandon_hold()
+    assert gate.pending() is None
+    gate.abandon_hold()  # idempotent, and safe with nothing open
+
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(1, 3, _entry(0))
+    pending = gate.pending()
+    assert (pending["index"], pending["attempt"], pending["degrees"]) == (1, 3, 0)
+    # A release already given stays given — abandoning a hold is not a rewind.
+    gate.release(1)
+    gate.gate(1, 3, _entry(0))
+
+
 def test_the_release_route_admits_the_pending_capture():
     gate = PositionGate()
     with _live_remote_slot(gate) as setup:
