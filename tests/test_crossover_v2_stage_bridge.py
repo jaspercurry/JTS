@@ -713,6 +713,8 @@ def test_the_state_axis_crosses_the_bridge_beside_the_commanded_one(monkeypatch)
 
 
 _PRESCRIPTION_BODY = {
+    "kind": "jts_crossover_alignment_prescription",
+    "artifact_schema_version": 1,
     "delay_us": -450.0,
     "basis_delay_us": -405.7,
     "basis_artifacts": [
@@ -746,6 +748,8 @@ def test_a_delay_prescription_crosses_from_the_request_body_to_the_bridge(monkey
     v2host.persist_conductor_state(conductor, failure_code=None)
     banked = (v2host.load_v2_state() or {})["verify_priors"]["alignment_prescription"]
     assert banked == {
+        "kind": "jts_crossover_alignment_prescription",
+        "artifact_schema_version": 1,
         "delay_us": -450.0,
         "basis_delay_us": -405.7,
         # Derived on the way out, never carried in: the receipt states the

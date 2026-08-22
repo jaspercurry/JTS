@@ -1196,7 +1196,26 @@ MAX_LINES_BY_PATH = {
     # when that vocabulary does: a THIRD spelling of a crossover, or a second
     # protected role. Deriving-and-refusing only — the single durable writer
     # stays in `sound_setup`, in both directions.
-    "jasper/active_speaker/crossover_declaration.py": 407,
+    # 2026-08-21 (tuning master plan 2.5): 407 -> 436, +29, no extraction. The
+    # version+kind envelope the other three prescription doors already carry
+    # (`driver_prescription`/`blend_prescription`'s established shape): two
+    # named constants (`CROSSOVER_DECLARATION_CHANGE_KIND` /
+    # `_SCHEMA_VERSION`) with their own docstrings, two fields on
+    # `change_to_record`'s output, and `change_from_record`'s envelope check.
+    # No seam to cut: this is the file's one vocabulary gaining one more fact
+    # about itself, not a second concern arriving.
+    # 2026-08-22 (same ticket, gate delta): 436 -> 452, +16, no extraction.
+    # The initial envelope check refused ANY record missing it — including
+    # `sound_declaration_undo`, which #2743 shipped writing three days before
+    # this envelope existed and which is carried UNCONDITIONALLY across a
+    # deploy for as long as the applied graph is, so a live speaker could
+    # already hold a pre-envelope record. `change_from_record` now treats a
+    # record naming NEITHER envelope field as that legacy shape (reads as
+    # this module's own kind and version 1) while still refusing one naming
+    # EITHER field wrong — the retrofit posture the two request-time doors'
+    # `_parse_prescription(..., read_back=True)` share, argued in each
+    # function's own docstring rather than restated here.
+    "jasper/active_speaker/crossover_declaration.py": 452,
     # Born 2026-08-18 (#2662 slice 1) at exactly this size: the relay capture
     # provider — the choreography only the phone-relay source has. It should
     # grow only when the RELAY grows; the wired provider is its own module.

@@ -137,7 +137,12 @@ SPOOL_TOO_MANY_STOPS = "angle_request_too_many_stops"
 #: its own slug rather than a malformed-document reason.
 SESSION_ALREADY_LIVE = "measurement_session_already_live"
 
-SPOOL_REFUSAL_REASONS = frozenset({
+#: ``ANGLE_SPOOL_`` prefixed: an unprefixed ``SPOOL_REFUSAL_REASONS`` would
+#: collide with :mod:`.crossover_v2.prescription_spool`'s own bare
+#: ``SPOOL_REFUSAL_REASONS`` -- two different closed vocabularies for two
+#: different mailboxes, sharing one name. Values are unchanged; only the
+#: Python identifier moved.
+ANGLE_SPOOL_REFUSAL_REASONS = frozenset({
     SPOOL_MALFORMED,
     SPOOL_TOO_LARGE,
     SPOOL_TOO_MANY_STOPS,
@@ -151,8 +156,8 @@ class AngleRequestRefused(CrossoverV2FlowError):
     Subclasses the flow's own error so a caller that already handles
     ``CrossoverV2FlowError`` -- which is every caller of
     :mod:`.angle_capture`'s constructors -- keeps handling this one. ``reason``
-    is from :data:`SPOOL_REFUSAL_REASONS`; ``detail`` is the sentence a person
-    reads.
+    is from :data:`ANGLE_SPOOL_REFUSAL_REASONS`; ``detail`` is the sentence a
+    person reads.
     """
 
     def __init__(self, reason: str, detail: str) -> None:
@@ -306,7 +311,7 @@ def take_staged_angle_request() -> AngleCaptureRequest | None:
     is every ordinary session.
 
     Raises :class:`AngleRequestRefused` when a document IS staged and cannot be
-    run, with a slug from :data:`SPOOL_REFUSAL_REASONS`, or the underlying
+    run, with a slug from :data:`ANGLE_SPOOL_REFUSAL_REASONS`, or the underlying
     ``CrossoverV2FlowError`` when the banked stops no longer satisfy
     :mod:`.angle_capture`'s own contract (an angle edited out of bounds, an
     unknown regime, an unknown mover). **That second class is deliberately not

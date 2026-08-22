@@ -31,7 +31,7 @@ which gate said no.
 that cannot tell *why* it was refused cannot correct itself, and the loop this
 module serves is a loop precisely because the next proposal should be better
 than the last.  Every refusal below carries a slug from
-:data:`PRESCRIPTION_REFUSAL_REASONS` beside a human sentence — the same
+:data:`BLEND_PRESCRIPTION_REFUSAL_REASONS` beside a human sentence — the same
 by-type-never-by-prose rule
 :class:`~.contracts.CrossoverV2ContractError` and
 :class:`~.alignment_prescription.AlignmentPrescriptionRefused` already follow.
@@ -142,6 +142,9 @@ PositionalEvidence = tuple[list[dict[str, Any]], list[float], float]
 
 __all__ = [
     "BLEND_CANDIDATE_FIELD",
+    "BLEND_PRESCRIPTION_MALFORMED",
+    "BLEND_PRESCRIPTION_PROVENANCE_MISSING",
+    "BLEND_PRESCRIPTION_REFUSAL_REASONS",
     "BOOST_MIN_DIP_DB",
     "BOOST_MIN_TESTIFYING_POSITIONS",
     "BOOST_ROUTE_UNAVAILABLE",
@@ -152,7 +155,6 @@ __all__ = [
     "PRESCRIPTION_MAX_FILTER_BOOST_DB",
     "PRESCRIPTION_MAX_TOTAL_BOOST_DB",
     "PRESCRIPTION_MIN_Q",
-    "PRESCRIPTION_REFUSAL_REASONS",
     "PRESCRIPTION_SCHEMA_VERSION",
     "PROHIBITED_PRESCRIPTION_KEYS",
     "BlendPrescription",
@@ -407,10 +409,17 @@ BOOST_MAX_DISSENTING_POSITIONS = 1
 # --------------------------------------------------------------------------- #
 
 PRESCRIPTION_TOO_LARGE = "prescription_too_large"
-PRESCRIPTION_MALFORMED = "prescription_malformed"
+#: ``BLEND_PRESCRIPTION_`` prefixed on these three: they would otherwise
+#: collide with :mod:`.alignment_prescription`'s own bare
+#: ``PRESCRIPTION_MALFORMED`` / ``PRESCRIPTION_PROVENANCE_MISSING`` /
+#: ``PRESCRIPTION_REFUSAL_REASONS`` — two different closed vocabularies for two
+#: different seams, sharing one name. Values are unchanged; only the Python
+#: identifiers moved, to :data:`DRIVER_PRESCRIPTION_MALFORMED`'s own
+#: sibling-module style.
+BLEND_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_SCHEMA_UNSUPPORTED = "prescription_schema_unsupported"
 PRESCRIPTION_PACKET_MISMATCH = "prescription_packet_mismatch"
-PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
+BLEND_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_PROHIBITED_FIELD = "prescription_prohibited_field"
 FILTER_MALFORMED = "filter_malformed"
 FILTER_COUNT_EXCEEDED = "filter_count_exceeded"
@@ -435,12 +444,12 @@ STRICT_READER_DISAGREEMENT = "strict_reader_disagreement"
 #: :func:`prescription_route` for the two structural facts behind it.
 BOOST_ROUTE_UNAVAILABLE = "boost_route_unavailable"
 
-PRESCRIPTION_REFUSAL_REASONS = frozenset({
+BLEND_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_TOO_LARGE,
-    PRESCRIPTION_MALFORMED,
+    BLEND_PRESCRIPTION_MALFORMED,
     PRESCRIPTION_SCHEMA_UNSUPPORTED,
     PRESCRIPTION_PACKET_MISMATCH,
-    PRESCRIPTION_PROVENANCE_MISSING,
+    BLEND_PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_PROHIBITED_FIELD,
     FILTER_MALFORMED,
     FILTER_COUNT_EXCEEDED,
@@ -544,8 +553,8 @@ PROHIBITED_PRESCRIPTION_KEYS = frozenset({
 class BlendPrescriptionRefused(ValueError):
     """One prescription this module would not accept, and why.
 
-    Carries a ``reason`` from :data:`PRESCRIPTION_REFUSAL_REASONS` beside the
-    human ``detail``, and — for the refusals a prescriber can act on — an
+    Carries a ``reason`` from :data:`BLEND_PRESCRIPTION_REFUSAL_REASONS` beside
+    the human ``detail``, and — for the refusals a prescriber can act on — an
     ``evidence`` mapping saying what was actually measured. A model told only
     "refused: boost_dip_not_stable" can guess; one told "3 of 4 testifying
     positions saw the dip, 4 needed" can fix its own proposal.
@@ -795,7 +804,7 @@ def prescription_response_format() -> dict[str, Any]:
                 "as a no — measure more positions and propose again"
             ),
         },
-        "refusal_reasons": sorted(PRESCRIPTION_REFUSAL_REASONS),
+        "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
         "execution_boundary": {
             "model_may_propose": True,
@@ -1257,19 +1266,20 @@ def _prescriber(raw: Any) -> tuple[str, str]:
 
     Both halves required. A model with no operator cannot be asked what it was
     told; an operator with no model cannot be compared against the next run.
-    This is :data:`PRESCRIPTION_PROVENANCE_MISSING` applied to authorship
-    rather than to a measured basis — the packet fingerprint carries the basis.
+    This is :data:`BLEND_PRESCRIPTION_PROVENANCE_MISSING` applied to
+    authorship rather than to a measured basis — the packet fingerprint
+    carries the basis.
     """
     if not isinstance(raw, Mapping):
         _refuse(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
             "a prescription must carry a prescriber object naming its model "
             "and operator",
         )
     unknown = sorted(set(raw) - {"model", "operator"})
     if unknown:
         _refuse(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
             f"prescriber carries unknown field(s): {', '.join(unknown)}",
         )
     values: list[str] = []
@@ -1277,7 +1287,7 @@ def _prescriber(raw: Any) -> tuple[str, str]:
         value = raw.get(field)
         if not isinstance(value, str) or not value.strip():
             _refuse(
-                PRESCRIPTION_PROVENANCE_MISSING,
+                BLEND_PRESCRIPTION_PROVENANCE_MISSING,
                 f"prescriber.{field} must be a non-blank name",
             )
         values.append(" ".join(value.split()))
@@ -1290,12 +1300,13 @@ def _rationale(raw: Any) -> str:
         return ""
     if not isinstance(raw, str):
         _refuse(
-            PRESCRIPTION_MALFORMED, f"rationale must be text, got {type(raw).__name__}"
+            BLEND_PRESCRIPTION_MALFORMED,
+            f"rationale must be text, got {type(raw).__name__}",
         )
     text = " ".join(raw.split())
     if len(text) > RATIONALE_MAX_CHARS:
         _refuse(
-            PRESCRIPTION_MALFORMED,
+            BLEND_PRESCRIPTION_MALFORMED,
             f"rationale must be at most {RATIONALE_MAX_CHARS} characters, got "
             f"{len(text)}",
         )
@@ -1312,7 +1323,7 @@ def _parse_prescription(
     """
     if not isinstance(raw, Mapping):
         _refuse(
-            PRESCRIPTION_MALFORMED,
+            BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
     # The blocklist runs BEFORE the unknown-field check, and the order is the
@@ -1333,12 +1344,12 @@ def _parse_prescription(
     unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
         _refuse(
-            PRESCRIPTION_MALFORMED,
+            BLEND_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
     if raw.get("kind") != PRESCRIPTION_KIND:
         _refuse(
-            PRESCRIPTION_MALFORMED,
+            BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must name kind={PRESCRIPTION_KIND!r}, got "
             f"{raw.get('kind')!r}",
         )
@@ -1353,7 +1364,7 @@ def _parse_prescription(
     fingerprint = raw.get(PACKET_FINGERPRINT_FIELD)
     if not isinstance(fingerprint, str) or not fingerprint.strip():
         _refuse(
-            PRESCRIPTION_PROVENANCE_MISSING,
+            BLEND_PRESCRIPTION_PROVENANCE_MISSING,
             f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
         )
     model, operator = _prescriber(raw.get("prescriber"))
@@ -1679,9 +1690,12 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
     try:
         document = json.loads(payload.decode("utf-8"))
     except UnicodeDecodeError:
-        _refuse(PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
+        _refuse(BLEND_PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
     except json.JSONDecodeError as exc:
-        _refuse(PRESCRIPTION_MALFORMED, f"a prescription must be valid JSON: {exc.msg}")
+        _refuse(
+            BLEND_PRESCRIPTION_MALFORMED,
+            f"a prescription must be valid JSON: {exc.msg}",
+        )
     except RecursionError:
         # Deeply nested arrays exhaust the interpreter stack inside the parser
         # itself, well under the byte cap: ~20 KB of `[[[[...]]]]` does it. A
@@ -1690,10 +1704,12 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
         # by widening either arm, because it is a fact about the document's
         # SHAPE rather than about its encoding or its syntax. The refusal path
         # from here is shallow, so it runs on the unwound stack.
-        _refuse(PRESCRIPTION_MALFORMED, "a prescription is nested too deeply to parse")
+        _refuse(
+            BLEND_PRESCRIPTION_MALFORMED, "a prescription is nested too deeply to parse"
+        )
     if not isinstance(document, dict):
         _refuse(
-            PRESCRIPTION_MALFORMED,
+            BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must be a JSON object, got {type(document).__name__}",
         )
     return document

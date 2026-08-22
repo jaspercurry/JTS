@@ -37,8 +37,8 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
+    BLEND_PRESCRIPTION_REFUSAL_REASONS,
     PRESCRIPTION_KIND,
-    PRESCRIPTION_REFUSAL_REASONS,
     BlendPrescriptionRefused,
     prescription_sha256,
     read_blend_prescription,
@@ -674,7 +674,7 @@ def test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest(
         spool.take_staged_prescription(round_ordinal=9)
 
     assert caught.value.reason == expected_reason
-    assert caught.value.reason in PRESCRIPTION_REFUSAL_REASONS
+    assert caught.value.reason in BLEND_PRESCRIPTION_REFUSAL_REASONS
 
 
 def test_a_document_staged_for_another_round_is_refused_by_name():
@@ -742,7 +742,7 @@ def test_a_malformed_envelope_is_refused_rather_than_half_read(overrides):
         spool.take_staged_prescription(round_ordinal=9)
 
     assert caught.value.reason in (
-        spool.SPOOL_REFUSAL_REASONS | PRESCRIPTION_REFUSAL_REASONS
+        spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS | BLEND_PRESCRIPTION_REFUSAL_REASONS
     )
 
 
@@ -897,7 +897,7 @@ def test_no_corrupt_envelope_field_escapes_the_refusal_vocabulary():
     more found re-running it here: ``1e308``, finite and absurd, which reaches
     the same evaluator through ``math.cos`` instead.
     """
-    known = spool.SPOOL_REFUSAL_REASONS | PRESCRIPTION_REFUSAL_REASONS
+    known = spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS | BLEND_PRESCRIPTION_REFUSAL_REASONS
     escapes: list[str] = []
 
     for field in _envelope_fields():
@@ -988,7 +988,19 @@ def test_the_two_refusal_vocabularies_stay_disjoint():
     slug appearing in both would make a prescriber's ``reason`` ambiguous about
     which question failed.
     """
-    assert not (spool.SPOOL_REFUSAL_REASONS & PRESCRIPTION_REFUSAL_REASONS)
+    assert not (
+        spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS & BLEND_PRESCRIPTION_REFUSAL_REASONS
+    )
+
+
+def test_the_unprefixed_spool_refusal_reasons_name_is_gone():
+    """This module's own member of the two-file ``SPOOL_REFUSAL_REASONS``
+    collision with :mod:`.angle_capture_spool` — renamed to
+    :data:`PRESCRIPTION_SPOOL_REFUSAL_REASONS` so importing both modules
+    unqualified cannot shadow one vocabulary with the other. The bare name
+    must not still be an attribute of this module.
+    """
+    assert not hasattr(spool, "SPOOL_REFUSAL_REASONS")
 
 
 # --------------------------------------------------------------------------- #

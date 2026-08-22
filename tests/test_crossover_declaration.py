@@ -24,6 +24,8 @@ import pytest
 
 from jasper.active_speaker.crossover_declaration import (
     CROSSOVER_BELOW_DECLARED_FLOOR,
+    CROSSOVER_DECLARATION_CHANGE_KIND,
+    CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
     CrossoverBelowDeclaredFloor,
     CrossoverGeometry,
     assert_crossover_honours_declared_floor,
@@ -270,7 +272,26 @@ def test_the_undo_record_round_trips_both_parameters():
     assert change_from_record(change_to_record(change)) == change
 
 
+def test_the_record_carries_kind_and_schema_version():
+    """The envelope :func:`change_to_record` writes, named as data.
+
+    Mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
+    DRIVER_PRESCRIPTION_KIND`'s shape: a reader handed this record can tell
+    what it is without guessing from its field names alone.
+    """
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = change_to_record(change)
+    assert record["kind"] == CROSSOVER_DECLARATION_CHANGE_KIND
+    assert record["artifact_schema_version"] == (
+        CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION
+    )
+
+
 @pytest.mark.parametrize("missing", [
+    "kind", "artifact_schema_version",
     "between_roles", "applied_hz", "previous_hz", "applied_filter_type",
     "previous_filter_type", "applied_slope_db_per_octave",
     "previous_slope_db_per_octave",
@@ -278,10 +299,13 @@ def test_the_undo_record_round_trips_both_parameters():
 def test_a_record_missing_any_field_reads_as_no_change_to_reverse(missing):
     """Strict on purpose, and it costs nothing.
 
-    No shipped build ever wrote one of these records (the accept branch was
-    unreachable), so there is no older shape to be tolerant of — and a partial
-    record completed with a default would put a crossover into ``/sound`` that
-    no accept chose.
+    A partial record completed with a default would put a crossover into
+    ``/sound`` that no accept chose. ``kind`` and ``artifact_schema_version``
+    are on the same terms as the seven fields beside them here — missing ONE
+    of the two, with the other present, is not the wholly-absent legacy shape
+    (see ``test_a_pre_envelope_record_round_trips_instead_of_stranding_the_
+    declaration`` for that one) and reads as ``None`` exactly like any other
+    incomplete record.
     """
     change = declaration_change_for_candidate(
         source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
@@ -290,6 +314,81 @@ def test_a_record_missing_any_field_reads_as_no_change_to_reverse(missing):
     record = change_to_record(change)
     del record[missing]
     assert change_from_record(record) is None
+
+
+def test_a_record_naming_an_unsupported_schema_version_reads_as_no_change():
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = change_to_record(change)
+    record["artifact_schema_version"] = 2
+    assert change_from_record(record) is None
+
+
+def test_a_pre_envelope_record_round_trips_instead_of_stranding_the_declaration():
+    """The retrofit contract, and the reason it exists.
+
+    #2743 shipped :func:`change_to_record` three days before this envelope,
+    and ``sound_declaration_undo`` is carried UNCONDITIONALLY across a deploy
+    for as long as the applied graph is
+    (``correction_crossover_v2.observe_apply_success`` /
+    ``persist_conductor_state``) — so a record on a live speaker RIGHT NOW can
+    be exactly this pre-envelope shape. Refusing it outright would silently
+    strand ``/sound``'s declaration against a graph the speaker is no longer
+    playing the next time Undo tries to read it back, the exact P0
+    :func:`~jasper.web.correction_crossover_v2._restore_sound_declaration`'s
+    own docstring names.
+
+    Generated from the CURRENT :func:`change_to_record` output with the two
+    envelope keys removed, not hand-typed, so this is exactly the shape the
+    merge-base wrote rather than a guess at it.
+    """
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0, order=2)), design_draft=_draft()
+    )
+    assert change is not None
+    pre_envelope_record = change_to_record(change)
+    del pre_envelope_record["kind"]
+    del pre_envelope_record["artifact_schema_version"]
+    assert change_from_record(pre_envelope_record) == change
+
+
+@pytest.mark.parametrize("mutation", [
+    {"kind": "nope"},
+    {"artifact_schema_version": 2},
+    {"kind": "nope", "artifact_schema_version": 2},
+])
+def test_a_record_naming_a_wrong_envelope_field_still_refuses(mutation):
+    """A record that TRIED to speak the envelope and got it wrong is not the
+    legacy shape, and is refused exactly like any other malformed field —
+    the future-version case (an as-yet-unbuilt schema bump) included."""
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = {**change_to_record(change), **mutation}
+    assert change_from_record(record) is None
+
+
+@pytest.mark.parametrize("keep", ["kind", "artifact_schema_version"])
+def test_naming_only_one_envelope_field_is_not_the_legacy_shape(keep):
+    """EITHER field present, even correctly, with the other missing, is not
+    the wholly-absent shape the retrofit tolerates."""
+    change = declaration_change_for_candidate(
+        source_preset=_preset(_region(fc_hz=2750.0)), design_draft=_draft()
+    )
+    assert change is not None
+    record = change_to_record(change)
+    other = "artifact_schema_version" if keep == "kind" else "kind"
+    del record[other]
+    assert change_from_record(record) is None
+
+
+def test_a_mangled_or_absent_record_still_reads_as_no_change():
+    assert change_from_record({}) is None
+    assert change_from_record({"kind": "nope"}) is None
+    assert change_from_record(None) is None
 
 
 def test_a_record_that_is_not_a_mapping_reads_as_no_change():
