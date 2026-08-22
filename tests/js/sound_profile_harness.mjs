@@ -6955,11 +6955,35 @@ const REPIN_PLAN = {
   reverify_output_labels: ["Apple DAC B left", "Apple DAC B right"],
 };
 
+// #2812 B1: the mismatch card (and everything nested inside it, including
+// the re-pin offer below) now renders only when the server-published
+// `hardware_mismatch` says so (jasper.output_topology.declared_hardware_mismatch,
+// jasper/web/sound_setup.py) -- the page no longer recomputes the rule
+// locally from `output_topology`/`output_hardware`/`clock_domain`. This
+// mirrors the shape that function produces for "declared composite, a
+// serial-mismatch clock blocker, no fresh hardware observation in this
+// response".
+const SWAPPED_DONGLE_MISMATCH = {
+  saved_label: "Dual Apple USB-C DAC 4-channel pair",
+  current_label: "Attached hardware",
+  saved_count: 4,
+  current_count: 0,
+  clock_blockers: [{
+    severity: "blocker",
+    code: "dual_apple_observed_serial_mismatch",
+    message: "current dual-Apple DAC serials do not match the saved topology",
+  }],
+  message: "Saved topology expects Dual Apple USB-C DAC 4-channel pair " +
+    "(4 physical outputs), but current output hardware has not been " +
+    "observed. current dual-Apple DAC serials do not match the saved topology.",
+};
+
 function swappedDonglePayload(overrides = {}) {
   return {
     output_topology: activeTwoWayTopologyPayload(),
     topology_revision: "sha256:saved",
     hardware_adoption: { allowed: true, identity: "sha256:hardware-swapped" },
+    hardware_mismatch: SWAPPED_DONGLE_MISMATCH,
     hardware_repin: REPIN_PLAN,
     clock_domain: {
       status: "dual_apple_composite_clock_blocked",
@@ -7115,6 +7139,7 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
       output_topology: activeTwoWayTopologyPayload(),
       topology_revision: "sha256:moved",
       hardware_adoption: { allowed: true, identity: "sha256:hardware-moved" },
+      hardware_mismatch: swappedDonglePayload().hardware_mismatch,
       hardware_repin: REPIN_PLAN,
       clock_domain: swappedDonglePayload().clock_domain,
       conflict: "detected_hardware_changed",

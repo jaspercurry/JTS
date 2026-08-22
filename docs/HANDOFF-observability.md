@@ -396,6 +396,37 @@ by design. A live fan-in or outputd failure still outranks the override, the
 same way it outranks a parked path. Audio health does not spawn a second
 `systemctl` cadence.
 
+A fourth override, `_undeclared_hardware_signal` (#2812), refines rather than
+outranks: it only replaces `_signal_path`'s own two generic "outputd is not
+delivering audio" headlines (`outputd is None`, or a non-ALSA backend — the
+dual-Apple `action=park_until_active_graph` path keeps outputd's sockets alive
+on a `fake` backend rather than opening ALSA) with a household-actionable one
+naming the detected hardware and pointing at `/sound/setup/`, so it runs last
+in the chain and only claims ground neither `_stopped_dsp_signal` nor
+`_parked_signal` already claimed with a more specific diagnosis. It requires
+BOTH the reconciler's own adoption gate
+(`detected_hardware_adoption_precondition` — a known, non-blocked, usable
+profile) AND the DECLARED topology genuinely not matching what's attached
+(`declared_hardware_mismatch`, in `jasper/output_topology.py` — the same
+comparison `/sound/setup/`'s "Use detected hardware" affordance uses,
+published once and read by both surfaces so neither forks the rule). On a box
+that has never saved a topology at all — the primary case — the second
+conjunct is satisfied directly from `load_output_topology_snapshot`'s
+`revision == "missing"`, without ever calling `declared_hardware_mismatch`:
+that function has no way to see "undeclared" on its own, because a missing
+file's `new_topology_draft` fallback auto-seeds `hardware` FROM the observed
+record whenever it has outputs, which would otherwise read as a false match.
+The second conjunct is load-bearing: an already-declared, already-armed box
+hitting an ordinary outputd hiccup (a deploy's audio-graph bounce, a crash)
+must not be told to "finish setup" for a setup that already happened. Declared
+topology is read on the same slow `_route_interval` cadence as the
+route/transport check above, not every fast tick, because it changes only when
+a household explicitly saves a new layout. The matching `path.*` incident row
+(`path.outputd_unavailable` / `path.outputd_backend_inactive`) is refined with
+the identical wording whenever this override fires, computed once per tick and
+threaded into both, so the incident history and the live headline cannot
+present two different explanations of the same fact.
+
 The contract separates playback continuity from timing. A USB `l2_fallback`
 is a latency warning while playback remains protected; `l0_locked` is runtime
 clock state, not an end-to-end measurement. Stale, missing, mismatched, or
@@ -673,7 +704,15 @@ Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliabilit
 
 ---
 
-Last verified: 2026-07-22 (the three-member debug registry and USB gadget
+Last verified: 2026-08-21 (the Audio alert card's override chain rechecked
+against `jasper/control/audio_health.py`: added the fourth writer,
+`_undeclared_hardware_signal` (#2812), its two-conjunct gate — read from
+`jasper.output_hardware.detected_hardware_adoption_precondition` plus, only
+when a topology was ever saved, `jasper.output_topology.declared_hardware_mismatch`,
+with a never-saved box instead satisfying the second conjunct directly from
+`load_output_topology_snapshot`'s `revision == "missing"` — its slow-cadence
+topology read, and its matching `path.*` incident-alignment fix).
+Prior 2026-07-22 (the three-member debug registry and USB gadget
 forensics' separate bounded-diagnostics boundary were rechecked against code,
 the root sampler, `/state`, and `/system/` cards).
 Prior 2026-07-15 (normalized audio-health ownership, cadence,

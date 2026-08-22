@@ -2191,6 +2191,115 @@ def composite_serial_repin_plan(
     return _composite_repin_plan(topology, pairs)
 
 
+_OBSERVED_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
+    "dual_apple_observation_missing",
+    "dual_apple_usb_topology_mismatch",
+    "dual_apple_usb_topology_unknown",
+    "dual_apple_stable_identity_missing",
+    "dual_apple_endpoint_not_synchronous",
+})
+
+
+def _is_observed_hardware_clock_issue(code: str) -> bool:
+    return (
+        code.startswith("dual_apple_observed_")
+        or code in _OBSERVED_HARDWARE_CLOCK_ISSUE_CODES
+    )
+
+
+def declared_hardware_mismatch(
+    topology: OutputTopology,
+    observed: OutputHardwareState | None,
+) -> dict[str, Any] | None:
+    """Compare the topology's DECLARED hardware against what's attached now.
+
+    This is the server-side original of
+    ``deploy/assets/sound-profile/js/main.js``'s ``outputHardwareMismatch()``
+    — that function now reads ``payload.hardware_mismatch`` (this result,
+    published by ``jasper.web.sound_setup._output_topology_payload``) instead
+    of recomputing the rule, so there is exactly one implementation of it.
+    ``jasper.control.audio_health``'s #2812 setup hint calls this directly —
+    it runs in a different daemon, so it cannot read the wizard's HTTP
+    response — as the "outer conjunct" alongside
+    ``jasper.output_hardware.detected_hardware_adoption_precondition``'s
+    inner one: adoption being allowed only says the DETECTED hardware is
+    usable, never that it differs from what is already declared. Without this
+    check an already-armed box hitting an ordinary outputd hiccup (a deploy's
+    audio-graph bounce, a crash) was told to "finish setup" for a setup that
+    already happened (#2812 B1).
+
+    Returns ``None`` when there's nothing to flag: the hardware has not been
+    observed and no clock-domain blocker is outstanding, or the declared id
+    and output count already match what's attached and no clock blocker is
+    outstanding either.
+
+    This function CANNOT by itself distinguish "genuinely never declared"
+    from "already matches" (#2812 B2). ``topology`` has no ``None`` state for
+    "undeclared" — a caller reading a missing topology file gets one back
+    from ``new_topology_draft`` regardless, and that draft's ``hardware`` is
+    auto-seeded FROM the observed record whenever it has outputs, not from a
+    fixed "unknown" placeholder. So on a truly fresh box whose detected
+    hardware is ready — precisely the case this function's callers care
+    about — the auto-seeded draft and the observed record match by
+    construction, and this function correctly, but unhelpfully, reports no
+    mismatch. Callers that need "was anything ever actually persisted?" must
+    ask ``jasper.output_topology.load_output_topology_snapshot`` for that
+    fact directly (``snapshot.revision == "missing"``) rather than infer it
+    from this function's verdict on the auto-seeded draft; see
+    ``jasper.control.audio_health._undeclared_hardware_signal`` for the
+    worked example.
+    """
+    clock_blockers = [
+        issue
+        for issue in clock_domain_report(topology).get("issues", [])
+        if issue.get("severity") == "blocker"
+        and _is_observed_hardware_clock_issue(str(issue.get("code") or ""))
+    ]
+    if observed is None and not clock_blockers:
+        return None
+    saved = topology.hardware
+    saved_id = saved.device_id
+    current_id = observed.profile_id if observed is not None else ""
+    saved_count = saved.physical_output_count
+    current_count = observed.physical_output_count if observed is not None else 0
+    id_mismatch = bool(saved_id and current_id and saved_id != current_id)
+    count_mismatch = saved_count != current_count
+    if not id_mismatch and not count_mismatch and not clock_blockers:
+        return None
+    saved_label = saved.device_label or saved.device_id or "Saved hardware"
+    current_label = (
+        (observed.profile_label or observed.profile_id)
+        if observed is not None
+        else "Attached hardware"
+    )
+    current_summary = (
+        f"currently attached hardware is {current_label} "
+        f"({current_count} physical output{'' if current_count == 1 else 's'})"
+        if observed is not None
+        else "current output hardware has not been observed"
+    )
+    blocker_messages = [
+        str(issue.get("message") or "")
+        for issue in clock_blockers
+        if issue.get("message")
+    ]
+    message = (
+        f"Saved topology expects {saved_label} "
+        f"({saved_count} physical output{'' if saved_count == 1 else 's'}), "
+        f"but {current_summary}."
+    )
+    if blocker_messages:
+        message = f"{message} {' '.join(blocker_messages)}"
+    return {
+        "saved_label": saved_label,
+        "current_label": current_label,
+        "saved_count": saved_count,
+        "current_count": current_count,
+        "clock_blockers": clock_blockers,
+        "message": message,
+    }
+
+
 def repin_composite_child_serials(
     topology: OutputTopology,
     observed: OutputHardwareState | None,

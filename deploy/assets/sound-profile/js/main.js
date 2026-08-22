@@ -120,6 +120,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     identity: null, clockDomain: null, activeRoute: null,
     observedHardware: null,
     hardwareAdoption: null,
+    hardwareMismatch: null,
     hardwareRepin: null,
     revision: null,
     identitySaving: '', protectionSaving: '',
@@ -865,75 +866,21 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function observedOutputHardware() {
     return outputTopology.observedHardware || null;
   }
-  function hardwareId(hardware) {
-    return hardware ? String(hardware.device_id || hardware.profile_id || '') : '';
-  }
-  function observedHardwareId(hardware) {
-    return hardware ? String(hardware.profile_id || hardware.device_id || '') : '';
-  }
-  function hardwareLabel(hardware, fallback) {
-    return hardware ? String(
-      hardware.device_label || hardware.profile_label ||
-      hardware.device_id || hardware.profile_id || fallback || 'Unknown output device'
-    ) : (fallback || 'Unknown output device');
-  }
   function hardwareOutputCount(hardware) {
     return Number(hardware && hardware.physical_output_count) || 0;
   }
-  function hardwareSummary(label, count) {
-    return label + ' (' + count + ' physical output' + (count === 1 ? '' : 's') + ')';
-  }
-  var observedHardwareClockIssueCodes = {
-    dual_apple_observation_missing: true,
-    dual_apple_usb_topology_mismatch: true,
-    dual_apple_usb_topology_unknown: true,
-    dual_apple_stable_identity_missing: true,
-    dual_apple_endpoint_not_synchronous: true
-  };
-  function isObservedHardwareClockIssue(issue) {
-    var code = String(issue && issue.code || '');
-    return code.indexOf('dual_apple_observed_') === 0 ||
-      !!observedHardwareClockIssueCodes[code];
-  }
-  function outputClockHardwareBlockers() {
-    var clock = outputClockDomainReport();
-    var issues = clock && Array.isArray(clock.issues) ? clock.issues : [];
-    return issues.filter(function(issue) {
-      return issue && issue.severity === 'blocker' &&
-        isObservedHardwareClockIssue(issue);
-    });
-  }
   function outputHardwareMismatch(topology) {
-    var saved = outputHardware(topology);
-    var observed = observedOutputHardware();
-    var clockBlockers = outputClockHardwareBlockers();
-    if (!saved || (!observed && !clockBlockers.length)) return null;
-    var savedId = hardwareId(saved);
-    var currentId = observedHardwareId(observed);
-    var savedCount = hardwareOutputCount(saved);
-    var currentCount = hardwareOutputCount(observed);
-    var idMismatch = !!(savedId && currentId && savedId !== currentId);
-    var countMismatch = savedCount !== currentCount;
-    if (!idMismatch && !countMismatch && !clockBlockers.length) return null;
-    var savedLabel = hardwareLabel(saved, 'Saved hardware');
-    var currentLabel = hardwareLabel(observed, 'Attached hardware');
-    var currentSummary = observed
-      ? 'currently attached hardware is ' + hardwareSummary(currentLabel, currentCount)
-      : 'current output hardware has not been observed';
-    var blockerMessages = clockBlockers.map(function(issue) {
-      return String(issue.message || '');
-    }).filter(Boolean);
-    return {
-      savedLabel: savedLabel,
-      currentLabel: currentLabel,
-      savedCount: savedCount,
-      currentCount: currentCount,
-      clockBlockers: clockBlockers,
-      message: 'Saved topology expects ' +
-        hardwareSummary(savedLabel, savedCount) +
-        ', but ' + currentSummary + '.' +
-        (blockerMessages.length ? ' ' + blockerMessages.join(' ') : '')
-    };
+    // The declared-vs-detected comparison used to be recomputed here from
+    // outputHardware(topology), observedOutputHardware(), and the clock
+    // domain report. It is now computed once, server-side, in
+    // jasper.output_topology.declared_hardware_mismatch and published as
+    // payload.hardware_mismatch (jasper/web/sound_setup.py's
+    // _output_topology_payload) -- the same rule
+    // jasper.control.audio_health's #2812 setup hint reads, since that
+    // detector runs in a different daemon and cannot see this page's HTTP
+    // response. `topology` is accepted but unused so existing call sites
+    // are unchanged.
+    return outputTopology.hardwareMismatch;
   }
   function outputEvaluation(topology) {
     return topology && topology.evaluation ? topology.evaluation : {};
@@ -5591,6 +5538,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
     outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
+    outputTopology.hardwareMismatch = payload && payload.hardware_mismatch || null;
     outputTopology.hardwareRepin = payload && payload.hardware_repin || null;
     i2sHat = payload && payload.i2s_hat || i2sHat;
     outputTopology.revision = payload && payload.topology_revision || null;

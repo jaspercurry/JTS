@@ -66,6 +66,15 @@ PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
 # incident title and the signal-path headline that carries it into `overall`.
 STOPPED_DSP_HEADLINE = "DSP engine is not running"
 
+# `_signal_path`'s own two generic headlines for "outputd is not delivering
+# audio, for a reason `_signal_path` cannot see": the daemon never started
+# (`outputd is None`), or it is up but self-reports a non-ALSA backend. Named
+# once so `_undeclared_hardware_signal`'s refinement guard and `_state_issues`'
+# matching incident branch can compare against these rather than duplicating
+# the literals `_signal_path` returns.
+_OUTPUTD_ABSENT_HEADLINE = "Final output unavailable"
+_OUTPUTD_NON_ALSA_HEADLINE = "Final audio output is not active"
+
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
@@ -170,6 +179,56 @@ def _read_mux_status(
         )
     except _MONITOR_ERRORS:
         logger.debug("audio health mux STATUS probe failed", exc_info=True)
+        return None
+
+
+def _read_output_hardware() -> Any:
+    """Read the reconciler-published output-hardware record, fail-soft.
+
+    Same reader ``/state.audio.output_hardware``
+    (:mod:`jasper.control.state_aggregate`) and the ``/sound/setup/``
+    hardware-adoption precondition use — a small ``/run`` JSON read that
+    ``jasper.output_hardware.load_state`` already returns ``None`` for on any
+    missing/corrupt file. The extra guard here matches every other probe in
+    this module: an unexpected attribute, type, or OS-level surprise
+    (``_MONITOR_ERRORS``) degrades to "no record" rather than taking a health
+    tick down. A broken import is not one of those — it would fail identically
+    on every call from process start, so it is a startup-time bug to fix, not
+    a per-tick condition to swallow.
+    """
+    try:
+        from ..output_hardware import load_state
+
+        return load_state()
+    except _MONITOR_ERRORS:
+        logger.debug("audio health output-hardware probe failed", exc_info=True)
+        return None
+
+
+def _read_output_topology() -> Any:
+    """Read the DECLARED output topology's SNAPSHOT (topology + revision),
+    fail-soft.
+
+    Reads ``load_output_topology_snapshot`` -- the same reader
+    ``/sound/setup/`` uses (``jasper.web.sound_setup._output_topology_payload``)
+    -- rather than the bare ``load_output_topology``. This matters (#2812
+    B2): on a missing file, both readers fall back to ``new_topology_draft``,
+    which auto-seeds ``hardware`` FROM the observed record whenever it has
+    outputs. A caller that only sees the resulting ``OutputTopology`` cannot
+    tell "genuinely never declared" from "declared and already matches" --
+    the auto-seed makes them look identical whenever the observed hardware is
+    ready, which is exactly the state this module's setup hint needs to
+    recognize as UNdeclared. ``snapshot.revision == "missing"`` is the fact
+    that survives the auto-seed: it says a topology was never actually
+    persisted, independent of what the ephemeral draft's ``hardware`` field
+    happens to contain.
+    """
+    try:
+        from ..output_topology import load_output_topology_snapshot
+
+        return load_output_topology_snapshot()
+    except _MONITOR_ERRORS:
+        logger.debug("audio health output-topology probe failed", exc_info=True)
         return None
 
 
@@ -539,6 +598,108 @@ def _stopped_dsp_signal(
     return {"status": "issue", "headline": STOPPED_DSP_HEADLINE, "detail": detail}
 
 
+# The one household-facing sentence for output hardware the reconciler has
+# positively identified and is ready to use, when the DECLARED topology does
+# not already claim it too (or nothing has ever been declared) -- being ready
+# alone is not enough to show this: an already-declared, already-armed box
+# hitting an ordinary outputd hiccup is also "positively identified and
+# ready" and must not see this sentence (#2812 B1/B2). A composite DAC can
+# sit in the genuine gap for minutes after a hotplug -- admitted, but held
+# back pending the active-graph handshake -- and until this detector existed
+# the household saw only the generic "outputd is not reporting" line, which
+# reads as a broken speaker rather than as a two-minute setup step. Written
+# once; the only writer of this wording.
+UNDECLARED_HARDWARE_HEADLINE = "Detected hardware is ready — finish setup"
+
+# The two generic `_signal_path` headlines that mean "outputd is not
+# delivering audio, for a reason `_signal_path` cannot see": outputd never
+# started at all (its missing-declaration `ExecCondition` kept the unit down,
+# so its control socket never answers — `outputd is None` here) or outputd
+# is up but self-reports a non-ALSA backend (the dual-Apple
+# `action=park_until_active_graph` path keeps sockets alive on a `fake`
+# backend without opening ALSA). `_undeclared_hardware_signal` only refines
+# these two; every other concrete `_signal_path` issue — fan-in down, a
+# stale watchdog, a broken active input — is left untouched.
+_UNDECLARED_OUTPUTD_HEADLINES = frozenset({
+    _OUTPUTD_ABSENT_HEADLINE,
+    _OUTPUTD_NON_ALSA_HEADLINE,
+})
+
+
+def _undeclared_hardware_signal(
+    output_hardware: Any,
+    output_topology_snapshot: Any,
+) -> dict[str, Any] | None:
+    """Return the "ready hardware is waiting to be declared" signal, or None.
+
+    ``output_hardware`` is the reconciler-published
+    :class:`~jasper.output_hardware.OutputHardwareState` (or ``None`` when
+    unreadable) — the same record ``/state.audio.output_hardware`` publishes
+    and ``/sound/setup/``'s "Use detected hardware" button already gates on.
+    ``output_topology_snapshot`` is a
+    :class:`~jasper.output_topology.OutputTopologySnapshot` (or ``None``
+    before the sampler's first read) — the topology alone is not enough; see
+    below.
+
+    Two conjuncts, mirroring the wizard's own "Use detected hardware"
+    affordance exactly (#2812 B1):
+
+    * :func:`jasper.output_hardware.detected_hardware_adoption_precondition`
+      — the INNER conjunct — says the detected hardware is usable at all
+      (a known profile, no blocking issue, at least one output). This alone
+      is NOT enough: it says nothing about whether the household already
+      declared and armed this exact hardware.
+    * :func:`jasper.output_topology.declared_hardware_mismatch` — the OUTER
+      conjunct — says the DECLARED topology does not already match what's
+      attached. Skipping this let an already-armed box hitting an ordinary
+      outputd hiccup (a deploy's audio-graph bounce, a crash) be told to
+      "finish setup" for a setup that already happened — proven live on a
+      declared, serial-bound speaker with an unrelated `outputd` fault
+      (#2812 B1).
+
+    A never-declared box does NOT reach that second conjunct at all (#2812
+    B2). ``load_output_topology``'s (and thus a bare
+    ``OutputTopologySnapshot.topology``'s) missing-file fallback
+    (``new_topology_draft``) auto-seeds ``hardware`` FROM the observed
+    record whenever it has outputs — which the inner conjunct just proved is
+    true here. Calling ``declared_hardware_mismatch`` on that ephemeral,
+    never-persisted draft would always find a match, making the two
+    conjuncts mutually exclusive on a fresh box and hiding the exact speaker
+    #2812 exists for. ``snapshot.revision == "missing"`` is read directly
+    instead: it says nothing was ever persisted, independent of what the
+    auto-seeded draft's ``hardware`` field contains, and satisfies the outer
+    conjunct on its own without ever calling ``declared_hardware_mismatch``.
+
+    Neither conjunct is re-derived here: the gate mandate is
+    single-source-of-truth, so this function calls the same two owners the
+    browser's own mismatch card and adoption button read, rather than
+    forking either rule into a third Python-only copy.
+    """
+    if output_hardware is None or output_topology_snapshot is None:
+        return None
+    from ..output_hardware import detected_hardware_adoption_precondition
+
+    if not detected_hardware_adoption_precondition(output_hardware)["allowed"]:
+        return None
+    if output_topology_snapshot.revision != "missing":
+        from ..output_topology import declared_hardware_mismatch
+
+        if declared_hardware_mismatch(
+            output_topology_snapshot.topology, output_hardware
+        ) is None:
+            return None
+    detail = (
+        f"{output_hardware.profile_label} is connected and detected, but "
+        "hasn't been set as the speaker's active output yet. Finish setup "
+        "at /sound/setup/."
+    )
+    return {
+        "status": "issue",
+        "headline": UNDECLARED_HARDWARE_HEADLINE,
+        "detail": detail,
+    }
+
+
 def _signal_path(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
@@ -568,7 +729,7 @@ def _signal_path(
             }
         return {
             "status": "issue",
-            "headline": "Final output unavailable",
+            "headline": _OUTPUTD_ABSENT_HEADLINE,
             "detail": "The shared path is running, but outputd is not reporting.",
         }
 
@@ -577,7 +738,7 @@ def _signal_path(
     if backend is not None and backend != "alsa":
         return {
             "status": "issue",
-            "headline": "Final audio output is not active",
+            "headline": _OUTPUTD_NON_ALSA_HEADLINE,
             "detail": f"Outputd reports backend {backend!r} instead of ALSA.",
         }
     outputd_watchdog = _mapping(outputd_map.get("watchdog"))
@@ -844,6 +1005,7 @@ def _state_issues(
     source_intents: Mapping[str, bool] | None = None,
     *,
     activity_unknown: bool = False,
+    undeclared_hardware: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     warmup = bool(airplay.get("warmup_active"))
@@ -881,13 +1043,26 @@ def _state_issues(
                 detail=camilla_stopped,
             ))
     if not warmup and outputd is None:
+        # S3 (#2812 gate round 1): when the setup hint fires for this exact
+        # condition, the incident row must say the same thing the headline
+        # does — otherwise the household sees a friendly "finish setup" card
+        # right next to a "Final audio output unavailable" danger badge for
+        # the identical fact. Both are computed from the same
+        # `undeclared_hardware` value the sampler passes in, so they cannot
+        # drift out of alignment with each other, only together.
+        if undeclared_hardware is not None:
+            title = str(undeclared_hardware.get("headline"))
+            detail = str(undeclared_hardware.get("detail"))
+        else:
+            title = "Final audio output unavailable"
+            detail = "Outputd is not reporting health."
         issues.append(_issue(
             "path.outputd_unavailable",
             scope="path",
             impact="continuity",
             severity="issue",
-            title="Final audio output unavailable",
-            detail="Outputd is not reporting health.",
+            title=title,
+            detail=detail,
         ))
     if signal_path.get("headline") == "Audio path has stopped progressing":
         issues.append(_issue(
@@ -907,14 +1082,21 @@ def _state_issues(
             title="Final audio output stopped progressing",
             detail="Outputd's work-loop watchdog is stale.",
         ))
-    if signal_path.get("headline") == "Final audio output is not active":
+    if signal_path.get("headline") == _OUTPUTD_NON_ALSA_HEADLINE:
+        # Same alignment as path.outputd_unavailable above.
+        if undeclared_hardware is not None:
+            title = str(undeclared_hardware.get("headline"))
+            detail = str(undeclared_hardware.get("detail"))
+        else:
+            title = _OUTPUTD_NON_ALSA_HEADLINE
+            detail = str(signal_path.get("detail") or "Outputd is not using ALSA.")
         issues.append(_issue(
             "path.outputd_backend_inactive",
             scope="path",
             impact="continuity",
             severity="issue",
-            title="Final audio output is not active",
-            detail=str(signal_path.get("detail") or "Outputd is not using ALSA."),
+            title=title,
+            detail=detail,
         ))
     if signal_path.get("headline") == "Voice audio is delayed":
         issues.append(_issue(
@@ -1609,8 +1791,20 @@ def compose_audio_health(
     source_intents: Mapping[str, bool] | None = None,
     session: Mapping[str, Any] | None = None,
     mux_status: Mapping[str, Any] | None = None,
+    output_hardware: Any = None,
+    output_topology_snapshot: Any = None,
 ) -> dict[str, Any]:
-    """Compose the public, presentation-ready audio-health contract."""
+    """Compose the public, presentation-ready audio-health contract.
+
+    ``output_hardware`` is an
+    :class:`~jasper.output_hardware.OutputHardwareState` or ``None``, and
+    ``output_topology_snapshot`` is a
+    :class:`~jasper.output_topology.OutputTopologySnapshot` or ``None``
+    (before the sampler's first slow-cadence read) — deliberately the
+    snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`
+    for why. Both typed loosely because this module imports those layers
+    lazily (same convention as ``topology`` in :func:`_transport_state`).
+    """
     ap = _mapping(airplay)
     route_state = _mapping(route)
     mux = mux_status if mux_status is not None else _mapping(ap.get("mux_status"))
@@ -1635,6 +1829,22 @@ def compose_audio_health(
         # persistent and fixed by changing the layout, while a stalled daemon
         # is happening now and has its own remedy.
         signal_path = parked
+    undeclared_hardware = _undeclared_hardware_signal(
+        output_hardware, output_topology_snapshot
+    )
+    if (
+        undeclared_hardware is not None
+        and signal_path.get("headline") in _UNDECLARED_OUTPUTD_HEADLINES
+    ):
+        # Checked by headline, not the `!= "issue"` guard `stopped_dsp`/
+        # `parked` use above: `_signal_path`'s own outputd-absent/non-ALSA
+        # branch is already "issue" status, so this refines its generic
+        # wording rather than outranking a different concrete issue. Because
+        # it runs last, it only claims the ground when neither `stopped_dsp`
+        # nor `parked` already replaced signal_path with a more relevant,
+        # differently-worded diagnosis (camilla down, transport
+        # disconnected) — both of those keep priority.
+        signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
     host_clock = _mapping(fanin.get("host_clock")) or None
@@ -1814,6 +2024,8 @@ class AudioHealthSampler:
         mux_probe: Callable[[], dict[str, Any] | None] | None = None,
         route_probe: Callable[[], dict[str, Any]] | None = None,
         service_probe: Callable[[], dict[str, dict[str, Any]]] | None = None,
+        output_hardware_probe: Callable[[], Any] | None = None,
+        output_topology_probe: Callable[[], Any] | None = None,
         incident_store: IncidentStore | None = None,
         time_fn: Callable[[], float] = time.time,
         camilla_host: str = "127.0.0.1",
@@ -1832,6 +2044,8 @@ class AudioHealthSampler:
         self._mux_probe = mux_probe or _read_mux_status
         self._route_probe = route_probe or read_route_claim
         self._service_probe = service_probe
+        self._output_hardware_probe = output_hardware_probe or _read_output_hardware
+        self._output_topology_probe = output_topology_probe or _read_output_topology
         observation_gap = max(15.0, sample_interval_sec * 3.0)
         self._issues = IssueTracker(
             store=incident_store,
@@ -1842,6 +2056,14 @@ class AudioHealthSampler:
         )
         self._outputd: dict[str, Any] | None = None
         self._route: dict[str, Any] | None = None
+        # Declared topology changes only when a household explicitly saves a
+        # new layout -- a rare event -- so it is refreshed on the same slow
+        # `_route_interval` cadence as the route/transport check below, not
+        # every fast tick, matching this module's "slow evidence stays on the
+        # slow cadence" discipline (see the module docstring). A SNAPSHOT
+        # (topology + revision), not a bare topology -- see
+        # `_undeclared_hardware_signal`'s docstring for why revision matters.
+        self._output_topology_snapshot: Any = None
         self._service_states: dict[str, dict[str, Any]] = {}
         self._snapshot: dict[str, Any] | None = None
         self._last_route_sample_at = 0.0
@@ -1965,6 +2187,11 @@ class AudioHealthSampler:
         except _MONITOR_ERRORS:
             logger.debug("audio health mux STATUS probe failed", exc_info=True)
             mux_status = None
+        try:
+            output_hardware = self._output_hardware_probe()
+        except _MONITOR_ERRORS:
+            logger.debug("audio health output-hardware probe failed", exc_info=True)
+            output_hardware = None
         if mux_status is None and isinstance(airplay.get("mux_status"), Mapping):
             # Explicit fixture/injected observation seam; production AirPlay
             # snapshots do not carry mux state and therefore still fail closed.
@@ -1987,6 +2214,13 @@ class AudioHealthSampler:
                 logger.debug("audio health route probe failed", exc_info=True)
                 route = {"status": "unavailable", "low_latency_claim": False}
             self._route = route if isinstance(route, dict) else None
+            try:
+                self._output_topology_snapshot = self._output_topology_probe()
+            except _MONITOR_ERRORS:
+                logger.debug("audio health output-topology probe failed", exc_info=True)
+                # Keep the previously cached snapshot: a transient read
+                # failure on a box that already had a good read a moment ago
+                # should not blank the declared side of the B1/B2 comparison.
             self._last_route_sample_at = now
 
         active_source = _active_source(airplay, mux_status)
@@ -2019,6 +2253,17 @@ class AudioHealthSampler:
             latency = _usb_timing(_mapping(self._route), host_clock, active=True)
         else:
             latency = _not_applicable_timing()
+        # Computed once here and passed to both _state_issues (below) and
+        # compose_audio_health (which recomputes it from the same
+        # output_hardware/output_topology_snapshot inputs, mirroring how
+        # signal_path itself is deliberately computed raw here and
+        # independently inside compose_audio_health): the two surfaces read
+        # the same value, so they cannot present a different verdict for the
+        # same tick (#2812 S3 — the raw path.outputd_unavailable incident
+        # must not contradict the overall headline when the setup hint wins).
+        undeclared_hardware = _undeclared_hardware_signal(
+            output_hardware, self._output_topology_snapshot
+        )
         state_issues = _state_issues(
             airplay,
             outputd,
@@ -2028,6 +2273,7 @@ class AudioHealthSampler:
             self._service_states,
             intents,
             activity_unknown=activity_unknown,
+            undeclared_hardware=undeclared_hardware,
         )
         tracked_state_issues = [
             issue for issue in state_issues
@@ -2093,6 +2339,8 @@ class AudioHealthSampler:
                 source_intents=intents,
                 session=self._session.snapshot(now),
                 mux_status=mux_status,
+                output_hardware=output_hardware,
+                output_topology_snapshot=self._output_topology_snapshot,
             )
 
     def _record_point(

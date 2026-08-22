@@ -27,6 +27,13 @@ from jasper.control.audio_incidents import (
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.control.server import _make_handler
+from jasper.output_hardware import OutputHardwareState
+from jasper.output_hardware import write_state as write_output_hardware_state
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    OutputTopologySnapshot,
+)
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
@@ -644,6 +651,307 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
     )
 
     assert health["signal_path"]["headline"] == (
+        "Final audio output has stopped progressing"
+    )
+
+
+def _output_hardware(
+    *,
+    status: str = "ready",
+    profile_id: str = "dual_apple_usb_c_dac_4ch",
+    profile_label: str = "Dual Apple USB-C DAC 4-channel pair",
+    physical_output_count: int = 4,
+    apple_dac_count: int = 2,
+    issues: tuple[dict, ...] = (),
+) -> OutputHardwareState:
+    return OutputHardwareState(
+        profile_id=profile_id,
+        profile_label=profile_label,
+        status=status,
+        physical_output_count=physical_output_count,
+        apple_dac_count=apple_dac_count,
+        issues=issues,
+    )
+
+
+def _declared_topology(
+    *,
+    device_id: str = "unknown",
+    device_label: str = "Unknown output device",
+    physical_output_count: int = 0,
+) -> OutputTopologySnapshot:
+    """A REAL, SAVED topology snapshot declaring the given hardware --
+    #2812 B1's "outer conjunct" input. The default (``device_id="unknown"``)
+    is a saved topology.json that names an unrecognized profile -- a
+    genuine mismatch -- NOT a simulation of "nothing was ever saved". Those
+    are different facts (#2812 B2): a real missing file resolves through
+    ``new_topology_draft``, which auto-seeds ``hardware`` FROM the observed
+    record whenever it has outputs, so it does NOT read as
+    ``device_id="unknown"`` once the record is ready. Tests that need the
+    genuinely-missing case must drive the real loader against an absent
+    path (see ``test_setup_hint_fires_when_no_topology_was_ever_saved``
+    below), not synthesize a revision here. This helper's ``revision`` is
+    always a real (non-``"missing"``) value for exactly that reason.
+    """
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "hardware": {
+            "device_id": device_id,
+            "device_label": device_label,
+            "physical_output_count": physical_output_count,
+        },
+        "speaker_groups": [],
+        "routing": {},
+    })
+    return OutputTopologySnapshot(topology, "sha256:test-declared-topology")
+
+
+def test_undeclared_ready_hardware_surfaces_a_setup_hint() -> None:
+    """#2812: outputd's control socket never answering — an undeclared
+    composite parks the daemon before it ever starts — must not read as a
+    generic, unexplained failure once the reconciler has positively
+    identified ready hardware waiting on the household, AND the saved
+    topology names a different (here, unrecognized) profile — #2812 B1's
+    outer conjunct, satisfied here by a genuine declared-vs-detected
+    mismatch (see `test_setup_hint_fires_when_no_topology_was_ever_saved`
+    below for the separate "nothing was ever saved" case — #2812 B2).
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["status"] == "issue"
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+    detail = health["overall"]["detail"]
+    assert "Dual Apple USB-C DAC 4-channel pair" in detail
+    assert "/sound/setup/" in detail
+
+
+def test_setup_hint_fires_when_no_topology_was_ever_saved(monkeypatch, tmp_path) -> None:
+    """#2812 B2: the feature's primary case -- a box that has NEVER saved a
+    topology at all -- must still get the hint.
+
+    This is the false negative the round-2 gate proved live: adoption being
+    allowed (a ready record) guarantees ``new_topology_draft``'s missing-file
+    auto-seed matches the observed record exactly, so
+    ``declared_hardware_mismatch`` alone can never see "genuinely
+    undeclared" once hardware is ready -- the two conjuncts were mutually
+    exclusive with no topology file. Only
+    ``load_output_topology_snapshot``'s ``revision == "missing"`` can.
+
+    Proven through the REAL default output-hardware AND output-topology
+    probes (neither injected) against a genuinely absent
+    ``JASPER_OUTPUT_TOPOLOGY_PATH`` and a REAL, populated
+    ``JASPER_OUTPUT_HARDWARE_STATE_PATH``. Both must be real: an injected
+    ``output_hardware_probe`` would desync from ``new_topology_draft``'s OWN
+    internal ``load_output_hardware_state()`` read (which sees only the real
+    file, not this sampler's injected value) and mask the exact defect this
+    test exists to catch -- confirmed by mutation: replacing the revision
+    check with an unconditional branch still passed against an
+    injected-probe version of this test, because the auto-seed contamination
+    never actually happened without a matching real file underneath it.
+    """
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "never-saved.json")
+    )
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "output_hardware.json")
+    )
+    write_output_hardware_state(
+        OutputHardwareState(
+            profile_id="dual_apple_usb_c_dac_4ch",
+            profile_label="Dual Apple USB-C DAC 4-channel pair",
+            status="ready",
+            physical_output_count=4,
+            apple_dac_count=2,
+        ),
+        path=tmp_path / "output_hardware.json",
+    )
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        # output_hardware_probe AND output_topology_probe are deliberately
+        # left at their real defaults -- see the docstring above.
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+    assert "Dual Apple USB-C DAC 4-channel pair" in health["overall"]["detail"]
+
+
+def test_undeclared_hardware_hint_covers_the_non_alsa_backend_park() -> None:
+    """The dual-Apple ``action=park_until_active_graph`` path keeps outputd's
+    socket alive on a ``fake`` backend rather than never starting it — the
+    other half of "outputd absent/parked" the hint must also cover, not just
+    the ``outputd is None`` case.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(backend="fake"),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+
+
+def test_setup_hint_does_not_fire_when_declared_already_matches_observed() -> None:
+    """#2812 B1: the false-positive the gate proved live.
+
+    A speaker that already declared and armed exactly the hardware now
+    attached, hitting an unrelated outputd fault (a deploy's audio-graph
+    bounce, a crash), must keep the pre-existing generic wording — not be
+    told to "finish setup" for a setup that already happened. Adoption being
+    allowed alone used to be enough to fire the hint; this is the regression
+    guard for the fix.
+    """
+    matching = OutputHardwareState(
+        profile_id="apple_usb_c_dongle",
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
+        physical_output_count=2,
+        apple_dac_count=1,
+    )
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=matching,
+        output_topology_snapshot=_declared_topology(
+            device_id="apple_usb_c_dongle",
+            device_label="Apple USB-C audio adapter",
+            physical_output_count=2,
+        ),
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["overall"]["headline"] != audio_health.UNDECLARED_HARDWARE_HEADLINE
+
+
+def test_missing_output_hardware_record_leaves_the_generic_message() -> None:
+    """No record (reconciler never ran, or the artifact is unreadable) falls
+    back to the pre-existing generic wording rather than guessing at
+    hardware JTS cannot confirm.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=None,
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_missing_output_topology_leaves_the_generic_message() -> None:
+    """No topology read yet (before the sampler's first slow-cadence tick)
+    must not guess a mismatch either -- fail toward the generic message, the
+    same fail-closed direction as a missing hardware record."""
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=None,
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_unready_output_hardware_record_has_no_setup_hint() -> None:
+    """A degraded/ambiguous detection blocked from adoption must not tell the
+    household hardware is ready when it is not — this reuses the exact gate
+    ``/sound/setup/``'s "Use detected hardware" button already applies.
+    """
+    blocked = _output_hardware(
+        status="partial",
+        issues=(
+            {
+                "severity": "blocker",
+                "code": "dual_apple_usb_topology_mismatch",
+                "message": (
+                    "two Apple DACs are present but not on the same USB "
+                    "controller/bus"
+                ),
+            },
+        ),
+    )
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=None,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=blocked,
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_healthy_outputd_suppresses_the_setup_hint_even_with_a_ready_record() -> None:
+    """A ready, genuinely-mismatched record alone is not the trigger — only
+    ``_signal_path``'s own generic absent/non-ALSA wording is refined.
+    Healthy outputd must play normally without a stale hint, even though the
+    hardware/topology inputs alone would otherwise qualify.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["headline"] != audio_health.UNDECLARED_HARDWARE_HEADLINE
+    assert health["overall"]["status"] != "issue"
+
+
+def test_setup_hint_yields_to_a_more_specific_live_output_issue() -> None:
+    """A concrete, differently-worded live failure keeps priority, the same
+    precedence ``_parked_signal`` and ``_stopped_dsp_signal`` hold: the hint
+    only refines ``_signal_path``'s own generic absent/non-ALSA wording,
+    never a distinct diagnosis such as a stalled watchdog — even though the
+    hardware/topology inputs alone would otherwise qualify.
+    """
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=_outputd(progress_age_ms=30_000),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=_declared_topology(),
+    )
+
+    assert health["overall"]["headline"] == (
         "Final audio output has stopped progressing"
     )
 
@@ -2634,6 +2942,122 @@ def test_confirmed_output_failure_outranks_mux_observability_gap() -> None:
         and issue["status"] == "ongoing"
         for issue in health["issues"]
     )
+
+
+def test_sampler_wires_the_output_hardware_probe_into_the_setup_hint() -> None:
+    """The sampler must actually call its output-hardware AND output-topology
+    probes each tick / slow-cadence pass and thread both into
+    ``compose_audio_health``, not just accept the constructor arguments.
+    Both probes are injected explicitly (never left to the real default
+    reader) so this cannot pass by accident depending on ambient host state.
+    """
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        output_hardware_probe=lambda: OutputHardwareState(
+            profile_id="dual_apple_usb_c_dac_4ch",
+            profile_label="Dual Apple USB-C DAC 4-channel pair",
+            status="ready",
+            physical_output_count=4,
+            apple_dac_count=2,
+        ),
+        output_topology_probe=_declared_topology,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    assert health["overall"]["headline"] == audio_health.UNDECLARED_HARDWARE_HEADLINE
+
+
+def test_output_hardware_probe_failure_is_fail_soft() -> None:
+    """An unreadable/raising output-hardware probe must not break a tick —
+    it degrades to "no record" like every other probe this sampler reads.
+    """
+    def _raise() -> None:
+        raise OSError("state file vanished mid-read")
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        output_hardware_probe=_raise,
+        output_topology_probe=_declared_topology,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_output_topology_probe_failure_is_fail_soft() -> None:
+    """A raising output-topology probe must not break a tick either, and
+    must not blank a previously-good cached topology (a transient read
+    failure is not "the box just uninstalled its speaker layout")."""
+    def _raise() -> None:
+        raise OSError("topology file vanished mid-read")
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        output_hardware_probe=lambda: OutputHardwareState(
+            profile_id="dual_apple_usb_c_dac_4ch",
+            profile_label="Dual Apple USB-C DAC 4-channel pair",
+            status="ready",
+            physical_output_count=4,
+            apple_dac_count=2,
+        ),
+        output_topology_probe=_raise,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    health = sampler.snapshot()
+
+    assert health is not None
+    # No cached topology yet (first tick, probe raised) -- fails toward the
+    # pre-existing generic message rather than guessing a mismatch.
+    assert health["overall"]["headline"] == "Final output unavailable"
+
+
+def test_output_topology_probe_runs_on_the_slow_route_cadence_not_every_tick() -> None:
+    """Declared topology changes only when a household saves a new layout, so
+    it is read on the same slow cadence as the route/transport check, not
+    every fast tick -- the resource-cost promise this module's docstring and
+    #2812's design both rely on.
+    """
+    calls = {"count": 0}
+
+    def _counting_probe() -> OutputTopologySnapshot:
+        calls["count"] += 1
+        return _declared_topology()
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([_airplay(), _airplay(), _airplay()]),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: {"sources": {}},
+        route_probe=_route,
+        route_interval_sec=60.0,
+        output_hardware_probe=lambda: None,
+        output_topology_probe=_counting_probe,
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+    sampler._tick()
+    sampler._tick()
+
+    assert calls["count"] == 1
 
 
 def test_inactive_airplay_xrun_is_not_household_history() -> None:

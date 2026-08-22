@@ -34,6 +34,7 @@ from jasper.output_topology import (
     channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
+    declared_hardware_mismatch,
     hardware_from_env,
     load_output_topology,
     load_output_topology_snapshot,
@@ -1701,6 +1702,148 @@ def test_composite_repin_is_offered_only_for_the_same_shape() -> None:
         _topology(groups=[_passive_main("mono", "mono", 0)]),
         _dual_apple_observation(serial_b="NEW"),
     ) is None
+
+
+def test_declared_hardware_mismatch_is_none_when_declared_matches_observed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#2812 B1: an already-declared, already-armed box must not mismatch.
+
+    Proven live: a declared, serial-bound dual-Apple speaker hitting an
+    unrelated outputd fault was told to "finish setup" for a setup that
+    already happened, because the detector that reads this result checked
+    only whether the DETECTED hardware was usable, never whether it already
+    matched the DECLARATION. Same fixtures ``composite_serial_repin_plan``
+    uses to prove "nothing to re-pin" (the very same two units) — the outer
+    conjunct must agree with the inner one that this box needs no action.
+    """
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    topology = _dual_apple_active_topology()
+    observed = _dual_apple_observation()
+
+    assert declared_hardware_mismatch(topology, observed) is None
+
+
+def test_declared_hardware_mismatch_flags_an_unknown_declared_profile() -> None:
+    """A DECLARED (saved) topology naming an unrecognized profile mismatches
+    against a real detected one -- ordinary id-comparison behavior, distinct
+    from the "nothing has ever been saved" case (see the auto-seed test
+    below, and #2812 B2 for why those two are not interchangeable).
+    """
+    topology = _topology(
+        groups=[],
+        hardware={
+            "device_id": "unknown",
+            "device_label": "Unknown output device",
+            "physical_output_count": 0,
+        },
+    )
+    observed = _dual_apple_observation()
+
+    mismatch = declared_hardware_mismatch(topology, observed)
+
+    assert mismatch is not None
+    assert "Saved topology expects" in mismatch["message"]
+    assert "Dual Apple USB-C DAC 4-channel pair" in mismatch["message"]
+
+
+def test_declared_hardware_mismatch_cannot_see_new_topology_drafts_auto_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#2812 B2: a never-saved draft auto-seeds FROM ready observed hardware,
+    so this function alone reports NO mismatch for a genuinely undeclared
+    box -- the false model an earlier version of the test above encoded, by
+    hand-building a ``device_id="unknown"`` topology instead of calling the
+    real missing-file loader. That is not what
+    ``new_topology_draft``/``load_output_topology``/
+    ``load_output_topology_snapshot`` actually return once the observed
+    hardware is ready: they auto-seed ``hardware`` FROM it, so the "declared"
+    and "observed" sides match by construction and this function correctly,
+    but unhelpfully, reports no mismatch.
+
+    ``new_topology_draft`` is called for real here, against the SAME
+    sandboxed observed-hardware path ``_write_dual_apple_observation``
+    writes, so this cannot silently drift from what the real loaders
+    produce. Callers that need "was anything ever persisted?" must ask
+    ``load_output_topology_snapshot`` directly (``revision == "missing"``)
+    instead of inferring it from this function's verdict — see
+    ``jasper.control.audio_health._undeclared_hardware_signal``.
+    """
+    _write_dual_apple_observation(monkeypatch, tmp_path)
+    observed = _dual_apple_observation()
+
+    draft = new_topology_draft()
+
+    assert draft.hardware.device_id == DUAL_APPLE_ACTIVE_DEVICE_ID
+    assert declared_hardware_mismatch(draft, observed) is None
+
+
+def test_declared_hardware_mismatch_flags_an_output_count_change() -> None:
+    """A declared single dongle vs. a now-attached dual-Apple pair mismatches.
+
+    Mirrors #2812's own live repro: a second Apple dongle hot-plugged next
+    to an already-declared single dongle.
+    """
+    topology = _topology(
+        groups=[],
+        hardware={
+            "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
+            "device_label": "Apple USB-C audio adapter",
+            "physical_output_count": 2,
+        },
+    )
+    observed = _dual_apple_observation()
+
+    mismatch = declared_hardware_mismatch(topology, observed)
+
+    assert mismatch is not None
+    assert mismatch["saved_count"] == 2
+    assert mismatch["current_count"] == 4
+
+
+def test_declared_hardware_mismatch_flags_an_unobserved_dual_apple_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A declared dual-Apple pair with no fresh hardware observation mismatches.
+
+    Deliberately omits ``_write_dual_apple_observation``: ``clock_domain_report``
+    re-reads the observed record itself, and with no record at all it raises
+    ``dual_apple_observation_missing`` — a blocker this function must also
+    treat as "needs attention" even when the caller's own ``observed``
+    argument happens to be a matching pair.
+    """
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path / "absent-output-hardware.json"),
+    )
+    topology = _dual_apple_active_topology()
+    observed = _dual_apple_observation()
+
+    mismatch = declared_hardware_mismatch(topology, observed)
+
+    assert mismatch is not None
+    assert any(
+        issue["code"] == "dual_apple_observation_missing"
+        for issue in mismatch["clock_blockers"]
+    )
+
+
+def test_declared_hardware_mismatch_is_none_with_nothing_observed_or_declared() -> None:
+    """A box with no hardware ever observed and nothing dual-Apple declared
+    stays quiet -- there is genuinely nothing to compare yet."""
+    topology = _topology(
+        groups=[],
+        hardware={
+            "device_id": "unknown",
+            "device_label": "Unknown output device",
+            "physical_output_count": 0,
+        },
+    )
+
+    assert declared_hardware_mismatch(topology, None) is None
 
 
 def test_composite_repin_refuses_to_mutate_without_an_offer() -> None:

@@ -467,12 +467,14 @@ once, so polling does not reset controls, disclosure state, or text selection.
 - **Audio** — an alert card that exists only while
   `audio_health.overall.status` is `issue`, i.e. while the signal path cannot
   carry audio at all (a parked graph, a stopped DSP, a dead final-output
-  stage). It sits above the metric tiles because a speaker that cannot play
-  outranks every number below it, and it renders before the metrics warm-up
-  gate because it comes from a different sampler. The browser decides only
-  *whether* to show it, never what it says: each sentence has exactly one
-  writer, and the writers are `_parked_signal`, `_stopped_dsp_signal`, and
-  `_signal_path`'s seven issue shapes — all in
+  stage, or hardware the reconciler has detected and confirmed adoptable but
+  that isn't yet declared as the speaker's active output). It sits above the
+  metric tiles because a speaker that cannot play outranks every number below
+  it, and it renders before the metrics warm-up gate because it comes from a
+  different sampler. The browser decides only *whether* to show it, never
+  what it says: each sentence has exactly one writer, and the writers are
+  `_parked_signal`, `_stopped_dsp_signal`, `_undeclared_hardware_signal`
+  (#2812), and `_signal_path`'s seven issue shapes — all in
   `jasper/control/audio_health.py`. `warn` / `unknown` deliberately stay off
   the front page. Before #2381 the System view had no audio surface at all, so
   a structurally-silent speaker looked exactly like an idle healthy one.
@@ -1609,4 +1611,6 @@ Phase 1 landing-page implementation, local font asset serving, integrations
 page, nginx route map, `jasper/web/__main__.py`, `/system/` dashboard, live
 `http://jts.local/`, and 2026-05-28 design/iOS research refresh)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-21 (Audio alert card writer enumeration rechecked
+against `jasper/control/audio_health.py`: added `_undeclared_hardware_signal`
+(#2812) as the fourth writer)

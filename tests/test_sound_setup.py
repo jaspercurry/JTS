@@ -1223,7 +1223,13 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "hardwareAdoption" in js
     assert "outputTopology.loading || outputTopology.saving || outputTopology.resetting" in js
     assert "detected_hardware_identity" in js
-    assert "Saved topology expects" in js
+    # #2812 B1: the mismatch message is computed once, server-side, in
+    # jasper.output_topology.declared_hardware_mismatch and published as
+    # payload.hardware_mismatch — the page reads that field rather than
+    # recomputing "Saved topology expects ..." locally, so the literal no
+    # longer lives here.
+    assert "hardwareMismatch" in js
+    assert "Saved topology expects" not in js
     assert "Detected output hardware" not in js
     assert "supported" in js
     assert "needs attention" not in js
@@ -1287,9 +1293,13 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Speaker layout is a draft." in js
     assert "active-speaker-issues--warning" in js
     assert "renderIssueList(issues, 5)" in js
-    assert "function outputClockHardwareBlockers()" in js
-    assert "dual_apple_observed_" in js
-    assert "dual_apple_usb_topology_mismatch" in js
+    # #2812 B1: the dual-Apple clock-blocker filter moved server-side into
+    # jasper.output_topology.declared_hardware_mismatch (the same function
+    # backing payload.hardware_mismatch above); outputClockHardwareBlockers
+    # and its dual_apple_* code list no longer exist in this file.
+    assert "function outputClockHardwareBlockers()" not in js
+    assert "dual_apple_observed_" not in js
+    assert "dual_apple_usb_topology_mismatch" not in js
     assert "function crossoverPreviewDisplayStatus(payload)" in js
     assert "JTS still checks the setup before any sound." in js
     assert "Starter stereo" not in js
@@ -3130,6 +3140,13 @@ def test_output_hardware_state_payload_is_json_serializable():
     payload = sound_setup._output_topology_payload()
     json.dumps(payload)
     assert set(payload["hardware_adoption"]) == {"allowed", "identity"}
+    # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
+    # it) is a pure proxy for this key now -- it does not recompute the rule
+    # itself. Deleting the key here would silently kill both with every test
+    # elsewhere still green (the JS harness fixture supplies its own value
+    # independent of this payload builder), so the key's presence is pinned
+    # at its one source.
+    assert "hardware_mismatch" in payload
 
 
 def test_active_speaker_design_draft_route_persists_saved_topology_research(

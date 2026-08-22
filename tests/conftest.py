@@ -213,3 +213,27 @@ def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
         "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE",
         str(tmp_path_factory.mktemp("seat-level") / "seat_level_reference.json"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
+    """Point the output-hardware reconciler's record at a per-test (absent)
+    temp file.
+
+    ``jasper.output_hardware.load_state`` defaults to
+    ``/run/jasper-output-hardware/output_hardware.json``. A host that
+    happens to hold a record there (a real Pi checkout, or a leftover from a
+    prior manual run) would otherwise make any test that constructs an
+    ``AudioHealthSampler`` with its real default probe non-hermetic:
+    ``jasper.control.audio_health``'s #2812 setup-hint detector reads that
+    record on every tick, so its result — and therefore ``overall.headline``
+    — would depend on ambient host state 19 of the 21 sampler constructions
+    in ``tests/test_audio_health.py`` never explicitly control. Absent here
+    means ``load_state()`` returns ``None`` — the hermetic baseline; tests
+    that want a populated record inject their own via
+    ``output_hardware_probe=``.
+    """
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
+        str(tmp_path_factory.mktemp("output-hardware") / "output_hardware.json"),
+    )
