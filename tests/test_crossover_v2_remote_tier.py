@@ -21,6 +21,8 @@ separate concerns:
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import io
 import json
 import logging
@@ -109,15 +111,21 @@ STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
 STAGE2_ANGLES = (0, -7, 7, -22, 22)
 
 
-def _stage1(tier):
+def _stage1_of(shape):
+    """The shipped stage-1 plan for a RESOLVED shape — the flags are the
+    shipped ones so a plan built here is the plan a session runs."""
     return build_v2_capture_plan(
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
-        plan_shape=resolve_plan_shape(tier),
+        plan_shape=shape,
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
+
+
+def _stage1(tier):
+    return _stage1_of(resolve_plan_shape(tier))
 
 
 def _stage2(tier):
@@ -738,6 +746,137 @@ def test_one_predicate_answers_who_positions_the_microphone():
             resolve_plan_shape(tier).externally_positioned
             is flow.tier_is_externally_positioned(tier)
         )
+
+
+# --------------------------------------------------------------------------- #
+# the second gated shape: a person releases the holds (#2879)
+# --------------------------------------------------------------------------- #
+
+
+def _hand_released(tier=TIER_FULL):
+    """A hand-walked shape told a PERSON releases its begins — what the host
+    hands a wired round through ``_hand_released_plan_shape``."""
+    return dataclasses.replace(
+        resolve_plan_shape(tier), hand_released_positions=True,
+    )
+
+
+def test_the_two_shape_facts_are_independent():
+    """The unweld, as a truth table.
+
+    ``externally_positioned`` is the ADVANCE axis and ``positions_gated`` the
+    POSE-STATEMENT one. Three of the four combinations are real shapes; the
+    fourth — auto-advance with no gate, the countdown firing into a
+    microphone nobody promised had arrived — is unreachable by construction
+    because gating reads the advance fact as one of its own disjuncts.
+    """
+    for tier in (TIER_FULL, TIER_EXPRESS):
+        shape = resolve_plan_shape(tier)
+        assert (shape.externally_positioned, shape.positions_gated) == (
+            False, False,
+        )
+        assert (_hand_released(tier).externally_positioned,
+                _hand_released(tier).positions_gated) == (False, True)
+    remote = resolve_plan_shape(TIER_REMOTE)
+    assert (remote.externally_positioned, remote.positions_gated) == (True, True)
+    # And no shape can claim both movers at once.
+    with pytest.raises(CrossoverV2FlowError, match="external driver"):
+        dataclasses.replace(remote, hand_released_positions=True)
+
+
+def test_a_hand_released_shape_states_bearings_and_keeps_the_tap():
+    """``(degrees, tap)`` — the combination the shipped tiers could not say.
+
+    The pose statement follows the GATE (a person is given the bearing the
+    gate is waiting for, in copy and in the machine keys the gate reads), and
+    the advance policy follows the MOVER (a person is there to tap, so no
+    countdown fires while they are still walking).
+    """
+    plan = _stage1_of(_hand_released())
+    for entry in plan.entries:
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+        assert "countdown_s" not in entry.screen
+        assert POSITION_DEG_KEY in entry.screen
+        assert entry.screen[POSITION_ROLE_KEY] == POSITION_ROLE_ONAX
+    baseline, = [e for e in plan.entries if e.kind_label == "entry_baseline"]
+    assert "0°" in baseline.screen["title"]
+
+
+def test_the_gate_can_read_a_hand_released_plans_own_entries():
+    """The join the split exists for: the gate refuses an entry that does not
+    say where the microphone should be (``position_target_missing``), so a
+    gated shape whose plan forgot the keys would fail every begin. It holds
+    instead, naming the bearing the person is being asked for."""
+    plan = _stage1_of(_hand_released())
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred) as caught:
+        gate.gate(1, 1, plan.entry_for_index(1))
+    assert caught.value.code == POSITION_HOLD_CODE
+    pending = gate.pending()
+    assert pending["degrees"] == 0
+    assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
+    # ...and the same release verb admits it, with the same minted payload.
+    gate.release(1)
+    gate.gate(1, 1, plan.entry_for_index(1))
+
+
+def test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate():
+    """The byte-identity promise, restated for the new fact: nothing about the
+    arm's plan moves. (``_GOLDEN_V2_PLAN_BYTES`` proves it in hashes; this
+    says which two fields the split could plausibly have disturbed.)"""
+    plan = _stage1(TIER_REMOTE)
+    for entry in plan.entries:
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
+        assert entry.screen["countdown_s"] == str(AUTO_ADVANCE_COUNTDOWN_S)
+        assert POSITION_DEG_KEY in entry.screen
+
+
+def test_the_wired_source_is_what_makes_a_hand_walked_round_gated():
+    """Who pairs the two halves: the shape knows its tier, the host knows the
+    source, and only the wired + hand-walked pair has no page tap to pace it.
+    Every other pairing is returned untouched."""
+    from jasper.web.correction_crossover_v2 import (
+        SOURCE_RELAY, SOURCE_WIRED, _hand_released_plan_shape,
+    )
+
+    full = resolve_plan_shape(TIER_FULL)
+    assert _hand_released_plan_shape(full, SOURCE_WIRED).hand_released_positions
+    assert _hand_released_plan_shape(full, SOURCE_RELAY) == full
+    remote = resolve_plan_shape(TIER_REMOTE)
+    assert _hand_released_plan_shape(remote, SOURCE_WIRED) == remote
+    # The tier-less recovery re-arm: one sweep at the mark, nowhere to walk to.
+    assert _hand_released_plan_shape(None, SOURCE_WIRED) is None
+
+
+def test_both_preparers_build_the_gate_from_the_shapes_own_answer():
+    """One question, one predicate, at BOTH construction sites — the drift
+    this pins is one stage gaining the second gated shape while the other
+    silently keeps running a hand-walked wired round with no hold at all."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    source = inspect.getsource(v2host)
+    assert source.count("PositionGate() if plan_shape.positions_gated") == 1
+    assert source.count("if plan_shape is not None and plan_shape.positions_gated") == 1
+    assert "PositionGate() if plan_shape.externally_positioned" not in source
+
+
+def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
+    """±80° is the GEOMETRY's ceiling and the person's reach; ±45° is the
+    arm's own travel. A walk stated for a person is judged against the
+    person's bound, and the session that hosts it is the hand-walked one."""
+    from jasper.active_speaker import angle_capture as ac
+
+    assert ac.MOVER_MAX_ANGLE_DEG[ac.MOVER_HUMAN] == ac.MAX_ANGLE_DEG == 80
+    assert ac.MOVER_MAX_ANGLE_DEG[ac.MOVER_ARM] == ac.ARM_ENVELOPE_DEG == 45
+    reach = ac.per_driver_at([80, -80], mover=ac.MOVER_HUMAN)
+    prompts = ac.session_lateral_walk(
+        reach, externally_positioned=False, base_entries=3,
+        plans_cloud_group=False,
+    )
+    assert [position_angle_deg(p) for p in prompts] == [80, -80]
+    with pytest.raises(ac.LateralWalkRefused) as caught:
+        ac.per_driver_at([46], mover=ac.MOVER_ARM)
+    assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
 
 
 # --------------------------------------------------------------------------- #
