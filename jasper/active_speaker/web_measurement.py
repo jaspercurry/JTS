@@ -111,11 +111,18 @@ def _stored_ambient_report(
     calibration: Any,
     ambient_duration_s: Any,
 ) -> dict[str, Any] | None:
-    """Validate and describe the relay's controlled pre-sweep interval.
+    """Validate the relay's declared controlled pre-sweep interval.
 
-    This is a protocol-intent stub only. The acoustic analyzer locates the
-    sweep from the signal and persists the exact quiet-window sample offsets;
-    the beginning of the phone WAV is deliberately never treated as ambient.
+    This is a validation stub only: it confirms the browser-declared
+    ``ambient_duration_s`` actually fits ahead of the reference sweep in the
+    uploaded WAV and raises if it doesn't. It does not locate the ambient
+    window itself — ``driver_acoustics.analyze_driver_capture`` is the real
+    acoustic analyzer; it locates the sweep from the signal and persists the
+    exact quiet-window sample offsets under its own ``ambient`` block. The
+    beginning of the phone WAV is deliberately never treated as ambient
+    here. The dict returned here is used as a last-resort fallback for that
+    block when the real analyzer's own computation comes back empty (see
+    ``record_driver_acoustic_capture`` in ``commissioning_capture.py``).
     """
 
     try:
@@ -137,13 +144,8 @@ def _stored_ambient_report(
         raise ValueError("crossover capture is missing its controlled ambient interval")
     return {
         "schema_version": 2,
-        "domain": "controlled_pre_sweep",
         "method": "paired_signal_window_deconvolution",
         "ambient_duration_s": round(duration, 3),
-        "source": {
-            "kind": "pending_signal_boundary",
-            "protocol_paused_duration_s": round(duration, 3),
-        },
     }
 
 
