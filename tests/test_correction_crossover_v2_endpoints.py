@@ -2822,7 +2822,8 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     the seam, because a stage-2 conductor never had one and would otherwise
     persist ``None`` over a live recommendation the household was mid-decision
     on. The selector that produced recommendations is retired, so there is no
-    live value to protect and nothing left that reads one: the carry-forward
+    live value to protect and no product read path that reads one (the offline
+    archaeology scripts still do, deliberately): the carry-forward
     went with it.
 
     What replaces it is the honest shape. A persist writes no ``fc_selection``
@@ -5483,9 +5484,13 @@ def test_a_legacy_fc_selection_is_inert_and_never_refuses():
 
     A speaker whose last round ran under a build that still had a corner
     selector carries that round's ``fc_selection`` in durable state forever.
-    Nothing in this build parses it — the grade, the status block and the
+    No PRODUCT read path parses it — the grade, the status block and the
     household envelope all reach their answers without touching the field — so
-    no legacy shape, well-formed or not, can refuse or raise. That is what
+    no legacy shape, well-formed or not, can refuse or raise. (The offline
+    archaeology scripts still read it on purpose;
+    ``scripts/derive-crossover-incident-fixture.py`` mints the #2291 fixture
+    from exactly this payload, which is why it is preserved rather than
+    scrubbed — asserted at the end of this test.) That is what
     "versioned-absent field, readers degrade gracefully" buys: the tolerance is
     structural rather than a per-shape guard someone has to maintain.
 

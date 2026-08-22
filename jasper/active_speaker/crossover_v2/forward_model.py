@@ -211,8 +211,9 @@ def driver_plants(
     ``measurements`` are duck-typed on ``role`` / ``angle_deg`` / ``freqs_hz`` /
     ``complex_tf`` / ``band_hz`` — the shape a per-driver capture already has,
     plus the angle it was taken at. Duck-typed rather than imported because
-    this module has no business holding the session's dataclass, exactly as
-    ``predict_pose_sum_db`` does not.
+    this module has no business holding the session's dataclass: this is the
+    boundary where a session value enters, and it converts to this module's own
+    :class:`DriverPlant`, which is what everything downstream takes.
 
     ``protection_by_role`` maps a role to ``freqs -> complex response`` — the
     callable :func:`~jasper.active_speaker.crossover_v2.priors.role_transfers`

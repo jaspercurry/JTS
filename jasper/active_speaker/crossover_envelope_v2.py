@@ -4057,9 +4057,19 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                     f" by {miss:.2f} dB" + (f" near {hz / 1000:.2f} kHz" if hz else "")
                     if miss is not None else ""
                 )
+                # **Says what was measured, not that options were compared.**
+                # The grade behind this sentence is the applied candidate
+                # against its OWN forecast and the sound it replaced — never a
+                # field of alternatives. No round evaluates one: the corner
+                # selector that did is retired (ticket 2.4), and the earlier
+                # "best measured option from the complete comparison" wording
+                # named a comparison that had already stopped happening. The
+                # ``RESULT_VERIFIED_BEST_EVALUATED`` constant keeps its name —
+                # it is banked in log events and receipts — so only the
+                # household-facing sentence changes.
                 done_verdict = (
-                    "This is the best measured option from the complete comparison, and it "
-                    f"matched its prediction, but it still misses the target{miss_text}. "
+                    "This matched its prediction and improved on the sound it "
+                    f"replaced, but it still misses the target{miss_text}. "
                     "If it sounds worse than before, you can undo."
                 )
         # Every branch above may have promised Undo; the button is gated ~40

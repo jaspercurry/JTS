@@ -254,6 +254,12 @@ from pathlib import Path
 
 state_path, out_path = Path(sys.argv[1]), Path(sys.argv[2])
 
+# ``fc_selection`` is LEGACY-TOLERANT, deliberately kept: the corner selector
+# that wrote it is retired (docs/tuning-master-plan.md ticket 2.4) and no
+# current round banks one, but a bank taken off a speaker whose last round
+# predates that still carries it and is worth snapshotting. The extraction is a
+# walk-and-match over whatever keys exist, so an absent key contributes nothing
+# and raises nothing — it simply yields one fewer path.
 PREDICTION_KEYS = (
     "predicted_sum", "predicted_spec", "expected_post_apply_offset_db",
     "commanded_delta", "gain_plan_db", "fc_selection", "candidate",

@@ -2237,9 +2237,14 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     # exempted the absent case when the selector was merely unfed.
     #
     # **Read-back tolerance is by non-consumption.** A round banked while a
-    # selector existed still carries the payload in durable state; nothing here
-    # parses it, so no legacy shape — well-formed, partial or malformed — can
-    # refuse or raise. Such a round grades on its OWN verification evidence,
+    # selector existed still carries the payload in durable state; no product
+    # read path parses it — not this grade, the status block, the household
+    # envelope or the evidence packet — so no legacy shape, well-formed, partial
+    # or malformed, can refuse or raise. (Offline archaeology tooling still
+    # reads it on purpose: ``scripts/derive-crossover-incident-fixture.py`` mints
+    # the #2291 fixture from it, and ``scripts/bank-crossover-round.sh``
+    # snapshots it when a bank carries one.)
+    # Such a round grades on its OWN verification evidence,
     # which is measured fact about the applied tune rather than a retired
     # comparator's opinion of an alternative. Pinned in
     # ``tests/test_correction_crossover_v2_endpoints.py``.
@@ -3868,7 +3873,8 @@ def persist_conductor_state(
         # No ``fc_selection`` key: the corner selector that produced one is
         # retired (ticket 2.4) and the field is absent from this version of the
         # record rather than written as a null. Rounds banked while a selector
-        # existed keep theirs in durable state; nothing reads it back.
+        # existed keep theirs in durable state; no product read path reads it
+        # back (the offline archaeology scripts still do, deliberately).
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             # Two-stage commission D4: the spec verdict for the curve above,
@@ -4199,7 +4205,8 @@ def persist_conductor_state(
             state["measure"] = dict(prior["measure"])
         # The Fc selection carried across the same seam for the same reason
         # while a corner selector existed. It is retired (ticket 2.4), no
-        # session writes the field, and nothing reads it back — so there is
+        # session writes the field, and no product read path reads it back — so
+        # there is
         # nothing to carry, and a legacy value ages out of durable state on the
         # next write rather than being copied forward into a record whose
         # version has no such field.

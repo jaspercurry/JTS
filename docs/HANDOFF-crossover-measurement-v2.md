@@ -3340,7 +3340,9 @@ final `capture_result` before the page's ~250 ms poll reads it.
 > `SELECTION_*` verdicts the grade read. A round crosses at the corner the
 > household declared or an operator pinned; no round produces an `fc_selection`,
 > the field is absent from the persisted record rather than written null, and
-> no reader parses one a round banked while a selector existed. What survives in
+> no product read path parses one a round banked while a selector existed —
+> only the offline archaeology tooling still does, on purpose
+> ([testing-tooling.md](testing-tooling.md)). What survives in
 > `fc_sweep.py` is corner ADMISSIBILITY — the spine's file map says what.
 > Everything below described the sweep and its selector while they existed.
 >
@@ -4107,21 +4109,37 @@ shallower than any single position in it).
 
 **Terminal grading has one owner and four honest outcomes.** The durable result
 owner `correction_crossover_v2._post_apply_grade` classifies from the candidate
-fingerprint, comparison completeness, baseline/selected scores, existing
-material-improvement margin, tracking, and independent absolute claim; it neither creates a second state machine nor alters the audition transaction.
+fingerprint, the VERIFY outcome and its reason code, the tracking claim, the
+independent absolute claim, and the predicted-spec comparison's
+material-improvement margin; it neither creates a second state machine nor
+alters the audition transaction. It reads **no corner-selector record**: the Fc
+selector and the `fc_selection` it wrote are retired
+([tuning-master-plan.md](tuning-master-plan.md) ticket 2.4), so comparison
+completeness and per-candidate scores are no longer inputs, and a round banked
+while a selector existed grades on its own VERIFY evidence like any other.
 
-| Comparative / terminal proof | Tracking | Absolute | Outcome |
+| Terminal proof | Tracking | Absolute | Outcome |
 |---|---|---|---|
-| authorized selection | pass | pass | `verified_target` |
-| authorized material improvement | pass | fail | `verified_best_evaluated` |
-| tracking failure/regression, or complete no-improvement/unapplied alternative | fail/any | any | `keep_previous` |
-| incomplete or unevaluable without definitive keep evidence above | any | any | `inconclusive` |
+| published candidate (fingerprint) + VERIFY pass | pass | pass | `verified_target` |
+| published candidate + VERIFY pass + material improvement, with both miss numbers stated | pass | fail | `verified_best_evaluated` |
+| tracking failure, a VERIFY regression outside the crossover region, or the forecast's `LEDGER_NOT_AN_IMPROVEMENT` / a sub-bar margin | fail/any | any | `keep_previous` |
+| unevaluable — VERIFY inconclusive, no fingerprint, or a tracking/absolute claim that is neither pass nor fail | any | any | `inconclusive` |
 
-`verified_best_evaluated` means only the best measured option in the completed comparison.
+An **un-applied** round reaches none of the four: it publishes no outcome at
+all. Both instruments that could once say a round DELIBERATELY kept the previous
+tune are gone — `accountability`'s item 2 stopped refusing and became a grade
+(#2854), and the corner selector's `recommend_alternative` retired with ticket
+2.4 — so that arm states nothing rather than inventing a verdict.
+
+`verified_best_evaluated` means only that the applied candidate beat its own
+predicted baseline by the material margin while missing the absolute target: a
+claim about THIS candidate against its own forecast, never about a field of
+alternatives, because no round evaluates one.
 The target remains visibly failed with miss magnitude/frequency; the copy never says within spec, perfect, or best achievable. Tracking error
 `1.398262557 dB <= 1.5 dB` plus a `4.3139 dB` miss near `1.590 kHz` is
-`verified_best_evaluated` only with complete proof and material improvement;
-with incomplete comparison it is `inconclusive`. These outcomes only report:
+`verified_best_evaluated` when the margin clears
+`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` and both miss numbers are present, and
+`inconclusive` when they are not. These outcomes only report:
 they do not apply, undo, retry, or recapture valid stored evidence.
 
 **VERIFY discloses WHAT THE GATE DID, and the inconclusive copy speaks from

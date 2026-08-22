@@ -1929,7 +1929,13 @@ Two things a topology pin does that no other prescription does:
   null would read as a comparison that ran and produced nothing. Neither
   `fc_adjudication` nor `fc_statistic_paused` is published by anything any
   more. A round banked while a selector existed keeps its payload in durable
-  state and no reader parses it.
+  state, and no PRODUCT read path parses it — not the grade, the status block,
+  the household envelope, or the evidence packet. The offline archaeology
+  tooling still may and is the deliberate exception:
+  [`scripts/derive-crossover-incident-fixture.py`](../scripts/derive-crossover-incident-fixture.py)
+  (indexed above) reads `fc_selection` off the #2291 bank to mint that
+  incident's committed fixture, and `scripts/bank-crossover-round.sh` snapshots
+  the field when a bank still carries one.
 - Its receipt carries an **authority caveat** (`operator_pinned_no_measured_ranking`).
   No shipped path ranks one topology against another, or one corner against
   another — the offline candidate search was deleted with the hunt — so a pinned
