@@ -1954,7 +1954,6 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     tweeter["recommended_highpass_hz"] = 700.0
     tweeter["hard_excitation_band_hz"] = [700.0, 22000.0]
     tweeter["measurement_band_hz"] = [700.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 700.0
     profile = build_driver_safety_profile(
         topology,
@@ -2132,7 +2131,6 @@ def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
 
     for manual, expected_warning in ((out_of_band, True), (_manual_settings(), False)):
@@ -2185,7 +2183,6 @@ def test_an_unknown_driver_type_is_disclosed_on_the_saved_profile() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["crossover_search_band_hz"] = [2000.0, 8000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
 
     profile = build_driver_safety_profile(
