@@ -61,11 +61,11 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
 ) -> None:
     """One statefile on disk; four readers; one answer.
 
-    The doctor helper (``_active_camilla_config_path``, which
-    ``jasper.cli.doctor.audio_runtime`` imports and three of its checks call),
-    the runtime plan, the bonded-leader pipe probe, and the canonical reader all
-    read the SAME ``JASPER_CAMILLA_STATEFILE`` fixture here. Break the shared
-    parse or the shared override lookup and every assertion below fails at once
+    The doctor helper (``_active_camilla_config_path``, which ``doctor.audio``,
+    ``doctor.audio_runtime``, and ``doctor.grouping`` import), the runtime plan,
+    the bonded-leader pipe probe, and the canonical reader all read the SAME
+    ``JASPER_CAMILLA_STATEFILE`` fixture here. Break the shared parse or the
+    shared override lookup and the one assertion below reports all four at once
     — which is the point: before the fold these four could disagree.
     """
 
