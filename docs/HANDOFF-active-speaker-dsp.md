@@ -214,14 +214,33 @@ above; this is only the entry points:
   "requires the all-muted staged config to be the persisted boot config first".
   (That gate runs before the load, so the later S3 durable-drift check inside the
   persist phase is never reached.) `load_protected_startup_config` therefore
-  sets an **ephemeral `/run` hold marker**
-  (`jasper.active_speaker.startup_hold`) around the load and clears it on
-  rollback; while it is present `safe_graph_for_current_topology` preserves the
+  takes an **ephemeral `/run` hold marker**
+  (`jasper.active_speaker.startup_hold`) before it applies anything and clears it
+  on rollback; while it is present `safe_graph_for_current_topology` preserves the
   staged all-muted anchor above the baseline-restore rung. The marker is in
   `/run`, so a normal boot never sees it — a commissioned box still restores its
   baseline on reboot — and preserving an all-muted anchor keeps the box silent,
   never loud, so this is gated only on the hold, not on identity (#2814's identity
   gate stays on the approved-runtime rungs).
+  **The unit owns the marker directory, and a load that cannot be held refuses.**
+  Two units reach the writer: `jasper-web` (`User=jasper-web`,
+  `ProtectSystem=strict`) through the `/sound/` commissioning flow and its
+  `POST /active-speaker/load-startup-config` route, and `jasper-correction-web`
+  (root) through `/correction/`'s driver-capture and level-match arms; both
+  arrive at the same function, the latter via
+  `web_commissioning._ensure_commission_startup_anchor`.
+  `ProtectSystem=strict` mounts the hierarchy read-only apart from `/dev`,
+  `/proc`, and `/sys`, so `jasper-web` cannot create `/run/jasper-active-speaker`
+  itself; `deploy/jasper-web.service` declares
+  `RuntimeDirectory=jasper-active-speaker` (mode 0755,
+  `RuntimeDirectoryPreserve=yes` because the unit is socket-activated and idles
+  out while a hold is live), which systemd creates as `jasper-web:jasper` and
+  excludes from `ProtectSystem=`. The root writer and the root reconciler's read
+  need nothing further. When the hold cannot be taken,
+  `load_protected_startup_config` returns `status="blocked"` with the
+  `staged_startup_hold_unavailable` blocker naming the directory — it applies
+  nothing, because a load whose durable half the next reconcile would undo must
+  not answer success.
 - **The applied baseline candidate is always a source-fingerprinted
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`

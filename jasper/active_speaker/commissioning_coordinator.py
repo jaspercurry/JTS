@@ -188,6 +188,11 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
             "summed_commission_load_failed",
             "driver_commission_load_failed",
             "startup_config_load_failed",
+            # The same function refusing one step earlier: it could not hold the
+            # staged anchor, so it applied nothing. Mapped because its prose
+            # names the unit directive an operator has to add
+            # (RuntimeDirectory=jasper-active-speaker) — household copy instead.
+            "staged_startup_hold_unavailable",
             "startup_config_missing",
             "startup_config_path_missing",
             "startup_config_unreadable",

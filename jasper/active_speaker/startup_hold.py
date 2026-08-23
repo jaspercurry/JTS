@@ -24,13 +24,27 @@ reboot; only a live, in-flight startup-load session sees the hold. This mirrors
 ``jasper.control.measurement_hold``'s "nothing persisted; a reboot drops it =
 intended crash-safety" philosophy.
 
-Both the writer (the startup-load path, in the root ``jasper-correction-web``
-daemon) and the reader (the selector, run as root by the reconciler) are root,
-so no group permissions are involved.
+Two units reach the writers, and they are not both root. ``jasper-web``
+(``User=jasper-web``, ``ProtectSystem=strict``) writes the hold from ``/sound/``'s
+``POST /active-speaker/load-startup-config`` and clears it from
+``/active-speaker/rollback-startup-config``; ``jasper-correction-web`` (root)
+writes it from ``/correction/``'s driver-capture and level-match arms, which
+reach the same ``load_protected_startup_config`` through
+``web_commissioning._ensure_commission_startup_anchor``. ``ProtectSystem=strict``
+mounts the hierarchy read-only apart from ``/dev``, ``/proc``, and ``/sys``, so
+``jasper-web`` cannot write anywhere under ``/run`` on its own — it owns the
+directory through ``RuntimeDirectory=jasper-active-speaker``
+(``deploy/jasper-web.service``), which systemd creates as ``jasper-web:jasper``
+mode 0755 and excludes from ``ProtectSystem=``. Root writes and 0755 reads need
+nothing further, so no supplementary group is involved.
 
-Fail direction, both sides: a write failure is best-effort and never turns a
-successful startup load into a failure; a read failure resolves to "no hold",
-which restores the saved baseline — audio, never silence, and never louder.
+Fail direction: a write failure never raises here, but it is not silent —
+``load_protected_startup_config`` refuses the load with the
+``staged_startup_hold_unavailable`` blocker before it applies anything, because
+the reconcile it would kick undoes an unheld anchor. A read failure resolves to
+"no hold", which restores the saved baseline — audio, never silence, and never
+louder. A failed CLEAR is fail-safe on its own: the baseline restore just waits
+for the next rollback or reboot.
 """
 
 from __future__ import annotations
@@ -80,9 +94,11 @@ def staged_startup_hold_active(path: str | Path | None = None) -> bool:
 
 
 def hold_staged_startup(path: str | Path | None = None) -> bool:
-    """Mark the staged startup anchor as held. Best-effort; never raises.
+    """Mark the staged startup anchor as held. Never raises.
 
-    Returns whether the marker is now present.
+    Returns whether the marker is now present. ``load_protected_startup_config``
+    refuses the load on ``False`` rather than applying an anchor the next
+    reconcile would undo, so this answer is load-bearing, not advisory.
     """
 
     marker = startup_hold_marker_path(path)

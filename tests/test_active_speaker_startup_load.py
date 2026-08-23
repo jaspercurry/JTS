@@ -8,8 +8,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-import pytest
-
 import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker.startup_hold import startup_hold_marker_path
 from jasper.active_speaker.calibration_level import calibration_level_payload
@@ -60,17 +58,6 @@ class FakeCamilla:
 class SnapshotFailingCamilla(FakeCamilla):
     async def get_config_file_path(self) -> str:
         raise RuntimeError("camilla unavailable")
-
-
-@pytest.fixture(autouse=True)
-def _isolate_startup_hold_marker(monkeypatch, tmp_path: Path):
-    # A successful load/rollback now writes the ephemeral /run hold marker for
-    # real. Redirect it into the test's tmp dir so the suite never touches the
-    # host's /run and stays hermetic whether or not it runs as root.
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER",
-        str(tmp_path / "staged-startup-hold"),
-    )
 
 
 def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
@@ -494,6 +481,119 @@ def test_startup_load_sets_staged_hold_and_rollback_clears_it(
     )
     assert rollback["rollback"]["status"] == "rolled_back"
     assert not marker.exists()  # hold released; baseline restore is allowed again
+
+
+def test_startup_load_refuses_when_the_staged_hold_cannot_be_taken(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # The hold's write is what keeps the reconcile this load kicks from restoring
+    # the saved baseline over the anchor. When it cannot be taken — the shape
+    # jasper-web hit on hardware before the unit declared
+    # RuntimeDirectory=jasper-active-speaker, where /run is read-only under
+    # ProtectSystem=strict — the load must refuse instead of answering success
+    # for durable work the next reconcile would undo, and must apply nothing.
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
+    fake = FakeCamilla(str(prior))
+    state_path = tmp_path / "startup_load.json"
+    reconcile_calls = _record_reconcile_triggers(monkeypatch)
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    monkeypatch.setattr(startup_load_mod, "hold_staged_startup", lambda: False)
+
+    result = asyncio.run(
+        load_protected_startup_config(
+            _topology(),
+            load_config=fake.set_config_file_path,
+            get_current_config_path=fake.get_config_file_path,
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+    state = load_startup_load_state(state_path=state_path)
+
+    # The preflight itself still passes — the refusal is the hold, not a gate.
+    assert result["preflight"]["load_allowed"] is True
+    assert result["load"]["status"] == "blocked"
+    assert result["load"]["last_action"] == "load_blocked"
+    assert "staged_startup_hold_unavailable" in {
+        issue["code"] for issue in result["load"]["issues"]
+    }
+    # Nothing applied, nothing kicked: no DSP load, and no reconcile to undo it.
+    assert fake.loaded_paths == []
+    assert reconcile_calls == []
+    assert state["status"] == "blocked"
+    assert state["rollback_available"] is False
+    # The blocker names the directory the writing unit has to own.
+    message = next(
+        issue["message"]
+        for issue in result["load"]["issues"]
+        if issue["code"] == "staged_startup_hold_unavailable"
+    )
+    assert "RuntimeDirectory=jasper-active-speaker" in message
+
+
+def test_startup_load_releases_the_staged_hold_when_the_apply_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # The hold is taken before the apply, so a failed apply — which leaves the
+    # anchor off the durable statefile — has to give it back, or the next
+    # reconcile would preserve an anchor this session never loaded.
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
+    fake = FakeCamilla(str(prior))
+    state_path = tmp_path / "startup_load.json"
+    _record_reconcile_triggers(monkeypatch)
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    marker = startup_hold_marker_path()
+
+    # Spy through the real writer so the final `not marker.exists()` cannot pass
+    # vacuously — it has to mean "taken, then given back", not "never taken".
+    held: list[bool] = []
+    real_hold = startup_load_mod.hold_staged_startup
+
+    def spy_hold() -> bool:
+        taken = real_hold()
+        held.append(taken and marker.exists())
+        return taken
+
+    monkeypatch.setattr(startup_load_mod, "hold_staged_startup", spy_hold)
+
+    async def refuse_load(_path: str) -> bool:
+        return False
+
+    result = asyncio.run(
+        load_protected_startup_config(
+            _topology(),
+            load_config=refuse_load,
+            get_current_config_path=fake.get_config_file_path,
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert result["load"]["status"] == "failed"
+    assert held == [True]  # the hold really was taken before the apply
+    assert not marker.exists()  # and given back when the apply failed
 
 
 def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(

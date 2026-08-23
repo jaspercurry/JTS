@@ -167,6 +167,22 @@ NoNewPrivileges=true
 # /ha wizards can atomically replace integration secret files and Spotify
 # OAuth tokens there.
 ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth /etc/avahi/services
+# The active-speaker staged-startup hold marker
+# (jasper.active_speaker.startup_hold, #2896) lives at
+# /run/jasper-active-speaker/staged-startup-hold, and this unit writes it from
+# the /sound/ protected startup load. ProtectSystem=strict mounts the whole
+# hierarchy read-only apart from /dev, /proc, and /sys, so a bare mkdir under
+# /run cannot succeed here; RuntimeDirectory= both creates the directory as
+# jasper-web:jasper (the unit's User:Group) and excludes it from
+# ProtectSystem=. Mode 0755 keeps the root reconciler's read of the marker
+# working; the other writer that reaches it — jasper-correction-web, through
+# /correction/'s driver-capture arms — is root and needs nothing. Preserve=yes is
+# load-bearing: jasper-web is socket-activated and idles out after 10 minutes,
+# and a commission hold has to outlive that stop — /run is tmpfs, so a reboot
+# still clears the marker, which is the property the guard rung depends on.
+RuntimeDirectory=jasper-active-speaker
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 # WS1 phase-1 hardening (docs/HANDOFF-privilege-separation.md): jasper-web gets
 # the full phase-1 stanza. ProtectKernelLogs is OMITTED — the wizards shell to
 # nmcli / journalctl -k for Wi-Fi diagnostics and must not be starved of kernel-

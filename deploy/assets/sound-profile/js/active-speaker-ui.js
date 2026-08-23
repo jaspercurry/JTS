@@ -508,6 +508,14 @@ function commissionIssueReason(codes) {
     return 'JTS needs to load the silent active-speaker setup before this driver ' +
       'can be tested. Start the tone again; no sound will play until the test opens.';
   }
+  if (codes.indexOf('staged_startup_hold_unavailable') >= 0) {
+    // One step earlier than the anchor codes below: the load refused before it
+    // changed anything, because it could not hold the silent setup in place.
+    // Retrying cannot clear it — the speaker's own software has to be repaired —
+    // so this points at System status instead of offering another attempt.
+    return 'JTS could not hold the silent active-speaker setup in place, so it ' +
+      'left the speaker as it was and played no driver sound. Open System status.';
+  }
   for (var i = 0; i < codes.length; i += 1) {
     if (String(codes[i]).indexOf('commission_startup_anchor_') === 0) {
       return 'JTS could not load the silent active-speaker setup. No driver sound ' +

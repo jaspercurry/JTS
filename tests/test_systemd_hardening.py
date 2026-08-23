@@ -431,6 +431,35 @@ def test_control_keeps_runtimedir_and_avahi_rwpaths_after_drop():
     )
 
 
+def test_web_owns_the_active_speaker_staged_startup_hold_runtime_dir():
+    """jasper-web writes the active-speaker staged-startup hold marker
+    (/run/jasper-active-speaker/staged-startup-hold) from /sound/'s protected
+    startup load. Under ProtectSystem=strict the whole hierarchy is read-only
+    apart from /dev, /proc, and /sys, so a bare mkdir under /run cannot succeed
+    from this unit — that is the failure jts3 hit on hardware after #2896
+    (event=active_speaker.staged_startup_hold_write_failed ... PermissionError),
+    which let the reconcile restore the baseline over the anchor and re-created
+    the deadlock. RuntimeDirectory= both creates the directory as the unit's
+    User:Group and excludes it from ProtectSystem=; Preserve=yes is load-bearing
+    because jasper-web is socket-activated and idles out while a commission hold
+    is still live."""
+    pairs = set(_directives(TIER_A["jasper-web"]))
+    assert ("ProtectSystem", "strict") in pairs, (
+        "this contract exists because /run is read-only for this unit."
+    )
+    assert ("RuntimeDirectory", "jasper-active-speaker") in pairs, (
+        "jasper-web must own /run/jasper-active-speaker via RuntimeDirectory= — "
+        "ProtectSystem=strict makes a bare mkdir under /run fail."
+    )
+    assert ("RuntimeDirectoryMode", "0755") in pairs, (
+        "0755 keeps the root reconciler's read of the hold marker working."
+    )
+    assert ("RuntimeDirectoryPreserve", "yes") in pairs, (
+        "the socket-activated unit idles out after 10 min; a live commission "
+        "hold must outlive that stop. /run is tmpfs, so a reboot still clears it."
+    )
+
+
 SERVICE_USERS_SH = ROOT / "deploy/lib/install/service-users.sh"
 
 

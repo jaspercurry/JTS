@@ -68,7 +68,11 @@ from .graph_evidence import (
     running_commission_evidence,
     running_graph_matches_staged_anchor,
 )
-from .startup_hold import hold_staged_startup, release_staged_startup_hold
+from .startup_hold import (
+    hold_staged_startup,
+    release_staged_startup_hold,
+    startup_hold_marker_path,
+)
 from ..fanin_coupling import transport_label
 from .safe_playback import load_safe_playback_state
 from .staging import (
@@ -915,6 +919,41 @@ async def load_protected_startup_config(
         )
         return {"preflight": preflight, "load": payload}
 
+    # Hold the staged anchor BEFORE touching the DSP. The reconcile this load
+    # kicks re-runs the graph selector, which restores the saved baseline over
+    # the anchor unless the hold is present (safe_graph_for_current_topology's
+    # deadlock-guard rung reads this marker). A load that cannot be held would
+    # have its durable half undone seconds later, so refuse here rather than
+    # answer success: nothing has been applied yet at this point.
+    if not hold_staged_startup():
+        hold_marker = startup_hold_marker_path()
+        payload = _loaded_state_payload(
+            status="blocked",
+            candidate_config_path=candidate_path,
+            active_config_path=None,
+            previous_config_path=str(prior_config_path),
+            last_action="load_blocked",
+            preflight=preflight,
+            issues=[
+                _issue(
+                    "blocker",
+                    "staged_startup_hold_unavailable",
+                    "could not hold the staged startup anchor at "
+                    f"{hold_marker}: the reconcile this load kicks would "
+                    "restore the saved baseline over it. The writing service "
+                    "needs write access to that directory — jasper-web.service "
+                    "declares it as RuntimeDirectory=jasper-active-speaker.",
+                )
+            ],
+        )
+        _record_state(payload, state_path=state_path)
+        logger.warning(
+            "event=active_speaker.startup_load result=blocked "
+            "reason=staged_startup_hold_unavailable marker=%s",
+            hold_marker,
+        )
+        return {"preflight": preflight, "load": payload}
+
     def _persist_loaded_anchor() -> None:
         _record_state(
             _loaded_state_payload(
@@ -957,6 +996,9 @@ async def load_protected_startup_config(
             ],
         )
         _record_state(payload, state_path=state_path)
+        # The apply rolled back, so the anchor is not the durable statefile and
+        # this session no longer holds it.
+        release_staged_startup_hold()
         logger.warning(
             "event=active_speaker.startup_load result=failed candidate=%s prior=%s error=%s",
             candidate_path,
@@ -975,12 +1017,8 @@ async def load_protected_startup_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_state(payload, state_path=state_path)
-    # Hold the staged anchor BEFORE kicking the reconcile: this durable statefile
-    # is now the deliberate all-muted anchor, and the reconcile re-runs the graph
-    # selector, which would otherwise restore the saved baseline over it and break
-    # the commission that follows (safe_graph_for_current_topology's deadlock
-    # guard reads this marker). Best-effort — a failed set never fails the load.
-    hold_staged_startup()
+    # The hold taken before the apply is still in force, so the reconcile kicked
+    # here preserves the anchor it just wrote instead of restoring the baseline.
     _trigger_audio_hardware_reconcile(source="active_speaker_startup_load")
     logger.info(
         "event=active_speaker.startup_load result=loaded candidate=%s prior=%s op_id=%s",
