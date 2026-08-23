@@ -698,8 +698,9 @@ _PRESCRIPTION_FIELDS = frozenset({
     "displaced_boost_db",
     "displaced_boost_role",
     # FORWARD-compatible, not backward: this reader accepts everything
-    # `to_dict` emits, but a PRE-boost-class build handed a post-boost-class
-    # receipt refuses it as an unknown field. Harmless today and recorded
+    # `to_dict` emits, but an OLDER build handed a NEWER receipt refuses it as
+    # an unknown field — true of the boost class's fields, of #2863's
+    # `displaced_*`, and of `unvouched_filters` above. Harmless today and recorded
     # rather than fixed, because no production caller reads a receipt back —
     # `driver_prescription_from_mapping` has test callers only, and the two
     # production readers are handed a prescriber's DOCUMENT, which never
