@@ -715,20 +715,35 @@ def resolve_driver_protection_slope_db_per_octave(
     (:func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`):
     a two-way corner high-passes the upper driver AT the corner, so that
     driver's published minimum slope is a claim about what the crossover's own
-    filter must do.  Nothing else applies a slope to a crossover — the L0 emit
-    gates prove corner FREQUENCIES only (``graph_safety.output_highpass_protected``,
-    ``tweeter_guard_present``), and the derived requirement is proved only
-    against the protective filter this build itself emitted.
+    filter must do.  Nothing downstream enforces a slope ABOVE 12 dB/octave on a
+    crossover: ``graph_safety.output_highpass_protected`` reads the corner and
+    no ``order`` at all, ``graph_safety.tweeter_guard_present`` reads ``order``
+    absent or ``>= 2.0`` (so every emittable order clears it), and the derived
+    requirement is proved only against the protective filter this build itself
+    emitted.  See ``topology_prescription``'s module docstring for the gate-by-
+    gate quotation and for the one dormant copy of this refusal.
 
     **Returns ``None`` rather than raising**, unlike its sibling
     :func:`resolve_driver_measurement_band_hz` above, and the difference is
     deliberate: the measurement band bounds a program that is about to PLAY, so
-    an unreadable one must stop the session.  ``None`` here means *the
-    manufacturer published no slope* — which is an ordinary datasheet (BMS's
-    4590), and it means there is no slope bound to apply, never a guessed
-    default, on ``declared_protection_highpass_floor_hz``'s never-nanny rule.
-    The commissioning recommendation is still DISCLOSED on the pin's record in
-    that case; it is only refusal that requires a published number.
+    an unreadable one must stop the session.
+
+    **``None`` means there is no published condition ON THE RECORD, and that has
+    TWO causes — say both, because they are not equally comfortable.**  Either
+    the maker prints no slope qualifier (an ordinary datasheet; BMS's 4590), or
+    the profile was saved before the owner pair existed as a target field, in
+    which case NO driver on that speaker has a published slope — not even one
+    publishing 24 — until the next ``/sound/`` save re-derives the target.  The
+    second case is every already-commissioned speaker on the deploy that ships
+    this, and it is why the field is optional in
+    ``driver_safety._validate_driver_safety_profile_shape`` rather than
+    required: a stored profile stays confirmed rather than being invalidated.
+    Both cases mean the same thing HERE — there is no published bound to apply,
+    never a guessed default, on ``declared_protection_highpass_floor_hz``'s
+    never-nanny rule — and in both the commissioning recommendation is still
+    DISCLOSED on the pin's record.  What this function must never do is let a
+    caller read ``None`` as "the manufacturer publishes nothing", because on a
+    pre-field profile that is a claim about a datasheet nobody consulted.
     """
     try:
         target = _target_for_request(safety_profile, target_fingerprint)

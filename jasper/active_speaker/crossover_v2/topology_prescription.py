@@ -64,16 +64,36 @@ commissioning recommendation rides the record as
 :attr:`TopologyPrescription.recommended_slope_db_per_octave` instead.
 
 **Why the slope bound is here and not downstream.**  Because nothing downstream
-applies one to a crossover.  The L0 emit gates prove the tweeter's high-pass
-CORNER and its limiter wrapper, with no slope term at all
-(``graph_safety.output_highpass_protected`` / ``tweeter_guard_present``), and
-crossover apply compares corner frequencies only
-(``driver_protection.protection_highpass_floor_satisfied``, the shared floor
-predicate).  The derived requirement IS proved by the commissioning admission
-path, but only against the protective filter this build emitted from that same
-derived number — never against a corner a household pinned.  So a published
-condition that is not checked here is not checked anywhere, which is why this is
-the one place it is applied.
+enforces a slope ABOVE 12 dB/octave on a crossover — quoting each gate rather
+than summarising it, because the summary "no slope term" is wrong about one of
+them:
+
+* ``graph_safety.output_highpass_protected`` (and ``unprotected_tweeter_outputs``
+  over it) matches an ``LinkwitzRileyHighpass`` with ``freq >= min_corner_hz``
+  and reads no ``order`` at all;
+* ``graph_safety.tweeter_guard_present`` DOES read one, as ``order`` absent or
+  ``>= 2.0`` — its own docstring's loose-tolerance rule.  Every order this
+  system can emit satisfies it (:data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`
+  starts at 2), so it refuses a sub-LR2 shape and never an order-2 crossover;
+* crossover apply compares corner frequencies only
+  (``driver_protection.protection_highpass_floor_satisfied``, the shared floor
+  predicate, which has no slope term);
+* the derived requirement IS proved by the commissioning admission path, but
+  only against the protective filter this build emitted from that same derived
+  number — never against a corner a household pinned.
+
+One dormant exception, named so a later reader is not surprised by it:
+``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor`` refuses the
+CROSSOVER high-pass at ``order * 6 < PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE``
+(hardcoded 24) — a second copy of exactly the refusal this ruling struck.  It is
+unreachable today: ``emit_active_speaker_program_config`` runs it only on its
+``protection_sections_by_role is None`` branch, and the one production caller
+always supplies that mapping.  But the parameter defaults to ``None``, so it is
+one omitted keyword from firing.  If that branch is ever revived it needs the
+same published-vs-derived split as this gate.
+
+So a published condition that is not checked here is not checked anywhere,
+which is why this is the one place it is applied.
 
 **The beaming ceiling is disclosed, never enforced.**  #1675 defines it as
 guidance to warn on rather than a fence, so no admissibility bound anywhere
@@ -316,9 +336,17 @@ class TopologyPrescription:
     2500 Hz declared ceiling or a 4000 Hz one, and the declaration is not
     elsewhere in the block.  ``None`` on a record that has not been through the
     gate (a durable read-back of a hand-built block), and ``None`` for a bound
-    that was not declared at all — which for
-    ``checked_against_slope_db_per_octave`` now means the manufacturer
-    published no slope condition, not that nobody looked.
+    that was not declared at all.
+
+    **A ``None`` ``checked_against_slope_db_per_octave`` is NOT proof the maker
+    prints no slope.**  It means no published condition was on the safety
+    profile, and there are two ways to get there: the datasheet really carries
+    no qualifier, or the profile predates the target field that holds one — in
+    which case no driver on that speaker has a published slope until its next
+    ``/sound/`` save, and this receipt says only that none was found.  A reader
+    grading an old round must not read the empty slot as a datasheet fact.  See
+    ``excitation_safety_plan.resolve_driver_protection_slope_db_per_octave``,
+    which owns that read.
     """
 
     fc_hz: float
@@ -639,11 +667,13 @@ def read_topology_prescription(
     high-passes the upper driver at ``fc_hz``, so what the manufacturer printed
     beside its minimum crossover frequency is a claim about what that filter
     must do; the lower driver's own protection high-pass is a claim about the
-    BOTTOM of its band and has nothing to say about the corner.  ``None`` is
-    the ordinary case for a datasheet that prints a frequency and no slope, and
-    it means there is no slope bound to apply — never the commissioning figure
+    BOTTOM of its band and has nothing to say about the corner.  ``None`` means
+    no published condition is on the safety profile — either the datasheet
+    prints none, or the profile predates the field that carries one — and
+    either way there is no slope bound to apply, never the commissioning figure
     standing in, which is the fusion the 2026-08-23 ruling struck (see this
-    module's docstring).
+    module's docstring, and :class:`TopologyPrescription` for what the resulting
+    empty receipt slot may and may not be read as).
 
     **The bounds are inclusive.**  An order whose slope exactly meets the
     published minimum is legal, and a corner exactly at a declared edge is legal

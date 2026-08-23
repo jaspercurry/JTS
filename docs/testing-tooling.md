@@ -1933,12 +1933,21 @@ Owning modules and their gates:
   the crossover search band that used to narrow them (asked of that path's own
   predicate, so a pin and a proposal are admissible on identical terms), plus
   the protected role's **published** slope condition
-  (`recommended_highpass_slope_db_per_octave`), absent on the ordinary datasheet
-  that prints a crossover frequency and no qualifier. **Nothing else applies a
-  slope to a crossover** — the L0 emit gates prove the corner and the limiter
-  with no slope term, and crossover apply compares corner frequencies only — so
-  a published condition unchecked here is unchecked anywhere. It reads the
-  published number and not the derived
+  (`recommended_highpass_slope_db_per_octave`), absent both on the ordinary
+  datasheet that prints a crossover frequency and no qualifier **and** on any
+  profile saved before that target field existed — so an already-commissioned
+  speaker gets no slope refusal at all until its next `/sound/` save.
+  **Nothing downstream enforces a slope above 12 dB/octave on a crossover** —
+  `graph_safety.output_highpass_protected` reads the corner and no order;
+  `graph_safety.tweeter_guard_present` reads `order` absent or `>= 2.0`, which
+  every emittable order clears; crossover apply compares corner frequencies
+  only. (One dormant exception:
+  `camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor` refuses the
+  crossover HP against a hardcoded 24, on the
+  `protection_sections_by_role is None` branch the single production caller
+  never takes — one omitted keyword from firing.) So a published condition
+  unchecked here is unchecked anywhere. It reads the published number and not
+  the derived
   `required_protection_filters[highpass].minimum_slope_db_per_octave` since
   [#2897](https://github.com/jaspercurry/JTS/pull/2897): that field is
   `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, and refusing a

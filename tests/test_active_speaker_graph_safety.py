@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import graph_safety as gs
+from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 
 MUTE_GAIN = -120.0
 
@@ -330,6 +331,36 @@ def _tweeter_hp_view(order: int):
     )
 
 
+def _tweeter_guard_view(order: int):
+    """``_tweeter_hp_view`` plus the soft-clip limiter ``tweeter_guard_present``
+    additionally requires, both wired to the one tweeter output."""
+    return gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": order,
+                    },
+                },
+                "tweeter_limiter": {
+                    "type": "Limiter",
+                    "parameters": {"clip_limit": -6.0, "soft_clip": True},
+                },
+            },
+            "pipeline": [
+                {
+                    "type": "Filter",
+                    "channels": [1],
+                    "names": ["tweeter_hp", "tweeter_limiter"],
+                }
+            ],
+        }
+    )
+
+
 def test_the_emitted_graph_is_still_proved_against_the_derived_slope():
     """#2897's blast-radius floor: the EMIT side did not move.
 
@@ -362,23 +393,41 @@ def test_the_emitted_graph_is_still_proved_against_the_derived_slope():
     )
 
 
-def test_the_l0_emit_gate_carries_no_slope_term_at_all():
+def test_the_l0_emit_gates_enforce_no_slope_above_12_db_per_octave():
     """Why the topology gate is the ONE place a slope bound is applied.
 
-    ``output_highpass_protected`` proves a tweeter output's high-pass CORNER
-    and nothing about its steepness, so an order-2 crossover at a legal corner
-    passes it. A published slope this build did not check at the pin would not
-    be checked anywhere downstream — which is the claim
-    ``topology_prescription``'s docstring makes and this is the measurement of
-    it.
+    The two L0 predicates are NOT the same about steepness, and the difference
+    is why this test names the bound rather than saying "no slope term":
+    ``output_highpass_protected`` reads the CORNER and no ``order`` at all,
+    while ``tweeter_guard_present`` does read one — ``order`` absent or
+    ``>= 2.0``, its own loose-tolerance rule. Every order this system can emit
+    clears that, so neither refuses an order-2 crossover, and a published slope
+    unchecked at the pin is unchecked downstream. Both halves are measured: the
+    orders that pass, and the sub-LR2 shape ``tweeter_guard_present`` still
+    rejects.
     """
-    for order in (2, 4, 8):
+    for order in sorted(SUPPORTED_LR_ORDERS):
         assert gs.output_highpass_protected(
             _tweeter_hp_view(order),
             channel=1,
             allowed_channels={1},
             min_corner_hz=400.0,
         )
+        assert gs.tweeter_guard_present(
+            _tweeter_guard_view(order),
+            channels={1},
+            hp_name="tweeter_hp",
+            limiter_name="tweeter_limiter",
+            limiter_clip_ceiling_db=-3.0,
+        )
+    # …and the shape it DOES refuse is below every emittable order.
+    assert not gs.tweeter_guard_present(
+        _tweeter_guard_view(1),
+        channels={1},
+        hp_name="tweeter_hp",
+        limiter_name="tweeter_limiter",
+        limiter_clip_ceiling_db=-3.0,
+    )
 
 
 def test_protection_requirement_allows_only_same_role_grouped_channels():

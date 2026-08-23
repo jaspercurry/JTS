@@ -12559,6 +12559,57 @@ def test_an_order_2_pin_is_admitted_when_the_maker_published_no_slope(
     )
 
 
+def test_a_pre_field_profile_refuses_no_slope_and_its_receipt_says_only_that(
+    monkeypatch,
+) -> None:
+    """The LEGACY cause of an empty slope slot, kept distinct from the other one.
+
+    The test above is a maker who prints no qualifier. This one is every speaker
+    already commissioned when #2897 deploys: the confirmed target predates the
+    owner pair, so it carries NEITHER field — and the consequence is stronger
+    than "this driver publishes nothing". No driver on such a profile has a
+    published slope, including one whose datasheet says 24, until the next
+    ``/sound/`` save re-derives the target. Both causes land the same behaviour
+    (no slope refusal, empty receipt slot), and the receipt cannot tell them
+    apart — which is exactly why the docstrings must not read the empty slot as
+    a datasheet fact.
+    """
+    pre_field = deepcopy(_PIN_SAFETY_PROFILE)
+    tweeter = pre_field["targets"][1]
+    del tweeter["recommended_highpass_hz"]
+    del tweeter["recommended_highpass_slope_db_per_octave"]
+    # The derived protective high-pass is untouched: a pre-field target carries
+    # the projections and nothing else, which is what makes this the real shape
+    # rather than a profile with a field surgically removed.
+    assert tweeter["required_protection_filters"][0]["minimum_slope_db_per_octave"] == (
+        _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_PIN_SAFETY_PROFILE", pre_field)
+
+    accepted = _stage_1_prescription_taps(
+        monkeypatch, {"topology_prescription": _topology_pin(order=2)},
+    )["topology"]
+
+    assert accepted is not None
+    assert accepted.order == 2
+    # Admitted — and the 18 the maker really publishes did NOT reach the gate,
+    # because the field that carries it is not on this profile.
+    assert accepted.checked_against_slope_db_per_octave is None
+    assert accepted.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+    # The same pin against the SAME maker, once a /sound/ save has put its
+    # published 18 on the record, IS refused — so the empty slot above is the
+    # profile's age and not the datasheet's silence. Undoing the patch restores
+    # the module fixture, which is that saved shape.
+    monkeypatch.undo()
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        _stage_1_prescription_taps(
+            monkeypatch, {"topology_prescription": _topology_pin(order=2)},
+        )
+    assert "published minimum of 18 dB/octave" in str(excinfo.value)
+
+
 def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     monkeypatch,
 ):
