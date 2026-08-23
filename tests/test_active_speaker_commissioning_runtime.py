@@ -2256,6 +2256,9 @@ def test_two_driver_profile_composition_intersects_existing_limits(
                 "hard_excitation_band_hz": [1.0, 40000.0],
                 "measurement_band_hz": [1.0, 30000.0],
                 "required_protection_filters": [{"kind": "lowpass"}],
+                # This fixture DECLARES a peak on purpose; the key is optional
+                # (2026-08-23) and the omitted shape has its own case, see
+                # ``test_summed_excitation_composes_when_no_driver_declares_a_level_limit``.
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24.0,
                     "max_sweep_duration_s": 20.0,
@@ -2309,6 +2312,76 @@ def test_two_driver_profile_composition_intersects_existing_limits(
     assert prepared.minimum_cooldown_s == 2.0
 
 
+def test_summed_excitation_composes_when_no_driver_declares_a_level_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary reply shape, which used to raise here (2026-08-23).
+
+    ``max_effective_peak_dbfs`` became optional when the research ask stopped
+    demanding a class-default figure. This function indexed it, so a profile
+    from a pair of drivers whose makers publish no level limit raised
+    ``KeyError`` and surfaced as "driver safety profile target limits are
+    incomplete" -- a message describing nothing wrong. The fixture above
+    hard-codes the key present and so cannot see that; this one omits it.
+
+    With no declaration the ceiling is each role's class default, and the
+    summed path takes the ``min`` because one signal reaches both drivers: the
+    woofer's 0.0 dBFS against the dome tweeter's -65.0.
+
+    Mutation guard: index the key again and this raises
+    ``CommissioningRuntimeError``.
+    """
+
+    topology = mono_output_topology()
+    current = runtime.active_driver_targets(topology)
+    fingerprints = tuple(target["target_fingerprint"] for target in current)
+
+    def _target(fingerprint: str, role: str, style: str | None) -> dict:
+        return {
+            "target_fingerprint": fingerprint,
+            "role": role,
+            **({"driver_style": style} if style else {}),
+            "hard_excitation_band_hz": [100.0, 40000.0],
+            "measurement_band_hz": [500.0, 30000.0],
+            "required_protection_filters": [
+                {"kind": "lowpass" if role == "woofer" else "highpass"}
+            ],
+            # No max_effective_peak_dbfs: neither maker publishes one.
+            "level_duration_limits": {
+                "max_sweep_duration_s": 20.0,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 0.5,
+            },
+        }
+
+    profile = {
+        "targets": [
+            _target(fingerprints[0], "woofer", None),
+            _target(fingerprints[1], "tweeter", "dome_tweeter"),
+        ]
+    }
+    monkeypatch.setattr(
+        runtime,
+        "evaluate_driver_safety_profile",
+        lambda *_args: SimpleNamespace(
+            confirmed_and_current=True, profile_fingerprint=_HASH_B
+        ),
+    )
+
+    prepared = runtime.prepare_summed_excitation(
+        topology,
+        profile,
+        target_fingerprints=fingerprints,
+        evidence_target_fingerprint=_HASH_A,
+        band=FrequencyBand(1950.0, 2050.0),
+        effective_peak_dbfs=-70.0,
+        duration_s=0.8,
+        excitation_plan_fingerprint=_HASH_D,
+    )
+    assert prepared.limits.maximum_effective_peak_dbfs == -65.0
+    assert prepared.minimum_cooldown_s == 0.5
+
+
 def test_summed_low_edge_is_owned_by_the_declared_measurement_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2339,6 +2412,9 @@ def test_summed_low_edge_is_owned_by_the_declared_measurement_floor(
                 "hard_excitation_band_hz": [100.0, 40000.0],
                 "measurement_band_hz": [500.0, 30000.0],
                 "required_protection_filters": [{"kind": "lowpass"}],
+                # This fixture DECLARES a peak on purpose; the key is optional
+                # (2026-08-23) and the omitted shape has its own case, see
+                # ``test_summed_excitation_composes_when_no_driver_declares_a_level_limit``.
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24.0,
                     "max_sweep_duration_s": 20.0,

@@ -2842,7 +2842,7 @@ refusal restores the household volume and banks nothing.
 | `stimulus_wav_missing` | the named stimulus is not a file |
 | `measurement_session_already_live` | a crossover session (or an unresolved one) holds the speaker — the same door `jasper-angle-capture stage` stands behind, read off the same durable state |
 | `seat_spl_target_rejected` | the band's TOP exceeds the profile's commissioning ceiling |
-| `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset |
+| `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset — the slug is historical, the caps no longer bound the ceiling but resolving them (and each driver's permitted band) is still what fails here |
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
 | `mic_not_observing` | the volume climbed the probe span and the mic never rose above the room |

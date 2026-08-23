@@ -72,11 +72,13 @@ def _safety_profile_and_targets(
                 # #2603: one declared low limit; the hard floor and the
                 # protective high-pass both derive from it.
                 "recommended_highpass_hz": 1500,
-                # Tweeters are hard-capped by driver_protection.py's own
-                # code policy (max_auto_level_dbfs = -65.0 for HIGH_FREQUENCY_ROLES)
-                # regardless of what a manual setting requests -- this value
-                # must already comply or build_driver_safety_profile refuses
-                # to confirm.
+                # -65.0 is the tweeter class default
+                # (``driver_protection.max_auto_level_dbfs`` for
+                # HIGH_FREQUENCY_ROLES). Declaring it is no longer REQUIRED --
+                # the key is optional since 2026-08-23, and a declared value is
+                # honoured verbatim rather than clamped to this figure -- but
+                # declaring exactly the class default still reads as the
+                # delegation, which is what this fixture wants.
                 "level_duration_limits": {
                     **common["level_duration_limits"],
                     "max_effective_peak_dbfs": -65.0,

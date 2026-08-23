@@ -307,9 +307,13 @@ def test_safety_plan_refuses_a_profile_it_cannot_read_back():
 # Operator ruling (2026-07-19): the -65 dBFS HF class default was sized for a
 # naked driver tone with no proven protective HP. On the program-admission
 # path (``program_admission=True``) it is superseded by a sensitivity-derived
-# ceiling -- but ONLY when the declared cap still equals that class-default
-# seed, and ONLY for the caller that asks for it. Every other caller keeps
-# exactly today's behavior. The sensitivities come from the DECLARATION (the
+# ceiling -- but ONLY when NO driver-specific level was declared, and ONLY for
+# the caller that asks for it. Every other caller keeps the declared ceiling,
+# or the class default when nothing is published. (Until 2026-08-23 the
+# delegation was carried by the declared value EQUALLING the class-default
+# seed; it is carried by the field's absence now, and a stored seed is read as
+# the retired encoding of the same thing -- see
+# ``declared_level_ceiling_dbfs``.) The sensitivities come from the DECLARATION (the
 # design draft's manual_settings, its one owner -- see
 # design_draft.declared_driver_sensitivities), passed as a plain per-role
 # mapping; they never ride the safety profile. JTS3 hardware numbers: woofer
@@ -338,29 +342,38 @@ def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
         LEVEL_CEILING_DECLARED,
         LEVEL_CEILING_LEGACY_CLASS_SEED,
         LEVEL_CEILING_UNDECLARED,
-        _declared_level_ceiling,
+        declared_level_ceiling_dbfs,
     )
 
     protection = driver_protection_profile("tweeter", driver_style="dome_tweeter")
     assert protection.max_auto_level_dbfs == -65.0
 
-    assert _declared_level_ceiling({}, protection) == (
+    def _target(limits: dict) -> dict:
+        return {
+            "role": "tweeter",
+            "driver_style": "dome_tweeter",
+            "level_duration_limits": limits,
+        }
+
+    assert declared_level_ceiling_dbfs(_target({})) == (
         -65.0,
         LEVEL_CEILING_UNDECLARED,
     )
-    assert _declared_level_ceiling(
-        {"max_effective_peak_dbfs": -65.0}, protection
+    assert declared_level_ceiling_dbfs(
+        _target({"max_effective_peak_dbfs": -65.0})
     ) == (-65.0, LEVEL_CEILING_LEGACY_CLASS_SEED)
     for declared in (-66.0, -64.0):
-        assert _declared_level_ceiling(
-            {"max_effective_peak_dbfs": declared}, protection
+        assert declared_level_ceiling_dbfs(
+            _target({"max_effective_peak_dbfs": declared})
         ) == (declared, LEVEL_CEILING_DECLARED)
 
     # A present-but-unusable value is a malformed record, not a silent fallback
-    # to the class figure.
+    # to the class figure. So is a target with no limits object at all.
     for junk in (True, "quiet", float("nan")):
         with pytest.raises(ExcitationSafetyPlanError):
-            _declared_level_ceiling({"max_effective_peak_dbfs": junk}, protection)
+            declared_level_ceiling_dbfs(_target({"max_effective_peak_dbfs": junk}))
+    with pytest.raises(ExcitationSafetyPlanError):
+        declared_level_ceiling_dbfs({"role": "tweeter"})
 
 
 def test_an_undeclared_peak_delegates_the_hf_ceiling_on_the_proven_hp_path() -> None:

@@ -69,6 +69,7 @@ from jasper.output_topology import OutputTopology
 from .baseline_profile import topology_config_fingerprint
 from .camilla_yaml import STARTUP_MUTE_GAIN_DB
 from .driver_safety import evaluate_driver_safety_profile
+from .excitation_safety_plan import declared_level_ceiling_dbfs
 from .graph_evidence import (
     driver_baseline_gain_name,
     driver_delay_name,
@@ -1891,7 +1892,14 @@ def prepare_summed_excitation(
             *(float(target["measurement_band_hz"][1]) for target in typed_targets),
         )
         limits = [cast(Mapping[str, Any], target["level_duration_limits"]) for target in typed_targets]
-        max_peak = min(float(item["max_effective_peak_dbfs"]) for item in limits)
+        # ``max_effective_peak_dbfs`` is OPTIONAL, so it is read through the one
+        # owner of "what is this target's level ceiling" rather than indexed
+        # here (2026-08-23). Indexing it made the ordinary reply shape -- a
+        # driver whose maker publishes no level limit -- raise KeyError and
+        # surface as "limits are incomplete", which described nothing wrong.
+        max_peak = min(
+            declared_level_ceiling_dbfs(target)[0] for target in typed_targets
+        )
         max_duration = min(
             SUMMED_SWEEP_DURATION_S,
             *(float(item["max_sweep_duration_s"]) for item in limits),

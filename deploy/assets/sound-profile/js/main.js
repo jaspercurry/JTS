@@ -3404,7 +3404,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   // Naming WHAT sets the level is the honest replacement for naming a global
   // number that no longer exists; no number is quoted here, so there is none
   // to fabricate or to drift.
-  function driverEchoSentinelText(targetId, setting) {
+  function driverEchoDelegationText(targetId, setting) {
     var policy = driverProtectionPolicyForTarget(targetId);
     if (!policy || policy.role_class !== 'high_frequency') return '';
     var ceiling = manualNumberValue(policy.max_auto_level_dbfs);
@@ -3434,10 +3434,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</dd>' +
       '</div>';
     }).filter(Boolean).join('');
-    var sentinel = driverEchoSentinelText(targetId, setting);
+    var delegation = driverEchoDelegationText(targetId, setting);
     return (rows ? '<dl class="driver-echo__rows">' + rows + '</dl>' : '') +
-      (sentinel ? '<p class="setting-row__hint">' +
-        escapeHtml(sentinel) + '</p>' : '');
+      (delegation ? '<p class="setting-row__hint">' +
+        escapeHtml(delegation) + '</p>' : '');
   }
   function renderDriverEchoBack(topology) {
     var payload = driverResearch.importedPayload;

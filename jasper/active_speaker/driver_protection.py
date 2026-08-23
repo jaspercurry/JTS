@@ -301,8 +301,9 @@ def derive_hf_measurement_ceiling_dbfs(
     admissible test level, which is where a legitimate negative delta (a
     less-sensitive tweeter under a high-sensitivity woofer) runs out of digital
     headroom rather than a level hedge (block comment above). Pure arithmetic
-    -- the caller owns picking valid inputs (a proven-protective-HP graph, an
-    unsuperseded class-default seed, and both drivers' declared sensitivities).
+    -- the caller owns picking valid inputs (a proven-protective-HP graph, a
+    high-frequency target that declared no level limit of its own, and both
+    drivers' declared sensitivities).
     """
 
     return min(

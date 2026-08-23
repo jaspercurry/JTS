@@ -33,8 +33,10 @@ When that render cannot be exact — no applied graph, a filter type the rendere
 does not model — the ceiling falls back to bounding every branch by the
 full-band peak, which is the conservative answer this verb shipped with.
 
-**The declared per-driver level caps do not hold this volume down.** They are
-protocol figures rather than published damage bounds, so the ceiling is digital
+**The declared per-driver level caps do not hold this volume down** — a
+published one included. A per-driver level limit binds that driver, at
+admission and in a composed program's segment gain; it cannot be enforced on a
+single signal that carries no per-driver gain, so the ceiling here is digital
 headroom and the caps are named beside it on
 ``event=active_speaker.unsegmented_ceiling_bound`` — what each driver receives
 at this ceiling, and how far past its declared figure that lands (owner ruling,
@@ -85,11 +87,16 @@ from jasper.active_speaker.session_volume_plan import (
     unsegmented_stimulus_ceiling_db,
 )
 
+from ._logging import CLI_LOG_FORMAT
+
 logger = logging.getLogger(__name__)
 
 REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
 REFUSE_MIC_ABSENT = "measurement_mic_absent"
 REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
+# The slug is unchanged on purpose: the ceiling no longer BINDS on the driver
+# caps, but resolving them is still what can fail here (the same call resolves
+# each driver's permitted band), and it is a stable operator-facing string.
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
 
@@ -396,6 +403,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Without this the whole disclosure receipt is computed and discarded: the
+    # root logger sits at WARNING, so ``event=active_speaker.unsegmented_ceiling_bound``
+    # -- the ONE production reader of the declared caps this ceiling drives past
+    # -- reaches no handler. ``basicConfig`` at INFO in ``main`` is what the
+    # sibling ``event=``-emitting CLIs do (``crossover_prescriber``,
+    # ``arm_walk``, ``sound``, ...), reusing the shared FORMAT so the one place
+    # that shape is written down stays the only one. In ``main`` rather than at
+    # import, because a module that configures the root logger on import
+    # imposes its choice on every importer, the test suite included.
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     args = build_parser().parse_args(argv)
     if not args.calibration_file and not args.mic_serial:
         build_parser().error("pass --calibration-file or --mic-serial")

@@ -4728,13 +4728,13 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
 // The view carried an `hf_measurement_abs_ceiling_dbfs` until 2026-08-20, and
 // these fixtures deliberately SET it to a number that was not the real -35, so
 // a page hardcoding the constant would have failed here. That constant is
-// retired and the field no longer goes on the wire; the sentinel test pins
+// retired and the field no longer goes on the wire; the delegation test pins
 // instead that the page quotes no dBFS bound at all, which no fixture value
 // can fake.
 const ECHO_TWEETER_CLASS_CEILING_DBFS = -65;
 // The low-frequency class ceiling, which LIMITS permits a woofer to declare
 // exactly. Delegation is a high-frequency-only rule, so landing on this number
-// must NOT produce the sentinel -- see the woofer half of the sentinel test.
+// must NOT produce it -- see the woofer half of the delegation test.
 const ECHO_WOOFER_CLASS_CEILING_DBFS = 0;
 
 // Shaped like driver_protection_policy_view: target_id + role_class +
@@ -5010,7 +5010,7 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
   return { researchEchoBackNamesEveryValueWithBadgeAndSource: true };
 }
 
-async function testResearchEchoBackDisclosesTheDelegationSentinel() {
+async function testResearchEchoBackDisclosesTheDelegation() {
   // A tweeter that declares NO level limit has DELEGATED the level, and
   // protection derives it. Saying nothing would leave the household with a
   // level row that never mentions the loudest fact about it (#2192).
@@ -5024,10 +5024,10 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
   if (!undeclared.includes("Test level here is left to JTS")) {
     fail("an undeclared peak must disclose the delegation", { undeclared });
   }
-  const onSentinel = echoPanel(await echoHarness(echoDraft()));
-  if (!onSentinel.includes("Test level here is left to JTS")) {
+  const onStoredSeed = echoPanel(await echoHarness(echoDraft()));
+  if (!onStoredSeed.includes("Test level here is left to JTS")) {
     fail("a declared peak on the class ceiling must disclose the delegation", {
-      onSentinel,
+      onStoredSeed,
     });
   }
   // The sentence names WHAT sets the level, never a dBFS number. The absolute
@@ -5035,18 +5035,18 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
   // dBFS constant); the real bound is the per-driver sensitivity derivation,
   // which this topology-only policy view cannot compute. A number here would
   // have to be invented, so any dBFS in this sentence is a regression.
-  if (!onSentinel.includes(
+  if (!onStoredSeed.includes(
     "from this driver’s declared sensitivity against the low-frequency " +
     "driver’s own limit"
   )) {
-    fail("the sentinel must name what sets the level", { onSentinel });
+    fail("the disclosure must name what sets the level", { onStoredSeed });
   }
-  const sentinelSentence = onSentinel.slice(
-    onSentinel.indexOf("Test level here is left to JTS")
+  const disclosedSentence = onStoredSeed.slice(
+    onStoredSeed.indexOf("Test level here is left to JTS")
   ).split("</p>")[0];
-  if (/dBFS/.test(sentinelSentence)) {
-    fail("the sentinel must quote no dBFS bound — the -35 constant is retired", {
-      sentinelSentence,
+  if (/dBFS/.test(disclosedSentence)) {
+    fail("the disclosure must quote no dBFS bound — the -35 constant is retired", {
+      disclosedSentence,
     });
   }
 
@@ -5063,7 +5063,7 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
   // invent a number.
   const noPolicy = echoPanel(await echoHarness(echoDraft({ policy: null })));
   if (noPolicy.includes("Test level here is left to JTS")) {
-    fail("without a server policy the sentinel must stay silent", { noPolicy });
+    fail("without a server policy the disclosure must stay silent", { noPolicy });
   }
   if (!noPolicy.includes("Test level and duration")) {
     fail("a missing policy must not take the rest of the panel with it", {
@@ -5116,10 +5116,10 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
       lfPanel,
     });
   }
-  const sentinels = (lfPanel.match(/Test level here is left to JTS/g) || []).length;
-  if (sentinels !== 1) {
+  const disclosures = (lfPanel.match(/Test level here is left to JTS/g) || []).length;
+  if (disclosures !== 1) {
     fail("only the high-frequency target may disclose a delegation", {
-      sentinels, lfPanel,
+      disclosures, lfPanel,
     });
   }
   const wooferBlock = lfPanel.split('<section class="driver-echo__driver">')[1] || "";
@@ -5131,7 +5131,7 @@ async function testResearchEchoBackDisclosesTheDelegationSentinel() {
       wooferBlock,
     });
   }
-  return { researchEchoBackDisclosesTheDelegationSentinel: true };
+  return { researchEchoBackDisclosesTheDelegation: true };
 }
 
 async function testResearchEchoBackEscapesUntrustedSources() {
@@ -8521,7 +8521,7 @@ results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped()
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
 results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
 results.push(await testResearchEchoBackNamesEveryValueWithBadgeAndSource());
-results.push(await testResearchEchoBackDisclosesTheDelegationSentinel());
+results.push(await testResearchEchoBackDisclosesTheDelegation());
 results.push(await testResearchEchoBackEscapesUntrustedSources());
 results.push(await testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence());
 results.push(await testResearchEchoBackRendersRightAfterAPaste());

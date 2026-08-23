@@ -57,7 +57,9 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
             # woofer's 500 Hz floor under a 5000 Hz protective high-pass.
             **({"recommended_highpass_hz": 1500} if role == "tweeter" else {}),
             "level_duration_limits": {
-                "max_effective_peak_dbfs": peak,
+                # ``None`` omits the key: since 2026-08-23 that is the ordinary
+                # shape, and it means "this maker publishes no level limit".
+                **({} if peak is None else {"max_effective_peak_dbfs": peak}),
                 "max_sweep_duration_s": 6,
                 "max_repeat_count": 3,
                 "minimum_cooldown_s": 0,
@@ -281,6 +283,57 @@ def test_the_new_horn_incident_target_is_reachable():
     # still 12.1 dB above what the target needs.
     assert ceiling > -12.1
     assert min(ceiling, 0.0) > -12.1
+
+
+@pytest.mark.parametrize(
+    ("woofer_peak", "expected_woofer_cap", "expected_tweeter_cap", "anchor"),
+    [
+        (-20.0, -20.0, -30.8, "declared"),
+        (None, 0.0, -10.8, "undeclared"),
+    ],
+    ids=["woofer-declares-a-limit", "woofer-declares-none"],
+)
+def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
+    caplog, woofer_peak, expected_woofer_cap, expected_tweeter_cap, anchor
+):
+    """The derived tweeter cap is a delta from the WOOFER's own cap.
+
+    So it moves with the woofer's contract shape, and by 20 dB on this
+    fixture. A woofer that declares -20 anchors the derivation there; one that
+    declares nothing anchors it at the woofer class default, which for a
+    low-frequency role IS full scale. Both are correct answers to different
+    declarations under the 2026-08-23 ruling -- there is no refusal here, and
+    the mic-measured commissioning stop still bounds physical output -- but a
+    20 dB shift on a compression driver must be a NAMED fact rather than an
+    emergent one, so the supersede line carries the anchor it used.
+
+    Mutation guard: stop passing the anchor through ``_derived_hf_ceiling_dbfs``
+    and the ``anchor=``/``anchor_cap_dbfs=`` fields vanish from the receipt.
+    """
+    profile, targets = _profile_and_targets(
+        woofer_peak=woofer_peak, tweeter_peak=-65.0
+    )
+    sensitivities = {"woofer": 90.0, "tweeter": 100.8}
+
+    def _cap(role):
+        return resolve_driver_excitation_ceilings(
+            profile,
+            targets[role],
+            program_admission=True,
+            declared_sensitivities=sensitivities,
+        )[1]
+
+    with caplog.at_level(
+        "INFO", logger="jasper.active_speaker.excitation_safety_plan"
+    ):
+        assert _cap("woofer") == pytest.approx(expected_woofer_cap)
+        assert _cap("tweeter") == pytest.approx(expected_tweeter_cap)
+    line = caplog.text
+    assert "event=active_speaker.excitation_ceiling_superseded" in line
+    assert f"anchor={anchor}" in line
+    assert f"anchor_cap_dbfs={expected_woofer_cap:.1f}" in line
+    # The shift is exactly the anchor's own shift, and nothing else.
+    assert expected_tweeter_cap - expected_woofer_cap == pytest.approx(-10.8)
 
 
 def test_the_declared_caps_are_disclosed_beside_the_ceiling(caplog):

@@ -95,6 +95,64 @@ def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
     assert seat_level.REFUSE_STIMULUS_MISSING in capsys.readouterr().out
 
 
+def test_the_verb_installs_a_handler_so_its_receipt_reaches_the_journal(
+    tmp_path,
+):
+    """The disclosure receipt has a production reader, proved without caplog.
+
+    ``unsegmented_stimulus_ceiling_db`` logs the caps this ceiling drives past
+    at INFO. The root logger defaults to WARNING and this module registers no
+    handler of its own, so before ``main`` called ``basicConfig`` every field
+    of that receipt was computed and discarded on a real run — and a guard
+    written with ``caplog.at_level("INFO")`` cannot see that, because forcing
+    the level is precisely the thing production does not do.
+
+    So this test takes the root logger away from pytest for the duration:
+    handlers cleared, level restored to the WARNING default, ``main`` run for
+    real, and then a record emitted through the module's OWN logger at INFO
+    has to arrive somewhere. Restored in ``finally`` either way.
+    """
+    import logging
+
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    received: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            received.append(record)
+
+    try:
+        root.handlers = []
+        root.setLevel(logging.WARNING)
+        code = seat_level.main(
+            [
+                "--stimulus-wav",
+                str(tmp_path / "nope.wav"),
+                "--calibration-file",
+                str(cal),
+            ]
+        )
+        assert code == 1
+        # ``basicConfig`` ran and it ran at INFO, not at the WARNING default
+        # that hid the event.
+        assert root.handlers, "the CLI installed no log handler"
+        assert root.level == logging.INFO
+        root.addHandler(_Capture())
+        logging.getLogger(
+            "jasper.active_speaker.session_volume_plan"
+        ).info("event=active_speaker.unsegmented_ceiling_bound probe=1")
+    finally:
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+
+    assert any("unsegmented_ceiling_bound" in r.getMessage() for r in received)
+
+
 def test_the_verb_requires_a_way_to_find_the_calibration(tmp_path):
     with pytest.raises(SystemExit):
         seat_level.main(["--stimulus-wav", str(tmp_path / "x.wav")])

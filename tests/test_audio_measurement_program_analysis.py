@@ -597,9 +597,10 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
 # the input. It is now an expectation checked against the live derivation.
 _CHECKPOINT_FC_HZ = 2000.0
 # jts3's declaration, in the shape the resolver reads.
-# ``max_effective_peak_dbfs`` is NOT a recorded jts3 value on either role: the
-# resolver requires the field and the band derivation never reads it, so -65.0
-# is filler. It is the class-default seed for the TWEETER only
+# ``max_effective_peak_dbfs`` is NOT a recorded jts3 value on either role, and
+# since 2026-08-23 the resolver does not require the field at all (absence is
+# the ordinary shape); the band derivation never reads it either, so -65.0 is
+# filler kept only because it matches what jts3 has on disk. It is the class-default seed for the TWEETER only
 # (``driver_protection``'s high-frequency branch); the woofer's low-frequency
 # class default is ``MAX_TEST_LEVEL_DBFS`` = 0.0, and -65.0 there is just the
 # conservative value matching its sibling.

@@ -511,7 +511,9 @@ A profile SAVED under the retired contract still carries the class default
 itself. It said then what absence says now, so it is read the same way
 (`LEVEL_CEILING_LEGACY_CLASS_SEED`, named on the supersede log line) rather
 than silently regressing a commissioned tweeter by tens of decibels; that arm
-is deletable once no stored profile carries a seed. So a tweeter with no
+is deletable once no stored profile carries a seed — with the sensitivity
+derivation behind it, tracked as
+[#2913](https://github.com/jaspercurry/JTS/issues/2913). So a tweeter with no
 declared limit is measured tens of decibels louder than the class default
 suggests (−25.2 dBFS against the −65 seed on the shipped JTS3 preset), while
 one declared a single dB quieter is taken at face value.

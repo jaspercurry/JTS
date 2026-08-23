@@ -238,16 +238,25 @@ def unsegmented_stimulus_ceiling_db(
     reports a peak ABOVE the full-band figure and binds TIGHTER than the
     full-band bound does.
 
-    **Declared per-driver caps do not bound this volume — they are DISCLOSED.**
-    ``level_duration_limits.max_effective_peak_dbfs`` is, in the research ask's
-    own words, "measurement-protocol discipline, not datasheet facts"
-    (:func:`jasper.active_speaker.driver_safety.build_driver_research_prompt`):
-    a protocol figure, never a manufacturer-published damage bound. Bounding a
-    measurement volume with one made the tightest such figure the operative
-    ceiling — on the new-horn box it pinned a 75 dB SPL seat target at 68.3 dB
-    with ~30 dB of digital headroom unused (owner ruling, 2026-08-23: "It's a
-    fixed-gain amp — we do ALL volume via software... No limit unless we have
-    no headroom to give"). So the caps are resolved, and what they WOULD have
+    **Declared per-driver caps do not bound this volume — they are DISCLOSED,
+    and that holds even for a published one.** Since the 2026-08-23 owner
+    ruling ``level_duration_limits.max_effective_peak_dbfs`` is asked for only
+    where a manufacturer publishes a level limit, so a value on the record IS a
+    datasheet fact and it does still bind — but per DRIVER, at admission and in
+    the composed segment level, not on the main volume of one un-segmented
+    signal. The volume this function returns is bounded by headroom alone.
+
+    Why even a published cap does not bind here: this number is the volume at
+    which a signal admits *digitally*, and a per-driver level limit cannot be
+    enforced on a signal that carries no per-driver gain — clamping the whole
+    speaker to the tightest driver's figure is what made a −65 protocol default
+    the operative ceiling and pinned a 75 dB SPL seat target at 68.3 dB with
+    ~30 dB of digital headroom unused (owner ruling: "It's a fixed-gain amp —
+    we do ALL volume via software... No limit unless we have no headroom to
+    give"). What bounds the driver instead is the mic-measured commissioning
+    SPL stop, live, on the way up.
+
+    So the caps are resolved, and what they WOULD have
     refused is named on ``event=active_speaker.unsegmented_ceiling_bound``:
     each driver's cap, what its branch actually receives at this ceiling, how
     far past its cap that lands, and the decibels the caps were leaving unused.
