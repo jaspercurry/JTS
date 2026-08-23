@@ -3170,3 +3170,41 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
         f"{order} left the fader stranded at {client.db:.1f} dB "
         f"(canonical {canonical_db:.1f} dB)"
     )
+
+
+async def test_duck_release_never_lands_above_a_volume_change_made_inside_it(
+    tmp_path, monkeypatch,
+):
+    """A user volume change inside the bracket is what rules out a bare
+    relative release: giving back 40 dB on top of the level the coordinator
+    just wrote lands tens of dB above what the user asked for. The canonical
+    ceiling is the half that prevents it.
+    """
+    from jasper import camilla as camilla_module
+
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    client = _MinimalCamillaClient(db=percent_to_db(70))
+    cam = _real_controller(client, tmp_path)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    await coord.set_listening_level(70)
+    monkeypatch.setattr(
+        camilla_module,
+        "_canonical_target_db_provider",
+        coord.get_camilla_target_db,
+    )
+
+    bracket = cam._graph_mutation("test.swap")
+    await bracket.__aenter__()
+    await coord.set_listening_level(30)
+    lowered_db = percent_to_db(30)
+    await bracket.__aexit__(None, None, None)
+
+    assert client.db == pytest.approx(lowered_db), (
+        f"the release landed at {client.db:.1f} dB, not the {lowered_db:.1f} dB "
+        "the user asked for during the swap"
+    )
