@@ -1,5 +1,13 @@
 # HANDOFF: active speaker DSP commissioning
 
+> **Live spine, historical appendix — two documents in one file.** Everything
+> above [Appendix — investigation history](#appendix--investigation-history)
+> is current operational truth. The appendix below that boundary is
+> **historical**: this doc's original 2026-05-25 → 2026-07-16 narrative,
+> preserved verbatim as primary-source archaeology and deliberately not kept
+> in sync with the code. Read the spine for what the system does today; read
+> the appendix for why it ended up this way.
+
 This doc is the canonical handoff for JTS speakers where CamillaDSP
 directly drives woofer/midrange/tweeter amplifier channels (an
 "active" speaker) instead of a passive in-cabinet crossover. JTS3
@@ -302,7 +310,7 @@ AGENTS.md "Debugging — fetch evidence before guessing".
 
 ## Appendix — investigation history
 
-> **Historical appendix — not current truth.** (Note: it preserves the ORIGINAL
+> **Status: historical.** Not current truth. (Note: it preserves the ORIGINAL
 > doc verbatim, including its own now-superseded “Current Operational
 > Truth” heading and mid-appendix `Last verified:` line — do not read
 > those as current.) Everything below this line is this doc's
@@ -2732,5 +2740,17 @@ ring became the roleful transport — corrected inline with pointer notes,
 same rationale as the 2026-07-27 entry above: correcting these entries is
 not a re-read of the doc, so `Last verified` stays unbumped. See
 [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+
+Doc-shape fix (2026-08-23): this file carried the hybrid shape — live spine,
+historical appendix — in bespoke wording, so the appendix's callout now opens
+with the canonical `> **Status: historical.**` tag and the title carries the
+orientation note that names the boundary (AGENTS.md documentation-paradigm
+rule 10). Until then `tests/test_docs_handoff_freshness.py` filtered this file
+out of its tag-placement check entirely. Scope of the verification recorded
+below is unchanged — the current-truth spine was re-read on 2026-08-04 and the
+historical appendix was not, per the paradigm's rule that historical sections
+are deliberately not kept in sync with code — so `Last verified` stays
+unbumped, same rationale as the two corrections above. Do not read the date
+below as a warranty on appendix facts.
 
 Last verified: 2026-08-04
