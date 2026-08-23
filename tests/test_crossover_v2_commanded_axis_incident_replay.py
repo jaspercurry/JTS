@@ -1278,7 +1278,10 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
 # committed alternative-Fc candidate, which took the whole probe down with it:
 # the two directional hearing-safety rules never ran, ``evaluate_applied_safety``
 # reported SAFE on a round where nothing had looked, and nothing said so. The
-# STATE axis needs no corner match, so the safety half runs on that alone.
+# STATE axis needs no corner match, so the probe runs on that alone — and since
+# series-2 D1 what it grades there is the MODEL's departure, not the speaker's
+# delivered energy: the two directional rules still do not run, but now the
+# verdict, ``safety_anchored`` and the axis's own reason all say so.
 
 
 def _alternative_fc_probe(*, hot_db: float, declared: bool = True):
