@@ -185,7 +185,7 @@ def test_an_unpublished_slope_is_not_invented_on_the_declaration() -> None:
     )
     assert limit is not None
     assert limit.slope_db_per_octave is None
-    assert limit.protection_slope_db_per_octave == PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    assert limit.derived_protection_slope_db_per_octave == PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 
     derived = _derived(driver)
     assert "recommended_highpass_slope_db_per_octave" not in derived

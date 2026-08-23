@@ -43,20 +43,37 @@ each one is asked of the module that already owns it:
 * ``fc_hz`` must clear the two DECLARED hard-excitation bounds every corner
   clears, asked of the shared predicate that owns them
   (:func:`.fc_sweep._fc_rejection`);
-* ``order * 6`` dB/octave must be at least the protected role's declared
-  ``minimum_slope_db_per_octave``.
+* ``order * 6`` dB/octave must be at least the protected role's PUBLISHED
+  slope condition, when the manufacturer printed one.
+
+**The published slope refuses; the commissioning figure discloses.**  Those are
+two different numbers and this gate fused them until the 2026-08-23 owner ruling
+("Why was LR2 refused?! ... If it was in the safe overall envelope, it's safe to
+test").  What it read was
+``required_protection_filters[highpass].minimum_slope_db_per_octave``, which is
+``max(published, driver_protection.PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` — so a
+B&C DE250 whose datasheet says "1.6 kHz — 12 dB/oct. or higher" had an order-2
+pin at 2400 Hz refused "below the protected driver's declared minimum of 24
+dB/octave", a sentence the manufacturer never wrote.  The 2026-08-22 ruling
+quoted in ``driver_safety`` is what governs: declared values are the only
+refusing authority; code figures may prefill, disclose, and fall back.  So the
+bound is now the PUBLISHED condition
+(``excitation_safety_plan.resolve_driver_protection_slope_db_per_octave``), a
+driver whose maker published no slope gets no slope refusal at all, and the
+commissioning recommendation rides the record as
+:attr:`TopologyPrescription.recommended_slope_db_per_octave` instead.
 
 **Why the slope bound is here and not downstream.**  Because nothing downstream
-applies it.  The 24 dB/octave clamp a household declares for its tweeter is read
-by the COMMISSIONING admission path (``graph_safety``) and by the derived
-protection filter; crossover apply compares corner FREQUENCIES only
+applies one to a crossover.  The L0 emit gates prove the tweeter's high-pass
+CORNER and its limiter wrapper, with no slope term at all
+(``graph_safety.output_highpass_protected`` / ``tweeter_guard_present``), and
+crossover apply compares corner frequencies only
 (``driver_protection.protection_highpass_floor_satisfied``, the shared floor
-predicate, which has no slope term).  An order-2 candidate at a legal corner
-would therefore have run with less sub-Fc attenuation than the tweeter's own
-declaration asks for, silently and with a receipt carrying the candidate's name.
-It is refused here, by name, with the declared number in the message — which is
-what makes a tournament's order-2 candidate produce evidence (a receipted refusal)
-rather than an unsafe measurement.
+predicate).  The derived requirement IS proved by the commissioning admission
+path, but only against the protective filter this build emitted from that same
+derived number — never against a corner a household pinned.  So a published
+condition that is not checked here is not checked anywhere, which is why this is
+the one place it is applied.
 
 **The beaming ceiling is disclosed, never enforced.**  #1675 defines it as
 guidance to warn on rather than a fence, so no admissibility bound anywhere
@@ -117,6 +134,7 @@ from typing import Any, Mapping
 
 from jasper.log_event import log_event
 
+from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS
 from .fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
@@ -183,8 +201,12 @@ TOPOLOGY_ORDER_INVALID = "topology_order_invalid"
 #: refusal has to send them to the supported set, not to the shape.
 TOPOLOGY_ORDER_UNSUPPORTED = "topology_order_unsupported"
 TOPOLOGY_PROVENANCE_MISSING = "topology_provenance_missing"
-#: The declared-slope bound.  New here because nothing else applies it to a
-#: crossover corner — see this module's docstring.
+#: The published-slope bound.  The only slope entitled to refuse a corner, and
+#: the code is kept across the 2026-08-23 ruling that narrowed what it fires on
+#: — a receipt banked before that ruling names this reason, and a second
+#: spelling would make the two rounds unsearchable together.  What changed is
+#: WHICH number it compares against: the manufacturer's published condition,
+#: never the commissioning figure derived from it.  See this module's docstring.
 TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT = "topology_slope_below_declared_requirement"
 #: A document naming a version this build does not speak. Mirrors
 #: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED`.
@@ -226,6 +248,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "checked_against_ceiling_hz",
     "checked_against_slope_db_per_octave",
     "beaming_ceiling_hz",
+    "recommended_slope_db_per_octave",
     # Derived on the way out. Accepted on the way in for the same round-trip
     # reason and likewise never trusted — ``slope_db_per_octave`` is a property.
     "slope_db_per_octave",
@@ -285,14 +308,17 @@ class TopologyPrescription:
     docstring for why a pinned corner must say out loud that no measurement
     ranked it.
 
-    The three ``checked_against_*`` fields and ``beaming_ceiling_hz`` are the
-    GATE's own record of what it compared this pin to, filled after the bounds
-    pass, so a receipt states not only what was pinned but WHAT IT CLEARED — a
-    reader who finds ``fc_hz: 2400`` on a receipt cannot otherwise tell whether
-    that cleared a 2500 Hz declared ceiling or a 4000 Hz one, and the
-    declaration is not elsewhere in the block.  ``None`` on a record that has
-    not been through the gate (a durable read-back of a hand-built block), and
-    ``None`` for a bound that was not declared at all.
+    The three ``checked_against_*`` fields, ``beaming_ceiling_hz`` and
+    ``recommended_slope_db_per_octave`` are the GATE's own record of what it
+    compared this pin to, filled after the bounds pass, so a receipt states not
+    only what was pinned but WHAT IT CLEARED — a reader who finds
+    ``fc_hz: 2400`` on a receipt cannot otherwise tell whether that cleared a
+    2500 Hz declared ceiling or a 4000 Hz one, and the declaration is not
+    elsewhere in the block.  ``None`` on a record that has not been through the
+    gate (a durable read-back of a hand-built block), and ``None`` for a bound
+    that was not declared at all — which for
+    ``checked_against_slope_db_per_octave`` now means the manufacturer
+    published no slope condition, not that nobody looked.
     """
 
     fc_hz: float
@@ -309,6 +335,18 @@ class TopologyPrescription:
     #: says so. ``None`` means the lower driver declared no diameter, which is
     #: an absent prior rather than a satisfied one.
     beaming_ceiling_hz: float | None = None
+    #: This build's commissioning recommendation for a protective high-pass
+    #: slope (``driver_protection.PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE``),
+    #: DISCLOSED and never enforced — the beaming ceiling's sibling, read the
+    #: same way: above ``slope_db_per_octave`` means this pin crosses shallower
+    #: than the build recommends and the receipt says so. It is a code figure,
+    #: which the 2026-08-22 ruling bars from refusing anything, and the design
+    #: page's ``tweeter_slope_below_recommended_floor`` warning names the same
+    #: number for the same reason. Stamped whatever the manufacturer published,
+    #: because a pin admitted with no published condition at all is exactly the
+    #: round whose receipt most needs to say what it was shallower than.
+    #: ``None`` only on a record that has not been through the gate.
+    recommended_slope_db_per_octave: float | None = None
 
     @property
     def slope_db_per_octave(self) -> float:
@@ -342,6 +380,7 @@ class TopologyPrescription:
                 self.checked_against_slope_db_per_octave
             ),
             "beaming_ceiling_hz": self.beaming_ceiling_hz,
+            "recommended_slope_db_per_octave": self.recommended_slope_db_per_octave,
         }
 
 
@@ -544,6 +583,9 @@ def _parse_prescription(
             raw.get("checked_against_slope_db_per_octave")
         ),
         beaming_ceiling_hz=_optional_number(raw.get("beaming_ceiling_hz")),
+        recommended_slope_db_per_octave=_optional_number(
+            raw.get("recommended_slope_db_per_octave")
+        ),
     )
 
 
@@ -591,12 +633,16 @@ def read_topology_prescription(
     admitted, and the invented crossover search band that used to narrow them
     further was deleted by the 2026-08-22 owner ruling (#2870).
 
-    ``minimum_slope_db_per_octave`` is the PROTECTED (upper) role's declared
-    protection high-pass slope, and only that role's.  A two-way corner
-    high-passes the upper driver at ``fc_hz``, so its declared minimum is a
-    claim about what that filter must do; the lower driver's own protection
-    high-pass is a claim about the BOTTOM of its band and has nothing to say
-    about the corner.
+    ``minimum_slope_db_per_octave`` is the PROTECTED (upper) role's PUBLISHED
+    high-pass slope condition, and only that role's.  A two-way corner
+    high-passes the upper driver at ``fc_hz``, so what the manufacturer printed
+    beside its minimum crossover frequency is a claim about what that filter
+    must do; the lower driver's own protection high-pass is a claim about the
+    BOTTOM of its band and has nothing to say about the corner.  ``None`` is
+    the ordinary case for a datasheet that prints a frequency and no slope, and
+    it means there is no slope bound to apply — never the commissioning figure
+    standing in, which is the fusion the 2026-08-23 ruling struck (see this
+    module's docstring).
 
     **The bounds are inclusive.**  An order whose slope exactly meets the
     declared minimum is legal, and a corner exactly at a declared edge is legal
@@ -653,13 +699,13 @@ def read_topology_prescription(
         # reuse exists to make impossible.
         raise TopologyPrescriptionRefused(TOPOLOGY_MALFORMED, reason)
     if minimum_slope_db_per_octave is not None:
-        declared_slope = float(minimum_slope_db_per_octave)
-        if prescription.slope_db_per_octave < declared_slope:
+        published_slope = float(minimum_slope_db_per_octave)
+        if prescription.slope_db_per_octave < published_slope:
             raise TopologyPrescriptionRefused(
                 TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
                 f"order {prescription.order} crosses at "
                 f"{prescription.slope_db_per_octave:.0f} dB/octave, below the "
-                f"protected driver's declared minimum of {declared_slope:g} "
+                f"protected driver's published minimum of {published_slope:g} "
                 "dB/octave",
             )
     # What the bounds were actually evaluated against, recorded on the record
@@ -676,6 +722,7 @@ def read_topology_prescription(
         beaming_ceiling_hz=(
             None if beaming_ceiling_hz is None else float(beaming_ceiling_hz)
         ),
+        recommended_slope_db_per_octave=PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
     )
 
 
