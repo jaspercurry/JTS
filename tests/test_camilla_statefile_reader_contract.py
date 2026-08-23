@@ -76,18 +76,9 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
     statefile.write_text(f"config_path: {config}\n")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    # The canonical reader — the answer every other assertion is compared to.
-    assert env_mod.read_camilla_statefile_config_path() == str(config)
-
-    # jasper-doctor. The pair is (which statefile, which config it names).
-    assert doctor_correction._active_camilla_config_path() == (
-        statefile,
-        str(config),
-    )
-
-    # The runtime plan. `correction_config_path` is not carried on the plan, but
-    # `camilla_config_hash` is derived from it, so a hash of the fixture's own
-    # bytes is proof the plan resolved this statefile and not another.
+    # The runtime plan does not carry `correction_config_path`, but
+    # `camilla_config_hash` is derived from it, so the fixture's own content hash
+    # is proof the plan resolved this statefile and not another.
     plan = audio_plan.build_audio_runtime_plan_from_system(
         base_env_path=str(tmp_path / "base.env"),
         outputd_env_path=str(tmp_path / "outputd.env"),
@@ -96,14 +87,22 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
         overrides_path=str(tmp_path / "overrides.json"),
         output_hardware_state_path=str(tmp_path / "output_hardware.json"),
     )
-    assert plan.camilla_config_hash not in ("", "missing", "unreadable")
-    assert plan.camilla_config_hash == audio_plan.camilla_config_hash_for_path(
-        str(config)
-    )
+    config_hash = audio_plan.camilla_config_hash_for_path(str(config))
+    assert config_hash not in ("", "missing", "unreadable")
 
-    # The bonded-leader pipe probe reaches the config text through the same
-    # statefile and recognises the pipe sink.
-    assert leader_config.active_leader_pipe_path() == SNAPFIFO
+    # One assertion over all four, so a broken parse names every reader it broke
+    # instead of stopping at whichever happens to be checked first.
+    assert {
+        "environment (canonical)": env_mod.read_camilla_statefile_config_path(),
+        "doctor": doctor_correction._active_camilla_config_path(),
+        "runtime plan": plan.camilla_config_hash,
+        "leader pipe": leader_config.active_leader_pipe_path(),
+    } == {
+        "environment (canonical)": str(config),
+        "doctor": (statefile, str(config)),
+        "runtime plan": config_hash,
+        "leader pipe": SNAPFIFO,
+    }
 
 
 def test_doctor_delegates_to_the_canonical_reader(
