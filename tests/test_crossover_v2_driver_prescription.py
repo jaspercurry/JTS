@@ -3675,6 +3675,28 @@ def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path
     assert "must lead the role's chain" in note
 
 
+def test_the_report_names_each_filters_own_type(tmp_path, capsys):
+    """The operator's line spells what the graph will carry, not a literal.
+
+    It printed ``Peaking`` for every entry while that was the only type either
+    prescription class admitted. With the emitter's whole set open, a Lowshelf
+    printed as a Peaking — at a Q the emitter drops — would be a report
+    disagreeing with the graph it describes, which is how an operator stages a
+    document believing it is something else.
+    """
+    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+    kept = [{"role": "tweeter", **entry} for entry in INCUMBENT_TWEETER]
+
+    cli._print_prescription(_gate(packet, _document(kept, packet)), "accepted")
+
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[1] == "  tweeter Lowshelf 5844.7 Hz -6.07 dB"
+    assert lines[2] == "  tweeter Peaking 3249.1 Hz Q2 -2.06 dB"
+    # The shelf's Q is absent rather than printed: the emitter drops it, so
+    # showing one would advertise a steepness nothing honours.
+    assert "Q" not in lines[1]
+
+
 def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
 

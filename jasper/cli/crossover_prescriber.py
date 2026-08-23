@@ -464,8 +464,15 @@ def _print_prescription(
     )
     for entry in prescription.filters:
         role = f"{entry['role']} " if "role" in entry else ""
+        # The entry's OWN type, and its Q only when the type has one. The line
+        # spelled a literal "Peaking" while that was the only type either class
+        # admitted; the driver door now takes the emitter's whole set, and a
+        # Lowshelf printed as a Peaking at a Q the emitter drops would be an
+        # operator report disagreeing with the graph it describes.
+        biquad_type = str(entry.get("biquad_type") or "Peaking")
+        q = f"Q{entry['q']:g} " if biquad_type == "Peaking" else ""
         print(
-            f"  {role}Peaking {entry['freq']:.1f} Hz Q{entry['q']:g} "
+            f"  {role}{biquad_type} {entry['freq']:.1f} Hz {q}"
             f"{entry['gain']:+.2f} dB",
             file=sys.stderr,
         )
