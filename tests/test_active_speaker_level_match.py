@@ -13,16 +13,26 @@ synthetic overlap evidence (a duck-typed preset carries only the way count +
 crossover regions the function reads). The end-to-end override / provisional
 behaviour through ``build_baseline_profile_candidate`` with real synthesized
 phone captures lives in ``test_active_speaker_baseline_profile.py``.
+
+The second half of this file pins which of the TWO evidence sources wins: a
+banked measured base trim (``jasper-driver-trim``) is preferred over the guided
+captures, and a banked trim measured against a different declaration is refused
+loudly rather than applied to a speaker it does not describe.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 
+import pytest
+
+from jasper.active_speaker import driver_base_trim as dbt
 from jasper.active_speaker.baseline_profile import (
     _measured_level_trims,
     _overlap_level_at,
 )
+from jasper.active_speaker.crossover_preview import crossover_preview_fingerprint
 
 
 def _preset(way_count: int, regions):
@@ -342,3 +352,145 @@ def test_overlap_level_at_requires_present_and_usable():
 
     assert _overlap_level_at(None, 2000.0) is None
     assert _overlap_level_at({}, 2000.0) is None
+
+
+# ---------- which evidence source wins --------------------------------------
+
+# Any mapping fingerprints; what matters is that the WRITER and the READER
+# derive the key from the same declaration document.
+PREVIEW = {
+    "kind": "jts_active_speaker_crossover_preview",
+    "status": "ready_for_protected_staging",
+    "drivers": {"woofer": {"sensitivity_db_2v83_1m": 88.0},
+                "tweeter": {"sensitivity_db_2v83_1m": 106.0}},
+}
+
+
+def _bank_base_trim(tmp_path, monkeypatch, *, trims, declaration):
+    state = tmp_path / "driver_base_trim.json"
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
+    dbt.write_base_trim(
+        trims_db=trims,
+        levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
+        roles=tuple(trims),
+        regions=[("woofer", "tweeter", 2000.0)],
+        declaration_fingerprint=declaration,
+        microphone={"sens_factor_db": -12.07, "serial": "8108494"},
+        state_path=state,
+    )
+    return state
+
+
+def test_a_banked_base_trim_is_preferred_over_the_guided_captures(
+    tmp_path, monkeypatch
+):
+    """Both sources are present and disagree; the deliberate measurement wins,
+    and the ledger says which one produced the number."""
+    _bank_base_trim(
+        tmp_path, monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},
+        declaration=crossover_preview_fingerprint(PREVIEW),
+    )
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),  # would be -20
+    )
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements, PREVIEW)
+
+    assert trims == {"woofer": 0.0, "tweeter": -6.0}
+    assert meta["source"] == "banked_base_trim"
+    assert meta["base_trim"]["status"] == dbt.STATUS_APPLIED
+    # The guided walk did not run, and the ledger does not pretend it did.
+    assert meta["deltas"] == []
+    assert meta["groups_measured"] == 0
+
+
+def test_a_banked_trim_for_another_declaration_is_refused_and_the_guided_path_runs(
+    tmp_path, monkeypatch
+):
+    _bank_base_trim(
+        tmp_path, monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},
+        declaration="f" * 64,
+    )
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),
+    )
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements, PREVIEW)
+
+    assert trims == {"woofer": 0.0, "tweeter": -20.0}  # the guided answer
+    assert meta["source"] == "guided_captures"
+    assert meta["base_trim"]["status"] == dbt.STATUS_DECLARATION_CHANGED
+    assert meta["base_trim"]["remediation"] == dbt.REMEASURE_REMEDIATION
+
+
+def test_without_a_declaration_only_the_guided_captures_are_considered(
+    tmp_path, monkeypatch
+):
+    """The estimator cross-check calls this reader with no preview. A banked
+    trim cannot be keyed there, so it is not silently applied."""
+    _bank_base_trim(
+        tmp_path, monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},
+        declaration=crossover_preview_fingerprint(PREVIEW),
+    )
+    measurements = _measurements(
+        ("mono", "woofer", "present", [_overlap(2000.0, -50.0)]),
+        ("mono", "tweeter", "present", [_overlap(2000.0, -30.0)]),
+    )
+
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), measurements)
+
+    assert trims == {"woofer": 0.0, "tweeter": -20.0}
+    assert meta["source"] == "guided_captures"
+
+
+def test_no_banked_trim_leaves_the_guided_path_exactly_as_it_was():
+    trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {}, PREVIEW)
+    assert trims == {}
+    assert meta["source"] == "guided_captures"
+    assert meta["base_trim"]["status"] == dbt.STATUS_ABSENT
+
+
+@pytest.mark.parametrize(
+    "tamper, status",
+    [
+        pytest.param(
+            lambda r: r.__setitem__("declaration_fingerprint", "f" * 64),
+            dbt.STATUS_DECLARATION_CHANGED,
+            id="declaration_moved",
+        ),
+        pytest.param(
+            lambda r: r["trims_db"].__setitem__("tweeter", 4.0),
+            dbt.STATUS_UNUSABLE,
+            id="hand_edited_to_a_boost",
+        ),
+        pytest.param(
+            lambda r: r["trims_db"].__setitem__("supertweeter", -3.0),
+            dbt.STATUS_ROLES_CHANGED,
+            id="roles_do_not_match",
+        ),
+    ],
+)
+def test_every_refused_status_is_reported_on_the_ledger(
+    tmp_path, monkeypatch, tamper, status
+):
+    """All three refusals reach the ledger. A record dropped without a word
+    reads exactly like a speaker nobody ever measured."""
+    state = _bank_base_trim(
+        tmp_path, monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},
+        declaration=crossover_preview_fingerprint(PREVIEW),
+    )
+    record = json.loads(state.read_text())
+    tamper(record)
+    state.write_text(json.dumps(record))
+
+    _trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {}, PREVIEW)
+
+    assert meta["base_trim"]["status"] == status
+    assert meta["base_trim"]["status"] in dbt.REFUSED_STATUSES
+    assert meta["base_trim"]["remediation"] == dbt.REMEASURE_REMEDIATION

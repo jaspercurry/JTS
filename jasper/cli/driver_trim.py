@@ -193,7 +193,10 @@ def _capture_levels(
     from jasper.active_speaker.profile import required_driver_roles
 
     roles = set(required_driver_roles(preset.way_count))
-    levels: dict[str, dict[str, dict[float, float]]] = {}
+    # Two passes on purpose: the manifest is checked whole BEFORE any capture
+    # is deconvolved, so a speaker whose third driver carries a broken ledger
+    # is told so immediately instead of after two analyses it will discard.
+    checked: list[tuple[str, str, Path, Mapping[str, Any], str, float]] = []
     for entry in entries:
         role = str(entry.get("role") or "")
         group_id = str(entry.get("speaker_group_id") or "")
@@ -217,6 +220,17 @@ def _capture_levels(
                 REFUSE_CAPTURES_INVALID,
                 f"{group_id}:{role} needs an existing wav and its sweep_meta",
             )
+        checked.append((
+            group_id,
+            role,
+            wav,
+            sweep_meta,
+            str(entry.get("capture_geometry") or "near_field"),
+            float(excitation["effective_peak_dbfs"]),
+        ))
+
+    levels: dict[str, dict[str, dict[float, float]]] = {}
+    for group_id, role, wav, sweep_meta, geometry, effective_peak in checked:
         fcs = driver_crossover_fcs(preset, role)
         result = analyze_driver_capture(
             wav,
@@ -225,7 +239,7 @@ def _capture_levels(
             overlap_fcs=fcs,
             has_mic_calibration=curve is not None,
             calibration=curve,
-            capture_geometry=str(entry.get("capture_geometry") or "near_field"),
+            capture_geometry=geometry,
         )
         if result.verdict != VERDICT_PRESENT:
             raise TrimRefusal(
@@ -233,7 +247,6 @@ def _capture_levels(
                 f"{group_id}:{role} analysed as {result.verdict}, not a driver "
                 "producing sound in its declared band — capture it again",
             )
-        effective_peak = float(excitation["effective_peak_dbfs"])
         for fc in fcs:
             level = usable_overlap_level_db(result.overlap_levels, fc)
             if level is None:

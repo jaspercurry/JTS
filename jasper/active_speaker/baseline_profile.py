@@ -62,7 +62,7 @@ from .crossover_contract import (
 )
 from .crossover_preview import crossover_preview_fingerprint
 from .driver_base_trim import (
-    STATUS_DECLARATION_CHANGED as BASE_TRIM_DECLARATION_CHANGED,
+    REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
     banked_base_trims,
 )
 from .driver_pad import effective_sensitivity_db
@@ -784,17 +784,21 @@ def _derive_corrections(
     base_trim_meta = level_match.get("base_trim")
     if (
         isinstance(base_trim_meta, Mapping)
-        and base_trim_meta.get("status") == BASE_TRIM_DECLARATION_CHANGED
+        and base_trim_meta.get("status") in BASE_TRIM_REFUSED_STATUSES
     ):
         # Refused, and said so. A banked trim that is silently dropped is
         # indistinguishable from a speaker that was never measured, and the
         # operator would have no way to tell which one they are looking at.
+        # The three refused statuses share one issue code because they share
+        # one remedy — measure this speaker again — and splitting them would
+        # give a household three sentences for one action.
         issues.append(_issue(
             "warning",
-            "driver_base_trim_declaration_changed",
+            "driver_base_trim_not_applied",
             (
-                "the banked measured base trim was taken against a different "
-                "driver declaration than this one; JTS ignored it — "
+                "the banked measured base trim does not describe this speaker "
+                f"({base_trim_meta.get('status')}); JTS kept the safe existing "
+                "or estimated trim — "
                 + str(base_trim_meta.get("remediation") or "")
             ).strip(),
         ))

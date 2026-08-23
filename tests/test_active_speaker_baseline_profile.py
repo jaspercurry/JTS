@@ -40,7 +40,11 @@ from jasper.active_speaker.baseline_profile import (
     restore_applied_baseline_profile,
 )
 from jasper.dsp_apply import config_file_sha256
-from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.active_speaker import driver_base_trim as dbt
+from jasper.active_speaker.crossover_preview import (
+    build_crossover_preview,
+    crossover_preview_fingerprint,
+)
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.measurement import (
     load_measurement_state,
@@ -6709,3 +6713,106 @@ async def test_restore_threads_the_digest_it_just_computed_into_the_proof(
     assert payload["status"] == "restored", payload.get("issues")
     assert seen["expected"] == config_file_sha256(target)
     assert seen["expected"] == retained["config"]["sha256"]
+
+
+# ---------- the measured base trim replaces the datasheet prefill ------------
+
+
+def _with_banked_base_trim(
+    topology: OutputTopology,
+    research: dict,
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    trims: dict[str, float],
+    declaration: str | None = None,
+) -> dict:
+    """``_baseline_payload``, with a base trim banked against this speaker's own
+    declaration (or, when ``declaration`` is given, against a different one)."""
+    draft = build_design_draft(
+        topology,
+        driver_research=research,
+        created_at="2026-06-19T12:00:00Z",
+    )
+    preview = build_crossover_preview(draft, created_at="2026-06-19T12:10:00Z")
+    state = tmp_path / "driver_base_trim.json"
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(state))
+    dbt.write_base_trim(
+        trims_db=trims,
+        levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
+        roles=tuple(trims),
+        regions=[("woofer", "tweeter", 2000.0)],
+        declaration_fingerprint=(
+            declaration if declaration is not None
+            else crossover_preview_fingerprint(preview)
+        ),
+        microphone={"sens_factor_db": -12.07, "serial": "8108494"},
+        state_path=state,
+    )
+    return build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=_measurements(topology, tmp_path),
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        created_at="2026-06-19T12:20:00Z",
+    )
+
+
+def test_banked_base_trim_replaces_the_sensitivity_prefill(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The incident, inverted. Without a measurement this speaker ships the
+    -25.2 dB trim its DE250-shaped datasheet gap implies; with one it ships the
+    number a microphone actually read, and the provenance says so."""
+    topology = _dual_apple_topology()
+    payload = _with_banked_base_trim(
+        topology,
+        _research_with_sensitivity(),  # 25.2 dB datasheet gap, no measurement
+        tmp_path,
+        monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -19.4},
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == -19.4
+    assert payload["corrections"]["woofer"]["gain_db"] == 0.0
+    assert payload["corrections_source"]["tweeter"] == "measured"
+    assert payload["provisional"] is False
+    assert payload["level_match"]["source"] == "banked_base_trim"
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_gain_derived_from_measurement" in codes
+    assert "driver_gain_derived_from_sensitivity" not in codes
+    assert "baseline_level_match_provisional" not in codes
+
+
+def test_a_base_trim_for_another_declaration_falls_back_and_says_why(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A speaker whose declaration moved under its banked trim keeps the safe
+    datasheet estimate AND is told the measurement no longer applies — a
+    silently-dropped trim is indistinguishable from never having measured."""
+    topology = _dual_apple_topology()
+    payload = _with_banked_base_trim(
+        topology,
+        _research_with_sensitivity(),
+        tmp_path,
+        monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -19.4},
+        declaration="f" * 64,
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == -25.2  # datasheet
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    assert payload["provisional"] is True
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_base_trim_not_applied" in codes
+    assert "driver_gain_derived_from_sensitivity" in codes
+    assert "driver_gain_derived_from_measurement" not in codes
+    message = next(
+        issue["message"] for issue in payload["issues"]
+        if issue["code"] == "driver_base_trim_not_applied"
+    )
+    assert dbt.REMEASURE_REMEDIATION in message

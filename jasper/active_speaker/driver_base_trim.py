@@ -72,6 +72,17 @@ STATUS_DECLARATION_CHANGED = "declaration_changed"
 STATUS_ROLES_CHANGED = "roles_changed"
 STATUS_UNUSABLE = "unusable"
 
+#: The statuses that mean "a trim was banked and this speaker is NOT using it".
+#: ``absent`` is not one of them — a box that never measured is the ordinary
+#: case — but every member here is a measurement being discarded, which the
+#: profile must say out loud rather than leaving indistinguishable from never
+#: having measured at all.
+REFUSED_STATUSES = frozenset({
+    STATUS_DECLARATION_CHANGED,
+    STATUS_ROLES_CHANGED,
+    STATUS_UNUSABLE,
+})
+
 #: The single remediation string. One sentence, one verb, in every surface that
 #: refuses a banked trim, so an operator never has to reconcile two wordings.
 REMEASURE_REMEDIATION = "re-run jasper-driver-trim to measure this speaker again"
@@ -115,8 +126,11 @@ def solve_base_trims(
     for either driver of any declared crossover is DROPPED, and no qualifying
     group returns ``{}`` so the caller keeps the estimate it already had. The
     surviving groups are averaged and normalized up by
-    :func:`~jasper.active_speaker.level_trim.attenuation_from_group_deltas`, so
-    the loudest driver lands at 0 dB and every trim is an attenuation.
+    :func:`~jasper.active_speaker.level_trim.attenuation_from_group_deltas`:
+    every trim is an attenuation, and the vector is shifted so its maximum is
+    exactly 0 dB — the QUIETEST driver is the reference and nothing is
+    attenuated further than the level match requires, which is the give-back
+    the composed gain structure owes the speaker's maximum SPL.
     """
     ordered = tuple(roles)
     chains: list[list[tuple[str, str, float]]] = []
