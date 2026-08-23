@@ -97,9 +97,8 @@ def test_driver_excitation_verifier_normalizes_both_scopes_idempotently() -> Non
         source = _driver_excitation(locked=locked)
         normalized = verified_driver_excitation(source)
         assert normalized is not None
-        assert normalized["scalar_playback_gain_db"] == (
-            -10.0 if locked else -6.0
-        )
+        # The verifier re-derives the ledger's own keys and invents none.
+        assert set(normalized) == set(source)
         assert ("locked_main_volume_db" in normalized) is locked
         assert normalized["gain_source"] == source["gain_source"]
         assert normalized["baseline_id"] == source["baseline_id"]
@@ -114,7 +113,7 @@ def test_driver_excitation_verifier_normalizes_both_scopes_idempotently() -> Non
     normalized_edge = verified_driver_excitation(tolerance_edge)
     assert normalized_edge is not None
     assert normalized_edge["effective_peak_dbfs"] == -18.0
-    assert normalized_edge["scalar_playback_gain_db"] == -6.0
+    assert set(normalized_edge) == set(tolerance_edge)
     assert verified_driver_excitation(normalized_edge) == normalized_edge
 
     for unity in (

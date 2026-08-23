@@ -74,14 +74,12 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
         > DRIVER_EXCITATION_MATCH_TOLERANCE_DB
     ):
         return None
-    scalar_playback_gain = commissioning_gain + locked_main_volume
     if (
         sweep_peak > 0.0
         or commissioning_gain > 0.0
         or locked_main_volume > 0.0
         or canonical_effective > 0.0
         or effective > 0.0
-        or scalar_playback_gain > 0.0
     ):
         return None
     for name in ("gain_source", "baseline_id", "topology_id", "role"):
@@ -95,12 +93,6 @@ def verified_driver_excitation(value: Any) -> dict[str, Any] | None:
         "sweep_peak_dbfs": sweep_peak,
         "commissioning_gain_db": commissioning_gain,
         "effective_peak_dbfs": canonical_effective,
-        # Deconvolution removes sweep amplitude; this is the remaining
-        # attenuation-only scalar (role commissioning gain plus locked main
-        # volume) between the played excitation and the measured response,
-        # which still contains the applied electrical crossover, protection,
-        # and filter response.
-        "scalar_playback_gain_db": scalar_playback_gain,
         **{
             name: value[name]
             for name in ("gain_source", "baseline_id", "topology_id", "role")
