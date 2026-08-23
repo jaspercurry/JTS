@@ -60,9 +60,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import math
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +72,7 @@ from typing import Any
 
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
+    REFUSE_INTERRUPTED,
     SeatLevelRampError,
     SeatLevelResult,
     run_seat_level_ramp,
@@ -224,6 +227,49 @@ def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, flo
     return ceiling_db, spl_ceiling
 
 
+class _OperatorStopped(Exception):
+    """SIGINT arrived while the pass was running, and the pass has torn down."""
+
+
+async def _stoppable(pass_coro: Any) -> SeatLevelResult:
+    """Run the leveling pass with SIGINT wired to its own cancellation.
+
+    Stopping must be possible at ANY moment, and it must stop the stimulus and
+    give the household its volume back — which is the pass's own teardown, not
+    a second one here. So SIGINT cancels the task and the pass's shielded
+    ``run_teardown`` does the work; this only turns the cancellation into an
+    honest refusal. Without the handler the only stop is Python's default
+    KeyboardInterrupt, which unwinds through the same ``finally`` blocks but
+    gives the operator no named outcome — and on a loop that is not the main
+    thread's, no handler can be installed at all, so the default is left in
+    place rather than pretended at.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(pass_coro)
+    stopped = False
+
+    def _stop() -> None:
+        nonlocal stopped
+        stopped = True
+        task.cancel()
+
+    handled = True
+    try:
+        loop.add_signal_handler(signal.SIGINT, _stop)
+    except (NotImplementedError, RuntimeError, ValueError):
+        handled = False
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if stopped:
+            raise _OperatorStopped from None
+        raise
+    finally:
+        if handled:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(signal.SIGINT)
+
+
 async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     from jasper.audio_measurement.correction_lane import exec_correction_play
     from jasper.audio_measurement.wired_capture import (
@@ -298,21 +344,29 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     except WiredCaptureError as exc:
         return _refused(REFUSE_MIC_ABSENT, str(exc))
     try:
-        result = await run_seat_level_ramp(
-            target=target,
-            sensitivity=sensitivity,
-            max_main_volume_db=ceiling_db,
-            spl_ceiling_db_spl=spl_ceiling,
-            get_main_volume_db=cam.get_volume_db,
-            set_main_volume_db=cam.set_volume_db,
-            play_continuous_tone=_play,
-            cancel_tone=_cancel,
-            next_samples=_samples,
+        result = await _stoppable(
+            run_seat_level_ramp(
+                target=target,
+                sensitivity=sensitivity,
+                max_main_volume_db=ceiling_db,
+                spl_ceiling_db_spl=spl_ceiling,
+                get_main_volume_db=cam.get_volume_db,
+                set_main_volume_db=cam.set_volume_db,
+                play_continuous_tone=_play,
+                cancel_tone=_cancel,
+                next_samples=_samples,
+            )
+        )
+    except _OperatorStopped:
+        return _refused(
+            REFUSE_INTERRUPTED,
+            "stopped by the operator; the stimulus was cut and the household "
+            "volume restored, nothing was banked",
         )
     except SeatLevelRampError as exc:
-        # The refusal code is the first token of the message (build_seat_level_
-        # ramp_config formats it that way) so the operator sees the same
-        # vocabulary a ramp terminal produces.
+        # The refusal code is the first token of the message (the window/ceiling
+        # validators format it that way) so the operator sees the same
+        # vocabulary a refusal terminal produces.
         return _refused(str(exc).split(":", 1)[0], str(exc))
     finally:
         _cancel()
@@ -391,7 +445,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.calibration_file and not args.mic_serial:
         build_parser().error("pass --calibration-file or --mic-serial")
-    result, detail = asyncio.run(_run(args))
+    try:
+        result, detail = asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        # The pass restored the household volume and stopped the stimulus on
+        # its way out (``run_teardown``); say so rather than dying silently.
+        result = SeatLevelResult(status="refused", reason=REFUSE_INTERRUPTED)
+        detail = "stopped by the operator; volume restored, nothing was banked"
     if args.json:
         print(json.dumps({**result.to_dict(), "detail": detail}, indent=2, sort_keys=True))
     elif result.converged:

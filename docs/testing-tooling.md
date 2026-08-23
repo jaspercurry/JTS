@@ -2947,21 +2947,24 @@ refusal restores the household volume and banks nothing.
 | `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset — the slug is historical, the caps no longer bound the ceiling but resolving them (and each driver's permitted band) is still what fails here |
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
-| `mic_not_observing` | the volume climbed the probe span and the mic never rose above the room |
+| `mic_not_observing` | the volume reached the ceiling and the mic never rose above the room |
 | `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
-| `mic_feed_lost` / `mic_clipping` / `ramp_timeout` | the kernel's own aborts |
+| `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
+| `seat_level_watchdog_expired` | the whole-operation watchdog fired — something the pass awaited never returned |
+| `seat_level_interrupted` | the operator stopped the pass (SIGINT); the stimulus was cut and the household volume restored |
+| `mic_feed_lost` / `mic_clipping` | no finite sample in a reading window, and a clipped capture |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 
 Read the journal, not the code, to find out what happened:
 
 | `event=active_speaker.seat_level_…` | says |
 |---|---|
-| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, start, step, and the amixer precondition |
-| `_ambient` | the measured room floor in dBFS and dB SPL, and the rise the guard will demand |
-| `_abort` | which guard fired, with the climb, the ambient, and the observed rise |
-| `_converged` | the banked volume, the measured dB SPL, and the recovered chain gain |
-| `_refused` | the refusal slug and the ramp terminal behind it |
+| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the step cap, and the amixer precondition |
+| `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
+| `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
+| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken |
+| `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 
 **What it does not do**: it designs no stimulus (point `--stimulus-wav` at the
 program the session will actually measure with — choosing a safe excitation is
@@ -2972,10 +2975,21 @@ normal** — a box that never runs this behaves exactly as it did before the ver
 existed. `jasper-doctor`'s `seat-SPL measurement reference` line reports which
 state that file is in.
 
-Two deploy-time knobs, both bounded and both falling back to their defaults on a
-bad value: `JASPER_SEAT_LEVEL_PROBE_DB` (how far the volume climbs before the
-guard demands evidence, default 20) and `JASPER_SEAT_LEVEL_MIN_RISE_DB` (how far
-above ambient counts as evidence, default 6).
+**How it climbs**: the remaining gap IS the step —
+`target_db_spl - measured_db_spl`, saturated upward by the shared
+`AUDIBLE_RAMP_STEP_DB` (10 dB, `jasper/active_speaker/calibration_level.py`'s
+own `upward_step_limit_db`; downward moves are uncapped because they reduce
+risk). Big bites while far away, shrinking ones as it closes, every one of them
+re-measured — so the chain only has to be locally monotone in dB, not linear.
+No sample is discarded for being quiet: a window with nothing above the room in
+it still yields the room's own level, the gap from there is large, and the ramp
+bites again. That is the fix for the 2026-08-22 jts3 incident, where a 0.75 dB
+rung behind a noise gate threw away 1138 of 1194 samples and timed out after
+51 s, 25 dB below its own ceiling.
+
+One deploy-time knob, bounded and falling back to its default on a bad value:
+`JASPER_SEAT_LEVEL_MIN_RISE_DB` (how far above ambient counts as the speaker
+rather than the room, default 6).
 
 Hardware-free coverage: the conversion, the guards, the ambient model and the
 banked artifact in

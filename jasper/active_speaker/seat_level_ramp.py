@@ -6,50 +6,80 @@
 """Closed-loop seat-SPL leveling: find the volume that measures the target.
 
 The crossover session's reference volume was a codified guess. This step makes
-it an observation: roll the main volume slowly up from a quiet floor while a
-CALIBRATED measurement mic at the listening seat watches, stop when the seat SPL
-settles inside the operator's band, and bank the volume that got there
+it an observation: play the session's own stimulus while a CALIBRATED
+measurement mic at the listening seat watches, ramp the main volume until the
+seat SPL lands inside the operator's band, and bank the volume that got there
 (:mod:`seat_level_reference`) for
 :func:`jasper.active_speaker.session_volume_plan.session_measurement_volume_db`
 to consume.
 
-**Almost none of this is new machinery.** The ramp itself is
-:class:`jasper.audio_measurement.ramp.RampController` — the settle-based
-two-point level-match kernel that already owns the quiet start, the coarse
-staircase, the stop-ahead pre-window, the settled jump, the confirm streak, the
-clip abort, the trust floor, the feed-liveness abort, the derived safety
-timeout, and the fade-before-tone-kill. The restore latch is
+**How the ramp moves: the remaining gap IS the step.** Each reading measures
+the seat SPL; the next step is ``target_db_spl - measured_db_spl``, saturated at
+one named upward cap (:data:`AUDIBLE_RAMP_STEP_DB`, the same number
+:mod:`jasper.active_speaker.calibration_level` declares as
+``upward_step_limit_db`` — one constant owns "how far may one audible upward
+step move the room"). So the ramp takes big strides while it is far away and
+naturally shrinking ones as it closes: three big bites carry it across jts3's
+61 dB SPL room and a fourth, aimed at the measured gap, lands a 75 dB SPL target
+— five readings, about five audible seconds, where the retired ladder spent 51 s
+and never arrived.
+
+This assumes only that the chain is LOCALLY monotone in dB — not that it is
+globally linear. Every step re-measures, so a chain that answers a 10 dB
+command with 7 dB simply takes one more step; the cap bounds how far any single
+surprise can carry the room. Downward steps are uncapped because they reduce
+risk, exactly as ``calibration_level``'s own contract says.
+
+**Where the ramp starts: low, and it does not matter much.** Bites this big
+cross a 61 dB SPL room from :data:`SEAT_LEVEL_START_DB` in three of them, so a
+start derived from the measured room was tried and dropped — it bought a second
+and cost a helper, a constant, and a refusal. What broke the
+retired ladder was never the start on its own — it was a 0.75 dB rung behind a
+noise gate, which turned "still under the room" into a stall instead of a
+reason to bite again.
+
+**Almost none of the rest is new machinery.** The restore latch is
 :class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan` (durable
 intent before the first mutation, set-and-confirm, restore exactly once) on the
 SAME durable statefile a measurement session uses, so the recovery machinery
-that already watches that file watches a leveling pass too. This module
-contributes exactly three things the kernel cannot know:
+that already watches that file watches a leveling pass too. What this module
+owns, and nothing else can know:
 
 1. **The window is a dB SPL band, not a dBFS one.** The mic's calibration file
    carries the absolute reference
-   (:class:`jasper.audio_measurement.calibration.MicSensitivity`); this module
-   converts the operator's seat-SPL band into the mic-dBFS window the kernel
-   ramps toward. No calibration means no absolute level, so the step REFUSES
-   (``mic_calibration_unavailable``) rather than chasing an uncalibrated number.
-2. **A ceiling the kernel has no vocabulary for** — the loudest main volume at
-   which the ACTUAL stimulus still has digital headroom in every driver's
-   branch (``unsegmented_stimulus_ceiling_db``). It is derived from full scale
-   and the stimulus bytes and contains no measured level, so a mis-calibrated
-   microphone cannot move it. The measured seat-SPL ceiling
-   (``max_commissioning_level_db_spl``) is a second, softer stop that shares the
-   calibration's fate — which is exactly why it is not the one holding the line.
-3. **The ambient floor, and the two rules that read it.** A wired measurement
-   mic that is plugged in but not observing the speaker — capturing the wrong
-   card, in a bag, muted at the OS — keeps delivering samples at its noise
-   floor, so neither the feed-liveness timeout (samples ARE arriving) nor the
-   trust floor (they are simply dropped) stops the climb. Measuring the room
-   ONCE before the tone gives the kernel its trust threshold, gives
-   :class:`_MicObservationGuard` a "did anything actually rise" test that does
-   not false-abort a speaker quieter than the room, and gives convergence the
-   same test so a stuck-constant mic can never bank a reference.
+   (:class:`jasper.audio_measurement.calibration.MicSensitivity`). No
+   calibration means no absolute level, so the step REFUSES
+   (``mic_calibration_unavailable``, raised by the CLI) rather than chasing an
+   uncalibrated number.
+2. **Two ceilings.** The loudest main volume at which the ACTUAL stimulus
+   still has digital headroom in every driver's branch
+   (``unsegmented_stimulus_ceiling_db``) is derived from full scale and the
+   stimulus bytes and contains no measured level, so a mis-calibrated
+   microphone cannot move it. The measured seat-SPL
+   ceiling (``max_commissioning_level_db_spl``) is a second, softer stop that
+   shares the calibration's fate — which is exactly why it is not the one
+   holding the line. Neither moved in this rework.
+3. **The ambient floor, and the rules that read it.** A wired measurement mic
+   that is plugged in but not observing the speaker — capturing the wrong card,
+   in a bag, muted at the OS — keeps delivering samples at its noise floor.
+   Measuring the room ONCE before the tone gives the runaway guard a "did
+   anything actually rise" test that does not false-abort a speaker quieter
+   than the room, and gives convergence the same test so a stuck-constant mic
+   can never bank a reference.
+
+**No sample is discarded for being quiet, so the climb can never stall.** A
+reading is the median of every finite sample in its window. A window with
+nothing above the room in it still produces a number — the room's own — and the
+gap from there to the target is large, so the one rule saturates at the cap and
+the ramp takes another big bite. That is the whole behavioural flip: the retired
+staircase ran behind a noise gate that dropped ambient-dominated samples before
+its state machine saw them, so in a 61 dB SPL room 1138 of 1194 samples were
+thrown away and the walk starved (``captures/new-horn-2026-08``). "Still under
+the room" is a reason to bite again, never a reason to wait.
 
 Every refusal restores the household volume through the latch and persists
-nothing. Only a converged, in-window lock banks a reference.
+nothing. Only a reading inside the band, clear of the measured ambient, banks a
+reference.
 """
 
 from __future__ import annotations
@@ -59,7 +89,7 @@ import logging
 import math
 import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -67,11 +97,9 @@ from jasper.env_load import bounded_env_float
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.ramp import (
     HARD_CEILING_DBFS,
+    RECOVERABLE_ERRORS,
     LevelSample,
-    MeasurementRamp,
-    RampController,
-    RampLockKind,
-    RampState,
+    capped_gap_step_db,
 )
 from jasper.correction.coordinator import (
     MeasurementWindowError,
@@ -79,6 +107,7 @@ from jasper.correction.coordinator import (
 )
 from jasper.log_event import log_event
 
+from .calibration_level import AUDIBLE_RAMP_STEP_DB
 from .seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
@@ -89,16 +118,12 @@ from .session_volume_plan import (
     SessionVolumeOpenResult,
     SessionVolumePlan,
     SessionVolumePlanError,
+    SessionVolumeRestoreResult,
     live_measurement_session,
 )
 from .volume_latch import GetMainVolumeDb, SetMainVolumeDb
 
 logger = logging.getLogger(__name__)
-
-# The quiet floor the climb starts from. The kernel's own default, and 30 dB
-# below the codified -20 dB reference, so the first audible moment of a leveling
-# pass is far under any level the session would hold.
-SEAT_LEVEL_START_DB = -50.0
 
 # This pass's identity in the shared measurement window: the mux diagnostic-gate
 # owner (registered in ``mux.FANIN_TEST_OWNERS``, so ``TEST_RELEASE`` stays
@@ -107,50 +132,76 @@ SEAT_LEVEL_START_DB = -50.0
 # ``event=measurement.hold_*`` line say while a leveling pass is running.
 SEAT_LEVEL_GATE_OWNER = "seat-level"
 
-# Worst-case delay between commanding a volume and seeing it in a sample. A
-# wired mic read in-process is chunk-bounded, an order of magnitude tighter than
-# the phone relay's 2 s default; the kernel's overshoot invariant
-# (``step + rate * latency < half the window``) is why this must be stated
-# rather than inherited — the phone value would refuse a 5 dB-wide window.
-SEAT_LEVEL_MAX_LOOP_LATENCY_S = 0.5
+# The ONE timescale in this pass: how long until the mic reflects a step
+# (owner's number, 2026-08-23). It is drained and discarded after each volume
+# change so a median never mixes the level before a step with the level after
+# it, and the median window that follows is the same length — a wired mic read
+# in-process is chunk-bounded, an order of magnitude tighter than the phone
+# relay's 2 s, and nothing else in the pass runs on a different clock.
+MIC_SETTLE_S = 0.5
 
-# Deliberately non-binding. The kernel's dynamic cap is
-# ``min(original + cap_bump_db, cap_ceil_db)``, where ``original`` is whatever
-# volume was live when the ramp started — and the latch has already parked that
-# at SEAT_LEVEL_START_DB, so a household-relative bump would cap this ramp ~38 dB
-# below any usable measurement level. The operative ceiling here is the
-# headroom ceiling passed as ``max_main_volume_db``, backed by the live
-# seat-SPL ceiling and the kernel's own 0 dB hard ceiling.
-SEAT_LEVEL_CAP_BUMP_DB = 120.0
+# The quiet floor the climb starts from. Deliberately low and deliberately
+# uninformed: with bites this big the start stops being load-bearing (from here
+# the ramp crosses a 61 dB SPL room in three bites), so paying for a smarter one
+# would buy a second or two at the cost of machinery the pass does not need.
+SEAT_LEVEL_START_DB = -50.0
 
-# How long the mic listens to a silent room before the tone starts. The measured
-# ambient floor it produces is the ONE measurement three rules read: the kernel's
-# trust threshold, the runaway guard's "did anything rise", and convergence's
-# "did the reading rise at all". One second of a stationary room is plenty for a
-# median; longer just delays the operator.
-AMBIENT_WINDOW_S = 1.0
-
-# The runaway guard, and the same rise convergence requires. Once the commanded
-# volume has climbed MIC_RESPONSE_PROBE_DB above the ramp's start, the observed
-# level must sit at least MIC_RESPONSE_MIN_RISE_DB ABOVE the measured ambient
-# floor.
+# The rise a reading must clear to count as the SPEAKER rather than the room —
+# read by the runaway guard and by convergence, which is why it is one number.
 #
 # Measuring rise against AMBIENT rather than against the first reading is what
 # keeps a real chain from being falsely aborted: a speaker that starts quieter
-# than the room pins the mic at ambient for the first several steps, so a 1:1
-# "track the commanded volume" test fires on a perfectly good mic in a normal
-# room (chain 80 dB / ambient 45 dB, and 85/42, both do this). Against ambient,
-# such a chain simply has to emerge — which it does, long before the ceiling —
-# while a mic that is not listening never emerges at all, because ITS ambient
-# reading and ITS signal reading are the same number.
+# than the room pins the mic at ambient for the first bites, so a 1:1 "track the
+# commanded volume" test fires on a perfectly good mic in a normal room. Against
+# ambient, such a chain simply has to emerge — which it does, long before the
+# ceiling — while a mic that is not listening never emerges at all, because ITS
+# ambient reading and ITS signal reading are the same number.
 #
-# 20 dB of probe span is ~27 staircase steps (~13 s), sized so a chain starting
-# below the room floor has room to climb through it. Both are deploy-time knobs
-# (ramp.py's convention for every hardware-gated threshold) because the right
-# span depends on the room's floor and the amp's gain, which only hardware
-# knows.
-MIC_RESPONSE_PROBE_DB = 20.0
+# A deploy-time knob (ramp.py's convention for every hardware-gated threshold)
+# because the right rise depends on the room's floor, which only hardware knows.
 MIC_RESPONSE_MIN_RISE_DB = 6.0
+
+# How many steps that commanded the FULL remaining gap — no cap, no ceiling
+# clamp — may land outside the band before the pass stops and reports the
+# measured slope. One miss buys a correction from the new reading; a second
+# says the chain did not answer its own measurement twice running, which is an
+# instrument answer worth printing, not a nanny.
+MAX_MISSED_FULL_STEPS = 2
+
+# Commanded volumes closer together than this are the same volume: the step
+# arithmetic is dB and the fader is not infinitely resolved.
+STEP_EPSILON_DB = 0.05
+
+# Whole-operation watchdog slack, on top of the pass's own honestly-priced
+# worst case (see :func:`_watchdog_seconds`). A backstop against a wedged
+# awaitable — a volume setter or a sample source that never returns — never a
+# step governor: the retired staircase died to a budget that priced a
+# continuous climb while the walk was gated, and no reader should have to
+# reason about whether this number bounds the ramp's shape. It does not.
+WATCHDOG_SLACK_S = 15.0
+
+# Fade the commanded volume down before the tone is killed, so a broadband
+# stimulus never stops at full level into the DAC. Preserved verbatim from the
+# retired kernel's fade-before-tone-kill.
+FADE_STEP_DB = 2.0
+FADE_STEP_S = 0.03
+FADE_FLOOR_DB = -50.0
+
+# How many times a teardown step may be re-awaited after the pass is cancelled.
+#
+# Measured, not assumed: a plain ``finally: await ...`` DOES complete after ONE
+# ``task.cancel()`` — the CancelledError is delivered once. It is a REPEATED
+# cancellation that strands it, which is exactly what an operator pressing
+# Ctrl-C twice, or a supervising timeout that re-cancels, produces. Each attempt
+# here shields the teardown and re-awaits it, so the household volume comes back
+# under repeated cancellation too.
+#
+# The count is bounded on purpose: past this many cancellations the operator is
+# leaning on the key and gets out, with the fader left where the ramp had it and
+# the durable latch still on disk for the recovery machinery to drain. That is
+# not a loud speaker — ``cancel_tone`` is synchronous and runs on the first
+# attempt, so the room is already quiet.
+TEARDOWN_SHIELD_ATTEMPTS = 4
 
 # Refusal codes. Stable strings: they are the operator-facing reason and the
 # `event=` field, so they are named once here.
@@ -159,12 +210,18 @@ REFUSE_SPL_CEILING_EXCEEDED = "spl_ceiling_exceeded"
 REFUSE_SPL_TARGET_UNREACHABLE = "spl_target_unreachable"
 REFUSE_MIC_FEED_LOST = "mic_feed_lost"
 REFUSE_MIC_CLIPPING = "mic_clipping"
-REFUSE_RAMP_TIMEOUT = "ramp_timeout"
 REFUSE_RAMP_ERROR = "ramp_error"
-REFUSE_RAMP_CONFIG_INVALID = "ramp_config_invalid"
 REFUSE_SPL_TARGET_UNCAPTURABLE = "spl_target_uncapturable"
 REFUSE_VOLUME_CEILING_TOO_LOW = "volume_ceiling_below_ramp_start"
 REFUSE_VOLUME_LATCH_UNCONFIRMED = "volume_latch_unconfirmed"
+# Two steps commanded the full measured gap and neither landed in the band.
+# The refusal carries the measured dB-per-dB slope so the operator sees WHY.
+REFUSE_LEVEL_UNCONVERGED = "spl_level_unconverged"
+# The whole-operation watchdog fired: something the pass awaits never returned.
+REFUSE_WATCHDOG_EXPIRED = "seat_level_watchdog_expired"
+# Ctrl-C, SIGINT, or any other cancellation of the pass. Recorded, never
+# swallowed: the cancellation still propagates once the teardown has run.
+REFUSE_INTERRUPTED = "seat_level_interrupted"
 # Reuses jasper-angle-capture's slug verbatim: same door, same durable fact.
 REFUSE_SESSION_ALREADY_LIVE = "measurement_session_already_live"
 # The shared measurement window would not open — another measurement holds the
@@ -183,7 +240,14 @@ class SeatLevelResult:
     """The outcome of one leveling pass.
 
     ``status`` is ``"converged"`` or ``"refused"``; a refusal always carries a
-    ``reason`` from the ``REFUSE_*`` set and persisted nothing.
+    ``reason`` from the ``REFUSE_*`` set and persisted nothing. ``ramp`` is this
+    pass's own telemetry — the start, the ceiling, the measured ambient, and one
+    entry per reading — read by ``jasper-seat-level --json``.
+
+    ``restored`` says whether the household volume actually came back. ``None``
+    before anything was moved, and a MEASURED outcome after: the volume seam can
+    reject a write (CamillaDSP down mid-pass), and a pass that left the fader at
+    a measurement level must say so rather than let silence read as success.
     """
 
     status: str
@@ -191,6 +255,7 @@ class SeatLevelResult:
     detail: str | None = None
     reference_volume_db: float | None = None
     measured_db_spl: float | None = None
+    restored: bool | None = None
     ramp: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -204,6 +269,7 @@ class SeatLevelResult:
             "detail": self.detail,
             "reference_volume_db": self.reference_volume_db,
             "measured_db_spl": self.measured_db_spl,
+            "restored": self.restored,
             "ramp": self.ramp,
         }
 
@@ -211,153 +277,118 @@ class SeatLevelResult:
 SampleSource = Callable[[], Awaitable[list[LevelSample]]]
 
 
-async def measure_ambient_dbfs(
+@dataclass(frozen=True)
+class _Reading:
+    """One settled level reading, or the guard that stopped it mid-window.
+
+    ``rms_dbfs`` is the median of EVERY finite sample in the window — no sample
+    is dropped for being quiet, because "the speaker is still under the room" is
+    evidence the step arithmetic uses. ``None`` means the mic delivered nothing
+    finite at all, which is a lost feed rather than a quiet room.
+    """
+
+    rms_dbfs: float | None
+    samples: int
+    refusal: str | None = None
+    detail: str | None = None
+
+
+async def _settle_reading(
     next_samples: SampleSource,
     *,
+    sensitivity: MicSensitivity,
+    spl_ceiling_db_spl: float,
     clock: Callable[[], float],
     sleep: Callable[[float], Awaitable[None]],
-    window_s: float = AMBIENT_WINDOW_S,
-) -> float | None:
-    """Median mic level over a silent window — the ONE measurement three rules read.
+    window_s: float = MIC_SETTLE_S,
+    latency_s: float = MIC_SETTLE_S,
+) -> _Reading:
+    """Drain the transport delay, then take the median of one window.
 
-    Called after the latch has parked the volume at the quiet floor and before
-    the tone starts, so the room is as silent as this session will see it.
-    Returns ``None`` when the mic delivered nothing finite; the caller refuses
-    rather than assuming a floor.
+    The two sample-domain stops run on EVERY sample seen, drain included, and
+    abandon the window the moment one fires: a clipped capture (the level is
+    meaningless) and a reading above the profile's commissioning SPL stop (the
+    hard-stop list's measured ceiling). Both are checked before the median so
+    the pass cannot sit at an over-ceiling level for the rest of a window.
     """
     readings: list[float] = []
-    deadline = clock() + float(window_s)
+    deadline = clock() + float(latency_s) + float(window_s)
+    window_opens = clock() + float(latency_s)
     while clock() < deadline:
         for sample in await next_samples():
-            if math.isfinite(sample.rms_dbfs):
-                readings.append(sample.rms_dbfs)
-        await sleep(0.05)
-    return statistics.median(readings) if readings else None
-
-
-class _MicObservationGuard:
-    """Wraps the sample source with the two SPL-domain aborts.
-
-    Sits BEFORE the kernel's trust floor on purpose: an ambient-dominated sample
-    is exactly the evidence the runaway guard needs, and the kernel drops those
-    before the state machine ever sees them.
-
-    Aborts by calling :meth:`RampController.cancel`, the kernel's own
-    abort-and-restore path (fade down, kill the tone, return to the pre-ramp
-    volume). The loop re-checks the cancel flag at the top of each tick and ticks
-    every 10 ms, while it steps the volume only every ``step_interval_s``
-    (0.5 s), so an abort lands with no further volume step.
-
-    :attr:`rise_db` — how far the loudest observed reading sits above the
-    measured ambient floor — is the guard's whole state, and convergence reads
-    the same number so a stuck-constant mic cannot bank a reference.
-    """
-
-    def __init__(
-        self,
-        *,
-        controller: RampController,
-        source: SampleSource,
-        sensitivity: MicSensitivity,
-        spl_ceiling_db_spl: float,
-        ambient_dbfs: float,
-        start_volume_db: float,
-        probe_db: float,
-        min_rise_db: float,
-    ) -> None:
-        self._controller = controller
-        self._source = source
-        self._sensitivity = sensitivity
-        self._spl_ceiling_db_spl = float(spl_ceiling_db_spl)
-        self._ambient_dbfs = float(ambient_dbfs)
-        self._start_volume_db = float(start_volume_db)
-        self._probe_db = float(probe_db)
-        self._min_rise_db = float(min_rise_db)
-        self.refusal: str | None = None
-        self.last_rms_dbfs: float | None = None
-        self._max_rms_dbfs: float | None = None
-
-    @property
-    def min_rise_db(self) -> float:
-        """The rise the guard demands — convergence demands the same one."""
-        return self._min_rise_db
-
-    @property
-    def rise_db(self) -> float:
-        """Loudest observed reading minus the ambient floor. Never negative.
-
-        A non-finite feed never raises ``_max_rms_dbfs``, so NaN/inf samples
-        score as no rise instead of defeating the guard by leaving it unarmed.
-        """
-        if self._max_rms_dbfs is None:
-            return 0.0
-        return max(0.0, self._max_rms_dbfs - self._ambient_dbfs)
-
-    async def __call__(self) -> list[LevelSample]:
-        batch = await self._source()
-        if self.refusal is not None:
-            return batch
-        commanded = self._controller.data.current_main_volume_db
-        for sample in batch:
+            if sample.clip:
+                return _Reading(
+                    rms_dbfs=None,
+                    samples=len(readings),
+                    refusal=REFUSE_MIC_CLIPPING,
+                    detail="the capture clipped; no level can be read from it",
+                )
             if not math.isfinite(sample.rms_dbfs):
                 continue
-            self.last_rms_dbfs = sample.rms_dbfs
-            self._max_rms_dbfs = (
-                sample.rms_dbfs
-                if self._max_rms_dbfs is None
-                else max(self._max_rms_dbfs, sample.rms_dbfs)
-            )
-            observed_db_spl = self._sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
-            if observed_db_spl > self._spl_ceiling_db_spl:
-                await self._abort(
-                    REFUSE_SPL_CEILING_EXCEEDED,
-                    observed_db_spl=f"{observed_db_spl:.1f}",
-                    ceiling_db_spl=f"{self._spl_ceiling_db_spl:.1f}",
-                    commanded_db=f"{commanded:.2f}",
+            observed_db_spl = sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
+            if observed_db_spl > spl_ceiling_db_spl:
+                return _Reading(
+                    rms_dbfs=None,
+                    samples=len(readings),
+                    refusal=REFUSE_SPL_CEILING_EXCEEDED,
+                    detail=(
+                        f"measured {observed_db_spl:.1f} dB SPL, above the "
+                        f"profile's commissioning stop "
+                        f"{spl_ceiling_db_spl:.1f} dB SPL"
+                    ),
                 )
-                return batch
-        if self._runaway(commanded):
-            await self._abort(
-                REFUSE_MIC_NOT_OBSERVING,
-                commanded_climb_db=f"{commanded - self._start_volume_db:.2f}",
-                ambient_dbfs=f"{self._ambient_dbfs:.1f}",
-                observed_rise_db=f"{self.rise_db:.2f}",
-                required_rise_db=f"{self._min_rise_db:.2f}",
-                commanded_db=f"{commanded:.2f}",
-            )
-        return batch
-
-    def _runaway(self, commanded_db: float) -> bool:
-        """True once the volume climbed the probe span without emerging from ambient."""
-        if commanded_db - self._start_volume_db < self._probe_db:
-            return False
-        return self.rise_db < self._min_rise_db
-
-    async def _abort(self, reason: str, **evidence: str) -> None:
-        self.refusal = reason
-        log_event(
-            logger,
-            "active_speaker.seat_level_abort",
-            level=logging.WARNING,
-            fields={"reason": reason, **evidence},
-        )
-        await self._controller.cancel()
+            if clock() >= window_opens:
+                readings.append(sample.rms_dbfs)
+        await sleep(0.05)
+    if not readings:
+        return _Reading(rms_dbfs=None, samples=0, refusal=REFUSE_MIC_FEED_LOST)
+    return _Reading(rms_dbfs=statistics.median(readings), samples=len(readings))
 
 
-def build_seat_level_ramp_config(
-    *,
-    target: SeatLevelTarget,
-    sensitivity: MicSensitivity,
-    max_main_volume_db: float,
-) -> MeasurementRamp:
-    """Translate a seat-SPL band into the kernel's mic-dBFS ramp config.
+def mic_is_not_observing(
+    *, max_rise_db: float, min_rise_db: float, at_ceiling: bool
+) -> bool:
+    """At the ceiling with no reading ever clear of the room: nobody is listening.
 
-    The window is the band converted through the mic's own sensitivity; the cap
-    is the headroom volume ceiling. Raises :class:`SeatLevelRampError` when the
-    result would not be a ramp: a band the mic cannot capture without clipping,
-    a ceiling at or below the quiet start, or a band too narrow for the kernel's
-    overshoot invariant at this step/latency.
+    Without this, a mic that is open and delivering samples but hearing nothing
+    (wrong card, in a bag, muted at the OS) is reported as a quiet amplifier,
+    which sends an operator to the wrong part of the chain.
+
+    The ceiling is the ONLY non-arbitrary place to ask. A fixed "probe span"
+    used to arm it earlier, and from a low start in a loud room it fired on a
+    perfectly good chain that simply had not emerged yet — jts3's 61 dB SPL room
+    tripped it 20 dB into a 44 dB climb. Waiting costs a few seconds and the
+    ceiling is a safe volume by construction (no branch reaches full scale
+    there), with the measured SPL stop live on every sample regardless.
     """
+    return max_rise_db < min_rise_db and at_ceiling
+
+
+def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
+    """This pass's own worst case, priced as the readings it actually takes.
+
+    One ambient reading, one reading per capped step from the derived start to
+    the ceiling, and one per allowed miss — each costing a transport drain plus
+    a window — plus :data:`WATCHDOG_SLACK_S`. Priced against the ACTUAL start
+    and the ACTUAL step cap, so it cannot repeat the retired kernel's mistake of
+    budgeting a continuous climb for a walk that does not climb continuously.
+    """
+    span_db = max(0.0, float(ceiling_db) - float(start_db))
+    steps = math.ceil(span_db / AUDIBLE_RAMP_STEP_DB) if span_db > 0.0 else 0
+    readings = 1 + steps + MAX_MISSED_FULL_STEPS
+    per_reading = MIC_SETTLE_S + MIC_SETTLE_S
+    return MIC_SETTLE_S + readings * per_reading + WATCHDOG_SLACK_S
+
+
+def seat_level_ceiling_db(max_main_volume_db: float) -> float:
+    """The operative volume ceiling: the headroom bound under the hard rail."""
+    return min(float(max_main_volume_db), HARD_CEILING_DBFS)
+
+
+def validate_seat_level_window(
+    *, target: SeatLevelTarget, sensitivity: MicSensitivity
+) -> tuple[float, float]:
+    """The band as a mic-dBFS window, refusing one the mic cannot capture."""
     window_low = sensitivity.dbfs_from_db_spl(target.low_db_spl)
     window_high = sensitivity.dbfs_from_db_spl(target.high_db_spl)
     if window_high > HARD_CEILING_DBFS:
@@ -366,45 +397,73 @@ def build_seat_level_ramp_config(
             f"{window_high:.1f} dBFS at this mic — above digital full scale, so "
             "the band cannot be reached without clipping the capture"
         )
-    ceiling = min(float(max_main_volume_db), HARD_CEILING_DBFS)
-    if ceiling <= SEAT_LEVEL_START_DB:
-        raise SeatLevelRampError(
-            f"{REFUSE_VOLUME_CEILING_TOO_LOW}: the headroom ceiling "
-            f"{ceiling:.1f} dB is at or below the {SEAT_LEVEL_START_DB:g} dB ramp "
-            "start; there is no room to climb"
-        )
+    return window_low, window_high
+
+
+async def run_teardown(what: str, coro: Awaitable[Any]) -> bool:
+    """Run one teardown step to completion under REPEATED cancellation.
+
+    Stopping the ramp — Ctrl-C, SIGINT, the watchdog, a refusal — must always
+    stop the stimulus and hand the household its volume back. A bare
+    ``finally: await ...`` survives a single cancellation (CancelledError is
+    delivered once) but not a second one, which is what pressing Ctrl-C twice
+    or a re-cancelling supervisor produces: the restore's next await raises and
+    the fader is left at a measurement level. Shielding the teardown and
+    re-awaiting it is what finishes it. Bounded by
+    :data:`TEARDOWN_SHIELD_ATTEMPTS`, and never re-raises: a failed teardown is
+    logged, not allowed to mask the outcome that sent us here.
+
+    Returns whether the step actually completed, so the pass can PUBLISH that
+    rather than assume it. A restore that silently failed and a restore that
+    happened must not look the same in the result.
+    """
+    task = asyncio.ensure_future(coro)
+    for _ in range(TEARDOWN_SHIELD_ATTEMPTS):
+        try:
+            await asyncio.shield(task)
+            return True
+        except asyncio.CancelledError:
+            if task.done():
+                return not task.cancelled() and task.exception() is None
+        except RECOVERABLE_ERRORS:
+            # The kernel's own teardown vocabulary: everything the volume seam
+            # and the tone player can raise. A failed teardown is reported, not
+            # allowed to mask the outcome that sent us here.
+            logger.exception("seat-level teardown step %s failed", what)
+            return False
+    task.cancel()
+    log_event(
+        logger,
+        "active_speaker.seat_level_teardown_abandoned",
+        level=logging.ERROR,
+        step=what,
+        attempts=str(TEARDOWN_SHIELD_ATTEMPTS),
+    )
+    return False
+
+
+async def _fade_and_stop(
+    *,
+    from_db: float,
+    set_main_volume_db: SetMainVolumeDb,
+    cancel_tone: Callable[[], None],
+    sleep: Callable[[float], Awaitable[None]],
+) -> None:
+    """Walk the commanded volume down, then kill the tone. Best effort.
+
+    ``cancel_tone`` is synchronous and sits in this function's own ``finally``,
+    so the stimulus stops even when the fade itself cannot run.
+    """
+    level = float(from_db)
     try:
-        return MeasurementRamp.from_env(
-            window_low_dbfs=window_low,
-            window_high_dbfs=window_high,
-            start_db=SEAT_LEVEL_START_DB,
-            max_loop_latency_s=SEAT_LEVEL_MAX_LOOP_LATENCY_S,
-            cap_bump_db=SEAT_LEVEL_CAP_BUMP_DB,
-            cap_ceil_db=ceiling,
-        )
-    except ValueError as exc:
-        raise SeatLevelRampError(f"{REFUSE_RAMP_CONFIG_INVALID}: {exc}") from exc
-
-
-def _refusal_for(ramp_state: RampState, data: Any, guard_refusal: str | None) -> str:
-    """Map a kernel terminal (plus any guard abort) onto one refusal code."""
-    if guard_refusal is not None:
-        return guard_refusal
-    if ramp_state is RampState.MAXED_OUT:
-        return REFUSE_SPL_TARGET_UNREACHABLE
-    if ramp_state is RampState.LOCKED:
-        # Not an in-window lock: a manual or bounded-low lock never proves the
-        # requested band was reached, so it is a refusal here even though the
-        # kernel calls it a lock.
-        return REFUSE_SPL_TARGET_UNREACHABLE
-    if ramp_state is RampState.ABORTED:
-        # The kernel reaches ABORTED two ways and distinguishes them only in its
-        # error sentence: a clip in a batch, or the feed going silent.
-        error = str(getattr(data, "error", "") or "")
-        return REFUSE_MIC_FEED_LOST if "feed lost" in error else REFUSE_MIC_CLIPPING
-    if ramp_state is RampState.CANCELLED:
-        return REFUSE_RAMP_TIMEOUT
-    return REFUSE_RAMP_ERROR
+        while level > FADE_FLOOR_DB:
+            level = max(FADE_FLOOR_DB, level - FADE_STEP_DB)
+            await set_main_volume_db(level)
+            await sleep(FADE_STEP_S)
+    except RECOVERABLE_ERRORS:
+        logger.exception("seat-level fade-before-tone-kill failed")
+    finally:
+        cancel_tone()
 
 
 async def run_seat_level_ramp(
@@ -456,17 +515,13 @@ async def run_seat_level_ramp(
     refusal (``measurement_isolation_unavailable``), and every lease it holds
     self-expires, so a killed pass frees the speaker with no operator step.
 
-    Persists a reference only on a converged, in-window lock whose reading rose
-    clear of the measured ambient floor.
+    Persists a reference only on a reading inside the band that rose clear of
+    the measured ambient floor.
     """
-    config = build_seat_level_ramp_config(
-        target=target,
-        sensitivity=sensitivity,
-        max_main_volume_db=max_main_volume_db,
+    window_low_dbfs, window_high_dbfs = validate_seat_level_window(
+        target=target, sensitivity=sensitivity
     )
-    probe_db = bounded_env_float(
-        "JASPER_SEAT_LEVEL_PROBE_DB", MIC_RESPONSE_PROBE_DB, lo=3.0, hi=40.0
-    )
+    ceiling_db = seat_level_ceiling_db(max_main_volume_db)
     min_rise_db = bounded_env_float(
         "JASPER_SEAT_LEVEL_MIN_RISE_DB", MIC_RESPONSE_MIN_RISE_DB, lo=1.0, hi=20.0
     )
@@ -486,8 +541,50 @@ async def run_seat_level_ramp(
             status="refused", reason=REFUSE_SESSION_ALREADY_LIVE, detail=busy
         )
 
+    # Written by the teardown in the `finally` below and read by the caller
+    # after it, so the published result can STATE the restore, not assume it.
+    restored: dict[str, bool | None] = {"ok": None}
+
     async def _leveled_under_isolation() -> SeatLevelResult:
         """The whole pass, run with the measurement window already held."""
+        # Ambient first, and deliberately BEFORE the latch: nothing is playing,
+        # so the fader is irrelevant to it, and the start the latch parks at is
+        # derived from this very measurement. A process killed here mutated
+        # nothing.
+        ambient = await _settle_reading(
+            next_samples,
+            sensitivity=sensitivity,
+            spl_ceiling_db_spl=spl_ceiling_db_spl,
+            clock=clock,
+            sleep=sleep,
+        )
+        if ambient.rms_dbfs is None:
+            reason = ambient.refusal or REFUSE_MIC_FEED_LOST
+            detail = ambient.detail or (
+                "the microphone delivered no finite sample before the tone"
+            )
+            log_event(
+                logger,
+                "active_speaker.seat_level_refused",
+                level=logging.WARNING,
+                session=session_id,
+                reason=reason,
+                detail=detail,
+            )
+            return SeatLevelResult(status="refused", reason=reason, detail=detail)
+        ambient_dbfs = ambient.rms_dbfs
+        ambient_db_spl = sensitivity.db_spl_from_dbfs(ambient_dbfs)
+        start_db = SEAT_LEVEL_START_DB
+        # One comparison, two failures: a ceiling that leaves no room to climb,
+        # and a non-finite one (every NaN comparison is False).
+        if not start_db < ceiling_db:
+            raise SeatLevelRampError(
+                f"{REFUSE_VOLUME_CEILING_TOO_LOW}: the headroom ceiling "
+                f"{ceiling_db:.1f} dB is at or below the {start_db:g} dB "
+                "start; there is no room to climb"
+            )
+        watchdog_s = _watchdog_seconds(start_db=start_db, ceiling_db=ceiling_db)
+
         plan = SessionVolumePlan(
             state_path=(
                 DEFAULT_SESSION_VOLUME_STATE_PATH
@@ -495,14 +592,11 @@ async def run_seat_level_ramp(
                 else volume_state_path
             )
         )
-        # A leveling pass is bounded by the kernel's own derived safety timeout, so
-        # a killed process should surface far sooner than a measurement session's
-        # 30-minute walked-away window.
-        plan.set_wall_clock_ceiling_s(config.safety_timeout + 60.0)
+        # A killed leveling pass should surface far sooner than a measurement
+        # session's 30-minute walked-away window.
+        plan.set_wall_clock_ceiling_s(watchdog_s + 60.0)
         try:
-            opened = await plan.open(
-                SEAT_LEVEL_START_DB, set_main_volume_db, get_main_volume_db
-            )
+            opened = await plan.open(start_db, set_main_volume_db, get_main_volume_db)
         except SessionVolumePlanError:
             # An undrainable prior latch. Nothing was mutated here; the recovery
             # path owns that state and must run before another pass.
@@ -517,7 +611,12 @@ async def run_seat_level_ramp(
                 open_result=opened.value,
             )
             return SeatLevelResult(
-                status="refused", reason=REFUSE_VOLUME_LATCH_UNCONFIRMED
+                status="refused",
+                reason=REFUSE_VOLUME_LATCH_UNCONFIRMED,
+                detail=(
+                    f"the volume latch did not confirm the {start_db:.2f} dB "
+                    f"start ({opened.value}); the speaker was not moved"
+                ),
             )
 
         log_event(
@@ -526,83 +625,111 @@ async def run_seat_level_ramp(
             session=session_id,
             target_db_spl=f"{target.target_db_spl:.1f}",
             band_db_spl=f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}]",
-            window_dbfs=(
-                f"[{config.window_low_dbfs:.1f},{config.window_high_dbfs:.1f}]"
-            ),
+            window_dbfs=f"[{window_low_dbfs:.1f},{window_high_dbfs:.1f}]",
             sens_factor_db=f"{sensitivity.sens_factor_db:.2f}",
             analog_gain_db=(
                 "" if sensitivity.analog_gain_db is None
                 else f"{sensitivity.analog_gain_db:.1f}"
             ),
-            max_main_volume_db=f"{config.cap_ceil_db:.2f}",
+            max_main_volume_db=f"{ceiling_db:.2f}",
             spl_ceiling_db_spl=f"{spl_ceiling_db_spl:.1f}",
-            start_db=f"{config.start_db:.1f}",
-            step_db=f"{config.step_db:.2f}",
+            ambient_dbfs=f"{ambient_dbfs:.1f}",
+            ambient_db_spl=f"{ambient_db_spl:.1f}",
+            start_db=f"{start_db:.2f}",
+            step_cap_db=f"{AUDIBLE_RAMP_STEP_DB:.1f}",
+            required_rise_db=f"{min_rise_db:.1f}",
+            watchdog_s=f"{watchdog_s:.0f}",
             # The absolute SPL is only as true as the capture gain the vendor's
             # sens factor assumes. An operator reads journal lines, not docstrings.
             precondition="mic capture volume must be at maximum (amixer -c <card>)",
         )
 
         try:
-            ambient_dbfs = await measure_ambient_dbfs(
-                next_samples, clock=clock, sleep=sleep
-            )
-            if ambient_dbfs is None:
-                log_event(
-                    logger,
-                    "active_speaker.seat_level_refused",
-                    level=logging.WARNING,
-                    session=session_id,
-                    reason=REFUSE_MIC_FEED_LOST,
-                    detail="the microphone delivered no finite sample before the tone",
+            async with asyncio.timeout(watchdog_s):
+                return await _walk_to_the_band(
+                    target=target,
+                    sensitivity=sensitivity,
+                    spl_ceiling_db_spl=spl_ceiling_db_spl,
+                    ambient_dbfs=ambient_dbfs,
+                    ambient_db_spl=ambient_db_spl,
+                    start_db=start_db,
+                    ceiling_db=ceiling_db,
+                    min_rise_db=min_rise_db,
+                    watchdog_s=watchdog_s,
+                    set_main_volume_db=set_main_volume_db,
+                    play_continuous_tone=play_continuous_tone,
+                    cancel_tone=cancel_tone,
+                    next_samples=next_samples,
+                    clock=clock,
+                    sleep=sleep,
+                    session_id=session_id,
+                    reference_state_path=reference_state_path,
                 )
-                return SeatLevelResult(status="refused", reason=REFUSE_MIC_FEED_LOST)
+        except TimeoutError:
+            detail = (
+                f"the leveling pass exceeded its {watchdog_s:.0f} s whole-operation "
+                "watchdog; something it awaited never returned"
+            )
             log_event(
                 logger,
-                "active_speaker.seat_level_ambient",
+                "active_speaker.seat_level_refused",
+                level=logging.ERROR,
                 session=session_id,
-                ambient_dbfs=f"{ambient_dbfs:.1f}",
-                ambient_db_spl=f"{sensitivity.db_spl_from_dbfs(ambient_dbfs):.1f}",
-                probe_db=f"{probe_db:.1f}",
-                required_rise_db=f"{min_rise_db:.1f}",
+                reason=REFUSE_WATCHDOG_EXPIRED,
+                watchdog_s=f"{watchdog_s:.0f}",
             )
-            controller = RampController(session_id=session_id, config=config)
-            guard = _MicObservationGuard(
-                controller=controller,
-                source=next_samples,
-                sensitivity=sensitivity,
-                spl_ceiling_db_spl=spl_ceiling_db_spl,
-                ambient_dbfs=ambient_dbfs,
-                start_volume_db=config.start_db,
-                probe_db=probe_db,
-                min_rise_db=min_rise_db,
+            return SeatLevelResult(
+                status="refused", reason=REFUSE_WATCHDOG_EXPIRED, detail=detail
             )
-            data = await controller.run(
-                get_main_volume_db=get_main_volume_db,
-                set_main_volume_db=set_main_volume_db,
-                play_continuous_tone=play_continuous_tone,
-                cancel_tone=cancel_tone,
-                next_samples=guard,
-                noise_floor_dbfs=ambient_dbfs,
-                clock=clock,
-                sleep=sleep,
+        except asyncio.CancelledError:
+            # Recorded, then re-raised: an operator who pressed Ctrl-C gets the
+            # honest reason in the journal, and the cancellation still reaches
+            # the caller. The `finally` below has already put the volume back.
+            log_event(
+                logger,
+                "active_speaker.seat_level_refused",
+                level=logging.WARNING,
+                session=session_id,
+                reason=REFUSE_INTERRUPTED,
+                detail="the leveling pass was cancelled; nothing was banked",
             )
-            return _finish(
-                data=data,
-                guard=guard,
-                target=target,
-                sensitivity=sensitivity,
-                config=config,
-                session_id=session_id,
-                reference_state_path=reference_state_path,
-            )
+            raise
         finally:
-            # Restore-exactly-once, on converged / refused / raised alike. The
-            # kernel's own restore returns to the latched START floor (that is the
-            # volume it snapshotted); this returns the household's.
-            await plan.close(
-                set_main_volume_db, get_main_volume_db, reason="seat_level_complete"
+            # Restore-exactly-once, on converged / refused / interrupted alike.
+            # The latch returns the HOUSEHOLD volume, so a stopped pass never
+            # leaves the speaker parked at a measurement level -- and whether it
+            # SUCCEEDED is published, not assumed.
+            # Two ways this fails, and both must read as "not restored": the
+            # teardown never finished, or it finished and the latch reports it
+            # could not put the level back (the volume seam raises when
+            # CamillaDSP rejects a write, and `close` handles that internally).
+            drained: dict[str, Any] = {}
+
+            async def _drain() -> None:
+                drained["result"] = await plan.close(
+                    set_main_volume_db,
+                    get_main_volume_db,
+                    reason="seat_level_complete",
+                )
+
+            restored["ok"] = await run_teardown("volume_restore", _drain()) and (
+                drained.get("result")
+                in (
+                    SessionVolumeRestoreResult.EXACT_RESTORED,
+                    SessionVolumeRestoreResult.ALREADY_RESOLVED,
+                )
             )
+            if not restored["ok"]:
+                log_event(
+                    logger,
+                    "active_speaker.seat_level_restore_failed",
+                    level=logging.ERROR,
+                    session=session_id,
+                    detail=(
+                        "the household volume was NOT restored; the speaker is "
+                        "parked at a measurement level"
+                    ),
+                )
 
     # Everything that touches the fader runs inside the shared measurement
     # window (jasper.correction.coordinator). Without it, jasper-voice's
@@ -613,11 +740,15 @@ async def run_seat_level_ramp(
     # volume-observation hold, so a host slider cannot walk the level either.
     # It wraps `plan.open` as well as the ramp: the latch's own first write
     # is a fader write like any other.
+    def _stamped(result: SeatLevelResult) -> SeatLevelResult:
+        """Publish the restore outcome the teardown recorded."""
+        return replace(result, restored=restored["ok"])
+
     leveled: SeatLevelResult | None = None
     try:
         async with measurement_window(gate_owner=SEAT_LEVEL_GATE_OWNER):
             leveled = await _leveled_under_isolation()
-        return leveled
+        return _stamped(leveled)
     except MeasurementWindowError as exc:
         if leveled is not None:
             # The pass finished and already restored the household volume;
@@ -632,7 +763,7 @@ async def run_seat_level_ramp(
                 session=session_id,
                 error=str(exc),
             )
-            return leveled
+            return _stamped(leveled)
         log_event(
             logger,
             "active_speaker.seat_level_refused",
@@ -648,42 +779,67 @@ async def run_seat_level_ramp(
         )
 
 
-def _finish(
+async def _walk_to_the_band(
     *,
-    data: Any,
-    guard: _MicObservationGuard,
     target: SeatLevelTarget,
     sensitivity: MicSensitivity,
-    config: MeasurementRamp,
+    spl_ceiling_db_spl: float,
+    ambient_dbfs: float,
+    ambient_db_spl: float,
+    start_db: float,
+    ceiling_db: float,
+    min_rise_db: float,
+    watchdog_s: float,
+    set_main_volume_db: SetMainVolumeDb,
+    play_continuous_tone: Callable[[], Awaitable[Any]],
+    cancel_tone: Callable[[], None],
+    next_samples: SampleSource,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
     session_id: str,
     reference_state_path: str | Path | None,
 ) -> SeatLevelResult:
-    """Classify the terminal and, only on convergence, bank the reference."""
-    snapshot = data.snapshot()
-    last_rms_dbfs = guard.last_rms_dbfs
-    # ``guard.last_rms_dbfs is not None`` is part of convergence, not a
-    # cosmetic detail: the banked reference is only meaningful next to the SPL
-    # that was actually measured at it, and an in-window lock without a single
-    # observed sample would mean the kernel and the guard disagree about what
-    # the mic said. Refuse rather than bank a reference with a fabricated level.
-    converged = (
-        guard.refusal is None
-        and data.state is RampState.LOCKED
-        and data.lock_kind is RampLockKind.IN_WINDOW
-        and data.locked_main_volume_db is not None
-        and last_rms_dbfs is not None
-        # The SAME rise the runaway guard measures. A mic stuck at a constant
-        # that happens to sit inside the target window would otherwise settle,
-        # confirm, and bank a reference for a level nothing produced -- and
-        # because its ambient reading IS its signal reading, its rise is zero.
-        and guard.rise_db >= guard.min_rise_db
-    )
-    if not converged:
-        reason = _refusal_for(data.state, data, guard.refusal)
-        observed = (
-            ""
-            if last_rms_dbfs is None
-            else f"{sensitivity.db_spl_from_dbfs(last_rms_dbfs):.1f}"
+    """Play the stimulus and step toward the band, one measured gap at a time."""
+    volume_db = start_db
+    steps: list[dict[str, Any]] = []
+    max_rise_db = 0.0
+    missed_full_steps = 0
+    last_step_was_full = False
+    previous: tuple[float, float] | None = None
+    slope_db_per_db: float | None = None
+    max_readings = 1 + math.ceil(
+        max(0.0, ceiling_db - start_db) / AUDIBLE_RAMP_STEP_DB
+    ) + MAX_MISSED_FULL_STEPS
+
+    def telemetry(final_volume_db: float) -> dict[str, Any]:
+        return {
+            "start_db": round(start_db, 2),
+            "ceiling_db": round(ceiling_db, 2),
+            "step_cap_db": AUDIBLE_RAMP_STEP_DB,
+            "ambient_dbfs": round(ambient_dbfs, 2),
+            "ambient_db_spl": round(ambient_db_spl, 2),
+            "required_rise_db": round(min_rise_db, 2),
+            "watchdog_s": round(watchdog_s, 1),
+            "final_volume_db": round(final_volume_db, 2),
+            "slope_db_per_db": (
+                None if slope_db_per_db is None else round(slope_db_per_db, 3)
+            ),
+            "steps": steps,
+        }
+
+    def refuse(reason: str, detail: str, **evidence: str) -> SeatLevelResult:
+        """Log the refusal and hand the operator the same facts on stdout.
+
+        Every detail closes with where the ramp stopped, the headroom ceiling it
+        stopped against, and the level that produced (#2910): an operator reading
+        a refusal is usually not reading the journal, and a bare slug is
+        unactionable without those three numbers.
+        """
+        last = steps[-1] if steps else None
+        stopped = (
+            f"stopped at {volume_db:.2f} dB against the {ceiling_db:.2f} dB "
+            "headroom ceiling"
+            + (f", reading {last['observed_db_spl']:.1f} dB SPL" if last else "")
         )
         log_event(
             logger,
@@ -691,33 +847,187 @@ def _finish(
             level=logging.WARNING,
             session=session_id,
             reason=reason,
-            ramp_state=data.state.value,
-            at_db=f"{data.current_main_volume_db:.2f}",
-            ceiling_db=f"{config.cap_ceil_db:.2f}",
-            observed_db_spl=observed,
-        )
-        # The same facts on stdout, because the operator reading a refusal is
-        # usually not reading the journal — and "unreachable" is unactionable
-        # without the volume it stopped at and the level that produced.
-        detail = (
-            f"stopped at {data.current_main_volume_db:.2f} dB against the "
-            f"{config.cap_ceil_db:.2f} dB headroom ceiling"
-            + (f", reading {observed} dB SPL" if observed else "")
+            at_db=f"{volume_db:.2f}",
+            ceiling_db=f"{ceiling_db:.2f}",
+            readings=str(len(steps)),
+            **evidence,
         )
         return SeatLevelResult(
-            status="refused", reason=reason, detail=detail, ramp=snapshot
+            status="refused",
+            reason=reason,
+            detail=f"{detail} ({stopped})",
+            ramp=telemetry(volume_db),
         )
 
-    reference_volume_db = float(data.locked_main_volume_db)
-    assert last_rms_dbfs is not None  # part of `converged` above
-    measured_db_spl = sensitivity.db_spl_from_dbfs(last_rms_dbfs)
+    tone = asyncio.ensure_future(play_continuous_tone())
+    try:
+        for _ in range(max_readings):
+            reading = await _settle_reading(
+                next_samples,
+                sensitivity=sensitivity,
+                spl_ceiling_db_spl=spl_ceiling_db_spl,
+                clock=clock,
+                sleep=sleep,
+            )
+            if reading.rms_dbfs is None:
+                return refuse(
+                    reading.refusal or REFUSE_MIC_FEED_LOST,
+                    reading.detail
+                    or "the microphone stopped delivering finite samples",
+                )
+            observed_db_spl = sensitivity.db_spl_from_dbfs(reading.rms_dbfs)
+            rise_db = reading.rms_dbfs - ambient_dbfs
+            max_rise_db = max(max_rise_db, rise_db)
+            gap_db = target.target_db_spl - observed_db_spl
+            if previous is not None:
+                delta_volume = volume_db - previous[0]
+                if abs(delta_volume) > STEP_EPSILON_DB:
+                    slope_db_per_db = (observed_db_spl - previous[1]) / delta_volume
+            previous = (volume_db, observed_db_spl)
+            steps.append({
+                "volume_db": round(volume_db, 2),
+                "observed_dbfs": round(reading.rms_dbfs, 2),
+                "observed_db_spl": round(observed_db_spl, 2),
+                "rise_db": round(rise_db, 2),
+                "gap_db": round(gap_db, 2),
+                "samples": reading.samples,
+            })
+            log_event(
+                logger,
+                "active_speaker.seat_level_reading",
+                session=session_id,
+                at_db=f"{volume_db:.2f}",
+                observed_db_spl=f"{observed_db_spl:.1f}",
+                rise_db=f"{rise_db:.1f}",
+                gap_db=f"{gap_db:.1f}",
+                samples=str(reading.samples),
+            )
+
+            # Convergence needs BOTH: inside the band, and clear of the room. A
+            # mic stuck at a constant that happens to sit inside the band would
+            # otherwise bank a reference for a level nothing produced -- and
+            # because its ambient reading IS its signal reading, its rise is zero.
+            in_band = target.low_db_spl <= observed_db_spl <= target.high_db_spl
+            if in_band and rise_db >= min_rise_db:
+                return _bank(
+                    reference_volume_db=volume_db,
+                    measured_db_spl=observed_db_spl,
+                    target=target,
+                    sensitivity=sensitivity,
+                    ceiling_db=ceiling_db,
+                    session_id=session_id,
+                    reference_state_path=reference_state_path,
+                    telemetry=telemetry(volume_db),
+                )
+
+            if last_step_was_full:
+                missed_full_steps += 1
+                if missed_full_steps >= MAX_MISSED_FULL_STEPS:
+                    slope = (
+                        "unmeasured" if slope_db_per_db is None
+                        else f"{slope_db_per_db:.2f} dB per commanded dB"
+                    )
+                    return refuse(
+                        REFUSE_LEVEL_UNCONVERGED,
+                        f"two steps commanded the full measured gap and neither "
+                        f"landed in the band; the chain measured {slope} across "
+                        f"the last two readings (last reading "
+                        f"{observed_db_spl:.1f} dB SPL at {volume_db:.2f} dB, "
+                        f"band [{target.low_db_spl:.1f},{target.high_db_spl:.1f}])",
+                        slope_db_per_db=(
+                            "" if slope_db_per_db is None
+                            else f"{slope_db_per_db:.3f}"
+                        ),
+                        observed_db_spl=f"{observed_db_spl:.1f}",
+                    )
+
+            if mic_is_not_observing(
+                max_rise_db=max_rise_db,
+                min_rise_db=min_rise_db,
+                at_ceiling=volume_db >= ceiling_db - STEP_EPSILON_DB,
+            ):
+                return refuse(
+                    REFUSE_MIC_NOT_OBSERVING,
+                    f"the volume climbed {volume_db - start_db:.1f} dB to the "
+                    f"ceiling and the mic never rose more than "
+                    f"{max_rise_db:.1f} dB above the {ambient_db_spl:.1f} dB SPL "
+                    "room; check that the mic is capturing the right card and "
+                    "is not muted",
+                    commanded_climb_db=f"{volume_db - start_db:.2f}",
+                    ambient_dbfs=f"{ambient_dbfs:.1f}",
+                    observed_rise_db=f"{max_rise_db:.2f}",
+                    required_rise_db=f"{min_rise_db:.2f}",
+                )
+
+            # The remaining gap IS the step, saturated upward by the one shared
+            # audible-step cap. Downward moves are uncapped: they reduce risk.
+            step_db = capped_gap_step_db(
+                measured_db=observed_db_spl,
+                target_db=target.target_db_spl,
+                cap_db=AUDIBLE_RAMP_STEP_DB,
+            )
+            next_db = min(volume_db + step_db, ceiling_db)
+            if abs(next_db - volume_db) <= STEP_EPSILON_DB:
+                return refuse(
+                    REFUSE_SPL_TARGET_UNREACHABLE,
+                    f"the ceiling {ceiling_db:.2f} dB measures "
+                    f"{observed_db_spl:.1f} dB SPL, short of the "
+                    f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}] dB SPL "
+                    "band; raise the external amplifier and retry",
+                    observed_db_spl=f"{observed_db_spl:.1f}",
+                )
+            # Only a step that commanded the WHOLE measured gap is a prediction
+            # the chain can miss. A capped or ceiling-clamped step is a
+            # deliberately truncated move, so it never spends the miss budget.
+            last_step_was_full = abs(next_db - (volume_db + gap_db)) <= STEP_EPSILON_DB
+            volume_db = next_db
+            await set_main_volume_db(volume_db)
+
+        slope = (
+            "unmeasured" if slope_db_per_db is None
+            else f"{slope_db_per_db:.2f} dB per commanded dB"
+        )
+        return refuse(
+            REFUSE_LEVEL_UNCONVERGED,
+            f"the ramp took its whole {max_readings}-reading budget without "
+            f"landing in the band; the chain measured {slope} across the last "
+            "two readings",
+            slope_db_per_db=(
+                "" if slope_db_per_db is None else f"{slope_db_per_db:.3f}"
+            ),
+        )
+    finally:
+        await run_teardown(
+            "fade_and_stop",
+            _fade_and_stop(
+                from_db=volume_db,
+                set_main_volume_db=set_main_volume_db,
+                cancel_tone=cancel_tone,
+                sleep=sleep,
+            ),
+        )
+        tone.cancel()
+
+
+def _bank(
+    *,
+    reference_volume_db: float,
+    measured_db_spl: float,
+    target: SeatLevelTarget,
+    sensitivity: MicSensitivity,
+    ceiling_db: float,
+    session_id: str,
+    reference_state_path: str | Path | None,
+    telemetry: dict[str, Any],
+) -> SeatLevelResult:
+    """Publish the converged reference. Called only from inside the band."""
     try:
         write_seat_level_reference(
             reference_volume_db=reference_volume_db,
             measured_db_spl=measured_db_spl,
             target=target,
             sensitivity=sensitivity.to_dict(),
-            max_main_volume_db=float(config.cap_ceil_db),
+            max_main_volume_db=float(ceiling_db),
             state_path=reference_state_path,
         )
     except (SeatLevelTargetError, OSError) as exc:
@@ -730,7 +1040,10 @@ def _finish(
             error=str(exc),
         )
         return SeatLevelResult(
-            status="refused", reason=REFUSE_RAMP_ERROR, ramp=snapshot
+            status="refused",
+            reason=REFUSE_RAMP_ERROR,
+            detail=str(exc),
+            ramp=telemetry,
         )
     log_event(
         logger,
@@ -739,13 +1052,11 @@ def _finish(
         reference_volume_db=f"{reference_volume_db:.2f}",
         measured_db_spl=f"{measured_db_spl:.1f}",
         band_db_spl=f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}]",
-        gain_map_db=(
-            "" if data.gain_map_db is None else f"{data.gain_map_db:.2f}"
-        ),
+        readings=str(len(telemetry.get("steps", []))),
     )
     return SeatLevelResult(
         status="converged",
         reference_volume_db=reference_volume_db,
         measured_db_spl=measured_db_spl,
-        ramp=snapshot,
+        ramp=telemetry,
     )

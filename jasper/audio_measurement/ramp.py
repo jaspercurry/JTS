@@ -119,6 +119,33 @@ LISTENING_POSITION_CAP_CEIL_DB = HARD_CEILING_DBFS
 # derived safety timeout — not a gate.
 SAMPLE_BUDGET_S = 1.5
 
+
+def capped_gap_step_db(
+    *, measured_db: float, target_db: float, cap_db: float = math.inf
+) -> float:
+    """How far one measured level step moves the level: the remaining gap.
+
+    The one climb policy in the tree. A level ramp that has just MEASURED where
+    it is knows exactly how far it has to go, so the step is that gap — big
+    while it is far away, naturally shrinking as it closes, and never a fixed
+    staircase whose rung size has to be guessed. Every step re-measures, so the
+    policy needs the chain to be only LOCALLY monotone in dB, never globally
+    linear: a chain that answers a 10 dB command with 7 dB simply takes one more
+    step.
+
+    ``cap_db`` saturates the step UPWARD only. Downward motion is never capped
+    because it reduces risk — the same asymmetry
+    :mod:`jasper.active_speaker.calibration_level` states for its
+    ``upward_step_limit_db``. Callers that command an audible level bind the cap
+    to that shared limit; a caller whose own geometry already bounds the jump
+    passes none.
+
+    Returns the step in dB, to be ADDED to the current commanded level. The
+    caller still clamps the result against its ceiling: this function knows the
+    gap, not the rails.
+    """
+    return min(float(target_db) - float(measured_db), float(cap_db))
+
 # The exception set the ramp treats as recoverable-by-restore. Deliberately a
 # broad-but-named tuple rather than a blind ``except Exception`` (lint contract:
 # no new BLE001 suppressions): it covers every realistic failure of the injected
@@ -274,6 +301,13 @@ class MeasurementRamp:
     stops at ``pre_window`` (set below ``window_low_dbfs`` by at least that
     worst-case in-flight overshoot), the staircase never climbs into the window;
     the sole approach into the window is a computed jump from a settled read.
+
+    That invariant is also why this staircase cannot take audible-sized strides:
+    it ties the step to the WINDOW width, so a 5 dB band admits steps under
+    ~1.25 dB however far there is to climb. A ramp that wants big strides has to
+    stop being blind — step on a fresh post-latency reading rather than on a
+    timer — which is the shape
+    :mod:`jasper.active_speaker.seat_level_ramp` runs and this kernel does not.
     """
 
     # Target window. The coarse staircase stops-ahead BELOW the bottom (the
@@ -622,6 +656,16 @@ class RampData:
     gain_map_db: float | None = None
     settled_mic_dbfs: float | None = None
     settled_snr_db: float | None = None
+    # How far the SETTLED median sits below the window bottom, from
+    # ``_record_settled_evidence``. Its population is the settle/confirm
+    # evidence — TRUSTED, gate-passing samples at the volume the settle
+    # happened at — which is not the same population as a "last observed
+    # sample" reported anywhere else, and in an ambient-dominated room the two
+    # are far apart. jts3's 2026-08-22 pass printed `window_shortfall_db 1.39`
+    # beside an observed 54.8 dB SPL against a 72.5 dB SPL edge and the 17.7 dB
+    # gap read as a bug; it was two different populations, 1138 of that run's
+    # 1194 samples having fallen below the gate. Read it against
+    # ``settled_mic_dbfs``, never against a raw reading.
     window_shortfall_db: float | None = None
     settled_spread_db: float | None = None
     noise_floor_dbfs: float | None = None
@@ -1306,6 +1350,16 @@ class RampController:
                             else ""
                         ),
                     )
+                # A fixed rung, NOT :func:`capped_gap_step_db`. The climb's
+                # target is a threshold it must CROSS, not a point to land on,
+                # and a gap step aimed at a threshold asymptotes: each step is
+                # the remaining gap, so the gap halves and the crossing never
+                # arrives. Measured, not reasoned — adopting the gap policy
+                # here turned
+                # ``test_agc_unattested_steps_met_but_span_unmet_is_still_indeterminate``
+                # into a safety timeout at -49.7 dB. The gap policy belongs
+                # where a ramp lands ON a value: the settled jump below, and
+                # the seat-level pass's band.
                 await _set(d.current_main_volume_db + cfg.step_db)
 
         elif d.state == RampState.SETTLING:
@@ -1587,14 +1641,20 @@ class RampController:
     ) -> None:
         """One computed jump so the mic lands at the window midpoint.
 
-        The gain map's slope is 1, so the target is exact up to reading noise;
-        the jump can be up (amp quiet) or DOWN (amp loud — the mic is already
-        above the window even at the quiet floor). Going down is always
-        cap-safe; going up is clamped by ``_set``. ``blank_until`` (stamped by
-        ``_set``) excludes post-jump stale reports from the confirm stream.
+        The step is :func:`capped_gap_step_db` — the shared climb policy, here
+        with no cap: this jump's upward magnitude is already bounded by the
+        staircase's own geometry (the settled read that triggers it sits at or
+        above ``pre_window``, so the gap to ``window_target`` cannot exceed
+        ``window_target - pre_window``), and ``_set`` clamps it against the
+        dynamic cap either way. The jump can be up (amp quiet) or DOWN (amp
+        loud — the mic is already above the window even at the quiet floor);
+        going down is always cap-safe. ``blank_until`` (stamped by ``_set``)
+        excludes post-jump stale reports from the confirm stream.
         """
         gain = observed_mic_dbfs - d.current_main_volume_db
-        target = cfg.window_target - gain
+        target = d.current_main_volume_db + capped_gap_step_db(
+            measured_db=observed_mic_dbfs, target_db=cfg.window_target
+        )
         safe = self._safe_target(target)
         v.jumps_used += 1
         log_event(

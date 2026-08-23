@@ -60,7 +60,7 @@ class WiredLevelMeter:
     relay. ``agc_frozen=True`` is a statement of fact, not a default: an ALSA
     capture has no browser gain control in the path, so the kernel's empirical
     AGC-slope machinery stays off — which is precisely why a wired ramp needs
-    :class:`jasper.active_speaker.seat_level_ramp._MicObservationGuard` for its
+    :func:`jasper.active_speaker.seat_level_ramp.mic_is_not_observing` for its
     "is the mic responding at all" evidence.
 
     Level per chunk is the MAX across channels: a UMIK enumerating as stereo
