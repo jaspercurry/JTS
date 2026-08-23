@@ -759,8 +759,10 @@ def _derive_corrections(
     # down to the least-sensitive (reference) driver so a high-sensitivity
     # compression/horn driver can never start at full level relative to the
     # woofer (the shrill / horn-dominant failure mode, and a diaphragm hazard).
-    # These are computed but NOT yet committed: a usable MEASURED phone level
-    # match overrides them below, falling back to this datasheet estimate (marked
+    # These are computed but NOT committed here: a usable MEASURED trim
+    # overrides them below — from either evidence source ``_measured_level_trims``
+    # accepts, the banked base trim ``jasper-driver-trim`` writes or the guided
+    # per-driver captures — falling back to this datasheet estimate (marked
     # provisional) when no measurement is available.
     datasheet_trims: dict[str, float] = {}
     derivable_roles = [
@@ -820,7 +822,8 @@ def _derive_corrections(
     # PR-L4 item 3(a): the two independent level-frame estimates finally meet.
     #
     # `datasheet_trims` (pad-folded driver sensitivity) and `measured_trims`
-    # (the phone level match) answer the SAME question from completely
+    # (whichever measured source `_measured_level_trims` accepted) answer the
+    # SAME question from completely
     # independent evidence, and until now the precedence ladder below simply
     # dropped whichever lost. On the 2026-07-27 JTS3 run they disagreed by
     # ~12 dB — the datasheet path correct, the measured path carrying the frame

@@ -99,7 +99,9 @@ DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "p
 # polarity proposal lives in crossover_alignment.py.
 FR_CURVE_MAX_POINTS = 72
 
-# Overlap-band level (L1 phone level matching). For a per-driver near-field
+# Overlap-band level, read by both measured level-match paths: the guided
+# phone captures (L1) and the headless `jasper-driver-trim` base trim. For a
+# per-driver near-field
 # capture taken THROUGH the production crossover, the level each driver produces
 # in a band centred on a shared crossover Fc is the physically-correct quantity
 # to level-match: both adjacent drivers are rolling off symmetrically there
@@ -176,7 +178,8 @@ class DriverAcousticResult:
     passband_hz: tuple[float, float]
     mic_clipping: bool
     quality: dict[str, Any]
-    # Per-crossover overlap-band levels for L1 phone level matching. One entry
+    # Per-crossover overlap-band levels for measured level matching, guided or
+    # headless. One entry
     # per crossover Fc this driver participates in, each
     # ``{fc_hz, lo_hz, hi_hz, level_db, bins, usable}``. ``usable`` is False when
     # the capture was silent/clipped/unusable or the band had too few bins, so
