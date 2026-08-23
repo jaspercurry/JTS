@@ -395,10 +395,11 @@ def _displaced_phrase(prescription: DriverPrescription) -> str:
 def _vouch_phrase(prescription: DriverPrescription) -> str:
     """Which filters a banked verdict backs, in one line, or that nobody knows.
 
-    The same three answers ``_displaced_phrase`` draws, for the same reason —
+    The three answers ``_displaced_phrase`` draws, for the same reason —
     "nobody read the evidence", "it was read and everything is backed", and
     "it was read and these are not" send an operator somewhere different. Only
-    the third asks for a judgement.
+    the third asks for a judgement. A fourth line covers the empty document,
+    which has no filters to say either about.
 
     It reports and never refuses. Until 2026-08-23 the unvouched filters were
     refused instead, which meant a role could never keep an incumbent shelf: the
