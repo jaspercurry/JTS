@@ -71,14 +71,28 @@ a violation of it. **Whether the series learns and continues** has one answer
 every time — it does. A worse round is a gradient sample, not a stop. Every
 round, kept or restored or refused, banks its measurement into the series state
 so the next bite is commanded from it. Only the round budget, the plateau, and
-the safety class end a series; rollback ends one only for the safety class or
-for genuine corruption — an unmeasured or integrity-lost state the model cannot
-reason about.
+the safety class end a series; rollback ends one only for that class or for
+genuine corruption — an unmeasured or integrity-lost state the model cannot
+reason about. **The safety class is §4's closed list**, which is stated there
+once and is the enumeration to read: the ethos that ruled this named the class
+as driver protection, hearing safety, and the clipping/volume ceiling, and that
+naming is its own gloss, not a second list to hold §4 to.
 
 So the rule a verdict class is held to: measured no-worse than the previous
 state → keep, bank, continue; measured worse → restore the playing
 configuration, bank, continue. A class that retreats from a measured-acceptable
 state on realized ≠ commanded alone is a bug against this principle.
+
+**Probabilistic posture, 80/20 execution.** Per-frequency graded evidence —
+support counts, confidence margins, tapered authority — beats a binary
+per-session verdict. The implementation is **deterministic decision tables
+fed by graded evidence**, extending the envelope min-composition pattern the
+code already uses. No Bayesian machinery, no inference engine.
+
+**Investment split.** The measurement substrate gets foundation-grade
+investment, because wrong measurements poison every layer downstream of
+them. Intervention layers get the 80/20 lens. When those two pull against
+each other, the substrate wins.
 
 **Selection is intervention-granular, not only candidate-granular.** Owner
 refinement, 2026-08-22 (#2862): *"if one intervention was really good but

@@ -62,7 +62,9 @@ against its primary source before acting on it.
 > [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites).
 > What follows is the original text, kept as archaeology.
 
-These are binding product principles for everything below, not preferences.
+These were ratified here as binding product principles, not preferences. They
+are binding still — from their live home in the doctrine linked above, which is
+where all five now live; this file is the record of where they were written.
 
 **Tinker-first, never-nanny.** A partially-working speaker beats one aired
 out by an error. The system always adopts the best configuration available

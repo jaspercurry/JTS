@@ -962,8 +962,9 @@ reference. Currently:
   the crossover-v2/correction measurement loop: measure → propose → run →
   collect → recommend → confirm, the propose/dispose authority model
   (predictions and heuristics propose, measurements dispose, the owner
-  rules), the program's guiding principle — "least-bad measured, honed in
-  bites", migrated here from `audio-commissioning-roadmap.md` in #2865 — and
+  rules), the program's guiding principle — the five ethos rulings led by
+  "least-bad measured, honed in bites", migrated here from
+  `audio-commissioning-roadmap.md` in #2865 — and
   the closed hard-stop list: refusals are for a named
   component-damage mechanism only, never a "might not work" hunch. Short
   and durable by design; other docs point here rather than restating it.
@@ -1143,19 +1144,17 @@ reference. Currently:
 - [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
   — **Historical roadmap (owner-ratified 2026-08-14)**, replaced whole
   2026-08-21 by `tuning-master-plan.md` above; its Ethos section was the one
-  carve-out until #2865 moved that ruling on 2026-08-23 into
+  carve-out until #2865 moved all five of its rulings on 2026-08-23 into
   `measurement-loop-doctrine.md`, **now the live home of the program's
   guiding principle** (owner re-affirmed 2026-08-22). What remains here, for
-  the audio
-  commissioning program: the ethos rulings as originally written
-  (tinker-first/never-nanny,
-  rollback reserved for measured regression, probabilistic posture with
-  80/20 execution, substrate-over-intervention investment), the pre-run
-  wave before the next hardware session, the measurement-integrity wave
-  built on the gating-v2 ladder with its skipped items and reasons, the
-  intervention roadmap, and the decisions pending ratification. Sequence
-  and rationale only — definitions and campaign state stay with the docs
-  it links.
+  the audio commissioning program: those ethos rulings as originally written
+  (tinker-first/never-nanny, rollback reserved for measured regression,
+  probabilistic posture with 80/20 execution, substrate-over-intervention
+  investment), the pre-run wave before the next hardware session, the
+  measurement-integrity wave built on the gating-v2 ladder with its skipped
+  items and reasons, the intervention roadmap, and the decisions pending
+  ratification. Sequence and rationale only — definitions and campaign state
+  stay with the docs it links.
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
   **Planning brief / execution plan of record** for Bass Extension:
   commissioned, volume-scheduled low-frequency alignment (Linkwitz-Transform
