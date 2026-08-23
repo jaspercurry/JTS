@@ -111,7 +111,7 @@ async def _duck_release_target_db(
         return min(snapshot_db, released_db)
     try:
         canonical_db = await provider()
-    except Exception:  # noqa: BLE001
+    except (CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError):
         logger.warning(
             "canonical volume target unavailable; releasing duck against "
             "the entry snapshot instead",
