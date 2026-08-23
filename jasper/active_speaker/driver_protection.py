@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Driver-aware protection and closed-loop level policy.
+"""Driver-aware protection and level-cap policy.
 
 This module is intentionally deterministic and side-effect free. It decides
-whether a commissioning tone may be considered for a driver role/style, how a
-mic observation should move the separate commissioning test level, and — since
-the 2026-08-17 ruling — what a driver's LOW LIMIT is and which fields derive
-from it. It does not play audio, write CamillaDSP state, or persist level
-changes.
+whether a commissioning tone may be considered for a driver role/style, what
+level cap that driver's tone may reach, and — since the 2026-08-17 ruling —
+what a driver's LOW LIMIT is and which fields derive from it. It does not play
+audio, write CamillaDSP state, or persist level changes.
 """
 
 from __future__ import annotations
@@ -19,20 +18,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ._common import finite_float as _finite_float, issue as _issue
-from .calibration_level import (
-    AUDIBLE_RAMP_STEP_DB,
-    MAX_TEST_LEVEL_DBFS,
-    MIC_USABLE_MAX_DBFS,
-    MIC_USABLE_MIN_DBFS,
-    MIN_TEST_LEVEL_DBFS,
-    TEST_LEVEL_STEP_DB,
-    clamp_test_level_dbfs,
-    classify_mic_meter,
-)
+from .calibration_level import MAX_TEST_LEVEL_DBFS, MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1
 DRIVER_PROTECTION_KIND = "jts_active_speaker_driver_protection"
-AUTO_LEVEL_DECISION_KIND = "jts_active_speaker_auto_level_decision"
 DRIVER_PROTECTION_POLICY_VERSION = "driver_protection_auto_level_v1"
 
 LOW_FREQUENCY_ROLES = frozenset({"woofer", "mid", "subwoofer"})
@@ -305,17 +294,6 @@ def derive_hf_measurement_ceiling_dbfs(
         declared_lf_driver_cap_dbfs - (sens_hf_db - sens_lf_db),
         MAX_TEST_LEVEL_DBFS,
     )
-
-
-def _current_level(calibration_level: dict[str, Any] | None) -> float:
-    if not isinstance(calibration_level, dict):
-        return MIN_TEST_LEVEL_DBFS
-    test_signal = (
-        calibration_level.get("test_signal")
-        if isinstance(calibration_level.get("test_signal"), dict)
-        else {}
-    )
-    return clamp_test_level_dbfs(test_signal.get("requested_level_dbfs"))
 
 
 def _level_at_floor(level: float) -> bool:
@@ -1023,154 +1001,5 @@ def driver_protection_payload(
             "low_frequency",
             "high_frequency",
         },
-        "issues": issues,
-    }
-
-
-def _meter_from_inputs(
-    *,
-    calibration_level: dict[str, Any] | None,
-    observed_mic_dbfs: Any = None,
-    mic_clipping: bool = False,
-) -> dict[str, Any]:
-    if observed_mic_dbfs is not None or mic_clipping:
-        return classify_mic_meter(
-            observed_dbfs=observed_mic_dbfs,
-            clipping=mic_clipping,
-        )
-    if isinstance(calibration_level, dict) and isinstance(
-        calibration_level.get("mic_meter"),
-        dict,
-    ):
-        return dict(calibration_level["mic_meter"])
-    return classify_mic_meter()
-
-
-def auto_level_decision(
-    calibration_level: dict[str, Any] | None,
-    *,
-    role: Any,
-    driver_style: Any = None,
-    protection_status: Any = None,
-    band_limit: Any = None,
-    declared_low_limit_hz: Any = None,
-    observed_mic_dbfs: Any = None,
-    mic_clipping: bool = False,
-    floor_audio_confirmed: bool = False,
-    stop_control_available: bool = True,
-) -> dict[str, Any]:
-    """Return one bounded closed-loop level decision.
-
-    The decision is deliberately one bounded ramp step only. Callers that
-    persist state must run this again after each observed tone, which keeps the
-    loop interruptible and makes every upward move inspectable without forcing
-    one-dB discovery clicks.
-    """
-
-    protection = driver_protection_payload(
-        role,
-        driver_style=driver_style,
-        protection_status=protection_status,
-        band_limit=band_limit,
-        declared_low_limit_hz=declared_low_limit_hz,
-    )
-    profile = driver_protection_profile(role, driver_style=driver_style)
-    current = _current_level(calibration_level)
-    meter = _meter_from_inputs(
-        calibration_level=calibration_level,
-        observed_mic_dbfs=observed_mic_dbfs,
-        mic_clipping=mic_clipping,
-    )
-    meter_status = str(meter.get("status") or "unmeasured")
-    max_level = min(MAX_TEST_LEVEL_DBFS, profile.max_auto_level_dbfs)
-    issues = [issue for issue in protection["issues"] if isinstance(issue, dict)]
-    if not stop_control_available:
-        issues.append(_issue(
-            "blocker",
-            "stop_control_required",
-            "closed-loop active-speaker level changes require Stop to be available",
-        ))
-
-    action = "hold"
-    status = "blocked" if any(issue.get("severity") == "blocker" for issue in issues) else "hold"
-    next_level = current
-    reason = "level held"
-
-    if meter_status == "clipping":
-        action = "reset_to_floor"
-        status = "reset"
-        next_level = MIN_TEST_LEVEL_DBFS
-        reason = "microphone clipped; reset to the quietest setting"
-    elif issues:
-        action = "hold"
-        status = "blocked"
-        reason = "selected driver is not ready for a quiet test"
-    elif meter_status == "too_loud":
-        action = "lower"
-        status = "lower"
-        next_level = max(MIN_TEST_LEVEL_DBFS, current - TEST_LEVEL_STEP_DB)
-        reason = "microphone reading is too loud"
-    elif meter_status in {"too_quiet", "low", "unmeasured"}:
-        operator_controlled = meter_status == "unmeasured"
-        if (
-            profile.requires_floor_confirmation_above_floor
-            and not floor_audio_confirmed
-        ):
-            action = "hold_for_floor_confirmation"
-            status = "waiting_for_floor_confirmation"
-            next_level = current
-            reason = "quietest-level audio must be confirmed before raising"
-        elif current >= max_level - 1e-6:
-            action = "hold_at_cap"
-            status = "maxed"
-            next_level = max_level
-            reason = "driver-specific auto-level cap reached"
-            issues.append(_issue(
-                "warning",
-                "auto_level_cap_reached",
-                (
-                    "operator-controlled raise reached the driver-specific level cap"
-                    if operator_controlled
-                    else "mic target was not reached before the driver-specific level cap"
-                ),
-            ))
-        else:
-            action = "raise"
-            status = "raise"
-            next_level = min(current + AUDIBLE_RAMP_STEP_DB, max_level)
-            reason = (
-                "operator-controlled raise toward audible"
-                if operator_controlled
-                else "microphone reading is below the usable window"
-            )
-    elif meter_status == "usable":
-        action = "hold"
-        status = "locked"
-        next_level = current
-        reason = "microphone reading is in the usable window"
-    next_level = clamp_test_level_dbfs(next_level)
-    if next_level > max_level:
-        next_level = max_level
-    return {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": AUTO_LEVEL_DECISION_KIND,
-        "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
-        "status": status,
-        "action": action,
-        "reason": reason,
-        "current_level_dbfs": current,
-        "next_level_dbfs": next_level,
-        "applied_delta_db": round(next_level - current, 3),
-        "max_auto_level_dbfs": max_level,
-        "step_db": AUDIBLE_RAMP_STEP_DB,
-        "manual_step_db": TEST_LEVEL_STEP_DB,
-        "mic_meter": {
-            **meter,
-            "usable_min_dbfs": MIC_USABLE_MIN_DBFS,
-            "usable_max_dbfs": MIC_USABLE_MAX_DBFS,
-        },
-        "floor_audio_confirmed": bool(floor_audio_confirmed),
-        "stop_control_available": bool(stop_control_available),
-        "driver_protection": protection,
         "issues": issues,
     }

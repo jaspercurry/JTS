@@ -88,10 +88,8 @@ from .calibration_level import (
     update_calibration_level_state,
 )
 from .driver_protection import (
-    AUTO_LEVEL_DECISION_KIND,
     DRIVER_PROTECTION_KIND,
     DRIVER_PROTECTION_POLICY_VERSION,
-    auto_level_decision,
     declared_protection_highpass_floor_hz,
     driver_protection_payload,
     driver_protection_profile,
@@ -339,7 +337,6 @@ __all__ = [
     "TONE_BACKEND_STATUS_KIND",
     "TONE_PLAYBACK_ARTIFACT_KIND",
     "TONE_PLAYBACK_RESULT_KIND",
-    "AUTO_LEVEL_DECISION_KIND",
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PROGRAM_BAKE_SOURCE",
     "AplayTonePlaybackBackend",
@@ -379,7 +376,6 @@ __all__ = [
     "confirmed_driver_roles",
     "active_topology_requires_roleful_graph",
     "apply_baseline_profile",
-    "auto_level_decision",
     "baseline_config_path",
     "baseline_profile_state_path",
     "declared_protection_floor_hz",

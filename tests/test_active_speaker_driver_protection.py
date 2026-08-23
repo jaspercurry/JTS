@@ -6,18 +6,11 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker.calibration_level import (
-    AUDIBLE_RAMP_STEP_DB,
-    MAX_TEST_LEVEL_DBFS,
-    MIN_TEST_LEVEL_DBFS,
-    calibration_level_payload,
-)
+from jasper.active_speaker.calibration_level import MAX_TEST_LEVEL_DBFS
 from jasper.active_speaker.driver_protection import (
-    AUTO_LEVEL_DECISION_KIND,
     DRIVER_PROTECTION_KIND,
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_STYLE_DEFAULT,
-    auto_level_decision,
     derive_hf_measurement_ceiling_dbfs,
     driver_protection_payload,
     driver_protection_profile,
@@ -30,151 +23,6 @@ from jasper.active_speaker.driver_protection import (
 # pair #2603 was filed on and #2874 finished.
 DE250_LOW_LIMIT_HZ = 1600.0
 COMPRESSION_DRIVER_CLASS_DEFAULT_HZ = 2000.0
-
-
-def test_low_frequency_auto_level_raises_one_bounded_step_when_mic_is_low() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=MIN_TEST_LEVEL_DBFS + 4,
-        observed_mic_dbfs=-52,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="woofer",
-        observed_mic_dbfs=-52,
-        floor_audio_confirmed=True,
-    )
-
-    assert decision["kind"] == AUTO_LEVEL_DECISION_KIND
-    assert decision["status"] == "raise"
-    assert decision["action"] == "raise"
-    assert decision["next_level_dbfs"] == (
-        MIN_TEST_LEVEL_DBFS + 4 + AUDIBLE_RAMP_STEP_DB
-    )
-    assert decision["applied_delta_db"] == AUDIBLE_RAMP_STEP_DB
-    assert decision["driver_protection"]["role_class"] == "low_frequency"
-
-
-def test_auto_level_can_raise_after_floor_confirmation_without_mic_reading() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=MIN_TEST_LEVEL_DBFS,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="woofer",
-        floor_audio_confirmed=True,
-    )
-
-    assert decision["status"] == "raise"
-    assert decision["action"] == "raise"
-    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
-    assert decision["reason"] == "operator-controlled raise toward audible"
-
-
-def test_auto_level_does_not_raise_above_floor_without_confirmation() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=MIN_TEST_LEVEL_DBFS + 1,
-        observed_mic_dbfs=-58,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="woofer",
-        observed_mic_dbfs=-58,
-        floor_audio_confirmed=False,
-    )
-
-    assert decision["status"] == "waiting_for_floor_confirmation"
-    assert decision["action"] == "hold_for_floor_confirmation"
-    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 1
-    assert decision["applied_delta_db"] == 0
-
-
-def test_auto_level_holds_when_mic_is_usable() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=-70,
-        observed_mic_dbfs=-32,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="woofer",
-        observed_mic_dbfs=-32,
-        floor_audio_confirmed=True,
-    )
-
-    assert decision["status"] == "locked"
-    assert decision["action"] == "hold"
-    assert decision["next_level_dbfs"] == -70
-
-
-def test_auto_level_resets_to_floor_on_clipping() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=-70,
-        observed_mic_dbfs=-18,
-        mic_clipping=True,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="woofer",
-        observed_mic_dbfs=-18,
-        mic_clipping=True,
-        floor_audio_confirmed=True,
-    )
-
-    assert decision["status"] == "reset"
-    assert decision["action"] == "reset_to_floor"
-    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS
-    assert decision["mic_meter"]["status"] == "clipping"
-
-
-def test_high_frequency_auto_level_waits_for_floor_confirmation() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=MIN_TEST_LEVEL_DBFS,
-        observed_mic_dbfs=-60,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="tweeter",
-        driver_style="dome_tweeter",
-        protection_status="software_guard_requested",
-        band_limit={"type": "highpass", "highpass_hz": 3000},
-        observed_mic_dbfs=-60,
-        floor_audio_confirmed=False,
-    )
-
-    assert decision["status"] == "waiting_for_floor_confirmation"
-    assert decision["action"] == "hold_for_floor_confirmation"
-    assert decision["next_level_dbfs"] == MIN_TEST_LEVEL_DBFS
-    assert decision["driver_protection"]["role_class"] == "high_frequency"
-
-
-def test_high_frequency_auto_level_uses_driver_specific_cap() -> None:
-    current = calibration_level_payload(
-        requested_level_dbfs=-65,
-        observed_mic_dbfs=-60,
-    )
-
-    decision = auto_level_decision(
-        current,
-        role="tweeter",
-        driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
-        band_limit={"type": "highpass", "highpass_hz": 5000},
-        observed_mic_dbfs=-60,
-        floor_audio_confirmed=True,
-    )
-
-    assert decision["status"] == "maxed"
-    assert decision["action"] == "hold_at_cap"
-    assert decision["next_level_dbfs"] == -65
-    assert decision["max_auto_level_dbfs"] == -65
-    assert "auto_level_cap_reached" in {
-        issue["code"] for issue in decision["issues"]
-    }
 
 
 def test_high_frequency_protection_requires_highpass_band_limit() -> None:
