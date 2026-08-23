@@ -1154,6 +1154,15 @@ signal to a compression driver.
 The phone level match refines the datasheet sensitivity trim with a measured
 one. End-to-end, magnitude-only (it can never authorize a phase/delay change):
 
+**It is no longer the only measured source.** `_measured_level_trims` accepts
+two, and prefers the other: the base trim the headless `jasper-driver-trim`
+verb banks, which drives its own per-driver captures instead of asking a
+household to hold a phone. Both feed the same overlap-band estimator, the same
+chain solver, and the same provenance ladder below; the banked record is keyed
+to the declaration it was measured against and a stale one is refused rather
+than applied. The verb, its refusals, and where it sits in commissioning are in
+[testing-tooling.md](testing-tooling.md#measured-driver-base-trim).
+
 1. **Capture (near-field, per driver).** The Confirm outputs card's per-driver
    Play control ramps one driver audible through the production crossover
    (`commission_ramp.build_stage5_ramp_gate` — still live, and still by-ear),

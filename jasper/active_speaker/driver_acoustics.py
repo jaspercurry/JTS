@@ -99,7 +99,9 @@ DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "p
 # polarity proposal lives in crossover_alignment.py.
 FR_CURVE_MAX_POINTS = 72
 
-# Overlap-band level (L1 phone level matching). For a per-driver near-field
+# Overlap-band level, read by both measured level-match paths: the guided
+# phone captures (L1) and the headless `jasper-driver-trim` base trim. For a
+# per-driver near-field
 # capture taken THROUGH the production crossover, the level each driver produces
 # in a band centred on a shared crossover Fc is the physically-correct quantity
 # to level-match: both adjacent drivers are rolling off symmetrically there
@@ -139,6 +141,12 @@ SUMMED_VERDICTS = frozenset(
     {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM, VERDICT_UNUSABLE_CAPTURE}
 )
 
+# The capture geometries the analysis reads. Exported so a caller carrying a
+# geometry out of an operator-authored document can check it at its own door
+# and refuse in its own vocabulary, instead of discovering an
+# out-of-vocabulary value as a DriverAcousticsError raised mid-analysis.
+CAPTURE_GEOMETRIES = frozenset({"near_field", "reference_axis"})
+
 
 class DriverAcousticsError(ValueError):
     """Raised for malformed inputs (bad channel index, unreadable sweep meta)."""
@@ -176,7 +184,8 @@ class DriverAcousticResult:
     passband_hz: tuple[float, float]
     mic_clipping: bool
     quality: dict[str, Any]
-    # Per-crossover overlap-band levels for L1 phone level matching. One entry
+    # Per-crossover overlap-band levels for measured level matching, guided or
+    # headless. One entry
     # per crossover Fc this driver participates in, each
     # ``{fc_hz, lo_hz, hi_hz, level_db, bins, usable}``. ``usable`` is False when
     # the capture was silent/clipped/unusable or the band had too few bins, so
@@ -396,7 +405,7 @@ def _capture_to_magnitude(
     caller MUST measure its signal side on the same table it passes here — the
     two are subtracted per ``band_id``.
     """
-    if capture_geometry not in {"near_field", "reference_axis"}:
+    if capture_geometry not in CAPTURE_GEOMETRIES:
         raise DriverAcousticsError(
             f"unsupported capture_geometry: {capture_geometry!r}"
         )
@@ -924,6 +933,40 @@ def _overlap_band_levels(
             "near_validity_floor": near,
         })
     return tuple(entries)
+
+
+def usable_overlap_level_db(
+    overlap_levels: Sequence[Mapping[str, Any]],
+    fc: float,
+    *,
+    tol_hz: float = 1.0,
+) -> float | None:
+    """The USABLE overlap-band level at ``fc`` in dB, or ``None`` (fail-closed).
+
+    An entry counts only when :func:`_overlap_band_levels` marked it ``usable``
+    (good SNR, not silent, not clipped, enough bins, at or above the validity
+    floor) and its level is a finite number. The one owner of that reading, so
+    a live :class:`DriverAcousticResult` and a persisted capture record — which
+    ``baseline_profile._overlap_level_at`` wraps this for — can never disagree
+    about whether the same band is evidence.
+    """
+    for entry in overlap_levels or ():
+        if not isinstance(entry, Mapping) or not entry.get("usable"):
+            continue
+        raw_fc = entry.get("fc_hz")
+        if isinstance(raw_fc, bool) or not isinstance(raw_fc, (int, float)):
+            continue
+        entry_fc = float(raw_fc)
+        if not math.isfinite(entry_fc):
+            continue
+        if abs(entry_fc - fc) > max(tol_hz, fc * 0.01):
+            continue
+        level = entry.get("level_db")
+        if isinstance(level, bool) or not isinstance(level, (int, float)):
+            return None
+        value = float(level)
+        return value if math.isfinite(value) else None
+    return None
 
 
 def analyze_driver_capture(

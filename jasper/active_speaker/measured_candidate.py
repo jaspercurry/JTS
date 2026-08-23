@@ -51,7 +51,11 @@ from .crossover_contract import (
     verified_driver_excitation,
 )
 from .driver_acoustics import DRIVER_ACOUSTIC_KIND, SUMMED_ACOUSTIC_KIND
-from .level_trim import LevelTrimError, attenuation_from_group_deltas
+from .level_trim import (
+    MAX_ATTENUATION_DB,
+    LevelTrimError,
+    attenuation_from_group_deltas,
+)
 from .profile import ActiveSpeakerPreset, required_driver_roles
 
 SCHEMA_VERSION = 1
@@ -63,7 +67,6 @@ ISOLATED_ANALYSIS_KIND = "jts_active_isolated_driver_capture_analysis"
 ISOLATED_QUALITY_KIND = "jts_active_isolated_driver_capture_quality"
 ISOLATED_ANALYZER_ID = "jts_active_isolated_driver_capture"
 ISOLATED_ANALYZER_VERSION = "1"
-_MAX_ATTENUATION_DB = -60.0
 _CANDIDATE_ALGORITHM = {
     "id": CANDIDATE_ALGORITHM_ID,
     "version": CANDIDATE_ALGORITHM_VERSION,
@@ -227,7 +230,7 @@ class MeasuredElectricalCandidate:
             if (
                 not math.isfinite(value)
                 or value > 0.0
-                or value < _MAX_ATTENUATION_DB
+                or value < MAX_ATTENUATION_DB
                 or not math.isclose(value, round(value, 1), abs_tol=1e-9)
             ):
                 raise MeasuredCandidateError("candidate attenuation is invalid")
@@ -610,7 +613,7 @@ def _attenuations(
         group_deltas.append(deltas)
     try:
         trims = attenuation_from_group_deltas(
-            roles, group_deltas, reject_below_db=_MAX_ATTENUATION_DB
+            roles, group_deltas, reject_below_db=MAX_ATTENUATION_DB
         )
     except LevelTrimError:
         _refuse(

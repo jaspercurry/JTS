@@ -77,6 +77,7 @@ from .camilla_yaml import (
 )
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
+from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
@@ -86,12 +87,6 @@ from .profile import (
 
 SCHEMA_VERSION = 1
 CANDIDATE_KIND = "jts_measured_crossover_candidate_v2"
-
-# Mirrors baseline_profile._MAX_ATTENUATION_DB / measured_candidate._MAX_ATTENUATION_DB
-# (the shared -60 dB attenuation floor); duplicated locally rather than imported
-# since neither module exports it and this module intentionally does not couple
-# to either.
-_MAX_ATTENUATION_DB = -60.0
 
 _POLARITY_VALUES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
@@ -375,12 +370,12 @@ class MeasuredCrossoverCandidate:
                 or not isinstance(value, (int, float))
                 or not math.isfinite(float(value))
                 or float(value) > 0.0
-                or float(value) < _MAX_ATTENUATION_DB
+                or float(value) < MAX_ATTENUATION_DB
             ):
                 _refuse(
                     "attenuation_out_of_range",
                     f"attenuation for {role!r} must be between "
-                    f"{_MAX_ATTENUATION_DB} and 0 dB",
+                    f"{MAX_ATTENUATION_DB} and 0 dB",
                 )
             normalized_trims[role] = float(value)
         object.__setattr__(self, "role_attenuations_db", normalized_trims)

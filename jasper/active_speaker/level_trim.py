@@ -10,6 +10,15 @@ import math
 from collections.abc import Sequence
 
 
+#: Floor for any single per-driver attenuation, in dB -- the bound this module's
+#: chain solver clamps to and rejects below. Exported so the modules that solve,
+#: persist, or re-validate one of those trims check it against the same number
+#: the solver used instead of a literal of their own: a banked artifact
+#: validated against a second copy of this floor could be accepted at a depth
+#: the solver would never have produced.
+MAX_ATTENUATION_DB = -60.0
+
+
 class LevelTrimError(ValueError):
     """Adjacent level evidence cannot produce a complete trim chain."""
 

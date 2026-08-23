@@ -437,6 +437,107 @@ def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
     )
 
 
+#: What a verb refuses with when no absolute reference can be read, and the
+#: sentence it prints. One owner for both, because two operator verbs now ask
+#: this same question and an operator who saw two wordings would have to work
+#: out whether they meant the same thing.
+REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
+MIC_CALIBRATION_UNAVAILABLE_DETAIL = (
+    "no parseable 'Sens Factor' calibration for this microphone — pass "
+    "--calibration-file, or store the vendor file via the /correction "
+    "wizard. Absolute SPL is never guessed."
+)
+
+
+def _resolve_calibration_source(
+    *,
+    calibration_file: str | Path | None,
+    mic_serial: str | None,
+    mic_provider: str,
+    mic_model: str,
+) -> tuple[Path, str, str] | None:
+    """``(path, text, sign convention)`` for this run's mic, or ``None``.
+
+    An explicit file wins; otherwise the stored record for this serial is used,
+    and that record's OWN recorded convention is authoritative — it is what
+    ``migrate_stored_sign_conventions`` maintains. An explicit file has no
+    record behind it, so the model registry's declaration is the best available
+    statement of which way its second column points.
+    """
+    path: Path | None = None
+    convention = str(
+        (SUPPORTED_MODELS.get(mic_model) or {}).get("sign_convention")
+        or DEFAULT_SIGN_CONVENTION
+    )
+    if calibration_file:
+        path = Path(calibration_file)
+    elif mic_serial:
+        record = find_stored_calibration(
+            provider=mic_provider, model_key=mic_model, serial=mic_serial
+        )
+        if record is not None:
+            path = Path(record.raw_path)
+            convention = record.sign_convention
+    if path is None:
+        return None
+    try:
+        return path, path.read_text(encoding="utf-8", errors="replace"), convention
+    except OSError:
+        return None
+
+
+def resolve_mic_sensitivity(
+    *,
+    calibration_file: str | Path | None = None,
+    mic_serial: str | None = None,
+    mic_provider: str = "minidsp",
+    mic_model: str = "minidsp_umik2",
+) -> MicSensitivity | None:
+    """The mic's absolute reference, from an explicit file or the stored record.
+
+    Returns ``None`` when no calibration can be read — the caller REFUSES with
+    :data:`REFUSE_MIC_CALIBRATION_UNAVAILABLE`; a guessed sensitivity would
+    silently mis-scale every SPL decision.
+    """
+    source = _resolve_calibration_source(
+        calibration_file=calibration_file,
+        mic_serial=mic_serial,
+        mic_provider=mic_provider,
+        mic_model=mic_model,
+    )
+    return parse_calibration_sensitivity(source[1]) if source is not None else None
+
+
+def resolve_mic_curve(
+    *,
+    calibration_file: str | Path | None = None,
+    mic_serial: str | None = None,
+    mic_provider: str = "minidsp",
+    mic_model: str = "minidsp_umik2",
+) -> tuple[CalibrationCurve, str] | None:
+    """``(response curve, its sign convention)`` for this mic, or ``None``.
+
+    The sibling of :func:`resolve_mic_sensitivity`, and separate for the same
+    reason its parser is: one file carries two facts, and a mic whose file has a
+    ``Sens Factor`` but no usable rows still has an absolute reference. The
+    convention travels WITH the curve because a curve applied under the other
+    one is applied with its sign flipped — the 2026-07-27 defect.
+    """
+    source = _resolve_calibration_source(
+        calibration_file=calibration_file,
+        mic_serial=mic_serial,
+        mic_provider=mic_provider,
+        mic_model=mic_model,
+    )
+    if source is None:
+        return None
+    _path, text, convention = source
+    try:
+        return parse_calibration_text(text, sign_convention=convention), convention
+    except ValueError:
+        return None
+
+
 def apply_calibration_curve(
     freqs_hz: np.ndarray,
     magnitude_db: np.ndarray,
