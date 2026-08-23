@@ -190,7 +190,7 @@ ARM_ENVELOPE_DEG = 45
 #: geometry stays honest (:data:`MAX_ANGLE_DEG`); the arm is bounded by its own
 #: travel. Checked when the walk is STATED rather than when a
 #: session takes it, because the alternative is a session that stalls: the
-#: position gate publishes a target no positioner can reach and then spends its
+#: position gate publishes a target this mover cannot reach and then spends its
 #: whole ``REMOTE_POSITION_HOLD_BUDGET_S`` (600 s) per stop waiting for a report
 #: that cannot come.
 MOVER_MAX_ANGLE_DEG: Mapping[str, int] = MappingProxyType({
