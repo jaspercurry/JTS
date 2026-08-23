@@ -184,6 +184,26 @@ def _isolate_tts_wire_width_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_startup_hold_marker(tmp_path_factory, monkeypatch):
+    """Point the active-speaker staged-startup hold marker at a per-test path.
+
+    ``jasper.active_speaker.startup_hold`` defaults to
+    ``/run/jasper-active-speaker/staged-startup-hold``, which no test user can
+    create. Since the hold became load-bearing —
+    ``load_protected_startup_config`` refuses with
+    ``staged_startup_hold_unavailable`` rather than applying an anchor the next
+    reconcile would undo — an unisolated test would take that refusal from the
+    host's read-only ``/run`` instead of exercising the path it means to. The
+    marker is per-test and starts absent, which is the no-hold baseline; the
+    tests that want a hold take it through the production writer.
+    """
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER",
+        str(tmp_path_factory.mktemp("startup-hold") / "staged-startup-hold"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
     """Point the automatic-capture entry stash at a per-test temp file.
 

@@ -177,6 +177,19 @@ _SUMMED_TEST_FAILURE_FAMILIES: tuple[tuple[tuple[str, ...], str], ...] = (
     # Its order relative to `summed_test_output_mismatch` is preserved (both
     # moved down together).
     #
+    # ABOVE the retry family below, and deliberately so: this code always rides
+    # the same payload as `commission_startup_anchor_load_failed`, so whichever
+    # entry comes first is the one a household reads. Retrying cannot clear it —
+    # the speaker could not hold the silent setup in place, which is a repair, not
+    # a transient — so "Press Play combined test to retry" would be false advice.
+    # This sentence is the backend twin of the `/sound/` JS ladder entry for the
+    # same code (`active-speaker-ui.js::commissionIssueReason`); the two surfaces
+    # must not contradict each other about whether retrying helps.
+    (
+        ("staged_startup_hold_unavailable",),
+        "JTS could not hold the silent speaker setup in place, so it left the "
+        "speaker as it was and played nothing. Open System status.",
+    ),
     # Below every routing family above, because "go back to <step>" / "open
     # System status" is a better answer than "retry" whenever one of those codes
     # is also present.

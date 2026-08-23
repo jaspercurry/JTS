@@ -70,6 +70,7 @@ from .playback_route import (
 )
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
+from .startup_hold import release_staged_startup_hold
 from .staging import (
     build_passive_mains_with_sub_preset,
     compile_preset_from_crossover_preview,
@@ -3176,6 +3177,24 @@ def persist_applied_baseline_profile(
         raise ValueError(
             "baseline candidate and successful apply proof are required"
         )
+    # The commission is over: a baseline is what boots now, not the all-muted
+    # staged anchor, so the startup-load hold that protected that anchor is
+    # spent. Releasing it HERE rather than in a web handler is what makes the
+    # release cover every way a baseline becomes applied — this function is the
+    # apply seam all three callers funnel through (the apply path, the
+    # commissioning apply, and the restore) — and the guard above has already
+    # proved `apply_state["result"] == "success"`. Before the idempotent
+    # early-return below as well as the write, because an already-applied
+    # baseline leaves the hold just as stale. Best-effort by contract: a failed
+    # clear never turns a successful apply into a failure, and the marker is
+    # ephemeral (/run) either way.
+    #
+    # A lingering hold is inert today — `safe_graph_for_current_topology`'s rung
+    # ALSO requires the current graph to classify as all-muted-active-startup,
+    # which an applied baseline does not — so this is a latent-surprise and
+    # doctor-honesty fix, not a live-bug fix. Observed on jts3 after a
+    # save-and-apply that left the marker set.
+    release_staged_startup_hold()
     target = baseline_profile_state_path(state_path)
     existing = _load_saved_state(target)
     candidate_identity = baseline_candidate_fingerprint(candidate)

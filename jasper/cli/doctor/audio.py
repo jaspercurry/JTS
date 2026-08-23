@@ -1587,3 +1587,49 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         "canonical file is stale for other readers (multiroom follower "
         "fallback, operators)",
     )
+
+
+@doctor_check(order=31.6, group="audio", label="active speaker startup hold")
+def check_active_speaker_startup_hold() -> CheckResult:
+    """A staged-startup hold marker with no startup load behind it is stale.
+
+    ``load_protected_startup_config`` takes an ephemeral ``/run`` marker before
+    it applies the all-muted staged anchor, and while that marker is present
+    ``safe_graph_for_current_topology`` preserves the anchor instead of
+    restoring the saved baseline (``jasper.active_speaker.startup_hold``). A
+    marker left behind after the load it belonged to went away therefore keeps a
+    commissioned box on its SILENT anchor across the next reconcile — recoverable
+    (the marker is in ``/run``, so a reboot clears it, and a rollback clears it
+    sooner) but invisible without this line.
+
+    This is the surface the household-facing "Open System status" copy for
+    ``staged_startup_hold_unavailable`` points at, so it has to be able to say
+    something. WARN, never FAIL: preserving an all-muted anchor is the safe
+    direction — silent, never loud — and the load path's own blocker is what
+    fails closed.
+    """
+
+    from ...active_speaker.startup_hold import (
+        staged_startup_hold_active,
+        startup_hold_marker_path,
+    )
+    from ...active_speaker.startup_load import load_startup_load_state
+
+    label = "active speaker startup hold"
+    marker = startup_hold_marker_path()
+    if not staged_startup_hold_active():
+        return CheckResult(label, "ok", f"no staged-startup hold in flight ({marker})")
+    status = str(load_startup_load_state().get("status") or "unknown")
+    if status == "loaded":
+        return CheckResult(
+            label, "ok",
+            f"staged-startup hold held by an in-flight protected load ({marker})",
+        )
+    return CheckResult(
+        label, "warn",
+        f"stale staged-startup hold at {marker}: the startup load is "
+        f"'{status}', not 'loaded', so no commission is in flight — the graph "
+        "selector keeps preserving the silent all-muted anchor instead of "
+        "restoring the saved baseline. Roll back the startup load from "
+        "http://jts.local/sound/ or reboot to clear it (/run is tmpfs).",
+    )

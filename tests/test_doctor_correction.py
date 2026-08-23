@@ -2577,3 +2577,53 @@ def test_both_new_checks_are_registered():
     names = _registered_check_names()
     assert "check_measurement_hold" in names
     assert "check_session_volume_unresolved" in names
+
+
+def test_check_active_speaker_startup_hold_registered_in_sync_checks():
+    assert "check_active_speaker_startup_hold" in _registered_check_names()
+
+
+def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
+    # The conftest fixture points the marker at a per-test path that starts
+    # absent, which is the no-hold baseline.
+    r = doctor.check_active_speaker_startup_hold()
+
+    assert r.status == "ok"
+    assert "no staged-startup hold" in r.detail
+
+
+def test_active_speaker_startup_hold_ok_while_a_load_is_actually_loaded(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.active_speaker.startup_hold import hold_staged_startup
+
+    assert hold_staged_startup() is True
+    state = tmp_path / "startup_load.json"
+    state.write_text('{"status": "loaded"}', encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
+
+    r = doctor.check_active_speaker_startup_hold()
+
+    assert r.status == "ok"
+    assert "in-flight protected load" in r.detail
+
+
+def test_active_speaker_startup_hold_warns_on_a_stale_marker(monkeypatch, tmp_path):
+    """A hold with no load behind it keeps a commissioned box on its SILENT
+    anchor across every reconcile. This is the surface the household-facing
+    "Open System status" copy for `staged_startup_hold_unavailable` points at,
+    so it has to be able to say something."""
+
+    from jasper.active_speaker.startup_hold import hold_staged_startup
+
+    assert hold_staged_startup() is True
+    state = tmp_path / "startup_load.json"
+    state.write_text('{"status": "rolled_back"}', encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
+
+    r = doctor.check_active_speaker_startup_hold()
+
+    assert r.status == "warn"
+    assert "stale staged-startup hold" in r.detail
+    assert "rolled_back" in r.detail

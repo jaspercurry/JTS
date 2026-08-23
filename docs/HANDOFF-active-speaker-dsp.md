@@ -214,14 +214,55 @@ above; this is only the entry points:
   "requires the all-muted staged config to be the persisted boot config first".
   (That gate runs before the load, so the later S3 durable-drift check inside the
   persist phase is never reached.) `load_protected_startup_config` therefore
-  sets an **ephemeral `/run` hold marker**
-  (`jasper.active_speaker.startup_hold`) around the load and clears it on
-  rollback; while it is present `safe_graph_for_current_topology` preserves the
-  staged all-muted anchor above the baseline-restore rung. The marker is in
+  takes an **ephemeral `/run` hold marker**
+  (`jasper.active_speaker.startup_hold`) before it applies anything; while it is
+  present `safe_graph_for_current_topology` preserves the staged all-muted anchor
+  above the baseline-restore rung. **One TAKE and three RELEASEs own that marker**, which is
+  every writer in the tree: the load TAKES it; the load's own `finally` RELEASES
+  it when the apply does not stick; `rollback_protected_startup_config` RELEASES
+  it when the anchor is deliberately abandoned; and
+  `baseline_profile.persist_applied_baseline_profile` — the apply seam every
+  "a baseline is now applied" path funnels through — RELEASES it when a
+  commission COMPLETES, because a baseline is what boots then. Without that third
+  one the marker outlives the commission that took it (seen on jts3 after a
+  successful save-and-apply); it is inert while it lingers, since the rung also
+  requires the current graph to classify as all-muted-active-startup, but it
+  surprises the next commission and makes the doctor's "marker present" state
+  ambiguous. The marker is in
   `/run`, so a normal boot never sees it — a commissioned box still restores its
   baseline on reboot — and preserving an all-muted anchor keeps the box silent,
   never loud, so this is gated only on the hold, not on identity (#2814's identity
   gate stays on the approved-runtime rungs).
+  **The unit owns the marker directory, and a load that cannot be held refuses.**
+  **Three** units reach the writer: `jasper-web` (`User=jasper-web`,
+  `ProtectSystem=strict`) through the `/sound/` commissioning flow and its
+  `POST /active-speaker/load-startup-config` route; `jasper-correction-web`
+  (root, `ProtectSystem=full`, `UMask=0077`) through `/correction/`'s
+  driver-capture and level-match arms, via
+  `web_commissioning._ensure_commission_startup_anchor`; and
+  `jasper-web-streambox.service` (root, `ProtectSystem=full`), which is the same
+  `python -m jasper.web` process installed AS `jasper-web.service` on a
+  streambox. All three can CLEAR the hold — `jasper-web` from
+  `/active-speaker/rollback-startup-config`, and any of the three through the
+  completion release at the baseline apply seam, which `/correction/`'s
+  crossover-v2 apply and restore reach as well. What is unique to `jasper-web`
+  is that its sandbox blocked the WRITE: `ProtectSystem=strict` mounts the
+  hierarchy read-only apart from `/dev`, `/proc`, and `/sys`, so it cannot
+  create `/run/jasper-active-speaker` itself. `deploy/jasper-web.service` declares
+  `RuntimeDirectory=jasper-active-speaker` (mode 0755,
+  `RuntimeDirectoryPreserve=yes` because the unit is socket-activated and idles
+  out while a hold is live), which systemd creates as `jasper-web:jasper` and
+  excludes from `ProtectSystem=`. The two root writers and the root reconciler's
+  read need nothing further. **A marker that already exists still holds**, even
+  when this writer cannot rewrite it — the root writers leave it `root:root`
+  0600, `touch()` raises there, and `hold_staged_startup` therefore answers from
+  the marker's presence rather than from its own call; `unlink` needs write on
+  the 0755 directory, not on the file, so release works from either identity.
+  When the hold cannot be taken at all,
+  `load_protected_startup_config` returns `status="blocked"` with the
+  `staged_startup_hold_unavailable` blocker naming the directory — it applies
+  nothing, because a load whose durable half the next reconcile would undo must
+  not answer success.
 - **The applied baseline candidate is always a source-fingerprinted
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`
