@@ -4902,9 +4902,11 @@ def safe_graph_for_current_topology(
     # Deadlock guard (re-commission on an already-commissioned box). While a
     # protected startup-load session is deliberately holding the staged
     # all-muted startup anchor as the durable graph, the reconciler that load
-    # KICKED must NOT restore the saved baseline over it: doing so drifts the
-    # durable statefile off the anchor, and commission-load's persist phase then
-    # fails closed ("durable statefile drifted"). So the anchor-preserve is
+    # KICKED must NOT restore the saved baseline over it: doing so moves the
+    # durable statefile off the anchor, and commission-load's PRE-AUDIO
+    # precondition gate (`commission_active_graph_not_staged`) then refuses,
+    # because per-driver commissioning "requires the all-muted staged config to
+    # be the persisted boot config first". So the anchor-preserve is
     # hoisted ABOVE the baseline-restore rung below — but ONLY while the hold is
     # in flight. The marker is ephemeral (/run), so a NORMAL boot never sees it
     # and the baseline-restore rung fires exactly as before; a commissioned box

@@ -39,6 +39,8 @@ import logging
 import os
 from pathlib import Path
 
+from jasper.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 STARTUP_HOLD_MARKER_ENV = "JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER"
@@ -89,10 +91,12 @@ def hold_staged_startup(path: str | Path | None = None) -> bool:
         marker.touch()
         return True
     except OSError as exc:
-        logger.warning(
-            "event=active_speaker.staged_startup_hold_write_failed path=%s error=%s",
-            marker,
-            type(exc).__name__,
+        log_event(
+            logger,
+            "active_speaker.staged_startup_hold_write_failed",
+            level=logging.WARNING,
+            path=marker,
+            error=type(exc).__name__,
         )
         return False
 
@@ -108,9 +112,11 @@ def release_staged_startup_hold(path: str | Path | None = None) -> bool:
         marker.unlink(missing_ok=True)
         return True
     except OSError as exc:
-        logger.warning(
-            "event=active_speaker.staged_startup_hold_clear_failed path=%s error=%s",
-            marker,
-            type(exc).__name__,
+        log_event(
+            logger,
+            "active_speaker.staged_startup_hold_clear_failed",
+            level=logging.WARNING,
+            path=marker,
+            error=type(exc).__name__,
         )
         return False

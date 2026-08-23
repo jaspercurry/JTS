@@ -200,8 +200,12 @@ above; this is only the entry points:
   writes the all-muted staged startup anchor to the durable statefile and then
   kicks `jasper-audio-hardware-reconcile`; on an already-commissioned box that
   reconcile's selection would otherwise pick `select_active_baseline` and repoint
-  the statefile off the anchor, which then fails `commission-load`'s S3 drift
-  guard ("durable statefile drifted"). `load_protected_startup_config` therefore
+  the statefile off the anchor. `commission-load` then refuses at its **pre-audio
+  precondition gate** (`commission_active_graph_not_staged`,
+  `startup_load.py`), whose blocker reads: per-driver commissioning
+  "requires the all-muted staged config to be the persisted boot config first".
+  (That gate runs before the load, so the later S3 durable-drift check inside the
+  persist phase is never reached.) `load_protected_startup_config` therefore
   sets an **ephemeral `/run` hold marker**
   (`jasper.active_speaker.startup_hold`) around the load and clears it on
   rollback; while it is present `safe_graph_for_current_topology` preserves the
