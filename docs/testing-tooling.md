@@ -1932,10 +1932,20 @@ Owning modules and their gates:
   edges, since [#2870](https://github.com/jaspercurry/JTS/issues/2870) deleted
   the crossover search band that used to narrow them (asked of that path's own
   predicate, so a pin and a proposal are admissible on identical terms), plus
-  the protected role's declared `minimum_slope_db_per_octave`. **Nothing else
-  applies that slope to a crossover** — the commissioning admission path reads
-  it, crossover apply compares corner frequencies only — so an order-2 candidate
-  at a legal corner was previously admitted silently.
+  the protected role's **published** slope condition
+  (`recommended_highpass_slope_db_per_octave`), absent on the ordinary datasheet
+  that prints a crossover frequency and no qualifier. **Nothing else applies a
+  slope to a crossover** — the L0 emit gates prove the corner and the limiter
+  with no slope term, and crossover apply compares corner frequencies only — so
+  a published condition unchecked here is unchecked anywhere. It reads the
+  published number and not the derived
+  `required_protection_filters[highpass].minimum_slope_db_per_octave` since
+  [#2891](https://github.com/jaspercurry/JTS/issues/2891): that field is
+  `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, and refusing a
+  household's order-2 pin against a 24 dB/octave figure no datasheet contains is
+  what the 2026-08-23 owner ruling struck. The commissioning recommendation is
+  disclosed on the accepted prescription (`recommended_slope_db_per_octave`)
+  instead of refusing.
 
 Two things a topology pin does that no other prescription does:
 

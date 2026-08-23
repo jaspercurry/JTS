@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from copy import deepcopy
 import hashlib
 import inspect
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -45,6 +47,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from jasper.active_speaker.driver_protection import (
+    PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
+)
 from jasper.active_speaker.crossover_v2_flow import (
     STAGE1_INCLUDES_CLOUD_MEASURE,
     DEFAULT_CLOUD_MEASURE_POSITIONS,
@@ -12265,7 +12270,16 @@ _PIN_ORDER = 4
 #: frequency gate since #2870 deleted the crossover search band, which is what
 #: makes 2400.0 admissible and 6500.0 — past the woofer's own declared ceiling —
 #: refusable.
-_DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 24.0
+#: What the fixture tweeter's MAKER publishes, and the only slope the gate may
+#: refuse on since #2891. It is deliberately different from the 24.0 stamped on
+#: the protective high-pass below — that number is
+#: ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, a code figure, and
+#: a fixture where the two agreed could not tell which one reached the gate.
+_PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 18.0
+#: What this build DERIVES and emits as the protective high-pass. Read by the
+#: commissioning admission path against a graph this build wrote; never by the
+#: topology gate.
+_DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE = 24.0
 _DECLARED_WOOFER_DIAMETER_MM = 114.0
 
 _PIN_SAFETY_PROFILE = {
@@ -12282,11 +12296,14 @@ _PIN_SAFETY_PROFILE = {
         {
             "role": "tweeter",
             "target_fingerprint": "fp-tweeter",
+            "recommended_highpass_hz": 300.0,
+            "recommended_highpass_slope_db_per_octave":
+                _PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
             "required_protection_filters": [{
                 "kind": "highpass",
                 "cutoff_hz": 300.0,
                 "minimum_slope_db_per_octave":
-                    _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
+                    _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE,
             }],
         },
     ],
@@ -12507,6 +12524,41 @@ def test_a_topology_pin_is_never_inherited_the_way_the_tier_deliberately_is(
     assert seen["tier"] == TIER_EXPRESS
 
 
+def test_an_order_2_pin_is_admitted_when_the_maker_published_no_slope(
+    monkeypatch,
+) -> None:
+    """The 2026-08-23 owner ruling, end to end through the real preparer.
+
+    The confirmed target still carries a 24 dB/octave protective high-pass —
+    that is what this build EMITS — but its maker published no slope condition,
+    so there is nothing for the gate to refuse. Before #2891 the derived 24
+    reached the gate wearing the manufacturer's clothes and this pin came back
+    ``topology_slope_below_declared_requirement``.
+    """
+    unpublished = deepcopy(_PIN_SAFETY_PROFILE)
+    del unpublished["targets"][1]["recommended_highpass_slope_db_per_octave"]
+    # Patched on this module's global rather than on the context: ``_arm_stage_1``
+    # builds a fresh ``_pinnable_context()`` inside the tap helper, so a context
+    # edited out here would be thrown away before the gate ran.
+    monkeypatch.setattr(
+        sys.modules[__name__], "_PIN_SAFETY_PROFILE", unpublished,
+    )
+
+    accepted = _stage_1_prescription_taps(
+        monkeypatch, {"topology_prescription": _topology_pin(order=2)},
+    )["topology"]
+
+    assert accepted is not None
+    assert accepted.order == 2
+    assert accepted.slope_db_per_octave == 12.0
+    # No published condition, so no comparison was made…
+    assert accepted.checked_against_slope_db_per_octave is None
+    # …and the recommendation this round crossed under is on the record.
+    assert accepted.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+
+
 def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     monkeypatch,
 ):
@@ -12535,13 +12587,22 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     # below a demanding one rather than four fields wide.
     assert accepted.checked_against_floor_hz == 300.0
     assert accepted.checked_against_ceiling_hz == 6000.0
+    # The PUBLISHED condition reached the gate end to end, and the derived 24.0
+    # sitting beside it on the same profile target did not (#2891).
     assert accepted.checked_against_slope_db_per_octave == (
-        _DECLARED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
+        _PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
+    )
+    assert accepted.checked_against_slope_db_per_octave != (
+        _DERIVED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
     )
     # The ka onset is DISCLOSED as a number, never enforced (#1675): this
     # candidate is above it and the receipt says so rather than refusing.
     assert accepted.beaming_ceiling_hz is not None
     assert accepted.fc_hz > accepted.beaming_ceiling_hz
+    # …and so is the commissioning slope recommendation, on the same terms.
+    assert accepted.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
 
     conductor = _rearm_conductor_for_persist(
         "cap_pinned_round", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
