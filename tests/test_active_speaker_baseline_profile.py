@@ -1540,6 +1540,85 @@ async def test_apply_baseline_profile_releases_the_staged_startup_hold(
     assert staged_startup_hold_active() is False
 
 
+async def test_persist_applied_baseline_releases_the_hold_on_its_idempotent_return(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The release sits ABOVE the already-applied early return, on purpose.
+
+    ``persist_applied_baseline_profile`` returns early when the same candidate
+    is already the applied SSOT, without writing. A release placed below that
+    return would skip exactly the case where the hold is most likely to be stale
+    — a re-run of a commission that already finished — and no test would notice,
+    because the ordinary path releases either way. So this pins the placement,
+    not just the behaviour: it re-takes the hold and drives the IDEMPOTENT call.
+    """
+    from jasper.active_speaker.startup_hold import (
+        hold_staged_startup,
+        staged_startup_hold_active,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+    state_path = tmp_path / "baseline_profile.json"
+
+    captured: dict[str, object] = {}
+    real_persist = baseline_profile_mod.persist_applied_baseline_profile
+
+    def spy_persist(candidate, **kwargs):
+        captured["candidate"] = candidate
+        captured["kwargs"] = kwargs
+        return real_persist(candidate, **kwargs)
+
+    monkeypatch.setattr(
+        baseline_profile_mod, "persist_applied_baseline_profile", spy_persist
+    )
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=state_path,
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+    assert payload["status"] == "applied"
+    assert "candidate" in captured, "the apply never reached the persist seam"
+
+    # Second, identical persist: same candidate, same apply proof, already
+    # applied — the early-return path. Re-take the hold first so its release is
+    # the only thing that can clear it.
+    writes: list[object] = []
+    real_write = baseline_profile_mod.atomic_write_text
+
+    def counting_write(*args, **kwargs):
+        writes.append(args[0])
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(baseline_profile_mod, "atomic_write_text", counting_write)
+    assert hold_staged_startup() is True
+    assert staged_startup_hold_active() is True
+
+    again = real_persist(captured["candidate"], **captured["kwargs"])
+
+    assert again["status"] == "applied"
+    assert writes == [], (
+        "this call must be the idempotent early return — if it wrote, the test "
+        "is exercising the ordinary path and proves nothing about placement"
+    )
+    assert staged_startup_hold_active() is False
+
+
 async def test_apply_baseline_profile_reloads_when_target_config_differs(
     monkeypatch, tmp_path: Path,
 ) -> None:

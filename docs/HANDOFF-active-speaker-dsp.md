@@ -242,10 +242,13 @@ above; this is only the entry points:
   `web_commissioning._ensure_commission_startup_anchor`; and
   `jasper-web-streambox.service` (root, `ProtectSystem=full`), which is the same
   `python -m jasper.web` process installed AS `jasper-web.service` on a
-  streambox. `jasper-web` is the only one that clears the hold, and the only one
-  whose sandbox blocks it: `ProtectSystem=strict` mounts the hierarchy read-only
-  apart from `/dev`, `/proc`, and `/sys`, so it cannot create
-  `/run/jasper-active-speaker` itself. `deploy/jasper-web.service` declares
+  streambox. All three can CLEAR the hold — `jasper-web` from
+  `/active-speaker/rollback-startup-config`, and any of the three through the
+  completion release at the baseline apply seam, which `/correction/`'s
+  crossover-v2 apply and restore reach as well. What is unique to `jasper-web`
+  is that its sandbox blocked the WRITE: `ProtectSystem=strict` mounts the
+  hierarchy read-only apart from `/dev`, `/proc`, and `/sys`, so it cannot
+  create `/run/jasper-active-speaker` itself. `deploy/jasper-web.service` declares
   `RuntimeDirectory=jasper-active-speaker` (mode 0755,
   `RuntimeDirectoryPreserve=yes` because the unit is socket-activated and idles
   out while a hold is live), which systemd creates as `jasper-web:jasper` and
