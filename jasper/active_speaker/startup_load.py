@@ -967,6 +967,15 @@ async def load_protected_startup_config(
             state_path=state_path,
         )
 
+    # The hold is taken before the apply, so EVERY way out of the apply that
+    # leaves the anchor off the durable statefile has to give it back — not just
+    # the one this function renders a payload for. `apply_dsp_config` raises at
+    # least two non-`DspApplyError` types on the writer-lock path both web
+    # surfaces contend for (`DspWriterLockTimeout`, `BassExtensionApplyPending`),
+    # and an awaited call can also be cancelled. A `finally` covers all of them
+    # without a broad `except`, and it re-raises nothing, so the caller's error
+    # handling stays exactly as it was.
+    apply_succeeded = False
     try:
         apply_state = await apply_dsp_config(
             source="active_speaker_startup_load",
@@ -978,6 +987,7 @@ async def load_protected_startup_config(
             acquire_lock=acquire_lock,
             validate=validate,
         )
+        apply_succeeded = True
     except DspApplyError as exc:
         payload = _loaded_state_payload(
             status="failed",
@@ -996,9 +1006,6 @@ async def load_protected_startup_config(
             ],
         )
         _record_state(payload, state_path=state_path)
-        # The apply rolled back, so the anchor is not the durable statefile and
-        # this session no longer holds it.
-        release_staged_startup_hold()
         logger.warning(
             "event=active_speaker.startup_load result=failed candidate=%s prior=%s error=%s",
             candidate_path,
@@ -1006,16 +1013,12 @@ async def load_protected_startup_config(
             type(exc).__name__,
         )
         return {"preflight": preflight, "load": payload}
-    except BaseException:
-        # The hold is taken before the apply, so every escape from the apply has
-        # to give it back — not just the one this function renders a payload for.
-        # `apply_dsp_config` raises at least two non-`DspApplyError` types on the
-        # lock path both web writers contend for (`DspWriterLockTimeout`,
-        # `BassExtensionApplyPending`), and those leave the anchor off the
-        # durable statefile exactly as a failed apply does. Release, then re-raise
-        # unchanged: the caller's error handling is not this function's to alter.
-        release_staged_startup_hold()
-        raise
+    finally:
+        # Runs on the return above too, so the rolled-back apply gives the hold
+        # back by the same one line that covers the escapes this function never
+        # sees. The success path clears the flag, so a held anchor stays held.
+        if not apply_succeeded:
+            release_staged_startup_hold()
 
     payload = _loaded_state_payload(
         status="loaded",
