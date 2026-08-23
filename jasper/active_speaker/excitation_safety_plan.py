@@ -482,13 +482,17 @@ LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
 def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
     """One target's effective-peak ceiling and where that number came from.
 
-    **The one owner of this question.** Every reader of
-    ``level_duration_limits.max_effective_peak_dbfs`` goes through here — this
-    module's own ceiling resolver and
-    ``commissioning_runtime.prepare_summed_excitation`` — because the field is
-    optional and two readers with two local interpretations of "absent" is
-    exactly how one of them came to raise on the shape the other calls
-    ordinary.
+    **The one owner of this question**, because the field is optional and two
+    readers with two local interpretations of "absent" is exactly how one of
+    them came to raise on the shape the other calls ordinary (2026-08-23).
+    Floor, checked rather than asserted: a grep of ``jasper/`` for
+    ``max_effective_peak_dbfs`` finds exactly one direct dict access, the one
+    below; the two callers that want the answer are
+    :func:`resolve_driver_excitation_ceilings` and
+    ``commissioning_runtime.prepare_summed_excitation``, and everything further
+    downstream (``web.correction_crossover_backend``,
+    ``audio_measurement.level_solver``) takes the already-resolved number as an
+    argument. A third reader belongs here too.
 
     ``max_effective_peak_dbfs`` is OPTIONAL, and absent is the ordinary answer.
     It is the one datasheet fact in ``level_duration_limits``, so since the
