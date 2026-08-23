@@ -612,6 +612,45 @@ def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
     assert spec.message != REASON_REGISTRY[POSITION_HOLD_EXPIRED_CODE].message
 
 
+#: Words that name ONE of the two movers. The gate's own copy may not use any
+#: of them: a hand-released round and an arm round reach the same three
+#: sentences, so a sentence that names either mover is false to the other half
+#: of its readership (#2879 round-3 nit 4). Matched on word boundaries so
+#: ``arrives`` and ``warm`` are not false hits, and deliberately SMALL — it is
+#: the minimal set the three comments asserting this invariant actually name
+#: (``refusal_copy``'s "the copy below therefore names neither mover", the
+#: budget constant's "covers BOTH movers", and ``PositionGate``'s "never asks
+#: WHO"), not a general banned-words list.
+_MOVER_WORDS = ("positioner", "positioners", "driver", "drivers", "arm", "arms")
+
+
+def test_the_gates_three_refusals_name_neither_mover():
+    """The invariant three comments assert and nothing pinned.
+
+    Weakening this is a one-word edit — the copy this replaced said "once the
+    positioner is answering again" — and it fails on no test, reaches no
+    screen a suite renders, and is only wrong for the half of the readership
+    that is a person holding a microphone.
+
+    Read off ``POSITION_GATE_TERMINAL_CODES`` rather than a hand-listed triple,
+    so a fourth gate refusal inherits the rule the day it is written.
+    """
+    import re
+
+    from jasper.web.correction_crossover_v2 import POSITION_GATE_TERMINAL_CODES
+
+    assert POSITION_GATE_TERMINAL_CODES, "the gate has terminal codes to check"
+    pattern = re.compile(r"\b(" + "|".join(_MOVER_WORDS) + r")\b", re.IGNORECASE)
+    for code in sorted(POSITION_GATE_TERMINAL_CODES):
+        spec = REASON_REGISTRY[code]
+        for slot, text in (("message", spec.message), ("banner", spec.banner)):
+            found = pattern.findall(text or "")
+            assert not found, f"{code}.{slot} names a mover: {found} in {text!r}"
+        # ...and it still says what it is about, so "names no mover" cannot be
+        # satisfied by saying nothing.
+        assert "microphone" in spec.message
+
+
 def test_an_entry_with_no_target_is_refused_not_measured():
     """A remote plan emits a target on EVERY entry, so a missing one means the
     plan and the gate disagree about the session's shape."""

@@ -6431,8 +6431,7 @@ POSITION_GATE_TERMINAL_CODES = frozenset(
 )
 
 #: The endpoint whoever moved the microphone POSTs to report it in place — the
-#: arm's driver, or the person on a hand-released round (#2879). One endpoint,
-#: because the report is the same fact either way.
+#: arm's driver, or the person on a hand-released round (#2879). One for both.
 POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
 
 
@@ -6453,8 +6452,9 @@ class PositionGate:
       walk fires every capture back to back while the household is still
       walking. The person releases each begin instead.
 
-    Either way the hold ends only when a release names this ``(index,
-    attempt)``; the gate never asks WHO moved the microphone.
+    A begin is ADMITTED only on a release naming its ``(index, attempt)``,
+    whoever sent it; the hold's other two exits REFUSE (the bounds below) or
+    ABANDON (:meth:`abandon_hold`).
 
     **The mechanism is the shipped soft-hold, not a new one.**
     :class:`~jasper.capture_relay.session.CaptureBeginDeferred` is the
@@ -6472,7 +6472,7 @@ class PositionGate:
     behind. Gating is per ``(index, attempt)``, so a retake re-gates — the same
     uniform rule rather than a special case that has to be reasoned about.
 
-    **Two bounds end a hold, and they name different failures** (issue #2506).
+    **Two bounds REFUSE a hold, and they name different failures** (#2506).
     :data:`REMOTE_POSITION_HOLD_BUDGET_S` is the per-hold one: a mover that
     STOPPED answering. The session's own wall-clock ceiling is the cumulative
     one: a mover answering every position, just too slowly to finish the walk.

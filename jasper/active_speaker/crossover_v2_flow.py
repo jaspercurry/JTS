@@ -5075,9 +5075,8 @@ class CrossoverV2Session:
         self._tier = normalize_tier(tier) if tier else ""
         # #2879, the POSE-STATEMENT axis (:attr:`V2PlanShape.positions_gated`):
         # are this walk's begins HELD until the microphone is reported in place?
-        # Resolved by the HOST, the half that knows the capture source, and
-        # handed down. ORed with the tier's own answer rather than replacing it,
-        # so a caller that resolved no shape cannot silently drop the arm's gate.
+        # Resolved by the HOST, the half that knows the capture source, and ORed
+        # with the tier's own answer so no caller can drop the arm's own gate.
         self._positions_gated = (
             tier_is_externally_positioned(self._tier) or bool(positions_gated)
         )
@@ -8084,18 +8083,15 @@ class CrossoverV2Session:
             #   1. it asked for a pose an external positioner cannot reach —
             #      rung 1 of ``CLOUD_GEOMETRY_RETRY_PROMPTS`` is 75 cm off the
             #      mark, past every pose in the walk, and rung 2 adds a move
-            #      ABOVE mark height, the exact axis the remote tier excludes
-            #      by construction;
+            #      ABOVE mark height, the axis the remote tier excludes;
             #   2. it recorded that un-made pose's 75 cm offset as the
             #      position's durable evidence; and
             #   3. the retry re-authorizes the SAME plan entry, so the position
-            #      gate republishes that entry's ORIGINAL bearing as the target
-            #      while the screen names the wider spot. Two answers to where
-            #      the microphone should be — and a person, who could perfectly
-            #      well walk to the wider spot, is exactly who cannot be told
-            #      which of the two to believe. The bearing has no rung-2
-            #      spelling at all: the gate states a horizontal angle and
-            #      rung 2 is a HEIGHT.
+            #      gate republishes that entry's ORIGINAL bearing while the
+            #      screen names the wider spot. Two answers to where the
+            #      microphone should be — and a person, who COULD walk to the
+            #      wider spot, is exactly who cannot be told which to believe.
+            #      Rung 2 has no bearing spelling at all: it is a HEIGHT.
             #
             # The retry budget is deliberately NOT spent and no take is dropped
             # — nothing here is a retry, so the group keeps the evidence it
@@ -8107,6 +8103,10 @@ class CrossoverV2Session:
                 session_id=self.session_id,
                 phase=phase,
                 tier=self._tier,
+                # `tier` cannot carry this — stage 2 is constructed without
+                # one, so an arm and a hand-released wired stage 2 both log
+                # `tier=""` and only this tells them apart.
+                gated=self._positions_gated,
                 median_tau_us=verdict.get("median_tau_us"),
                 clustered_fraction=verdict.get("clustered_fraction"),
             )

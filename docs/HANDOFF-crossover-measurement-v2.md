@@ -437,7 +437,8 @@ neither field.
 earlier ruling here was "keep the class filter on the Pi when that lands —
 `auto_retry` is already the machine-readable *safe to retry from the same
 spot*". That still holds for the #2506 CLASS case, and the geometry ask
-(`cloud_geometry_locked`, or remote's own `geometry_retake_unreachable`) is
+(`cloud_geometry_locked`, or any gated session's `geometry_retake_unreachable`)
+is
 deliberately not in `auto_retry`, which is what makes it usable as that filter.
 It is the wrong filter for the glitch trigger that actually shipped, and the
 re-derivation is worth recording because the two look interchangeable:
