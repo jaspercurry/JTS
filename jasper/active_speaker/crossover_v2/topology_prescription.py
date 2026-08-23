@@ -880,7 +880,10 @@ def topology_prescription_response_format() -> dict[str, Any]:
             "order": (
                 "required integer, one of "
                 + ", ".join(str(o) for o in sorted(SUPPORTED_LR_ORDERS))
-                + "; its slope is order * 6 dB/octave"
+                + "; its slope is order * 6 dB/octave. Refused only when the "
+                "protected driver's MAKER published a steeper minimum — a "
+                "shallower order than this build commissions at is admitted "
+                "and disclosed on the record instead"
             ),
             "basis_artifacts": (
                 "required non-empty list of names — what proposed this corner"
