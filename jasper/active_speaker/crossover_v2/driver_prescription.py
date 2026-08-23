@@ -703,6 +703,9 @@ _PRESCRIPTION_FIELDS = frozenset({
     "composed_boost_db",
     "composed_boost_role",
     "max_spl_spend_bound_db",
+    "displaced_filters",
+    "displaced_boost_db",
+    "displaced_boost_role",
     # FORWARD-compatible, not backward: this reader accepts everything
     # `to_dict` emits, but a PRE-boost-class build handed a post-boost-class
     # receipt refuses it as an unknown field. Harmless today and recorded
@@ -788,6 +791,16 @@ class DriverPrescription:
     #: Which role carried that worst composed boost. The emitter folds by worst
     #: BRANCH, so the number alone cannot say where the spend went.
     composed_boost_role: str | None = None
+    #: How many incumbent filters the named roles REPLACE — see
+    #: :func:`_check_displaced`. ``None`` means no incumbent was available to
+    #: compare against (the durable read-back, and any packet whose applied
+    #: profile could not be read); ``0`` means one was, and it was empty.
+    displaced_filters: int | None = None
+    #: The worst amount the prescribed cascade sits ABOVE the incumbent one,
+    #: dB, and the role that carried it. Same ``None``-versus-``0.0`` rule as
+    #: ``composed_boost_db`` beside it, and the same first-role-wins tie rule.
+    displaced_boost_db: float | None = None
+    displaced_boost_role: str | None = None
     #: The prescriber's own words. **Never parsed for behaviour** — no branch in
     #: this module or any caller reads it, and it is excluded by construction
     #: from every instruction this harness renders.
@@ -833,6 +846,9 @@ class DriverPrescription:
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
+            "displaced_filters": self.displaced_filters,
+            "displaced_boost_db": self.displaced_boost_db,
+            "displaced_boost_role": self.displaced_boost_role,
             "rationale": self.rationale,
         }
 
@@ -1350,6 +1366,93 @@ def _check_composed(
     return worst_boost, worst_role
 
 
+def _check_displaced(
+    filters: tuple[dict[str, Any], ...],
+    incumbent: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    passbands: DriverPassbands,
+) -> tuple[int | None, float | None, str | None]:
+    """What this document DELETES, and what deleting it changes. Never refuses.
+
+    Returns ``(incumbent filters the named roles replace, the worst amount the
+    prescribed cascade sits ABOVE the incumbent one in dB, the role that
+    carried it)``, or ``(None, None, None)`` when the evidence carries no
+    incumbent to compare against. ``0`` filters with ``0.0`` dB is a measured
+    "this document displaces nothing"; ``None`` is "nobody knows", and the two
+    are different facts a receipt may not spell the same way.
+
+    **Why the number exists.** ``filters`` is a total for every role it names,
+    so a role's incumbent filters are deleted by a document that names the role
+    and does not repeat them. :func:`_check_composed` cannot see that: it reads
+    the document's own cascade, which is exactly right for the caps it enforces
+    and says nothing about what the cascade replaced. On 2026-08-22 a
+    five-filter tweeter document displaced a −6.037 dB Lowshelf at 5844.67 Hz,
+    and the round measured a 6.065 dB tilt step for a change no gate had a
+    number for (#2863).
+
+    **It DISCLOSES and never refuses, and the mechanism test is why.** The
+    composed caps guard one thing — maximum-SPL spend, charged by
+    ``camilla_yaml.linearization_headroom_db`` over the cascade the emitter
+    actually realizes — and dropping an incumbent cut adds nothing to that
+    cascade, so it spends no headroom and cannot clip. A driver's protective
+    corners are not in this map either: they are declared as
+    ``required_protection_filters`` on the design draft's driver-safety profile
+    and enforced somewhere else entirely — ``graph_safety``'s emit-gate
+    high-pass proof, ``path_safety``'s per-driver protection floor, and
+    ``excitation_safety_plan``'s permitted bands — so no document routed here
+    can delete one. With no component-damage mechanism to name, a refusal here
+    would fail ``docs/measurement-loop-doctrine.md``'s nanny test — deleting a
+    shelf to find out whether it is still earning its place is precisely the
+    reversible experiment that doctrine protects.
+
+    **Measured against the INCUMBENT, which is not quite what the merge
+    replaces.** At staging time the round has not measured, so the fit this
+    document will actually displace does not exist yet; the incumbent is what
+    the speaker is playing and what the evidence packet can name. The two are
+    the same question asked one round apart.
+
+    **It is a PER-BRANCH number, and one case sits outside it.** Removing an
+    incumbent BOOST also releases the pre-split attenuation that boost was
+    charged (``camilla_yaml.linearization_headroom_db``), which raises the
+    whole speaker rather than one branch's band. This reads only the branch's
+    own cascade, so it reports that removal as the negative per-branch delta it
+    is and says nothing about the whole-speaker step beside it. Named rather
+    than papered over: the number is honest about the band it covers.
+    """
+    if incumbent is None:
+        return None, None, None
+    displaced = 0
+    worst_boost = 0.0
+    worst_role: str | None = None
+    for role in sorted({str(entry["role"]) for entry in filters}):
+        previous = [dict(entry) for entry in incumbent.get(role) or ()]
+        displaced += len(previous)
+        if not previous:
+            continue
+        role_filters = [
+            {key: value for key, value in entry.items() if key != "role"}
+            for entry in filters
+            if entry["role"] == role
+        ]
+        lo, hi = passbands[role]
+        # One grid over BOTH cascades, so neither one's extremum can fall
+        # between the other's sample points — `_composed_grid` unions each
+        # filter's own centre, and a delta read on a grid built from half the
+        # filters would miss the incumbent's corner exactly where it matters.
+        grid = _composed_grid(role_filters + previous, lo, hi)
+        delta = 20.0 * np.log10(
+            np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
+            / np.maximum(np.abs(np.asarray(chain_response(previous, grid))), 1e-12)
+        )
+        peak = max(0.0, float(np.max(delta)))
+        # `> 0.0` and the first-role-wins tie rule, both read off
+        # `_check_composed`: a document that raises nothing has no role that
+        # displaced upward, and naming one anyway would attribute 0.0 dB to
+        # whichever role sorted first.
+        if peak > 0.0 and (worst_role is None or peak > worst_boost):
+            worst_boost, worst_role = peak, role
+    return displaced, worst_boost, worst_role
+
+
 def _check_classification(
     filters: tuple[dict[str, Any], ...],
     verdicts: Sequence[FeatureVerdict] | None,
@@ -1638,6 +1741,7 @@ def read_driver_prescription(
     packet_fingerprint: Any,
     passbands_hz: DriverPassbands | None,
     classifications: Sequence[FeatureVerdict] | None,
+    incumbent_filters: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> DriverPrescription | None:
     """THE request gate. One point, and the one place every bound is applied.
 
@@ -1646,17 +1750,24 @@ def read_driver_prescription(
     :class:`~.blend_prescription.BlendPrescriptionRefused` naming which gate
     said no.
 
-    The three keyword arguments are the evidence packet's own answers, read out
+    The four keyword arguments are the evidence packet's own answers, read out
     of it by :mod:`.evidence_packet`'s named readers. Taking VALUES rather than
     the packet is what keeps this module a leaf of the DAG — the packet imports
     the response format from here — and it is exactly the shape
     :func:`~.blend_prescription.read_blend_prescription` already has.
 
-    **All three are required and undefaulted**, on that function's rule: every
+    **All four are required and undefaulted**, on that function's rule: every
     other bound in this gate rests on a number the prescriber itself supplied,
-    and these three are the only inputs a prescriber willing to lie cannot
+    and these four are the only inputs a prescriber willing to lie cannot
     forge. A caller that forgot one would lose the evidence's own opinion and
-    never know, which is precisely what a defaulted keyword hides.
+    never know, which is precisely what a defaulted keyword hides —
+    ``incumbent_filters`` most of all, because forgetting it costs no refusal
+    and no error, only a silent ``None`` where a disclosure belonged.
+
+    ``incumbent_filters`` bounds nothing. It is what the graph is already
+    carrying, and it buys one disclosed number — see :func:`_check_displaced`
+    for what that number is and why it is not a gate. ``None`` is a legitimate
+    value ("this evidence does not say"), unlike the three above it.
 
     **Order is deliberate.** Shape, then identity, then the bands, then the
     per-filter bounds, then the composed cascade, then the classification bar,
@@ -1701,6 +1812,11 @@ def read_driver_prescription(
     prescription_class = _check_bounds(filters, passbands)
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
     basis = _check_classification(filters, classifications)
+    # LAST, after every bound: it refuses nothing, so a document the gate was
+    # going to reject anyway never pays for the extra cascade evaluation.
+    displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
+        filters, incumbent_filters, passbands
+    )
 
     prescription = DriverPrescription(
         filters=filters,
@@ -1714,6 +1830,9 @@ def read_driver_prescription(
         classification_basis=basis,
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
+        displaced_filters=displaced_filters,
+        displaced_boost_db=displaced_boost_db,
+        displaced_boost_role=displaced_boost_role,
         rationale=rationale,
     )
     driver_prescription_route(prescription)

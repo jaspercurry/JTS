@@ -174,6 +174,7 @@ __all__ = [
     "build_crossover_evidence_packet",
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
+    "packet_incumbent_linearization",
     "packet_positional_evidence",
     "packet_region_band_hz",
     "round_artifact_dir",
@@ -563,9 +564,13 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     time, so they structurally cannot carry one here. Two further inputs are
     written with a plain ``json.dumps`` and are NOT guarded:
     ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
-    state, where all three fields this packet copies —
-    ``verify.claims``, ``pre_apply_profile.blend_correction``
-    and ``evidence.calibration`` — kill the packet; and
+    state, where all four fields this packet copies —
+    ``verify.claims``, ``pre_apply_profile.blend_correction``,
+    ``pre_apply_profile.linearization`` (through
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
+    which selects the authoritative copy and does not screen, so a non-finite
+    gain reaches the packet unguarded) and ``evidence.calibration`` — kill the
+    packet; and
     :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
     ``driver_safety_profile.confirmation`` is copied whole and does the same.
     The draft's passbands do NOT, because
@@ -1866,19 +1871,39 @@ def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
 def _incumbent_block(
     receipt: dict[str, Any], reason: str, state: dict[str, Any], state_reason: str
 ) -> dict[str, Any]:
-    """What the measurement was taken THROUGH, from both places that record it.
+    """What the measurement was taken THROUGH — three records, two questions.
 
-    Two records of one fact, deliberately reported side by side rather than
-    reconciled here: the receipt's ``round_measurements.blend.incumbent`` (what
-    the round said it derived from) and the applied profile's own
-    ``blend_correction`` (what the graph actually carried). They should agree,
-    and a packet that silently preferred one would hide the round where they
-    did not. Reconciling them is a judgement, and this module makes none.
+    The BLEND correction is recorded in two places, deliberately reported side
+    by side rather than reconciled here: the receipt's
+    ``round_measurements.blend.incumbent`` (what the round said it derived
+    from) and the applied profile's own ``blend_correction`` (what the graph
+    actually carried). They should agree, and a packet that silently preferred
+    one would hide the round where they did not. Reconciling them is a
+    judgement, and this module makes none.
+
+    ``linearization`` is the SAME question asked of the other prescription
+    class, and it is here rather than beside ``drivers`` because "what is the
+    graph already carrying" has one owner in this document. The receipt has no
+    second record of it to report alongside — ``_round_measurements`` banks the
+    blend region and nothing per-driver — so this half carries the applied
+    profile's copy alone, read through
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
+    which owns WHICH copy of that field is authoritative.
+
+    Why it is load-bearing: a per-driver prescription is a total for every role
+    it names (:class:`~.driver_prescription.DriverPrescription`), so a role's
+    incumbent filters are DELETED by any document that names the role and does
+    not repeat them. On 2026-08-22 that deleted a −6.037 dB Lowshelf at
+    5844.67 Hz the prescriber had never been shown, and the round measured a
+    6.065 dB tilt step for it (issue #2863).
     """
+    from jasper.active_speaker.baseline_profile import profile_linearization
+
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
     profile = _mapping(state.get("pre_apply_profile"))
     from_receipt = blend.get("incumbent")
     from_profile = profile.get("blend_correction")
+    linearization = profile_linearization(profile)
     return {
         "from_round_receipt": (
             from_receipt
@@ -1898,6 +1923,41 @@ def _incumbent_block(
             "a prescription is a TOTAL, not a delta: prescribe the whole "
             "correction the next round should apply, incumbent included"
         ),
+        "linearization": {
+            # Keyed on the PROFILE and not on what it holds: a profile whose
+            # linearization is empty says the branches carry nothing, which is
+            # a report rather than an absence, and only a missing profile
+            # leaves the question unanswered.
+            # Each filter copied VERBATIM rather than field-reduced, and the
+            # cost was measured rather than assumed: the whole record is 1716
+            # bytes of a 36411-byte packet on the shipped two-way. The profile
+            # already stores exactly `{biquad_type, freq, q, gain}`, so there
+            # is nothing to drop, and rounding the floats would cost a reader
+            # the ability to reproduce the cascade the speaker is playing.
+            "from_applied_profile": (
+                {
+                    str(role): list(filters)
+                    for role, filters in sorted(linearization.items())
+                    if isinstance(role, str) and role.strip()
+                }
+                if profile
+                else _absence(
+                    state_reason, False, "pre_apply_profile.linearization"
+                )
+            ),
+            "source": (
+                "pre_apply_profile.recomposition_snapshot.linearization, "
+                "falling back to pre_apply_profile.linearization"
+            ),
+            "note": (
+                "the per-driver correction each branch is already carrying. A "
+                "driver prescription is a TOTAL for every role it names: every "
+                "filter listed here for a role you name and do not repeat is "
+                "DELETED from the graph. A document may carry only Peaking "
+                "filters, so a shelf listed here cannot be repeated at all — "
+                "name that role only if you mean to drop its shelf"
+            ),
+        },
     }
 
 
@@ -2589,6 +2649,89 @@ def packet_driver_passbands_hz(packet: Any) -> dict[str, tuple[float, float]]:
             continue
         if lo > 0.0 and hi > lo:
             out[role.strip()] = (lo, hi)
+    return out
+
+
+def packet_incumbent_linearization(
+    packet: Any,
+) -> dict[str, tuple[dict[str, Any], ...]] | None:
+    """The per-driver correction the graph is already carrying, or ``None``.
+
+    A reader rather than an attribute access, on
+    :func:`packet_driver_passbands_hz`'s rule: the packet owns its own layout
+    and :mod:`.driver_prescription` asks it questions.
+
+    ``None`` — "this packet does not say" — and ``{}`` — "it says the graph
+    carries none" — are DIFFERENT and both callers must keep them apart, on
+    :func:`~.blend_correction.blend_filters_from_mapping`'s rule for exactly
+    this quantity: an unreadable incumbent and an empty one have different
+    consequences, and a document that replaces a role it cannot see is the
+    defect this reader exists to expose (#2863).
+
+    **Strict, and it fails the WHOLE map rather than a filter.** A record that
+    is not one this system wrote means the profile copy cannot be vouched for,
+    and a partial read would understate the displacement — which is the one
+    direction this number must never err in. The permitted biquad types are the
+    emitter's own set (``camilla_yaml.LINEARIZATION_BIQUAD_TYPES``), consumed
+    rather than restated, because "would the emitter accept this record" is the
+    question being asked and it has one owner.
+
+    Entries come back in the reduced ``{biquad_type, freq, q, gain}`` shape
+    :func:`~jasper.active_speaker.branch_chain.chain_response` takes, which is
+    the shape the profile already stores them in — so the caller evaluates the
+    incumbent through the same one biquad evaluator as everything else.
+    """
+    from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
+
+    if not isinstance(packet, dict):
+        return None
+    block = _mapping(packet.get("incumbent")).get("linearization")
+    if not isinstance(block, dict):
+        return None
+    roles = block.get("from_applied_profile")
+    if not isinstance(roles, dict):
+        return None
+    # The builder writes an ``_absence`` here when no profile reached it, and
+    # that shape is checked by name rather than inferred from its contents —
+    # ``_incumbent_record``'s rule, for the same reason: an absence and a role
+    # map are both dicts, and telling them apart by duck-typing would make a
+    # banked role called ``status`` change the answer.
+    if roles.get("status") == "not_evaluated":
+        return None
+    out: dict[str, tuple[dict[str, Any], ...]] = {}
+    for role, filters in roles.items():
+        if not isinstance(role, str) or not role.strip():
+            return None
+        if isinstance(filters, (str, bytes)) or not isinstance(filters, list):
+            return None
+        entries: list[dict[str, Any]] = []
+        for entry in filters:
+            if not isinstance(entry, dict):
+                return None
+            if entry.get("biquad_type") not in LINEARIZATION_BIQUAD_TYPES:
+                return None
+            # Real numbers, NOT anything ``float()`` will coerce, and ``bool``
+            # excluded because it is an ``int`` subclass — the same test
+            # ``blend_filters_from_mapping`` applies, for the same reason: this
+            # system writes floats, so a string here is by definition a record
+            # something else wrote.
+            numbers: list[float] = []
+            for value in (entry.get("freq"), entry.get("q"), entry.get("gain")):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return None
+                numbers.append(float(value))
+            freq, q, gain = numbers
+            if not all(map(math.isfinite, numbers)):
+                return None
+            if freq <= 0.0 or q <= 0.0:
+                return None
+            entries.append({
+                "biquad_type": str(entry["biquad_type"]),
+                "freq": freq,
+                "q": q,
+                "gain": gain,
+            })
+        out[role.strip()] = tuple(entries)
     return out
 
 

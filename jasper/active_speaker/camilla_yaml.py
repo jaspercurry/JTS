@@ -1344,6 +1344,14 @@ MAX_PROGRAM_HEADROOM_DB = 40.0
 
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
+# Public alias, on ``blend_correction_name``'s rule below: a reader outside
+# this module needs the same set to decide whether a persisted linearization
+# record is one this system wrote. The evidence packet's
+# ``packet_incumbent_linearization`` reads the applied profile's copy back out
+# and asks exactly that; a second literal there is how the emitter's policy and
+# that reader drift.
+LINEARIZATION_BIQUAD_TYPES = _LINEARIZATION_BIQUAD_TYPES
+
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
 # CamillaDSP through ``emit_filter_spec``, which spells the one Butterworth
 # ``camilla_config_contract.SHELF_Q`` -- the same Q the fit engine designed the
