@@ -502,6 +502,13 @@ class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""
 
     initial_sweep_level_db_spl: float = 65.0
+    # Owner ruling 2026-08-23: the commissioning SPL stop rides this dataclass
+    # default; construction sites must not restate it. Two staging sites
+    # hardcoded 80.0, which hid this default and cost a bench night — the ruled
+    # 75 dB seat-level frame could not converge because a measured ~+6.5-7 dB
+    # post-step transient peaked ~81.5 and tripped the 80.0 stop, even though
+    # the settled level at the refused volume was ~74, inside the band.
+    # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
     escalation_step_db: float = 5.0
     require_physical_tweeter_protection: bool = True

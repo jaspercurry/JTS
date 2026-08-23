@@ -344,7 +344,7 @@ def test_default_active_speaker_preset_is_epique_f110m_safe_bringup() -> None:
     assert preset.preset_id == "epique-e150he44-eminence-f110m8-safe-v1"
     assert preset.name == "Dayton Epique E150HE-44 + Eminence F110M-8 safe bring-up"
     assert preset.crossover_regions[0].fc_hz == 2500
-    assert preset.safety.max_commissioning_level_db_spl == 80
+    assert preset.safety.max_commissioning_level_db_spl == 85
 
 
 def test_stage_protected_startup_config_writes_muted_candidate(
