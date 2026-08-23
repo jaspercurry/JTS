@@ -7321,18 +7321,34 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         ),
                     )
                 except ValueError as e:
-                    # A refusal (CrossoverV2Refused) and a malformed body
-                    # (BadRequest) are both the CALLER being told no, and they
-                    # stay quiet. Anything else arriving as a ValueError is the
-                    # speaker faulting on its own apply path and leaves no
-                    # other record: this arm answers 400 with the raw string
-                    # and, unlike its 500 sibling below, logged nothing. #2839
-                    # gave `save_v2_state` an `allow_nan=False` refusal that
-                    # lands exactly here, so the fault half is now named.
+                    # This arm answered 400 with the raw string and journaled
+                    # NOTHING, which the session/verify arm above had already
+                    # ruled a defect ("the 400 response is correct for the
+                    # browser; the gap was purely observability" --
+                    # test_crossover_v2_refusal_is_logged_not_silent). Every
+                    # ValueError leaving here is now recorded; what differs is
+                    # the SEVERITY, because the two halves are different events.
+                    #
+                    # A refusal (CrossoverV2Refused) or a malformed body
+                    # (BadRequest) is the caller being told no -- WARNING, under
+                    # the vocabulary the sibling already owns for "a v2 route
+                    # refused", which likewise exempts neither. Anything else is
+                    # the speaker faulting on its own apply path, which #2839's
+                    # `allow_nan=False` refusal in `save_v2_state` made
+                    # reachable -- ERROR, and named for what it is.
                     from jasper.web.correction_crossover_v2 import (
                         CrossoverV2Refused,
                     )
-                    if not isinstance(e, (BadRequest, CrossoverV2Refused)):
+                    if isinstance(e, (BadRequest, CrossoverV2Refused)):
+                        log_event(
+                            logger,
+                            "correction.crossover_v2_refused",
+                            level=logging.WARNING,
+                            route=path,
+                            reason=str(e),
+                            code=str(getattr(e, "code", "") or ""),
+                        )
+                    else:
                         log_event(
                             logger,
                             "correction.crossover_v2_apply_fault",
