@@ -1363,6 +1363,32 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     )
 
 
+#: The registry's Undo promises, and what each sentence says once the control
+#: is not on the screen. NOT new household copy, deliberately: each replacement
+#: is the same sentence MINUS the clause naming a control that is not there,
+#: which is #1924's rule ("every control the sentence names is on this screen")
+#: pointing the way it already points on the done screen — where
+#: ``crossover_envelope_v2._UNDO_PROMISE_SWAPS`` does exactly this for the
+#: promises THAT layer mints. Two entries cover the four TEMPLATE_VERIFY_FAIL
+#: sentences because three of them end the same way; the fourth leads with Undo
+#: and so has to name its whole action clause. Fragments, so a future row that
+#: makes the same promise inherits the drop without an edit here.
+_UNDO_PROMISE_DROPS = (
+    (", or undo to restore the previous sound.", "."),
+    (
+        "Undo to restore the previous sound, or re-measure to fit the "
+        "crossover again.",
+        "Re-measure to fit the crossover again.",
+    ),
+)
+
+
+def _without_undo_promise(message: str) -> str:
+    for promise, replacement in _UNDO_PROMISE_DROPS:
+        message = message.replace(promise, replacement)
+    return message
+
+
 def reason_message(
     code: str,
     spec: ReasonSpec,
@@ -1370,6 +1396,7 @@ def reason_message(
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
     rollback_anchor_available: bool | None = None,
+    can_undo: bool | None = None,
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -1401,16 +1428,34 @@ def reason_message(
     Facts are keyword-only and each defaults to "not established", so a caller
     holding none of them gets the registry's own renderings — the same answer
     reading ``REASON_REGISTRY`` by hand would give.
+
+    ``can_undo`` is the SCREEN's live fact — is the Undo control being offered
+    — and it is a different question from ``rollback_anchor_available``, which
+    is what the ROUND recorded about its own anchor when it failed (#2849).
+    Copy that names a button must agree with the button, so the four
+    ``TEMPLATE_VERIFY_FAIL`` sentences that point at Undo drop that clause
+    when it is not there. Keyed on this fact and not on the anchor precisely
+    because the reported case is a first-ever apply, where no anchor flag is
+    written onto the failure record at all (it is stamped only by the round
+    refusal that needs it) and the record therefore says nothing — while
+    ``can_undo`` is ``False``, which is why #1863 hides the control.
     """
     if code == REASON_LOCATE_FAILED:
-        return locate_failed_message(pilot_heard)
-    if code == REASON_VERIFY_INCONCLUSIVE:
-        return verify_inconclusive_message(reflection_measured)
-    if code == REASON_CORRECTION_ROLLBACK_FAILED:
+        message = locate_failed_message(pilot_heard)
+    elif code == REASON_VERIFY_INCONCLUSIVE:
+        message = verify_inconclusive_message(reflection_measured)
+    elif code == REASON_CORRECTION_ROLLBACK_FAILED:
+        # Returns EARLY, alone among the codes: this one already answers the
+        # Undo question, and it answers it on the round's recorded anchor
+        # because its whole subject is a restore that was tried and failed.
+        # Re-deciding it here on the screen's live fact would give one failure
+        # two accounts, which is the gap this selector exists to close.
         return correction_rollback_failed_message(rollback_anchor_available)
-    # ``or spec.banner`` for the silent-auto-retry codes, whose household text
-    # IS the banner and whose ``message`` is empty by construction.
-    return spec.message or spec.banner
+    else:
+        # ``or spec.banner`` for the silent-auto-retry codes, whose household
+        # text IS the banner and whose ``message`` is empty by construction.
+        message = spec.message or spec.banner
+    return _without_undo_promise(message) if can_undo is False else message
 
 
 def reason_diagnosis(

@@ -78,6 +78,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_VERIFY_INCONCLUSIVE,
     REASON_VERIFY_LEVEL_SHIFT,
     REASON_VERIFY_OUT_OF_TOLERANCE,
+    TEMPLATE_VERIFY_FAIL,
+    reason_message,
     verify_inconclusive_cause,
     verify_inconclusive_message,
 )
@@ -3040,8 +3042,8 @@ def test_verify_fail_screen_names_the_crossover_region_finding():
     """Same disclosure on the failure screen, where the household chooses."""
     # ``can_undo=True``: this test's subject is the finding's disclosure, and
     # its last assertion is the #1924 control/copy match — which only holds on
-    # a screen that HAS an Undo. See the open item on
-    # crossover_envelope_v2._can_undo for the first-ever-apply copy gap.
+    # a screen that HAS an Undo. The first-ever-apply case is
+    # test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply.
     env = build_crossover_envelope_v2(_status(
         phase="verify",
         failure={"code": "verify_crossover_region"},
@@ -3906,8 +3908,9 @@ def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
 
     ``can_undo=True``: the sentence names Undo, so the #1924 match this test
     asserts is only claimable on a screen that has one. The first-ever-apply
-    case, where the sentence names it and #1863 removes it, is the open item
-    recorded on ``crossover_envelope_v2._can_undo``."""
+    case, where #1863 removes the control, is
+    test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply — the
+    sentence drops the clause there rather than pointing at nothing."""
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, can_undo=True,
         failure={"code": REASON_VERIFY_DETERMINISTIC_MISMATCH},
@@ -3918,6 +3921,64 @@ def test_deterministic_mismatch_copy_matches_the_controls_on_its_own_screen():
     assert "Try again" not in verdict
     assert "Re-measure" in env["next_action"]["label"]
     assert "Undo (restore previous sound)" in _labels(env)
+
+
+def test_verify_fail_copy_drops_its_undo_promise_on_a_first_ever_apply():
+    """#2849 item 1, the converse of the two tests around it.
+
+    #1863 hides the Undo control on a speaker with nothing to restore to, and
+    until now the four TEMPLATE_VERIFY_FAIL sentences kept naming it anyway —
+    #1924's rule ("every control the sentence names is on this screen")
+    pointing the other way, on a first-ever apply, which is the most ordinary
+    case there is. The clause is dropped, not replaced: nothing here is new
+    household copy, and each sentence keeps the lever that DOES exist.
+    """
+    remaining_lever = {
+        REASON_VERIFY_OUT_OF_TOLERANCE: "Try again.",
+        REASON_VERIFY_CROSSOVER_REGION: "Re-measure to fit it again.",
+        REASON_VERIFY_LEVEL_SHIFT: "Try again — if it repeats, re-measure.",
+        REASON_VERIFY_DETERMINISTIC_MISMATCH: "Re-measure to fit the crossover again.",
+    }
+    for code, lever in remaining_lever.items():
+        gated = build_crossover_envelope_v2(_status(
+            phase="verify", applied=True, can_undo=False,
+            failure={"code": code},
+        ))["verdict_text"]
+        offered = build_crossover_envelope_v2(_status(
+            phase="verify", applied=True, can_undo=True,
+            failure={"code": code},
+        ))["verdict_text"]
+
+        assert "undo" not in gated.lower(), (code, gated)
+        assert lever in gated, (code, gated)
+        # ...and the screen with a real Undo is untouched, which is what makes
+        # the assertion above a CHANGE rather than copy that never said it.
+        assert "undo" in offered.lower(), (code, offered)
+        assert not any("Undo" in label for label in _labels(
+            build_crossover_envelope_v2(_status(
+                phase="verify", applied=True, can_undo=False,
+                failure={"code": code},
+            ))
+        ))
+
+
+def test_every_undo_naming_verify_fail_sentence_is_covered_by_the_drop():
+    """The fragment table is matched by TEXT, so a sentence can silently escape
+    it. Enumerated from the registry rather than from the four codes this
+    landed for: a future ``verify_fail`` row that promises Undo has to be
+    covered too, and this is what tells its author so."""
+    promising = {
+        code: spec for code, spec in REASON_REGISTRY.items()
+        if spec.template == TEMPLATE_VERIFY_FAIL and "undo" in spec.message.lower()
+    }
+    assert len(promising) == 4, sorted(promising)
+    for code, spec in promising.items():
+        dropped = reason_message(code, spec, can_undo=False)
+        assert dropped != spec.message, code
+        assert "undo" not in dropped.lower(), (code, dropped)
+        # Not established is not "no button": the registry rendering stands.
+        assert reason_message(code, spec) == spec.message, code
+        assert reason_message(code, spec, can_undo=True) == spec.message, code
 
 
 def test_a_retriable_verify_fail_code_keeps_its_try_again():
@@ -4432,6 +4493,36 @@ def test_rollback_failed_keeps_its_fact_and_its_instruction_when_aged():
     assert "it didn't finish" not in note
     # And the button the sentence names is actually on the screen.
     assert any("Undo" in label for label in _labels(env))
+
+
+def test_the_aged_nudge_takes_the_no_anchor_row_when_undo_is_gated():
+    """#2849 item 2 — the disagreeing direction, which nothing covered.
+
+    The nudge picked its row off the failure record's
+    ``rollback_anchor_available`` while the button beside it gates on
+    ``can_undo``. Two facts, and until now nothing made them agree: a record
+    that says nothing (absent flag — a legacy pre-#2291 state) over a speaker
+    with no ``pre_apply_profile`` took the row ending "Undo restores it" onto
+    a screen with no Undo. A promise is only honest when BOTH allow it.
+
+    The record here is deliberately silent rather than ``False``: a ``False``
+    already took the no-anchor row before this change, so it could not tell
+    the fix from the shipped behaviour.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        REASON_CORRECTION_ROLLBACK_FAILED,
+    )
+
+    env = build_crossover_envelope_v2(
+        _stale_measurement_status(
+            REASON_CORRECTION_ROLLBACK_FAILED, phase="verify", can_undo=False,
+        ),
+    )
+    note = _history_note(env)
+    assert "rollback_anchor_available" not in str(env)  # the record says nothing
+    assert "Undo restores it" not in note
+    assert "no stored previous sound to go back to" in note
+    assert not any("Undo" in label for label in _labels(env))
 
 
 def test_rollback_failed_falls_back_to_the_generic_note_when_nothing_is_applied():

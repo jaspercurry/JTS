@@ -2852,12 +2852,15 @@ def _undo_action() -> dict[str, Any]:
 # ``can_undo``, deriving it from the same evidence handle_v2_restore checks; this
 # reads that fact rather than re-deriving it.
 #
-# OPEN ITEM this gate creates: the button is conditional, the COPY is not — four
-# TEMPLATE_VERIFY_FAIL registry sentences still name Undo, so a first-ever apply
-# reads copy pointing at an absent control (#1924 pointing the other way). The
-# fix belongs in crossover_v2.refusal_copy.reason_message, where
-# correction_rollback_failed already does it via ``rollback_anchor_available``;
-# four new household sentences are the owner's call, not this fix's.
+# THE Undo fact for this layer, and for the copy selector below it. The button
+# is conditional on it (#1863) and so is every sentence that names the button:
+# the promises this layer mints go through :func:`_honest_about_undo`, and the
+# four TEMPLATE_VERIFY_FAIL registry sentences through
+# ``crossover_v2.refusal_copy.reason_message``, which takes it as ``can_undo``
+# (#2849) — one failure narrated the same way on every surface that holds the
+# fact. Deliberately NOT ``rollback_anchor_available``: that is what the ROUND
+# recorded about its own anchor, and on a first-ever apply nothing writes it at
+# all, so it cannot answer "is the button on this screen".
 def _can_undo(status: Mapping[str, Any]) -> bool:
     return bool(_v2(status).get("can_undo"))
 
@@ -2876,8 +2879,8 @@ def _can_undo(status: Mapping[str, Any]) -> bool:
 #: several call sites. Only sentences MINTED HERE are listed — the four
 #: TEMPLATE_VERIFY_FAIL registry sentences belong to
 #: ``crossover_v2.refusal_copy.reason_message``, which narrates one failure
-#: across surfaces this layer cannot see; those are the open item on
-#: :func:`_can_undo`.
+#: across surfaces this layer cannot see; it drops their Undo clause itself,
+#: off the same ``can_undo`` this table is gated on (#2849).
 _UNDO_PROMISE_SWAPS = (
     (
         "If it sounds worse than before, you can undo.",
@@ -3085,7 +3088,7 @@ def _record_when_phrase(record: Mapping[str, Any]) -> str:
 
 
 def _failure_history_note(
-    code: str, failure: Mapping[str, Any], *, applied: bool,
+    code: str, failure: Mapping[str, Any], *, applied: bool, can_undo: bool,
 ) -> str:
     """The aged failure's ONE quiet line: what happened, and when.
 
@@ -3104,10 +3107,16 @@ def _failure_history_note(
     # #2291: the no-anchor arm gets its own row. Read off the record rather
     # than re-derived, because the anchor can change between the round and the
     # resume, and this line describes the round.
+    #
+    # ...and #2849: EITHER fact takes that row, because the row above ends
+    # "Undo restores it" and the button beside this nudge is gated on
+    # ``can_undo``, not on the record. Two facts, and the promise is only
+    # honest when both allow it — so a disagreement resolves toward the arm
+    # that promises nothing.
     anchor = failure.get("rollback_anchor_available")
     durable = (
         _DURABLE_STATE_FACTS_NO_ANCHOR.get(code)
-        if anchor is False
+        if anchor is False or not can_undo
         else _DURABLE_STATE_FACTS.get(code)
     )
     if durable is not None and applied:
@@ -3235,7 +3244,9 @@ def _aged_failure_envelope(
             # styles the two differently (crossover/main.js renderNudges), so
             # the quiet presentation needs no page change.
             "severity": "info",
-            "text": _failure_history_note(code, failure, applied=applied),
+            "text": _failure_history_note(
+                code, failure, applied=applied, can_undo=_can_undo(status),
+            ),
         }],
     )
     # The dead session's measurement payloads. Nulled AFTER the build rather
@@ -3451,6 +3462,7 @@ def _reason_message(
         pilot_heard=_failure_pilot_heard(status),
         reflection_measured=_verify_gate_reflection_measured(status),
         rollback_anchor_available=_failure_rollback_anchor_available(status),
+        can_undo=_can_undo(status),
     )
 
 
