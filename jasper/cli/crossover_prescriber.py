@@ -75,6 +75,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
+    packet_incumbent_linearization,
     packet_positional_evidence,
     packet_region_band_hz,
 )
@@ -248,6 +249,7 @@ def _gate(
             packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=packet_driver_passbands_hz(packet),
             classifications=classifications,
+            incumbent_filters=packet_incumbent_linearization(packet),
         )
         # `fitted=None` and not an oversight: at propose/stage time this round
         # has not measured, so no per-driver fit exists to merge the document
@@ -357,6 +359,39 @@ def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
     return _band_phrase(prescription.band_hz[0], prescription.band_hz[1])
 
 
+def _displaced_phrase(prescription: DriverPrescription) -> str:
+    """What staging this document deletes, in one line, or that nobody knows.
+
+    Three answers, kept apart because they send an operator somewhere
+    different: the evidence carried no incumbent (go and find out what the
+    speaker is playing before you total a role); it carried one and this
+    document replaces nothing; it replaces filters, and here is how far above
+    them the prescribed cascade ends up. Only the last is the 2026-08-22 shape.
+
+    It reports and never refuses — see
+    :func:`~.driver_prescription._check_displaced` for the mechanism test that
+    decision rests on.
+    """
+    count = prescription.displaced_filters
+    if count is None:
+        return (
+            "displaces: unknown — this packet carries no incumbent "
+            "linearization, so what these filters replace cannot be named"
+        )
+    if not count:
+        return "displaces: nothing (the named role(s) carry no filters today)"
+    boost = prescription.displaced_boost_db or 0.0
+    where = (
+        f", peaking on the {prescription.displaced_boost_role}"
+        if prescription.displaced_boost_role
+        else ""
+    )
+    return (
+        f"displaces: {count} incumbent filter(s); net {boost:+.2f} dB against "
+        f"the graph now playing{where}"
+    )
+
+
 def _print_prescription(
     prescription: BlendPrescription | DriverPrescription,
     verb: str,
@@ -369,6 +404,11 @@ def _print_prescription(
     wording of both lines is preserved: ``stage``'s "for round N" sits where it
     always did, because a test in a real subprocess reads that sentence to prove
     the CLI's logging configuration did not swallow the operator's own output.
+
+    The per-driver class gets one more line, after the filters, because a
+    document of that class is a TOTAL for every role it names and the filters
+    printed above are therefore also a DELETION of whatever those roles carry —
+    the fact the 2026-08-22 round had no way to see (#2863).
     """
     print(
         f"{verb} {prescription.prescription_class} prescription{qualifier}: "
@@ -382,6 +422,8 @@ def _print_prescription(
             f"{entry['gain']:+.2f} dB",
             file=sys.stderr,
         )
+    if isinstance(prescription, DriverPrescription):
+        print(f"  {_displaced_phrase(prescription)}", file=sys.stderr)
 
 
 def _next_round_ordinal(state_path: str | None) -> int:

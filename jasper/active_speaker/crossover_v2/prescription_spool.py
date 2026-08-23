@@ -578,6 +578,14 @@ def stage_prescription(
         composed_boost_db=driver.composed_boost_db if driver else None,
         composed_boost_role=driver.composed_boost_role if driver else None,
         max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB if driver else None,
+        # …and what it DELETES, on the same line, because a per-driver document
+        # is a total for every role it names and the incumbent filters it does
+        # not repeat go away. `None` on the blend class, which replaces no
+        # per-driver branch, and on a driver document whose evidence carried no
+        # incumbent — an absent number rather than a zero, as above.
+        displaced_filters=driver.displaced_filters if driver else None,
+        displaced_boost_db=driver.displaced_boost_db if driver else None,
+        displaced_boost_role=driver.displaced_boost_role if driver else None,
         replaced=replaced,
     )
     return path
@@ -824,6 +832,13 @@ def _validate(
             # its own name rather than on a substitute; a subset that dropped
             # the dips could not, because it is the dips that say no.
             classifications=read_feature_verdicts(envelope.get("classifications")),
+            # `None` for the same reason the blend arm below passes no
+            # positional evidence: the packet is gone, and this argument buys
+            # only a disclosure — one already made, on the line
+            # `stage_prescription` logged, at the moment an operator could act
+            # on it. Banking the incumbent in the envelope to re-report it here
+            # would be a write with no reader.
+            incumbent_filters=None,
         )
     else:
         # `positional_evidence` is None because the packet is gone and inventing

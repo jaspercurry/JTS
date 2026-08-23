@@ -76,6 +76,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
+    packet_incumbent_linearization,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
@@ -172,11 +173,28 @@ def _classification(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {"schema": 1, "thresholds": {"frac_of_nmp": 0.35}, "rows": rows}
 
 
+#: The tweeter linearization the 2026-08-22 round was already playing, banked
+#: verbatim from ``captures/tuning-hw-validation-2026-08/e-boost-measure/
+#: state.json`` -> ``pre_apply_profile.linearization.tweeter`` (#2863). The
+#: Lowshelf is the filter that document deleted without saying so.
+INCUMBENT_TWEETER = [
+    {"biquad_type": "Lowshelf", "freq": 5844.665822142265,
+     "gain": -6.074416704015194, "q": 0.7071067811865475},
+    {"biquad_type": "Peaking", "freq": 3249.129612679807,
+     "gain": -2.058708122071308, "q": 2.0},
+    {"biquad_type": "Peaking", "freq": 7309.703164045622,
+     "gain": -2.8630187931748154, "q": 2.0},
+    {"biquad_type": "Peaking", "freq": 5683.517187477042,
+     "gain": -1.4499782258759095, "q": 2.0},
+]
+
+
 def _speaker(
     tmp_path: Path,
     *,
     draft: dict[str, Any] | None = _draft(),
     classification: dict[str, Any] | None = None,
+    incumbent: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A bundle plus the two per-driver evidence sources, as a packet."""
     session, _ = _bundle(tmp_path)
@@ -191,7 +209,16 @@ def _speaker(
     if draft is not None:
         draft_path = tmp_path / "draft.json"
         draft_path.write_text(json.dumps(draft))
-    return build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+    state_path = None
+    if incumbent is not None:
+        state_path = tmp_path / "state.json"
+        state_path.write_text(json.dumps({
+            "kind": "jts_crossover_v2_flow_state",
+            "pre_apply_profile": {"linearization": incumbent},
+        }))
+    return build_crossover_evidence_packet(
+        session, driver_draft_path=draft_path, state_path=state_path
+    )
 
 
 @pytest.fixture
@@ -200,12 +227,13 @@ def packet(tmp_path: Path) -> dict[str, Any]:
 
 
 def _gate(packet: dict[str, Any], document: Any) -> Any:
-    """The gate, called the one way its three inputs are meant to be derived."""
+    """The gate, called the one way its four inputs are meant to be derived."""
     return read_driver_prescription(
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
         passbands_hz=packet_driver_passbands_hz(packet),
         classifications=packet_feature_classifications(packet),
+        incumbent_filters=packet_incumbent_linearization(packet),
     )
 
 
@@ -2942,10 +2970,13 @@ def _stage_driver(
     ordinal: int = 4,
     filters: Any = None,
     classification: dict[str, Any] | None = None,
+    incumbent: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     """One accepted per-driver prescription, banked in a temporary spool."""
     spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
-    packet = _speaker(tmp_path / "bundle", classification=classification)
+    packet = _speaker(
+        tmp_path / "bundle", classification=classification, incumbent=incumbent
+    )
     document = _document(filters or [_cut()], packet)
     payload = json.dumps(document).encode()
     prescription = _gate(packet, document)
@@ -3456,3 +3487,212 @@ def test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag(
     out = json.loads(capsys.readouterr().out)
     assert code == cli.EXIT_REFUSED
     assert out["reason"] == dp.PASSBAND_UNAVAILABLE
+
+
+# --------------------------------------------------------------------------- #
+# what a document DISPLACES (#2863)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_packet_enumerates_the_incumbent_linearization_a_document_replaces(
+    tmp_path,
+):
+    """The evidence the 2026-08-22 round did not have.
+
+    A per-driver document is a total for every role it names, so the filters a
+    prescriber does not repeat are deleted. It cannot repeat what it was never
+    shown — and before this block the packet showed it nothing.
+    """
+    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+
+    block = packet["incumbent"]["linearization"]
+    assert block["from_applied_profile"]["tweeter"] == INCUMBENT_TWEETER
+    assert "DELETED" in block["note"]
+    assert "pre_apply_profile" in block["source"]
+    # The reader the door is handed, over the block the packet published.
+    assert packet_incumbent_linearization(packet) == {
+        "tweeter": tuple(INCUMBENT_TWEETER),
+    }
+
+
+def test_the_incumbent_reader_keeps_unanswered_apart_from_empty(tmp_path):
+    """``None`` is "nobody knows"; ``{}`` is "the branches carry nothing".
+
+    A round banked without its flow state cannot say what the graph holds, and
+    a document staged against it displaces an unknown. A profile that IS there
+    and linearizes nothing is a different, answered fact.
+    """
+    assert packet_incumbent_linearization(_speaker(tmp_path / "none")) is None
+    assert packet_incumbent_linearization(
+        _speaker(tmp_path / "empty", incumbent={})
+    ) == {}
+    assert packet_incumbent_linearization(
+        _speaker(tmp_path / "role", incumbent={"tweeter": []})
+    ) == {"tweeter": ()}
+
+
+def test_the_incumbent_reader_refuses_a_record_this_system_did_not_write(tmp_path):
+    """Strict, and it fails the WHOLE map — a partial read would under-report."""
+    for index, bad in enumerate((
+        {"biquad_type": "Bandpass", "freq": 5000.0, "gain": -3.0, "q": 2.0},
+        {"biquad_type": "Peaking", "freq": "5000", "gain": -3.0, "q": 2.0},
+        {"biquad_type": "Peaking", "freq": 5000.0, "gain": -3.0, "q": 0.0},
+    )):
+        packet = _speaker(tmp_path / str(index), incumbent={"tweeter": [bad]})
+        assert packet_incumbent_linearization(packet) is None
+
+
+def test_dropping_an_incumbent_lowshelf_is_charged_as_the_boost_it_is(tmp_path):
+    """The 2026-08-22 shape: cuts that silently delete a −6 dB shelf.
+
+    The document's own cascade never rises above unity, so ``_check_composed``
+    reads ``0.0`` — correctly, because that is what the emitter charges. What
+    the round actually did to the sound is the DELTA against what it replaced,
+    and only this number carries it.
+    """
+    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+    document = _document([_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)], packet)
+
+    prescription = _gate(packet, document)
+
+    assert prescription.composed_boost_db == 0.0
+    assert prescription.displaced_filters == 4
+    assert prescription.displaced_boost_role == "tweeter"
+    # The incumbent cascade bottoms out at −8.015 dB near 3217 Hz — its
+    # Lowshelf's −6.074 dB floor plus the −2.059 dB bell at 3249 Hz — and the
+    # document's Q-8 bell at 5 kHz is ~0 dB that far away. Deleting the one and
+    # keeping the other is +8.0 dB of output the composed cap never sees.
+    assert prescription.displaced_boost_db == pytest.approx(7.998, abs=0.01)
+    assert prescription.to_dict()["displaced_boost_db"] == (
+        prescription.displaced_boost_db
+    )
+
+
+def test_repeating_the_incumbent_leaves_the_true_small_delta(tmp_path):
+    """The same document, authored as the total it is, reads as what it is.
+
+    Every repeated filter needs its own banked ``defect-cuttable`` verdict —
+    ``_check_classification`` vouches per filter and makes no exception for one
+    the graph is already playing — so this round banks four.
+    """
+    peaking = [
+        entry for entry in INCUMBENT_TWEETER if entry["biquad_type"] == "Peaking"
+    ]
+    packet = _speaker(
+        tmp_path,
+        incumbent={"tweeter": peaking},
+        classification=_classification([
+            _verdict(TWEETER_FEATURE_HZ),
+            *(_verdict(entry["freq"]) for entry in peaking),
+        ]),
+    )
+    kept = [
+        {"role": "tweeter", **entry} for entry in peaking
+    ] + [_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)]
+
+    prescription = _gate(packet, _document(kept, packet))
+
+    assert prescription.displaced_filters == 3
+    # Only the document's own added bell separates the two cascades, and a
+    # −1.0 dB cut can only make the prescribed side QUIETER — so nothing rises
+    # above the incumbent anywhere.
+    assert prescription.displaced_boost_db == 0.0
+    assert prescription.displaced_boost_role is None
+
+
+def test_an_incumbent_shelf_can_never_be_repeated_so_naming_the_role_drops_it(
+    tmp_path,
+):
+    """The structural corner two rulings make between them, pinned (#2863).
+
+    ``_parse_filters`` admits Peaking and nothing else — "a prescriber that
+    wants a shelf is asking for a different quantity" — while the merge is a
+    TOTAL for every role a document names. So a role whose incumbent carries a
+    shelf cannot be totalled: naming it deletes the shelf, and there is no
+    document that does not. That is exactly the 2026-08-22 round, and it is why
+    the disclosure below is the only signal there is to give.
+    """
+    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+    shelf = {"role": "tweeter", **INCUMBENT_TWEETER[0]}
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([shelf], packet))
+
+    assert excinfo.value.reason == dp.FILTER_MALFORMED
+    assert "Peaking" in excinfo.value.detail
+
+
+def test_a_displaced_incumbent_is_disclosed_and_never_refused(tmp_path):
+    """``docs/measurement-loop-doctrine.md`` §3/§4, pinned.
+
+    Deleting a deep incumbent cut is a reversible experiment with no
+    component-damage mechanism behind it: the emitted cascade is what spends
+    headroom, and a driver's protective corners are not in this map at all. So
+    the gate reports the number and accepts the document.
+    """
+    deep = [{"biquad_type": "Peaking", "freq": 5000.0, "gain": -11.0, "q": 2.0}]
+    packet = _speaker(tmp_path, incumbent={"tweeter": deep})
+
+    prescription = _gate(packet, _document([_cut(gain=-0.5)], packet))
+
+    assert prescription.displaced_boost_db > DRIVER_MAX_COMPOSED_BOOST_DB - 2.0
+    assert prescription.prescription_class == "cut"
+
+
+def test_without_an_incumbent_record_the_displacement_is_unknown_not_zero(tmp_path):
+    """A packet with no flow state says nothing, and the receipt says so too."""
+    packet = _speaker(tmp_path)
+
+    prescription = _gate(packet, _document([_cut()], packet))
+
+    assert prescription.displaced_filters is None
+    assert prescription.displaced_boost_db is None
+    assert prescription.displaced_boost_role is None
+
+
+def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, capsys):
+    """The disclosure's operator-facing reader: one line, before staging."""
+    session, _ = _bundle(tmp_path / "bundle")
+    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (round_dir / "feature_classification.json").write_text(
+        json.dumps(_classification())
+    )
+    draft_path = tmp_path / "draft.json"
+    draft_path.write_text(json.dumps(_draft()))
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "kind": "jts_crossover_v2_flow_state",
+        "pre_apply_profile": {"linearization": {"tweeter": INCUMBENT_TWEETER}},
+    }))
+    packet = build_crossover_evidence_packet(
+        session, driver_draft_path=draft_path, state_path=state_path
+    )
+    prescription_path = tmp_path / "p.json"
+    prescription_path.write_text(json.dumps(
+        _document([_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)], packet)
+    ))
+
+    code = cli.main([
+        "propose", str(session), "--drivers", str(draft_path),
+        "--state", str(state_path), "--prescription", str(prescription_path),
+    ])
+
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "displaces: 4 incumbent filter(s)" in err
+    assert "+8.00 dB" in err
+
+
+def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog):
+    """The disclosure's durable reader: the journal line that banks the stage."""
+    with caplog.at_level(
+        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
+    ):
+        _stage_driver(
+            tmp_path,
+            filters=[_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)],
+            incumbent={"tweeter": INCUMBENT_TWEETER},
+        )
+
+    assert "displaced_filters=4" in caplog.text
+    assert "displaced_boost_role=tweeter" in caplog.text
