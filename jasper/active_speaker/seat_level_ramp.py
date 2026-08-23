@@ -39,7 +39,7 @@ surprise can carry the room. Downward steps are uncapped because they reduce
 risk, exactly as ``calibration_level``'s own contract says.
 
 **Where the ramp starts: low, and it does not matter much.** Bites this big
-cross a 61 dB SPL room from :data:`SEAT_LEVEL_START_DB` in three of them, so a
+cross a 61 dB SPL room from :data:`SEAT_LEVEL_START_DB` in five of them, so a
 start derived from the measured room was tried and dropped — it bought a second
 and cost a helper, a constant, and a refusal. What broke the
 retired ladder was never the start on its own — it was a 0.75 dB rung behind a
@@ -96,6 +96,7 @@ import asyncio
 import logging
 import math
 import statistics
+import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -219,10 +220,14 @@ FADE_FLOOR_DB = -50.0
 # under repeated cancellation too.
 #
 # The count is bounded on purpose: past this many cancellations the operator is
-# leaning on the key and gets out, with the fader left where the ramp had it and
-# the durable latch still on disk for the recovery machinery to drain. That is
-# not a loud speaker — ``cancel_tone`` is synchronous and runs on the first
-# attempt, so the room is already quiet.
+# leaning on the key and gets out. What that costs, stated rather than implied:
+# ``cancel_tone`` is synchronous but runs in ``_fade_and_stop``'s own ``finally``
+# — i.e. AFTER the fade, not on the first shield attempt — so an abandoned
+# teardown cuts the stimulus abruptly at whatever level the ramp had reached,
+# and leaves the fader there with the durable latch still on disk for the
+# recovery machinery to drain. Abrupt at a measurement level is the deliberate
+# trade for always being able to stop; it is bounded by the same headroom
+# ceiling every other path is, and the recovery screen sees the latch.
 TEARDOWN_SHIELD_ATTEMPTS = 4
 
 # Refusal codes. Stable strings: they are the operator-facing reason and the
@@ -255,6 +260,25 @@ REFUSE_ISOLATION_UNAVAILABLE = "measurement_isolation_unavailable"
 
 class SeatLevelRampError(RuntimeError):
     """The leveling step cannot form a safe ramp from these inputs."""
+
+
+# An interrupted pass still owes its caller one fact: did the household get its
+# volume back? The cancellation is RE-RAISED rather than swallowed (swallowing
+# would break task-cancellation semantics for every caller), so there is no
+# return value to carry it — it rides on the exception that is already
+# propagating, stamped by the teardown that measured it.
+RESTORED_ATTR = "seat_level_restored"
+
+
+def interrupted_restore_outcome(exc: BaseException) -> bool | None:
+    """What the pass's teardown achieved before ``exc`` propagated out of it.
+
+    ``None`` when the exception never passed through a pass that had opened the
+    latch — which is the honest answer, not an optimistic one: a caller that
+    gets ``None`` here must not claim the volume was restored.
+    """
+    value = getattr(exc, RESTORED_ATTR, None)
+    return value if isinstance(value, bool) else None
 
 
 @dataclass(frozen=True)
@@ -389,9 +413,30 @@ def mic_is_not_observing(
     The ceiling is the ONLY non-arbitrary place to ask. A fixed "probe span"
     used to arm it earlier, and from a low start in a loud room it fired on a
     perfectly good chain that simply had not emerged yet — jts3's 61 dB SPL room
-    tripped it 20 dB into a 44 dB climb. Waiting costs a few seconds and the
-    ceiling is a safe volume by construction (no branch reaches full scale
-    there), with the measured SPL stop live on every sample regardless.
+    tripped it 20 dB into a 44 dB climb, refusing the very incident this pass
+    exists to fix.
+
+    **What bounds the wait, stated exactly** (#2910 merged the vocabulary this
+    has to use): ``max_main_volume_db`` is DIGITAL HEADROOM — the loudest volume
+    at which no driver's branch reaches full scale — with the declared per-driver
+    caps disclosed beside it on
+    ``event=active_speaker.unsegmented_ceiling_bound`` rather than binding it. So
+    the three things that bound a dead-mic walk are that headroom ceiling (the
+    loudest volume this run may reach, by construction), full scale itself, and
+    the graph's limiters.
+
+    The measured SPL stop is deliberately NOT in that list. It cannot be: a mic
+    that is not observing reports a level that does not move with the volume, so
+    its reading never approaches the stop however far the ramp climbs — a
+    -90 dBFS feed reads about 16 dB SPL against an 80 dB SPL stop the whole way
+    up. Citing it here would be citing a guard that is structurally inert on the
+    exact failure mode this predicate is about.
+
+    Model-derived cost of the wait (synthetic mic, jts3 rig): the walk tops out
+    AT the ceiling and never above it, 8.86 audible seconds of which 1.0 s sits
+    at the ceiling, refusal ``mic_not_observing``, household volume restored —
+    23.2 dB louder than the retired 20 dB span reached before refusing. An
+    on-metal dead-mic run is on the bench checklist; these numbers are a model.
     """
     return max_rise_db < min_rise_db and at_ceiling
 
@@ -401,7 +446,15 @@ def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
 
     One ambient reading, one reading per bite from the start to the ceiling, and
     one per allowed miss — each costing a settle drain plus a median window —
-    plus :data:`WATCHDOG_SLACK_S`. Priced against the ACTUAL start and the
+    plus :data:`WATCHDOG_SLACK_S`.
+
+    Scope, because the budget is wider than the thing it guards: the ambient read
+    happens BEFORE the timeout scope opens (its result is what the pass logs and
+    what the guards read), so this budget covers the tone-playing walk only. The
+    ambient window is priced in anyway, which makes the budget generous by one
+    reading rather than tight by one — the safe direction for a backstop. A feed
+    that never returns during the ambient read is caught by that read's own
+    wall-clock window instead. Priced against the ACTUAL start and the
     ACTUAL bite, so it cannot repeat the retired kernel's mistake of budgeting a
     continuous climb for a walk that does not climb continuously. Because the
     bite is a fixed fraction of the span, the bite count is the same
@@ -766,6 +819,13 @@ async def run_seat_level_ramp(
                         "parked at a measurement level"
                     ),
                 )
+            # An interrupt leaves by exception, so there is no result to stamp.
+            # Stamp the exception instead: the CLI turns it into an honest
+            # refusal, and `restored: null` beside prose claiming a restore is
+            # exactly the dishonesty this field exists to prevent.
+            in_flight = sys.exc_info()[1]
+            if in_flight is not None:
+                setattr(in_flight, RESTORED_ATTR, restored["ok"])
 
     # Everything that touches the fader runs inside the shared measurement
     # window (jasper.correction.coordinator). Without it, jasper-voice's
@@ -843,6 +903,9 @@ async def _walk_to_the_band(
     last_step_was_full = False
     previous: tuple[float, float] | None = None
     slope_db_per_db: float | None = None
+    # Non-zero by construction: a span that would make the bite zero is a
+    # ceiling at or below the start, which REFUSE_VOLUME_CEILING_TOO_LOW already
+    # refused before the tone started.
     bite = bite_db(start_db=start_db, ceiling_db=ceiling_db)
     max_readings = 1 + math.ceil(
         max(0.0, ceiling_db - start_db) / bite
@@ -865,7 +928,7 @@ async def _walk_to_the_band(
             "steps": steps,
         }
 
-    def refuse(reason: str, detail: str, **evidence: str) -> SeatLevelResult:
+    def refuse(reason: str, detail: str, **evidence: Any) -> SeatLevelResult:
         """Log the refusal and hand the operator the same facts on stdout.
 
         Every detail closes with where the ramp stopped, the headroom ceiling it
@@ -979,10 +1042,11 @@ async def _walk_to_the_band(
                         observed_db_spl=f"{observed_db_spl:.1f}",
                     )
 
+            at_ceiling = volume_db >= ceiling_db - STEP_EPSILON_DB
             if mic_is_not_observing(
                 max_rise_db=max_rise_db,
                 min_rise_db=min_rise_db,
-                at_ceiling=volume_db >= ceiling_db - STEP_EPSILON_DB,
+                at_ceiling=at_ceiling,
             ):
                 return refuse(
                     REFUSE_MIC_NOT_OBSERVING,
@@ -1006,12 +1070,22 @@ async def _walk_to_the_band(
             )
             next_db = min(volume_db + step_db, ceiling_db)
             if abs(next_db - volume_db) <= STEP_EPSILON_DB:
+                # Two shapes reach here. At the ceiling the amplifier is the
+                # actionable half; off the ceiling the ramp simply cannot move
+                # (a reading pinned within STEP_EPSILON_DB of the target while
+                # out of band), and telling that operator to turn up an
+                # amplifier would send them the wrong way.
+                remedy = (
+                    "raise the external amplifier and retry"
+                    if at_ceiling
+                    else "the reading did not move with the volume; check the "
+                    "microphone and the signal path"
+                )
                 return refuse(
                     REFUSE_SPL_TARGET_UNREACHABLE,
-                    f"the ceiling {ceiling_db:.2f} dB measures "
-                    f"{observed_db_spl:.1f} dB SPL, short of the "
+                    f"{observed_db_spl:.1f} dB SPL is short of the "
                     f"[{target.low_db_spl:.1f},{target.high_db_spl:.1f}] dB SPL "
-                    "band; raise the external amplifier and retry",
+                    f"band and the ramp cannot climb further; {remedy}",
                     observed_db_spl=f"{observed_db_spl:.1f}",
                 )
             # Only a step that commanded the WHOLE measured gap is a prediction

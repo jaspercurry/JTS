@@ -73,6 +73,7 @@ from typing import Any
 from jasper.log_event import log_event
 from jasper.active_speaker.seat_level_ramp import (
     REFUSE_INTERRUPTED,
+    interrupted_restore_outcome,
     SeatLevelRampError,
     SeatLevelResult,
     run_seat_level_ramp,
@@ -108,8 +109,25 @@ REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
 REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
 
 
-def _refused(reason: str, detail: str) -> tuple[SeatLevelResult, str]:
-    return SeatLevelResult(status="refused", reason=reason), detail
+def _refused(
+    reason: str, detail: str, *, restored: bool | None = None
+) -> tuple[SeatLevelResult, str]:
+    return (
+        SeatLevelResult(status="refused", reason=reason, restored=restored),
+        detail,
+    )
+
+
+def _restore_phrase(restored: bool | None) -> str:
+    """Say what is known about the fader, and never more than that."""
+    if restored is True:
+        return "The household volume was restored."
+    if restored is False:
+        return (
+            "The household volume was NOT restored — the speaker is parked at a "
+            "measurement level; the volume-recovery screen can drain it."
+        )
+    return "Whether the household volume was restored could not be observed."
 
 
 def stimulus_peak_dbfs(path: Path) -> float:
@@ -228,7 +246,16 @@ def _derive_bounds(args: argparse.Namespace, stimulus: Path) -> tuple[float, flo
 
 
 class _OperatorStopped(Exception):
-    """SIGINT arrived while the pass was running, and the pass has torn down."""
+    """SIGINT arrived while the pass was running, and the pass has torn down.
+
+    Carries the pass's MEASURED restore outcome (``None`` when the pass never
+    got far enough to have one), so the refusal this becomes can state the
+    volume rather than assume it.
+    """
+
+    def __init__(self, restored: bool | None) -> None:
+        super().__init__("stopped by the operator")
+        self.restored = restored
 
 
 async def _stoppable(pass_coro: Any) -> SeatLevelResult:
@@ -260,10 +287,15 @@ async def _stoppable(pass_coro: Any) -> SeatLevelResult:
         handled = False
     try:
         return await task
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
         if stopped:
-            raise _OperatorStopped from None
+            raise _OperatorStopped(interrupted_restore_outcome(exc)) from None
         raise
+    except KeyboardInterrupt as exc:
+        # Reached only when no handler could be installed (a loop that is not
+        # the main thread's): the interpreter raises inside the running
+        # coroutine, so the pass's teardown has already run and stamped it.
+        raise _OperatorStopped(interrupted_restore_outcome(exc)) from None
     finally:
         if handled:
             with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
@@ -357,11 +389,12 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
                 next_samples=_samples,
             )
         )
-    except _OperatorStopped:
+    except _OperatorStopped as stop:
         return _refused(
             REFUSE_INTERRUPTED,
-            "stopped by the operator; the stimulus was cut and the household "
-            "volume restored, nothing was banked",
+            "stopped by the operator; the stimulus was cut and nothing was "
+            f"banked. {_restore_phrase(stop.restored)}",
+            restored=stop.restored,
         )
     except SeatLevelRampError as exc:
         # The refusal code is the first token of the message (the window/ceiling
@@ -447,11 +480,19 @@ def main(argv: list[str] | None = None) -> int:
         build_parser().error("pass --calibration-file or --mic-serial")
     try:
         result, detail = asyncio.run(_run(args))
-    except KeyboardInterrupt:
-        # The pass restored the household volume and stopped the stimulus on
-        # its way out (``run_teardown``); say so rather than dying silently.
-        result = SeatLevelResult(status="refused", reason=REFUSE_INTERRUPTED)
-        detail = "stopped by the operator; volume restored, nothing was banked"
+    except KeyboardInterrupt as exc:
+        # The last-resort path: the interrupt escaped ``_stoppable`` entirely,
+        # so the pass may never have opened the latch. Report only what the
+        # exception actually carries -- claiming a restore here is the
+        # dishonesty this field exists to prevent.
+        restored = interrupted_restore_outcome(exc)
+        result = SeatLevelResult(
+            status="refused", reason=REFUSE_INTERRUPTED, restored=restored
+        )
+        detail = (
+            "stopped by the operator; the stimulus was cut and nothing was "
+            f"banked. {_restore_phrase(restored)}"
+        )
     if args.json:
         print(json.dumps({**result.to_dict(), "detail": detail}, indent=2, sort_keys=True))
     elif result.converged:

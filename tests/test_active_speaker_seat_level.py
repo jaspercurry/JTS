@@ -146,14 +146,14 @@ def _control_unreachable(monkeypatch):
         svp, "read_measurement_hold", lambda: None,
     )
 
-# Below the runaway guard's abort level (start + probe span) on purpose, so
-# ``max(commanded)`` in the guard tests reads the RAMP's peak and not the
-# household level the latch restores at the end.
+# The household level the latch records and restores. Below anything the ramp
+# commands, so a test that reads the restored value cannot confuse it with a
+# volume the climb happened to pass through.
 HOUSEHOLD_VOLUME_DB = -44.0
 CEILING_DB = -6.0
-# A realistically quiet listening room. The derived start is measured FROM this,
-# so an unrealistic floor would put every rig's start tens of dB below anything
-# a real speaker meets.
+# A realistically quiet listening room. Every rig's chain gain is expressed
+# against this floor, so an unrealistic one would model a speaker no room ever
+# meets and make the rise assertions meaningless.
 ROOM_DB_SPL = 45.0
 SPL_CEILING = 85.0
 TARGET = SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5)
@@ -313,15 +313,6 @@ async def _level(
         reference_state_path=tmp_path / "seat_level_reference.json",
     )
     return result
-
-
-def _always_ambient(value: float):
-    """A stand-in for the ambient measurement that reports a fixed floor."""
-
-    async def _measure(next_samples, *, clock, sleep, window_s=None):
-        return value
-
-    return _measure
 
 
 def _far_chain_gain_db() -> float:
@@ -495,7 +486,7 @@ def test_the_kernel_jump_is_the_same_policy():
     assert "capped_gap_step_db(" in source
 
 
-# --- the window conversion and the derived start ----------------------------
+# --- the window conversion, the ceiling, and the start ----------------------
 
 
 def test_the_window_is_the_band_converted_through_the_mic():
@@ -727,8 +718,8 @@ def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
 def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
     """The starvation the noise gate caused, pinned as its absence.
 
-    At the derived start the speaker measures ~56 dB SPL under a 61 dB SPL
-    room, so the first reading is ambient-dominated — the exact population the
+    At the start the speaker measures far under the 61 dB SPL room, so the
+    first reading is ambient-dominated — the exact population the
     retired kernel's trust floor threw away. Here it is EVIDENCE: it is what
     sizes the first step.
     """
@@ -969,9 +960,8 @@ def test_a_speaker_quieter_than_the_room_is_not_falsely_aborted(
 ):
     """The guard's false-abort cases, and they must converge.
 
-    At the derived start the speaker is well BELOW the room, so the mic reads
-    ambient and the level does not track the commanded volume at all down
-    there. Measuring rise against the ambient floor (rather than against the
+    At the start the speaker is well BELOW the room, so the mic reads ambient
+    and the level does not track the commanded volume at all down there. Measuring rise against the ambient floor (rather than against the
     first reading) is what lets this chain climb through the room and converge.
     """
     gain = gain_for_seat_spl(seat_spl_at_ceiling, at_volume_db=CEILING_DB)
@@ -1393,6 +1383,92 @@ def test_a_completed_pass_publishes_that_it_restored(tmp_path):
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
     assert result.restored is True
     assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
+
+
+def test_the_sigint_path_reports_the_restore_it_measured(tmp_path):
+    """S3: prose and JSON must agree about the fader.
+
+    ``restored: null`` beside a detail claiming "volume restored" is exactly the
+    dishonesty this field exists to kill, so the CLI's interrupt refusal carries
+    the value the pass's own teardown measured.
+    """
+    from jasper.cli import seat_level as cli
+
+    volume, tone, mic = _rig(gain_db=-10.0)
+    clock = FakeClock()
+    started = asyncio.Event()
+
+    async def _watched():
+        if tone.started:
+            started.set()
+        return await mic.next_samples()
+
+    async def _go():
+        task = asyncio.ensure_future(
+            slr.run_seat_level_ramp(
+                target=TARGET,
+                sensitivity=UMIK2,
+                max_main_volume_db=CEILING_DB,
+                spl_ceiling_db_spl=SPL_CEILING,
+                get_main_volume_db=volume.get,
+                set_main_volume_db=volume.set,
+                play_continuous_tone=tone.play,
+                cancel_tone=tone.cancel,
+                next_samples=_watched,
+                clock=clock.now,
+                sleep=clock.sleep,
+                volume_state_path=tmp_path / "seat_level_volume.json",
+                reference_state_path=tmp_path / "seat_level_reference.json",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError as exc:
+            return slr.interrupted_restore_outcome(exc)
+        raise AssertionError("the cancellation did not propagate")
+
+    measured = asyncio.run(_go())
+    # The pass really did restore, and really did say so on the exception.
+    assert measured is True
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
+
+    # ...and the CLI turns that into a refusal whose prose and JSON agree.
+    result, detail = cli._refused(
+        slr.REFUSE_INTERRUPTED, f"stopped. {cli._restore_phrase(measured)}",
+        restored=measured,
+    )
+    assert result.restored is True
+    assert result.to_dict()["restored"] is True
+    assert "was restored" in detail
+
+
+def test_an_unobservable_interrupt_never_claims_a_restore(tmp_path):
+    """The last-resort path knows nothing, and must say nothing.
+
+    A KeyboardInterrupt that escaped the pass entirely carries no stamp, so the
+    honest report is "could not be observed" and a null field -- never prose
+    asserting a restore that no one measured.
+    """
+    from jasper.cli import seat_level as cli
+
+    assert slr.interrupted_restore_outcome(KeyboardInterrupt()) is None
+    phrase = cli._restore_phrase(None)
+    assert "could not be observed" in phrase
+    assert "restored." not in phrase  # never an assertion of success
+
+    result, detail = cli._refused(
+        slr.REFUSE_INTERRUPTED, f"stopped. {phrase}", restored=None
+    )
+    assert result.restored is None
+    assert result.to_dict()["restored"] is None
+    assert "could not be observed" in detail
+
+    # A failed restore is reported as a failure, with the remedy.
+    failed = cli._restore_phrase(False)
+    assert "NOT restored" in failed
+    assert "volume-recovery screen" in failed
 
 
 def test_an_unconfirmable_volume_latch_refuses_before_any_tone(tmp_path):

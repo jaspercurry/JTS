@@ -2843,11 +2843,15 @@ jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
     --target-db-spl 72 --tolerance-db 2 --json
 ```
 
-**It measures nothing by itself — it reuses the level-match kernel.** The ramp is
+**It owns its climb and reuses everything else.** The pass runs its own
+settle-per-bite loop — a quiet start, one median reading per bite, the gap
+arithmetic below, a clip abort, a feed-liveness abort, a whole-operation
+watchdog, and a fade before the tone is killed. It shares ONE thing with
 [`jasper.audio_measurement.ramp`](../jasper/audio_measurement/ramp.py)'s
-`RampController` (quiet start, coarse staircase, stop-ahead pre-window, settled
-two-point jump, confirm streak, clip abort, feed-liveness abort, derived safety
-timeout, fade before the tone is killed); the mic feed is
+`RampController`: `capped_gap_step_db`, the climb policy both step through (that
+kernel's own coarse staircase, stop-ahead pre-window, confirm streak and derived
+safety timeout stay behind on the phone-relay path, and #2911 carries converging
+the two loops). The mic feed is
 [`wired_level_meter.py`](../jasper/audio_measurement/wired_level_meter.py); the
 volume hold is the crossover session's own `SessionVolumePlan`; the whole pass
 runs inside the shared
@@ -2917,13 +2921,15 @@ active driver. Which bound was used is in the journal —
 render was not possible at all. Read those before concluding a speaker's graph is
 simply tight.
 
-**The room is measured once, before the tone, and three rules read it.** That one
-ambient number is the kernel's trust threshold, the runaway guard's "did anything
-actually rise", and convergence's "did the reading rise at all". Measuring rise
-against ambient rather than against the first reading is what stops a speaker
-quieter than the room from being falsely aborted while it climbs through the
-floor — and a mic that is not listening never emerges at all, because its ambient
-reading IS its signal reading.
+**The room is measured once, before the tone, and two rules read it.** That one
+ambient number is the runaway guard's "did anything actually rise" and
+convergence's "did the reading rise at all". (It was three: the kernel's trust
+threshold was the third, and it is gone with the kernel's noise gate — which is
+the same deletion that stopped the climb starving in a loud room.) Measuring
+rise against ambient rather than against the first reading is what stops a
+speaker quieter than the room from being falsely aborted while it climbs through
+the floor — and a mic that is not listening never emerges at all, because its
+ambient reading IS its signal reading.
 
 **Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
 header line that the curve parser has always skipped
@@ -2947,7 +2953,7 @@ refusal restores the household volume and banks nothing.
 | `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset — the slug is historical, the caps no longer bound the ceiling but resolving them (and each driver's permitted band) is still what fails here |
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
-| `mic_not_observing` | the volume reached the ceiling and the mic never rose above the room |
+| `mic_not_observing` | the volume reached the headroom ceiling and the mic never rose above the room; the detail names the ceiling and the rise it required |
 | `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
@@ -2965,6 +2971,7 @@ Read the journal, not the code, to find out what happened:
 | `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
 | `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken |
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
+| `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |
 
 **What it does not do**: it designs no stimulus (point `--stimulus-wav` at the
 program the session will actually measure with — choosing a safe excitation is
@@ -2974,6 +2981,24 @@ session reads it through `measurement_reference_volume_db`, and **absent is
 normal** — a box that never runs this behaves exactly as it did before the verb
 existed. `jasper-doctor`'s `seat-SPL measurement reference` line reports which
 state that file is in.
+
+**Why the guard waits for the ceiling.** A fixed probe span used to arm
+`mic_not_observing` 20 dB above the start; from a low start in a loud room that
+refused a healthy chain that had simply not emerged yet — the 2026-08-22
+incident itself. The span is gone and the ceiling is the only non-arbitrary
+place left to ask. What bounds that wait is the **digital-headroom ceiling**
+(the loudest volume the run may reach, by construction — the declared per-driver
+caps are disclosed beside it on
+`event=active_speaker.unsegmented_ceiling_bound`, not binding it), full scale,
+and the graph's limiters. The measured `max_commissioning_level_db_spl` stop is
+deliberately NOT on that list: a mic that is not observing reports a level that
+does not move with the volume, so its reading never approaches the stop — a −90
+dBFS feed reads about 16 dB SPL the whole way up. Model-derived cost of the wait
+on the jts3 rig: the walk tops out AT the ceiling and never above it, 8.86
+audible seconds of which 1.0 s is at the ceiling, refusal `mic_not_observing`,
+household volume restored — 23.2 dB louder than the retired span reached before
+refusing. An on-metal dead-mic run is on the bench checklist beside the real 75
+dB run.
 
 **How it climbs**: the remaining gap IS the step —
 `target_db_spl - measured_db_spl`, saturated upward by one BITE, and the bite is
@@ -2991,7 +3016,8 @@ No sample is discarded for being quiet: a window with nothing above the room in
 it still yields the room's own level, the gap from there is large, and the ramp
 bites again. That is the fix for the 2026-08-22 jts3 incident, where a 0.75 dB
 rung behind a noise gate threw away 1138 of 1194 samples and timed out after
-51 s, 25 dB below its own ceiling. The same rig now converges in 7 readings and 7.8 audible seconds.
+51 s, 25 dB below its own ceiling. The same rig now converges in 7 readings
+and 7.8 audible seconds.
 
 One deploy-time knob, bounded and falling back to its default on a bad value:
 `JASPER_SEAT_LEVEL_MIN_RISE_DB` (how far above ambient counts as the speaker
