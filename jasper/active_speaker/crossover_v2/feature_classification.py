@@ -396,9 +396,11 @@ class FeatureVerdict:
     measured_q: float | None
     #: How far the feature departs from its neighbours, dB, unsigned, when the
     #: artifact carried one — a DIP's own depth. Optional because the
-    #: 2026-08-19 record does not carry it; a boost bar that needs it refuses
-    #: by name rather than substituting a number (see
-    #: :mod:`.driver_prescription`'s ``driver_feature_depth_unavailable``).
+    #: 2026-08-19 record does not carry it, which is why nothing gates on it:
+    #: :mod:`.driver_prescription` bounded a boost by this number until
+    #: 2026-08-23, and since NOT ONE row of that record carries one, the bar
+    #: refused every boost the real record could have produced. It now rides
+    #: the receipt's ``classification_basis`` for a reader to weigh.
     depth_db: float | None
 
     @property

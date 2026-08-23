@@ -47,8 +47,6 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
 from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
-    FEATURE_NOT_CLASSIFIED as DRIVER_FEATURE_NOT_CLASSIFIED,
-    FEATURE_NOT_CUTTABLE as DRIVER_FEATURE_NOT_CUTTABLE,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
@@ -1697,13 +1695,16 @@ def test_a_tampered_per_driver_document_is_refused_on_the_digest(
 def test_a_per_driver_filter_moved_off_its_verdict_is_refused_at_the_take(
     tmp_path, monkeypatch, caplog,
 ):
-    """The CONTENT gate, re-run at the take and reaching the round's preparer.
+    """The CONTENT reading, re-run at the take and reaching the round's preparer.
 
-    #2752 made the take's classification bar EQUAL to the staging gate's by
-    banking the whole row set. What this pins is that the equal bar is the one
-    the ROUND now meets: a filter re-aimed at an unclassified frequency, with
-    its digest recomputed so nothing cheaper can refuse it first, is refused by
-    the gate's own slug and the session still opens.
+    #2752 made the take's classification reading EQUAL to the staging gate's by
+    banking the whole row set, and the 2026-08-23 ruling made that reading a
+    DISCLOSURE. What this pins is that the equal reading is the one the ROUND
+    now meets: a filter re-aimed at an unclassified frequency reaches the round
+    carrying its own unvouched count, and the round is what measures it.
+
+    The blend document beside it is untouched, which is the other half: this
+    class's ruling changed nothing about the sibling's bar.
     """
     _stage_driver(tmp_path, ordinal=9)
     v2host.save_v2_state(_state_carrying_a_kept_round())
@@ -1719,8 +1720,10 @@ def test_a_per_driver_filter_moved_off_its_verdict_is_refused_at_the_take(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         conductor = _prepare(monkeypatch)
 
-    assert _refusal_slug(caplog) == DRIVER_FEATURE_NOT_CLASSIFIED
-    assert conductor._prescribed_driver is None
+    assert _refusal_slug(caplog) == ""
+    assert conductor._prescribed_driver is not None
+    assert conductor._prescribed_driver.filters[0]["freq"] == 12000.0
+    assert conductor._prescribed_driver.unvouched_filters == 1
     assert conductor._blend_prescription() == (
         {"biquad_type": "Peaking", "freq": 2120.34, "q": 2.0, "gain": -0.72},
     )
@@ -1732,21 +1735,22 @@ _RECORD_PEAK_HZ = 4149.0
 _RECORD_DIP_HZ = 4582.0
 
 
-def test_a_per_driver_filter_nudged_onto_a_nearby_dip_is_refused_at_the_take(
+def test_a_per_driver_filter_nudged_onto_a_nearby_dip_reads_unvouched_at_the_take(
     tmp_path, monkeypatch, caplog,
 ):
     """#2752's hole, closed, and now proven from the ROUND rather than the gate.
 
-    The staging step accepted a cut aimed at the 4149 Hz peak. Moved 0.143
-    octaves onto the 4582 Hz dip — inside the match tolerance, so the peak is
-    still "a match" — the pre-#2752 take found the peak in its vouching-subset
-    anchor, found no dip to outrank it, and ACCEPTED. Banking the WHOLE row set
-    means the take now asks the same question the staging gate asked and gets
-    the same no.
+    The staging step disclosed a cut aimed at the 4149 Hz peak as VOUCHED. Moved
+    0.143 octaves onto the 4582 Hz dip — inside the match tolerance, so the peak
+    is still "a match" — the pre-#2752 take found the peak in its
+    vouching-subset anchor, found no dip to outrank it, and reported it vouched
+    anyway. Banking the WHOLE row set means the take asks the same question the
+    staging gate asked and gets the same answer, which since 2026-08-23 is a
+    COUNT rather than a refusal.
 
-    The strong input, deliberately: a filter moved somewhere unclassified is
-    refused by a much cheaper rule, so it would pass even against the old
-    subset. This one only refuses because the dip is there.
+    The strong input, deliberately: a filter moved somewhere unclassified reads
+    unvouched for a much cheaper reason, so it would look right even against the
+    old subset. This one only reads unvouched because the dip is there.
     """
     _stage_driver(
         tmp_path, ordinal=9,
@@ -1769,8 +1773,10 @@ def test_a_per_driver_filter_nudged_onto_a_nearby_dip_is_refused_at_the_take(
     with caplog.at_level(logging.INFO, logger="jasper.web.correction_crossover_v2"):
         conductor = _prepare(monkeypatch)
 
-    assert _refusal_slug(caplog) == DRIVER_FEATURE_NOT_CUTTABLE
-    assert conductor._prescribed_driver is None
+    assert _refusal_slug(caplog) == ""
+    assert conductor._prescribed_driver is not None
+    assert conductor._prescribed_driver.unvouched_filters == 1
+    assert conductor._prescribed_driver.classification_basis == ()
 
 
 # --- the merge, at the site that consumes it -------------------------------- #

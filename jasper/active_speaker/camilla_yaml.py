@@ -1421,6 +1421,14 @@ driver_linearization_shelf_name = _driver_linearization_shelf_name
 driver_linearization_peak_name = _driver_linearization_peak_name
 driver_linearization_taper_name = _driver_linearization_taper_name
 
+# Public alias, on ``LINEARIZATION_BIQUAD_TYPES``'s rule: a gate outside this
+# module that admits a shelf must answer "would the emitter accept this list"
+# before it accepts one, and that question has one owner. The per-driver
+# prescription door (``crossover_v2.driver_prescription._parse_filters``) reads
+# it so a shelf placed where ``_validate_linearization_shelf_structure`` would
+# raise is refused at intake instead of at emission.
+linearization_slot = _linearization_slot
+
 
 def _validated_biquad_entry(
     entry: Any,

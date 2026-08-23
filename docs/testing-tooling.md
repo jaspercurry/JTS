@@ -2026,7 +2026,7 @@ jasper-crossover-prescriber propose <bundle-dir> \
 - **The verdicts** are auto-discovered: the packet builder reads
   `feature_classification.json` from the round's own artifact directory,
   alongside `round_receipt.json` and `cloud_verify.json`. There is no flag for
-  it and no way to point it elsewhere. Absent → `driver_feature_not_classified`.
+  it and no way to point it elsewhere. Absent → every filter comes back unvouched on `prescription.unvouched_filters`; nothing refuses.
 
 That file is written by `jasper-classify-features` (below), or is an
 operator's own banked lab result dropped into the round directory under the

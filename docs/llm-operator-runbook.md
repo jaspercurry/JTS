@@ -155,7 +155,7 @@ Five prescription doors, one refusal vocabulary each, counted at HEAD:
 | alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
 | topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
 | blend | 19 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 25 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 19 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
 The topology door lost `outside_declared_search_band` when
@@ -163,16 +163,27 @@ The topology door lost `outside_declared_search_band` when
 search band; its two surviving frequency refusals are both drivers' declared
 hard excitation edges.
 
-Two shape what you can even ask for, and both are about **boosts**:
+The driver door dropped six on 2026-08-23, all of them the classification
+bar's — `driver_feature_not_classified`, `driver_feature_not_cuttable`,
+`driver_feature_not_boostable`, `driver_feature_depth_unavailable`,
+`driver_boost_exceeds_feature_depth`, and `driver_boost_unvouched`. The owner
+ruled that a candidate inside the caps may be tested; the vouch is a prediction
+about whether a filter will help, so it now DISCLOSES (see below) and the round
+disposes.
+
+One refusal still shapes what you can ask for, and it is about **boosts**:
 
 - **`boost_route_unavailable`** (blend): the summed blend stage refuses a
   positive gain and "is not a headroom term (opening it is a gain-structure
   change)"; a summed packet also "cannot say which driver a region's deficit
   belongs to." Boosts go through the **driver** door instead.
-- **`driver_boost_unvouched`** (driver): "a boost spends the household's
-  maximum SPL and may only do so against a measured minimum-phase dip" — i.e.
-  a matching banked `defect-boostable (min-phase dip)` verdict for the named
-  driver. Evidence first, then permission.
+
+**A driver document may carry any filter the emitter can build — `Peaking`,
+`Highshelf`, `Lowshelf`.** A shelf must LEAD its role's chain, or (a `Highshelf`
+taper only) end it after a `Lowshelf` lead; anywhere else the emitter cannot
+name the filter and the door refuses `driver_filter_malformed`. A shelf takes no
+`q`: every one is emitted at the fixed Butterworth steepness, so any `q` you send
+is replaced by it.
 
 **A driver document REPLACES each role it names — omitting a filter deletes
 it.** The packet's `incumbent.linearization.from_applied_profile` block lists
@@ -181,7 +192,20 @@ not repeat is gone from the graph. No gate refuses that (there is no
 component-damage mechanism to name), so `propose` and `stage` disclose it
 instead — read it before you stage: the `displaces:` line on the terminal
 report, or `prescription.displaced_filters` / `displaced_boost_db` /
-`displaced_boost_role` under `--json`.
+`displaced_boost_role` under `--json`. Repeating an incumbent filter is the
+common case, and until 2026-08-23 it was impossible for a shelf
+([#2863](https://github.com/jaspercurry/JTS/issues/2863)).
+
+**The classification bar DISCLOSES; it stopped refusing on 2026-08-23.** Every
+filter is checked against the packet's `feature_classification.verdicts[]` —
+nearest verdict decides, and it must match your filter's sign — and the ones no
+verdict backs are counted, not refused. Read the count on the same report: the
+`vouched:` line on the terminal output, or `prescription.unvouched_filters`
+under `--json`, with the backing verdicts in `prescription.classification_basis`.
+Filters repeated from the incumbent normally come back unvouched, because the fit
+engine placed them and nothing classified them. What still refuses is what a
+filter COSTS: the per-filter and composed caps, the declared band, the crossover
+knee for a boost, and the emitter's filter vocabulary.
 
 **One durable apply door, one ephemeral activation door.** `handle_v2_apply`
 (behind `POST /crossover/v2/apply`) is the only path that durably applies a
