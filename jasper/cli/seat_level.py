@@ -124,19 +124,21 @@ def _refused(
 
 
 def _ambient_phrase(ramp: dict[str, Any]) -> str:
-    """Disclose an ambient floor the climb itself contradicted.
+    """Disclose a room floor the pass had to measure twice.
 
-    The rise gate reads ``observed - ambient``, so which floor was used changes
-    which readings the pass trusted. An operator reading a terminal is not
-    reading ``--json``, and a silently substituted floor is exactly the kind of
+    The rise gate reads ``observed - floor``, so which window supplied the floor
+    changes which readings the pass trusted. An operator reading a terminal is
+    not reading ``--json``, and a silently replaced floor is exactly the kind of
     correction that must be stated rather than applied invisibly.
     """
-    if not ramp.get("ambient_corrected"):
+    if not ramp.get("ambient_remeasured"):
         return ""
     return (
-        f" The ambient window read {ramp['ambient_db_spl']:.1f} dB SPL but the "
-        f"climb measured quieter, so {ramp['ambient_effective_db_spl']:.1f} dB "
-        "SPL was used as the room floor."
+        f" A climb reading landed below the {ramp['ambient_db_spl']:.1f} dB SPL "
+        "ambient window, which cannot happen while the speaker is playing, so "
+        "the tone was stopped and the room re-measured in silence: "
+        f"{ramp['ambient_remeasured_db_spl']:.1f} dB SPL, which is the floor "
+        "every rise above was measured against."
     )
 
 
@@ -433,10 +435,11 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         else (result.detail or "nothing was banked")
     )
     # The refusal's own window summary already rides ``result.detail`` (the ramp
-    # writes it there so one sentence serves every reader). The ambient
-    # correction is a ramp fact rather than a refusal fact, so it is appended
-    # here and reaches a converged run's line too -- which is the run that most
-    # needs it, since a corrected floor is what let its readings be trusted.
+    # writes it there so one sentence serves every reader). The re-measured
+    # floor is a ramp fact rather than a refusal fact, so it is appended here
+    # and reaches a converged run's line too -- which is the run that most needs
+    # it, since the second silent window is what its readings were judged
+    # against.
     return result, detail + _ambient_phrase(result.ramp)
 
 

@@ -817,7 +817,7 @@ def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys
                 "74.0, and stopped on the 80.5 dB SPL sample 0.950 s in)"
             ),
             restored=True,
-            ramp={"ambient_corrected": False},
+            ramp={"ambient_remeasured": False},
         ),
     )
 
@@ -846,14 +846,14 @@ def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys
     assert slr._window_phrase(trace.summary()) in err
 
 
-def test_a_corrected_ambient_floor_is_disclosed_on_the_line(
+def test_a_re_measured_room_floor_is_disclosed_on_the_line(
     tmp_path, monkeypatch, capsys
 ):
-    """A substituted room floor is stated, never applied invisibly.
+    """A floor the pass had to measure twice is stated, never applied invisibly.
 
-    The rise gate reads ``observed - ambient``, so which floor was used decides
-    which readings the pass trusted. Run 87 on jts3 measured 57.18 dB SPL of
-    "room" and then published three negative rises against it.
+    The rise gate reads ``observed - floor``, so which window supplied the floor
+    decides which readings the pass trusted. Run 87 on jts3 measured 57.18 dB
+    SPL of "room" and then published three negative rises against it.
     """
     from jasper.active_speaker.seat_level_ramp import SeatLevelResult
 
@@ -867,8 +867,8 @@ def test_a_corrected_ambient_floor_is_disclosed_on_the_line(
             restored=True,
             ramp={
                 "ambient_db_spl": 57.18,
-                "ambient_effective_db_spl": 50.21,
-                "ambient_corrected": True,
+                "ambient_remeasured_db_spl": 49.7,
+                "ambient_remeasured": True,
             },
         ),
     )
@@ -878,8 +878,9 @@ def test_a_corrected_ambient_floor_is_disclosed_on_the_line(
 
     assert code == 0
     assert "converged: reference -13.69 dB measured 72.6 dB SPL" in out
-    assert "The ambient window read 57.2 dB SPL" in out
-    assert "50.2 dB SPL was used as the room floor" in out
+    assert "landed below the 57.2 dB SPL ambient window" in out
+    assert "re-measured in silence: 49.7 dB SPL" in out
+    assert "which is the floor every rise above was measured against" in out
 
 
 def test_an_honest_ambient_floor_adds_nothing_to_the_line(
@@ -898,8 +899,8 @@ def test_an_honest_ambient_floor_adds_nothing_to_the_line(
             restored=True,
             ramp={
                 "ambient_db_spl": 49.73,
-                "ambient_effective_db_spl": 49.73,
-                "ambient_corrected": False,
+                "ambient_remeasured_db_spl": None,
+                "ambient_remeasured": False,
             },
         ),
     )
@@ -909,6 +910,7 @@ def test_an_honest_ambient_floor_adds_nothing_to_the_line(
 
     assert code == 0
     assert "ambient window" not in out
+    assert "re-measured" not in out
     assert out.strip().endswith("69.6 dB SPL")
 
 

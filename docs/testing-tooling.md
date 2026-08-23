@@ -2935,7 +2935,7 @@ speaker quieter than the room from being falsely aborted while it climbs through
 the floor — and a mic that is not listening never emerges at all, because its
 ambient reading IS its signal reading.
 
-**The climb can put that floor back down, and says so when it does.** The
+**A contradicted floor is re-measured in silence, once, and disclosed.** The
 ambient window is one median of one half-second, so a transient inside it would
 otherwise be "the room" for the whole run: on jts3 (2026-08-23) a pass measured
 57.18 dB SPL of ambient while its own −50.00 dB reading was 50.21 and the
@@ -2943,14 +2943,28 @@ previous pass's was 50.59, and it published three NEGATIVE rises — tone readin
 quieter than the room they were taken in — which put its first four readings
 below `required_rise_db` on a baseline nothing measured. The tone is *playing*,
 so a climb reading is the room plus the speaker and cannot be quieter than the
-room; the floor is therefore the quietest level the mic reported during the
-pass. The receipt publishes the measured window (`ramp.ambient_db_spl`), the
-floor the rise gate used (`ramp.ambient_effective_db_spl`) and whether they
-differ (`ramp.ambient_corrected`), and the CLI states the substitution on its
-own line. Nothing is refused and nothing retries. The correction is
-structurally inert on the failure `mic_not_observing` guards: a mic that is not
-observing reports a constant, so its ambient reading IS its quietest reading and
-the floor never moves.
+room: a reading below the floor proves one of the two windows wrong. The pass
+then **stops the tone, measures the room again in silence, and starts the tone
+again** — one extra ~1 s window, priced into the watchdog, at most once per pass,
+with no threshold to tune and no retry. The receipt publishes both windows
+(`ramp.ambient_db_spl` and `ramp.ambient_remeasured_db_spl`, with
+`ramp.ambient_remeasured` saying whether the second one exists; the floor used is
+the second when it does, else the first), the journal carries
+`event=…seat_level_ambient_remeasured`, and the CLI states it on its own line.
+
+**Why the floor is never taken from a climb reading.** It would be cheaper to
+re-base onto the quietest reading already in hand, and that is wrong: measured
+SILENCE is the anti-coincidence property that makes "rise" mean *responded to
+the speaker* rather than *happened to be louder than a number we picked*. A mic
+that is not observing is not always a constant — "capturing the wrong card"
+hears a **room**, and a room wanders. Re-base onto such a mic's quietest wander
+and its loudest wander clears the 6 dB bar: a 66 dB SPL ambient window with
+volume-independent readings of 60 then 67 converges and banks a reference for a
+level nothing produced, and a wandering one refuses `spl_target_unreachable`
+("raise the amplifier") where it should refuse `mic_not_observing` ("check the
+mic"). Against a silent-measured floor the same mic hears the same room both
+times, so its rise is ~0 and both guards hold. Both shapes are pinned in
+[`tests/test_active_speaker_seat_level.py`](../tests/test_active_speaker_seat_level.py).
 
 **Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
 header line that the curve parser has always skipped
@@ -2986,7 +3000,7 @@ refusal restores the household volume and banks nothing.
 **A sample-domain stop publishes the window it abandoned.** The two stops that
 run on every sample — `spl_ceiling_exceeded` and `mic_clipping` — end a window
 part-way through, so there is no settled median for the volume they stopped at.
-The refusal carries that window instead, on the receipt as `ramp.window` and in
+The refusal carries that window instead, on the receipt as `ramp.stopped_window` and in
 the same sentence the CLI prints: how many samples it saw, their min/median/max
 dB SPL, and the sample that tripped with its offset from the volume step. Read
 the median against the max. A median far below the max is ONE excursion on top
@@ -3006,8 +3020,8 @@ Read the journal, not the code, to find out what happened:
 | `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the bite (and its fraction), and the amixer precondition |
 | `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
 | `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
-| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, when a sample-domain stop abandoned a window, that window's `window_*` facts and the `prior_*` settled reading they must be read against |
-| `_ambient_corrected` | the climb contradicted the ambient window, so the room floor moved down: the measured figure, the effective one, and the volume that produced it |
+| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, when a sample-domain stop abandoned a window, that window's `stopped_window_*` facts and the `prior_*` settled reading they must be read against |
+| `_ambient_remeasured` | a climb reading landed below the ambient window, so the tone was stopped and the room measured again in silence: both figures, the reading that contradicted, and the volume it happened at |
 | `_window_samples` | DEBUG only, behind `--verbose`: ONE line per settle window (`window=ambient` or the commanded volume) carrying every sample as `offset:dB SPL`. This is how a rising edge is reconstructed — the per-sample record exists nowhere else |
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 | `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |
