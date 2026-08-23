@@ -720,8 +720,11 @@ def resolve_driver_protection_slope_db_per_octave(
     no ``order`` at all, ``graph_safety.tweeter_guard_present`` reads ``order``
     absent or ``>= 2.0`` (so every emittable order clears it), and the derived
     requirement is proved only against the protective filter this build itself
-    emitted.  See ``topology_prescription``'s module docstring for the gate-by-
-    gate quotation and for the one dormant copy of this refusal.
+    emitted, and ``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor``
+    — which DID carry a second copy of this refusal on the VERIFY stage's call
+    shape — now discloses its shortfall instead.  See
+    ``topology_prescription``'s module docstring for the gate-by-gate
+    quotation.
 
     **Returns ``None`` rather than raising**, unlike its sibling
     :func:`resolve_driver_measurement_band_hz` above, and the difference is
