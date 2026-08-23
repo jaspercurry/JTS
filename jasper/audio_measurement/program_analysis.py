@@ -4344,7 +4344,7 @@ def _select_alignment_pair(
     −211 µs and two wild, and a wrong commit computes a deep commanded null
     (−36 dB @ 1885 Hz on the worked example). So the delay now comes from
     ``applied_alignment`` — what the speaker is ALREADY playing, per the
-    ethos's best-available rule (``docs/audio-commissioning-roadmap.md``) — and
+    ethos's best-available rule (``docs/measurement-loop-doctrine.md``) — and
     from ``0.0`` when there is none to hold. Never the anchor, and never the
     GCC seed: both are this capture's own answer, and the capture was refused.
     The three arms are three objectives, because they are three different

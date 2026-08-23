@@ -33,7 +33,80 @@ household's judgment call, made on data.
 - **Hard stops exist only for a known component-damage mechanism** — never
   for "this probably won't work" or "we haven't tried this before."
 
-## 3. The hard-stop enumeration (closed list)
+## 3. The guiding principle — least-bad measured, honed in bites
+
+Owner-ratified 2026-08-14 as the commissioning program's ethos, extended
+2026-08-16, and re-affirmed 2026-08-22: *"least bad is still the overall
+guiding principle"* (#2865). Migrated here from
+[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), which is
+historical and keeps its original text as archaeology; this section is the
+live home, and it is the file production code cites.
+
+**Tinker-first, never-nanny.** A partially-working speaker beats one aired out
+by an error. The system always adopts the best configuration available given
+current evidence. Imperfect-but-best-known is the bar — a defect that degrades
+a claim does not withhold the tune that claim describes.
+
+**Restore and rollback are reserved for measured regression.** Every defect
+outside the closed hard-stop list (§4) **discloses and recommends a next
+action**. It never blocks. A gate that refuses on suspicion rather than on a
+measured regression is a bug against this principle.
+
+**Least-bad measured, honed in bites.** The target of an intervention cycle is
+the least bad **measured** configuration, not a match to the prediction — a
+realized result will likely never perfectly match what the model commanded. So
+a series gets a few bites at that apple: up to three rounds to hone, which the
+owner may extend to four (#2602 owns the cap).
+
+Realized-versus-predicted mismatch is a **learning signal**, never by itself a
+reason to retreat. The bites exist to separate what is in our control to fix —
+model and accounting defects, which get fixed — from what is not — driver and
+room physics, which get commanded for the achievable instead — and then to land
+somewhere better than we started.
+
+Two decisions the machinery must not conflate. **What plays** is always the
+least-bad measured configuration, so a round that measures worse than the
+previous state restores that state: that restore is this principle working, not
+a violation of it. **Whether the series learns and continues** has one answer
+every time — it does. A worse round is a gradient sample, not a stop. Every
+round, kept or restored or refused, banks its measurement into the series state
+so the next bite is commanded from it. Only the round budget, the plateau, and
+the safety class end a series; rollback ends one only for the safety class or
+for genuine corruption — an unmeasured or integrity-lost state the model cannot
+reason about. **The safety class is §4's closed list**, which is stated there
+once and is the enumeration to read: the ethos that ruled this named the class
+as driver protection, hearing safety, and the clipping/volume ceiling, and that
+naming is its own gloss, not a second list to hold §4 to.
+
+So the rule a verdict class is held to: measured no-worse than the previous
+state → keep, bank, continue; measured worse → restore the playing
+configuration, bank, continue. A class that retreats from a measured-acceptable
+state on realized ≠ commanded alone is a bug against this principle.
+
+**Probabilistic posture, 80/20 execution.** Per-frequency graded evidence —
+support counts, confidence margins, tapered authority — beats a binary
+per-session verdict. The implementation is **deterministic decision tables
+fed by graded evidence**, extending the envelope min-composition pattern the
+code already uses. No Bayesian machinery, no inference engine.
+
+**Investment split.** The measurement substrate gets foundation-grade
+investment, because wrong measurements poison every layer downstream of
+them. Intervention layers get the 80/20 lens. When those two pull against
+each other, the substrate wins.
+
+**Selection is intervention-granular, not only candidate-granular.** Owner
+refinement, 2026-08-22 (#2862): *"if one intervention was really good but
+another was bad but the entire candidate was worse, there is still a least bad
+part that we may want to use in a future config."* A candidate that loses as a
+unit can still carry an intervention whose measured evidence stands, so a record
+must keep intervention identity distinct from candidate identity — otherwise a
+measured-good intervention dies with its carrier and its evidence is re-earned
+from scratch. The per-feature record join (ticket 1.10 in
+[`tuning-master-plan.md`](tuning-master-plan.md)) is the substrate; the grading
+rules for "this intervention was good inside a losing candidate" are design
+work, not settled doctrine.
+
+## 4. The hard-stop enumeration (closed list)
 
 This is the ruling the tree converges to, not a snapshot of its current
 refusal surface — known deviations at this doc's date are tracked below,
@@ -70,12 +143,12 @@ an old round or an old commit can tell it was retired on purpose:
 | # | refusal | file | status |
 |---|---|---|---|
 | ~~a~~ | ~~`BOOST_VERTICALLY_BLIND`~~ | `jasper/active_speaker/crossover_v2/driver_prescription.py` | **CLOSED** — removed in #2805; a boost admitted on a horizontal capture now owes a measurement, not a plane |
-| ~~b~~ | ~~`FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses"~~ | — | **CLOSED 2026-08-21.** The refusal only ever bound the corner hunt's proposal grid, and the hunt was deleted with `fc_sweep`'s sweep half (plan ticket 2.3). No admissibility bound reads the ka onset now; it rides the receipt as provenance, which is what section 3 asked for. |
+| ~~b~~ | ~~`FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses"~~ | — | **CLOSED 2026-08-21.** The refusal only ever bound the corner hunt's proposal grid, and the hunt was deleted with `fc_sweep`'s sweep half (plan ticket 2.3). No admissibility bound reads the ka onset now; it rides the receipt as provenance, which is what section 4 asked for. |
 | ~~c~~ | ~~`REASON_CORRECTION_NOT_AN_IMPROVEMENT`~~ — refused on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | **CLOSED** — it vetoed jts3's first prescribed-boost round on 2026-08-22 (`improvement_db=-0.703`, one line after disclosing its own inputs 11.635 dB apart); the forecast now banks `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds |
 | ~~d~~ | ~~`_strategy_gates` score floors~~; ~~`measurement_evidence_failure`'s fail-severity apply blocker~~ | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | **CLOSED** — the score floors' only veto (`response._policy_allows`) went in #2808 and every remaining reader was already disclosure; the apply blocker is deleted, and a `fail`-severity finding now reaches the household as a `warn` nudge |
 | e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | **RETAINED by ruling R8** (`docs/tuning-master-plan.md`): "Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver)" — a stated limit of the instrument, not a prior about the outcome |
 
-## 4. The nanny test
+## 5. The nanny test
 
 Before a review adds a new refusal, ask: **does this block a reversible
 experiment a scientist would run, on the theory it might not work?** If
@@ -83,7 +156,7 @@ yes, it ships as an informational flag, never a gate. A refusal earns its
 place only by naming the component-damage mechanism it guards against —
 "seems risky" is not a mechanism.
 
-## 5. Pointers
+## 6. Pointers
 
 - Round runner (the loop's home; measure and apply are two separate,
   fingerprint-named steps): `scripts/run-crossover-round.py`.
@@ -107,9 +180,18 @@ place only by naming the component-damage mechanism it guards against —
 
 ---
 
-Scope of this verification: the deviation table above was re-derived against
-the tree — every row's named symbol grepped for a live producer — and rows (a),
-(c), and (d) closed; row (b) closed separately the same day (#2853) and its
-account is that PR's. Sections 1-3, 4, and 5 were re-read and stand unchanged.
+Scope of the 2026-08-22 verification: the deviation table above was re-derived
+against the tree — every row's named symbol grepped for a live producer — and
+rows (a), (c), and (d) closed; row (b) closed separately the same day (#2853)
+and its account is that PR's. The other sections were re-read and stand
+unchanged; the hard-stop list, the nanny test, and the pointers are numbered
+one higher since, unmoved.
+
+Migration (2026-08-23, #2865): section 3 arrived from
+[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md)'s Ethos —
+its ruling text re-read from that file, and the owner's 2026-08-22
+re-affirmation and intervention-granularity refinement quoted from #2865 and
+#2862, at writing time. Nothing else was re-derived, so the date below is
+deliberately not bumped: it still records the 2026-08-22 pass.
 
 Last verified: 2026-08-22

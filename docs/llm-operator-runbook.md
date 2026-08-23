@@ -16,7 +16,9 @@
 
 ## Division of labor
 
-Four lines, from plan invariants 3–4 and doctrine §2. They are not advice.
+Four lines, from plan invariants 3–4 and
+[the doctrine's authority model](measurement-loop-doctrine.md#2-the-authority-model).
+They are not advice.
 
 - **Code computes.** Deconvolution, gating, σ, feature extraction, filter
   responses, headroom — anything with one right answer — is deterministic and
@@ -193,10 +195,12 @@ build one.
 corner the speaker already declares. Compare candidates that vary linearization
 EQ, trim, delay, and polarity — not the corner.
 
-**Hard stops.** The closed list is the doctrine's §3, five bullets, and it is
-stated there once. Read it there; do not accept a sixth from anywhere. A
-refusal that names no component-damage mechanism is a **deviation** to report,
-not a rule to obey — the doctrine tracks the live ones with their status.
+**Hard stops.** The closed list is
+[the doctrine's hard-stop enumeration](measurement-loop-doctrine.md#4-the-hard-stop-enumeration-closed-list),
+five bullets, and it is stated there once. Read it there; do not accept a
+sixth from anywhere. A refusal that names no component-damage mechanism is a
+**deviation** to report, not a rule to obey — the doctrine tracks the live
+ones with their status.
 
 ## Exit codes
 

@@ -2807,7 +2807,10 @@ rollback classes used to restore from a seam of their own
 (`_delta_probe_refusal`) that ran BEFORE `run_round` and ended the session on
 its own code — so a rollback round wrote no receipt at all, which is the bug
 the ethos's fifth principle names by its date ("no round receipt was written on
-the failed verify, leaving that round's realization only in journal events").
+the failed verify, leaving that round's realization only in journal events" —
+that 2026-08-16 incident record stays in `audio-commissioning-roadmap.md` as
+archaeology; the banking rule it forced into writing is the guiding principle in
+[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)).
 That seam is deleted. The probe reports, `evaluate_round_quality` escalates a
 non-deferred rollback class to `REGRESSED`, the adoption table restores through
 its one restore owner, and the receipt records what the restore did. **The

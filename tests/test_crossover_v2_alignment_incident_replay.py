@@ -409,7 +409,8 @@ def test_a_refused_capture_holds_the_delay_this_speaker_already_plays():
 
     The box had already applied 96.0 µs on the tweeter when this capture came
     back refused. Holding that — the best configuration available given the
-    evidence, per the roadmap's ethos — is the commitment; the anchor this
+    evidence, per the ethos in ``docs/measurement-loop-doctrine.md`` — is the
+    commitment; the anchor this
     capture produced is reported as declined evidence and never becomes the
     delay. The polarity half is unchanged from #2607.
 
