@@ -135,10 +135,11 @@ LLM) to weigh. It must never refuse an experiment on its own.
 ### Known deviations at 2026-08-21, and where each stands
 
 Five tested refusals sat outside the list above when this doc was ratified,
-none naming a component-damage mechanism. **Four are now closed and one is
-retained by ruling, so this table tracks nothing outstanding.** Rows are struck
-as they close and a struck row stays, so a reader meeting one of these names in
-an old round or an old commit can tell it was retired on purpose:
+none naming a component-damage mechanism; a sixth was found afterwards and is
+carried here on the same terms. **Five are now closed and one is retained by
+ruling, so this table tracks nothing outstanding.** Rows are struck as they
+close and a struck row stays, so a reader meeting one of these names in an old
+round or an old commit can tell it was retired on purpose:
 
 | # | refusal | file | status |
 |---|---|---|---|
@@ -147,6 +148,7 @@ an old round or an old commit can tell it was retired on purpose:
 | ~~c~~ | ~~`REASON_CORRECTION_NOT_AN_IMPROVEMENT`~~ — refused on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | **CLOSED** — it vetoed jts3's first prescribed-boost round on 2026-08-22 (`improvement_db=-0.703`, one line after disclosing its own inputs 11.635 dB apart); the forecast now banks `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds |
 | ~~d~~ | ~~`_strategy_gates` score floors~~; ~~`measurement_evidence_failure`'s fail-severity apply blocker~~ | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | **CLOSED** — the score floors' only veto (`response._policy_allows`) went in #2808 and every remaining reader was already disclosure; the apply blocker is deleted, and a `fail`-severity finding now reaches the household as a `warn` nudge |
 | e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | **RETAINED by ruling R8** (`docs/tuning-master-plan.md`): "Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver)" — a stated limit of the instrument, not a prior about the outcome |
+| ~~f~~ | ~~`TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` refused a pinned order against a code floor while calling it "declared"~~ | `jasper/active_speaker/crossover_v2/topology_prescription.py` | **CLOSED 2026-08-23** — found after ratification. The gate read `required_protection_filters[highpass].minimum_slope_db_per_octave`, which is `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, so jts3's DE250 — B&C publish "1.6 kHz — 12 dB/oct. or higher" — had a 2400 Hz order-2 pin refused "below the protected driver's declared minimum of 24 dB/octave". The owner ruled: "If it was in the safe overall envelope, it's safe to test." The refusal survives but now compares the PUBLISHED condition only, which makes it a declared-value refusal rather than a class floor and puts it inside section 4 on the same footing as the declared excitation bands; a maker who publishes nothing gets no slope refusal at all, and the 24 dB/octave commissioning figure discloses on the receipt (`recommended_slope_db_per_octave`) beside the design page's existing `tweeter_slope_below_recommended_floor` warning ([#2897](https://github.com/jaspercurry/JTS/pull/2897)) |
 
 ## 5. The nanny test
 
@@ -193,5 +195,9 @@ its ruling text re-read from that file, and the owner's 2026-08-22
 re-affirmation and intervention-granularity refinement quoted from #2865 and
 #2862, at writing time. Nothing else was re-derived, so the date below is
 deliberately not bumped: it still records the 2026-08-22 pass.
+
+Row (f) was added and closed on 2026-08-23 (#2897), and only that row: the
+rest of the table and the sections around it were not re-derived that day, so
+the date below still records the 2026-08-22 pass.
 
 Last verified: 2026-08-22

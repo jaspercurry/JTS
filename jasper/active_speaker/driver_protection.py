@@ -521,15 +521,35 @@ def format_protection_hz(value: float) -> str:
 # what the manufacturer printed ("12 dB/oct. or higher slope high-pass filter"
 # for the DE250), and the commissioning safety margin is computed HERE, named,
 # rather than smuggled into a datasheet field as though the manufacturer had
-# published it.
+# published it. Only the DECLARATION refuses; see the constant below for what
+# the margin is allowed to do instead.
 
-#: Commissioning floor on a derived protective high-pass slope, dB/octave. The
-#: manufacturer's published minimum is the FLOOR of what the driver tolerates;
-#: this build has always commissioned at 24 dB/octave or steeper (the research
-#: ask said so, and ``crossover_preview`` warns below it), so the derived
-#: REQUIREMENT is ``max(published, this)``. Raising a published 12 dB/oct to 24
-#: cannot hurt the driver -- a steeper filter passes strictly less energy below
-#: the corner -- and it keeps every already-emitted graph legal.
+#: Commissioning floor on the protective high-pass THIS BUILD EMITS, dB/octave,
+#: and the figure every slope disclosure names. It is a code number, so the
+#: 2026-08-22 owner ruling quoted in ``driver_safety`` binds it: "declared
+#: values are the only refusing authority; class tables may prefill, disclose,
+#: and serve as fallback -- they must never refuse a declaration." Its two jobs:
+#:
+#: * PREFILL. :attr:`DriverLowLimit.derived_protection_slope_db_per_octave`
+#:   raises a published slope to it, and :func:`apply_driver_low_limit` stamps
+#:   that derived number as the protective high-pass this build emits and later
+#:   proves it emitted (``graph_safety.protection_requirement_present``). No
+#:   household choice is refused there -- the filter being proved is one this
+#:   build generated from this very number. Raising a published 12 dB/oct to 24
+#:   cannot hurt the driver (a steeper filter passes strictly less energy below
+#:   the corner) and it keeps every already-emitted graph legal.
+#: * DISCLOSE. ``crossover_preview``'s ``tweeter_slope_below_recommended_floor``
+#:   warning and
+#:   :attr:`~jasper.active_speaker.crossover_v2.topology_prescription.TopologyPrescription.recommended_slope_db_per_octave`
+#:   both name it, so a household crossing shallower is told what it crossed
+#:   against -- on the design page and on the round's receipt.
+#:
+#: What it may NOT do is refuse a crossover a household pinned. The topology
+#: gate did exactly that until the 2026-08-23 owner ruling ("if it was in the
+#: safe overall envelope, it's safe to test"), because it read the DERIVED
+#: number and called it the manufacturer's declaration. The manufacturer's
+#: published condition is :attr:`DriverLowLimit.slope_db_per_octave`, and it is
+#: the only slope entitled to refuse a corner.
 PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
 
 #: How far a DECLARED low limit may sit from its style's default before it stops
@@ -578,8 +598,16 @@ class DriverLowLimit:
     manufacturer's published slope CONDITION and is ``None`` when the maker
     prints none (BMS's 4590 is a real example) -- it is deliberately NOT
     defaulted here, because a code default wearing a datasheet's clothes is the
-    exact failure decision 9 was written against. The derived commissioning
-    requirement is :attr:`protection_slope_db_per_octave`.
+    exact failure decision 9 was written against. It is also the ONLY one of
+    the two entitled to refuse anything: see
+    :data:`PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`.
+
+    The derived commissioning figure is
+    :attr:`derived_protection_slope_db_per_octave`, named DERIVED rather than
+    sharing the published one's words so a reader can never mistake which of
+    the two a call site is holding. That distinction is the whole of the
+    2026-08-23 ruling: the topology gate refused a household's pinned order
+    against the derived number while its message said "declared".
     """
 
     frequency_hz: float
@@ -588,8 +616,12 @@ class DriverLowLimit:
     rationale: str
 
     @property
-    def protection_slope_db_per_octave(self) -> float:
-        """The slope the emitted protective high-pass must meet, dB/octave."""
+    def derived_protection_slope_db_per_octave(self) -> float:
+        """The slope the protective high-pass this build EMITS must meet.
+
+        A prefill, never a bound on what the household may cross at -- see
+        :data:`PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`.
+        """
 
         published = self.slope_db_per_octave
         return max(
@@ -601,7 +633,9 @@ class DriverLowLimit:
         return {
             "frequency_hz": self.frequency_hz,
             "slope_db_per_octave": self.slope_db_per_octave,
-            "protection_slope_db_per_octave": self.protection_slope_db_per_octave,
+            "derived_protection_slope_db_per_octave": (
+                self.derived_protection_slope_db_per_octave
+            ),
             "provenance": self.provenance,
             "rationale": self.rationale,
         }
@@ -871,7 +905,9 @@ def apply_driver_low_limit(
         {
             "kind": "highpass",
             "cutoff_hz": frequency,
-            "minimum_slope_db_per_octave": limit.protection_slope_db_per_octave,
+            "minimum_slope_db_per_octave": (
+                limit.derived_protection_slope_db_per_octave
+            ),
             "family_or_equivalent": "equivalent_or_steeper",
         }
     )

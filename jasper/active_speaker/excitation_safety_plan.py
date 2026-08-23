@@ -686,62 +686,77 @@ def resolve_driver_measurement_band_hz(
 def resolve_driver_protection_slope_db_per_octave(
     safety_profile: Mapping[str, Any], target_fingerprint: str,
 ) -> float | None:
-    """The confirmed protective HIGH-PASS minimum slope for one driver, or
-    ``None``.
+    """The manufacturer's PUBLISHED high-pass slope condition, or ``None``.
 
-    The second of this file's confirmed-record readers, and the frequency
-    sibling of :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`
-    — that function reads the ``cutoff_hz`` out of ``required_protection_filters``
-    and nothing read the ``minimum_slope_db_per_octave`` beside it back out.  A
-    caller that needed one would have written a second parse of the same field,
-    which is how the two halves of one declaration end up disagreeing about what
-    was declared.
+    The second of this file's confirmed-record readers, and the slope half of
+    the pair whose frequency half is
+    :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`.
+    One parse site each, so the two halves of one declaration cannot disagree.
 
-    Strictest wins (``max``), matching that function's rule: a driver declaring
-    two protective high-passes is asking for the steeper of them, and the
-    direction can only tighten.
+    **The two halves read DIFFERENT fields, and that asymmetry is the point.**
+    The frequency half reads ``required_protection_filters[highpass].cutoff_hz``
+    — a projection, but a LOSSLESS one:
+    :func:`~jasper.active_speaker.driver_protection.apply_driver_low_limit`
+    stamps that cutoff as the declared frequency verbatim, with no floor
+    applied.  The slope beside it is not lossless — it is
+    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, so reading it
+    cannot tell a published 24 from a published 12 raised to 24.  This function
+    therefore reads the OWNER field instead
+    (``recommended_highpass_slope_db_per_octave``, the pair
+    ``driver_protection``'s decision-9 block describes), which a confirmed
+    target carries only when the manufacturer actually published one.
+
+    Reading the projection was what made the topology gate refuse a DE250 at
+    order 2 "below the protected driver's declared minimum of 24 dB/octave"
+    when B&C publish 12 — a code figure refusing a household's choice, which
+    the 2026-08-22 ruling bars and the 2026-08-23 owner ruling struck.
 
     **It exists for the topology gate**
     (:func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`):
     a two-way corner high-passes the upper driver AT the corner, so that
-    driver's declared minimum slope is a claim about what the crossover's own
-    filter must do.  Nothing else applies it to a crossover — the derived
-    protection filter and the commissioning admission path (``graph_safety``)
-    read the declaration, and crossover apply compares corner FREQUENCIES only.
+    driver's published minimum slope is a claim about what the crossover's own
+    filter must do.  Nothing downstream enforces a slope ABOVE 12 dB/octave on a
+    crossover: ``graph_safety.output_highpass_protected`` reads the corner and
+    no ``order`` at all, ``graph_safety.tweeter_guard_present`` reads ``order``
+    absent or ``>= 2.0`` (so every emittable order clears it), and the derived
+    requirement is proved only against the protective filter this build itself
+    emitted, and ``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor``
+    — which DID carry a second copy of this refusal on the VERIFY stage's call
+    shape — now discloses its shortfall instead.  See
+    ``topology_prescription``'s module docstring for the gate-by-gate
+    quotation.
 
     **Returns ``None`` rather than raising**, unlike its sibling
     :func:`resolve_driver_measurement_band_hz` above, and the difference is
     deliberate: the measurement band bounds a program that is about to PLAY, so
-    an unreadable one must stop the session.  ``None`` here means *no slope is
-    declared* — never a guessed default, on
-    ``declared_protection_highpass_floor_hz``'s never-nanny rule.  What keeps
-    that honest rather than fail-open: a MALFORMED
-    ``required_protection_filters`` cannot reach a caller through this function
-    unnoticed, because ``branch_chain.confirmed_protection_sections`` parses the
-    same list on the same record and raises on exactly those shapes — and the v2
-    session boundary runs it first, refusing the session outright.  So ``None``
-    here is the absence of a declaration and not the failure to read one.
+    an unreadable one must stop the session.
+
+    **``None`` means there is no published condition ON THE RECORD, and that has
+    TWO causes — say both, because they are not equally comfortable.**  Either
+    the maker prints no slope qualifier (an ordinary datasheet; BMS's 4590), or
+    the profile was saved before the owner pair existed as a target field, in
+    which case NO driver on that speaker has a published slope — not even one
+    publishing 24 — until the next ``/sound/`` save re-derives the target.  The
+    second case is every already-commissioned speaker on the deploy that ships
+    this, and it is why the field is optional in
+    ``driver_safety._validate_driver_safety_profile_shape`` rather than
+    required: a stored profile stays confirmed rather than being invalidated.
+    Both cases mean the same thing HERE — there is no published bound to apply,
+    never a guessed default, on ``declared_protection_highpass_floor_hz``'s
+    never-nanny rule — and in both the commissioning recommendation is still
+    DISCLOSED on the pin's record.  What this function must never do is let a
+    caller read ``None`` as "the manufacturer publishes nothing", because on a
+    pre-field profile that is a claim about a datasheet nobody consulted.
     """
     try:
         target = _target_for_request(safety_profile, target_fingerprint)
     except ExcitationSafetyPlanError:
         return None
-    filters = target.get("required_protection_filters")
-    if not isinstance(filters, list):
+    published = target.get("recommended_highpass_slope_db_per_octave")
+    if isinstance(published, bool) or not isinstance(published, (int, float)):
         return None
-    slopes: list[float] = []
-    for item in filters:
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind") or "").strip().lower() != "highpass":
-            continue
-        try:
-            slope = float(item.get("minimum_slope_db_per_octave"))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(slope) and slope > 0:
-            slopes.append(slope)
-    return max(slopes) if slopes else None
+    slope = float(published)
+    return slope if math.isfinite(slope) and slope > 0 else None
 
 
 def prepare_driver_excitation_plan(

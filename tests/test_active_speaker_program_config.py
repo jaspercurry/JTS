@@ -239,13 +239,63 @@ def test_program_config_refuses_tweeter_hp_below_protective_floor():
         )
 
 
-def test_program_config_refuses_tweeter_hp_slope_below_floor():
-    with pytest.raises(ActiveSpeakerConfigError, match="slope"):
+def test_program_config_discloses_a_shallow_tweeter_crossover_never_refuses_it(
+    caplog,
+):
+    """The 2026-08-23 owner ruling, at the gate that would otherwise have moved
+    the nanny one stage later.
+
+    This branch — the one taken when the caller omits
+    ``protection_sections_by_role`` — is the VERIFY stage's call shape
+    (``correction_crossover_v2.py`` builds ``bind_production_play`` twice and
+    only the MEASURE one supplies that mapping). Until #2897 it refused a
+    tweeter crossover at ``order * 6 < 24`` against a hardcoded figure no
+    datasheet contains, so an order-2 pin admitted at the topology gate was
+    measured, applied, and THEN refused here. The corner refusal above is
+    unchanged — that one names a damage mechanism; this one is a code floor and
+    so discloses.
+    """
+    raw = _two_way_preset("mono")
+    raw["crossover_regions"][0]["order"] = 2
+    raw["crossover_regions"][0]["fc_hz"] = 2400
+    order_2 = ActiveSpeakerPreset.from_mapping(raw)
+
+    with caplog.at_level(logging.WARNING):
+        out = emit_active_speaker_program_config(
+            order_2, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        )
+
+    # Emitted, and the graph is still a real one the tweeter is protected in.
+    view = view_from_emitted_text(out)
+    assert unprotected_tweeter_outputs(view, tweeter_channels={1}) == ()
+    # …and the shortfall reached the journal instead of the caller.
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "result=tweeter_hp_slope_below_commissioning_floor" in m
+        and "slope_db_per_octave=12" in m
+        and "commissioning_floor_db_per_octave=24" in m
+        for m in messages
+    ), messages
+    assert not any("blocked_tweeter_hp_slope_below_floor" in m for m in messages)
+
+
+def test_program_config_still_refuses_a_crossover_below_the_declared_corner():
+    """The half that survives, asserted beside the half that did not.
+
+    De-nannying the slope did not widen the corner: an order-2 crossover BELOW
+    the declared protective floor is still refused, so "shallower is disclosed"
+    can never be read as "anything is emitted".
+    """
+    raw = _two_way_preset("mono")
+    raw["crossover_regions"][0]["order"] = 2
+    raw["crossover_regions"][0]["fc_hz"] = 2400
+    order_2 = ActiveSpeakerPreset.from_mapping(raw)
+    with pytest.raises(ActiveSpeakerConfigError, match="below the declared protective"):
         emit_active_speaker_program_config(
-            _preset("mono"),
+            order_2,
             role_channels=ROLE_CHANNELS,
             playback_device=ACTIVE_PCM,
-            protective_hp_min_slope_db_per_octave=30.0,  # LR4 is 24 dB/oct
+            protective_hp_min_corner_hz=3000.0,
         )
 
 

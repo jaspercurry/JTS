@@ -24,6 +24,7 @@ from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
+    PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
     apply_driver_low_limit,
     declared_protection_highpass_floor_hz,
     driver_protection_profile,
@@ -404,13 +405,20 @@ def _build_crossover(
             )
         )
 
+    # Disclose-and-recommend, the same rule as the low-limit warning above and
+    # the same number the round's own receipt discloses against
+    # (``TopologyPrescription.recommended_slope_db_per_octave``). Read from the
+    # constant rather than typed here, because a second spelling of a
+    # recommendation is how the design page and the receipt come to name two
+    # different floors for one build.
     slope = _slope(candidate or {})
-    if upper_role == "tweeter" and slope < 24:
+    if upper_role == "tweeter" and slope < PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE:
         issues.append(
             _issue(
                 "warning",
                 "tweeter_slope_below_recommended_floor",
-                "tweeter crossover slope is below the conservative 24 dB/octave floor",
+                "tweeter crossover slope is below the conservative "
+                f"{PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE:g} dB/octave floor",
             )
         )
     confidence = str((candidate or {}).get("confidence") or "unknown")

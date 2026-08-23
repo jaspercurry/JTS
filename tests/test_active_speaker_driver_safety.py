@@ -1310,6 +1310,137 @@ def test_a_stale_profile_that_would_rebuild_cleanly_offers_no_blocker() -> None:
     assert evaluation.reasons == ("driver_safety_profile_low_limit_stale",)
 
 
+def _de250_manual() -> dict:
+    """``_manual_settings`` with the tweeter declaring B&C's real DE250 pair.
+
+    "Recommended Crossover 1.6 kHz — 12 dB/oct. or higher slope high-pass
+    filter", which is the declaration the 2026-08-23 owner ruling was made on.
+    """
+
+    manual = deepcopy(_manual_settings())
+    tweeter = manual["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 1600.0
+    tweeter["recommended_highpass_slope_db_per_octave"] = 12.0
+    tweeter["hard_excitation_band_hz"] = [1600.0, 22000.0]
+    tweeter["measurement_band_hz"] = [1600.0, 20000.0]
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 1600.0,
+         "minimum_slope_db_per_octave": 24.0},
+    ]
+    return manual
+
+
+def test_a_confirmed_target_carries_the_declared_pair_beside_its_projections(
+) -> None:
+    """The un-fusing (#2897). Two slopes, both on the record, distinguishable.
+
+    Before this, a confirmed target held only ``max(published, 24)`` on the
+    derived protective high-pass, and no reader could recover what the
+    manufacturer actually printed — which is how the topology gate came to
+    refuse a household's order-2 pin against a 24 no datasheet contains.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_de250_manual(),
+        driver_research=None,
+        saved_at="2026-08-23T00:00:00Z",
+    )
+    assert profile["status"] == "confirmed"
+    tweeter = profile["targets"][1]
+    assert tweeter["recommended_highpass_hz"] == 1600.0
+    assert tweeter["recommended_highpass_slope_db_per_octave"] == 12.0
+    highpass = next(
+        item
+        for item in tweeter["required_protection_filters"]
+        if item["kind"] == "highpass"
+    )
+    # The derived figure is UNCHANGED: it is still what this build emits and
+    # later proves it emitted, so every already-legal graph stays legal.
+    assert highpass["cutoff_hz"] == 1600.0
+    assert highpass["minimum_slope_db_per_octave"] == 24.0
+
+
+def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
+    """Provenance is not laundered by persistence.
+
+    ``_manual_settings``'s tweeter declares a protective high-pass and no owner
+    field, so its limit is INFERRED. ``apply_driver_low_limit`` fills the owner
+    pair on that projection too — storing it would turn "we read this off your
+    filter" into "the manufacturer published this", on the one field whose
+    entire meaning is the second sentence.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_manual_settings(),
+        driver_research=None,
+        saved_at="2026-08-23T00:00:00Z",
+    )
+    tweeter = profile["targets"][1]
+    assert "recommended_highpass_hz" not in tweeter
+    assert "recommended_highpass_slope_db_per_octave" not in tweeter
+    # …and the projection it WAS inferred from is untouched.
+    highpass = next(
+        item
+        for item in tweeter["required_protection_filters"]
+        if item["kind"] == "highpass"
+    )
+    assert highpass["cutoff_hz"] == 5000.0
+
+
+def test_a_profile_stored_before_the_declared_pair_stays_confirmed() -> None:
+    """#2897's read-back tolerance, measured rather than argued.
+
+    The confirmed fingerprint is computed from the profile's OWN stored
+    targets, so adding a field to what the BUILDER writes cannot re-key an
+    artifact already on disk. A speaker whose profile predates this change must
+    keep playing across the deploy rather than reading ``malformed`` until
+    somebody re-saves numbers that did not change.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    profile = build_driver_safety_profile(
+        topology,
+        manual_settings=_de250_manual(),
+        driver_research=None,
+        saved_at="2026-08-23T00:00:00Z",
+    )
+    stored_before = deepcopy(profile)
+    for target in stored_before["targets"]:
+        target.pop("recommended_highpass_hz", None)
+        target.pop("recommended_highpass_slope_db_per_octave", None)
+    # The stored digest is the pre-change one, unchanged by the pop above only
+    # because it was never over these keys — so re-derive it the way a
+    # pre-change build would have, and confirm the evaluation accepts it.
+    stored_before["profile_fingerprint"] = driver_safety_module._fingerprint(
+        {
+            key: stored_before.get(key)
+            for key in (
+                "artifact_schema_version",
+                "kind",
+                "topology_id",
+                "targets",
+                "research",
+                "authority",
+                "authorizes_playback",
+            )
+        }
+    )
+    stored_before["confirmation"]["confirmed_fingerprint"] = (
+        stored_before["profile_fingerprint"]
+    )
+    assert stored_before["profile_fingerprint"] != profile["profile_fingerprint"]
+
+    evaluation = evaluate_driver_safety_profile(stored_before, topology)
+
+    assert evaluation.status == "confirmed"
+    assert evaluation.confirmed_and_current is True
+    assert evaluation.reasons == ()
+
+
 def test_a_profile_carrying_a_retired_field_is_named_not_called_corrupt() -> None:
     """#2870 hazard 1, and the migration this PR deliberately does NOT automate.
 

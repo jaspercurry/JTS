@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import graph_safety as gs
+from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 
 MUTE_GAIN = -120.0
 
@@ -306,6 +307,126 @@ def test_pipeline_contains_chain_requires_exact_channels():
     # superset of channels must not match an exact-{1} step
     assert not gs.pipeline_contains_chain(
         view, channels={0, 1}, required_names=("as_tweeter_protective_hp",)
+    )
+
+
+def _tweeter_hp_view(order: int):
+    """One tweeter output carrying one Linkwitz-Riley high-pass of ``order``."""
+    return gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": order,
+                    },
+                }
+            },
+            "pipeline": [
+                {"type": "Filter", "channels": [1], "names": ["tweeter_hp"]}
+            ],
+        }
+    )
+
+
+def _tweeter_guard_view(order: int):
+    """``_tweeter_hp_view`` plus the soft-clip limiter ``tweeter_guard_present``
+    additionally requires, both wired to the one tweeter output."""
+    return gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": order,
+                    },
+                },
+                "tweeter_limiter": {
+                    "type": "Limiter",
+                    "parameters": {"clip_limit": -6.0, "soft_clip": True},
+                },
+            },
+            "pipeline": [
+                {
+                    "type": "Filter",
+                    "channels": [1],
+                    "names": ["tweeter_hp", "tweeter_limiter"],
+                }
+            ],
+        }
+    )
+
+
+def test_the_emitted_graph_is_still_proved_against_the_derived_slope():
+    """#2897's blast-radius floor: the EMIT side did not move.
+
+    The 2026-08-23 ruling narrowed what may refuse a household's PINNED
+    crossover. It changed nothing about proving that a graph this build emitted
+    carries the protective filter this build derived — the filter being proved
+    is generated from the same ``max(published, 24)`` figure, so no household
+    choice is being refused here. LR4 proves it and LR2 does not, exactly as
+    before, and both halves are asserted so "unchanged" is not just the absence
+    of an edit.
+    """
+    requirement = {
+        "kind": "highpass",
+        "cutoff_hz": 1_600.0,
+        "minimum_slope_db_per_octave": 24.0,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }
+    for order in (4, 8):
+        assert gs.protection_requirement_present(
+            _tweeter_hp_view(order),
+            output_index=1,
+            allowed_channels={1},
+            requirement=requirement,
+        )
+    assert not gs.protection_requirement_present(
+        _tweeter_hp_view(2),
+        output_index=1,
+        allowed_channels={1},
+        requirement=requirement,
+    )
+
+
+def test_the_l0_emit_gates_enforce_no_slope_above_12_db_per_octave():
+    """Why the topology gate is the ONE place a slope bound is applied.
+
+    The two L0 predicates are NOT the same about steepness, and the difference
+    is why this test names the bound rather than saying "no slope term":
+    ``output_highpass_protected`` reads the CORNER and no ``order`` at all,
+    while ``tweeter_guard_present`` does read one — ``order`` absent or
+    ``>= 2.0``, its own loose-tolerance rule. Every order this system can emit
+    clears that, so neither refuses an order-2 crossover, and a published slope
+    unchecked at the pin is unchecked downstream. Both halves are measured: the
+    orders that pass, and the sub-LR2 shape ``tweeter_guard_present`` still
+    rejects.
+    """
+    for order in sorted(SUPPORTED_LR_ORDERS):
+        assert gs.output_highpass_protected(
+            _tweeter_hp_view(order),
+            channel=1,
+            allowed_channels={1},
+            min_corner_hz=400.0,
+        )
+        assert gs.tweeter_guard_present(
+            _tweeter_guard_view(order),
+            channels={1},
+            hp_name="tweeter_hp",
+            limiter_name="tweeter_limiter",
+            limiter_clip_ceiling_db=-3.0,
+        )
+    # …and the shape it DOES refuse is below every emittable order.
+    assert not gs.tweeter_guard_present(
+        _tweeter_guard_view(1),
+        channels={1},
+        hp_name="tweeter_hp",
+        limiter_name="tweeter_limiter",
+        limiter_clip_ceiling_db=-3.0,
     )
 
 

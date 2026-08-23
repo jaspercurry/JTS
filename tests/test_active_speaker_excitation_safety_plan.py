@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 
 import pytest
@@ -18,6 +19,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     prepare_driver_excitation_plan,
     resolve_driver_excitation_ceilings,
     resolve_driver_measurement_band_hz,
+    resolve_driver_protection_slope_db_per_octave,
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from tests.active_speaker_fixtures import mono_output_topology
@@ -34,6 +36,7 @@ def _profile_and_targets(
     hard_band: list | None = None,
     measurement_band: list | None = None,
     tweeter_low_limit_hz: float = 1500.0,
+    tweeter_published_slope_db_per_octave: float | None = None,
 ):
     topology = mono_output_topology(mode=mode)
 
@@ -51,7 +54,17 @@ def _profile_and_targets(
         return {
             "hard_excitation_band_hz": role_hard,
             **(
-                {"recommended_highpass_hz": tweeter_low_limit_hz}
+                {
+                    "recommended_highpass_hz": tweeter_low_limit_hz,
+                    **(
+                        {
+                            "recommended_highpass_slope_db_per_octave":
+                                tweeter_published_slope_db_per_octave,
+                        }
+                        if tweeter_published_slope_db_per_octave is not None
+                        else {}
+                    ),
+                }
                 if role == "tweeter"
                 else {}
             ),
@@ -139,6 +152,78 @@ def _requested(target_fingerprint: str, **overrides):
         commissioning_context_fingerprint="a" * 64,
         generator=DriverSweepGeneratorPlan(**values),
     )
+
+
+def _tweeter_target(profile, targets) -> dict:
+    fingerprint = targets["tweeter"]["target_fingerprint"]
+    return next(
+        target
+        for target in profile["targets"]
+        if target["target_fingerprint"] == fingerprint
+    )
+
+
+def test_the_protection_slope_reader_returns_the_published_number_not_the_derived_one():
+    """The un-fusing (2026-08-23 owner ruling).
+
+    The confirmed target carries both: the manufacturer's published condition
+    under ``recommended_highpass_slope_db_per_octave``, and the commissioning
+    figure this build derived from it — ``max(published, 24)`` — stamped on the
+    protective high-pass. This reader owes the topology gate the FIRST, because
+    a code figure may prefill and disclose but never refuse.
+    """
+    topology, profile, targets = _profile_and_targets(
+        tweeter_published_slope_db_per_octave=12.0,
+    )
+    tweeter = _tweeter_target(profile, targets)
+    stamped = next(
+        item
+        for item in tweeter["required_protection_filters"]
+        if item["kind"] == "highpass"
+    )
+    # Both numbers really are on the record, and they really do differ…
+    assert tweeter["recommended_highpass_slope_db_per_octave"] == 12.0
+    assert stamped["minimum_slope_db_per_octave"] == 24.0
+    # …and the reader hands the gate the published one.
+    assert resolve_driver_protection_slope_db_per_octave(
+        profile, targets["tweeter"]["target_fingerprint"],
+    ) == 12.0
+
+
+def test_a_maker_that_publishes_no_slope_gives_the_gate_nothing_to_refuse_on():
+    """An ordinary datasheet — a recommended crossover frequency with no slope
+    qualifier — must not be read as declaring this build's own 24. The stamp is
+    still 24 because that is the filter this build EMITS; the reader says
+    ``None`` because nobody published a condition."""
+    topology, profile, targets = _profile_and_targets()
+    tweeter = _tweeter_target(profile, targets)
+    stamped = next(
+        item
+        for item in tweeter["required_protection_filters"]
+        if item["kind"] == "highpass"
+    )
+    assert "recommended_highpass_slope_db_per_octave" not in tweeter
+    assert stamped["minimum_slope_db_per_octave"] == 24.0
+    assert resolve_driver_protection_slope_db_per_octave(
+        profile, targets["tweeter"]["target_fingerprint"],
+    ) is None
+
+
+def test_a_profile_stored_before_the_owner_pair_landed_reads_as_unpublished():
+    """A pre-#2897 target carries only the projections. It is a sound
+    declaration and stays confirmed, but it has no published slope on it — so
+    the gate applies no slope bound until the next /sound/ save, which is the
+    de-nanny direction rather than a fabricated 24."""
+    topology, profile, targets = _profile_and_targets(
+        tweeter_published_slope_db_per_octave=12.0,
+    )
+    legacy = deepcopy(profile)
+    for target in legacy["targets"]:
+        target.pop("recommended_highpass_hz", None)
+        target.pop("recommended_highpass_slope_db_per_octave", None)
+    assert resolve_driver_protection_slope_db_per_octave(
+        legacy, targets["tweeter"]["target_fingerprint"],
+    ) is None
 
 
 def test_safety_plan_derives_closed_request_for_shared_admission():

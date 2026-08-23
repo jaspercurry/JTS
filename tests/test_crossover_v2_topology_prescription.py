@@ -30,6 +30,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker.driver_protection import (
+    PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
+)
 from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
@@ -68,8 +71,16 @@ from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 DECLARED_FLOOR_HZ = 1600.0
 #: The lower driver's declared hard ceiling.
 LOWER_CEILING_HZ = 4000.0
-#: The tweeter's declared ``minimum_slope_db_per_octave``.
+#: A maker who PUBLISHES 24 dB/octave. Not jts3's DE250 — B&C publish 12 for
+#: that driver (:data:`DE250_PUBLISHED_SLOPE` below) — but the shape that must
+#: still refuse order 2, because a published condition is the authority in both
+#: directions. It was jts3's number here only because the gate used to read the
+#: DERIVED ``max(published, 24)``; the 2026-08-23 ruling ended that.
 DECLARED_SLOPE = 24.0
+#: What B&C actually print for the DE250: "Recommended Crossover 1.6 kHz — 12
+#: dB/oct. or higher slope high-pass filter", read off the datasheet line quoted
+#: in the 2026-08-23 owner ruling.
+DE250_PUBLISHED_SLOPE = 12.0
 #: What the speaker is commissioned at today.
 INCUMBENT_HZ = 1648.7
 #: The provenance a real pin carries: the banked artifact it was drawn from.
@@ -420,6 +431,131 @@ def test_the_frequency_bounds_are_answered_before_the_slope():
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(5000.0, order=2))
     assert excinfo.value.reason == FC_REJECT_ABOVE_LOWER_DRIVER_BAND
+
+
+def test_the_de250_admits_order_2_because_its_maker_publishes_12():
+    """The 2026-08-23 owner ruling, at jts3's real driver.
+
+    B&C print "1.6 kHz — 12 dB/oct. or higher" for the DE250, and this pin —
+    2400 Hz at order 2 — is what the gate refused as "below the protected
+    driver's declared minimum of 24 dB/octave". Nobody declared 24: that was
+    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, a code figure the
+    2026-08-22 ruling bars from refusing anything. Order 2 IS 12 dB/octave, the
+    corner clears both declared bands, so it is admitted — and disclosed.
+    """
+    pinned = _read(
+        _pin(2400.0, order=2),
+        minimum_slope_db_per_octave=DE250_PUBLISHED_SLOPE,
+    )
+    assert pinned is not None
+    assert pinned.order == 2
+    assert pinned.slope_db_per_octave == DE250_PUBLISHED_SLOPE
+    assert pinned.checked_against_slope_db_per_octave == DE250_PUBLISHED_SLOPE
+
+
+def test_the_de250s_declared_corner_still_refuses_a_pin_below_it():
+    """The half of the envelope that DOES name a damage mechanism is untouched.
+
+    De-nannying the slope did not widen the frequency gate: 1500 Hz is below the
+    driver's declared 1.6 kHz floor and is refused at order 2 exactly as it is at
+    order 4, by the shared predicate the automatic path uses.
+    """
+    for order in (2, 4):
+        with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+            _read(
+                _pin(1500.0, order=order),
+                minimum_slope_db_per_octave=DE250_PUBLISHED_SLOPE,
+            )
+        assert excinfo.value.reason == FC_REJECT_BELOW_DECLARED_FLOOR
+
+
+def test_a_published_slope_above_the_recommendation_still_refuses_order_2():
+    """The declaration is the authority in BOTH directions.
+
+    A maker publishing 24 gets order 2 refused, and a maker publishing 36 —
+    above this build's own commissioning recommendation — gets order 4 refused
+    too. Nothing about the ruling makes a published number advisory; it makes
+    the UNPUBLISHED one advisory.
+    """
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0, order=2), minimum_slope_db_per_octave=24.0)
+    assert excinfo.value.reason == TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0, order=4), minimum_slope_db_per_octave=36.0)
+    assert excinfo.value.reason == TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT
+    assert "published minimum of 36 dB/octave" in excinfo.value.detail
+
+
+def test_the_refusal_says_published_not_declared_minimum():
+    """The message is the whole of what an operator reads, and the old one
+    attributed this build's 24 to the manufacturer."""
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0, order=2))
+    assert "published minimum" in excinfo.value.detail
+    assert "declared minimum" not in excinfo.value.detail
+
+
+def test_an_admitted_shallow_pin_discloses_the_commissioning_recommendation():
+    """Disclose-and-recommend, on the receipt rather than only on /sound/.
+
+    ``crossover_preview`` warns a DESIGN below the 24 dB/octave floor, and until
+    this ruling that was the only surface that named it — a pinned measurement
+    arm crossed shallower with nothing on its record to say so. The number rides
+    the prescription now, the beaming ceiling's sibling and read the same way.
+    """
+    pinned = _read(
+        _pin(2400.0, order=2),
+        minimum_slope_db_per_octave=DE250_PUBLISHED_SLOPE,
+    )
+    assert pinned is not None
+    assert pinned.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+    # The comparison a reader makes: this pin crossed shallower than recommended.
+    assert pinned.slope_db_per_octave < pinned.recommended_slope_db_per_octave
+    assert pinned.to_dict()["recommended_slope_db_per_octave"] == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+
+
+def test_the_recommendation_is_disclosed_even_when_nothing_was_published():
+    """The round whose receipt most needs it: no published condition at all, so
+    no slope refusal was possible, and the recommendation is the only slope
+    figure a later reader has."""
+    pinned = _read(_pin(2400.0, order=2), minimum_slope_db_per_octave=None)
+    assert pinned is not None
+    assert pinned.checked_against_slope_db_per_octave is None
+    assert pinned.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+
+
+def test_the_disclosed_recommendation_survives_the_durable_read_back():
+    """A receipt banked today must still say what the pin crossed against when
+    it is graded, on the same round-trip rule the other stamped fields keep."""
+    pinned = _read(
+        _pin(2400.0, order=2),
+        minimum_slope_db_per_octave=DE250_PUBLISHED_SLOPE,
+    )
+    assert pinned is not None
+    again = topology_prescription_from_mapping(pinned.to_dict())
+    assert again is not None
+    assert again.recommended_slope_db_per_octave == (
+        PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
+    )
+    assert again.checked_against_slope_db_per_octave == DE250_PUBLISHED_SLOPE
+
+
+def test_a_receipt_banked_before_the_disclosure_still_reads_back():
+    """A block this build wrote last week names no recommendation. It is a
+    document this repository already wrote, so it loads with the field absent
+    rather than being refused for not carrying a field it predates."""
+    stale = _read(_pin(2400.0)).to_dict()
+    del stale["recommended_slope_db_per_octave"]
+    again = topology_prescription_from_mapping(stale)
+    assert again is not None
+    assert again.recommended_slope_db_per_octave is None
+    assert again.fc_hz == 2400.0
 
 
 def test_the_slope_relation_matches_the_one_confirmed_protection_uses():
