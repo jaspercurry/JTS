@@ -588,19 +588,18 @@ def _jts3_safety_profile(topology):
 
 
 def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkeypatch):
-    """Both conservatisms, retired together, through the REAL derivation.
+    """The de-nannied ceiling through the REAL derivation.
 
     Real ``_derive_bounds``, real ``unsegmented_stimulus_ceiling_db``, real
     branch render, real driver-safety profile — only the topology and the
-    statefile lookup are stubbed. The three ceilings and the two deltas between
-    them are what this PR is:
+    statefile lookup are stubbed.
 
-      1. naked sensitivities + full-band peak — what shipped
-      2. pad-folded + full-band  — moved by EXACTLY the pad
-      3. pad-folded + per-branch — moved by EXACTLY (full-band peak - the
-         BINDING branch's peak)
+    Two things are pinned end to end. The ceiling is full scale less the
+    LOUDEST branch peak the render found, which on this fixture is the woofer's;
+    and it clears the ceiling the declared caps used to impose (-21.2 dB on
+    these numbers) by tens of decibels, which is the 2026-08-23 ruling.
 
-    The magnitudes are this fixture's own — a branch delta is a property of one
+    The magnitudes are this fixture's own — a branch peak is a property of one
     stimulus through one graph and is never transferable, which is the whole
     reason the render is redone per stimulus rather than cached.
     """
@@ -646,33 +645,31 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
 
     peak = seat_level.stimulus_peak_dbfs(stimulus)
     fingerprints = [t["target_fingerprint"] for t in targets]
-    naked = unsegmented_stimulus_ceiling_db(
+    full_band = unsegmented_stimulus_ceiling_db(
         profile, fingerprints, stimulus_peak_dbfs=peak,
         declared_sensitivities={"woofer": _SENS_WOOFER, "tweeter": _SENS_TWEETER},
     )
-    padded = unsegmented_stimulus_ceiling_db(
-        profile, fingerprints, stimulus_peak_dbfs=peak,
-        declared_sensitivities={
-            "woofer": _SENS_WOOFER, "tweeter": _SENS_TWEETER + _PAD_DB,
-        },
-    )
 
-    # 1. What shipped: min(-8.0, -33.2) - (-12.0).
-    assert naked == pytest.approx(-21.2, abs=0.01)
-    # 2. Pad-folded: the move is exactly the pad, and nothing else.
-    assert padded - naked == pytest.approx(-_PAD_DB, abs=0.01)
-    # 3. Per-branch, from the render: the tweeter still binds, the woofer alone
-    #    would have allowed more, and the move is exactly the peak the binding
-    #    branch does NOT receive.
+    # The bound with no render: full scale less the stimulus's own peak.
+    assert full_band == pytest.approx(-peak, abs=0.01)
+    # With the render: full scale less the LOUDEST branch, which is the woofer
+    # here — the quiet tweeter branch no longer holds the volume down.
     branch = seat_level._applied_branch_peaks(stimulus, targets)
     assert set(branch) == set(fingerprints)
     assert branch[by_role["tweeter"]] < branch[by_role["woofer"]]
-    assert ceiling_db == pytest.approx(
-        min(-18.8 - branch[by_role["tweeter"]], -8.0 - branch[by_role["woofer"]]),
-        abs=0.01,
+    assert ceiling_db == pytest.approx(-branch[by_role["woofer"]], abs=0.01)
+    assert ceiling_db - full_band == pytest.approx(
+        peak - max(branch.values()), abs=0.01
     )
-    assert ceiling_db - padded == pytest.approx(peak - min(branch.values()), abs=0.01)
-    assert ceiling_db > naked
+    # The ruling, as a number: the declared caps used to pin this ceiling at
+    # min(-8.0, -33.2) - peak. Mutation guard — restore that term and the
+    # ceiling collapses to it, tens of decibels below what the box can drive.
+    declared_cap_ceiling = min(
+        -18.8 - branch[by_role["tweeter"]], -8.0 - branch[by_role["woofer"]]
+    )
+    assert ceiling_db > declared_cap_ceiling
+    assert min(-8.0, -33.2) - peak == pytest.approx(-21.2, abs=0.01)
+    assert ceiling_db > -21.2
     # The commissioning SPL stop is a SEPARATE bound and is untouched by any of
     # this — it is still a real number from the preset.
     assert 45.0 <= spl_ceiling <= 85.0

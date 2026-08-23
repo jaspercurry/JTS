@@ -2757,21 +2757,31 @@ host-slider volume observations. What this verb
 adds is the SPL domain: the band, the ceilings, and the ambient floor.
 
 **The ceiling is mic-independent, and that is deliberate.** The ramp's hard bound
-is `unsegmented_stimulus_ceiling_db`, the excitation ledger solved for main
-volume against the ACTUAL stimulus bytes. No measured level enters that number,
+is `unsegmented_stimulus_ceiling_db`, digital full scale solved for main volume
+against the ACTUAL stimulus bytes. No measured level enters that number,
 so a mis-calibrated microphone cannot move it. The profile's
 `max_commissioning_level_db_spl` is a second, measured stop — softer by
 construction, because it shares the calibration's fate.
 
+**Declared per-driver caps do not bound it, and have not since 2026-08-23.**
+They used to: the ceiling was `min(driver caps) − stimulus peak`, which made the
+tightest `level_duration_limits.max_effective_peak_dbfs` the operative volume
+ceiling and refused a 75 dB SPL seat target at 68.3 dB with ~30 dB of digital
+headroom unused. That field is protocol discipline rather than a published
+damage bound (row (h) in
+[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)), so the caps are
+now DISCLOSED on `event=active_speaker.unsegmented_ceiling_bound` — each
+driver's cap, what its branch receives at the ceiling, and how far past its
+declared figure that lands — beside a ceiling that is headroom.
+
 **That ceiling has two forms, and which one applies depends on what can be
-known about the graph.** Given only the stimulus, every driver has to be assumed
-to see the whole thing: `min(driver caps) − stimulus peak`, `min` not `max`,
-because nothing attenuates a flat WAV down to the quieter drivers' ledgers the
-way a composed program's per-segment gains do. Given the applied graph as well,
+known about the graph.** Given only the stimulus, every branch has to be assumed
+to see the whole thing: `MAX_TEST_LEVEL_DBFS − stimulus peak`. Given the applied
+graph as well,
 [`branch_peak.py`](../jasper/active_speaker/branch_peak.py) RENDERS the stimulus
 through it — input split mixer, crossover passes, shelves and peaks, per-driver
-gain and delay — and the same per-driver caps bind against what each branch
-actually receives: `min(cap − that driver's branch peak)`. That render is an
+gain and delay — and the branch that reaches full scale first is the one that
+binds: `MAX_TEST_LEVEL_DBFS − max(branch peak)`. That render is an
 in-process model, deliberately not the byte-exact
 `jasper-active-speaker-emit-bench` path (which needs a subprocess and a
 materialised WavFile capture plus F64 output per render — wrong shape for a
@@ -2834,10 +2844,10 @@ refusal restores the household volume and banks nothing.
 | `seat_spl_target_rejected` | the band's TOP exceeds the profile's commissioning ceiling |
 | `driver_cap_ceiling_underivable` | no confirmed driver safety profile, or no preset |
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
-| `volume_ceiling_below_ramp_start` | the ledger leaves no room to climb |
+| `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
 | `mic_not_observing` | the volume climbed the probe span and the mic never rose above the room |
 | `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
-| `spl_target_unreachable` | the ceiling was reached without entering the band |
+| `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `mic_feed_lost` / `mic_clipping` / `ramp_timeout` | the kernel's own aborts |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 

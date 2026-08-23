@@ -363,9 +363,10 @@ class ExcitationProgram:
 
 Composers: `build_check_program(...)`, `build_measure_program(gain_plan, ...)`,
 `build_verify_program(...)`. Every segment passes
-`prepare_driver_excitation_plan` (band ⊆ permitted band, effective peak ≤
-`min(profile cap, protection cap)` — the DE250 −65 dBFS HF cap lives there
-already). **Program admission attests N per-segment plans plus two
+`prepare_driver_excitation_plan` (band ⊆ permitted band, effective peak ≤ the
+driver's admitted cap — the declared value when there is one, else the class
+default, superseded on this path by the sensitivity derivation; the `min` of
+declared and class default went with the 2026-08-23 ruling). **Program admission attests N per-segment plans plus two
 per-channel whole-file facts recomputed from the rendered WAV bytes: each
 channel's true peak ≤ its driver's admitted cap, and out-of-segment channel
 energy below a floor** — that is what makes the attestation about the
@@ -769,9 +770,10 @@ issue #2761).
 **Residual, named:** the derivation is only as good as the declaration, and
 declared sensitivities carry no plausibility validation. A household that swaps
 the two sensitivity rows presents Δ ≤ 0 for a genuinely more-sensitive tweeter,
-and the ceiling lands at full scale — where the retired −35 hedge clamped it by
-accident. That removes the *derivation's* contribution to
-`unsegmented_stimulus_ceiling_db` (documented mic-*independent*) for that box.
+and the cap lands at full scale — where the retired −35 hedge clamped it by
+accident. That empties the derivation of content for that box's composed
+tweeter level. It no longer reaches `unsegmented_stimulus_ceiling_db`, which
+since 2026-08-23 is bounded by digital headroom rather than by any driver cap.
 
 Two mic-independent stops survive a swapped declaration even so, which is why
 the residual is bounded rather than open-ended: `MAX_TEST_LEVEL_DBFS` still

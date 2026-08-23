@@ -4830,7 +4830,11 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
           family_or_equivalent: "equivalent_or_steeper",
         }],
         level_duration_limits: {
-          max_effective_peak_dbfs: tweeterPeakDbfs,
+          // `null` omits the key -- the ordinary reply since the 2026-08-23
+          // ruling made this a published-fact-or-omit field.
+          ...(tweeterPeakDbfs === null
+            ? {}
+            : { max_effective_peak_dbfs: tweeterPeakDbfs }),
           max_sweep_duration_s: 4,
           max_repeat_count: 3,
           minimum_cooldown_s: 2,
@@ -5007,9 +5011,19 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
 }
 
 async function testResearchEchoBackDisclosesTheDelegationSentinel() {
-  // A tweeter left exactly on its class ceiling has DELEGATED the level, and
-  // protection may lawfully raise it. Confirming that number without this line
-  // would tell the household they had capped something they had not (#2192).
+  // A tweeter that declares NO level limit has DELEGATED the level, and
+  // protection derives it. Saying nothing would leave the household with a
+  // level row that never mentions the loudest fact about it (#2192).
+  //
+  // Absence is the ordinary shape since the 2026-08-23 ruling made the field
+  // published-fact-or-omit. A profile saved before that carries the class
+  // ceiling itself, which said the same thing, so both must disclose.
+  const undeclared = echoPanel(await echoHarness(
+    echoDraft({ research: echoResearchPacket(null) })
+  ));
+  if (!undeclared.includes("Test level here is left to JTS")) {
+    fail("an undeclared peak must disclose the delegation", { undeclared });
+  }
   const onSentinel = echoPanel(await echoHarness(echoDraft()));
   if (!onSentinel.includes("Test level here is left to JTS")) {
     fail("a declared peak on the class ceiling must disclose the delegation", {

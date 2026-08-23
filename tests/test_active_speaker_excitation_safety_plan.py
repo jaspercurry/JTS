@@ -70,7 +70,10 @@ def _profile_and_targets(
             ),
             "measurement_band_hz": measurement_band or [500, 10_000],
             "level_duration_limits": {
-                "max_effective_peak_dbfs": peak,
+                # ``None`` omits the key -- since the 2026-08-23 ruling that is
+                # the ordinary shape, and it is how a target says it has no
+                # published level limit.
+                **({} if peak is None else {"max_effective_peak_dbfs": peak}),
                 "max_sweep_duration_s": 4,
                 "max_repeat_count": 3,
                 "minimum_cooldown_s": cooldown_s,
@@ -314,6 +317,104 @@ def test_safety_plan_refuses_a_profile_it_cannot_read_back():
 # 25.2 dB delta.
 
 _JTS3_SENSITIVITIES = {"woofer": 83.3, "tweeter": 108.5}
+
+
+def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
+    """Delegation is a provenance fact, not a magic value (2026-08-23).
+
+    The ceiling used to be selected by comparing the declared peak against the
+    class default: equal meant "delegated", anything else meant "literal", and
+    ``min(declared, class_default)`` then clamped the literal arm back down. A
+    value steering a derivation is how a household number typed one dB louder
+    than a code figure silently lost both its intent and its level.
+
+    Three cases, one predicate. Absence is the ordinary delegation; a stored
+    class seed said the same thing under the retired contract and is read the
+    same way; anything else is a declaration, honoured verbatim in BOTH
+    directions from the class figure.
+    """
+    from jasper.active_speaker.driver_protection import driver_protection_profile
+    from jasper.active_speaker.excitation_safety_plan import (
+        LEVEL_CEILING_DECLARED,
+        LEVEL_CEILING_LEGACY_CLASS_SEED,
+        LEVEL_CEILING_UNDECLARED,
+        _declared_level_ceiling,
+    )
+
+    protection = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+    assert protection.max_auto_level_dbfs == -65.0
+
+    assert _declared_level_ceiling({}, protection) == (
+        -65.0,
+        LEVEL_CEILING_UNDECLARED,
+    )
+    assert _declared_level_ceiling(
+        {"max_effective_peak_dbfs": -65.0}, protection
+    ) == (-65.0, LEVEL_CEILING_LEGACY_CLASS_SEED)
+    for declared in (-66.0, -64.0):
+        assert _declared_level_ceiling(
+            {"max_effective_peak_dbfs": declared}, protection
+        ) == (declared, LEVEL_CEILING_DECLARED)
+
+    # A present-but-unusable value is a malformed record, not a silent fallback
+    # to the class figure.
+    for junk in (True, "quiet", float("nan")):
+        with pytest.raises(ExcitationSafetyPlanError):
+            _declared_level_ceiling({"max_effective_peak_dbfs": junk}, protection)
+
+
+def test_an_undeclared_peak_delegates_the_hf_ceiling_on_the_proven_hp_path() -> None:
+    """Absence reaches the derivation, end to end through the real resolver.
+
+    The path a profile saved after 2026-08-23 takes: no ``max_effective_peak_dbfs``
+    on the tweeter at all, and the level comes from the sensitivity delta
+    against the woofer's own cap.
+
+    Mutation guard: make absence resolve literally instead of delegating and
+    this lands on the -65 class default, 41.8 dB adrift.
+    """
+    _topology, profile, targets = _profile_and_targets(
+        woofer_peak=-8, tweeter_peak=None,
+    )
+    _band, ceiling = resolve_driver_excitation_ceilings(
+        profile,
+        targets["tweeter"]["target_fingerprint"],
+        program_admission=True,
+        declared_sensitivities=_JTS3_SENSITIVITIES,
+    )
+    # woofer cap -8.0, sensitivity delta 25.2 dB -> -33.2.
+    assert ceiling == pytest.approx(-33.2)
+
+    # And the naked-tone path still keeps the class default, exactly as it does
+    # for a declared seed -- delegation is what the proven high-pass buys.
+    _band, naked = resolve_driver_excitation_ceilings(
+        profile,
+        targets["tweeter"]["target_fingerprint"],
+        declared_sensitivities=_JTS3_SENSITIVITIES,
+    )
+    assert naked == pytest.approx(-65.0)
+
+
+def test_a_declared_peak_louder_than_the_class_default_is_not_clamped() -> None:
+    """The clamp that went with the save-time refusal (2026-08-23).
+
+    ``min(declared, class_default)`` used to pull a declared -50 back to -65
+    while ``_target_issues`` refused the save — a code figure overruling a
+    declaration in two places at once, and the reason the old comment at this
+    site called the corner "silently unmet". The declaration wins now, and the
+    only bound left on it is digital full scale.
+    """
+    _topology, profile, targets = _profile_and_targets(
+        woofer_peak=-8, tweeter_peak=-50,
+    )
+    for program_admission in (False, True):
+        _band, ceiling = resolve_driver_excitation_ceilings(
+            profile,
+            targets["tweeter"]["target_fingerprint"],
+            program_admission=program_admission,
+            declared_sensitivities=_JTS3_SENSITIVITIES,
+        )
+        assert ceiling == pytest.approx(-50.0)
 
 
 def test_naked_path_keeps_legacy_ceiling_even_with_sensitivities_declared():

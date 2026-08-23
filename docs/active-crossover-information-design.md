@@ -456,20 +456,21 @@ engineering estimate** from the driver's published facts and physics, tagged
 `confidence: "low"` with its derivation in `basis`, and `null` only where there
 is no engineering basis at all. The estimate asked for is deliberately not a
 timid one: safety never lived in a number's modesty but in the bounds below,
-the per-style plausibility band, the peak ceiling, and the quiet-start ramp,
+the per-style plausibility band, and the quiet-start ramp,
 while prompt-level lowballing costs real performance — a needlessly high cutoff
 robs usable range, a needlessly low level under-drives the measurement. Every
 estimate is therefore declared as an estimate and carries one citation in its
 provenance `source`: the datasheet or measurement for a published number, and
 for an estimate the single fact it leaned on. The ask also names, per target,
-the code-owned bounds the reply must clear, and its
-worked example fills itself in from those same bounds — both read from
+the code-owned bound the reply must clear — the per-style plausibility band for
+the minimum crossover frequency, and since 2026-08-23 that alone — and its
+worked example fills itself in from that same bound, both read from
 `driver_protection_profile` rather than restated, so an estimate can land on
 the first try and the example is never a worked answer the gate refuses for the
 tweeter style actually installed. What did not move is the bound itself: a
 **reply** carrying an out-of-bounds value is refused however impeccable its
 provenance, and refused **by name** rather than silently clamped, so the
-operator sees the bound and decides — the peak ceiling and band nesting by
+operator sees the bound and decides — band nesting by
 `_target_issues` on the save, the per-style low-limit band by
 `validate_research_low_limit_plausibility` at the paste. The same low-limit
 band over a value a *human* typed became a warning in #2874; the bound the ask
@@ -492,21 +493,28 @@ the wire that could disagree with it. Owner rulings, 2026-08-06 (issues
 #2186 and #2195, the latter superseding the former's conservative-estimate
 half and absorbing #2192).
 
-One of those bounds is also a **sentinel**, and the ask lands on it deliberately.
-For a high-frequency role on the proven-high-pass path,
-`resolve_driver_excitation_ceilings` reads a declared
-`max_effective_peak_dbfs` that exactly equals the class default as "no
-driver-specific level intent was expressed" and supersedes it with the
-sensitivity-derived ceiling; any
-other declared value is honoured literally. So a tweeter declared at the class
-default can be measured tens of decibels louder than that number suggests
-(−25.2 dBFS against the −65 seed on the shipped JTS3 preset), while one
-declared a single dB quieter is taken at face value. That discontinuity predates
-the estimate contract, but the research ask is now its first automated writer,
-so the ask tells the assistant what declaring the ceiling actually delegates,
-and the template value, the class default, and the equality comparison are
-pinned as one three-link chain in
-`tests/test_active_speaker_driver_safety.py`.
+**`max_effective_peak_dbfs` is asked for as a published fact or not at all**
+(owner ruling, 2026-08-23). Until then the ask named a class-default ceiling
+under LIMITS and told the assistant to "send exactly the ceiling" for a tweeter
+with no published limit, and `resolve_driver_excitation_ceilings` read a
+declared value equal to that figure as "no driver-specific level intent was
+expressed" — a number this build wrote, sent through a researcher, and read
+back as a declaration. On the new-horn box the round trip pinned a 75 dB SPL
+seat target at 68.3 dB SPL. The demand is gone, the key is optional, and the
+delegation is carried by the field's **absence**, which is a provenance fact
+rather than a magic value. A declared value is honoured verbatim in both
+directions — the `min(declared, class_default)` clamp and the
+`max_effective_peak_above_code_policy` save refusal both went with the demand,
+since a class figure may not overrule a declaration.
+
+A profile SAVED under the retired contract still carries the class default
+itself. It said then what absence says now, so it is read the same way
+(`LEVEL_CEILING_LEGACY_CLASS_SEED`, named on the supersede log line) rather
+than silently regressing a commissioned tweeter by tens of decibels; that arm
+is deletable once no stored profile carries a seed. So a tweeter with no
+declared limit is measured tens of decibels louder than the class default
+suggests (−25.2 dBFS against the −65 seed on the shipped JTS3 preset), while
+one declared a single dB quieter is taken at face value.
 
 The derivation carried a provisional `HF_MEASUREMENT_ABS_CEILING_DBFS` of
 −35 dBFS until 2026-08-20. It is retired: it was landed pending a bench
@@ -530,7 +538,8 @@ retired hedge clamped it by accident. Validating the declaration is the fix;
 refusing to derive on Δ ≤ 0 would break the legitimate case.
 
 That disclosure is no longer only
-assistant-facing: when an echoed peak sits exactly on its class ceiling, the
+assistant-facing: when a high-frequency target declares no level limit — or
+carries the retired class seed — the
 echo-back panel says so in the operator's own words — the level is left to JTS,
 picked once a protective high-pass is in place, from that driver's declared
 sensitivity against the low-frequency driver's own limit. The sentence names

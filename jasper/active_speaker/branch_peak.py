@@ -4,10 +4,10 @@
 
 """What peak ONE driver's branch actually receives for ONE stimulus.
 
-The un-segmented volume ceiling
+Without a render, the un-segmented volume ceiling
 (:func:`jasper.active_speaker.session_volume_plan.unsegmented_stimulus_ceiling_db`)
-has always had to assume every driver sees the whole stimulus peak, because it
-had no way to know what a crossed-over branch really gets. On a two-way that is
+has to assume every branch sees the whole stimulus peak, because it has no way
+to know what a crossed-over branch really gets. On a two-way that is
 wrong by the crossover: a full-band program reaches the tweeter through a
 high-pass, the woofer through a low-pass, and neither through the input split
 mixer at unity. The gap is not small — measured on JTS3's basin-2 graph against
@@ -15,6 +15,11 @@ its session check program (2026-08-19), the binding branch sat 10.7 dB under the
 full-band peak — and it was paid as a speaker refusing to reach a 75-80 dB SPL
 seat target it is physically able to reach. The magnitude is a property of one
 stimulus through one graph, never a constant.
+
+It cuts both ways, which is why the render still earns its keep now that the
+ceiling is digital headroom rather than a driver cap: a branch whose chain
+BOOSTS reports a peak above the full-band figure and reaches full scale first,
+so it binds tighter than the no-render bound does.
 
 This module closes it by RENDERING: take the actual stimulus WAV, push it
 through the actual applied CamillaDSP graph, and report each output channel's

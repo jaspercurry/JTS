@@ -218,9 +218,12 @@ def driver_protection_policy_view(
     the /sound/ page always loads with a topology.)
 
     It exists because the browser has to answer one question before anything is
-    saved, and it is policy the browser must not own a second copy of: *is this
-    target's declared peak sitting on the delegation sentinel?* — which needs
-    that target's ``max_auto_level_dbfs``.  The confirmed safety profile
+    saved, and it is policy the browser must not own a second copy of: *has
+    this target delegated its level?*  Since the 2026-08-23 ruling that is
+    normally answered by the peak being ABSENT, but a profile saved under the
+    retired contract carries the class default itself and means the same thing,
+    so the page still needs that target's ``max_auto_level_dbfs`` to recognise
+    it.  The confirmed safety profile
     carries the same number in ``code_owned_policy``, but only **after** a
     save; the echo-back panel renders straight after a paste.
 

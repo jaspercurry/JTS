@@ -216,11 +216,14 @@ def driver_protection_profile(
 # its mic-independent ceiling from min(driver caps) - stimulus peak
 # (session_volume_plan.unsegmented_stimulus_ceiling_db), so the tweeter's -35
 # WAS min(caps) and capped the whole session at 68.07 dB SPL at the seat
-# against the operator's 75-80 dB SPL target. That formula is now the FALLBACK
-# half of that function: given the applied graph it bounds each driver by its
-# own branch's rendered peak instead (active_speaker.branch_peak). The tweeter
-# is still the binding driver on JTS3 either way -- what changed is that its
-# cap is compared against what the crossover actually delivers to it.
+# against the operator's 75-80 dB SPL target. The same shape recurred on the
+# new-horn box with the hedge already gone, because the DERIVED cap was then
+# min(caps): 68.3 dB SPL against a 75 dB target. So that ceiling no longer
+# reads any driver cap at all -- since 2026-08-23 it is digital headroom (full
+# scale less the binding branch peak) and the caps ride its log line as a
+# disclosure. What these caps still set is each driver's composed segment
+# level inside a v2 program, which is where a sensitivity-referenced number
+# belongs: it is level-MATCHING between two drivers, not a volume ceiling.
 #
 # Owner ratification, 2026-08-20, verbatim: "i use a fixed gain amp and
 # digitally control the volume. i can hit loud volumes - im confident the
@@ -257,19 +260,20 @@ def driver_protection_profile(
 # plausibility validation (design_draft.declared_driver_sensitivities parses
 # for finiteness and nothing else). A household that swaps the two sensitivity
 # rows presents delta <= 0 for a genuinely more-sensitive tweeter, and the
-# ceiling then lands at full scale -- where the retired -35 hedge used to clamp
-# it by accident. On the leveling path that empties
-# session_volume_plan.unsegmented_stimulus_ceiling_db of content for that box,
-# and it is documented as mic-INDEPENDENT precisely so a bad microphone cannot
-# move it. Two mic-independent stops do survive the swap, which is what bounds
-# the residual to ~10 dB over intent at the loudest bankable volume rather than
+# cap then lands at full scale -- where the retired -35 hedge used to clamp
+# it by accident. That empties the derivation of content for that box's
+# composed tweeter level. Two mic-independent stops do survive the swap, which
+# is what bounds the residual to ~10 dB over intent at the loudest bankable
+# volume rather than
 # leaving it open-ended: MAX_TEST_LEVEL_DBFS still clamps the derived cap at
 # 0.0 dBFS (and seat_level_ramp's HARD_CEILING_DBFS clamps the ramp's volume
 # ceiling to the same), and the nominal measurement stimulus peaks at -12.0 dBFS
 # (audio_measurement.excitation.AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS) -- of
 # which a crossed-over driver receives its own branch's share, at most that peak
 # for any branch sitting at or under unity. The measured SPL band top and the
-# ramp's runaway guard sit above those as the mic-DEPENDENT layer.
+# ramp's runaway guard sit above those as the mic-DEPENDENT layer. The leveling
+# ramp's own ceiling is unaffected either way: it stopped reading these caps on
+# 2026-08-23 and is bounded by digital headroom.
 #
 # Refusing to derive on delta <= 0 is NOT the fix -- it would break the
 # legitimate pro-woofer case above, and the two shapes derive the SAME ceiling:
