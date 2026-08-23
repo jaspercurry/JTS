@@ -403,7 +403,10 @@ def test_a_banked_base_trim_is_preferred_over_the_guided_captures(
     assert meta["base_trim"]["status"] == dbt.STATUS_APPLIED
     # The guided walk did not run, and the ledger does not pretend it did.
     assert meta["deltas"] == []
-    assert meta["groups_measured"] == 0
+    # But the groups the banked record DID level are reported under the keys
+    # readiness gates on -- see the readiness test below.
+    assert meta["measured_group_ids"] == ["mono"]
+    assert meta["groups_measured"] == 1
 
 
 def test_a_banked_trim_for_another_declaration_is_refused_and_the_guided_path_runs(
@@ -494,3 +497,47 @@ def test_every_refused_status_is_reported_on_the_ledger(
     assert meta["base_trim"]["status"] == status
     assert meta["base_trim"]["status"] in dbt.REFUSED_STATUSES
     assert meta["base_trim"]["remediation"] == dbt.REMEASURE_REMEDIATION
+
+
+def test_a_banked_trim_reports_the_groups_it_levelled_to_readiness(
+    tmp_path, monkeypatch
+):
+    """The field is a gate, not a decoration.
+
+    ``automatic_candidate_readiness`` compares the ledger's measured-group SET
+    against the topology's required one, so a banked trim reporting no groups
+    would leave a fully-levelled speaker reading
+    ``automatic_crossover_measurements_incomplete``.
+    """
+    from jasper.active_speaker.crossover_contract import (
+        automatic_candidate_readiness,
+    )
+
+    state = _bank_base_trim(
+        tmp_path, monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},
+        declaration=crossover_preview_fingerprint(PREVIEW),
+    )
+    record = json.loads(state.read_text())
+    record["levels_db"] = {
+        "left": record["levels_db"]["mono"],
+        "right": record["levels_db"]["mono"],
+    }
+    state.write_text(json.dumps(record))
+
+    _trims, meta = _measured_level_trims(_preset(2, TWO_WAY), {}, PREVIEW)
+
+    assert meta["measured_group_ids"] == ["left", "right"]
+    assert meta["groups_measured"] == 2
+    readiness = automatic_candidate_readiness(
+        required_group_ids=["left", "right"],
+        level_match=meta,
+        measurement_summary={},
+    )
+    assert readiness["measured_group_ids"] == ["left", "right"]
+    # A pair whose trim levelled only ONE cabinet is still incomplete.
+    assert automatic_candidate_readiness(
+        required_group_ids=["left", "right", "centre"],
+        level_match=meta,
+        measurement_summary={},
+    )["measured_group_ids"] == ["left", "right"]

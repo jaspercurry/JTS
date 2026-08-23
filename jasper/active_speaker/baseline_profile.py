@@ -506,13 +506,21 @@ def _measured_level_trims(
     )
     base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
     if base_trims:
+        # The banked record names the speaker groups it levelled, and the ledger
+        # reports them under the SAME keys the guided path uses: readiness
+        # (``crossover_contract.automatic_candidate_readiness``) and the setup
+        # status both gate on those, so a measured speaker reporting zero
+        # measured groups would read as un-measured. ``deltas`` stays empty
+        # because the per-crossover evidence lives in the record itself, which
+        # ``base_trim.state_path`` names.
+        banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
         return base_trims, {
             "source": "banked_base_trim",
             "base_trim": base_trim_meta,
             "comparison": "declared_crossover_gain_ledger_normalized",
-            "groups_total": 0,
-            "groups_measured": 0,
-            "measured_group_ids": [],
+            "groups_total": len(banked_group_ids),
+            "groups_measured": len(banked_group_ids),
+            "measured_group_ids": list(banked_group_ids),
             "deltas": [],
             "incomparable_groups": [],
             "trims": dict(base_trims),

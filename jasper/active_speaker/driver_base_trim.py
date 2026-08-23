@@ -248,7 +248,20 @@ def banked_base_trims(
                 "remediation": REMEASURE_REMEDIATION,
             }
         trims[role] = value
-    return trims, {**meta, "status": STATUS_APPLIED, "trims": dict(trims)}
+    return trims, {
+        **meta,
+        "status": STATUS_APPLIED,
+        "trims": dict(trims),
+        # WHICH speaker groups this trim was measured on, not merely how many.
+        # ``crossover_contract.automatic_candidate_readiness`` gates on the
+        # measured-group SET against the topology's required one, so a record
+        # that levelled only the left cabinet of a stereo pair must not read as
+        # having levelled both.
+        "speaker_group_ids": sorted(
+            str(group_id) for group_id in (record.get("levels_db") or {})
+            if str(group_id)
+        ),
+    }
 
 
 def write_base_trim(
