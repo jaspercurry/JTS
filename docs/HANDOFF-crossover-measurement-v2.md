@@ -3275,8 +3275,11 @@ is #2291's before→after comparison and the delta probe's anchor check. What
 justifies dropping the repeat is that the mux measurement window is held for
 the whole session (no household audio can start mid-session for a sweep to
 collide with — the incident's own hazard is closed at the session boundary) and
-every later capture is begun deliberately, by the household's tap or by the
-remote tier's position gate. Five of a Full journey's eight captures no longer
+every later capture is begun deliberately: by the household's tap, by the
+remote tier's position gate, or — on a hand-walked round running on the WIRED
+source (#2879) — by both, the tap behind a gate the person releases. Five of a
+Full journey's eight captures no longer
+
 pay it: 18.0 s, on top of the 37.2 s the shorter verify walk saves.
 
 One consequence to know when reading `program_for_phase`: the summed sweep is

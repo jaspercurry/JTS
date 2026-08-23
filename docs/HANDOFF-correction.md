@@ -2175,14 +2175,17 @@ POST /crossover/v2/complete  v2 conductor, WIRED source only (#2662 W2b): the
                              held pre-apply group — the local stand-in for the
                              phone's authenticated completion event. Empty
                              body; 409 when no wired session is waiting
-POST /crossover/v2/retake    v2 conductor, WIRED source only (#2879): re-open
-                             the take that JUST COMPLETED, the local stand-in
-                             for the phone's `begin_capture {retake: true}`.
-                             Its terms are the relay's §2.6, stated once in
+POST /crossover/v2/retake    v2 conductor, GATED WIRED sessions only (#2879):
+                             re-open the take that JUST COMPLETED, the local
+                             stand-in for the phone's `begin_capture {retake:
+                             true}`. A gateless wired walk never waits for a
+                             person, so it carries no retake to serve. Its
+                             terms are the relay's §2.6, stated once in
                              `run_capture_plan`'s docstring
                              (jasper/capture_relay/session.py). Empty body
                              (WHICH slot is the walk's own fact); 409 when no
                              wired session is waiting
+
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

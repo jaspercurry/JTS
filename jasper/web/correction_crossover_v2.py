@@ -6732,11 +6732,13 @@ class V2PreparedSession:
     #: the held-set walk semantics need a signal source to be complete.
     request_complete: Callable[[], None] | None = None
     #: The wired session's per-take RETAKE signal — the local stand-in for the
-    #: phone's ``begin_capture {retake: true}``. ``None`` on a relay session,
-    #: whose retake rides the relay protocol's own begin. Routed from
+    #: phone's ``begin_capture {retake: true}``. ``None`` on a relay session
+    #: (whose retake rides the relay protocol's own begin) AND on a GATELESS
+    #: wired one, which never waits for a person to serve it in. Routed from
     #: ``POST /crossover/v2/retake`` through the same slot as
-    #: :attr:`request_complete`, and honoured in the SAME window the relay
-    #: offers its retake in: while the pre-apply group is held open.
+    #: :attr:`request_complete`, and honoured in either window where the walk
+    #: is waiting on a person: a HELD BEGIN, or the held-set window.
+
     request_retake: Callable[[], None] | None = None
 
 

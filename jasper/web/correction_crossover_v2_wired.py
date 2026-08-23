@@ -58,10 +58,9 @@ with the real cause on the journal).
 
 A voluntary RETAKE is initiated locally, through the host's
 ``request_retake`` seam (``POST /crossover/v2/retake``), on the relay's own
-§2.6 terms: it re-opens the slot that just completed while the walk is still
-waiting on a person — a held begin, or the held-set window — spends one
-ordinary attempt, never advances the accepted count, and leaves the original
-take standing if the replacement is rejected.
+§2.6 terms. Those terms are stated once, where they are implemented
+(:func:`build_v2_wired_run_and_consume`), rather than a second time here.
+
 
 Deferred to W3 (stated, not implied): the wizard UI for wired sessions —
 including the retake's own affordance, which today is that bare POST — and a
