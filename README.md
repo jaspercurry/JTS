@@ -962,7 +962,9 @@ reference. Currently:
   the crossover-v2/correction measurement loop: measure → propose → run →
   collect → recommend → confirm, the propose/dispose authority model
   (predictions and heuristics propose, measurements dispose, the owner
-  rules), and the closed hard-stop list — refusals are for a named
+  rules), the program's guiding principle — "least-bad measured, honed in
+  bites", migrated here from `audio-commissioning-roadmap.md` in #2865 — and
+  the closed hard-stop list: refusals are for a named
   component-damage mechanism only, never a "might not work" hunch. Short
   and durable by design; other docs point here rather than restating it.
 - [`active-speaker-tuning-layers-design.md`](docs/active-speaker-tuning-layers-design.md)
@@ -1140,10 +1142,13 @@ reference. Currently:
   archaeology, not current behavior.
 - [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
   — **Historical roadmap (owner-ratified 2026-08-14)**, replaced whole
-  2026-08-21 by `tuning-master-plan.md` above **except its Ethos section,
-  which stays the program's live guiding principle** (owner re-affirmed
-  2026-08-22; migration tracked as #2865), for the audio
-  commissioning program: the ethos rulings (tinker-first/never-nanny,
+  2026-08-21 by `tuning-master-plan.md` above; its Ethos section was the one
+  carve-out until #2865 moved that ruling on 2026-08-23 into
+  `measurement-loop-doctrine.md`, **now the live home of the program's
+  guiding principle** (owner re-affirmed 2026-08-22). What remains here, for
+  the audio
+  commissioning program: the ethos rulings as originally written
+  (tinker-first/never-nanny,
   rollback reserved for measured regression, probabilistic posture with
   80/20 execution, substrate-over-intervention investment), the pre-run
   wave before the next hardware session, the measurement-integrity wave

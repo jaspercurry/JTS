@@ -9,20 +9,16 @@
 > section, which states the one exception below), now the planning authority
 > for the measurement/tuning program.
 >
-> **One carve-out — the
-> [Ethos](#ethos-owner-ratified-2026-08-14-extended-2026-08-16) section below
-> is not historical.** "Least-bad measured, honed in bites" — and with it
-> tinker-first and the reserved-rollback rule — remains the program's live
-> overall guiding principle, owner re-affirmed 2026-08-22, and that section is
-> what production code cites this file for
-> (`crossover_v2/verification.py` reads its "only the round budget, the
-> plateau, and the safety class end a series" rule;
-> `audio_measurement/program_analysis.py` reads its best-available rule).
-> Migrating the section into the live planning authority is tracked as
-> #2865. Everything else is preserved for primary-source archaeology —
-> specific facts (sequencing, wave contents, ratification-pending lists,
-> measurement snapshots) will drift over time. Read the rest for the
-> narrative, not for current state.
+> **The one carve-out is closed (#2865).** The live rulings of the
+> [Ethos](#ethos-owner-ratified-2026-08-14-extended-2026-08-16) section below —
+> "Least-bad measured, honed in bites", tinker-first, and the reserved-rollback
+> rule — moved on 2026-08-23 to the guiding-principle section of
+> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
+> which is now their one home and what production code cites. This whole file,
+> that section included, is preserved for primary-source archaeology — specific
+> facts (sequencing, wave contents, ratification-pending lists, measurement
+> snapshots) will drift over time. Read it for the narrative, not for current
+> state.
 
 The cross-subsystem working roadmap for the audio commissioning program —
 the measurement substrate, crossover and linearization commissioning, and
@@ -61,6 +57,10 @@ against its primary source before acting on it.
 ---
 
 ## Ethos (owner-ratified 2026-08-14; extended 2026-08-16)
+
+> Live home since 2026-08-23 (#2865): the guiding-principle section of
+> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites).
+> What follows is the original text, kept as archaeology.
 
 These are binding product principles for everything below, not preferences.
 

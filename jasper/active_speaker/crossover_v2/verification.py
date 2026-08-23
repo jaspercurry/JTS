@@ -1675,7 +1675,7 @@ def evaluate_iteration_headroom(
        one the series is iterating on.
 
     **Ungradable objectives are NOT a fourth stop, and that reversal is the
-    ethos's** (``docs/audio-commissioning-roadmap.md``, "Least-bad measured,
+    ethos's** (``docs/measurement-loop-doctrine.md``, "Least-bad measured,
     honed in bites", owner-ratified 2026-08-16): *only the round budget, the
     plateau, and the safety class end a series.* Until this change a tier that
     walked no post-apply cloud, or a report whose bands all fell below the
@@ -1905,7 +1905,7 @@ def decide_adoption(
     **What #2656 MODIFIES, and why.** One fact now crosses to the MISSED cell:
     the spent round budget. The ethos names three series-enders — *only the
     round budget, the plateau, and the safety class end a series*
-    (``docs/audio-commissioning-roadmap.md``) — with no row exception, and
+    (``docs/measurement-loop-doctrine.md``) — with no row exception, and
     until this the budget had one. A MISSED round never read the fourth axis at
     all, so a series that kept missing kept being offered another round with no
     round left to spend: a gate walked 40 consecutive MISSED rounds and every

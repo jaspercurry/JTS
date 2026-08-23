@@ -22,7 +22,8 @@ so prose never leads code. The operator-facing companion,
 
 Authority model and method are **not restated here**: the loop's rules live in
 [measurement-loop-doctrine.md](measurement-loop-doctrine.md) (propose/dispose,
-the closed hard-stop list, the nanny test) and the execution method lives in
+the guiding principle — least-bad measured, honed in bites — the closed
+hard-stop list, the nanny test) and the execution method lives in
 AGENTS.md ("The standing multi-agent method": conductor, adversarial gate to
 0 blockers / 0 should-fixes, the owner's values). Every ticket below is
 executed under both.
@@ -284,11 +285,14 @@ the ruling those banners point back to.
 **Superseded (historical-tag or banner + pointer here):**
 
 - `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
-  previous program-wide roadmap for the identical scope. Replaced whole,
-  except the Ethos section — "least bad is still the overall guiding
-  principle", owner re-affirmed 2026-08-22, and three production sites cite
-  that section as their governing rule; migration into this plan is tracked
-  as #2865.
+  previous program-wide roadmap for the identical scope. Replaced whole. Its
+  Ethos section was the one carve-out — "least bad is still the overall
+  guiding principle", owner re-affirmed 2026-08-22 — and #2865 moved that
+  ruling on 2026-08-23 into the guiding-principle section of
+  [measurement-loop-doctrine.md](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
+  not into this plan: the doctrine is where the loop's rules live (see the
+  orientation note above), and the three production sites that cite the
+  ruling now cite it there.
 - `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
   a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
@@ -377,7 +381,11 @@ figure it is published as `unseparated` with the separation named as pending —
 1.10 The per-feature record join (M): classifier verdicts + envelope depth
     reasons + attribution mechanism vocabulary in one record per feature,
     published through the packet. One mechanism taxonomy (substrate table);
-    the fit engine stays decoupled.
+    the fit engine stays decoupled. Binding on the record shape: intervention
+    identity stays distinct from candidate identity, so selection can reach a
+    measured-good intervention inside a losing candidate (owner refinement
+    2026-08-22, #2862; the principle itself lives in
+    [the doctrine](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites)).
 
 **Wave 2 — executor ratification (deletion-led).** Standing hygiene for
 every deletion PR in this wave: run `bash scripts/tense-grep.sh --all`
