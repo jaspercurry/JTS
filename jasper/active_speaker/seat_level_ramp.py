@@ -421,7 +421,7 @@ def _window_phrase(summary: dict[str, Any]) -> str:
     (:data:`REFUSE_MIC_FEED_LOST`) already says exactly that in words, and
     "saw 0 samples" beside it is the same fact twice.
     """
-    if not summary["samples"] or summary["max_db_spl"] is None:
+    if not summary["samples"]:
         return ""
     phrase = (
         f"the window it stopped in saw {summary['samples']} samples spanning "
@@ -1117,7 +1117,7 @@ async def _walk_to_the_band(
     previous: tuple[float, float] | None = None
     slope_db_per_db: float | None = None
     # The floor every rise is measured against. It starts as the ambient window
-    # read it and can only ever move DOWN -- see `_reconciled_ambient_dbfs`.
+    # read it and can only ever move DOWN -- see `reconciled_ambient_dbfs`.
     effective_ambient_dbfs = ambient_dbfs
     # Non-zero by construction: a span that would make the bite zero is a
     # ceiling at or below the start, which REFUSE_VOLUME_CEILING_TOO_LOW already
@@ -1320,15 +1320,21 @@ async def _walk_to_the_band(
                 min_rise_db=min_rise_db,
                 at_ceiling=at_ceiling,
             ):
+                # The rise is measured against the EFFECTIVE floor, so that is
+                # the number this sentence has to name. Saying "above the
+                # {measured} dB SPL room" beside a rise computed from a
+                # reconciled floor would be two different rooms in one sentence.
+                floor_db_spl = sensitivity.db_spl_from_dbfs(effective_ambient_dbfs)
                 return refuse(
                     REFUSE_MIC_NOT_OBSERVING,
                     f"the volume climbed {volume_db - start_db:.1f} dB to the "
                     f"ceiling and the mic never rose more than "
-                    f"{max_rise_db:.1f} dB above the {ambient_db_spl:.1f} dB SPL "
+                    f"{max_rise_db:.1f} dB above the {floor_db_spl:.1f} dB SPL "
                     "room; check that the mic is capturing the right card and "
                     "is not muted",
                     commanded_climb_db=f"{volume_db - start_db:.2f}",
                     ambient_dbfs=f"{ambient_dbfs:.1f}",
+                    effective_ambient_dbfs=f"{effective_ambient_dbfs:.1f}",
                     observed_rise_db=f"{max_rise_db:.2f}",
                     required_rise_db=f"{min_rise_db:.2f}",
                 )

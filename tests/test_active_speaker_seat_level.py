@@ -2443,6 +2443,37 @@ def test_an_honest_ambient_is_never_corrected(tmp_path):
     )
 
 
+def test_a_runaway_refusal_names_the_floor_its_rise_was_measured_against(tmp_path):
+    """Both corrections in one sentence, or neither: one room per sentence.
+
+    Reachable, and contrived only in that both halves happen at once — the
+    ambient window over-reads AND the mic then never rises. The rise is computed
+    against the reconciled floor, so naming the measured ambient beside it would
+    put two different rooms in the same sentence.
+    """
+    # 57.18 dB SPL of "ambient", then a mic pinned at 50.21 all the way up.
+    levels = {
+        volume_db: RUN87_LEVELS[-50.00]
+        for volume_db in (-50.0, -42.5, -35.0, -27.5, -20.0, -12.5, -5.0, 0.0)
+    }
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=levels,
+        target=RUN87_TARGET,
+    )
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert result.ramp["ambient_corrected"] is True
+    # The floor the rise was measured against, not the window's own reading.
+    assert f"above the {RUN87_LEVELS[-50.00]:.1f} dB SPL room" in (result.detail or "")
+    assert f"{RUN87_AMBIENT_DB_SPL:.1f} dB SPL room" not in (result.detail or "")
+    # ...and the guard still fired, which is the half that must not weaken.
+    assert result.ramp["ambient_effective_db_spl"] == pytest.approx(
+        RUN87_LEVELS[-50.00], abs=0.01
+    )
+
+
 def test_a_stuck_constant_mic_is_untouched_by_the_reconciliation(tmp_path):
     """The guard the rise gate feeds is structurally immune to the correction.
 
