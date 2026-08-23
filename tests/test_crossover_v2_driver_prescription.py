@@ -3620,6 +3620,13 @@ def test_an_incumbent_shelf_can_never_be_repeated_so_naming_the_role_drops_it(
 
     assert excinfo.value.reason == dp.FILTER_MALFORMED
     assert "Peaking" in excinfo.value.detail
+    # …and the packet SAYS so where the shelf is listed, so a prescriber meets
+    # the constraint beside the filter it applies to rather than by being
+    # refused. The claim and the gate that makes it true are pinned together.
+    assert (
+        "only Peaking filters"
+        in packet["incumbent"]["linearization"]["note"]
+    )
 
 
 def test_a_displaced_incumbent_is_disclosed_and_never_refused(tmp_path):

@@ -1394,9 +1394,11 @@ def _check_displaced(
     ``camilla_yaml.linearization_headroom_db`` over the cascade the emitter
     actually realizes — and dropping an incumbent cut adds nothing to that
     cascade, so it spends no headroom and cannot clip. A driver's protective
-    corners are not in this map either: they live in the design draft's
-    ``required_protection_filters`` and are emitted and gated separately
-    (``graph_safety``, ``excitation_safety_plan``), so no document routed here
+    corners are not in this map either: they are declared as
+    ``required_protection_filters`` on the design draft's driver-safety profile
+    and enforced somewhere else entirely — ``graph_safety``'s emit-gate
+    high-pass proof, ``path_safety``'s per-driver protection floor, and
+    ``excitation_safety_plan``'s permitted bands — so no document routed here
     can delete one. With no component-damage mechanism to name, a refusal here
     would fail ``docs/measurement-loop-doctrine.md``'s nanny test — deleting a
     shelf to find out whether it is still earning its place is precisely the
