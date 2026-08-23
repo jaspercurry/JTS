@@ -233,10 +233,13 @@ def update_calibration_level_state(
 ) -> dict[str, Any]:
     """Persist one guarded level transition.
 
-    Upward motion remains backend-owned. Manual ``set`` stays one dB at a time;
-    the product-facing audible ramp action may move by a larger bounded step so
-    the user is not forced through dozens of clicks. Lowering and reset-to-floor
-    remain unrestricted because they reduce risk.
+    Upward motion remains backend-owned and bounded by one number: the
+    ``upward_step_limit_db`` this module declares in every payload it returns
+    (:data:`AUDIBLE_RAMP_STEP_DB`). ``set`` and the audible ramp both honour
+    it, so a caller that reads the contract can predict what one call does.
+    ``raise`` is the fixed nudge — :data:`TEST_LEVEL_STEP_DB`, the
+    ``manual_step_db`` the payload declares beside it. Lowering and
+    reset-to-floor remain unrestricted because they reduce risk.
 
     ``run_id`` binds the transition to one commissioning run: the prior level
     used to compute this step is only trusted when it was persisted under the
@@ -291,13 +294,13 @@ def update_calibration_level_state(
             next_level = min(clamp_test_level_dbfs(requested), current)
     elif action_id == "set":
         requested = clamp_test_level_dbfs(requested_level_dbfs)
-        if requested > current + TEST_LEVEL_STEP_DB:
-            next_level = current + TEST_LEVEL_STEP_DB
+        if requested > current + AUDIBLE_RAMP_STEP_DB:
+            next_level = current + AUDIBLE_RAMP_STEP_DB
             issues.append({
                 "severity": "warning",
                 "code": "upward_step_limited",
                 "message": (
-                    "requested calibration level was above the one-step "
+                    "requested calibration level was above the declared "
                     "software guard limit"
                 ),
             })

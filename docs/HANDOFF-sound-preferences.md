@@ -637,7 +637,7 @@ the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
 the protected graph. The normal product UI does not require a user to understand
 or click those controls.
 The same walkthrough then opens **Validate and apply**. That card first runs a
-looped spoken combined-speaker test through
+spoken combined-speaker test through
 `/sound/active-speaker/summed-test`; while that request is preparing/playing,
 the same CTA moves through **Preparing** into a red **Stop** state backed by
 `/sound/active-speaker/summed-test/stop`. The combined-test card has its own
@@ -646,9 +646,19 @@ floor without changing normal listening volume; while the loop is playing, the
 slider posts live level changes to `/sound/active-speaker/summed-test/level`.
 The backend reloads the protected all-drivers-live graph at the requested level
 only after CamillaDSP accepts the new graph, clamps absolute min/max bounds, and
-leaves the active loop metadata unchanged if the reload fails. The loop
-continues until the operator stops it, presses **Sounds right**, or the backend
-watchdog expires it. The summed crossover validation POST at
+leaves the active loop metadata unchanged if the reload fails. **`duration_ms`
+is how long the test plays, and the request returns when it has.** The
+`start_combined_test` action the commissioning coordinator publishes carries
+`duration_ms: 12000`, so a client that replays that action — the browser, or an
+LLM driving the box over raw HTTP — gets a play that ends itself and a
+**completed** test whose record is `captured`. One connection is enough: the
+same client can POST the validation next without racing
+`active_summed_test_running`. Omitting `duration_ms` keeps the open-ended loop,
+which then continues until the operator stops it, presses **Sounds right**, or
+the backend watchdog expires it. Stopping early is still an incomplete test
+either way — a bounded play only removes the need for a second connection, it
+does not decide whether the crossover blends. The summed crossover validation
+POST at
 `/sound/active-speaker/summed-validation` must reference the latest audible
 combined-test record for that group: artifact-only, stale, stopped-before-audio,
 or watchdog-expired records cannot unlock the active profile. For the current

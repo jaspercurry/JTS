@@ -121,6 +121,11 @@ accept. Ingests the UMIK-2 calibration by serial (`/correction/calibration/fetch
    source or the browser JS. (Matches the pre-existing "combined test can wedge"
    note.) The shipped browser UI does this rendezvous correctly; the finding is
    about the raw contract's discoverability + the wedge lane.
+   **Resolved 2026-08-23.** `duration_ms` now bounds the audible play: the
+   request ends itself, returns a completed test, and frees the lane, so a
+   raw-HTTP client never needs the confirming-stop rendezvous and cannot hold
+   the lane for ten minutes. The magic string still exists for the browser's
+   mid-play **Sounds right**, and both endpoints now document the contract.
 3. **Manual protected-setup is fully API-drivable, no mic** — confirmed the exact
    ordered sequence end to end (topology → channel-identity ×2 →
    channel-protection → design-draft → crossover-preview → per-driver

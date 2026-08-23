@@ -7158,9 +7158,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!await jtsConfirm(
-      'Play a looped spoken combined test for "' + label +
+      'Play a spoken combined test for "' + label +
         '" at ' + fmtDb(combinedTestLevelDbfs()) +
-        '? JTS uses the prepared crossover and keeps the test level bounded.',
+        '? JTS uses the prepared crossover, keeps the test level bounded, and ' +
+        'stops the test when it finishes.',
       {danger: true}
     )) {
       return;

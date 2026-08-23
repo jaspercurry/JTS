@@ -68,11 +68,58 @@ def test_calibration_level_state_limits_large_upward_steps(tmp_path) -> None:
     )
     loaded = load_calibration_level_state(state_path=path)
 
-    assert first["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS + 1
+    # The clamp is the cap the payload declares, so a client that reads
+    # `upward_step_limit_db` can predict the landing level.
+    assert first["test_signal"]["requested_level_dbfs"] == (
+        MIN_TEST_LEVEL_DBFS + AUDIBLE_RAMP_STEP_DB
+    )
+    assert first["software_gain_guard"]["upward_step_limit_db"] == AUDIBLE_RAMP_STEP_DB
     assert first["issues"][0]["code"] == "upward_step_limited"
     assert loaded["test_signal"]["requested_level_dbfs"] == first["test_signal"][
         "requested_level_dbfs"
     ]
+
+
+def test_calibration_level_set_lands_on_the_request_within_the_declared_cap(
+    tmp_path,
+) -> None:
+    # The headless shape: one POST per requested level, not one per dB. Reaching
+    # -40 dBFS from the floor is four calls at the declared cap, and each one
+    # lands exactly where it was asked to.
+    path = tmp_path / "level.json"
+
+    levels = [-70.0, -60.0, -50.0, -40.0]
+    landed = [
+        update_calibration_level_state(
+            action="set",
+            requested_level_dbfs=level,
+            state_path=path,
+        )
+        for level in levels
+    ]
+
+    assert [
+        payload["test_signal"]["requested_level_dbfs"] for payload in landed
+    ] == levels
+    assert [payload["applied_delta_db"] for payload in landed] == [
+        AUDIBLE_RAMP_STEP_DB
+    ] * len(levels)
+    assert all(payload["issues"] == [] for payload in landed)
+
+
+def test_calibration_level_set_below_current_lands_immediately(tmp_path) -> None:
+    # Lowering reduces risk, so it is never step-limited.
+    path = tmp_path / "level.json"
+
+    update_calibration_level_state(
+        action="set", requested_level_dbfs=-70.0, state_path=path
+    )
+    lowered = update_calibration_level_state(
+        action="set", requested_level_dbfs=MIN_TEST_LEVEL_DBFS, state_path=path
+    )
+
+    assert lowered["test_signal"]["requested_level_dbfs"] == MIN_TEST_LEVEL_DBFS
+    assert lowered["issues"] == []
 
 
 def test_calibration_level_state_supports_bounded_audible_ramp(tmp_path) -> None:

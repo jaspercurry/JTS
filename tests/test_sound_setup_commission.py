@@ -1402,6 +1402,281 @@ def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_pat
     assert latest["audio_emitted"] is False
 
 
+def _exit_cleanly_after_two_polls(monkeypatch, processes):
+    """Make the faked aplay finish a stimulus repeat instead of running forever."""
+
+    previous_popen = sound_setup.subprocess.Popen
+
+    def _fake_popen(args, *popen_args, **kwargs):
+        if args and Path(str(args[0])).name == "aplay":
+            proc = _FakeToneProcess(list(args), exit_after_polls=2)
+            processes.append(proc)
+            return proc
+        return previous_popen(args, *popen_args, **kwargs)
+
+    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+
+
+def test_summed_test_duration_ms_completes_without_a_second_connection(
+    monkeypatch, tmp_path
+):
+    # The headless shape: ONE request, no concurrent stop. The play ends itself
+    # once the requested budget elapses and the record is captured, so the
+    # validation POST that follows it has something to reference.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    env = summed["env"]
+    processes = summed["processes"]
+    fanin_actions = summed["fanin_actions"]
+    _exit_cleanly_after_two_polls(monkeypatch, processes)
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_summed_test_payload(
+            {
+                "speaker_group_id": "mono",
+                "audio": True,
+                "level_dbfs": -40.0,
+                "duration_ms": 10,
+            },
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert playback["status"] == "completed", json.dumps(
+        playback, indent=2, sort_keys=True, default=str
+    )
+    assert playback["stop_reason"] == "duration_elapsed"
+    assert playback["audio_emitted"] is True
+    assert playback["confirmable"] is True
+    assert playback["tone"]["level_dbfs"] == -40.0
+    assert playback["rollback"]["rollback"]["status"] == "rolled_back"
+    assert latest["captured"] is True
+    assert latest["audio_emitted"] is True
+    assert latest["issues"] == []
+    # A budget shorter than one stimulus repeat still buys a whole repeat: the
+    # completion claim is never made without audio behind it.
+    assert len(processes) == 1
+    assert processes[0].returncode == 0
+    assert processes[0].terminated is False
+    assert controller.applied_texts[-1] == Path(env["staged_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert fanin_actions == ["select", "release:summed_test"]
+    # The lane is free the moment the request returns, so the validation POST
+    # that follows is not refused with active_summed_test_running.
+    assert sound_setup._active_speaker_summed_validation_active_conflict(
+        {"speaker_group_id": "mono"}
+    ) is None
+
+
+def test_summed_test_confirm_during_a_duration_bounded_play_still_wins(
+    monkeypatch, tmp_path
+):
+    # The browser's shape: it replays the coordinator's start_combined_test
+    # action, which carries duration_ms, and presses "Sounds right" mid-play on
+    # a second connection. The confirmation is what gets recorded.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
+
+    async def _run_confirmed_bounded_test():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {
+                    "speaker_group_id": "mono",
+                    "audio": True,
+                    "stimulus": "speech",
+                    "duration_ms": 12000,
+                    "level_dbfs": -40.0,
+                },
+                camilla_factory=lambda: controller,
+            )
+        )
+        for _ in range(50):
+            if processes:
+                break
+            await asyncio.sleep(0.01)
+        assert processes, "summed test should start aplay before confirmation"
+        stop_payload = sound_setup._active_speaker_stop_summed_test_tone(
+            reason="operator_confirmed"
+        )
+        return stop_payload, await task
+
+    stop, payload = asyncio.run(_run_confirmed_bounded_test())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert stop["status"] == "stopped"
+    assert playback["status"] == "completed"
+    assert playback["stop_reason"] == "operator_confirmed"
+    assert playback["audio_emitted"] is True
+    assert playback["confirmable"] is True
+    assert latest["captured"] is True
+
+
+def test_summed_validation_records_after_a_duration_bounded_test(
+    monkeypatch, tmp_path
+):
+    # The whole sequential ordering end to end, which is what a headless client
+    # runs: bounded combined test, then the verdict, on one connection.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    _exit_cleanly_after_two_polls(monkeypatch, summed["processes"])
+
+    test_payload = asyncio.run(
+        sound_setup._active_speaker_summed_test_payload(
+            {
+                "speaker_group_id": "mono",
+                "audio": True,
+                "level_dbfs": -40.0,
+                "duration_ms": 10,
+            },
+            camilla_factory=lambda: controller,
+        )
+    )
+    summed_test_id = test_payload["measurements"]["summary"][
+        "latest_summed_tests"
+    ]["mono"]["summed_test_id"]
+
+    validation = sound_setup._active_speaker_summed_validation_payload({
+        "speaker_group_id": "mono",
+        "summed_test_id": summed_test_id,
+        "outcome": "blend_ok",
+        "operator_listening_check": True,
+    })
+
+    latest = validation["summary"]["latest_summed_validations"]["mono"]
+    # No blockers at all: in particular neither summed_validation_test_missing
+    # (the test was captured) nor summed_validation_audio_missing. The one
+    # remaining issue is the mic-reading warning the operator listening check
+    # stands in for.
+    assert [
+        issue for issue in latest["issues"] if issue["severity"] == "blocker"
+    ] == [], json.dumps(latest["issues"], indent=2, sort_keys=True, default=str)
+    assert latest["validated"] is True
+    assert validation["summary"]["validated_summed_group_count"] == 1
+
+
+def test_summed_test_duration_ms_absent_still_loops_until_stopped(
+    monkeypatch, tmp_path
+):
+    # The browser's shape is unchanged: no budget means the loop keeps playing
+    # repeats until a stop arrives, and a plain stop is still incomplete.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
+    _exit_cleanly_after_two_polls(monkeypatch, processes)
+
+    async def _run_until_several_repeats():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+                camilla_factory=lambda: controller,
+            )
+        )
+        for _ in range(200):
+            if len(processes) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        assert len(processes) >= 3, "loop should keep repeating without a budget"
+        sound_setup._active_speaker_stop_summed_test_tone(reason="operator_stop")
+        return await task
+
+    payload = asyncio.run(_run_until_several_repeats())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert playback["status"] == "stopped"
+    assert playback["stop_reason"] == "operator_stop"
+    assert playback["audio_emitted"] is False
+    assert latest["captured"] is False
+    assert "summed_test_playback_incomplete" in {
+        issue["code"] for issue in latest["issues"]
+    }
+
+
+def test_summed_test_stop_before_the_budget_elapses_stays_incomplete(
+    monkeypatch, tmp_path
+):
+    # A budget is not a promise of completion: stopping early still records an
+    # incomplete test, so "captured" cannot be bought by asking for a duration.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
+
+    async def _run_and_stop_mid_play():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {
+                    "speaker_group_id": "mono",
+                    "audio": True,
+                    "level_dbfs": -40.0,
+                    "duration_ms": 600_000,
+                },
+                camilla_factory=lambda: controller,
+            )
+        )
+        for _ in range(50):
+            if processes:
+                break
+            await asyncio.sleep(0.01)
+        assert processes, "summed test should start aplay before stop"
+        sound_setup._active_speaker_stop_summed_test_tone(reason="operator_stop")
+        return await task
+
+    payload = asyncio.run(_run_and_stop_mid_play())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert playback["status"] == "stopped"
+    assert playback["stop_reason"] == "operator_stop"
+    assert playback["audio_emitted"] is False
+    assert playback["confirmable"] is False
+    assert latest["captured"] is False
+    assert "summed_test_playback_incomplete" in {
+        issue["code"] for issue in latest["issues"]
+    }
+
+
+def test_summed_test_stop_cannot_borrow_the_duration_elapsed_reason(
+    monkeypatch, tmp_path
+):
+    # `duration_elapsed` is the loop's own end reason. A client that posts it to
+    # /summed-test/stop gets the string recorded and nothing else: completion is
+    # passed in code by the loop, never read back off a client-supplied reason.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
+
+    async def _run_and_stop_with_the_machine_reason():
+        task = asyncio.create_task(
+            sound_setup._active_speaker_summed_test_payload(
+                {"speaker_group_id": "mono", "audio": True, "level_dbfs": -40.0},
+                camilla_factory=lambda: controller,
+            )
+        )
+        for _ in range(50):
+            if processes:
+                break
+            await asyncio.sleep(0.01)
+        assert processes, "summed test should start aplay before stop"
+        sound_setup._active_speaker_stop_summed_test_tone(
+            reason=sound_setup.SUMMED_TEST_DURATION_ELAPSED_REASON
+        )
+        return await task
+
+    payload = asyncio.run(_run_and_stop_with_the_machine_reason())
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert playback["stop_reason"] == "duration_elapsed"
+    assert playback["status"] == "stopped"
+    assert playback["audio_emitted"] is False
+    assert latest["captured"] is False
+
+
 def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path):
     summed = _summed_test_stubs(monkeypatch, tmp_path)
     controller = summed["controller"]
