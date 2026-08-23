@@ -67,7 +67,7 @@ from .driver_base_trim import (
 )
 from .driver_pad import effective_sensitivity_db
 from .level_trim import (
-    MAX_ATTENUATION_DB as _MAX_ATTENUATION_DB,
+    MAX_ATTENUATION_DB,
     LevelTrimError,
     attenuation_from_group_deltas,
 )
@@ -660,7 +660,7 @@ def _measured_level_trims(
 
     try:
         trims = attenuation_from_group_deltas(
-            roles, per_group_delta_chains, minimum_db=_MAX_ATTENUATION_DB
+            roles, per_group_delta_chains, minimum_db=MAX_ATTENUATION_DB
         )
     except LevelTrimError:
         return {}, meta
@@ -782,7 +782,7 @@ def _derive_corrections(
             trim_db = reference_db - sensitivities[role]  # <= 0 by construction
             if trim_db >= -_SENSITIVITY_TRIM_EPS_DB:
                 continue  # reference driver and ties stay at unity
-            datasheet_trims[role] = max(round(trim_db, 1), _MAX_ATTENUATION_DB)
+            datasheet_trims[role] = max(round(trim_db, 1), MAX_ATTENUATION_DB)
 
     # MEASURED refinement overrides research, UI-suggested, and sensitivity
     # estimates. Manual tuning keeps an operator pin authoritative. Automatic
@@ -1750,9 +1750,10 @@ def _estimator_cross_check(
     **Disclosed, not refused** — and the distinction is deliberate. Unlike item
     3(a)'s measured-vs-datasheet check, whose two frames describe the SAME
     capture against a physical model, these two estimators in practice read
-    DIFFERENT captures (the phone level-match session and the crossover MEASURE
-    sweep are separate sittings, and the candidate branch below never runs the
-    point-at-Fc path itself). Mic placement moves between sittings, so a
+    DIFFERENT captures (whichever sitting the point-at-Fc reader accepted — a
+    banked base trim or the guided phone level match — and the crossover
+    MEASURE sweep are separate sittings, and the candidate branch below never
+    runs the point-at-Fc path itself). Mic placement moves between sittings, so a
     disagreement here is weaker evidence than 3(a)'s and does not justify
     refusing a candidate the realized-level assertion has already graded. It
     justifies saying so.
@@ -2423,7 +2424,7 @@ def build_baseline_profile_candidate(
             if (
                 gain is None
                 or gain > 0.0
-                or gain < _MAX_ATTENUATION_DB
+                or gain < MAX_ATTENUATION_DB
                 or delay is None
                 or not 0.0 <= delay <= 20.0
                 or not isinstance(inverted, bool)
