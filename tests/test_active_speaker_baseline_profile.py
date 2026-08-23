@@ -6816,3 +6816,34 @@ def test_a_base_trim_for_another_declaration_falls_back_and_says_why(
         if issue["code"] == "driver_base_trim_not_applied"
     )
     assert dbt.REMEASURE_REMEDIATION in message
+
+
+def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The interaction the base trim inherits, pinned so its change is visible.
+
+    ``MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB`` discards a measured trim more
+    than 6 dB from the datasheet one, and a banked base trim enters that ladder
+    at exactly the rung the guided level match did — so a driver whose real
+    in-situ level is far from its datasheet's (a compression driver rated on a
+    different horn: the case this whole step exists for) is still refused today.
+    Retiring or one-siding that check is deliberately a separate change with its
+    own review; this test is what will go red when it lands.
+    """
+    topology = _dual_apple_topology()
+    payload = _with_banked_base_trim(
+        topology,
+        _research_with_sensitivity(),  # 25.2 dB datasheet gap
+        tmp_path,
+        monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -6.0},  # 19.2 dB from the datasheet
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == -25.2  # datasheet
+    assert payload["corrections_source"]["tweeter"] == "sensitivity"
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_level_frame_disagreement" in codes
+    assert payload["level_match"]["frame_tolerance_db"] == (
+        MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
+    )
