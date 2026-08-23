@@ -1460,7 +1460,7 @@ def _check_displaced(
     high-pass proof, ``path_safety``'s per-driver protection floor, and
     ``excitation_safety_plan``'s permitted bands — so no document routed here
     can delete one. With no component-damage mechanism to name, a refusal here
-    would fail ``docs/measurement-loop-doctrine.md``'s nanny test — deleting a
+    would fail ``docs/measurement-loop-doctrine.md`` §5's nanny test — deleting a
     shelf to find out whether it is still earning its place is precisely the
     reversible experiment that doctrine protects.
 
@@ -1524,13 +1524,15 @@ def _check_classification(
     the vouch is a prediction about whether a filter will help, and
     ``docs/measurement-loop-doctrine.md`` §2 gives a prediction the power to
     propose and never to dispose. A filter inside this gate's caps and bands
-    spends nothing the household can hear more of, so §3 has no
-    component-damage mechanism to name for it and §4's nanny test fails a
-    refusal here — trying an unclassified feature and measuring the result is
-    exactly the reversible experiment that doctrine protects. What it cost while
-    it did refuse is on the record: a role whose incumbent carried a Lowshelf
-    could not keep it, because no banked verdict vouches for a filter the fit
-    engine placed, so naming the role deleted the shelf (#2863).
+    spends nothing the household can hear more of, so §4's closed list has no
+    component-damage mechanism to name for it, §3 puts every defect outside that
+    list under "discloses and recommends a next action; it never blocks", and
+    §5's nanny test fails a refusal here — trying an unclassified feature and
+    measuring the result is exactly the reversible experiment that doctrine
+    protects. What it cost while it did refuse is on the record: a role whose
+    incumbent carried a Lowshelf could not keep it, because no banked verdict
+    vouches for a filter the fit engine placed, so naming the role deleted the
+    shelf (#2863).
 
     A verdict vouches when it is the NEAREST banked one to the filter's centre
     and its classification matches the filter's sign — ``defect_cuttable_at``

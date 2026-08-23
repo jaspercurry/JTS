@@ -3804,7 +3804,7 @@ def test_a_negative_gain_shelf_never_puts_the_branch_above_unity(tmp_path):
 
 
 def test_a_displaced_incumbent_is_disclosed_and_never_refused(tmp_path):
-    """``docs/measurement-loop-doctrine.md`` §3/§4, pinned.
+    """``docs/measurement-loop-doctrine.md`` §4/§5, pinned.
 
     Deleting a deep incumbent cut is a reversible experiment with no
     component-damage mechanism behind it: the emitted cascade is what spends
