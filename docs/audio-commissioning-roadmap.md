@@ -9,10 +9,11 @@
 > section, which states the one exception below), now the planning authority
 > for the measurement/tuning program.
 >
-> **The one carve-out is closed (#2865).** The live rulings of the
+> **The one carve-out is closed (#2865).** All five rulings of the
 > [Ethos](#ethos-owner-ratified-2026-08-14-extended-2026-08-16) section below —
-> "Least-bad measured, honed in bites", tinker-first, and the reserved-rollback
-> rule — moved on 2026-08-23 to the guiding-principle section of
+> tinker-first, the reserved-rollback rule, "Least-bad measured, honed in
+> bites", the probabilistic posture, and the investment split — moved on
+> 2026-08-23 to the guiding-principle section of
 > [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
 > which is now their one home and what production code cites. This whole file,
 > that section included, is preserved for primary-source archaeology — specific

@@ -71,8 +71,8 @@ a violation of it. **Whether the series learns and continues** has one answer
 every time — it does. A worse round is a gradient sample, not a stop. Every
 round, kept or restored or refused, banks its measurement into the series state
 so the next bite is commanded from it. Only the round budget, the plateau, and
-the safety class end a series; rollback ends one only for that class or for
-genuine corruption — an unmeasured or integrity-lost state the model cannot
+the safety class end a series; rollback ends one only for the safety class or
+for genuine corruption — an unmeasured or integrity-lost state the model cannot
 reason about. **The safety class is §4's closed list**, which is stated there
 once and is the enumeration to read: the ethos that ruled this named the class
 as driver protection, hearing safety, and the clipping/volume ceiling, and that

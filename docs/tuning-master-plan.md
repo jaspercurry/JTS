@@ -287,8 +287,8 @@ the ruling those banners point back to.
 - `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
   previous program-wide roadmap for the identical scope. Replaced whole. Its
   Ethos section was the one carve-out — "least bad is still the overall
-  guiding principle", owner re-affirmed 2026-08-22 — and #2865 moved that
-  ruling on 2026-08-23 into the guiding-principle section of
+  guiding principle", owner re-affirmed 2026-08-22 — and #2865 moved all five
+  of its rulings on 2026-08-23 into the guiding-principle section of
   [measurement-loop-doctrine.md](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
   not into this plan: the doctrine is where the loop's rules live (see the
   orientation note above), and the three production sites that cite the

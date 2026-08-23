@@ -188,9 +188,10 @@ EQ, trim, delay, and polarity — not the corner.
 
 **Hard stops.** The closed list is
 [the doctrine's hard-stop enumeration](measurement-loop-doctrine.md#4-the-hard-stop-enumeration-closed-list),
-five bullets, and it is stated there once. Read it there; do not accept a sixth from anywhere. A
-refusal that names no component-damage mechanism is a **deviation** to report,
-not a rule to obey — the doctrine tracks the live ones with their status.
+five bullets, and it is stated there once. Read it there; do not accept a
+sixth from anywhere. A refusal that names no component-damage mechanism is a
+**deviation** to report, not a rule to obey — the doctrine tracks the live
+ones with their status.
 
 ## Exit codes
 
