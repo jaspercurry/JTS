@@ -95,6 +95,7 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
     restore_target_diverged,
     round_anchor_record,
     running_config_diverged,
+    stashed_restore_target,
 )
 # The position gate's two TERMINAL codes, at module level because the constants
 # they name are module level. A pure-organ leaf like ``journey`` above, so this
@@ -783,6 +784,29 @@ def observe_apply_success(
         "correction.crossover_v2_applied",
         expected_post_apply_offset_db=state["expected_post_apply_offset_db"],
     )
+    # #2859: an apply can INHERIT a stale stash. ``jasper-sound
+    # reconcile-current-dsp`` is a legitimate graph writer that is (correctly)
+    # ignorant of the active-speaker profile system, so a deploy moves the live
+    # graph without touching the record ``pre_apply_profile`` is frozen from,
+    # and this apply then stamps a ``displaced`` identity that stash does not
+    # name. Nothing is refused and nothing is re-anchored: the restore door
+    # already refuses the stale target by this same predicate, and re-pointing
+    # the stash is a design question the ticket parks against the 2026-08-15
+    # resurrection. What was missing is the MOMENT — four occurrences, each
+    # diagnosed hours later at a restore that could not say when.
+    stash_path, stash_sha = stashed_restore_target(state["pre_apply_profile"])
+    if restore_target_diverged(state[ROUND_ANCHOR_STATE_KEY], stash_path, stash_sha):
+        log_event(
+            logger,
+            "correction.crossover_v2_apply_inherited_stale_anchor",
+            level=logging.WARNING,
+            stash_config_path=stash_path,
+            displaced_config_path=str(
+                (state[ROUND_ANCHOR_STATE_KEY] or {})
+                .get("displaced", {})
+                .get("config_path") or ""
+            ),
+        )
 
 
 def observe_restore() -> None:
@@ -9147,13 +9171,9 @@ def rollback_anchor_refusal(
                 "crossover was applied, so the previous sound can't be safely "
                 "restored — re-measure the crossover instead",
             )
-    stashed_config = pre_apply_profile.get("config")
     if restore_target_diverged(
         resolved.get(ROUND_ANCHOR_STATE_KEY),
-        str(stashed_config.get("path") or "")
-        if isinstance(stashed_config, Mapping) else "",
-        str(stashed_config.get("sha256") or "")
-        if isinstance(stashed_config, Mapping) else "",
+        *stashed_restore_target(pre_apply_profile),
     ):
         return RollbackAnchorRefusal(
             ANCHOR_STASH_NOT_DISPLACED,
@@ -9265,11 +9285,9 @@ def handle_v2_restore(
                 logger,
                 "correction.crossover_v2_restore_stash_not_displaced",
                 level=logging.ERROR,
-                stash_config_path=str(
-                    ((state or {}).get("pre_apply_profile") or {})
-                    .get("config", {})
-                    .get("path") or ""
-                ),
+                stash_config_path=stashed_restore_target(
+                    (state or {}).get("pre_apply_profile")
+                )[0],
                 displaced_config_path=str(
                     ((state or {}).get(ROUND_ANCHOR_STATE_KEY) or {})
                     .get("displaced", {})

@@ -1347,7 +1347,16 @@ MAX_LINES_BY_PATH = {
     # so the wrong import reads correct today and breaks the moment either
     # value moves. Refusing five lines here would buy a smaller number with a
     # duplicated vocabulary and two silent traps.
-    "jasper/web/correction_crossover_v2.py": 9_435,
+    # 2026-08-23 (#2859, same batch): 9,435 -> 9,453. The whole +18 is one
+    # observability check at `observe_apply_success` — the moment a stale Undo
+    # stash is INHERITED, which four field incidents each had to reconstruct
+    # hours later from a restore refusal that could not say when the divergence
+    # was created. It refuses nothing and rewrites nothing, so the file gains a
+    # log line and its argument and no behaviour. Paid for in part by the seam
+    # it rides on: `round_anchor.stashed_restore_target` retires the two inline
+    # `config`/`path`/`sha256` transcriptions this file carried (-6), which is
+    # the trade that distinguishes it from a third one.
+    "jasper/web/correction_crossover_v2.py": 9_453,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

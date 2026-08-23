@@ -3006,17 +3006,23 @@ _DURABLE_STATE_FACTS = {
     ),
 }
 
-#: The same row, for the arm with NO anchor (#2291). Split rather than
-#: parameterized because the two differ in their remedy, not their wording: one
-#: has an Undo to point at and the other does not, and pointing the second at
-#: Undo sends a household to a control that refuses on the very fact that put
-#: them here. Selected by ``_failure_rollback_anchor_available``; absent or
-#: ``True`` keeps the row above.
+#: The same row, for the arm with no Undo to point at (#2291). Split rather
+#: than parameterized because the two differ in their remedy, not their
+#: wording: one has an Undo to point at and the other does not, and pointing
+#: the second at Undo sends a household to a control that refuses on the very
+#: fact that put them here. Selected when EITHER
+#: ``_failure_rollback_anchor_available`` or :func:`_can_undo` says no (#2849).
+#:
+#: States no CAUSE, in one voice with
+#: ``refusal_copy.correction_rollback_failed_message``'s matching arm, which
+#: carries the reasoning (#2859): the two facts behind this row cover four
+#: named refusals between them, and "this speaker has no stored previous
+#: sound" — what this said until then — is true of only some of them.
 _DURABLE_STATE_FACTS_NO_ANCHOR = {
     REASON_CORRECTION_ROLLBACK_FAILED: (
-        "the newer tuning is still applied and this speaker has no stored "
-        "previous sound to go back to — measure again, or clear the tuning "
-        "from the Sound page"
+        "the newer tuning is still applied and JTS has no previous sound it "
+        "can safely put back — measure again, or clear the tuning from the "
+        "Sound page"
     ),
 }
 

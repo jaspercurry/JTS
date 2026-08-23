@@ -2856,6 +2856,30 @@ A stale applied-profile record therefore needs **no operator repair for
 correctness**: it can no longer aim a restore, and the next apply overwrites it
 as it always did.
 
+**The apply says when it inherited one (#2859).** The refusal above is right,
+but it fires at a restore — hours after the divergence was created, which is
+how four field occurrences each cost a reconstruction from the journal.
+`observe_apply_success` now runs the same static predicate on the stash it just
+wrote, against the anchor it wrote beside it, and logs
+`event=correction.crossover_v2_apply_inherited_stale_anchor` (WARNING, naming
+both paths) when they disagree. It **refuses nothing and re-anchors nothing** —
+the apply is legitimate and the restore door already holds the line; what
+changed is that the moment is on the record. Re-pointing the stash at what the
+apply actually displaced is still open, and is the design question the
+2026-08-15 resurrection bounds.
+
+**The no-anchor sentence names no cause (#2859).** `rollback_anchor_available`
+is one bool over all five preconditions, and its household sentence used to end
+"this was its first measured crossover" — true of `ANCHOR_NO_PRE_APPLY_PROFILE`
+and of no other code on the list. On 2026-08-22 a jts3 speaker with an intact
+stash and an intact displaced record hit `ANCHOR_STASH_NOT_DISPLACED` and was
+told it had never been corrected, sending the operator after the wrong
+diagnosis. Both surfaces — `refusal_copy.correction_rollback_failed_message`
+and `crossover_envelope_v2._DURABLE_STATE_FACTS_NO_ANCHOR` — now state the
+remedy without the cause. A third state that distinguishes absent from
+stale-divergent is a capability-probe change, not a copy one, and is not made
+here.
+
 **Read-side provenance.** `baseline_profile.applied_profile_displacement`
 compares the applied record's `config.path` against the running CamillaDSP
 statefile. Where that record is read as authority — today

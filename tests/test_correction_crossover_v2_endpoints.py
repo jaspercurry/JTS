@@ -100,6 +100,7 @@ from jasper.capture_relay.session import (
     mint_session,
     register_session,
 )
+from jasper.active_speaker.crossover_v2.round_anchor import round_anchor_record
 from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_relay as v2relay
@@ -4868,6 +4869,61 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
                 "verify": {"claims": {"residual_db": bad}},
             })
         assert v2host.load_v2_state() == good
+
+
+def test_the_apply_names_the_moment_it_inherits_a_stale_undo_stash(caplog, tmp_path):
+    """#2859: the divergence is CREATED here, and until now said nothing.
+
+    ``jasper-sound reconcile-current-dsp`` is a legitimate graph writer that is
+    (correctly) ignorant of the active-speaker profile system, so a deploy
+    moves the live graph without touching the record ``pre_apply_profile`` is
+    frozen from. The next apply stamps a ``displaced`` identity the stash does
+    not name — and every one of the four field occurrences was diagnosed hours
+    later, at a restore, from a refusal that could not say when.
+
+    Nothing is refused and nothing is re-anchored: the stash is written exactly
+    as passed, and ``applied`` still lands. The line is observability.
+    """
+    displaced = tmp_path / "sound_current.yml"
+    displaced.write_text("the graph this apply replaced\n", encoding="utf-8")
+    stale = tmp_path / "active_speaker_baseline_candidate_ff12ef1da447.yml"
+    stale.write_text("what the record still names\n", encoding="utf-8")
+
+    v2host.save_v2_state({"session_id": "cap_stale", "candidate": {"fingerprint": "fp"}})
+    with caplog.at_level(logging.WARNING):
+        v2host.observe_apply_success(
+            "fp",
+            pre_apply_profile={"config": {"path": str(stale), "sha256": "deadbeef"}},
+            round_anchor=round_anchor_record({
+                "apply": {"prior_config_path": str(displaced)},
+                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
+            }),
+        )
+
+    assert "crossover_v2_apply_inherited_stale_anchor" in caplog.text
+    assert str(stale) in caplog.text and str(displaced) in caplog.text
+    # Reported, not acted on: the stash is untouched and the apply stands.
+    state = v2host.load_v2_state()
+    assert state["pre_apply_profile"]["config"]["path"] == str(stale)
+    assert state["applied"] is True
+
+    # …and a coherent apply is silent, which is what makes the line a signal.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        v2host.observe_apply_success(
+            "fp",
+            pre_apply_profile={
+                "config": {
+                    "path": str(displaced),
+                    "sha256": config_file_sha256(str(displaced)),
+                },
+            },
+            round_anchor=round_anchor_record({
+                "apply": {"prior_config_path": str(displaced)},
+                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
+            }),
+        )
+    assert "inherited_stale_anchor" not in caplog.text
 
 
 def test_observe_apply_success_stashes_the_pre_apply_profile():

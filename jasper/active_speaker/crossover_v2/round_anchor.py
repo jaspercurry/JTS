@@ -59,6 +59,7 @@ __all__ = [
     "restore_target_diverged",
     "round_anchor_record",
     "running_config_diverged",
+    "stashed_restore_target",
 ]
 
 #: The durable v2-state key this module's record lives under. Named here
@@ -120,6 +121,27 @@ def _identity(path: Any, sha256: Any = None) -> dict[str, str]:
         return {"config_path": "", "sha256": ""}
     digest = str(sha256 or "") or (config_file_sha256(text) or "")
     return {"config_path": text, "sha256": digest}
+
+
+def stashed_restore_target(pre_apply_profile: Any) -> tuple[str, str]:
+    """The ``(config_path, sha256)`` a stash says a restore would put back.
+
+    The two arguments :func:`restore_target_diverged` compares the anchor
+    against, read off the frozen applied-baseline profile the Undo path
+    restores from. ``""`` for every unreadable shape, which that function reads
+    as "could not compare" rather than as "it moved" — the same direction it
+    takes for its own missing halves.
+
+    Here rather than at either caller because the question is asked at two
+    moments that must not drift: the restore, deciding whether to refuse, and
+    the apply, which stamps the anchor beside the stash and is the moment a
+    divergence is CREATED (#2859).
+    """
+    profile = pre_apply_profile if isinstance(pre_apply_profile, Mapping) else {}
+    config = profile.get("config")
+    if not isinstance(config, Mapping):
+        return "", ""
+    return str(config.get("path") or ""), str(config.get("sha256") or "")
 
 
 def running_config_diverged(

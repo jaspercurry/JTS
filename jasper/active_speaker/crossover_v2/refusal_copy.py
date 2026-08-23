@@ -1336,12 +1336,20 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     * **A restore was attempted and did not complete** (``True``/``None``):
       there IS a stored previous sound, the automatic attempt failed, and Undo
       is a real remedy the household can press. Unchanged copy.
-    * **There was never an anchor** (``False``): the adoption table routed here
-      *because* no previous sound exists, and Undo refuses on that same
-      predicate. Telling this household to tap it sends them to a dead end on
-      the most ordinary case there is — a speaker's first-ever correction. So
-      this arm names no Undo, states what is true about their speaker, and
-      offers the two remedies that DO exist.
+    * **Undo cannot run** (``False``): the household's remedy is the same two
+      levers either way, and this arm names them instead of Undo.
+
+    **This arm states no CAUSE, and that is #2859's finding** (it used to end
+    "this was its first measured crossover"). ``False`` is not one situation:
+    the capability it reports is ``rollback_anchor_refusal is None``, and that
+    refusal has FOUR named codes — nothing applied, no stashed profile, the
+    output topology changed since the apply, and the stash naming a graph this
+    round did not displace. On jts3, 2026-08-22, the last of those told a
+    household with an intact stash and an intact displaced record that their
+    speaker had never been corrected, and sent the operator after the wrong
+    diagnosis. One sentence true of all four is the honest rendering of a bool
+    that names all four — the same repair ``verify_inconclusive`` had (#1974),
+    where copy asserted a cause its verdict had never consulted.
 
     ``None`` takes the Undo arm deliberately: an unestablished fact must not
     invent the more alarming claim ("nothing to go back to") about a speaker
@@ -1349,11 +1357,10 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     """
     if rollback_anchor_available is False:
         return (
-            "The new tuning is still applied, and this speaker has no stored "
-            "previous sound to go back to — this was its first measured "
-            "crossover. You can measure again to try for a better result, or "
-            "clear the tuning from the Sound page to return to the standard "
-            "setup."
+            "The new tuning is still applied, and JTS has no previous sound it "
+            "can safely put back on this speaker. You can measure again to try "
+            "for a better result, or clear the tuning from the Sound page to "
+            "return to the standard setup."
         )
     return (
         "JTS checked the tuning against what your speaker actually did, and "

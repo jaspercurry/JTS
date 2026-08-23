@@ -4521,7 +4521,7 @@ def test_the_aged_nudge_takes_the_no_anchor_row_when_undo_is_gated():
     note = _history_note(env)
     assert "rollback_anchor_available" not in str(env)  # the record says nothing
     assert "Undo restores it" not in note
-    assert "no stored previous sound to go back to" in note
+    assert "no previous sound it can safely put back" in note
     assert not any("Undo" in label for label in _labels(env))
 
 
