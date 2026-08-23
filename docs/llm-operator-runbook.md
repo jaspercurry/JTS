@@ -177,7 +177,9 @@ it.** The packet's `incumbent.linearization.from_applied_profile` block lists
 what each branch is carrying today; anything there for a role you name and do
 not repeat is gone from the graph. No gate refuses that (there is no
 component-damage mechanism to name), so `propose` and `stage` disclose it
-instead: read the `displaces:` line before you stage.
+instead — read it before you stage: the `displaces:` line on the terminal
+report, or `prescription.displaced_filters` / `displaced_boost_db` /
+`displaced_boost_role` under `--json`.
 
 **One durable apply door, one ephemeral activation door.** `handle_v2_apply`
 (behind `POST /crossover/v2/apply`) is the only path that durably applies a

@@ -1409,6 +1409,14 @@ def _check_displaced(
     document will actually displace does not exist yet; the incumbent is what
     the speaker is playing and what the evidence packet can name. The two are
     the same question asked one round apart.
+
+    **It is a PER-BRANCH number, and one case sits outside it.** Removing an
+    incumbent BOOST also releases the pre-split attenuation that boost was
+    charged (``camilla_yaml.linearization_headroom_db``), which raises the
+    whole speaker rather than one branch's band. This reads only the branch's
+    own cascade, so it reports that removal as the negative per-branch delta it
+    is and says nothing about the whole-speaker step beside it. Named rather
+    than papered over: the number is honest about the band it covers.
     """
     if incumbent is None:
         return None, None, None

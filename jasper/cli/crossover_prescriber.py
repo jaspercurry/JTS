@@ -704,7 +704,14 @@ def _staged_section() -> dict[str, Any]:
 def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """What the round was measured THROUGH, from both records the packet keeps."""
+    """What the round was measured THROUGH — the packet's two BLEND records.
+
+    The packet keeps a third under ``incumbent.linearization``, the per-driver
+    correction each branch carries, and this verb does not surface it yet
+    (#2863's follow-up). Named here rather than left as a silent omission: a
+    reader told "what the round was measured through" would otherwise take
+    these two lines for the whole answer.
+    """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
     from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)
@@ -725,11 +732,13 @@ def _status_sections(
 
     Every fact in these four comes from
     :func:`~.evidence_packet.build_crossover_evidence_packet` and the named
-    readers the gate itself calls
+    readers the gate itself calls — three of them today
     (:func:`~.evidence_packet.packet_region_band_hz`,
     :func:`~.evidence_packet.packet_driver_passbands_hz`,
-    :func:`~.evidence_packet.packet_feature_classifications`), plus the spool's
-    own :func:`~.prescription_spool.staged_prescription_pending`. **No second
+    :func:`~.evidence_packet.packet_feature_classifications`), with the gate's
+    fourth (:func:`~.evidence_packet.packet_incumbent_linearization`) not yet
+    called here — plus the spool's own
+    :func:`~.prescription_spool.staged_prescription_pending`. **No second
     walk of the bundle.** A status verb with its own tree reader would answer a
     slightly different question from the door beside it, and the day they
     disagreed the operator would believe the one that was not enforcing

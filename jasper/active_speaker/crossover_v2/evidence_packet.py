@@ -564,9 +564,12 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     time, so they structurally cannot carry one here. Two further inputs are
     written with a plain ``json.dumps`` and are NOT guarded:
     ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
-    state, where all three fields this packet copies —
-    ``verify.claims``, ``pre_apply_profile.blend_correction``
-    and ``evidence.calibration`` — kill the packet; and
+    state, where all four fields this packet copies —
+    ``verify.claims``, ``pre_apply_profile.blend_correction``,
+    ``pre_apply_profile.linearization`` (through
+    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
+    which reduces but does not screen, so a non-finite gain reaches the packet
+    unguarded) and ``evidence.calibration`` — kill the packet; and
     :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
     ``driver_safety_profile.confirmation`` is copied whole and does the same.
     The draft's passbands do NOT, because
@@ -1867,14 +1870,15 @@ def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
 def _incumbent_block(
     receipt: dict[str, Any], reason: str, state: dict[str, Any], state_reason: str
 ) -> dict[str, Any]:
-    """What the measurement was taken THROUGH, from both places that record it.
+    """What the measurement was taken THROUGH — three records, two questions.
 
-    Two records of one fact, deliberately reported side by side rather than
-    reconciled here: the receipt's ``round_measurements.blend.incumbent`` (what
-    the round said it derived from) and the applied profile's own
-    ``blend_correction`` (what the graph actually carried). They should agree,
-    and a packet that silently preferred one would hide the round where they
-    did not. Reconciling them is a judgement, and this module makes none.
+    The BLEND correction is recorded in two places, deliberately reported side
+    by side rather than reconciled here: the receipt's
+    ``round_measurements.blend.incumbent`` (what the round said it derived
+    from) and the applied profile's own ``blend_correction`` (what the graph
+    actually carried). They should agree, and a packet that silently preferred
+    one would hide the round where they did not. Reconciling them is a
+    judgement, and this module makes none.
 
     ``linearization`` is the SAME question asked of the other prescription
     class, and it is here rather than beside ``drivers`` because "what is the
@@ -1923,6 +1927,12 @@ def _incumbent_block(
             # linearization is empty says the branches carry nothing, which is
             # a report rather than an absence, and only a missing profile
             # leaves the question unanswered.
+            # Each filter copied VERBATIM rather than field-reduced, and the
+            # cost was measured rather than assumed: the whole record is 1716
+            # bytes of a 36411-byte packet on the shipped two-way. The profile
+            # already stores exactly `{biquad_type, freq, q, gain}`, so there
+            # is nothing to drop, and rounding the floats would cost a reader
+            # the ability to reproduce the cascade the speaker is playing.
             "from_applied_profile": (
                 {
                     str(role): list(filters)
