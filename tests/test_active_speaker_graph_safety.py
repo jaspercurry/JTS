@@ -309,6 +309,78 @@ def test_pipeline_contains_chain_requires_exact_channels():
     )
 
 
+def _tweeter_hp_view(order: int):
+    """One tweeter output carrying one Linkwitz-Riley high-pass of ``order``."""
+    return gs.view_from_camilla_dict(
+        {
+            "filters": {
+                "tweeter_hp": {
+                    "type": "BiquadCombo",
+                    "parameters": {
+                        "type": "LinkwitzRileyHighpass",
+                        "freq": 1_600.0,
+                        "order": order,
+                    },
+                }
+            },
+            "pipeline": [
+                {"type": "Filter", "channels": [1], "names": ["tweeter_hp"]}
+            ],
+        }
+    )
+
+
+def test_the_emitted_graph_is_still_proved_against_the_derived_slope():
+    """#2891's blast-radius floor: the EMIT side did not move.
+
+    The 2026-08-23 ruling narrowed what may refuse a household's PINNED
+    crossover. It changed nothing about proving that a graph this build emitted
+    carries the protective filter this build derived — the filter being proved
+    is generated from the same ``max(published, 24)`` figure, so no household
+    choice is being refused here. LR4 proves it and LR2 does not, exactly as
+    before, and both halves are asserted so "unchanged" is not just the absence
+    of an edit.
+    """
+    requirement = {
+        "kind": "highpass",
+        "cutoff_hz": 1_600.0,
+        "minimum_slope_db_per_octave": 24.0,
+        "family_or_equivalent": "equivalent_or_steeper",
+    }
+    for order in (4, 8):
+        assert gs.protection_requirement_present(
+            _tweeter_hp_view(order),
+            output_index=1,
+            allowed_channels={1},
+            requirement=requirement,
+        )
+    assert not gs.protection_requirement_present(
+        _tweeter_hp_view(2),
+        output_index=1,
+        allowed_channels={1},
+        requirement=requirement,
+    )
+
+
+def test_the_l0_emit_gate_carries_no_slope_term_at_all():
+    """Why the topology gate is the ONE place a slope bound is applied.
+
+    ``output_highpass_protected`` proves a tweeter output's high-pass CORNER
+    and nothing about its steepness, so an order-2 crossover at a legal corner
+    passes it. A published slope this build did not check at the pin would not
+    be checked anywhere downstream — which is the claim
+    ``topology_prescription``'s docstring makes and this is the measurement of
+    it.
+    """
+    for order in (2, 4, 8):
+        assert gs.output_highpass_protected(
+            _tweeter_hp_view(order),
+            channel=1,
+            allowed_channels={1},
+            min_corner_hz=400.0,
+        )
+
+
 def test_protection_requirement_allows_only_same_role_grouped_channels():
     requirement = {
         "kind": "highpass",
