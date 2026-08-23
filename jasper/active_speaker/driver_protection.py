@@ -68,7 +68,6 @@ class DriverProtectionProfile:
     floor_test_frequency_hz: float
     floor_test_duration_ms: int
     max_auto_level_dbfs: float
-    requires_floor_confirmation_above_floor: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,9 +78,6 @@ class DriverProtectionProfile:
             "floor_test_frequency_hz": self.floor_test_frequency_hz,
             "floor_test_duration_ms": self.floor_test_duration_ms,
             "max_auto_level_dbfs": self.max_auto_level_dbfs,
-            "requires_floor_confirmation_above_floor": (
-                self.requires_floor_confirmation_above_floor
-            ),
         }
 
 
@@ -142,7 +138,6 @@ def driver_protection_profile(
             floor_test_frequency_hz=frequency,
             floor_test_duration_ms=duration_ms,
             max_auto_level_dbfs=MAX_TEST_LEVEL_DBFS,
-            requires_floor_confirmation_above_floor=True,
         )
     if role_id in HIGH_FREQUENCY_ROLES:
         hf_style = style or _UNKNOWN_HF_STYLE
@@ -161,7 +156,6 @@ def driver_protection_profile(
             # ``derive_hf_measurement_ceiling_dbfs`` and
             # ``jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings``.
             max_auto_level_dbfs=-65.0,
-            requires_floor_confirmation_above_floor=True,
         )
     return DriverProtectionProfile(
         role=role_id,
@@ -171,7 +165,6 @@ def driver_protection_profile(
         floor_test_frequency_hz=500.0,
         floor_test_duration_ms=300,
         max_auto_level_dbfs=MIN_TEST_LEVEL_DBFS,
-        requires_floor_confirmation_above_floor=True,
     )
 
 
