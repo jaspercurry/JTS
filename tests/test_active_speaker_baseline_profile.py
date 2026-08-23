@@ -1491,6 +1491,55 @@ async def test_apply_baseline_profile_persists_applied_state_durably(
     assert len(fsync_calls) == 2
 
 
+async def test_apply_baseline_profile_releases_the_staged_startup_hold(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A completed commission is the END of the startup-load hold.
+
+    Observed on jts3: after save-and-apply put the baseline live, the ephemeral
+    hold marker was still set, because only the rollback path cleared it. It is
+    inert while it lingers — ``safe_graph_for_current_topology``'s rung ALSO
+    requires the current graph to classify as all-muted-active-startup, which an
+    applied baseline does not — but it is a latent surprise for the NEXT
+    commission and it makes the doctor's "marker present" state ambiguous. The
+    apply seam owns the release, so every caller that records a baseline as
+    applied clears it.
+    """
+    from jasper.active_speaker.startup_hold import (
+        hold_staged_startup,
+        staged_startup_hold_active,
+    )
+
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft)
+    measurements = _measurements(topology, tmp_path)
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
+
+    async def load_config(path: str) -> bool:
+        return True
+
+    assert hold_staged_startup() is True
+    assert staged_startup_hold_active() is True
+
+    payload = await apply_baseline_profile(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements=measurements,
+        load_config=load_config,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+    )
+
+    assert payload["status"] == "applied"
+    assert staged_startup_hold_active() is False
+
+
 async def test_apply_baseline_profile_reloads_when_target_config_differs(
     monkeypatch, tmp_path: Path,
 ) -> None:

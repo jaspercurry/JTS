@@ -215,9 +215,20 @@ above; this is only the entry points:
   (That gate runs before the load, so the later S3 durable-drift check inside the
   persist phase is never reached.) `load_protected_startup_config` therefore
   takes an **ephemeral `/run` hold marker**
-  (`jasper.active_speaker.startup_hold`) before it applies anything and clears it
-  on rollback; while it is present `safe_graph_for_current_topology` preserves the
-  staged all-muted anchor above the baseline-restore rung. The marker is in
+  (`jasper.active_speaker.startup_hold`) before it applies anything; while it is
+  present `safe_graph_for_current_topology` preserves the staged all-muted anchor
+  above the baseline-restore rung. **One TAKE and three RELEASEs own that marker**, which is
+  every writer in the tree: the load TAKES it; the load's own `finally` RELEASES
+  it when the apply does not stick; `rollback_protected_startup_config` RELEASES
+  it when the anchor is deliberately abandoned; and
+  `baseline_profile.persist_applied_baseline_profile` — the apply seam every
+  "a baseline is now applied" path funnels through — RELEASES it when a
+  commission COMPLETES, because a baseline is what boots then. Without that third
+  one the marker outlives the commission that took it (seen on jts3 after a
+  successful save-and-apply); it is inert while it lingers, since the rung also
+  requires the current graph to classify as all-muted-active-startup, but it
+  surprises the next commission and makes the doctor's "marker present" state
+  ambiguous. The marker is in
   `/run`, so a normal boot never sees it — a commissioned box still restores its
   baseline on reboot — and preserving an all-muted anchor keeps the box silent,
   never loud, so this is gated only on the hold, not on identity (#2814's identity

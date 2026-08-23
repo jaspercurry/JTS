@@ -29,8 +29,8 @@ sandbox:
 
 * ``jasper-web`` (``User=jasper-web``, ``ProtectSystem=strict``) — writes the
   hold from the ``/sound/`` commissioning flow and its
-  ``POST /active-speaker/load-startup-config`` route, and is the only unit that
-  clears it, from ``/active-speaker/rollback-startup-config``.
+  ``POST /active-speaker/load-startup-config`` route, and clears it from
+  ``/active-speaker/rollback-startup-config``.
 * ``jasper-correction-web`` (root, ``ProtectSystem=full``, ``UMask=0077``) —
   writes it from ``/correction/``'s driver-capture and level-match arms, which
   reach the same ``load_protected_startup_config`` through
@@ -47,6 +47,30 @@ sandbox:
 systemd creates as ``jasper-web:jasper`` mode 0755 and excludes from
 ``ProtectSystem=``. The two root writers and the root reader need nothing
 further, so no supplementary group is involved.
+
+RELEASING is not scoped to those three: the completion release below sits at the
+baseline apply seam, which the ``/correction/`` crossover-v2 apply and the
+``jasper-active-speaker`` CLI also reach. That needs no extra permission — the
+0755 directory is what makes ``unlink`` work for any of them.
+
+Lifecycle — one TAKE and three RELEASEs, which is the whole set of writers in
+the tree (``grep release_staged_startup_hold``):
+
+* ``load_protected_startup_config`` TAKES it, before it applies the anchor.
+* the same function's ``finally`` RELEASES it when the apply does not stick, so
+  no escape leaves a hold behind an anchor that was never loaded.
+* ``rollback_protected_startup_config`` RELEASES it when the anchor is
+  deliberately abandoned.
+* ``baseline_profile.persist_applied_baseline_profile`` — the apply seam every
+  "a baseline is now applied" path funnels through — RELEASES it when a
+  commission COMPLETES, because a baseline is what boots then and the anchor the
+  hold protected is no longer the boot config.
+
+Without that last one the marker outlives the commission that took it (observed
+on jts3 after a successful save-and-apply). It is inert while it lingers, since
+the selector's rung also requires the current graph to classify as
+all-muted-active-startup, but it surprises the next commission and it makes the
+doctor's "marker present" state ambiguous.
 
 Fail direction: a write failure never raises here, but it is not silent —
 ``load_protected_startup_config`` refuses the load with the
