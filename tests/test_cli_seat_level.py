@@ -831,6 +831,20 @@ def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys
     assert "80.5 dB SPL sample 0.950 s in" in err
     assert "reading 64.6 dB SPL at -20.00 dB" in err
 
+    # The detail above is a COPY of what the ramp writes, so it is pinned
+    # against the ramp's own writer rather than left to go stale silently: this
+    # is the window that produced it, phrased by the one function that phrases
+    # it. `tests/test_active_speaker_seat_level.py` covers the ramp end putting
+    # that clause on a real refusal.
+    from jasper.active_speaker import seat_level_ramp as slr
+
+    trace = slr._WindowTrace(
+        samples=tuple((index * 0.05, 74.0) for index in range(19)) + ((0.95, 80.5),),
+        seen=20,
+        trip=(0.95, 80.5),
+    )
+    assert slr._window_phrase(trace.summary()) in err
+
 
 def test_a_corrected_ambient_floor_is_disclosed_on_the_line(
     tmp_path, monkeypatch, capsys
