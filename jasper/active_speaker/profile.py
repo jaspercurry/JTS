@@ -512,8 +512,15 @@ class SafetyEnvelope:
     # 80.50 and 80.90 — single SAMPLES, not peaks. The settled level at the
     # refused volume was never measured, because the window was abandoned. So
     # the excess over settled is a RANGE and not a number: roughly +6 to
-    # +11 dB, the two ends being an extrapolation from each run's own slope
-    # and one from the 68/72-run calibration. Do not restate either end alone.
+    # +11 dB. The WIDE end extrapolates each run's own banked slope; the NARROW
+    # end comes from a separate calibration (captures 86/87, same campaign
+    # bringup dir as 83/84). The two do not reconcile, and that is the point:
+    # the narrow end needs a chain answering a commanded dB with MORE than a
+    # dB, while ``test_the_new_horn_slope_estimate_never_reached_unity`` pins
+    # every banked pair BELOW unity — room-subtracted too, with both readings
+    # of the estimator's own pair already clear of the room, so "still emerging
+    # from the room" does not account for it. The gap is unexplained by these
+    # runs. That is exactly why neither end may be restated alone.
     # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
     escalation_step_db: float = 5.0
