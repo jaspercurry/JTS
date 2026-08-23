@@ -944,7 +944,14 @@ MAX_LINES_BY_PATH = {
     # file its code was shrinking, and again when the fix round's own six prose
     # corrections did the same — so every one of them was rewritten in place.
     # Both are the guard refusing the trade it exists to refuse.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_076,
+    #
+    # 2026-08-23, the post-#2888 burn-down: 13,076 -> 13,075, LOWERED rather
+    # than left as slack. The line is incidental — two pre-D1 prose blocks in
+    # `_run_delta_probe` were rewritten to say what that branch does since
+    # #2693, and the true statement is one line shorter than the false one —
+    # but this file has sat ON its ceiling by design, and banking an unearned
+    # line for the next author is how zero slack stops meaning anything.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_075,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic

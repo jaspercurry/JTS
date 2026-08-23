@@ -3980,6 +3980,18 @@ def test_every_undo_naming_verify_fail_sentence_is_covered_by_the_drop():
         assert reason_message(code, spec) == spec.message, code
         assert reason_message(code, spec, can_undo=True) == spec.message, code
 
+    # ...and it touches NOTHING else. The drop is applied to every code rather
+    # than gated on the template, which is only safe if the fragments are this
+    # specific — a claim about the whole registry, so it is counted over the
+    # whole registry rather than over the four rows it was written for.
+    # ``correction_rollback_failed`` also names Undo and is deliberately among
+    # the untouched: it answers that question itself, on a different fact.
+    assert [
+        code for code, spec in REASON_REGISTRY.items()
+        if spec.template != TEMPLATE_VERIFY_FAIL
+        and reason_message(code, spec, can_undo=False) != reason_message(code, spec)
+    ] == []
+
 
 def test_a_retriable_verify_fail_code_keeps_its_try_again():
     """The regression guard on the swap above. Every OTHER verify_fail code is
