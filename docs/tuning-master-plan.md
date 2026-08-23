@@ -439,9 +439,13 @@ deviation rows as they close.
     and its quality-gated household copy (#2058 B1) is correct and stays. (S–M)
 2.11 `setup_status.py`'s private statefile reader (duplicate env-var name,
     literal path, and regex parse) folds onto
-    `active_speaker/environment.py`. Scope is that one duplicate — the
-    other readers of `JASPER_CAMILLA_STATEFILE` keep their documented
-    reasons. (S)
+    `active_speaker/environment.py`. Its scope was that one duplicate;
+    the premise that the other readers of `JASPER_CAMILLA_STATEFILE` kept
+    documented reasons held for one of four. The three that did not —
+    `cli/doctor/correction.py`, `audio_runtime_plan.py`, and
+    `multiroom/leader_config.py` — fold in #2848; `fanin/converge.py`
+    resolves the statefile PATH only, never the parse, and keeps its
+    written reason. (S)
 2.12 Rename the two `vocabulary.py` modules (attribution's taxonomy vs
     crossover_v2's household refusal copy) so the names say which is
     which. (S)
