@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 
@@ -1957,3 +1958,473 @@ def test_a_converged_pass_survives_a_failed_isolation_teardown(
     assert result.status == "converged", result.reason
     assert log == ["window_enter", "window_exit"]
     assert (tmp_path / "seat_level_reference.json").exists()
+
+
+# --- the jts3 new-horn bench night, replayed --------------------------------
+#
+# Two independent instrument defects surfaced on jts3 on 2026-08-23 while
+# leveling a new horn, and neither could be diagnosed from anything the build
+# emitted. Every number in this section is read off the receipts in
+# ``captures/new-horn-2026-08/bringup/``, and the fixtures replay those receipts
+# rather than modelling a chain -- so the published rises, medians and volumes
+# ARE the bench's, and a regression shows up as a number that stopped matching.
+
+# 83-seatlevel-run1-refused.json: --target 75, refused `spl_ceiling_exceeded`
+# on a sample measuring 80.5 dB SPL against the 80.0 stop, 0.955 s after the
+# step to -12.50 dB. Its five settled medians, and the ambient it measured.
+RUN83_AMBIENT_DB_SPL = 49.65
+RUN83_LEVELS = {
+    -50.00: 50.78,
+    -42.50: 53.45,
+    -35.00: 52.33,
+    -27.50: 57.90,
+    -20.00: 64.61,
+    # NOT a receipt number: -12.50 never produced a settled median, because the
+    # window was abandoned. This is the run-log's own extrapolation from the two
+    # converged runs' slopes (73.94 and 74.55 dB SPL), and it sits INSIDE the
+    # [72.5, 77.5] band -- which is the sharp end of the incident.
+    -12.50: 74.0,
+}
+RUN83_TRIP_DB_SPL = 80.5
+RUN83_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
+
+# 86-seatlevel-68-converged.json: --target 68, converged, honest ambient.
+RUN86_AMBIENT_DB_SPL = 49.73
+RUN86_LEVELS = {
+    -50.00: 50.59,
+    -42.50: 50.67,
+    -35.00: 51.63,
+    -27.50: 57.36,
+    -20.00: 64.97,
+    -16.97: 69.63,
+}
+RUN86_RISES = [0.86, 0.94, 1.89, 7.63, 15.24, 19.90]
+RUN86_TARGET = SeatLevelTarget(target_db_spl=68.0, tolerance_db=2.5)
+
+# 87-seatlevel-72-converged.json: --target 72, converged, but with an ambient
+# 7.45 dB above what the same mic read one second later -- so it published three
+# NEGATIVE rises: tone readings quieter than the room they were taken in.
+RUN87_AMBIENT_DB_SPL = 57.18
+RUN87_LEVELS = {
+    -50.00: 50.21,
+    -42.50: 50.86,
+    -35.00: 53.48,
+    -27.50: 58.24,
+    -20.00: 65.69,
+    -13.69: 72.63,
+}
+RUN87_PUBLISHED_RISES = [-6.97, -6.32, -3.70, 1.06, 8.51, 15.45]
+RUN87_TARGET = SeatLevelTarget(target_db_spl=72.0, tolerance_db=2.5)
+
+# The bench ran against the headroom ceiling and the profile's stop, not this
+# file's shared rig, and its 7.5 dB bite follows from that span.
+BENCH_CEILING_DB = 0.0
+BENCH_SPL_CEILING = 80.0
+
+
+class ScriptedMic:
+    """A mic that replays one bench run's own medians, keyed by commanded volume.
+
+    Deliberately not a model of a chain. The receipts' levels ARE the fixture,
+    so the ramp steps through exactly the volumes the bench stepped through and
+    publishes exactly the rises the bench published -- which is what lets a test
+    assert against a receipt instead of against a simulation.
+
+    ``excursion`` is ``(volume_db, sample_index, db_spl)``: from that sample of
+    that volume's window on, the level is the excursion rather than the settled
+    one. One sample of it is the incident's shape; a whole window of it is the
+    shape the incident has to be told apart from, and one rig produces both.
+    """
+
+    def __init__(
+        self,
+        volume: Volume,
+        tone: BlockingTone,
+        *,
+        ambient_db_spl: float,
+        levels: dict[float, float],
+        excursion: tuple[float, int, float] | None = None,
+        sensitivity: MicSensitivity = UMIK2,
+    ) -> None:
+        self._volume = volume
+        self._tone = tone
+        self._ambient_db_spl = ambient_db_spl
+        self._levels = levels
+        self._excursion = excursion
+        self._sensitivity = sensitivity
+        self._seq = 0
+        self._at_volume = -1
+        self._last_volume: float | None = None
+
+    def _db_spl(self, commanded: float) -> float:
+        if not self._tone.started:
+            return self._ambient_db_spl
+        settled = self._levels[commanded]
+        if self._excursion is None:
+            return settled
+        volume_db, index, level = self._excursion
+        if commanded == volume_db and self._at_volume >= index:
+            return level
+        return settled
+
+    async def next_samples(self) -> list[LevelSample]:
+        commanded = round(self._volume.value, 2)
+        if self._tone.started:
+            self._at_volume = (
+                self._at_volume + 1 if self._last_volume == commanded else 0
+            )
+            self._last_volume = commanded
+        self._seq += 1
+        rms = self._sensitivity.dbfs_from_db_spl(self._db_spl(commanded))
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+
+def _bench_run(
+    tmp_path,
+    *,
+    ambient_db_spl: float,
+    levels: dict[float, float],
+    target: SeatLevelTarget,
+    excursion: tuple[float, int, float] | None = None,
+    mic_class: type[ScriptedMic] = ScriptedMic,
+):
+    """One replayed bench pass, against the bench's own ceiling and SPL stop."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    volume = Volume()
+    tone = BlockingTone()
+    mic = mic_class(
+        volume,
+        tone,
+        ambient_db_spl=ambient_db_spl,
+        levels=levels,
+        excursion=excursion,
+    )
+    return asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=target,
+            max_main_volume_db=BENCH_CEILING_DB,
+            spl_ceiling_db_spl=BENCH_SPL_CEILING,
+        )
+    )
+
+
+def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
+    """The fixtures are the receipts, not an approximation of them.
+
+    If this drifts, every assertion below is asserting against a simulation.
+    """
+    converged = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+        levels=RUN86_LEVELS,
+        target=RUN86_TARGET,
+    )
+    assert converged.status == "converged", converged.reason
+    assert [step["volume_db"] for step in converged.ramp["steps"]] == list(RUN86_LEVELS)
+    assert [step["observed_db_spl"] for step in converged.ramp["steps"]] == list(
+        RUN86_LEVELS.values()
+    )
+    # The bite the bench ran with follows from the bench's own span.
+    assert converged.ramp["bite_db"] == 7.5
+
+
+# --- defect 1: the refusal published nothing about the window it stopped in --
+
+
+def test_a_sample_domain_stop_publishes_the_window_it_abandoned(tmp_path):
+    """The receipt, the event line and the prose all carry the aborted window.
+
+    Before this, ``_settle_reading`` computed the aborted window's sample count
+    and DROPPED it on the way out, and no per-sample SPL existed anywhere. The
+    refusal's top-level keys were exactly ``detail, measured_db_spl, ramp,
+    reason, reference_volume_db, restored, status`` -- nothing in them could
+    separate one tail sample from a level that rose and stayed.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    window = result.ramp["window"]
+    # Every field is present and typed -- a None here is a dropped measurement.
+    assert isinstance(window["samples"], int) and window["samples"] > 0
+    assert isinstance(window["retained"], int)
+    for key in ("min_db_spl", "median_db_spl", "max_db_spl", "trip_db_spl"):
+        assert isinstance(window[key], float), key
+    assert isinstance(window["trip_offset_s"], float)
+    # The trip is the loudest thing the window saw AND the sample that ended it,
+    # so a reader can check those two against each other.
+    assert window["trip_db_spl"] == pytest.approx(RUN83_TRIP_DB_SPL, abs=0.01)
+    assert window["max_db_spl"] == window["trip_db_spl"]
+    # ...about a second after the step that opened the window, as on the bench.
+    assert window["trip_offset_s"] == pytest.approx(0.95, abs=0.06)
+    # The settled median of the PRIOR window is already on the receipt, so the
+    # window object does not restate it -- one writer per fact.
+    assert "prior_db_spl" not in window
+    assert result.ramp["steps"][-1]["observed_db_spl"] == RUN83_LEVELS[-20.00]
+
+
+def test_the_refusal_prose_carries_the_window_and_names_the_prior_volume(tmp_path):
+    """What an operator reading a terminal gets, without opening ``--json``.
+
+    The prior reading was already in this sentence, but with no volume beside
+    it -- which reads as if the ramp had SETTLED at the volume it stopped on,
+    the one thing a sample-domain stop means it did not do.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+    detail = result.detail or ""
+
+    assert "stopped at -12.50 dB" in detail
+    assert f"reading {RUN83_LEVELS[-20.00]:.1f} dB SPL at -20.00 dB" in detail
+    assert "the window it stopped in saw" in detail
+    assert f"{RUN83_TRIP_DB_SPL:.1f} dB SPL sample" in detail
+    # The window's median is in the sentence too: it is the whole discriminator.
+    assert f"median {RUN83_LEVELS[-12.50]:.1f}" in detail
+
+
+def test_the_window_separates_a_tail_excursion_from_a_level_that_rose_and_stayed(
+    tmp_path,
+):
+    """The discriminator the mechanism hunt needed and did not have.
+
+    Two passes that refuse identically -- same reason, same measured value in
+    the same sentence, same five settled readings behind them. One stopped on a
+    single sample 6.5 dB above a settled level that was INSIDE the band; the
+    other was over the stop from its first sample after the step. Only the
+    window tells them apart.
+    """
+    tail = _bench_run(
+        tmp_path / "tail",
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+    stayed = _bench_run(
+        tmp_path / "stayed",
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels={**RUN83_LEVELS, -12.50: RUN83_TRIP_DB_SPL},
+        target=RUN83_TARGET,
+    )
+
+    # Indistinguishable on everything that existed before the window did.
+    assert tail.reason == stayed.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert tail.ramp["steps"] == stayed.ramp["steps"]
+    assert (tail.detail or "").split("(")[0] == (stayed.detail or "").split("(")[0]
+
+    # And separated by the window, in the direction the bench needs.
+    tail_window, stayed_window = tail.ramp["window"], stayed.ramp["window"]
+    assert tail_window["median_db_spl"] == pytest.approx(RUN83_LEVELS[-12.50], abs=0.1)
+    assert tail_window["max_db_spl"] - tail_window["median_db_spl"] > 6.0
+    assert stayed_window["median_db_spl"] == stayed_window["max_db_spl"]
+    assert stayed_window["trip_offset_s"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_the_per_sample_series_is_one_debug_line_per_window(tmp_path, caplog):
+    """The rising edge, reconstructable without new tooling -- and bounded.
+
+    One line per WINDOW, values joined. One line per SAMPLE would be journal
+    spam at ~24 samples a window and eight windows a pass.
+    """
+    with caplog.at_level(logging.DEBUG, logger=slr.logger.name):
+        result = _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+            levels=RUN86_LEVELS,
+            target=RUN86_TARGET,
+        )
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker.seat_level_window_samples" in record.getMessage()
+    ]
+
+    # The ambient window plus one per reading, and not one more.
+    assert len(lines) == 1 + len(result.ramp["steps"])
+    assert sum("window=ambient" in line for line in lines) == 1
+    assert sum("window=-50.00" in line for line in lines) == 1
+    assert all("\n" not in line for line in lines)
+    # Each line carries its own samples as offset:level pairs, and the count it
+    # claims is the count it printed.
+    for line in lines:
+        claimed = int(line.split(" samples=")[1].split(" ")[0])
+        series = line.split('db_spl="')[1].rstrip('"')
+        assert len(series.split(" ")) == claimed
+        assert all(":" in pair for pair in series.split(" "))
+
+
+def test_the_series_costs_nothing_when_debug_is_off(tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+            levels=RUN86_LEVELS,
+            target=RUN86_TARGET,
+        )
+    assert not [
+        record
+        for record in caplog.records
+        if "seat_level_window_samples" in record.getMessage()
+    ]
+
+
+class FloodMic(ScriptedMic):
+    """A source that delivers far faster than a sound card can.
+
+    The cap's reason for existing: a production window holds ~24 samples, so
+    nothing here can happen on the wired meter -- but the retained list and the
+    single line built from it must be bounded by construction, not by trust.
+    """
+
+    async def next_samples(self):
+        batch = []
+        for _ in range(slr.WINDOW_TRACE_MAX_SAMPLES + 40):
+            batch.extend(await super().next_samples())
+        return batch
+
+
+def test_the_window_trace_is_bounded_and_says_so(tmp_path):
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, slr.WINDOW_TRACE_MAX_SAMPLES + 10, RUN83_TRIP_DB_SPL),
+        mic_class=FloodMic,
+    )
+
+    window = result.ramp["window"]
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert window["retained"] == slr.WINDOW_TRACE_MAX_SAMPLES
+    assert window["samples"] > window["retained"]
+    # The sample that STOPPED the window is recorded outside the cap, so
+    # truncation can never be the reason a stop has no value attached.
+    assert window["trip_db_spl"] == pytest.approx(RUN83_TRIP_DB_SPL, abs=0.01)
+    assert window["max_db_spl"] < window["trip_db_spl"]
+
+
+# --- defect 2: one half-second of room became every rise's denominator ------
+
+
+@pytest.mark.parametrize(
+    "ambient_dbfs, quietest, expected",
+    [
+        pytest.param(-56.3, -55.5, -56.3, id="honest_floor_is_kept"),
+        pytest.param(-48.9, -55.9, -55.9, id="inflated_floor_moves_down"),
+        pytest.param(-56.3, -56.3, -56.3, id="a_stuck_mic_reads_its_own_ambient"),
+    ],
+)
+def test_the_room_floor_is_the_quietest_level_this_mic_reported(
+    ambient_dbfs, quietest, expected
+):
+    assert slr.reconciled_ambient_dbfs(
+        ambient_dbfs=ambient_dbfs, quietest_reading_dbfs=quietest
+    ) == pytest.approx(expected)
+
+
+def test_the_bench_ambient_over_read_is_reconciled_by_the_climbs_own_readings(
+    tmp_path,
+):
+    """Run 87's exact numbers: an ambient 7.45 dB above the room seconds later.
+
+    ``required_rise_db`` gates trust on ``observed - ambient``, so the inflated
+    floor made the run's first four readings untrusted against a baseline
+    nothing measured. It converged anyway only because its top readings cleared
+    even the bogus floor.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=RUN87_LEVELS,
+        target=RUN87_TARGET,
+    )
+    ramp = result.ramp
+
+    assert result.status == "converged", result.reason
+    # What the ambient window measured is still published as measured...
+    assert ramp["ambient_db_spl"] == pytest.approx(RUN87_AMBIENT_DB_SPL, abs=0.01)
+    # ...beside the floor the rise gate actually used, and the disclosure.
+    assert ramp["ambient_effective_db_spl"] == pytest.approx(
+        RUN87_LEVELS[-50.00], abs=0.01
+    )
+    assert ramp["ambient_corrected"] is True
+    # No rise is negative any more, and the first is exactly zero: a reading
+    # cannot be quieter than the room it was taken in.
+    rises = [step["rise_db"] for step in ramp["steps"]]
+    assert min(rises) >= 0.0
+    assert rises[0] == pytest.approx(0.0, abs=0.01)
+
+    # Control, from the same fixture: the un-reconciled rule is what published
+    # the bench's three negative rises, so this is the instrument and not the
+    # room. (The receipt rounds its medians to 2 decimals before this file
+    # reads them, which is the only reason any cell moves by 0.01.)
+    floor = UMIK2.dbfs_from_db_spl(RUN87_AMBIENT_DB_SPL)
+    assert [
+        UMIK2.dbfs_from_db_spl(level) - floor for level in RUN87_LEVELS.values()
+    ] == pytest.approx(RUN87_PUBLISHED_RISES, abs=0.02)
+
+
+def test_an_honest_ambient_is_never_corrected(tmp_path):
+    """Run 86, two minutes earlier: the same room, an honest window.
+
+    The reconciliation must be invisible on a pass that did not need it, or it
+    is a second source of truth for the room rather than a repair of a broken
+    one.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+        levels=RUN86_LEVELS,
+        target=RUN86_TARGET,
+    )
+    ramp = result.ramp
+
+    assert result.status == "converged", result.reason
+    assert ramp["ambient_corrected"] is False
+    assert ramp["ambient_effective_db_spl"] == pytest.approx(
+        RUN86_AMBIENT_DB_SPL, abs=0.01
+    )
+    # The rises are the receipt's, unchanged.
+    assert [step["rise_db"] for step in ramp["steps"]] == pytest.approx(
+        RUN86_RISES, abs=0.02
+    )
+
+
+def test_a_stuck_constant_mic_is_untouched_by_the_reconciliation(tmp_path):
+    """The guard the rise gate feeds is structurally immune to the correction.
+
+    A mic that is not observing reports a constant, so its ambient reading IS
+    its signal reading -- the floor never moves, the rise stays zero, and the
+    runaway guard still fires. That is the argument the correction rests on,
+    asserted rather than reasoned about.
+    """
+    volume, tone, mic = _rig(deaf=True)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert result.ramp["ambient_corrected"] is False
+    assert result.ramp["ambient_effective_db_spl"] == result.ramp["ambient_db_spl"]
+    assert {step["rise_db"] for step in result.ramp["steps"]} == {0.0}

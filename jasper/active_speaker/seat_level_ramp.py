@@ -73,7 +73,18 @@ owns, and nothing else can know:
    Measuring the room ONCE before the tone gives the runaway guard a "did
    anything actually rise" test that does not false-abort a speaker quieter
    than the room, and gives convergence the same test so a stuck-constant mic
-   can never bank a reference.
+   can never bank a reference. That single half-second median is also the
+   denominator of every rise, so a transient inside it would become "the room"
+   for the whole run — :func:`reconciled_ambient_dbfs` lets the climb's own
+   readings put the floor back down when they contradict it, and the pass
+   publishes both numbers rather than rewriting what it measured.
+4. **What the refusal path saw.** Every settle window leaves a
+   :class:`_WindowTrace`, so a sample-domain stop publishes the window it
+   abandoned — sample count, min/median/max dB SPL, and the sample that tripped
+   with its offset from the volume step — on the receipt, the event line, and
+   the operator's own terminal, with the whole per-sample series one DEBUG line
+   behind ``--verbose``. Without it, a stop reports a slug and a number that
+   cannot be told apart from a level that rose and stayed.
 
 **No sample is discarded for being quiet, so the climb can never stall.** A
 reading is the median of every finite sample in its window. A window with
@@ -194,6 +205,15 @@ MAX_MISSED_FULL_STEPS = 2
 # Commanded volumes closer together than this are the same volume: the step
 # arithmetic is dB and the fader is not infinitely resolved.
 STEP_EPSILON_DB = 0.05
+
+# How many samples of ONE settle window are retained for its trace. A window is
+# MIC_SETTLE_S of drain plus MIC_SETTLE_S of median, and the wired meter
+# delivers one sample per 2048-frame ALSA period (~42.7 ms at 48 kHz), so a
+# production window holds about 24. This bounds a sample source that delivers
+# faster than a sound card can, so neither the retained list nor the single
+# DEBUG line built from it can grow without limit. The sample that STOPPED a
+# window is recorded outside the cap, so truncation can never lose it.
+WINDOW_TRACE_MAX_SAMPLES = 256
 
 # Whole-operation watchdog slack, on top of the pass's own honestly-priced
 # worst case (see :func:`_watchdog_seconds`). A backstop against a wedged
@@ -324,6 +344,99 @@ SampleSource = Callable[[], Awaitable[list[LevelSample]]]
 
 
 @dataclass(frozen=True)
+class _WindowTrace:
+    """What one settle window actually heard, sample by sample.
+
+    The refusal path's discriminator, and the reason it exists: before it, an
+    aborted window's sample count was computed and then DROPPED, and no
+    per-sample SPL was written anywhere — so nothing the pass emitted could
+    separate "one tail sample crossed the stop" from "the level rose and stayed
+    there". On jts3 (2026-08-23) two 75 dB SPL runs refused on a ~+6.5-7 dB
+    excursion appearing ~0.95 s after a volume step, against settled medians of
+    64.6 and 64.3 dB SPL, and the mechanism could not be located from any
+    artifact the build produced.
+
+    ``samples`` is ``(offset_s, db_spl)`` per finite sample, offset from the
+    moment the settle began — which, for a climb window, is the moment the
+    volume step was commanded. That offset is read from the pass's OWN injected
+    clock when the sample is processed, so it lags capture by at most one drain
+    interval plus one chunk; this pass runs on one clock (see
+    :data:`MIC_SETTLE_S`) and a second time base carried on the sample would not
+    survive the fake clock the tests inject.
+
+    ``seen`` is the true finite-sample count and exceeds ``len(samples)`` only
+    when :data:`WINDOW_TRACE_MAX_SAMPLES` truncated the retained series.
+    ``trip`` is the sample that STOPPED the window, recorded outside that cap;
+    it is ``None`` for a window that ended on its own deadline and for a clipped
+    capture, whose level is meaningless by definition.
+    """
+
+    samples: tuple[tuple[float, float], ...]
+    seen: int
+    trip: tuple[float, float] | None = None
+
+    def series(self) -> str:
+        """The retained samples as one ``offset:dB SPL`` line."""
+        return " ".join(f"{at:.3f}:{level:.1f}" for at, level in self.samples)
+
+    def summary(self) -> dict[str, Any]:
+        """This window's facts, for the refusal receipt and its event line.
+
+        The PRIOR window's settled median is deliberately not here: the receipt
+        already owns it as ``ramp.steps[-1]``, and a second copy beside it would
+        be a second writer of one fact. The refusal's own prose and event line
+        carry it because neither of those has the steps array to read.
+
+        ``retained`` is what min/median/max were computed over. It equals
+        ``samples`` unless the cap truncated the series, and it is published
+        rather than implied so a truncated window cannot read as a whole one —
+        the trip is recorded outside the cap, so under truncation
+        ``trip_db_spl`` can legitimately exceed ``max_db_spl``.
+        """
+        levels = [level for _at, level in self.samples]
+        return {
+            "samples": self.seen,
+            "retained": len(self.samples),
+            "min_db_spl": round(min(levels), 2) if levels else None,
+            "median_db_spl": round(statistics.median(levels), 2) if levels else None,
+            "max_db_spl": round(max(levels), 2) if levels else None,
+            "trip_db_spl": None if self.trip is None else round(self.trip[1], 2),
+            "trip_offset_s": None if self.trip is None else round(self.trip[0], 3),
+        }
+
+
+def _window_event_fields(summary: dict[str, Any]) -> dict[str, Any]:
+    """An aborted window's facts as ``window_*`` fields on a refusal event.
+
+    One owner of that prefix, so the journal's vocabulary and the receipt's
+    ``ramp.window`` object cannot drift apart into two names for one number.
+    """
+    return {f"window_{key}": value for key, value in summary.items()}
+
+
+def _window_phrase(summary: dict[str, Any]) -> str:
+    """One sentence of an aborted window, for the operator's own terminal.
+
+    Empty for a window that saw no finite sample: the refusal that produces one
+    (:data:`REFUSE_MIC_FEED_LOST`) already says exactly that in words, and
+    "saw 0 samples" beside it is the same fact twice.
+    """
+    if not summary["samples"] or summary["max_db_spl"] is None:
+        return ""
+    phrase = (
+        f"the window it stopped in saw {summary['samples']} samples spanning "
+        f"{summary['min_db_spl']:.1f}-{summary['max_db_spl']:.1f} dB SPL, "
+        f"median {summary['median_db_spl']:.1f}"
+    )
+    if summary["trip_db_spl"] is not None:
+        phrase += (
+            f", and stopped on the {summary['trip_db_spl']:.1f} dB SPL sample "
+            f"{summary['trip_offset_s']:.3f} s in"
+        )
+    return phrase
+
+
+@dataclass(frozen=True)
 class _Reading:
     """One settled level reading, or the guard that stopped it mid-window.
 
@@ -331,10 +444,16 @@ class _Reading:
     is dropped for being quiet, because "the speaker is still under the room" is
     evidence the step arithmetic uses. ``None`` means the mic delivered nothing
     finite at all, which is a lost feed rather than a quiet room.
+
+    ``samples`` counts the finite samples that reached the MEDIAN — the drain's
+    are excluded, which is what the converged receipt's ``steps[].samples`` has
+    always meant. ``trace`` is the whole window, drain included, and is the only
+    place the drain's samples survive.
     """
 
     rms_dbfs: float | None
     samples: int
+    trace: _WindowTrace
     refusal: str | None = None
     detail: str | None = None
 
@@ -346,6 +465,8 @@ async def _settle_reading(
     spl_ceiling_db_spl: float,
     clock: Callable[[], float],
     sleep: Callable[[float], Awaitable[None]],
+    session_id: str,
+    window: str,
     window_s: float = MIC_SETTLE_S,
     latency_s: float = MIC_SETTLE_S,
 ) -> _Reading:
@@ -356,39 +477,84 @@ async def _settle_reading(
     meaningless) and a reading above the profile's commissioning SPL stop (the
     hard-stop list's measured ceiling). Both are checked before the median so
     the pass cannot sit at an over-ceiling level for the rest of a window.
+
+    Every window — the ambient one and every climb one, stopped or not — leaves
+    a :class:`_WindowTrace` on the reading and emits its per-sample series as
+    ONE DEBUG line (``event=active_speaker.seat_level_window_samples``, one line
+    per window rather than one per sample). ``window`` names which window that
+    line describes: ``"ambient"``, or the commanded volume the climb was sitting
+    at. The line is built only when DEBUG is actually enabled, so an ordinary
+    run pays nothing for it.
     """
     readings: list[float] = []
-    deadline = clock() + float(latency_s) + float(window_s)
-    window_opens = clock() + float(latency_s)
-    while clock() < deadline:
-        for sample in await next_samples():
-            if sample.clip:
-                return _Reading(
-                    rms_dbfs=None,
-                    samples=len(readings),
-                    refusal=REFUSE_MIC_CLIPPING,
-                    detail="the capture clipped; no level can be read from it",
-                )
-            if not math.isfinite(sample.rms_dbfs):
-                continue
-            observed_db_spl = sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
-            if observed_db_spl > spl_ceiling_db_spl:
-                return _Reading(
-                    rms_dbfs=None,
-                    samples=len(readings),
-                    refusal=REFUSE_SPL_CEILING_EXCEEDED,
-                    detail=(
-                        f"measured {observed_db_spl:.1f} dB SPL, above the "
-                        f"profile's commissioning stop "
-                        f"{spl_ceiling_db_spl:.1f} dB SPL"
-                    ),
-                )
-            if clock() >= window_opens:
-                readings.append(sample.rms_dbfs)
-        await sleep(0.05)
-    if not readings:
-        return _Reading(rms_dbfs=None, samples=0, refusal=REFUSE_MIC_FEED_LOST)
-    return _Reading(rms_dbfs=statistics.median(readings), samples=len(readings))
+    trace: list[tuple[float, float]] = []
+    trip: tuple[float, float] | None = None
+    seen = 0
+    started = clock()
+    deadline = started + float(latency_s) + float(window_s)
+
+    def _trace() -> _WindowTrace:
+        return _WindowTrace(samples=tuple(trace), seen=seen, trip=trip)
+
+    try:
+        while clock() < deadline:
+            for sample in await next_samples():
+                if sample.clip:
+                    return _Reading(
+                        rms_dbfs=None,
+                        samples=len(readings),
+                        trace=_trace(),
+                        refusal=REFUSE_MIC_CLIPPING,
+                        detail="the capture clipped; no level can be read from it",
+                    )
+                if not math.isfinite(sample.rms_dbfs):
+                    continue
+                observed_db_spl = sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
+                at = clock() - started
+                seen += 1
+                if len(trace) < WINDOW_TRACE_MAX_SAMPLES:
+                    trace.append((at, observed_db_spl))
+                if observed_db_spl > spl_ceiling_db_spl:
+                    trip = (at, observed_db_spl)
+                    return _Reading(
+                        rms_dbfs=None,
+                        samples=len(readings),
+                        trace=_trace(),
+                        refusal=REFUSE_SPL_CEILING_EXCEEDED,
+                        detail=(
+                            f"measured {observed_db_spl:.1f} dB SPL, above the "
+                            f"profile's commissioning stop "
+                            f"{spl_ceiling_db_spl:.1f} dB SPL"
+                        ),
+                    )
+                if at >= float(latency_s):
+                    readings.append(sample.rms_dbfs)
+            await sleep(0.05)
+        if not readings:
+            return _Reading(
+                rms_dbfs=None,
+                samples=0,
+                trace=_trace(),
+                refusal=REFUSE_MIC_FEED_LOST,
+            )
+        return _Reading(
+            rms_dbfs=statistics.median(readings),
+            samples=len(readings),
+            trace=_trace(),
+        )
+    finally:
+        if logger.isEnabledFor(logging.DEBUG):
+            recorded = _trace()
+            log_event(
+                logger,
+                "active_speaker.seat_level_window_samples",
+                level=logging.DEBUG,
+                session=session_id,
+                window=window,
+                samples=str(recorded.seen),
+                retained=str(len(recorded.samples)),
+                db_spl=recorded.series(),
+            )
 
 
 def bite_db(*, start_db: float, ceiling_db: float) -> float:
@@ -439,6 +605,43 @@ def mic_is_not_observing(
     on-metal dead-mic run is on the bench checklist; these numbers are a model.
     """
     return max_rise_db < min_rise_db and at_ceiling
+
+
+def reconciled_ambient_dbfs(
+    *, ambient_dbfs: float, quietest_reading_dbfs: float
+) -> float:
+    """The room floor the rise gate uses: the quietest level this mic reported.
+
+    The ambient window is ONE median of ONE half-second, taken once before the
+    tone, and it is then the denominator of every rise the pass computes. So a
+    transient inside that half-second becomes "the room" for the whole run. On
+    jts3 (2026-08-23) a pass measured ``ambient_db_spl=57.18`` and published
+    rises of ``-7.0, -6.3, -3.7`` — tone readings BELOW the measured room — while
+    its own -50.00 dB reading (50.21 dB SPL) and the previous pass's (50.59)
+    put the real floor near 49.7. ``required_rise_db`` gates trust on
+    ``observed - ambient``, so an inflated floor silently disqualifies good
+    readings.
+
+    The reconciliation is the physics: the tone is PLAYING, so a climb reading is
+    the room plus the speaker and cannot be quieter than the room. A reading
+    below the measured ambient is therefore proof the ambient window over-read,
+    from the same instrument seconds later — and the floor moves down to it.
+
+    **Why this cannot weaken the guard it feeds.** The failure
+    :func:`mic_is_not_observing` exists for is a mic that delivers samples which
+    never respond to the speaker; it reports a CONSTANT, so its ambient reading
+    IS its signal reading and this ``min`` returns the ambient unchanged. The
+    correction is structurally inert on the exact failure mode the rise gate
+    guards, and bounded everywhere else by the quietest level the mic actually
+    reported during the pass.
+
+    Only the floor is reconciled. The measured ambient is still published as
+    measured (``ramp.ambient_db_spl``), beside the floor that was used
+    (``ramp.ambient_effective_db_spl``) and whether they differ
+    (``ramp.ambient_corrected``) — the pass discloses the correction rather than
+    quietly rewriting what it measured.
+    """
+    return min(float(ambient_dbfs), float(quietest_reading_dbfs))
 
 
 def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
@@ -646,9 +849,13 @@ async def run_seat_level_ramp(
             spl_ceiling_db_spl=spl_ceiling_db_spl,
             clock=clock,
             sleep=sleep,
+            session_id=session_id,
+            window="ambient",
         )
         if ambient.rms_dbfs is None:
             reason = ambient.refusal or REFUSE_MIC_FEED_LOST
+            summary = ambient.trace.summary()
+            phrase = _window_phrase(summary)
             detail = ambient.detail or (
                 "the microphone delivered no finite sample before the tone"
             )
@@ -659,8 +866,13 @@ async def run_seat_level_ramp(
                 session=session_id,
                 reason=reason,
                 detail=detail,
+                **_window_event_fields(summary),
             )
-            return SeatLevelResult(status="refused", reason=reason, detail=detail)
+            return SeatLevelResult(
+                status="refused",
+                reason=reason,
+                detail=detail if not phrase else f"{detail} ({phrase})",
+            )
         ambient_dbfs = ambient.rms_dbfs
         ambient_db_spl = sensitivity.db_spl_from_dbfs(ambient_dbfs)
         start_db = SEAT_LEVEL_START_DB
@@ -904,6 +1116,9 @@ async def _walk_to_the_band(
     last_step_was_full = False
     previous: tuple[float, float] | None = None
     slope_db_per_db: float | None = None
+    # The floor every rise is measured against. It starts as the ambient window
+    # read it and can only ever move DOWN -- see `_reconciled_ambient_dbfs`.
+    effective_ambient_dbfs = ambient_dbfs
     # Non-zero by construction: a span that would make the bite zero is a
     # ceiling at or below the start, which REFUSE_VOLUME_CEILING_TOO_LOW already
     # refused before the tone started.
@@ -912,14 +1127,20 @@ async def _walk_to_the_band(
         max(0.0, ceiling_db - start_db) / bite
     ) + MAX_MISSED_FULL_STEPS
 
-    def telemetry(final_volume_db: float) -> dict[str, Any]:
-        return {
+    def telemetry(
+        final_volume_db: float, *, window: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "start_db": round(start_db, 2),
             "ceiling_db": round(ceiling_db, 2),
             "bite_db": round(bite, 2),
             "bite_fraction": BITE_FRACTION,
             "ambient_dbfs": round(ambient_dbfs, 2),
             "ambient_db_spl": round(ambient_db_spl, 2),
+            "ambient_effective_db_spl": round(
+                sensitivity.db_spl_from_dbfs(effective_ambient_dbfs), 2
+            ),
+            "ambient_corrected": effective_ambient_dbfs < ambient_dbfs,
             "required_rise_db": round(min_rise_db, 2),
             "watchdog_s": round(watchdog_s, 1),
             "final_volume_db": round(final_volume_db, 2),
@@ -928,21 +1149,53 @@ async def _walk_to_the_band(
             ),
             "steps": steps,
         }
+        if window is not None:
+            payload["window"] = window
+        return payload
 
-    def refuse(reason: str, detail: str, **evidence: Any) -> SeatLevelResult:
+    def refuse(
+        reason: str,
+        detail: str,
+        *,
+        trace: _WindowTrace | None = None,
+        **evidence: Any,
+    ) -> SeatLevelResult:
         """Log the refusal and hand the operator the same facts on stdout.
 
         Every detail closes with where the ramp stopped, the headroom ceiling it
         stopped against, and the level that produced (#2910): an operator reading
         a refusal is usually not reading the journal, and a bare slug is
-        unactionable without those three numbers.
+        unactionable without those three numbers. That level is the PRIOR
+        window's settled median, so the prose names the volume it was taken at —
+        without it the sentence reads as if the ramp had settled at the volume it
+        stopped on, which is the one thing a sample-domain stop means it did not.
+
+        ``trace`` is the window a sample-domain stop abandoned. Its facts ride
+        the receipt as ``ramp.window``, the event line as ``window_*``, and the
+        operator's own prose, because separating "one tail sample crossed" from
+        "the level rose and stayed" needs all three of those readers to have it.
         """
         last = steps[-1] if steps else None
         stopped = (
             f"stopped at {volume_db:.2f} dB against the {ceiling_db:.2f} dB "
             "headroom ceiling"
-            + (f", reading {last['observed_db_spl']:.1f} dB SPL" if last else "")
+            + (
+                f", reading {last['observed_db_spl']:.1f} dB SPL at "
+                f"{last['volume_db']:.2f} dB"
+                if last
+                else ""
+            )
         )
+        summary = None if trace is None else trace.summary()
+        phrase = "" if summary is None else _window_phrase(summary)
+        window_fields: dict[str, Any] = {}
+        if summary is not None:
+            window_fields.update(_window_event_fields(summary))
+            # Only beside a window: this is the number the window has to be read
+            # AGAINST, and on any other refusal the prose already carries it.
+            if last is not None:
+                window_fields["prior_db_spl"] = f"{last['observed_db_spl']:.1f}"
+                window_fields["prior_volume_db"] = f"{last['volume_db']:.2f}"
         log_event(
             logger,
             "active_speaker.seat_level_refused",
@@ -953,12 +1206,13 @@ async def _walk_to_the_band(
             ceiling_db=f"{ceiling_db:.2f}",
             readings=str(len(steps)),
             **evidence,
+            **window_fields,
         )
         return SeatLevelResult(
             status="refused",
             reason=reason,
-            detail=f"{detail} ({stopped})",
-            ramp=telemetry(volume_db),
+            detail=f"{detail} ({stopped}{'' if not phrase else f'; {phrase}'})",
+            ramp=telemetry(volume_db, window=summary),
         )
 
     tone = asyncio.ensure_future(play_continuous_tone())
@@ -970,15 +1224,32 @@ async def _walk_to_the_band(
                 spl_ceiling_db_spl=spl_ceiling_db_spl,
                 clock=clock,
                 sleep=sleep,
+                session_id=session_id,
+                window=f"{volume_db:.2f}",
             )
             if reading.rms_dbfs is None:
                 return refuse(
                     reading.refusal or REFUSE_MIC_FEED_LOST,
                     reading.detail
                     or "the microphone stopped delivering finite samples",
+                    trace=reading.trace,
                 )
             observed_db_spl = sensitivity.db_spl_from_dbfs(reading.rms_dbfs)
-            rise_db = reading.rms_dbfs - ambient_dbfs
+            reconciled = reconciled_ambient_dbfs(
+                ambient_dbfs=effective_ambient_dbfs,
+                quietest_reading_dbfs=reading.rms_dbfs,
+            )
+            if reconciled < effective_ambient_dbfs:
+                effective_ambient_dbfs = reconciled
+                log_event(
+                    logger,
+                    "active_speaker.seat_level_ambient_corrected",
+                    session=session_id,
+                    at_db=f"{volume_db:.2f}",
+                    measured_ambient_db_spl=f"{ambient_db_spl:.2f}",
+                    effective_ambient_db_spl=f"{observed_db_spl:.2f}",
+                )
+            rise_db = reading.rms_dbfs - effective_ambient_dbfs
             max_rise_db = max(max_rise_db, rise_db)
             gap_db = target.target_db_spl - observed_db_spl
             if previous is not None:

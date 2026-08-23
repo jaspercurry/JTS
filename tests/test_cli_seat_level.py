@@ -756,6 +756,192 @@ def test_the_measured_SPL_stop_still_rejects_a_target_above_the_profile_ceiling(
     SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5).validate(ceiling_db_spl=85.0)
 
 
+def _stub_a_ramp_result(monkeypatch, tmp_path, result):
+    """Everything between ``main()`` and the ramp, stubbed to a fixed outcome.
+
+    The ramp's own behaviour is covered in
+    ``tests/test_active_speaker_seat_level.py``; what is under test here is
+    whether the CLI actually SHOWS what the ramp published.
+    """
+    stimulus = _stereo_wav(tmp_path / "check.wav", peak_int16=32767)
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+
+    async def _fake_ramp(**_kwargs):
+        return result
+
+    monkeypatch.setattr(seat_level, "run_seat_level_ramp", _fake_ramp)
+    monkeypatch.setattr(seat_level, "_derive_bounds", lambda args, stim: (0.0, 80.0))
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda: SimpleNamespace(pcm="hw:CARD=UMIK2,DEV=0"),
+    )
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_level_meter.WiredLevelMeter",
+        lambda *a, **k: SimpleNamespace(
+            start=lambda **kw: None, drain=lambda: [], stop=lambda: None
+        ),
+    )
+    monkeypatch.setattr(
+        "jasper.camilla.primary_controller",
+        lambda: SimpleNamespace(get_volume_db=None, set_volume_db=None),
+    )
+    return [str(stimulus), str(cal)]
+
+
+def test_a_refusal_prints_the_window_it_stopped_in(tmp_path, monkeypatch, capsys):
+    """The operator's own terminal carries the discriminator, not just --json.
+
+    jts3, 2026-08-23: two 75 dB SPL runs refused on a sample measuring 80.5 /
+    80.9 dB SPL, and the line an operator read said only that -- with the prior
+    settled median (64.6) beside it, and nothing at all about the window the
+    stop abandoned. The two readings that separate "one tail sample crossed"
+    from "the level rose and stayed" are the window's median and its max.
+    """
+    from jasper.active_speaker.seat_level_ramp import (
+        REFUSE_SPL_CEILING_EXCEEDED,
+        SeatLevelResult,
+    )
+
+    stimulus, cal = _stub_a_ramp_result(
+        monkeypatch,
+        tmp_path,
+        SeatLevelResult(
+            status="refused",
+            reason=REFUSE_SPL_CEILING_EXCEEDED,
+            detail=(
+                "measured 80.5 dB SPL, above the profile's commissioning stop "
+                "80.0 dB SPL (stopped at -12.50 dB against the 0.00 dB headroom "
+                "ceiling, reading 64.6 dB SPL at -20.00 dB; the window it "
+                "stopped in saw 20 samples spanning 74.0-80.5 dB SPL, median "
+                "74.0, and stopped on the 80.5 dB SPL sample 0.950 s in)"
+            ),
+            restored=True,
+            ramp={"ambient_corrected": False},
+        ),
+    )
+
+    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
+    err = capsys.readouterr().err
+
+    assert code == 1
+    assert "refused (spl_ceiling_exceeded)" in err
+    assert "the window it stopped in saw 20 samples" in err
+    assert "median 74.0" in err
+    assert "80.5 dB SPL sample 0.950 s in" in err
+    assert "reading 64.6 dB SPL at -20.00 dB" in err
+
+
+def test_a_corrected_ambient_floor_is_disclosed_on_the_line(
+    tmp_path, monkeypatch, capsys
+):
+    """A substituted room floor is stated, never applied invisibly.
+
+    The rise gate reads ``observed - ambient``, so which floor was used decides
+    which readings the pass trusted. Run 87 on jts3 measured 57.18 dB SPL of
+    "room" and then published three negative rises against it.
+    """
+    from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+    stimulus, cal = _stub_a_ramp_result(
+        monkeypatch,
+        tmp_path,
+        SeatLevelResult(
+            status="converged",
+            reference_volume_db=-13.69,
+            measured_db_spl=72.63,
+            restored=True,
+            ramp={
+                "ambient_db_spl": 57.18,
+                "ambient_effective_db_spl": 50.21,
+                "ambient_corrected": True,
+            },
+        ),
+    )
+
+    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "converged: reference -13.69 dB measured 72.6 dB SPL" in out
+    assert "The ambient window read 57.2 dB SPL" in out
+    assert "50.2 dB SPL was used as the room floor" in out
+
+
+def test_an_honest_ambient_floor_adds_nothing_to_the_line(
+    tmp_path, monkeypatch, capsys
+):
+    """The control: a pass that needed no correction says nothing about one."""
+    from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+    stimulus, cal = _stub_a_ramp_result(
+        monkeypatch,
+        tmp_path,
+        SeatLevelResult(
+            status="converged",
+            reference_volume_db=-16.97,
+            measured_db_spl=69.63,
+            restored=True,
+            ramp={
+                "ambient_db_spl": 49.73,
+                "ambient_effective_db_spl": 49.73,
+                "ambient_corrected": False,
+            },
+        ),
+    )
+
+    code = seat_level.main(["--stimulus-wav", stimulus, "--calibration-file", cal])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "ambient window" not in out
+    assert out.strip().endswith("69.6 dB SPL")
+
+
+@pytest.mark.parametrize(
+    "argv_extra, expected_level",
+    [
+        pytest.param([], "INFO", id="the_receipt_still_reaches_the_journal"),
+        pytest.param(["--verbose"], "DEBUG", id="verbose_unlocks_the_sample_series"),
+    ],
+)
+def test_verbose_lowers_the_log_floor_without_losing_the_receipt(
+    tmp_path, monkeypatch, argv_extra, expected_level
+):
+    """``--verbose`` is the reader for the per-sample series.
+
+    The series is a DEBUG line, so without a way to turn DEBUG on it is a write
+    with no reader. And the floor without the flag stays INFO rather than
+    ``_logging.configure_verbose_logging``'s WARNING, which is the level that
+    would discard ``event=active_speaker.unsegmented_ceiling_bound``.
+    """
+    import logging
+
+    from jasper.active_speaker.seat_level_ramp import SeatLevelResult
+
+    seen: dict = {}
+
+    def _basic_config(**kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(logging, "basicConfig", _basic_config)
+    stimulus, cal = _stub_a_ramp_result(
+        monkeypatch,
+        tmp_path,
+        SeatLevelResult(
+            status="converged",
+            reference_volume_db=-16.97,
+            measured_db_spl=69.63,
+            restored=True,
+        ),
+    )
+
+    seat_level.main(
+        ["--stimulus-wav", stimulus, "--calibration-file", cal, *argv_extra]
+    )
+    assert logging.getLevelName(seen["level"]) == expected_level
+
+
 def test_a_ceiling_above_digital_zero_is_still_clamped_to_the_0_dB_rail():
     """``volume_limit 0.0`` is untouched, and the ramp is where it is enforced.
 
