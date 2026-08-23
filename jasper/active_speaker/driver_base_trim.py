@@ -202,6 +202,13 @@ def banked_base_trims(
     silently ignored looks exactly like a speaker that was never measured, and
     the operator would have no way to tell the two apart.
 
+    A caller that hands over NO declaration gets
+    :data:`STATUS_DECLARATION_CHANGED` too, sharing the status because it earns
+    the same answer: a record that cannot be keyed to the declaration in front
+    of us is not evidence about this speaker. Today that caller is
+    ``baseline_profile._estimator_cross_check``, which discards this meta, so
+    the shared word reaches no operator-facing string.
+
     The trims are re-validated against the writer's own envelope on the way out
     (finite, attenuation-only, at or above
     :data:`~jasper.active_speaker.level_trim.MAX_ATTENUATION_DB`), so a corrupt
