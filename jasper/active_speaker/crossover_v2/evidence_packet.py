@@ -568,8 +568,9 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     ``verify.claims``, ``pre_apply_profile.blend_correction``,
     ``pre_apply_profile.linearization`` (through
     :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
-    which reduces but does not screen, so a non-finite gain reaches the packet
-    unguarded) and ``evidence.calibration`` — kill the packet; and
+    which selects the authoritative copy and does not screen, so a non-finite
+    gain reaches the packet unguarded) and ``evidence.calibration`` — kill the
+    packet; and
     :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
     ``driver_safety_profile.confirmation`` is copied whole and does the same.
     The draft's passbands do NOT, because
