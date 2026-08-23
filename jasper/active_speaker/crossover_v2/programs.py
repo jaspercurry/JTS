@@ -143,9 +143,11 @@ def courtesy_prelude_for_phase(phase: str) -> bool:
       the warning now sits;
     * every capture after the first is begun deliberately — a hand-walked tier
       taps "I'm there — play the tone" at each position (``_entry_advance``'s
-      ``AUTO_ADVANCE_TAP``), and an externally positioned one is released by its
-      driver through the position gate — inside a session the room has already
-      been told is running.
+      ``AUTO_ADVANCE_TAP``), an externally positioned one is released by its
+      driver through the position gate, and a hand-walked round on the WIRED
+      source (#2879) does BOTH: it keeps the tap and its begins are held by
+      that same gate until the person releases them — inside a session the
+      room has already been told is running.
 
     A repeat therefore carries no information the household does not have, and
     it costs 3.6 s (0.6 s of beeps + a 3.0 s settle) of held-still silence each

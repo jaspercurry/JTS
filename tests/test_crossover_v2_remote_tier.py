@@ -21,6 +21,8 @@ separate concerns:
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import io
 import json
 import logging
@@ -79,9 +81,13 @@ from jasper.web.correction_crossover_v2 import (
 
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
+    CLOUD_VERIFY_INDEXES,
     FC_HZ,
+    STAGE2_MAP,
+    VERIFY_INDEX,
     FakeSeams,
     _cloud_conductor,
+    _conductor,
     _lock,
     _run_phase,
     _walk,
@@ -109,19 +115,32 @@ STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
 STAGE2_ANGLES = (0, -7, 7, -22, 22)
 
 
-def _stage1(tier):
+def _stage1_of(shape):
+    """The shipped stage-1 plan for a RESOLVED shape — the flags are the
+    shipped ones so a plan built here is the plan a session runs."""
     return build_v2_capture_plan(
         flow._DISPLAY_ROLES_BANDS,
         flow._DISPLAY_FC_HZ,
-        plan_shape=resolve_plan_shape(tier),
+        plan_shape=shape,
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         include_lateral=False,
         include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
 
+def _stage1(tier):
+    return _stage1_of(resolve_plan_shape(tier))
+
+
+def _stage2_of(shape):
+    """The shipped stage-2 plan for a RESOLVED shape — the twin of
+    :func:`_stage1_of`, and the only builder that reaches
+    ``_positioned_prompt`` in a shipped shape (stage 1's cloud group is off)."""
+    return build_v2_verify_capture_plan(FC_HZ, plan_shape=shape)
+
+
 def _stage2(tier):
-    return build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape(tier))
+    return _stage2_of(resolve_plan_shape(tier))
 
 
 def _entry(degrees, role=POSITION_ROLE_ONAX):
@@ -593,6 +612,45 @@ def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
     assert spec.message != REASON_REGISTRY[POSITION_HOLD_EXPIRED_CODE].message
 
 
+#: Words that name ONE of the two movers. The gate's own copy may not use any
+#: of them: a hand-released round and an arm round reach the same three
+#: sentences, so a sentence that names either mover is false to the other half
+#: of its readership (#2879 round-3 nit 4). Matched on word boundaries so
+#: ``arrives`` and ``warm`` are not false hits, and deliberately SMALL — it is
+#: the minimal set the three comments asserting this invariant actually name
+#: (``refusal_copy``'s "the copy below therefore names neither mover", the
+#: budget constant's "covers BOTH movers", and ``PositionGate``'s "never asks
+#: WHO"), not a general banned-words list.
+_MOVER_WORDS = ("positioner", "positioners", "driver", "drivers", "arm", "arms")
+
+
+def test_the_gates_three_refusals_name_neither_mover():
+    """The invariant three comments assert and nothing pinned.
+
+    Weakening this is a one-word edit — the copy this replaced said "once the
+    positioner is answering again" — and it fails on no test, reaches no
+    screen a suite renders, and is only wrong for the half of the readership
+    that is a person holding a microphone.
+
+    Read off ``POSITION_GATE_TERMINAL_CODES`` rather than a hand-listed triple,
+    so a fourth gate refusal inherits the rule the day it is written.
+    """
+    import re
+
+    from jasper.web.correction_crossover_v2 import POSITION_GATE_TERMINAL_CODES
+
+    assert POSITION_GATE_TERMINAL_CODES, "the gate has terminal codes to check"
+    pattern = re.compile(r"\b(" + "|".join(_MOVER_WORDS) + r")\b", re.IGNORECASE)
+    for code in sorted(POSITION_GATE_TERMINAL_CODES):
+        spec = REASON_REGISTRY[code]
+        for slot, text in (("message", spec.message), ("banner", spec.banner)):
+            found = pattern.findall(text or "")
+            assert not found, f"{code}.{slot} names a mover: {found} in {text!r}"
+        # ...and it still says what it is about, so "names no mover" cannot be
+        # satisfied by saying nothing.
+        assert "microphone" in spec.message
+
+
 def test_an_entry_with_no_target_is_refused_not_measured():
     """A remote plan emits a target on EVERY entry, so a missing one means the
     plan and the gate disagree about the session's shape."""
@@ -708,9 +766,87 @@ def test_a_geometry_locked_remote_group_refuses_instead_of_prompting(monkeypatch
     }
 
 
+def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch, caplog):
+    """S4a's predicate is the GATE, not the tier (#2879 round-2 SF2).
+
+    Driven on the shape the finding names: a hand-walked Full **stage 2**,
+    gated because it opened on the wired source, walking its ``cloud_verify``
+    group into a lock. The person could perfectly well walk to 75 cm — what
+    they could not do is be told two places at once, which is what prompting
+    here produces: the retry re-authorizes the SAME plan entry, so the position
+    gate goes on publishing that entry's original bearing while the screen
+    names the wider spot.
+
+    It also covers the ARM's stage 2, which reached this branch unrefused
+    before the predicate moved: ``prepare_v2_verify`` constructs its session
+    with no ``tier`` at all, so the old ``tier_is_externally_positioned`` read
+    answered False for every stage-2 group including remote's.
+    """
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    held = _conductor(
+        fakes,
+        tier=TIER_FULL,
+        positions_gated=True,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
+        applied=True,
+    )
+    attempt = _walk(held, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
+    last = CLOUD_VERIFY_INDEXES[-1]
+    _lock(monkeypatch)
+    caplog.set_level(logging.WARNING, logger=flow.__name__)
+
+    verdict = _run_phase(held, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_GEOMETRY_RETAKE_UNREACHABLE
+    # The journal names the PREDICATE, not just the tier: a stage-2 session is
+    # constructed without one, so `tier=` alone would say nothing about why
+    # this refused.
+    refused = [
+        r.getMessage() for r in caplog.records
+        if "crossover_v2_geometry_retake_unreachable" in r.getMessage()
+    ]
+    assert len(refused) == 1, refused
+    assert "gated=true" in refused[0]
+    # ONE surface owns the answer: no prompt is handed back for a spot the gate
+    # would go on contradicting.
+    assert not verdict.get("prompt")
+    # Nothing was spent and nothing was dropped: this is not a retry.
+    assert last in {
+        int(pid.rsplit("_", 1)[1])
+        for pid in held.group_positions(flow.PHASE_CLOUD_VERIFY)
+    }
+
+
+def test_the_same_stage_2_group_still_prompts_when_nothing_holds_its_begins(
+    monkeypatch,
+):
+    """The control for the test above, ONE field apart: the ordinary phone
+    round walks the identical stage-2 group with no gate, so there is no second
+    answer to contradict and the household IS asked for the wider spot."""
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    ungated = _conductor(
+        fakes,
+        tier=TIER_FULL,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
+        applied=True,
+    )
+    attempt = _walk(ungated, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
+    last = CLOUD_VERIFY_INDEXES[-1]
+    _lock(monkeypatch)
+
+    verdict = _run_phase(ungated, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == flow.REASON_CLOUD_GEOMETRY_LOCKED
+    assert verdict["prompt"] == flow.CLOUD_GEOMETRY_RETRY_PROMPTS[0]
+
+
 def test_a_hand_walked_group_still_gets_its_wider_retake_prompt(monkeypatch):
-    """The other half of S4a: the refusal is scoped to externally positioned
-    sessions, and a household that CAN walk to 75 cm is still asked to."""
+    """The other half of S4a: the refusal is scoped to GATED sessions, and a
+    household whose begins nothing holds is still asked to walk to 75 cm."""
     fakes = FakeSeams()
     walked = _cloud_conductor(fakes, tier=TIER_FULL)
     attempt = _walk(walked, (1, 2), 1)
@@ -738,6 +874,466 @@ def test_one_predicate_answers_who_positions_the_microphone():
             resolve_plan_shape(tier).externally_positioned
             is flow.tier_is_externally_positioned(tier)
         )
+
+
+# --------------------------------------------------------------------------- #
+# the second gated shape: a person releases the holds (#2879)
+# --------------------------------------------------------------------------- #
+
+
+def _hand_released(tier=TIER_FULL):
+    """A hand-walked shape told a PERSON releases its begins — what the host
+    hands a wired round through ``_hand_released_plan_shape``."""
+    return dataclasses.replace(
+        resolve_plan_shape(tier), hand_released_positions=True,
+    )
+
+
+def test_the_two_shape_facts_are_independent():
+    """The unweld, as a truth table.
+
+    ``externally_positioned`` is the ADVANCE axis and ``positions_gated`` the
+    POSE-STATEMENT one. Three of the four combinations are real shapes; the
+    fourth — auto-advance with no gate, the countdown firing into a
+    microphone nobody promised had arrived — is unreachable by construction
+    because gating reads the advance fact as one of its own disjuncts.
+    """
+    for tier in (TIER_FULL, TIER_EXPRESS):
+        shape = resolve_plan_shape(tier)
+        assert (shape.externally_positioned, shape.positions_gated) == (
+            False, False,
+        )
+        assert (_hand_released(tier).externally_positioned,
+                _hand_released(tier).positions_gated) == (False, True)
+    remote = resolve_plan_shape(TIER_REMOTE)
+    assert (remote.externally_positioned, remote.positions_gated) == (True, True)
+    # And no shape can claim both movers at once.
+    with pytest.raises(CrossoverV2FlowError, match="external driver"):
+        dataclasses.replace(remote, hand_released_positions=True)
+
+
+def test_a_hand_released_shape_states_bearings_and_keeps_the_tap():
+    """``(degrees, tap)`` — the combination the shipped tiers could not say.
+
+    The pose statement follows the GATE (a person is given the bearing the
+    gate is waiting for, in copy and in the machine keys the gate reads), and
+    the advance policy follows the MOVER (a person is there to tap, so no
+    countdown fires while they are still walking).
+    """
+    plan = _stage1_of(_hand_released())
+    for entry in plan.entries:
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+        assert "countdown_s" not in entry.screen
+        assert POSITION_DEG_KEY in entry.screen
+        assert entry.screen[POSITION_ROLE_KEY] == POSITION_ROLE_ONAX
+    baseline, = [e for e in plan.entries if e.kind_label == "entry_baseline"]
+    assert "0°" in baseline.screen["title"]
+
+
+def test_a_hand_released_stage_2_states_its_SPOTS_as_bearings():
+    """The pose-statement axis where it is actually READ (#2879 gate S2).
+
+    ``_positioned_prompt`` is reached by exactly one shipped builder — stage
+    2's post-apply group — because stage 1's cloud group is off
+    (``STAGE1_INCLUDES_CLOUD_MEASURE``) and its lateral walk is opt-in. So a
+    stage-1-only test cannot see it, and welding that read back to
+    ``externally_positioned`` passed the entire suite while flipping a
+    household's copy to a tape-measure instruction against a gate publishing
+    degrees. This asserts the COPY, which is the half the machine keys cannot
+    stand in for: the two are the same statement in two vocabularies, and a
+    session that says one thing to a person and another to the gate is the
+    whole defect the split exists to prevent.
+    """
+    plan = _stage2_of(_hand_released())
+    prompted = [e for e in plan.entries if int(e.screen[POSITION_DEG_KEY]) != 0]
+    assert prompted, "a Full stage 2 walks prompted spots off the axis"
+    for entry in prompted:
+        degrees = int(entry.screen[POSITION_DEG_KEY])
+        side = "LEFT" if degrees < 0 else "RIGHT"
+        # The copy names the SAME bearing the gate will publish and wait for.
+        assert f"Turn the microphone to {degrees:+d}°" in entry.screen["title"]
+        assert f"{abs(degrees)}° {side} of the design axis" in entry.screen["title"]
+        # ...and it is a tap, not a countdown: a person is holding the tape.
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_TAP
+        assert "countdown_s" not in entry.screen
+    assert [int(e.screen[POSITION_DEG_KEY]) for e in plan.entries] == list(
+        STAGE2_ANGLES
+    )
+
+
+def test_a_hand_released_stage_2_anchor_reads_in_degrees_and_keeps_its_confirm():
+    """The second unpinned read: stage 2's ANCHOR copy (#2879 gate S2).
+
+    Its title/body follow the pose statement (a gated operator is given the
+    bearing) while its confirm tap follows the advance policy (only a
+    machine-advanced session has no hand to answer one). Welding the first back
+    to ``externally_positioned`` also passed the whole suite.
+    """
+    anchor = _stage2_of(_hand_released()).entries[0].screen
+    assert "design axis (0°)" in anchor["title"]
+    assert f"{flow.MARK_DISTANCE_M:g} m out" in anchor["body"]
+    # The hand keeps its confirm — byte-identical to every tap-paced shape.
+    assert anchor["confirm_title"] == "Back on the mark, holding still?"
+    # ...which the ARM still does not get, because there is no hand to answer.
+    assert "confirm_title" not in _stage2(TIER_REMOTE).entries[0].screen
+    # ...and a tap-paced shape keeps the tape-measure copy verbatim.
+    assert "Back at the mark" in _stage2(TIER_FULL).entries[0].screen["title"]
+
+
+def test_the_gate_can_read_a_hand_released_plans_own_entries():
+    """The join the split exists for: the gate refuses an entry that does not
+    say where the microphone should be (``position_target_missing``), so a
+    gated shape whose plan forgot the keys would fail every begin. It holds
+    instead, naming the bearing the person is being asked for."""
+    plan = _stage1_of(_hand_released())
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred) as caught:
+        gate.gate(1, 1, plan.entry_for_index(1))
+    assert caught.value.code == POSITION_HOLD_CODE
+    pending = gate.pending()
+    assert pending["degrees"] == 0
+    assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
+    # ...and the same release verb admits it, with the same minted payload.
+    gate.release(1)
+    gate.gate(1, 1, plan.entry_for_index(1))
+
+
+#: The arm's two SHIPPED plans, as wire bytes. Captured from the #2879 SPLIT
+#: build and then re-run against the PRE-SPLIT ``crossover_v2_flow`` (that
+#: module checked out at the merge base, this test unchanged): both digests
+#: matched, which is the tier's byte-identity promise as a measurement rather
+#: than as a claim.
+#:
+#: Deliberately NOT added to ``_GOLDEN_V2_PLAN_BYTES``: that table builds each
+#: plan from the BUILDER's defaults, and ``include_cloud_measure`` defaults True
+#: — which for remote's N=9 walks a vertical pose and makes
+#: ``position_angle_deg`` refuse before a digest exists. Remote is only
+#: constructible through the flags a session actually uses
+#: (:data:`STAGE1_INCLUDES_CLOUD_MEASURE`), so its digest belongs beside its own
+#: contract rather than in a table whose convention it cannot satisfy.
+_GOLDEN_REMOTE_PLAN_BYTES = {
+    "stage1-remote": (
+        1322,
+        "fc27865bbd695be7a4fe08611efe2c825f88820666c82fc59e1eb93176dd3b5e",
+    ),
+    "stage2-remote": (
+        1797,
+        "b2a38c46887329266142d66a18622ad581efe0edf5922e7ec04e6ba7bdccdfdc",
+    ),
+}
+
+
+def test_the_arms_shipped_plans_are_byte_identical():
+    """The tier's own promise, as bytes rather than as spot-checked fields.
+
+    ``test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate`` below
+    names the two fields the split could plausibly have disturbed; this says
+    nothing at all moved, which is the claim #2879 actually made.
+    """
+    import hashlib
+    import json
+
+    plans = {
+        "stage1-remote": _stage1(TIER_REMOTE),
+        "stage2-remote": _stage2(TIER_REMOTE),
+    }
+    assert set(plans) == set(_GOLDEN_REMOTE_PLAN_BYTES)
+    for label, plan in plans.items():
+        raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
+        actual = (len(raw), hashlib.sha256(raw).hexdigest())
+        assert actual == _GOLDEN_REMOTE_PLAN_BYTES[label], (
+            f"{label} wire bytes changed: len={actual[0]} sha256={actual[1]}"
+        )
+
+
+def test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate():
+    """The byte-identity promise, restated for the new fact: nothing about the
+    arm's plan moves. (``_GOLDEN_REMOTE_PLAN_BYTES`` proves it in hashes; this
+    says which two fields the split could plausibly have disturbed.)"""
+    plan = _stage1(TIER_REMOTE)
+    for entry in plan.entries:
+        assert entry.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
+        assert entry.screen["countdown_s"] == str(AUTO_ADVANCE_COUNTDOWN_S)
+        assert POSITION_DEG_KEY in entry.screen
+
+
+def test_the_wired_source_is_what_makes_a_hand_walked_round_gated():
+    """Who pairs the two halves: the shape knows its tier, the host knows the
+    source, and only the wired + hand-walked pair has no page tap to pace it.
+    Every other pairing is returned untouched."""
+    from jasper.web.correction_crossover_v2 import (
+        SOURCE_RELAY, SOURCE_WIRED, _hand_released_plan_shape,
+    )
+
+    full = resolve_plan_shape(TIER_FULL)
+    assert _hand_released_plan_shape(full, SOURCE_WIRED).hand_released_positions
+    assert _hand_released_plan_shape(full, SOURCE_RELAY) == full
+    remote = resolve_plan_shape(TIER_REMOTE)
+    assert _hand_released_plan_shape(remote, SOURCE_WIRED) == remote
+    # The tier-less recovery re-arm: one sweep at the mark, nowhere to walk to.
+    assert _hand_released_plan_shape(None, SOURCE_WIRED) is None
+
+
+def test_both_preparers_build_the_gate_from_the_shapes_own_answer():
+    """One question, one predicate, at BOTH construction sites — the drift
+    this pins is one stage gaining the second gated shape while the other
+    silently keeps running a hand-walked wired round with no hold at all."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    source = inspect.getsource(v2host)
+    assert source.count("PositionGate() if plan_shape.positions_gated") == 1
+    assert source.count("if plan_shape is not None and plan_shape.positions_gated") == 1
+    assert "PositionGate() if plan_shape.externally_positioned" not in source
+
+
+def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
+    caplog, monkeypatch,
+):
+    """The acceptance criterion, through the REAL preparer.
+
+    A wired round has no capture page, so nothing there taps: without a hold
+    the local runner fires every capture back to back while the household is
+    still walking. So a hand-walked shape on the wired source opens gated,
+    announces WHO releases the holds, and carries the local retake seam — and
+    the same tier on the relay opens exactly as it always has.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    prepared = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.capture_source == v2host.SOURCE_WIRED
+    assert prepared.position_gate is not None
+    assert prepared.request_retake is not None
+    assert prepared.request_complete is not None
+    opens = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+    assert len(opens) == 1, opens
+    assert f"tier={TIER_FULL}" in opens[0] and "hand_released=true" in opens[0]
+
+
+def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
+    """STAGE 2 through the real preparer (#2879 gate S2).
+
+    The gate is built at TWO construction sites, and a source pin says they
+    read the same predicate — but only a drive proves stage 2 rebinds the shape
+    off the resolved source at all. Its plan is built inside ``_open``, so a
+    rebind that landed one line too late would emit a plan whose entries the
+    gate cannot read.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    prepared = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.position_gate is not None
+    assert prepared.request_retake is not None
+    opens = [
+        r.getMessage() for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+    assert len(opens) == 1, opens
+    assert "stage=2" in opens[0] and "hand_released=true" in opens[0]
+
+
+def _opened_conductor(monkeypatch, v2host, prepared):
+    """Run a prepared session's real ``_open`` and hand back its conductor.
+
+    ``tests.test_crossover_v2_stage_bridge._open_prepared`` does this for a
+    RELAY session by stubbing the relay runner, which is also where it catches
+    the conductor. A wired session never reaches that runner (``_build_source_run``
+    routes to the wired provider instead), so the capture point here is the
+    router itself — the one seam both sources pass through.
+    """
+    captured: dict = {}
+
+    def _router(_source, conductor, **_kwargs):
+        captured["conductor"] = conductor
+
+        async def _run(_client, _pi_session):
+            return None
+
+        return _run
+
+    monkeypatch.setattr(v2host, "_build_source_run", _router)
+    prepared.open(
+        object(), "http://relay.test", "http://origin.test", "http://return.test",
+    )
+    return captured["conductor"]
+
+
+def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
+    monkeypatch,
+):
+    """The wiring the two behavioural tests above cannot see (#2879 round-2).
+
+    ``test_a_geometry_locked_hand_released_group_refuses_too`` drives a
+    conductor directly, so it proves the RULE. This proves each REAL preparer
+    hands its conductor the fact that rule reads — the gate the host builds and
+    the fact the conductor decides with come off ONE shape, or they are two
+    answers again. Stage 2 needs saying most: its ctor is handed no ``tier`` at
+    all, so before this it decided from a tier it never had. (Its argument also
+    landed one call too early during this fix round, inside ``open_stage``,
+    which every existing test tolerated because nothing opened a stage-2
+    session on this path.)
+
+    Read privately on purpose. The fact selects a refusal branch and is
+    rendered nowhere, so it has no public surface; walking a whole opened
+    stage-2 session into a geometry lock would restate the behavioural test
+    rather than pin the wiring.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (
+            v2host.SOURCE_WIRED,
+            SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
+        ),
+    )
+    stage_1 = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert stage_1.position_gate is not None
+    assert _opened_conductor(monkeypatch, v2host, stage_1)._positions_gated is True
+
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    stage_2 = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert stage_2.position_gate is not None
+    assert _opened_conductor(monkeypatch, v2host, stage_2)._positions_gated is True
+
+
+def test_a_relay_stage_2_conductor_is_told_nothing_holds_its_begins(monkeypatch):
+    """The control: the ordinary phone round is paced by its own tap, so its
+    conductor must NOT think a gate is republishing bearings behind it."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_RELAY, None),
+    )
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    prepared = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert prepared.position_gate is None
+    # The shared harness, because this one DOES reach the relay runner it
+    # stubs — and it mints no wired session, so it needs the relay stub too.
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    assert conductor._positions_gated is False
+
+
+def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatch):
+    """The one-sweep recovery re-verify has no gate and no group (#2879 gate N6).
+
+    So it reaches neither retake window, and carrying the seam would answer a
+    household's POST with ``ok: true`` and then do nothing — a signal that
+    reports success and serves nobody. The route's own 409 ("no wired
+    measurement is waiting to re-take a spot") becomes the honest answer.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+    )
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    prepared = v2host.prepare_v2_verify(
+        {}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert prepared.position_gate is None      # the recovery shape
+    assert prepared.request_retake is None
+    # ...and the completion signal is untouched: it has a real reader.
+    assert prepared.request_complete is not None
+
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:verify",
+        request_complete=prepared.request_complete,
+        request_retake=prepared.request_retake,
+    )
+    try:
+        with pytest.raises(ValueError, match="no wired measurement"):
+            correction_setup._handle_crossover_v2_retake(
+                SimpleNamespace(
+                    headers={"Content-Length": "2"}, rfile=io.BytesIO(b"{}"),
+                )
+            )
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_a_hand_walked_relay_round_still_opens_with_no_gate(caplog, monkeypatch):
+    """The control for the pin above: the SOURCE is what changed, not the tier.
+
+    A relay round is paced by the page's own tap, so it carries no gate, no
+    local completion signal, and no local retake — byte-identical to what
+    every hand-walked session has always opened with.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    caplog.set_level(logging.INFO, logger=v2host.__name__)
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_RELAY, None),
+    )
+    prepared = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+
+    assert prepared.position_gate is None
+    assert prepared.request_retake is None
+    assert prepared.request_complete is None
+    assert not [
+        r for r in caplog.records
+        if "correction.crossover_v2_remote_session_open" in r.getMessage()
+    ]
+
+
+def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
+    """±80° is the GEOMETRY's ceiling and the person's reach; ±45° is the
+    arm's own travel. A walk stated for a person is judged against the
+    person's bound, and the session that hosts it is the hand-walked one."""
+    from jasper.active_speaker import angle_capture as ac
+
+    assert ac.MOVER_MAX_ANGLE_DEG[ac.MOVER_HUMAN] == ac.MAX_ANGLE_DEG == 80
+    assert ac.MOVER_MAX_ANGLE_DEG[ac.MOVER_ARM] == ac.ARM_ENVELOPE_DEG == 45
+    reach = ac.per_driver_at([80, -80], mover=ac.MOVER_HUMAN)
+    prompts = ac.session_lateral_walk(
+        reach,
+        # The hand-released shape's OWN answer, not a literal: what makes a
+        # person's walk admissible is that a gated session still advances by
+        # tap, and a regression that gave it the countdown would refuse this
+        # walk rather than quietly measuring through it.
+        externally_positioned=_hand_released().externally_positioned,
+        base_entries=3,
+        plans_cloud_group=False,
+    )
+    assert [position_angle_deg(p) for p in prompts] == [80, -80]
+    with pytest.raises(ac.LateralWalkRefused) as caught:
+        ac.per_driver_at([46], mover=ac.MOVER_ARM)
+    assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
 
 
 # --------------------------------------------------------------------------- #
@@ -830,9 +1426,38 @@ def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
         assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
-    # A hand-walked session registers no gate at all, and the same poll must
-    # still enforce the ceiling rather than raise on the missing gate.
+    # A tap-paced session (every relay round) registers no gate at all, and
+    # the same poll must still enforce the ceiling rather than raise on the
+    # missing gate.
     setup._enforce_session_volume_ceiling(stale)
+
+
+def test_an_abandoned_hold_stops_being_the_advertised_position():
+    """A hold whose begin nobody is running any more must not be published.
+
+    ``gate`` publishes a NEW ``pending`` only when no hold is open — the
+    idempotence that lets a re-posted begin re-enter its own hold without
+    restarting the clock. So a caller that walks AWAY from a held begin (the
+    wired runner, abandoning one to re-open the previous slot as a retake) has
+    to say so, or the next begin reads as a continuation and the envelope keeps
+    naming a position nothing is measuring.
+    """
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(2, 2, _entry(22, POSITION_ROLE_OFFAX))
+    assert gate.pending()["index"] == 2
+
+    gate.abandon_hold()
+    assert gate.pending() is None
+    gate.abandon_hold()  # idempotent, and safe with nothing open
+
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(1, 3, _entry(0))
+    pending = gate.pending()
+    assert (pending["index"], pending["attempt"], pending["degrees"]) == (1, 3, 0)
+    # A release already given stays given — abandoning a hold is not a rewind.
+    gate.release(1)
+    gate.gate(1, 3, _entry(0))
 
 
 def test_the_release_route_admits_the_pending_capture():
@@ -966,7 +1591,9 @@ def test_the_release_route_is_allowlisted_and_matches_the_minted_action():
     assert "/crossover/v2/position-ready" in correction_setup._POST_ROUTES
 
 
-def test_a_hand_walked_session_registers_no_gate_at_all():
+def test_a_tap_paced_session_registers_no_gate_at_all():
+    """A session opened with no gate advertises no hold — the relay round's
+    shape, and the one a household paces with its own taps on the page."""
     from jasper.web import correction_setup
 
     correction_setup._set_relay_capture(None)

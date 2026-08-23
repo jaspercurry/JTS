@@ -456,13 +456,13 @@ def build_v2_run_and_consume(
             with stop_lock:
                 if stop_event.is_set():
                     raise CaptureStopped("capture stopped")
-            # The remote tier's POSITION GATE, ahead of the conductor and
-            # deliberately so: a hold is not an admission decision, and routing
-            # it through ``authorize_begin`` would spend ledger and stamp
-            # failure state on a capture that has not been refused anything. It
-            # raises ``CaptureBeginDeferred`` past this frame to the runner,
-            # which the conductor therefore never sees. A hand-walked session
-            # has no gate and this line is not reached.
+            # The POSITION GATE, ahead of the conductor and deliberately so: a
+            # hold is not an admission decision, and routing it through
+            # ``authorize_begin`` would spend ledger and stamp failure state on
+            # a capture not refused anything. It raises ``CaptureBeginDeferred``
+            # past this frame to the runner, which the conductor never sees. On
+            # THIS runner the gate is the remote tier's alone — the other gated
+            # shape (#2879) is WIRED-only, and a relay hand-walk keeps its tap.
             if position_gate is not None:
                 position_gate.gate(index, attempt, entry)
             conductor.authorize_begin(index, attempt, entry)

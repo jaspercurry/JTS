@@ -1080,8 +1080,14 @@ def test_a_position_hold_that_expires_is_named_not_blamed_on_the_transport():
     assert last["phase"] == "capture_refused"
     assert last["code"] == REASON_POSITION_HOLD_EXPIRED
     assert last["index"] == 1
-    # …and the copy the household reads is the named one, from the registry.
-    assert "positioner" in REASON_REGISTRY[REASON_POSITION_HOLD_EXPIRED].message
+    # …and the copy the household reads is the named one, from the registry:
+    # about the microphone's POSITION, never the transport. It names neither
+    # mover — the same sentence reaches an operator watching an arm and a
+    # household member holding the microphone (#2879) — so what is pinned here
+    # is the subject, not the word "positioner" it used to say.
+    hold_copy = REASON_REGISTRY[REASON_POSITION_HOLD_EXPIRED].message
+    assert "microphone" in hold_copy and "position" in hold_copy
+    assert hold_copy != REASON_REGISTRY[REASON_RELAY_TIMEOUT].message
 
 
 def test_abandoning_an_express_session_before_the_confirm_leaves_the_dsp_alone(

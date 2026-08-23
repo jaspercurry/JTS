@@ -697,8 +697,9 @@ def test_capture_page_auto_retake_never_answers_a_geometry_ask():
 
     * **prompted** — ``cloud_geometry_locked``'s wider-spot ask, which the
       page's filter sees; or
-    * **terminal** — ``geometry_retake_unreachable`` (a remote positioner that
-      cannot reach the pose) carries no prompt at all, and is safe only because
+    * **terminal** — ``geometry_retake_unreachable`` (any GATED session: an arm
+      that cannot reach the pose, or a held walk whose gate would go on naming
+      the old bearing) carries no prompt at all, and is safe only because
       its ``retry_budget`` of 0 puts it in ``NON_RETRIABLE_CODES``, so the page
       returns at ``verdict.terminal`` long before the auto-retake branch.
 

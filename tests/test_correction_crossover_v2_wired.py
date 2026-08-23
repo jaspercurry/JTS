@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -335,21 +337,28 @@ def test_build_source_run_gives_each_provider_its_own_extras(monkeypatch):
     monkeypatch.setattr(v2host, "build_v2_run_and_consume", _relay_builder)
     device = _device()
     complete = threading.Event()
+    retake = threading.Event()
     signal = object()
     common = dict(
         volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
         position_gate=None, evidence_refs={}, playback_started=signal,
         wired_device=device, ceiling_s=42.0, complete_event=complete,
+        retake_event=retake,
     )
     assert v2host._build_source_run(SOURCE_WIRED, "conductor", **common) == "wired-run"
     assert built["wired"]["device"] is device
     assert built["wired"]["ceiling_s"] == 42.0
     assert built["wired"]["complete_event"] is complete
+    assert built["wired"]["retake_event"] is retake
     assert "playback_started" not in built["wired"]
 
     assert v2host._build_source_run(SOURCE_RELAY, "conductor", **common) == "relay-run"
     assert built["relay"]["playback_started"] is signal
     assert "device" not in built["relay"]
+    # The relay's retake rides the phone's own begin, so the local signal is
+    # NOT one of its extras — the seam's rule that a source's choreography
+    # stays private.
+    assert "retake_event" not in built["relay"]
 
 
 # --------------------------------------------------------------------------- #
@@ -927,6 +936,362 @@ def test_cancellation_drains_the_walk_before_cleanup(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# 3b. the per-take RETAKE (#2879) — the relay's own §2.6 terms, locally
+# --------------------------------------------------------------------------- #
+
+
+class _RetakeOnHold:
+    """A gate that holds ONE begin and asks for a retake while it holds.
+
+    The wired analogue of the relay's retake window: the previous slot is
+    accepted and this one has not started, so replacing the previous take is
+    still meaningful. ``hold_index=None`` admits everything.
+    """
+
+    def __init__(self, retake_event, *, hold_index, refuse=None):
+        self._retake = retake_event
+        self._hold_index = hold_index
+        self._refuse = refuse
+        self.held = 0
+        self.abandoned = 0
+
+    def gate(self, index, attempt, entry):
+        if self._refuse is not None and (index, attempt) == self._refuse:
+            raise CaptureBeginRefused("locate_failed", "no")
+        if index == self._hold_index and self.held == 0:
+            self.held += 1
+            self._retake.set()
+            raise CaptureBeginDeferred("awaiting_position", "hold")
+
+    def abandon_hold(self):
+        """The real gate's method, so this double cannot hide the call."""
+        self.abandoned += 1
+
+
+def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
+    monkeypatch,
+):
+    """The whole contract, in one event list (relay ``session.py`` §2.6).
+
+    The retake names the slot that JUST COMPLETED (``index == accepted``,
+    never ``accepted + 1``); it spends ONE ordinary attempt; and the accepted
+    count never rewinds — capture 2 still runs afterwards and the walk
+    finishes its target.
+
+    The attempt numbers are the pin on the last of those: 1, 2, 3 with no gap.
+    The held begin for slot 2 claimed attempt 2 and was never admitted, so the
+    walk hands that number back; charging it would spell 1, 3, 4 and bill a
+    household two attempts for one retake.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor()
+    gate = _RetakeOnHold(retake, hold_index=2)
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=gate, retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    # The abandoned begin was declared abandoned, so the gate stops
+    # advertising a position nothing is measuring any more.
+    assert gate.abandoned == 1
+    assert [e for e in conductor.events if e[0] != "on_armed"] == [
+        ("authorize", 1, 1),
+        ("consume", 1, 1, {"accepted": True}),
+        ("authorize", 1, 2),       # the retake: the slot that just completed
+        ("consume", 1, 2, {"accepted": True}),
+        ("authorize", 2, 3),       # ...and the walk carries on where it was
+        ("consume", 2, 3, {"accepted": True}),
+    ]
+
+
+def test_a_rejected_retake_leaves_the_original_take_standing(monkeypatch):
+    """"Nothing was dropped on its behalf" — the relay's own words.
+
+    The replacement is REJECTED, so the host never replaces the retained
+    position and the walk moves on to the next slot rather than re-running the
+    one it already has a usable take for.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor(verdicts=[
+        {"accepted": True},
+        {"accepted": False, "code": "locate_failed"},
+        {"accepted": True},
+    ])
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(retake, hold_index=2), retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
+def test_a_retake_with_no_take_to_replace_is_dropped_by_name(monkeypatch, caplog):
+    """An ask that reached a walk which has not measured anything yet.
+
+    Never re-pointed at the capture about to run — that is a DIFFERENT spot,
+    and silently retaking it would be the shape-change this ticket removed
+    from the staged walk.
+    """
+    retake = threading.Event()
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(retake, hold_index=1), retake_event=retake,
+    )
+    with caplog.at_level(logging.WARNING):
+        _run(runner, plan=_plan(target=1, max_attempts=3))
+
+    assert any(
+        "crossover_v2_wired_retake_refused" in r.getMessage()
+        and "reason=no_take_to_replace" in r.getMessage()
+        for r in caplog.records
+    )
+    # ...and the walk it interrupted still ran, on its own first attempt.
+    assert ("authorize", 1, 1) in conductor.events
+
+
+def test_a_refused_retake_begin_does_not_end_the_session(monkeypatch):
+    """The per-slot extras ledger running out is the ordinary way this arm is
+    reached, and it must leave the household with the take they already had —
+    a bonus was asked for, not a teardown."""
+    terminal = []
+    retake = threading.Event()
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        terminal=terminal, retake_event=retake,
+        position_gate=_RetakeOnHold(retake, hold_index=2, refuse=(1, 2)),
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert terminal == []
+    assert volume.events == ["open", "close"]
+    # The refused retake spent its attempt and nothing else; slot 2 followed.
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (2, 3),
+    ]
+
+
+def test_a_retake_past_the_plans_attempt_budget_is_refused_not_fatal(
+    monkeypatch, caplog,
+):
+    """The plan's own ``max_attempts`` is the only budget a retake spends —
+    there is no second one to reason about, and running out keeps the set."""
+    retake = threading.Event()
+    conductor = FakeConductor(awaiting_confirm=True)
+    volume = VolumeRecorder()
+    complete_event = threading.Event()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        retake_event=retake, complete_event=complete_event,
+    )
+
+    async def _drive():
+        session = _wired_session(_plan(target=1, max_attempts=1))
+        task = asyncio.create_task(runner(None, session))
+        await asyncio.sleep(0.15)
+        retake.set()
+        await asyncio.sleep(0.15)
+        complete_event.set()
+        await task
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(_drive())
+
+    assert any(
+        "reason=plan_attempts_spent" in r.getMessage() for r in caplog.records
+    )
+    # The set still closed on the household's own signal.
+    assert ("confirm",) in conductor.events
+
+
+def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch):
+    """The relay holds the set open so "the just-accepted slot is still
+    retakeable on exactly the terms above" — the same sentence, locally."""
+    retake = threading.Event()
+    conductor = FakeConductor(awaiting_confirm=True)
+    volume = VolumeRecorder()
+    complete_event = threading.Event()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        retake_event=retake, complete_event=complete_event,
+    )
+
+    async def _drive():
+        session = _wired_session(_plan(target=1, max_attempts=4))
+        task = asyncio.create_task(runner(None, session))
+        await asyncio.sleep(0.15)
+        retake.set()
+        await asyncio.sleep(0.2)
+        complete_event.set()
+        await task
+
+    asyncio.run(_drive())
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2),
+    ]
+    assert ("confirm",) in conductor.events
+
+
+def test_the_real_gate_publishes_the_retakes_own_target(monkeypatch):
+    """Against the REAL PositionGate, not a double — the join a fake hides.
+
+    Abandoning a held begin to serve a retake leaves the gate holding state
+    for the begin nobody is running any more. If that is not cleared, the gate
+    treats the retake's own hold as a CONTINUATION: it publishes no new
+    ``pending``, so the envelope keeps naming the abandoned position, the
+    person is asked for the wrong spot, and a release for the retake's index
+    is refused as stale — the hold then spins until the 600 s budget kills it.
+    """
+    from jasper.active_speaker.crossover_v2_flow import (
+        POSITION_DEG_KEY, POSITION_ROLE_KEY,
+    )
+    from jasper.web.correction_crossover_v2 import PositionGate
+
+    gate = PositionGate()
+    retake = threading.Event()
+    plan = CapturePlan(
+        capture_target=2,
+        max_attempts=5,
+        schema_version=2,
+        entries=tuple(
+            CapturePlanEntry(
+                index=i, kind_label="verify", duration_ms=200,
+                screen={
+                    POSITION_DEG_KEY: str(i * 22),
+                    POSITION_ROLE_KEY: "onax",
+                },
+            )
+            for i in range(2)
+        ),
+    )
+    seen: list = []
+
+    abandoned_hold_had_to_be_released = []
+
+    def _release_in_the_background() -> None:
+        """Play the person: release what the gate asks for, except once.
+
+        At capture 2's hold — the moment capture 1 is banked and nothing new
+        has started — they decide take 1 was bad and ask for a retake instead
+        of walking on. They then refuse to release capture 2's position,
+        because they are not standing there: they are walking back to take 1's
+        spot. If the gate is still advertising the abandoned hold, that refusal
+        is the deadlock, and the fallback below records it before breaking it
+        so the test fails on the FACT rather than on a wall-clock timeout.
+        """
+        asked_at = None
+        while not stop.is_set():
+            pending = gate.pending()
+            if pending is None:
+                stop.wait(0.01)
+                continue
+            key = (pending["index"], pending["attempt"])
+            if not seen or seen[-1] != key:
+                seen.append(key)
+            if key == (2, 2) and asked_at is None:
+                asked_at = time.monotonic()
+                retake.set()
+                stop.wait(0.02)
+                continue
+            if key == (2, 2) and (1, 2) not in seen:
+                if time.monotonic() - asked_at < 0.5:
+                    stop.wait(0.02)
+                    continue
+                abandoned_hold_had_to_be_released.append(key)
+            gate.release(pending["index"])
+            stop.wait(0.01)
+
+    stop = threading.Event()
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=gate, retake_event=retake,
+    )
+    releaser = threading.Thread(target=_release_in_the_background, daemon=True)
+    releaser.start()
+    try:
+        _run(runner, plan=plan)
+    finally:
+        stop.set()
+        releaser.join(timeout=5)
+
+    # The retake's own (index, attempt) reached the person, and it did so
+    # WITHOUT them first having to release a position the walk had abandoned.
+    assert abandoned_hold_had_to_be_released == []
+    assert seen == [(1, 1), (2, 2), (1, 2), (2, 3)]
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
+def test_asking_again_while_the_retake_is_held_keeps_waiting(monkeypatch):
+    """A double-POST during the retake's OWN hold names the same slot.
+
+    It cannot mean anything else — the slot being re-opened is the only one a
+    retake can name — so the walk keeps waiting for the release. Swallowed
+    inside the retake rather than propagated: this path runs from inside the
+    walk's own handler for that signal, so an escape would have nothing to
+    catch it and would end a perfectly healthy session on ``internal_error``.
+    """
+    terminal = []
+    retake = threading.Event()
+
+    class Gate:
+        def __init__(self):
+            self.holds = 0
+            self.abandoned = 0
+
+        def gate(self, index, attempt, entry):
+            if index == 2 and self.holds == 0:
+                self.holds += 1
+                retake.set()
+                raise CaptureBeginDeferred("awaiting_position", "hold")
+            if (index, attempt) == (1, 2) and self.holds == 1:
+                # The retake's own begin, held once — and the household taps
+                # again while it waits.
+                self.holds += 1
+                retake.set()
+                raise CaptureBeginDeferred("awaiting_position", "hold")
+
+        def abandon_hold(self):
+            self.abandoned += 1
+
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=[],
+        terminal=terminal, position_gate=Gate(), retake_event=retake,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+
+    assert terminal == []
+    assert volume.events == ["open", "close"]
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (1, 2), (2, 3),
+    ]
+
+
+def test_a_session_with_no_retake_signal_is_byte_identical(monkeypatch):
+    """The default: a runner built without the signal never looks for one, so
+    every walk that shipped before this seam runs exactly as it did."""
+    conductor = FakeConductor()
+    runner = _build(
+        conductor, VolumeRecorder(), monkeypatch=monkeypatch, persists=[],
+        position_gate=_RetakeOnHold(threading.Event(), hold_index=2),
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=5))
+    assert [(e[1], e[2]) for e in conductor.events if e[0] == "consume"] == [
+        (1, 1), (2, 2),
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # 4. fake-ALSA end-to-end through the REAL host consume path
 # --------------------------------------------------------------------------- #
 
@@ -1187,6 +1552,61 @@ def test_the_completion_signal_drops_with_the_slot():
             correction_setup._handle_crossover_v2_complete(_fake_handler())
     finally:
         correction_setup._set_relay_capture(None)
+
+
+def test_retake_endpoint_conflicts_when_nothing_is_waiting():
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    with pytest.raises(ValueError, match="no wired measurement"):
+        correction_setup._handle_crossover_v2_retake(_fake_handler())
+
+
+def test_retake_endpoint_fires_the_wired_sessions_signal():
+    from jasper.web import correction_setup
+
+    fired = []
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:session",
+        request_retake=lambda: fired.append(True),
+    )
+    try:
+        result = correction_setup._handle_crossover_v2_retake(_fake_handler())
+    finally:
+        correction_setup._set_relay_capture(None)
+    assert result == {"ok": True}
+    assert fired == [True]
+
+
+def test_the_retake_signal_drops_with_the_slot():
+    """A POST arriving after the walk must not re-open a slot nothing holds."""
+    from jasper.web import correction_setup
+
+    correction_setup._set_relay_capture(None)
+    assert correction_setup._begin_relay_capture(
+        "crossover_v2:session", request_retake=lambda: None,
+    )
+    correction_setup._set_relay_capture(
+        {"status": "complete", "kind": "crossover_v2:session"}
+    )
+    try:
+        with pytest.raises(ValueError, match="no wired measurement"):
+            correction_setup._handle_crossover_v2_retake(_fake_handler())
+    finally:
+        correction_setup._set_relay_capture(None)
+
+
+def test_a_relay_session_offers_no_local_retake_signal():
+    """The relay's retake rides the phone's own begin, so a relay session
+    leaves the local seam unset and the route 409s rather than half-serving
+    a verb whose walk would never look at it."""
+    prepared = v2host.V2PreparedSession(
+        label="x", open=lambda *a: None,
+        run_and_consume=lambda c, s: None, request_stop=lambda: None,
+    )
+    assert prepared.request_retake is None
+    assert prepared.request_complete is None
 
 
 def test_prepared_session_defaults_to_the_relay_source():

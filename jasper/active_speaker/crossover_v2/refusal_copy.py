@@ -267,13 +267,18 @@ REASON_USER_STOPPED = "user_stopped"
 # forward. RETAINED but unreached since the two-stage split (D10): no shipped
 # session holds for an apply any more.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
-# The EXTERNALLY POSITIONED tier's three gate refusals (``TIER_REMOTE``). Named
-# reasons rather than a fall-through to ``relay_timeout`` because the position
-# gate is consulted AHEAD of the conductor — nothing sets ``last_failure_code``
-# on this path, so an unnamed gate refusal persisted as "the measurement link
-# timed out", which is a claim about the transport that no transport made.
+# The position gate's three refusals, reachable by EITHER gated shape (#2879):
+# the externally positioned tier (``TIER_REMOTE``), whose driver reports each
+# arrival, and a hand-walked round on the WIRED capture source, where the
+# person holding the tape does. Named reasons rather than a fall-through to
+# ``relay_timeout`` because the position gate is consulted AHEAD of the
+# conductor — nothing sets ``last_failure_code`` on this path, so an unnamed
+# gate refusal persisted as "the measurement link timed out", which is a claim
+# about the transport that no transport made. The copy below therefore names
+# neither mover: one sentence has to read true to an operator watching an arm
+# and to a household member holding the microphone.
 #
-#   position_hold_expired  — no driver reported the microphone in place before
+#   position_hold_expired  — nothing reported the microphone in place before
 #                            REMOTE_POSITION_HOLD_BUDGET_S. The session is over;
 #                            a fresh one is the only way forward.
 #   position_target_missing— a plan entry carried no target angle, so the gate
@@ -297,11 +302,15 @@ REASON_POSITION_HOLD_EXPIRED = "position_hold_expired"
 REASON_POSITION_TARGET_MISSING = "position_target_missing"
 REASON_SESSION_CEILING_EXPIRED = "session_ceiling_expired"
 # The geometry-locked retake asks for a pose PAST the walk — 75 cm out, and on
-# its second rung 75 cm out AND above mark height. An external positioner swings
-# on one horizontal axis at a fixed radius, so it can serve neither rung. Rather
-# than prompt for a move that cannot be made (and then record the un-made pose
-# as though it had been), an externally positioned session refuses here and
-# recommends the hand-walked instrument that CAN do it.
+# its second rung 75 cm out AND above mark height. NO GATED session can serve
+# it, and for two reasons rather than one (#2879): an external positioner
+# swings on one horizontal axis at a fixed radius, so it can reach neither
+# rung; and the retry re-authorizes the same plan entry, so the position gate
+# goes on naming that entry's original BEARING while the screen names the wider
+# spot — two answers to where the microphone should be, which is a person's
+# problem even though a person could walk there. Rather than prompt for a move
+# that cannot be made, or made honestly, a gated session refuses here and
+# recommends the screen-paced instrument that CAN ask for it.
 REASON_GEOMETRY_RETAKE_UNREACHABLE = "geometry_retake_unreachable"
 # Position-group choreography (flat-linearization PR-3b): the pre-apply cloud
 # closed with `spatial_combine.assess_geometry` reporting `locked` — every
@@ -1110,8 +1119,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
         "Nothing reported the microphone reaching its next position, so the "
-        "measurement stopped waiting. Start over from this page once the "
-        "positioner is answering again.",
+        "measurement stopped waiting. Start over from this page when every "
+        "position can be confirmed as the microphone arrives.",
     ),
     REASON_POSITION_TARGET_MISSING: ReasonSpec(
         REASON_POSITION_TARGET_MISSING, TEMPLATE_SESSION_RESTART, 0, "",
@@ -1123,14 +1132,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_SESSION_CEILING_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
         "The whole measurement ran out of time while it was still waiting for "
         "the microphone to reach a position. Start over from this page once "
-        "the positioner can work through the walk more quickly.",
+        "the microphone can be moved through the walk more quickly.",
     ),
     REASON_GEOMETRY_RETAKE_UNREACHABLE: ReasonSpec(
         REASON_GEOMETRY_RETAKE_UNREACHABLE, TEMPLATE_SESSION_RESTART, 0, "",
         "The room needs the microphone measured from a wider spot, and from "
-        "above the mark, than a remote positioner can reach. Run a Full "
-        "measurement and walk those spots by hand to finish tuning this "
-        "speaker.",
+        "above the mark, than this measurement can ask for. Run a Full "
+        "measurement that prompts each spot on screen, and walk those spots by "
+        "hand, to finish tuning this speaker.",
     ),
     REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
         REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,

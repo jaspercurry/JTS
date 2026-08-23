@@ -370,17 +370,26 @@ def test_the_string_and_protractor_combination_is_reachable() -> None:
 
 
 def test_human_mover_taps_and_declares_no_position() -> None:
-    """A person's tap IS the settle signal; no gate keys are emitted."""
+    """A person's tap IS the settle signal, and this REQUEST declares no target.
+
+    Whether a person's walk is HELD is the session's fact, not the request's
+    (``V2PlanShape.positions_gated``) -- a session that gates one builds its own
+    entries through ``_entry_policy`` off its own shape. This bag is the dry
+    run's, so guessing a target from the mover alone would be a second answer
+    to a question this seam cannot see.
+    """
     for stop in ac.resolve_request(ac.both_at([0, 22])):
         assert stop.screen == {"auto_advance": flow.AUTO_ADVANCE_TAP}
         assert flow.POSITION_DEG_KEY not in stop.screen
 
 
 def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
-    """Auto-advance and the gate are emitted TOGETHER -- they are a pair.
+    """An ARM's auto-advance and its target are emitted TOGETHER.
 
-    A countdown without the gate fires into an arm still in motion; the gate
-    without auto-advance waits for a tap nobody is there to give.
+    A countdown without the gate fires into an arm still in motion. The
+    converse is not a pair: a gate with no countdown is a person holding the
+    tape, released by their own tap -- which is exactly the shape
+    ``V2PlanShape.positions_gated`` exists to say apart from this one.
     """
     for stop in ac.resolve_request(ac.both_at([0, -22], mover=ac.MOVER_ARM)):
         assert stop.screen["auto_advance"] == flow.AUTO_ADVANCE_COUNTDOWN

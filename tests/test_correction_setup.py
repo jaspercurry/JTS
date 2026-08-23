@@ -536,15 +536,19 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
             request_stop=lambda: None,
-            # A hand-walked session carries no position gate; the field is
-            # stated rather than omitted so this stub keeps matching the real
-            # V2PreparedSession the dispatch reads.
+            # A relay session is paced by the page's own tap, so it carries no
+            # position gate; the field is stated rather than omitted so this
+            # stub keeps matching the real V2PreparedSession the dispatch
+            # reads.
             position_gate=None,
             # #2662 W2b: the dispatch reads the resolved capture source (to
             # gate the relay-base requirement and mark the kind local) and
-            # forwards the wired completion signal. Relay defaults, stated.
+            # forwards the wired session's two local signals — the
+            # all-spots-measured confirmation and the per-take retake (#2879).
+            # Relay defaults, stated.
             capture_source=v2host.SOURCE_RELAY,
             request_complete=None,
+            request_retake=None,
         )
 
     def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):

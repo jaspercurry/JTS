@@ -56,12 +56,15 @@ the walk outliving its wall-clock ceiling persists
 host's one program-failure classifier (``internal_error`` when unclassified,
 with the real cause on the journal).
 
+A voluntary RETAKE is initiated locally, through the host's
+``request_retake`` seam (``POST /crossover/v2/retake``), on the relay's own
+§2.6 terms. Those terms are stated once, where they are implemented
+(:func:`build_v2_wired_run_and_consume`), rather than a second time here.
+
 Deferred to W3 (stated, not implied): the wizard UI for wired sessions —
-including a voluntary-retake affordance (the held-set window below already
-holds the set open exactly as the relay does; nothing local can INITIATE a
-retake yet) and a named household-facing reason for a mid-session mic loss
-(today that is ``internal_error`` copy with the specific cause in the
-journal).
+including the retake's own affordance, which today is that bare POST — and a
+named household-facing reason for a mid-session mic loss (today that is
+``internal_error`` copy with the specific cause in the journal).
 """
 
 from __future__ import annotations
@@ -140,6 +143,15 @@ def _fallback_program_s() -> float:
     from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 
     return float(DEFAULT_MAX_CAPTURE_SECONDS)
+
+
+class _RetakeRequested(Exception):
+    """How the hold loop tells the walk to abandon a begin nobody has released
+    and re-open the previous slot instead.
+
+    Private to one walk, and deliberately NOT one of the flow's reasons:
+    nothing failed, and no household ever reads it.
+    """
 
 
 def resolve_v2_capture_source(
@@ -305,6 +317,7 @@ def build_v2_wired_run_and_consume(
     device: WiredMicDevice,
     ceiling_s: float,
     complete_event: threading.Event,
+    retake_event: threading.Event | None = None,
     position_gate: "PositionGate | None" = None,
     evidence_refs: Mapping[str, Any] | None = None,
     poll_interval_s: float | None = None,
@@ -354,6 +367,28 @@ def build_v2_wired_run_and_consume(
     the session's own wall-clock ceiling, the same clock the volume plan
     arms — and expiry persists the registry's own honest
     ``session_ceiling_expired``, never a transport claim.
+
+    **A per-take RETAKE (``retake_event``, the host's ``request_retake`` seam)
+    is honoured wherever the walk is WAITING ON A PERSON**, which is the
+    relay's own window ("only while the begin for the next entry has not been
+    seen yet") expressed locally: a HELD BEGIN, and the held-set window above.
+    Nowhere else — between an accepted capture and the next begin nothing here
+    pauses, so there is no moment to interject in that a hold does not already
+    cover.
+
+    It re-authorizes and re-captures the slot that JUST COMPLETED (``index ==
+    accepted``, never ``accepted + 1``), spending an ordinary attempt against
+    the plan's ``max_attempts`` and the conductor's own per-slot extras ledger.
+    ``accepted`` is never advanced by one: the slot was counted once and stays
+    counted. An accepted take REPLACES the retained position (the conductor's
+    retention is per-index idempotent) and a rejected one leaves the original
+    standing — nothing was dropped on its behalf. Both takes stay banked under
+    their own attempt; the fit reads the retained one. ``complete_event`` wins
+    a tie: a household that said "done" is not asked to say it twice.
+
+    Leaving a held begin for a retake tells the gate so
+    (:meth:`PositionGate.abandon_hold`), because a hold nobody is running any
+    more must stop being the position the envelope advertises.
     """
 
     poll_s = WIRED_HOLD_POLL_S if poll_interval_s is None else float(poll_interval_s)
@@ -423,6 +458,31 @@ def build_v2_wired_run_and_consume(
                 if stop_event.is_set():
                     raise CaptureStopped("capture stopped")
 
+        def _retake_wanted() -> bool:
+            """One take-and-clear of the household's retake signal.
+
+            A level-triggered :class:`threading.Event` rather than a queue,
+            deliberately: two taps before the walk next looks are ONE retake,
+            which is what a household means by them. Cleared here so the same
+            ask can never serve two slots.
+
+            **An ask that arrives while a capture is IN FLIGHT is served at the
+            next hold, and by then "the slot that just completed" may not be
+            the capture they were watching.** If that in-flight capture is
+            REJECTED, ``accepted`` never advanced, so the retake re-opens the
+            slot accepted BEFORE it. That is faithful to the relay rule this
+            mirrors — a retake names ``accepted_count``, and a rejected capture
+            does not change it — and it is also not obviously what a person
+            tapping mid-capture meant. It is written down rather than guessed
+            at: the affordance that decides whether the ask is even offered
+            mid-capture is the wizard's, and belongs to that ticket rather than
+            to a second interpretation of the count here.
+            """
+            if retake_event is None or not retake_event.is_set():
+                return False
+            retake_event.clear()
+            return True
+
         def _authorize(index: int, attempt: int, entry: Any, deadline: float) -> None:
             held_logged = False
             while True:
@@ -459,6 +519,19 @@ def build_v2_wired_run_and_consume(
                         )
                     if stop_event.wait(poll_s):
                         raise CaptureStopped("capture stopped") from None
+                    # A HELD begin is exactly the relay's retake window: the
+                    # previous slot is accepted and this one has not started,
+                    # so replacing the previous take is still meaningful. The
+                    # walk decides what to do about it — this loop only stops
+                    # waiting for a release nobody is coming to give.
+                    if _retake_wanted():
+                        # Say so before leaving: a hold nobody is running must
+                        # stop being the position the envelope advertises, or
+                        # the operator is sent to the wrong spot and the
+                        # retake's own target is never published.
+                        if position_gate is not None:
+                            position_gate.abandon_hold()
+                        raise _RetakeRequested from None
 
         def _mint_answer(recording: Any) -> WiredCaptureAnswer:
             channel, mono, rms_dbfs = select_capture_channel(recording)
@@ -552,6 +625,94 @@ def build_v2_wired_run_and_consume(
             max_attempts = int(plan.max_attempts)
             accepted = 0
             attempt = 0
+
+            def _serve_retake(
+                accepted: int, attempt: int, deadline: float,
+            ) -> tuple[int, bool]:
+                """Re-capture the just-accepted slot — the terms are stated once,
+                in this function's own runner docstring above.
+
+                Returns ``(attempt, end_walk)``: the attempt counter after this,
+                and whether the walk must stop. The three refusals below are the
+                only policy here; everything else is the ordinary path.
+                """
+                if accepted < 1:
+                    # Nothing has been accepted yet, so there is no take to
+                    # replace — the ask reached a walk that had not measured
+                    # anything. Dropped with a name rather than re-pointed at
+                    # the capture about to run, which is a DIFFERENT spot.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_wired_retake_refused",
+                        level=logging.WARNING,
+                        session_id=session_id,
+                        reason="no_take_to_replace",
+                    )
+                    return attempt, False
+                if attempt >= max_attempts:
+                    # The plan's own budget, the only one a retake spends —
+                    # there is no second budget to reason about. Refusing here
+                    # keeps the set the household already has; the walk stays
+                    # where it was.
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_wired_retake_refused",
+                        level=logging.WARNING,
+                        session_id=session_id,
+                        reason="plan_attempts_spent",
+                        index=accepted,
+                        attempts=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    return attempt, False
+                index = accepted
+                attempt += 1
+                entry = plan.entry_for_index(index)
+                log_event(
+                    logger,
+                    "correction.crossover_v2_wired_retake",
+                    session_id=session_id,
+                    index=index,
+                    attempt=attempt,
+                )
+                while True:
+                    try:
+                        _authorize(index, attempt, entry, deadline)
+                        break
+                    except _RetakeRequested:
+                        # Asked AGAIN while this retake's own begin was held.
+                        # It can only name the slot already being re-opened, so
+                        # it is the same ask arriving twice and the honest
+                        # answer is to keep waiting for the release. Swallowed
+                        # rather than propagated: this function is reached from
+                        # INSIDE the walk's own handler for that exception, so
+                        # letting it escape would leave nothing to catch it and
+                        # would end a healthy session on ``internal_error``.
+                        # Bounded by the gate's per-hold and ceiling budgets
+                        # exactly as the first wait is.
+                        continue
+                    except CaptureBeginRefused as refusal:
+                        # A refused RETAKE must not end a session that already
+                        # holds a usable take for this slot: the household
+                        # asked for a bonus, not for the set to be torn down,
+                        # and the per-slot extras ledger running out is the
+                        # ordinary way here. The two clock deaths lose nothing
+                        # by being swallowed — the walk's own deadline checks
+                        # re-decide them next pass, same ceiling, same code.
+                        log_event(
+                            logger,
+                            "correction.crossover_v2_wired_retake_refused",
+                            level=logging.WARNING,
+                            session_id=session_id,
+                            reason="begin_refused",
+                            index=index,
+                            attempt=attempt,
+                            code=str(getattr(refusal, "code", "") or ""),
+                        )
+                        return attempt, False
+                verdict = _capture_one(index, attempt, entry)
+                return attempt, verdict.get("terminal") is True
+
             while accepted < target:
                 if attempt >= max_attempts:
                     # Attempt budget spent: mirror ``run_capture_plan``'s
@@ -574,7 +735,20 @@ def build_v2_wired_run_and_consume(
                 index = accepted + 1
                 attempt += 1
                 entry = plan.entry_for_index(index)
-                _authorize(index, attempt, entry, deadline)
+                try:
+                    _authorize(index, attempt, entry, deadline)
+                except _RetakeRequested:
+                    # This begin was HELD and never admitted, so the attempt
+                    # number it claimed was never spent — the walk hands it
+                    # back rather than charging two attempts for one retake.
+                    # Re-using the pair later is safe precisely BECAUSE the
+                    # begin was still held: the gate keys its releases on
+                    # (index, attempt), and this one was never released.
+                    attempt -= 1
+                    attempt, end_walk = _serve_retake(accepted, attempt, deadline)
+                    if end_walk:
+                        return
+                    continue
                 verdict = _capture_one(index, attempt, entry)
                 if verdict.get("accepted"):
                     accepted += 1
@@ -614,6 +788,15 @@ def build_v2_wired_run_and_consume(
                     # (the PR-L4 accountability veto) propagates like any
                     # admission refusal.
                     _host.drive_group_close(conductor, evidence=evidence_refs)
+                    continue
+                # The set is held open, which the relay states is exactly when
+                # the just-accepted slot is still retakeable. Asked AFTER the
+                # completion wait above so a household that said "done" is
+                # never asked to say it twice.
+                if _retake_wanted():
+                    attempt, end_walk = _serve_retake(accepted, attempt, deadline)
+                    if end_walk:
+                        return
 
         try:
             opened = await volume.open()

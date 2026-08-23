@@ -1264,6 +1264,28 @@ class V2PlanShape:
     tier: str
     cloud_measure_positions: int
     cloud_verify_positions: int
+    #: Whether a PERSON releases every begin — the second of the two facts the
+    #: old single ``externally_positioned`` boolean carried at once. Set by the
+    #: session host for a HAND-WALKED round running on the wired capture
+    #: source, which has no capture page to pace it: nothing there taps, so
+    #: without a hold the walk fires every capture back to back while the
+    #: household is still walking to the next spot.
+    #:
+    #: It is not a tier. The tier still decides the (N, M) shape and whether a
+    #: MACHINE advances the walk (:attr:`externally_positioned`); this says who
+    #: releases each hold, which is the only thing that differs between the arm
+    #: and a person holding a tape at the same bearings.
+    hand_released_positions: bool = False
+
+    def __post_init__(self) -> None:
+        if self.hand_released_positions and self.externally_positioned:
+            # Loud rather than idempotent: the arm's own driver releases its
+            # holds, so a shape claiming BOTH movers is a caller that has not
+            # decided which one is on the floor.
+            raise CrossoverV2FlowError(
+                f"tier {self.tier!r} is positioned by an external driver, so "
+                "its holds cannot also be hand-released"
+            )
 
     @property
     def measure_capture_target(self) -> int:
@@ -1345,23 +1367,49 @@ class V2PlanShape:
         live conductor (which holds a tier string, not a resolved shape) and the
         plan builders answer the question from ONE definition.
 
-        The one predicate the two shape-dependent behaviours read, so "which
-        tier is machine-driven?" is answered in a single place rather than by
-        a ``tier == TIER_REMOTE`` comparison scattered across the plan
-        builders and the session host:
+        **This is the ADVANCE axis, and only that.** It decides one behaviour:
+        every entry auto-begins behind the cancelable countdown
+        (:func:`_entry_advance`), because there is no hand to tap. It also
+        implies :attr:`positions_gated` — a countdown alone would fire into an
+        arm still in motion — but the converse does not hold, and that is the
+        whole reason the two are separate properties: a person can walk the same
+        bearings and release each hold by hand, which needs the gate and must
+        NOT get the countdown.
 
-        * every entry auto-begins (:func:`_entry_advance`), because there is no
-          hand to tap; and
-        * every entry's begin is held behind a POSITION GATE until the driver
-          says the microphone has reached the angle, because a countdown alone
-          would fire into an arm still in motion — the same reason the
-          hand-walked tiers make each prompted pose a tap.
-
-        The two are a PAIR. Auto-advance without the gate is the bug it would
-        replace the tap with; the gate without auto-advance is a session that
-        waits for a tap nobody is there to give.
+        The combination this refuses is auto-advance WITHOUT a gate: that is
+        the bug the countdown would have replaced the tap with, and it is
+        unreachable by construction because :attr:`positions_gated` reads this
+        property as one of its own disjuncts.
         """
         return tier_is_externally_positioned(self.tier)
+
+    @property
+    def positions_gated(self) -> bool:
+        """Whether poses are stated as BEARINGS and every begin is HELD until
+        something reports the microphone in place.
+
+        **The POSE-STATEMENT axis** — the second of the two independent facts
+        the old single boolean carried. It decides, together:
+
+        * the prompt copy restates each pose as its angle
+          (:func:`_positioned_prompt`), because whoever moves the microphone is
+          working in degrees rather than tape-measure centimetres; and
+        * every entry declares that angle in machine terms
+          (:data:`POSITION_DEG_KEY` / :data:`POSITION_ROLE_KEY`,
+          :func:`_entry_policy`), which is what the session host's position gate
+          reads to name the target it is waiting for.
+
+        Those two are one statement in two vocabularies — the sentence a person
+        reads and the number the gate acts on — so they share one property
+        rather than drifting as two.
+
+        True for the arm (:attr:`externally_positioned`), whose driver POSTs the
+        release, and for a hand-released round
+        (:attr:`hand_released_positions`), where a person does. What separates
+        those two is :attr:`externally_positioned` alone: the arm also gets the
+        countdown, the person keeps the tap.
+        """
+        return self.externally_positioned or self.hand_released_positions
 
 
 def tier_is_externally_positioned(tier: Any) -> bool:
@@ -4977,6 +5025,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         tier: str = "",
+        positions_gated: bool = False,
         driver_spacing_m: float = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -5024,6 +5073,13 @@ class CrossoverV2Session:
         # option. Validated so an unknown id fails at construction rather than
         # riding into the durable state and out to `/state`.
         self._tier = normalize_tier(tier) if tier else ""
+        # #2879, the POSE-STATEMENT axis (:attr:`V2PlanShape.positions_gated`):
+        # are this walk's begins HELD until the microphone is reported in place?
+        # Resolved by the HOST, the half that knows the capture source, and ORed
+        # with the tier's own answer so no caller can drop the arm's own gate.
+        self._positions_gated = (
+            tier_is_externally_positioned(self._tier) or bool(positions_gated)
+        )
         self._preset = source_preset
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
@@ -8017,20 +8073,26 @@ class CrossoverV2Session:
             group_already_closed=phase in self._group_geometry,
             have_take_to_replace=position is not None,
         )
-        if retake is not None and tier_is_externally_positioned(self._tier):
-            # REFUSE rather than prompt for a move this operator cannot make
-            # (owner ruling: refuse, don't mislead). Both rungs of
-            # ``CLOUD_GEOMETRY_RETRY_PROMPTS`` are out of an external
-            # positioner's reach — rung 1 is 75 cm off the mark, past every
-            # pose in the walk, and rung 2 adds a move ABOVE mark height, the
-            # exact axis this tier excludes by construction.
+        if retake is not None and self._positions_gated:
+            # REFUSE rather than prompt (owner ruling: refuse, don't mislead) —
+            # for EITHER gated shape, because what decides is "these begins are
+            # HELD", not "an arm is moving". Prompting did three dishonest
+            # things at once, and the third belongs to the gate, not the arm:
             #
-            # Prompting anyway did three dishonest things at once: it asked a
-            # driver for a pose it cannot reach, it recorded the un-made pose's
-            # 75 cm offset as the position's durable evidence, and the position
-            # gate published the PREVIOUS entry's stale angle as the target. The
-            # retry budget is deliberately NOT spent and no take is dropped —
-            # nothing here is a retry, so the group keeps the evidence it
+            #   1. it asked for a pose an external positioner cannot reach —
+            #      ``CLOUD_GEOMETRY_RETRY_PROMPTS`` rung 1 is 75 cm off the
+            #      mark, past every pose in the walk, and rung 2 goes ABOVE it;
+            #   2. it recorded that un-made pose's 75 cm offset as the
+            #      position's durable evidence; and
+            #   3. the retry re-authorizes the SAME plan entry, so the position
+            #      gate republishes that entry's ORIGINAL bearing while the
+            #      screen names the wider spot. Two answers to where the
+            #      microphone should be — and a person, who COULD walk to the
+            #      wider spot, is exactly who cannot be told which to believe.
+            #      Rung 2 has no bearing spelling at all: it is a HEIGHT.
+            #
+            # The retry budget is deliberately NOT spent and no take is dropped
+            # — nothing here is a retry, so the group keeps the evidence it
             # legitimately has for whatever the session does with it next.
             log_event(
                 logger,
@@ -8039,6 +8101,12 @@ class CrossoverV2Session:
                 session_id=self.session_id,
                 phase=phase,
                 tier=self._tier,
+                # `tier` cannot carry this: stage 2 is constructed without one,
+                # so both gated stage-2 shapes log `tier=""`. This names the
+                # PREDICATE that refused, not WHICH shape — that is constant-true
+                # here by construction, and the mover is recoverable from this
+                # session's `…_remote_session_open` line (`hand_released=`).
+                gated=self._positions_gated,
                 median_tau_us=verdict.get("median_tau_us"),
                 clustered_fraction=verdict.get("clustered_fraction"),
             )
@@ -11706,12 +11774,15 @@ def _positioned_prompt(
 ) -> CloudPositionPrompt:
     """One pose's prompt, in the vocabulary the shape's OPERATOR acts on.
 
-    A hand-walked shape keeps the tape-measure copy verbatim (byte-identical);
-    an externally positioned one restates the SAME pose as its angle. Only the
-    sentence differs — ``offset_cm`` and ``role`` are untouched, so the durable
-    evidence a remote session records stays comparable with a hand-walked one's.
+    A tap-paced shape keeps the tape-measure copy verbatim (byte-identical); a
+    GATED one (:attr:`V2PlanShape.positions_gated` — the arm, or a person
+    releasing each hold by hand) restates the SAME pose as its angle, because
+    that is the number the gate publishes and the operator is asked for. Only
+    the sentence differs — ``offset_cm`` and ``role`` are untouched, so the
+    durable evidence a gated session records stays comparable with a
+    tape-measured one's.
     """
-    if shape is not None and shape.externally_positioned:
+    if shape is not None and shape.positions_gated:
         return remote_position_prompt(prompt)
     return prompt
 
@@ -11719,13 +11790,16 @@ def _positioned_prompt(
 def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
     """The §5.2 auto-advance fields one plan entry carries, from its SHAPE.
 
-    Hand-walked tiers get :data:`AUTO_ADVANCE_TAP` and no countdown key —
+    Hand-advanced shapes get :data:`AUTO_ADVANCE_TAP` and no countdown key —
     BYTE-IDENTICAL to what every entry emitted when the policy was a literal at
-    each site, which is what ``_GOLDEN_V2_PLAN_BYTES`` pins. An externally
-    positioned shape (:attr:`V2PlanShape.externally_positioned`) gets the
-    countdown instead, because no hand is there to tap; its per-entry begin is
-    then held by the position gate until the driver reports the angle reached,
-    so the countdown only ever runs out into a capture the gate has released.
+    each site, which is what ``_GOLDEN_V2_PLAN_BYTES`` pins. That includes a
+    hand-RELEASED shape (:attr:`V2PlanShape.hand_released_positions`): its
+    begins are gated, but a person is there to tap, so a countdown would fire
+    while they are still walking. An externally positioned shape
+    (:attr:`V2PlanShape.externally_positioned`) gets the countdown instead,
+    because no hand is there to tap; its per-entry begin is then held by the
+    position gate until the driver reports the angle reached, so the countdown
+    only ever runs out into a capture the gate has released.
 
     ``shape is None`` is the recovery re-verify, which has no tier and keeps the
     tap.
@@ -11741,12 +11815,13 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
     return {"auto_advance": AUTO_ADVANCE_TAP}
 
 
-#: The per-entry screen keys that state a remote entry's TARGET POSITION in
+#: The per-entry screen keys that state a GATED entry's TARGET POSITION in
 #: machine terms. ``screen`` is an opaque ``str -> str`` bag the page ignores
 #: unknown keys in (the same seam ``auto_advance`` / ``noise_note`` /
 #: ``confirm_title`` already ride), so this is not a protocol change.
 #:
-#: Emitted ONLY by an externally positioned shape. They exist because the
+#: Emitted ONLY by a GATED shape (:attr:`V2PlanShape.positions_gated`). They
+#: exist because the
 #: position gate has to name the angle it is waiting for, and the alternative —
 #: re-deriving it from the entry's index against a second copy of the plan's
 #: index arithmetic — is two sources of truth for one number. The PLAN is the
@@ -11764,12 +11839,16 @@ def _entry_policy(
     ``prompt is None`` means an entry with no prompted pose of its own — CHECK,
     MEASURE, the entry baseline, and stage 2's anchor — every one of which is a
     0° design-axis capture, so that is what it declares. Gating those too is
-    deliberate: a remote session's driver has to put the arm back on the axis
-    for them exactly as it moved it away, and a gate that trusted "it is
+    deliberate: a gated session's operator has to put the microphone back on the
+    axis for them exactly as they moved it away, and a gate that trusted "it is
     probably still there" would measure whatever the last pose left behind.
+
+    The two halves answer different questions and so read different facts: the
+    advance policy is the MOVER's (:func:`_entry_advance`), the target position
+    is the GATE's (:attr:`V2PlanShape.positions_gated`).
     """
     policy = _entry_advance(shape)
-    if shape is None or not shape.externally_positioned:
+    if shape is None or not shape.positions_gated:
         return policy
     degrees = position_angle_deg(prompt) if prompt is not None else 0
     role = prompt.role if prompt is not None else POSITION_ROLE_ONAX
@@ -12045,7 +12124,7 @@ def build_v2_capture_plan(
                     title=(
                         "Back to the design axis (0°) — one last measurement "
                         "before tuning."
-                        if shape.externally_positioned
+                        if shape.positions_gated
                         else "Back to the mark — one last measurement before "
                         "tuning."
                     ),
@@ -12201,6 +12280,11 @@ def build_v2_verify_capture_plan(
         ),
     }
     advance = _entry_policy(plan_shape)
+    # The two facts asked separately, because this screen reads both: the COPY
+    # follows the pose statement (a gated operator is given the bearing), the
+    # confirm tap below follows the advance policy (only a machine-advanced
+    # session has no hand to answer it).
+    positions_gated = plan_shape is not None and plan_shape.positions_gated
     externally_positioned = (
         plan_shape is not None and plan_shape.externally_positioned
     )
@@ -12208,12 +12292,12 @@ def build_v2_verify_capture_plan(
         "progress": capture_progress_label(1, target),
         "title": (
             "Back on the design axis (0°) — one sweep to check the result."
-            if externally_positioned
+            if positions_gated
             else "Back at the mark — one sweep to check the result."
         ),
         "body": (
             f"{MARK_DISTANCE_M:g} m out, pointed at the speaker."
-            if externally_positioned
+            if positions_gated
             else "Same spot, same height, pointed at the speaker."
         ),
         **advance,
@@ -12232,6 +12316,11 @@ def build_v2_verify_capture_plan(
         # the tap makes — the microphone is where the plan says before the tone
         # plays — is the POSITION GATE's promise here, made by the driver that
         # actually moved it.
+        #
+        # A hand-RELEASED shape keeps the confirm, which is why this arm reads
+        # the advance policy rather than ``positions_gated``: there IS a hand
+        # there, and the strings are byte-identical to what every tap-paced
+        # shape has always emitted.
         anchor_screen.update({
             "confirm_title": "Back on the mark, holding still?",
             "confirm_body": "Same spot, same height, pointed at the speaker.",
