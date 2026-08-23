@@ -337,26 +337,17 @@ def active_leader_pipe_path() -> str:
     text says whether it writes the pipe — never a mirror of env
     intent (the retired ``SNAPFIFO_PRODUCER_WIRED`` lesson). Total:
     any read failure resolves to ``""`` (degraded — fail visible)."""
-    import re
+    # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override,
+    # the shipped default, and the ``config_path`` parse all live in
+    # active_speaker.environment. Lazy like every other import in this module,
+    # and free for all three daemons that reach this function: jasper-control's
+    # `_get_state` already imports that module for `active_speaker_parked`;
+    # jasper-web builds every role-eligible wizard at startup, and `/sound`
+    # pulls it under the same role set that gates `/rooms`; the doctor's
+    # correction module imports it outright.
+    from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
-    # Statefile location mirrors jasper.cli.doctor.correction's
-    # _active_camilla_config_path (kept in sync by the shared env knob;
-    # not imported — the doctor package is the wrong layer to pull into
-    # the /state hot path).
-    statefile = Path(
-        os.environ.get(
-            "JASPER_CAMILLA_STATEFILE",
-            "/var/lib/camilladsp/outputd-statefile.yml",
-        )
-    )
-    try:
-        text = statefile.read_text()
-    except OSError:
-        return ""
-    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
-    if not match:
-        return ""
-    config_path = match.group(1).strip().strip("'\"")
+    config_path = read_camilla_statefile_config_path()
     if not config_path:
         return ""
     try:

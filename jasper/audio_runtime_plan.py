@@ -1403,7 +1403,13 @@ def build_audio_runtime_plan_from_system(
     except ImportError:
         route_mode = "unknown"
         dac_content_lane_armed = False
-    correction_config_path = _active_camilla_config_path_from_statefile()
+    # The statefile's own reader, not a second one: this plan and the doctor's
+    # `current correction` check must never disagree about which config is
+    # loaded. Lazy like the other collaborators above — module level would make
+    # a widely-imported plan module pull the active-speaker tree.
+    from jasper.active_speaker.environment import read_camilla_statefile_config_path
+
+    correction_config_path = read_camilla_statefile_config_path()
     return build_audio_runtime_plan(
         base_env=base_values,
         outputd_env=outputd.values,
@@ -2324,23 +2330,6 @@ def _fir_metadata_paths_for_config(text: str, *, config_path: Path) -> tuple[Pat
             wav_path = config_path.parent / wav_path
         out.append(wav_path.with_suffix(".json"))
     return tuple(out)
-
-
-def _active_camilla_config_path_from_statefile() -> str | None:
-    statefile = Path(
-        os.environ.get(
-            "JASPER_CAMILLA_STATEFILE",
-            "/var/lib/camilladsp/outputd-statefile.yml",
-        )
-    )
-    try:
-        text = statefile.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1).strip().strip("'\"") or None
 
 
 def outputd_latency_floor_actions(

@@ -54,7 +54,6 @@ pass continues into its gate set, which resolves loopback on its own terms.
 from __future__ import annotations
 
 import logging
-import os
 
 from jasper.log_event import log_event
 
@@ -234,12 +233,14 @@ def _reemit_graph_at_ring() -> tuple[bool, str]:
     ``JASPER_CAMILLA_STATEFILE``; taking it would let the divergence check read
     one statefile while the re-emit re-pointed another.
     """
-    from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
+    from jasper.active_speaker.environment import camilla_statefile_path
     from jasper.cli import active_speaker as cli
 
-    statefile = os.environ.get(
-        "JASPER_CAMILLA_STATEFILE", str(DEFAULT_CAMILLA_STATEFILE)
-    )
+    # Resolved through the same owner ``applied_profile_displacement`` resolves
+    # through, so the two cannot disagree — including on an empty
+    # ``JASPER_CAMILLA_STATEFILE``, which both read as ``"."`` where this call
+    # site alone used to send ``""``.
+    statefile = str(camilla_statefile_path())
     argv = ["baseline-reemit", "--endpoint", "ring", "--statefile", statefile]
     try:
         rc = int(cli.main(argv))

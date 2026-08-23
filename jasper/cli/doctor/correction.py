@@ -20,6 +20,10 @@ from datetime import datetime as _datetime, timezone
 from pathlib import Path
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
+from ...active_speaker.environment import (
+    camilla_statefile_path,
+    read_camilla_statefile_config_path,
+)
 from ...active_speaker.seat_level_reference import (
     load_seat_level_reference,
     seat_level_reference_state_path,
@@ -440,24 +444,17 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
         "(miniDSP, Dayton, Cross-Spectrum) are response curves",
     )
 
-def _parse_camilla_statefile_config_path(path: Path) -> str | None:
-    try:
-        text = path.read_text()
-    except OSError:
-        return None
-    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1).strip().strip("'\"") or None
-
 def _active_camilla_config_path() -> tuple[Path, str | None]:
-    statefile = Path(
-        os.environ.get(
-            "JASPER_CAMILLA_STATEFILE",
-            "/var/lib/camilladsp/outputd-statefile.yml",
-        )
-    )
-    return statefile, _parse_camilla_statefile_config_path(statefile)
+    """Which statefile this box means, and the config it names (or ``None``).
+
+    Both halves come from ``active_speaker.environment`` — the one owner of the
+    ``JASPER_CAMILLA_STATEFILE`` override, the shipped default, and the
+    ``config_path`` parse. The pair is what the callers need: the path is named
+    in the warn detail even when the parse fails.
+    """
+
+    statefile = camilla_statefile_path()
+    return statefile, read_camilla_statefile_config_path(statefile)
 
 @doctor_check(order=29, group="correction")
 def check_correction_current_config() -> CheckResult:
