@@ -634,7 +634,13 @@ class StampingTone(BlockingTone):
 
 
 def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
-    """The jts3 rig: a 61 dB SPL room, the measured chain, the real ceiling."""
+    """The jts3 rig: a 61 dB SPL room, the measured chain, the resolved stop.
+
+    Synthetic like the rest of this file — a MODELLED mic, not a replayed
+    trace — so it characterizes today's ramp and takes today's commissioning
+    stop (``SPL_CEILING``, the ruled 85). The frozen pre-ruling evidence is the
+    ``NEW_HORN_*`` replay below, which is a different thing and says so.
+    """
     clock = FakeClock()
     volume = Volume()
     tone = StampingTone(clock)
@@ -649,7 +655,7 @@ def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
             target=JTS3_TARGET,
             sensitivity=UMIK2,
             max_main_volume_db=JTS3_CEILING_DB,
-            spl_ceiling_db_spl=80.0,
+            spl_ceiling_db_spl=SPL_CEILING,
             get_main_volume_db=volume.get,
             set_main_volume_db=volume.set,
             play_continuous_tone=tone.play,
@@ -693,7 +699,7 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
     assert -14.0 < result.reference_volume_db < -12.0
     # Under the ceiling and under the commissioning stop, throughout.
     assert max(step["volume_db"] for step in steps) < JTS3_CEILING_DB
-    assert max(step["observed_db_spl"] for step in steps) < 80.0
+    assert max(step["observed_db_spl"] for step in steps) < SPL_CEILING
 
 
 def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):

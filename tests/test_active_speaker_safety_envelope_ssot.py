@@ -25,7 +25,7 @@ import pytest
 
 from jasper.active_speaker import commission_wiring, staging, tone_plan
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.profile import SafetyEnvelope
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, SafetyEnvelope
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TOLERANCE_DB,
     SeatLevelTarget,
@@ -49,7 +49,17 @@ _STOP_KWARG = "max_commissioning_level_db_spl"
 
 
 def _restating_sites(tree: ast.AST) -> list[int]:
-    """Line numbers of ``SafetyEnvelope(...)`` calls passing the stop kwarg."""
+    """Line numbers of ``SafetyEnvelope(...)`` calls that could set the stop.
+
+    The explicit keyword is only the obvious route. Two more reach the same
+    field without naming it, so all three are flagged:
+
+    * ``max_commissioning_level_db_spl=`` — the plain restatement;
+    * ANY positional argument — field ORDER decides what a positional sets, so
+      a positional stop names nothing a grep or a reader could see, and no
+      site needs positional construction here;
+    * a ``**splat`` — its keys are not literals, so no AST scan can read them.
+    """
     lines: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -60,7 +70,9 @@ def _restating_sites(tree: ast.AST) -> list[int]:
         )
         if name != "SafetyEnvelope":
             continue
-        if any(kw.arg == _STOP_KWARG for kw in node.keywords):
+        names_the_stop = any(kw.arg == _STOP_KWARG for kw in node.keywords)
+        splats = any(kw.arg is None for kw in node.keywords)
+        if names_the_stop or splats or node.args:
             lines.append(node.lineno)
     return lines
 
@@ -70,7 +82,7 @@ def test_the_ruled_stop_is_the_dataclass_default() -> None:
     assert RULED_STOP_DB_SPL == 85.0
     # The ruled value is the validated ceiling, not an arbitrary number.
     SafetyEnvelope(max_commissioning_level_db_spl=85.0).validate()
-    with pytest.raises(Exception):
+    with pytest.raises(ActiveSpeakerConfigError):
         SafetyEnvelope(max_commissioning_level_db_spl=85.1).validate()
 
 
@@ -79,12 +91,22 @@ def test_no_production_site_restates_the_commissioning_stop() -> None:
 
     Scope floor — what this actually scans, stated so nobody reads it as
     broader than it is: every ``jasper/**/*.py`` file, AST-based (so prose
-    naming the kwarg does not count). It deliberately does NOT cover
-    ``tests/`` (a test constructing an envelope with an explicit stop is
-    exercising ``validate``, which is legitimate), preset JSON data (a stored
-    envelope declares its own stop and ``SafetyEnvelope.from_mapping`` is its
-    reader), or a stop reaching the constructor through ``**kwargs`` or a
-    dict splat, which no AST scan can see.
+    naming the kwarg does not count), matching the call by the literal name
+    ``SafetyEnvelope``.
+
+    Three things it deliberately does NOT cover, each for a reason:
+
+    * ``tests/`` — a test constructing an envelope with an explicit stop is
+      exercising ``validate``, which is legitimate;
+    * preset JSON data — a stored envelope declares its own stop, and
+      ``SafetyEnvelope.from_mapping`` is its reader (the bundled files are
+      covered by ``test_every_bundled_preset_declares_the_ruled_stop``);
+    * in-class construction spelled ``cls(...)`` rather than by name. That is
+      exactly ``from_mapping``, the deserializer, which MUST pass the field
+      because it is reading stored data — and which since the 2026-08-23
+      ruling defaults it from ``cls.max_commissioning_level_db_spl`` rather
+      than a literal of its own. A name-matched detector cannot see ``cls``;
+      an allowlist would only re-admit the one site it would flag.
     """
     offenders: dict[str, list[int]] = {}
     for path in sorted(_JASPER.rglob("*.py")):
@@ -133,8 +155,11 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
     assert [i for i in issues if i.get("severity") == "blocker"] == []
     assert preset is not None
     assert preset.safety.max_commissioning_level_db_spl == RULED_STOP_DB_SPL
-    # The two envelope fields that DIFFER from the dataclass default are
-    # deliberate and stay restated: a quieter first sweep and a finer step.
+    # The two envelope fields that DIFFER from their dataclass defaults stay
+    # restated, and are pinned here only so a later cleanup cannot delete them
+    # as if they were restatements too. This asserts what they ARE, not what
+    # they do: neither has a production reader today (pre-existing, and not
+    # this change's to fix).
     assert preset.safety.initial_sweep_level_db_spl == 55.0
     assert preset.safety.escalation_step_db == 1.0
 

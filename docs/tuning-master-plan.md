@@ -186,15 +186,17 @@ ratified rulings. Constants land in code as the named program definitions;
   86 dB industry convention is noted and **rejected as an absolute**: it
   exceeds the declared `max_commissioning_level_db_spl` ceiling (85 on
   every shipped preset since the 2026-08-23 owner ruling, which is also the
-  schema cap), which sits on the doctrine's closed hard-stop list. Absolute SPL anchoring uses the mic's parsed
-  sensitivity (`calibration.parse_calibration_sensitivity`).
+  schema cap), which sits on the doctrine's closed hard-stop list. Absolute
+  SPL anchoring uses the mic's parsed sensitivity
+  (`calibration.parse_calibration_sensitivity`).
 - **Escalation** (the second level, on anomaly): anchor + 10 dB where the
   preset's declared ceiling permits, otherwise the largest separation the
   ceiling allows, with the shrunken separation disclosed in the evidence.
-  Every shipped preset declares 85 dB SPL, which is also the schema cap, so
-  raising a preset's declared ceiling is spent as a lever: a separation the
+  Both **shipped** presets declare 85 dB SPL, which is also the schema cap, so
+  for them raising the declared ceiling is spent as a lever: a separation the
   ceiling cannot fit is disclosed shrunken rather than bought with a higher
-  stop. `delta_probe`'s commanded-amount regression remains the
+  stop. A household preset declaring less than 85 keeps the lever, within the
+  same 45–85 schema. `delta_probe`'s commanded-amount regression remains the
   primary compression detector and needs no second level, which is why
   escalation is on-anomaly rather than default.
 - **Distance rule:** measure at the largest distance where the gate still

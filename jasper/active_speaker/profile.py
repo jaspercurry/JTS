@@ -504,10 +504,16 @@ class SafetyEnvelope:
     initial_sweep_level_db_spl: float = 65.0
     # Owner ruling 2026-08-23: the commissioning SPL stop rides this dataclass
     # default; construction sites must not restate it. Two staging sites
-    # hardcoded 80.0, which hid this default and cost a bench night — the ruled
-    # 75 dB seat-level frame could not converge because a measured ~+6.5-7 dB
-    # post-step transient peaked ~81.5 and tripped the 80.0 stop, even though
-    # the settled level at the refused volume was ~74, inside the band.
+    # hardcoded 80.0, which hid this default and cost a bench night: the ruled
+    # 75 dB seat-level frame could not converge, because a post-step sample
+    # tripped the 80.0 stop and abandoned its window before any median.
+    # What is BANKED, and only that (runs 83/84, replayed verbatim by
+    # ``tests/test_active_speaker_seat_level.py``): the two trip values were
+    # 80.50 and 80.90 — single SAMPLES, not peaks. The settled level at the
+    # refused volume was never measured, because the window was abandoned. So
+    # the excess over settled is a RANGE and not a number: roughly +6 to
+    # +11 dB, the two ends being an extrapolation from each run's own slope
+    # and one from the 68/72-run calibration. Do not restate either end alone.
     # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
     escalation_step_db: float = 5.0
@@ -527,7 +533,12 @@ class SafetyEnvelope:
                 "initial_sweep_level_db_spl",
             ),
             max_commissioning_level_db_spl=_finite_float(
-                raw.get("max_commissioning_level_db_spl", 85.0),
+                # The dataclass default is the ONE owner of this value; a
+                # literal here would be a second (owner ruling 2026-08-23).
+                raw.get(
+                    "max_commissioning_level_db_spl",
+                    cls.max_commissioning_level_db_spl,
+                ),
                 "max_commissioning_level_db_spl",
             ),
             escalation_step_db=_positive_float(

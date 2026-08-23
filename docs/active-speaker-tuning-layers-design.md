@@ -1768,9 +1768,10 @@ vocabulary and `SUMMED_SWEEP_PHASES` membership, `position_angle_deg`'s
 (15 captures, 13 displayed minutes) and its 9 → 3 stage-1 shape under a
 `STAGE1_INCLUDES_LATERAL` flag flip, the ramp's dBFS window and the
 calibration reader's lack of a sensitivity term, the declared commissioning
-SPL fields, the three N≥3 policy floors, and the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
-the display constants, not a fixed one — it moves with topology — so it is
-cited as representative rather than verified. Nothing else in this doc was
+SPL fields, the three N≥3 policy floors, and the pilot pair's duration. The
+per-pose ~41.6 s is a representative figure at the display constants, not a
+fixed one — it moves with topology — so it is cited as representative rather
+than verified. Nothing else in this doc was
 re-verified in that pass.
 
 Decision 15 (2026-08-19) opens no new issues. Its two named blockers are
