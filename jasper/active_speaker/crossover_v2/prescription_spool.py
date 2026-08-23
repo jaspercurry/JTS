@@ -423,38 +423,34 @@ def _anchors(
     One per class, because the two gates are measured against different
     evidence. The blend document is bounded by ONE region, so its anchor is one
     band. The per-driver document is bounded by a band PER ROLE and, unlike its
-    sibling, carries a second evidence bar — so its anchors are the role bands
-    and the round's WHOLE banked classification, exactly as the staging gate
-    read it.
+    sibling, carries a second EVIDENCE reading it discloses — so its anchors are
+    the role bands and the round's WHOLE banked classification, exactly as the
+    staging gate read it.
 
-    Banking the verdicts is what makes the driver class's re-validation as
-    strong at take time as it was at staging time, which the blend class's is
-    deliberately not: that one passes ``positional_evidence=None``, so a boost
-    tampered into the document refuses on missing evidence rather than on the
-    bar. Here the SAME evidence that judged the filters is offered back, so a
-    document edited to move a filter onto an unclassified — or an
-    interference-barred — feature refuses on the bar itself, by its own name.
+    Banking the verdicts is what lets the take re-derive the SAME disclosure the
+    staging gate made. Since the 2026-08-23 ruling the driver class's
+    classification vouch refuses nothing — it counts the filters no banked
+    verdict backs onto ``unvouched_filters`` — so what this anchor buys is that
+    the take's count equals the staging count, rather than the take applying a
+    quietly weaker bar. The blend class banks no such evidence and passes
+    ``positional_evidence=None``, because its bar DOES still refuse (a boost
+    tampered into the document refuses on missing evidence).
 
-    **The whole row set, not the vouching subset, and that is the fix for a
-    hole the subset had.** ``classification_basis`` holds only the verdicts
-    that PASSED the bar, so every verdict in it is ``defect-cuttable`` by
-    construction and the minimum-phase DIPS are exactly what it drops. The bar
-    is ``defect_cuttable_at``'s nearest-verdict-decides rule, and it needs the
-    dips in order to say no: on the 2026-08-19 record a filter honestly aimed
-    at the 4149 Hz peak, moved 0.143 octaves onto the 4582 Hz dip, found the
-    peak still banked, no dip to outrank it, and was ACCEPTED — the precise
-    proposal the bar exists to refuse.
+    **The whole row set, not the vouching subset.**
+    ``classification_basis`` holds only the verdicts that vouched, so every
+    verdict in it matches some filter's sign by construction and the opposite-
+    sign features are exactly what it drops. The vouch is
+    ``defect_cuttable_at`` / ``defect_boostable_at``'s nearest-verdict-decides
+    rule, and it needs the whole set to answer: on the 2026-08-19 record a
+    filter aimed at the 4149 Hz peak sits 0.143 octaves from the 4582 Hz dip,
+    and which of the two is nearest is what decides whether it is vouched. A
+    subset would report a different count from the one the operator read.
 
-    The property this buys is not "refuses more"; it is EQUALITY, **and it is
-    equality on the classification bar alone.** Same function, same verdicts,
-    so the take's answer to "may this filter be aimed here" is the answer the
-    staging gate gave it — and the subset was wrong in both directions rather
-    than merely lenient: it hid the dips (a false accept, the hole above) and
-    it also hid every cuttable feature no filter happened to aim at, so a
-    filter moved onto one of THOSE refused as unclassified when the staging
-    step would have admitted it. A subset is an argument about how much
-    evidence is enough; handing back what the gate actually read needs no
-    argument.
+    **Neither this anchor nor the digest beside it is a tamper defence, and
+    naming that is more honest than implying it.** The envelope is one
+    operator-writable 0640 file, so whoever can edit the document can edit the
+    verdicts and recompute ``prescription_sha256`` in the same pass — the same
+    threat model ``passbands_hz`` below already states for itself.
 
     The OTHER anchor on this class, ``passbands_hz``, keeps the weaker property
     it has always had and that #2740's review examined and accepted: it is the
@@ -500,9 +496,9 @@ def stage_prescription(
     REQUIRED rather than defaulted for the reason ``fitted`` is on
     ``read_blend_prescription``'s rule: it is the input a caller can forget
     while everything still looks fine at staging time, and the damage lands a
-    round later, at the take, on a bar quietly weaker than the one that
-    accepted the document. The blend class has no such evidence and passes
-    ``None``; :func:`_anchors` is where the two classes part.
+    round later, at the take, as a vouch count that disagrees with the one the
+    operator read. The blend class has no such evidence and passes ``None``;
+    :func:`_anchors` is where the two classes part.
 
     ``document`` is stored VERBATIM, not re-serialized from the parsed object.
     The digest banked beside it is over these bytes, so the take can prove the
@@ -586,6 +582,14 @@ def stage_prescription(
         displaced_filters=driver.displaced_filters if driver else None,
         displaced_boost_db=driver.displaced_boost_db if driver else None,
         displaced_boost_role=driver.displaced_boost_role if driver else None,
+        # …and how much of it the round's own evidence backs. `None` on the
+        # blend class, whose evidence is positional rather than classified, and
+        # on a driver document read back without a classification — an absent
+        # number rather than a zero, as above. It bounds nothing: since
+        # 2026-08-23 the classification vouch discloses and never refuses, so
+        # this is the line an operator greps to see what a staged document is
+        # betting on.
+        unvouched_filters=driver.unvouched_filters if driver else None,
         replaced=replaced,
     )
     return path
@@ -827,10 +831,9 @@ def _validate(
             packet_fingerprint=envelope.get("packet_fingerprint"),
             passbands_hz=_passbands(envelope.get("passbands_hz")),
             # The round's WHOLE banked classification, as the staging gate read
-            # it — see `_anchors`. Same evidence, same bar, so a document edited
-            # to move a filter onto a dip refuses on the classification bar by
-            # its own name rather than on a substitute; a subset that dropped
-            # the dips could not, because it is the dips that say no.
+            # it — see `_anchors`. Same evidence, same reading, so the take's
+            # `unvouched_filters` equals the number the operator was shown at
+            # staging time; a subset would answer a different question.
             classifications=read_feature_verdicts(envelope.get("classifications")),
             # `None` for the same reason the blend arm below passes no
             # positional evidence: the packet is gone, and this argument buys

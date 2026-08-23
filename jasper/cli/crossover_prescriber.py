@@ -392,6 +392,50 @@ def _displaced_phrase(prescription: DriverPrescription) -> str:
     )
 
 
+def _vouch_phrase(prescription: DriverPrescription) -> str:
+    """Which filters a banked verdict backs, in one line, or that nobody knows.
+
+    The same three answers ``_displaced_phrase`` draws, for the same reason —
+    "nobody read the evidence", "it was read and everything is backed", and
+    "it was read and these are not" send an operator somewhere different. Only
+    the third asks for a judgement.
+
+    It reports and never refuses. Until 2026-08-23 the unvouched filters were
+    refused instead, which meant a role could never keep an incumbent shelf: the
+    fit engine placed it and no verdict vouches for it, so naming the role
+    deleted it (#2863). See
+    :func:`~.driver_prescription._check_classification` for the ruling.
+    """
+    unvouched = prescription.unvouched_filters
+    total = len(prescription.filters)
+    if unvouched is None:
+        return (
+            "vouched: unknown — no banked classification was read for this "
+            "document, so which filters the evidence backs cannot be named"
+        )
+    if not total:
+        return "vouched: no filters to vouch for"
+    if not unvouched:
+        return f"vouched: all {total} filter(s) sit on a banked defect verdict"
+    # By ``(role, freq)`` rather than by position, so a basis shorter than the
+    # filter list names the RIGHT filters — the same match the receipt's own
+    # basis is keyed on.
+    backed = {
+        (basis.role, basis.filter_freq_hz)
+        for basis in prescription.classification_basis
+    }
+    named = ", ".join(
+        f"{entry['role']} @ {float(entry['freq']):.0f} Hz"
+        for entry in prescription.filters
+        if (str(entry["role"]), float(entry["freq"])) not in backed
+    )
+    return (
+        f"vouched: {total - unvouched} of {total} filter(s); {unvouched} carry "
+        f"no banked verdict ({named}) — disclosed, not refused; the round "
+        "measures whether they helped"
+    )
+
+
 def _print_prescription(
     prescription: BlendPrescription | DriverPrescription,
     verb: str,
@@ -405,10 +449,13 @@ def _print_prescription(
     always did, because a test in a real subprocess reads that sentence to prove
     the CLI's logging configuration did not swallow the operator's own output.
 
-    The per-driver class gets one more line, after the filters, because a
-    document of that class is a TOTAL for every role it names and the filters
-    printed above are therefore also a DELETION of whatever those roles carry —
-    the fact the 2026-08-22 round had no way to see (#2863).
+    The per-driver class gets two more lines, after the filters, and both are
+    disclosures the gate makes rather than bounds it applies. What the document
+    DELETES, because a document of that class is a TOTAL for every role it names
+    and the filters printed above are therefore also a deletion of whatever
+    those roles carry — the fact the 2026-08-22 round had no way to see (#2863).
+    And which of those filters a banked verdict BACKS, which stopped being a
+    refusal on 2026-08-23 and became this line.
     """
     print(
         f"{verb} {prescription.prescription_class} prescription{qualifier}: "
@@ -424,6 +471,7 @@ def _print_prescription(
         )
     if isinstance(prescription, DriverPrescription):
         print(f"  {_displaced_phrase(prescription)}", file=sys.stderr)
+        print(f"  {_vouch_phrase(prescription)}", file=sys.stderr)
 
 
 def _next_round_ordinal(state_path: str | None) -> int:

@@ -1957,9 +1957,9 @@ def _incumbent_block(
                 "the per-driver correction each branch is already carrying. A "
                 "driver prescription is a TOTAL for every role it names: every "
                 "filter listed here for a role you name and do not repeat is "
-                "DELETED from the graph. A document may carry only Peaking "
-                "filters, so a shelf listed here cannot be repeated at all — "
-                "name that role only if you mean to drop its shelf"
+                "DELETED from the graph. A document may carry any filter listed "
+                "here, shelves included, so repeat what you mean to keep — a "
+                "shelf must lead the role's chain, as it does here"
             ),
         },
     }

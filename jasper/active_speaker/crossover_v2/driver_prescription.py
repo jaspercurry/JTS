@@ -27,9 +27,12 @@ and it is the shipped instrument for two of stage P3's rules
 (``docs/active-speaker-tuning-layers-design.md``):
 
 * **rule 1, classify-first** — "only minimum-phase, speaker-own defects are
-  eligible."  Enforced here as :data:`FEATURE_NOT_CUTTABLE` and
-  :data:`FEATURE_NOT_BOOSTABLE`, against banked verdicts, by
-  :mod:`.feature_classification`.
+  eligible."  DISCLOSED here, against banked verdicts, by
+  :func:`_check_classification` reading :mod:`.feature_classification`: every
+  filter no verdict vouches for is counted onto the receipt and onto the
+  propose/stage report, and none of them is refused.  Owner ruling, 2026-08-23
+  — the vouch is a prediction about whether a filter will help, and predictions
+  propose while measurements dispose.
 * **rule 3, per-driver placement** — "a per-driver defect gets a per-driver
   filter in that branch — Layer 1a's existing per-role stage — and the shared
   stage is reserved for genuinely system-level shaping."  Enforced here as the
@@ -62,19 +65,17 @@ bounds that spend; the emitter's 12 dB rail, the per-driver soft-clip limiters
 and the runtime contract's re-proof are unchanged and are not this class's to
 weaken.
 
-The admission bars are therefore the only new safety logic.  Two are
-EVIDENCE, and they are what a boost owes over a cut: a banked
-:data:`~.feature_classification.DEFECT_BOOSTABLE` verdict is the nearest one to
-the filter's centre, and the boost is no deeper than the dip that verdict
-measured.  The rest are SHAPE, and mirror the cut side: a per-filter
-magnitude window, the shared Q envelope, and
-:data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.  That
-last one is what sizes the class: it bounds the spend one document can command
-at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0 dB.  Two independent gates still, on
-:mod:`.blend_prescription`'s rule that the seam's promise is a property of the
-FUNCTION and not of the call graph: :func:`_check_bounds` and
-:func:`_check_classification` at the boundary,
-:func:`driver_prescription_route` on every value object however it was built.
+The admission bars are therefore the only new safety logic, and since the
+2026-08-23 ruling every one of them is SHAPE.  A per-filter magnitude window,
+the shared Q envelope, the declared band, the emitter's own filter vocabulary,
+and :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated per-role cascade.
+That last one is what sizes the class: it bounds the spend one document can
+command at :data:`MAX_SPL_SPEND_BOUND_DB` = 13.0 dB.  What a boost owes over a
+cut is no longer a bar but a NUMBER — that spend — which
+:func:`_check_composed` measures at the boundary and the emitter re-proves.
+The EVIDENCE that used to bar a filter is now
+:func:`_check_classification`'s disclosure, counted onto the receipt so a
+reader weighs it instead of the gate deciding for them.
 
 **Where every bound comes from, and why not one of them is new.**  Restoring
 rather than inventing is the #2730 precedent, and it is stronger here because
@@ -130,17 +131,23 @@ cut is the driver's own declared band: its published response range, floored
 by whatever protective high-pass it declares and capped by whatever protective
 low-pass it declares.  See :func:`driver_passbands_from_safety_profile`.
 
-**And BOTH signs carry an evidence bar here, which inverts the family's usual
-posture.**  In the blend region, "cuts are bounded and free; boosts pay an
-evidence bar" — a cut there is cheap because the region is small, the honesty
-mask has already removed the interference-flagged bins, and the correction is
-graded a few hundred Hz wide.  None of those three hold out here.  A full-band
-per-driver cut reaches bins the merged mask never screened, at frequencies no
-positional bar was ever computed for, and the 2026-08-19 night measured what
-happens when a filter is aimed at the wrong KIND of feature: both prescribed
-rounds were rolled back on skirt damage.  So this class pays the bar the blend
-class does not, and it pays it in the currency stage P3 rule 1 names —
-classification, not position.
+**And BOTH signs carry an evidence DISCLOSURE here, where the blend class
+carries a bar.**  In the blend region, "cuts are bounded and free; boosts pay
+an evidence bar" — a cut there is cheap because the region is small, the
+honesty mask has already removed the interference-flagged bins, and the
+correction is graded a few hundred Hz wide.  None of those three hold out here.
+A full-band per-driver cut reaches bins the merged mask never screened, at
+frequencies no positional bar was ever computed for, and the 2026-08-19 night
+measured what happens when a filter is aimed at the wrong KIND of feature: both
+prescribed rounds were rolled back on skirt damage.  That is the reason the
+classification is REPORTED on every filter, in the currency stage P3 rule 1
+names — classification, not position.  It stopped being a refusal on
+2026-08-23, when the owner ruled that a candidate inside the caps may be
+tested: a filter aimed at the wrong kind of feature costs a rolled-back round,
+which is what a round is FOR, and the 2026-08-22 evidence is that refusing on
+it cost more than it saved — a role whose incumbent carried a Lowshelf could
+not keep it, because nothing vouches for a filter the fit engine placed
+(#2863).
 """
 
 from __future__ import annotations
@@ -161,6 +168,21 @@ from jasper.active_speaker.branch_chain import (
     _evaluation_grid,
     chain_response,
 )
+# The EMITTER's own filter vocabulary and its own shelf-placement classifier,
+# consumed rather than restated: "would the emitter accept this list" is the
+# question this gate's shape bar asks, and it has one owner. That is the
+# opposite of the lockstep rule the bounds below follow, and deliberately so —
+# a POLICY number restated here is an independent re-validation, while the set
+# of filters the graph can build is a fact about the graph.
+from jasper.active_speaker.camilla_yaml import (
+    LINEARIZATION_BIQUAD_TYPES,
+    linearization_slot,
+)
+# The one Butterworth steepness every emitted linearization shelf carries. The
+# emitter drops a shelf entry's own ``q`` and spells this instead, so a gate
+# that evaluated a prescriber's number would be reading a filter the speaker
+# will not play.
+from jasper.camilla_config_contract import SHELF_Q
 from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     declared_protection_lowpass_ceiling_hz,
@@ -211,13 +233,7 @@ __all__ = [
     "DRIVER_PRESCRIPTION_SCHEMA_VERSION",
     "LINEARIZATION_CANDIDATE_FIELD",
     "MAX_SPL_SPEND_BOUND_DB",
-    "BOOST_EXCEEDS_FEATURE_DEPTH",
     "BOOST_IN_CROSSOVER_OVERLAP",
-    "BOOST_UNVOUCHED",
-    "FEATURE_DEPTH_UNAVAILABLE",
-    "FEATURE_NOT_BOOSTABLE",
-    "FEATURE_NOT_CLASSIFIED",
-    "FEATURE_NOT_CUTTABLE",
     "ClassificationBasis",
     "check_driver_document_size",
     "DriverPassbands",
@@ -305,12 +321,15 @@ LINEARIZATION_CANDIDATE_FIELD = "linearization"
 #: relationship: a cut's width is a property of the feature it is aimed at, and
 #: the feature does not care which stage the filter is emitted from.
 #: **It bounds BOTH signs**, and this class deliberately does not call
-#: ``blend_prescription.max_q_for_gain`` — whose boost arm is 2.0 — because
-#: this seam substitutes EVIDENCE for width: the sharp-boost-into-a-null hazard
-#: that number exists to prevent is refused here by name
-#: (:data:`FEATURE_NOT_BOOSTABLE`, for every null the classifier resolved), and
-#: depth caps what a real dip can absorb. Owner ruling, 2026-08-19: width is free
-#: ("filters can be whatever works best to get flat").
+#: ``blend_prescription.max_q_for_gain`` — whose boost arm is 2.0 — on the
+#: owner's 2026-08-19 ruling that width is free ("filters can be whatever works
+#: best to get flat"). What bounds a sharp boost here is what a sharp boost
+#: costs: :data:`DRIVER_MAX_FILTER_BOOST_DB` per filter and
+#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` on the evaluated cascade, which together
+#: hold the maximum-SPL spend to :data:`MAX_SPL_SPEND_BOUND_DB` however narrow
+#: the filter is. The classifier's opinion about the feature under it rides the
+#: receipt as a disclosure (:func:`_check_classification`); since 2026-08-23 it
+#: refuses nothing.
 DRIVER_MAX_CUT_Q = 8.0
 
 #: Narrowest Q, taken from the family's owner. Below this a Peaking filter is a
@@ -601,37 +620,11 @@ FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 FILTER_BOOST_TOO_SHALLOW = "driver_filter_boost_too_shallow"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 
-#: No banked verdict covers the frequency this filter is aimed at.
-#:
-#: Deliberately distinct from :data:`FEATURE_NOT_CUTTABLE`, and the split is the
-#: same one :data:`~.blend_prescription.INSUFFICIENT_POSITIONAL_EVIDENCE` draws
-#: against ``boost_dip_not_stable``: this is "go and classify", an instruction a
-#: prescriber can act on, not a verdict on the proposal.
-FEATURE_NOT_CLASSIFIED = "driver_feature_not_classified"
-
-#: A verdict covers the frequency and it does not admit a cut — the feature is
-#: an interference null, a room arrival, a minimum-phase DIP (which a cut would
-#: deepen), or one the classifier could not resolve. Stage P3 rule 1's refusal.
-FEATURE_NOT_CUTTABLE = "driver_feature_not_cuttable"
-
-#: A verdict covers the frequency and it does not admit a boost — the feature
-#: is a minimum-phase PEAK (which a boost would grow), an interference null, a
-#: room arrival, or one the classifier could not resolve. The boost half of
-#: stage P3 rule 1, and the mirror of :data:`FEATURE_NOT_CUTTABLE`.
-FEATURE_NOT_BOOSTABLE = "driver_feature_not_boostable"
-
-#: The vouching verdict reported no depth, so there is no measured dip for the
-#: boost to be bounded by. Fail-closed rather than substituted: a boost bounded
-#: by a guessed depth is a boost bounded by nothing.
-FEATURE_DEPTH_UNAVAILABLE = "driver_feature_depth_unavailable"
-
-#: The boost is deeper than the dip it is aimed at. Filling a 1.5 dB dip with
-#: 3 dB does not correct it; it overshoots it into a peak, and spends max SPL
-#: to do so.
-BOOST_EXCEEDS_FEATURE_DEPTH = "driver_boost_exceeds_feature_depth"
-
 #: The boost's centre sits where two drivers' declared bands overlap — the
-#: crossover knee. Owner ruling, 2026-08-19 (hearing lens).
+#: crossover knee. Owner ruling, 2026-08-19 (hearing lens), and the one
+#: evidence-shaped bar on this door the 2026-08-23 ruling left standing: it is
+#: a BAND bound, not a prediction about the feature there, and what it protects
+#: is the crossover stage's own quantity.
 #:
 #: A per-driver boost there is charged nothing by the crossover stage and still
 #: moves the SUMMED response, which is the crossover's own quantity to own.
@@ -647,12 +640,15 @@ BOOST_EXCEEDS_FEATURE_DEPTH = "driver_boost_exceeds_feature_depth"
 #: is the deciding-frame measurement, not a wider refusal here.
 BOOST_IN_CROSSOVER_OVERLAP = "driver_boost_in_crossover_overlap"
 
-#: A positive-gain filter reached the route carrying no
-#: :data:`~.feature_classification.DEFECT_BOOSTABLE` basis. The route's own
-#: refusal, so a value object built directly or rehydrated by
-#: :func:`driver_prescription_from_mapping` — neither of which runs the
-#: classification bar — cannot land a boost in a candidate field.
-BOOST_UNVOUCHED = "driver_boost_unvouched"
+# SIX slugs stood beside that one until 2026-08-23, all of them the
+# classification bar's: `driver_feature_not_classified`,
+# `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
+# `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`, and
+# `driver_boost_unvouched` (the same bar restated at the route). The owner's
+# ruling made every one of them a DISCLOSURE — see `_check_classification` — so
+# they are deleted rather than registered-but-unreachable: no reader maps a
+# refusal slug back, and a vocabulary naming an answer this door can no longer
+# give would mislead the prescriber reading `refusal_reasons`.
 
 DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
@@ -673,13 +669,7 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     FILTER_BOOST_TOO_SHALLOW,
     COMPOSED_BOOST_EXCEEDED,
-    FEATURE_NOT_CLASSIFIED,
-    FEATURE_NOT_CUTTABLE,
-    FEATURE_NOT_BOOSTABLE,
-    FEATURE_DEPTH_UNAVAILABLE,
-    BOOST_EXCEEDS_FEATURE_DEPTH,
     BOOST_IN_CROSSOVER_OVERLAP,
-    BOOST_UNVOUCHED,
 })
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
@@ -700,6 +690,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "prescription_class",
     "passbands_hz",
     "classification_basis",
+    "unvouched_filters",
     "composed_boost_db",
     "composed_boost_role",
     "max_spl_spend_bound_db",
@@ -779,8 +770,19 @@ class DriverPrescription:
     #: evidence, as ``((role, lo_hz, hi_hz), ...)`` sorted by role. A tuple
     #: rather than a mapping so the record stays hashable and ordered.
     passbands_hz: tuple[tuple[str, float, float], ...]
-    #: The verdict that admitted each filter, in filter order.
+    #: The banked verdict that VOUCHES for each vouched filter, in filter
+    #: order. Shorter than ``filters`` when some are unvouched — see
+    #: :attr:`unvouched_filters` for how many, and why that is a disclosure
+    #: rather than a refusal.
     classification_basis: tuple[ClassificationBasis, ...] = ()
+    #: How many filters no banked verdict vouches for. ``None`` means nobody
+    #: computed it (the durable read-back, which rebuilds no basis); ``0``
+    #: means it was computed and every filter sits on a matching-sign defect
+    #: verdict. The two are different facts, exactly as for
+    #: ``displaced_filters`` below, and an empty ``classification_basis``
+    #: cannot tell them apart — which is the whole reason this number is
+    #: carried rather than derived.
+    unvouched_filters: int | None = None
     #: The worst per-role composed boost the gate evaluated, dB, or ``None``
     #: when nothing evaluated it. ``0.0`` means "measured, and this document
     #: puts nothing above unity"; ``None`` means the durable read-back, which
@@ -843,6 +845,7 @@ class DriverPrescription:
             "classification_basis": [
                 basis.to_dict() for basis in self.classification_basis
             ],
+            "unvouched_filters": self.unvouched_filters,
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
@@ -1027,20 +1030,32 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
                 f"filter {position} must name the driver role it belongs to",
             )
         role = role.strip()
-        if entry.get("biquad_type") != "Peaking":
-            # Peaking only. The fit engine also emits shelves, but a shelf is a
-            # LEVEL move across a driver's whole top or bottom, and per-driver
-            # level is the trim's fact and the fit's normalization ledger —
-            # neither of which an intake may reach past. A prescriber that wants
-            # a shelf is asking for a different quantity.
+        biquad_type = entry.get("biquad_type")
+        if biquad_type not in LINEARIZATION_BIQUAD_TYPES:
+            # The EMITTER's set, consumed. This bar is not a policy about what
+            # is wise to prescribe; it is what the graph can be built out of, so
+            # a type outside it would be accepted here and raise at emission.
             _refuse(
                 FILTER_MALFORMED,
-                f"filter {position} must be a Peaking biquad, got "
-                f"{entry.get('biquad_type')!r}",
+                f"filter {position} must be one of "
+                f"{sorted(LINEARIZATION_BIQUAD_TYPES)}, got {biquad_type!r}",
             )
         freq = _finite_number(entry.get("freq"), field=f"filter {position} freq")
-        q = _finite_number(entry.get("q"), field=f"filter {position} q")
         gain = _finite_number(entry.get("gain"), field=f"filter {position} gain")
+        if biquad_type == "Peaking":
+            q = _finite_number(entry.get("q"), field=f"filter {position} q")
+        else:
+            # A SHELF carries no steepness of its own, so the document does not
+            # have to state one and a stated one is replaced rather than
+            # honoured. Both halves of the loop already work this way: the
+            # emitter's shelf `FilterSpec` carries no `q` at all
+            # (`camilla_yaml._emit_driver_linearization_definitions`), and the
+            # one biquad evaluator forces the same number
+            # (`jasper.sound.profile._biquad_coeffs`'s `eff_q`). Writing it into
+            # the record is what keeps the banked filter honest — the emitter's
+            # own `_validated_biquad_entry` requires a positive `q`, and a
+            # number nothing reads is worse than the number everything uses.
+            q = SHELF_Q
         if freq <= 0.0:
             _refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
         per_role[role] = per_role.get(role, 0) + 1
@@ -1056,13 +1071,57 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
         out.append(
             {
                 "role": role,
-                "biquad_type": "Peaking",
+                "biquad_type": biquad_type,
                 "freq": freq,
                 "q": q,
                 "gain": gain,
             }
         )
+    _check_shelf_placement(out)
     return tuple(out)
+
+
+def _check_shelf_placement(filters: Sequence[dict[str, Any]]) -> None:
+    """The other half of the emitter's filter vocabulary: WHERE a shelf may sit.
+
+    ``camilla_yaml`` accepts a shelf in exactly two places in one role's chain —
+    leading (index 0), or a trailing ``Highshelf`` taper after a ``Lowshelf``
+    lead (#1668) — and raises on any other placement, because the position is
+    what names the emitted filter and two shelves in "peak" slots would collide.
+    :func:`~jasper.active_speaker.camilla_yaml.linearization_slot` is that
+    classifier, consumed rather than restated for
+    :func:`~.evidence_packet.packet_incumbent_linearization`'s reason: "would the
+    emitter accept this list" has one owner.
+
+    Applied PER ROLE and in document order, which is the order the merged
+    candidate field carries into the emitter. Peaking anywhere is always fine,
+    so a document that names no shelf never reaches the loop's body.
+    """
+    for role in dict.fromkeys(str(entry["role"]) for entry in filters):
+        indexed = [
+            (position, entry)
+            for position, entry in enumerate(filters)
+            if str(entry["role"]) == role
+        ]
+        role_filters = [entry for _, entry in indexed]
+        count = len(role_filters)
+        for index, (position, entry) in enumerate(indexed):
+            biquad_type = str(entry["biquad_type"])
+            if biquad_type == "Peaking":
+                continue
+            if linearization_slot(index, count, role_filters) != "peak":
+                continue
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} is a {biquad_type} at position {index} of "
+                f"the {role}'s {count} filter(s), which the emitter cannot "
+                "build: a shelf may only lead a driver's chain, or (a Highshelf "
+                "taper) end it after a Lowshelf lead. Put the shelf first",
+                role=role,
+                biquad_type=biquad_type,
+                role_position=index,
+                role_filters=count,
+            )
 
 
 def _crossover_overlaps(
@@ -1456,175 +1515,55 @@ def _check_displaced(
 def _check_classification(
     filters: tuple[dict[str, Any], ...],
     verdicts: Sequence[FeatureVerdict] | None,
-) -> tuple[ClassificationBasis, ...]:
-    """Stage P3 rule 1, applied per filter BY SIGN: EQ only classified defects.
+) -> tuple[tuple[ClassificationBasis, ...], int]:
+    """Which filters a banked verdict VOUCHES for, and how many it does not.
 
-    Refuses with :data:`FEATURE_NOT_CLASSIFIED` when nothing was classified at
-    the frequency — an instruction to go and measure, not a verdict on the
-    proposal — and with :data:`FEATURE_NOT_CUTTABLE` /
-    :data:`FEATURE_NOT_BOOSTABLE` when something was and it does not admit that
-    sign. A boost pays two more bars, both about the dip's measured depth, in
-    :func:`_boost_basis`.
+    Returns ``(the vouching basis in filter order, the count of filters with no
+    vouching verdict)``. **It refuses nothing**, and that is ruling 2026-08-23:
+    the vouch is a prediction about whether a filter will help, and
+    ``docs/measurement-loop-doctrine.md`` §2 gives a prediction the power to
+    propose and never to dispose. A filter inside this gate's caps and bands
+    spends nothing the household can hear more of, so §3 has no
+    component-damage mechanism to name for it and §4's nanny test fails a
+    refusal here — trying an unclassified feature and measuring the result is
+    exactly the reversible experiment that doctrine protects. What it cost while
+    it did refuse is on the record: a role whose incumbent carried a Lowshelf
+    could not keep it, because no banked verdict vouches for a filter the fit
+    engine placed, so naming the role deleted the shelf (#2863).
 
-    **What clearing this bar does and does not mean.** It means the feature is
-    not one a cut is structurally the wrong tool for. It does NOT mean a cut
-    will help: run-log §9.2 says so in as many words, and every EQ candidate
-    played that night measured worse against the frozen reference. The round that
-    follows is what answers the second question, and it answers it by measuring.
+    A verdict vouches when it is the NEAREST banked one to the filter's centre
+    and its classification matches the filter's sign — ``defect_cuttable_at``
+    for a cut, ``defect_boostable_at`` for a boost, each applying its own
+    nearest-verdict-decides rule. One question, asked the same way for both
+    signs, so a receipt reads the same across them.
+
+    **Vouched is not "will help", and unvouched is not "will not".** A defect
+    verdict says EQ is not structurally the wrong tool; run-log §9.2 says in as
+    many words that it does not say EQ helps, and every EQ candidate played on
+    2026-08-19 measured worse against the frozen reference. The round that
+    follows answers both, and it answers by measuring.
     """
-    if not filters:
-        # A prescription that corrects nothing needs no evidence that its
-        # filters are aimed at defects. Ordering, not leniency: refusing an
-        # empty document for want of a classification would report a
-        # missing-evidence problem to an author who did not ask to correct
-        # anything, and the bar's whole content is per-filter.
-        return ()
     if verdicts is None:
-        _refuse(
-            FEATURE_NOT_CLASSIFIED,
-            "this packet carries no banked feature classification, so no "
-            "filter can be shown to be aimed at a minimum-phase driver defect "
-            "rather than at an interference null or a room arrival. Bank a "
-            "classification for this round and propose again.",
-            match_tolerance_octaves=VERDICT_MATCH_TOLERANCE_OCTAVES,
-        )
+        # No banked classification at all: nothing is vouched, and the count
+        # says so. Distinct from the ``None`` the caller carries for "nobody
+        # computed this", which is what a durable read-back reports.
+        return (), len(filters)
     basis: list[ClassificationBasis] = []
-    for position, entry in enumerate(filters):
+    unvouched = 0
+    for entry in filters:
         freq = float(entry["freq"])
         role = str(entry["role"])
-        gain = float(entry["gain"])
-        if gain > 0.0:
-            basis.append(_boost_basis(position, role, freq, gain, verdicts))
+        matching = (
+            defect_boostable_at if float(entry["gain"]) > 0.0 else defect_cuttable_at
+        )
+        vouching, _nearest = matching(verdicts, freq)
+        if vouching is None:
+            unvouched += 1
             continue
-        vouching, nearest = defect_cuttable_at(verdicts, freq)
-        if vouching is not None:
-            basis.append(
-                ClassificationBasis(filter_freq_hz=freq, role=role, verdict=vouching)
-            )
-            continue
-        if nearest is None:
-            _refuse(
-                FEATURE_NOT_CLASSIFIED,
-                f"filter {position} is aimed at {freq:.1f} Hz and no banked "
-                "verdict covers that frequency (within "
-                f"{VERDICT_MATCH_TOLERANCE_OCTAVES:.3g} octaves). Classify the "
-                "feature and propose again — an unclassified feature may be a "
-                "cancellation, which a cut makes worse rather than better.",
-                role=role,
-                freq_hz=freq,
-                match_tolerance_octaves=VERDICT_MATCH_TOLERANCE_OCTAVES,
-            )
-        # The NEAREST verdict is the one quoted, because it is the one that
-        # decided — see `defect_cuttable_at`. A cuttable peak sitting further
-        # away inside the tolerance neither vouches nor appears here, which is
-        # what stops a receipt citing a feature the filter is not on.
-        why = (
-            "cutting a minimum-phase DIP deepens it — aim a cut at a peak"
-            if nearest.classification == DEFECT_BOOSTABLE
-            else (
-                "only a minimum-phase, speaker-own peak may be cut: a "
-                "cancellation is lowered along with the direct sound, and a "
-                "room arrival is not the speaker's to correct"
-            )
+        basis.append(
+            ClassificationBasis(filter_freq_hz=freq, role=role, verdict=vouching)
         )
-        _refuse(
-            FEATURE_NOT_CUTTABLE,
-            f"filter {position} is aimed at {freq:.1f} Hz, and the nearest "
-            f"banked verdict ({nearest.freq_hz:.1f} Hz) is "
-            f"{nearest.classification!r} "
-            f"(excess group delay {nearest.egd_verdict or 'unreported'}, gate "
-            f"{nearest.gate_verdict or 'unreported'}). {why}",
-            role=role,
-            freq_hz=freq,
-            **nearest.to_dict(),
-        )
-    return tuple(basis)
-
-
-def _boost_basis(
-    position: int,
-    role: str,
-    freq: float,
-    gain: float,
-    verdicts: Sequence[FeatureVerdict],
-) -> ClassificationBasis:
-    """The boost half of the classification bar. Four refusals, in this order.
-
-    :data:`FEATURE_NOT_CLASSIFIED` (nothing there) → :data:`FEATURE_NOT_BOOSTABLE`
-    (the nearest verdict is not a minimum-phase dip) →
-    :data:`FEATURE_DEPTH_UNAVAILABLE` (it is, and reported no depth) →
-    :data:`BOOST_EXCEEDS_FEATURE_DEPTH` (it did, and the boost is deeper than it).
-
-    Each sends a prescriber somewhere different, which is why they are four
-    slugs and not one. The last two are what stop a boost being bounded by
-    policy alone: the ceiling says how much a document MAY spend, and the
-    measured depth says how much this feature can absorb.
-    """
-    vouching, nearest = defect_boostable_at(verdicts, freq)
-    if vouching is None:
-        if nearest is None:
-            _refuse(
-                FEATURE_NOT_CLASSIFIED,
-                f"filter {position} is aimed at {freq:.1f} Hz and no banked "
-                "verdict covers that frequency (within "
-                f"{VERDICT_MATCH_TOLERANCE_OCTAVES:.3g} octaves). Classify the "
-                "feature and propose again — an unclassified feature may be a "
-                "cancellation, which a boost feeds rather than fills.",
-                role=role,
-                freq_hz=freq,
-                match_tolerance_octaves=VERDICT_MATCH_TOLERANCE_OCTAVES,
-            )
-        # The NEAREST verdict is the one quoted, because it is the one that
-        # decided — see `defect_boostable_at`. A boostable dip standing further
-        # away inside the tolerance neither vouches nor appears here.
-        why = (
-            "boosting a minimum-phase PEAK grows it — aim a boost at a dip"
-            if nearest.classification == DEFECT_CUTTABLE
-            else (
-                "only a minimum-phase, speaker-own dip may be boosted: a "
-                "cancellation is FED by a boost rather than filled, and a room "
-                "arrival is not the speaker's to correct"
-            )
-        )
-        _refuse(
-            FEATURE_NOT_BOOSTABLE,
-            f"filter {position} boosts {freq:.1f} Hz, and the nearest banked "
-            f"verdict ({nearest.freq_hz:.1f} Hz) is {nearest.classification!r} "
-            f"(excess group delay {nearest.egd_verdict or 'unreported'}, gate "
-            f"{nearest.gate_verdict or 'unreported'}). {why}",
-            role=role,
-            freq_hz=freq,
-            gain_db=gain,
-            **nearest.to_dict(),
-        )
-    if vouching.depth_db is None:
-        _refuse(
-            FEATURE_DEPTH_UNAVAILABLE,
-            f"filter {position} boosts {freq:.1f} Hz against a verdict that "
-            "reported no depth, so there is no measured dip to bound the boost "
-            "by. Re-bank this round's classification with a depth_db per row "
-            "and propose again — a boost bounded only by a policy ceiling is a "
-            "boost bounded by nothing the speaker measured.",
-            role=role,
-            freq_hz=freq,
-            gain_db=gain,
-            **vouching.to_dict(),
-        )
-    if gain > vouching.depth_db:
-        _refuse(
-            BOOST_EXCEEDS_FEATURE_DEPTH,
-            f"filter {position} boosts {gain:.2f} dB into a dip the classifier "
-            f"measured at {vouching.depth_db:.2f} dB. Filling a dip past its "
-            "own depth overshoots it into a peak and spends maximum SPL to do "
-            "it; the feature is the bound, not the ceiling.",
-            role=role,
-            freq_hz=freq,
-            gain_db=gain,
-            # The depth itself rides in on `to_dict`'s own `depth_db` key —
-            # one spelling of the number that decided, not two.
-            **vouching.to_dict(),
-        )
-    return ClassificationBasis(filter_freq_hz=freq, role=role, verdict=vouching)
+    return tuple(basis), unvouched
 
 
 def _prescriber(raw: Any) -> tuple[str, str]:
@@ -1811,9 +1750,9 @@ def read_driver_prescription(
 
     prescription_class = _check_bounds(filters, passbands)
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
-    basis = _check_classification(filters, classifications)
-    # LAST, after every bound: it refuses nothing, so a document the gate was
-    # going to reject anyway never pays for the extra cascade evaluation.
+    # The last two refuse nothing, so they run after every bound: a document
+    # the gate was going to reject anyway never pays for their evaluation.
+    basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
         filters, incumbent_filters, passbands
     )
@@ -1828,6 +1767,7 @@ def read_driver_prescription(
             (role, lo, hi) for role, (lo, hi) in sorted(passbands.items())
         ),
         classification_basis=basis,
+        unvouched_filters=unvouched_filters,
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
         displaced_filters=displaced_filters,
@@ -1840,61 +1780,26 @@ def read_driver_prescription(
 
 
 def driver_prescription_route(prescription: DriverPrescription) -> str:
-    """Which candidate field this prescription lands in, or a refusal.
+    """Which candidate field this prescription lands in.
 
-    **A cut routes.** :data:`LINEARIZATION_CANDIDATE_FIELD` is the role-keyed
-    field the Layer-1a fit already writes, so a prescribed per-driver cut is
-    byte-shaped like a fitted one and passes the same emitter gates —
+    :data:`LINEARIZATION_CANDIDATE_FIELD` is the role-keyed field the Layer-1a
+    fit already writes, so a prescribed per-driver filter is byte-shaped like a
+    fitted one and passes the same emitter gates —
     ``camilla_yaml._validated_linearization`` re-validates every entry
     independently before any of it reaches CamillaDSP, and lands them in that
-    role's own branch immediately after its crossover filters.
+    role's own branch immediately after its crossover filters. Both signs take
+    the same field: ``linearization`` accepts per-driver boosts to 12 dB and
+    ``camilla_yaml.linearization_headroom_db`` absorbs them.
 
-    **A boost routes only while carrying its own vouching verdict.** The same
-    field takes it — ``linearization`` accepts per-driver boosts to 12 dB and
-    ``camilla_yaml.linearization_headroom_db`` absorbs them — so what this gate
-    adds is not a route but a CONDITION on one: every positive-gain filter must
-    carry a :class:`ClassificationBasis` whose verdict is
-    :data:`~.feature_classification.DEFECT_BOOSTABLE`. Anything else is
-    :data:`BOOST_UNVOUCHED`.
-
-    That is the SECOND of two gates, not the only one:
-    :func:`_check_classification` has already applied the full bar — nearest
-    verdict, measured depth — by the time a gated prescription exists. This one
-    makes the promise a property of the FUNCTION, which is what the two ungated
-    constructors need: a
-    :class:`DriverPrescription` built directly, or read back by
-    :func:`driver_prescription_from_mapping` (which rebuilds no basis at all),
-    reaches here with an empty basis and refuses. A cut needs no such condition
-    because a cut cannot spend maximum SPL however it was built.
-
-    Matching is by the filter's own ``(role, freq)`` rather than by position,
-    so a truncated or reordered basis refuses rather than vouching for the
-    wrong filter.
+    It carries no condition of its own. It used to: until 2026-08-23 a boost
+    reaching here without a vouching verdict refused ``driver_boost_unvouched``,
+    which was :func:`_check_classification`'s bar restated as a property of the
+    FUNCTION so the two ungated constructors could not step past it. That bar is
+    now a disclosure by the same ruling, so restating it here would be the
+    refusal the ruling removed, wearing a second name — and the spend a boost
+    actually costs is bounded by :data:`MAX_SPL_SPEND_BOUND_DB`, which
+    :func:`_check_composed` applies at the boundary and the emitter re-proves.
     """
-    vouched = {
-        (basis.role, basis.filter_freq_hz)
-        for basis in prescription.classification_basis
-        if basis.verdict.classification == DEFECT_BOOSTABLE
-    }
-    unvouched = [
-        entry for entry in prescription.filters
-        if float(entry["gain"]) > 0.0
-        and (str(entry["role"]), float(entry["freq"])) not in vouched
-    ]
-    if unvouched:
-        _refuse(
-            BOOST_UNVOUCHED,
-            f"{len(unvouched)} positive-gain filter(s) reached the route "
-            "carrying no banked defect-boostable verdict, so no route carries "
-            "them: a boost spends the household's maximum SPL and may only do "
-            "so against a measured minimum-phase dip",
-            blocked_by=["per_driver_boost_needs_a_vouching_verdict"],
-            unvouched=[
-                {"role": str(e["role"]), "freq_hz": float(e["freq"]),
-                 "gain_db": float(e["gain"])}
-                for e in unvouched
-            ],
-        )
     return LINEARIZATION_CANDIDATE_FIELD
 
 
@@ -2150,9 +2055,11 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "operator": "the person who ran it",
             },
             "filters": (
-                "0 or more objects, each exactly {role: <driver role>, "
-                "biquad_type: 'Peaking', freq: <Hz>, q: <number>, "
-                "gain: <dB, negative to cut or positive to boost>}"
+                "0 or more objects, each {role: <driver role>, biquad_type: "
+                "<one of the biquad_types below>, freq: <Hz>, gain: <dB, "
+                "negative to cut or positive to boost>}, plus q: <number> on a "
+                "Peaking. A shelf takes no q: it is emitted at one fixed "
+                "Butterworth steepness, so any q you send is replaced by it"
             ),
         },
         "optional_top_level": {
@@ -2169,7 +2076,14 @@ def driver_prescription_response_format() -> dict[str, Any]:
         ),
         "bounds": {
             "max_filters_per_role": DRIVER_MAX_FILTERS_PER_ROLE,
-            "biquad_type": "Peaking",
+            # The EMITTER's set, so the contract a prescriber reads and the
+            # graph it will be built into name the same filters.
+            "biquad_types": sorted(LINEARIZATION_BIQUAD_TYPES),
+            "where_a_shelf_may_sit": (
+                "leading a role's chain, or — a Highshelf only — ending it "
+                "after a Lowshelf lead. Anywhere else the emitter cannot name "
+                "the filter and the document is refused. Peaking sits anywhere"
+            ),
             "q_min": DRIVER_MIN_Q,
             "q_max": DRIVER_MAX_CUT_Q,
             "min_cut_db": DRIVER_MIN_CUT_DB,
@@ -2207,13 +2121,13 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "the driver has a real dip, and only as deep as the dip"
             ),
             "eligible_classification": DEFECT_BOOSTABLE,
-            "a_boost_owes_one_thing_a_cut_does_not": (
-                "the vouching verdict must report a depth_db, and the boost "
-                "may not exceed it — the measured dip is what bounds a boost, "
-                "more tightly than the ceiling does. Needing a matching-sign "
-                "verdict is NOT that thing: a cut owes a defect-cuttable one "
-                "identically, so it is stated once for both signs under "
-                "classification_bar"
+            "a_boost_owes_nothing_a_cut_does_not": (
+                "both signs are bounded by the same caps and disclosed by the "
+                "same classification_bar. What differs is the COST: a cut "
+                "spends a filter slot, a boost also spends maximum SPL, up to "
+                "max_spl_spend_bound_db. Boost no deeper than the dip the "
+                "verdict measured (its depth_db is in the packet) — nothing "
+                "refuses a deeper one, and nothing makes it work either"
             ),
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
             "spend_is_a_step_function": (
@@ -2232,27 +2146,33 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "allowed"
             ),
             "refusals": sorted({
-                FEATURE_NOT_BOOSTABLE,
-                FEATURE_DEPTH_UNAVAILABLE,
-                BOOST_EXCEEDS_FEATURE_DEPTH,
                 BOOST_IN_CROSSOVER_OVERLAP,
                 FILTER_BOOST_TOO_HIGH,
                 FILTER_BOOST_TOO_SHALLOW,
                 COMPOSED_BOOST_EXCEEDED,
-                BOOST_UNVOUCHED,
             }),
         },
         "classification_bar": {
-            "note": (
-                "every filter must be aimed at a feature "
-                "feature_classification.verdicts[] typed as a minimum-phase, "
-                "speaker-own defect of the MATCHING sign — that list is what "
-                "this bar reads, never the lab_rows[] working beside it. "
-                "Interference nulls, room "
-                "arrivals and unresolved features are barred either way: a cut "
-                "aimed at a cancellation lowers the direct sound and the "
+            "it_discloses_and_never_refuses": (
+                "this is EVIDENCE, not a gate. Every filter is checked against "
+                "feature_classification.verdicts[] — never the lab_rows[] "
+                "working beside it — and the count that no banked verdict "
+                "vouches for comes back as prescription.unvouched_filters, on "
+                "the propose/stage report and under --json. Nothing about it "
+                "refuses: what a filter costs is bounded by the caps above, and "
+                "whether it HELPS is what the next round measures"
+            ),
+            "what_a_vouch_means": (
+                "the nearest banked verdict to your centre frequency types the "
+                "feature as a minimum-phase, speaker-own defect of your "
+                "filter's sign. Unvouched means the nearest verdict disagrees "
+                "with your sign, or is an interference null / room arrival / "
+                "unresolved feature, or there is no verdict there at all — a "
+                "cut aimed at a cancellation lowers the direct sound and the "
                 "delayed copy together, a boost aimed at one feeds it, and a "
-                "room arrival is not the speaker's to correct"
+                "room arrival is not the speaker's to correct. Those are the "
+                "reasons an unvouched filter usually measures worse, which is "
+                "why the count is on the report you read before you stage"
             ),
             # Per SIGN, and a pair rather than one key: a reader that walked
             # the keys used to find only the cut's eligible class and could
@@ -2277,8 +2197,17 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "follows is what answers that, by measuring"
             ),
             "if_evidence_is_missing": (
-                f"refused as '{FEATURE_NOT_CLASSIFIED}' rather than as a no — "
-                "classify the feature and propose again"
+                "every filter comes back unvouched and the document is still "
+                "admitted. Classify the features if you want the evidence; "
+                "propose without it if you would rather let the round decide"
+            ),
+            "repeating_an_incumbent_filter_is_the_common_case": (
+                "a document is a TOTAL for every role it names, so keeping "
+                "what a branch already carries means listing it again. Those "
+                "filters were placed by the fit engine and usually have no "
+                "verdict of their own, so they come back unvouched — which is "
+                "a disclosure, not an obstacle. Read the packet's "
+                "incumbent.linearization block and repeat what you mean to keep"
             ),
         },
         "refusal_reasons": sorted(DRIVER_PRESCRIPTION_REFUSAL_REASONS),
