@@ -440,6 +440,67 @@ def _derived_hf_ceiling_dbfs(
     return min(candidates) if candidates else None
 
 
+#: How a target's effective-peak ceiling got its number. The same three-way
+#: shape :func:`jasper.active_speaker.driver_protection.resolve_driver_low_limit`
+#: uses for the low limit, and for the same reason: "who decided this?" is a
+#: provenance question, and answering it by comparing a value against a code
+#: figure is how a magic number ends up steering a derivation.
+LEVEL_CEILING_DECLARED = "declared"
+LEVEL_CEILING_UNDECLARED = "undeclared"
+LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
+
+
+def _declared_level_ceiling(
+    profile_limits: Mapping[str, Any],
+    protection: Any,
+) -> tuple[float, str]:
+    """One target's effective-peak ceiling and where that number came from.
+
+    ``max_effective_peak_dbfs`` is OPTIONAL, and absent is the ordinary answer.
+    It is the one datasheet fact in ``level_duration_limits``, so since the
+    2026-08-23 owner ruling the research ask requests it only where a
+    manufacturer publishes a level limit and ``_target_issues`` no longer
+    requires it. **Absent** therefore means "no published level limit for this
+    driver" — ``LEVEL_CEILING_UNDECLARED`` — which is exactly the
+    no-driver-specific-level-intent the sensitivity derivation answers; the
+    class default stands as the seed until it does.
+
+    A **declared** value is honoured verbatim, never clamped down to the class
+    figure. It is a published limit or an operator's own choice, and the same
+    ruling bars a code figure from overruling either; the one bound that
+    survives on it is digital full scale, enforced where the value is parsed
+    (``driver_safety._normalise_level_duration_limits`` refuses a peak above
+    0 dBFS). Until that ruling this was ``min(declared, class_default)``, so a
+    household value typed LOUDER than the seed was silently clamped back — the
+    trap the old comment here anticipated and left open.
+
+    ``LEVEL_CEILING_LEGACY_CLASS_SEED`` is the third case and the only one that
+    compares a value: a profile SAVED under the retired contract carries the
+    class default itself, because the ask told the researcher to send exactly
+    that number to mean "no level intent". It said then what absence says now,
+    so it is read that way rather than silently regressing an already-
+    commissioned speaker's tweeter by tens of decibels. It is named on the
+    supersede log line so the residual is visible, and the arm is deletable
+    once no stored profile carries a seed.
+    """
+
+    declared_peak = profile_limits.get("max_effective_peak_dbfs")
+    if declared_peak is None:
+        return float(protection.max_auto_level_dbfs), LEVEL_CEILING_UNDECLARED
+    if (
+        isinstance(declared_peak, bool)
+        or not isinstance(declared_peak, (int, float))
+        or not math.isfinite(float(declared_peak))
+    ):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    peak = float(declared_peak)
+    if peak == float(protection.max_auto_level_dbfs):
+        return peak, LEVEL_CEILING_LEGACY_CLASS_SEED
+    return peak, LEVEL_CEILING_DECLARED
+
+
 def resolve_driver_excitation_ceilings(
     safety_profile: Mapping[str, Any],
     target_fingerprint: str,
@@ -471,9 +532,9 @@ def resolve_driver_excitation_ceilings(
     the two drivers' declared sensitivities, rather than pinned at the
     naked-tone class default (sized for an UNPROTECTED tone, not a HP-proven
     one). Every other caller (isolated driver capture, the v1 ramp solver,
-    ear-check ramps) defaults to ``False`` and keeps exactly today's
-    ``min(declared, class_default)`` ceiling -- one conditional, no new
-    subsystem.
+    ear-check ramps) defaults to ``False`` and keeps the declared ceiling, or
+    the class default when no level limit is published -- one conditional, no
+    new subsystem.
 
     ``declared_sensitivities`` is the per-role declared datasheet sensitivity
     mapping read from the DECLARATION (the design draft's ``manual_settings``
@@ -576,49 +637,24 @@ def resolve_driver_excitation_ceilings(
         role,
         driver_style=target.get("driver_style"),
     )
-    declared_peak = float(profile_limits["max_effective_peak_dbfs"])
-    maximum_peak = min(declared_peak, protection.max_auto_level_dbfs)
+    maximum_peak, level_provenance = _declared_level_ceiling(
+        profile_limits, protection
+    )
     # Supersede-the-seed rule (W6.5): only on the proven-HP path, only for
-    # high-frequency roles, and only when the declared cap still EQUALS the
-    # class-default seed the wizard writes at declaration time -- a value
-    # that exactly matches the seed is the unedited default, not a deliberate
-    # operator choice, so it is safe to replace with the derived ceiling. A
-    # declared value that differs (even if quieter) is a real household
-    # choice and is always respected as-is, never overridden.
+    # high-frequency roles, and only when NO driver-specific level was declared
+    # -- see :func:`_declared_level_ceiling` for what that means and how a
+    # stored profile still says it. A declared value is a real published or
+    # household choice and is always respected as-is, never overridden.
     #
-    # Known corner: a household value typed LOUDER than the class default
-    # (e.g. -50 against the -65 seed) also fails this equality, so no
-    # derivation runs -- and the min() above still clamps it back to -65.
-    # Safe direction (quieter than the typed intent), but the intent is
-    # silently unmet; wizard-side validation of the declared HF cap is the
-    # noted follow-up.
-    #
-    # #2186 widened who writes this value. The driver-research ask now tells an
-    # assistant to send exactly this class default for a tweeter with no
-    # published level limit, so a research reply is an AUTOMATED writer landing
-    # deliberately on the sentinel. That is intended and it does not change the
-    # premise -- it extends it: "equals the seed" used to mean "the operator
-    # left the wizard default alone", and now also means "the reply had no
-    # driver-specific level knowledge". Both are the same claim, that no
-    # driver-specific level intent was expressed, which is exactly when
-    # deriving from sensitivity is the better answer. A reply that DOES know
-    # better sends a different number and is honoured literally by the branch
-    # below never running.
-    #
-    # The discontinuity is real and deliberate: on this path -65.0 resolves to
-    # the sensitivity-derived ceiling -- since the provisional absolute hedge
-    # was retired on 2026-08-20, that is the low-frequency sibling's own cap
-    # less the declared sensitivity delta, tens of decibels louder than the
-    # seed -- while -66.0 resolves to -66.0. Anything that changes the class
-    # default, or the value
-    # the research template emits, must move both together --
-    # tests/test_active_speaker_driver_safety.py's
-    # test_template_tweeter_peak_lands_on_the_derivation_sentinel pins the
-    # three-way chain (template value == class default == this comparison).
+    # The step is real and deliberate: on this path a delegated ceiling
+    # resolves to the sensitivity-derived one -- since the provisional absolute
+    # hedge was retired on 2026-08-20, that is the low-frequency sibling's own
+    # cap less the declared sensitivity delta, tens of decibels louder than the
+    # class seed -- while a declared -66.0 resolves to -66.0.
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES
-        and declared_peak == protection.max_auto_level_dbfs
+        and level_provenance != LEVEL_CEILING_DECLARED
     ):
         derived_peak = _derived_hf_ceiling_dbfs(
             safety_profile, role, declared_sensitivities
@@ -644,6 +680,7 @@ def resolve_driver_excitation_ceilings(
                 role=role,
                 legacy_ceiling_dbfs=f"{maximum_peak:.1f}",
                 derived_ceiling_dbfs=f"{derived_peak:.1f}",
+                delegation=level_provenance,
             )
             maximum_peak = derived_peak
     return permitted_band, maximum_peak

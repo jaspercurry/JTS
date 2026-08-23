@@ -32,10 +32,10 @@ contributes exactly three things the kernel cannot know:
    ramps toward. No calibration means no absolute level, so the step REFUSES
    (``mic_calibration_unavailable``) rather than chasing an uncalibrated number.
 2. **A ceiling the kernel has no vocabulary for** — the loudest main volume at
-   which the ACTUAL stimulus admits for EVERY driver
-   (``unsegmented_stimulus_ceiling_db``). It is derived from the excitation
-   ledger and the stimulus bytes and contains no measured level, so a
-   mis-calibrated microphone cannot move it. The measured seat-SPL ceiling
+   which the ACTUAL stimulus still has digital headroom in every driver's
+   branch (``unsegmented_stimulus_ceiling_db``). It is derived from full scale
+   and the stimulus bytes and contains no measured level, so a mis-calibrated
+   microphone cannot move it. The measured seat-SPL ceiling
    (``max_commissioning_level_db_spl``) is a second, softer stop that shares the
    calibration's fate — which is exactly why it is not the one holding the line.
 3. **The ambient floor, and the two rules that read it.** A wired measurement
@@ -119,7 +119,7 @@ SEAT_LEVEL_MAX_LOOP_LATENCY_S = 0.5
 # volume was live when the ramp started — and the latch has already parked that
 # at SEAT_LEVEL_START_DB, so a household-relative bump would cap this ramp ~38 dB
 # below any usable measurement level. The operative ceiling here is the
-# driver-cap ceiling passed as ``max_main_volume_db``, backed by the live
+# headroom ceiling passed as ``max_main_volume_db``, backed by the live
 # seat-SPL ceiling and the kernel's own 0 dB hard ceiling.
 SEAT_LEVEL_CAP_BUMP_DB = 120.0
 
@@ -353,7 +353,7 @@ def build_seat_level_ramp_config(
     """Translate a seat-SPL band into the kernel's mic-dBFS ramp config.
 
     The window is the band converted through the mic's own sensitivity; the cap
-    is the driver-cap volume ceiling. Raises :class:`SeatLevelRampError` when the
+    is the headroom volume ceiling. Raises :class:`SeatLevelRampError` when the
     result would not be a ramp: a band the mic cannot capture without clipping,
     a ceiling at or below the quiet start, or a band too narrow for the kernel's
     overshoot invariant at this step/latency.
@@ -369,7 +369,7 @@ def build_seat_level_ramp_config(
     ceiling = min(float(max_main_volume_db), HARD_CEILING_DBFS)
     if ceiling <= SEAT_LEVEL_START_DB:
         raise SeatLevelRampError(
-            f"{REFUSE_VOLUME_CEILING_TOO_LOW}: the driver-cap ceiling "
+            f"{REFUSE_VOLUME_CEILING_TOO_LOW}: the headroom ceiling "
             f"{ceiling:.1f} dB is at or below the {SEAT_LEVEL_START_DB:g} dB ramp "
             "start; there is no room to climb"
         )
@@ -433,8 +433,8 @@ async def run_seat_level_ramp(
 
     ``max_main_volume_db`` is the mic-independent ceiling from
     :func:`jasper.active_speaker.session_volume_plan.unsegmented_stimulus_ceiling_db`
-    — the loudest volume at which the actual stimulus admits for EVERY driver.
-    The ramp never commands above it.
+    — the loudest volume at which the actual stimulus still has digital headroom
+    in every driver's branch. The ramp never commands above it.
 
     **The hold rides the crossover session's own volume plan, on its own
     statefile.** A leveling pass holds the speaker exactly as a session does, so
@@ -680,6 +680,11 @@ def _finish(
     )
     if not converged:
         reason = _refusal_for(data.state, data, guard.refusal)
+        observed = (
+            ""
+            if last_rms_dbfs is None
+            else f"{sensitivity.db_spl_from_dbfs(last_rms_dbfs):.1f}"
+        )
         log_event(
             logger,
             "active_speaker.seat_level_refused",
@@ -689,13 +694,19 @@ def _finish(
             ramp_state=data.state.value,
             at_db=f"{data.current_main_volume_db:.2f}",
             ceiling_db=f"{config.cap_ceil_db:.2f}",
-            observed_db_spl=(
-                ""
-                if last_rms_dbfs is None
-                else f"{sensitivity.db_spl_from_dbfs(last_rms_dbfs):.1f}"
-            ),
+            observed_db_spl=observed,
         )
-        return SeatLevelResult(status="refused", reason=reason, ramp=snapshot)
+        # The same facts on stdout, because the operator reading a refusal is
+        # usually not reading the journal — and "unreachable" is unactionable
+        # without the volume it stopped at and the level that produced.
+        detail = (
+            f"stopped at {data.current_main_volume_db:.2f} dB against the "
+            f"{config.cap_ceil_db:.2f} dB headroom ceiling"
+            + (f", reading {observed} dB SPL" if observed else "")
+        )
+        return SeatLevelResult(
+            status="refused", reason=reason, detail=detail, ramp=snapshot
+        )
 
     reference_volume_db = float(data.locked_main_volume_db)
     assert last_rms_dbfs is not None  # part of `converged` above

@@ -2621,14 +2621,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     highpass_cutoff_outside_hard_band:
       'high-pass cutoff sits outside its hard excitation band',
     lowpass_cutoff_outside_hard_band:
-      'low-pass cutoff sits outside its hard excitation band',
+      'low-pass cutoff sits outside its hard excitation band'
     // `low_limit_implausible_for_style` used to sit here. Since #2874 an
     // implausible SAVED low limit is not a refusal at all — it is a warning
     // the server renders itself, because its copy names numbers (the value,
     // the band it missed, the class anchor) that a code-to-phrase map here
     // cannot carry. renderDriverSafetyWarnings below shows that server text.
-    max_effective_peak_above_code_policy:
-      'level ceiling is louder than what JTS allows for that driver'
+    //
+    // `max_effective_peak_above_code_policy` used to sit here too. The
+    // 2026-08-23 ruling struck that refusal: a declared level limit is a
+    // published or operator figure and a class default may not overrule it,
+    // so no server produces the code any more.
   };
   // Reason codes are `<role>:<code>` (a few are bare). Server text, so read it
   // as data: only codes this page knows how to phrase produce a sentence.
@@ -3383,12 +3386,16 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       }
     ];
   }
-  // The delegation sentinel, disclosed (#2192, folded into #2195). A
-  // high-frequency target left sitting exactly on its class ceiling is read by
+  // The delegation, disclosed (#2192, folded into #2195). A high-frequency
+  // target that declares NO level limit is read by
   // resolve_driver_excitation_ceilings as "no driver-specific level intent",
-  // and the measurement level is then DERIVED. Confirming that number without
-  // this line would tell the household they had capped something they had
-  // actually delegated.
+  // and the measurement level is then DERIVED. Saying nothing here would leave
+  // the household with a level row that never mentions the loudest fact about
+  // it.
+  //
+  // Absence is the ordinary shape since the 2026-08-23 ruling made the field a
+  // published-fact-or-omit key. A stored profile written before that carries
+  // the class ceiling itself, which said the same thing, so both land here.
   //
   // The sentence named an absolute dBFS bound until 2026-08-20, when the
   // provisional -35 dBFS constant behind it was retired: the bound is now this
@@ -3402,7 +3409,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!policy || policy.role_class !== 'high_frequency') return '';
     var ceiling = manualNumberValue(policy.max_auto_level_dbfs);
     var peak = manualNumberValue(setting.max_effective_peak_dbfs);
-    if (ceiling == null || peak == null || peak !== ceiling) return '';
+    if (peak != null && (ceiling == null || peak !== ceiling)) return '';
     return 'Test level here is left to JTS. It picks the level once a ' +
       'protective high-pass is in place, from this driver’s declared ' +
       'sensitivity against the low-frequency driver’s own limit.';

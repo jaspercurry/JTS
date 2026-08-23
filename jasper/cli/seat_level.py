@@ -14,8 +14,8 @@ This module is wiring only. Every decision it makes belongs to someone else:
 
 * the ramp, its guards, and the refusal codes — :mod:`jasper.active_speaker.seat_level_ramp`
 * the volume ceiling — ``session_volume_plan.unsegmented_stimulus_ceiling_db``,
-  the excitation ledger solved for what THIS stimulus's peak becomes in each
-  driver's own branch of the live graph
+  the digital headroom THIS stimulus still has in each driver's own branch of
+  the live graph
 * those branch peaks — :mod:`jasper.active_speaker.branch_peak`, which renders
   the stimulus through the applied CamillaDSP graph
 * the SPL ceiling — the profile's ``max_commissioning_level_db_spl``
@@ -28,10 +28,18 @@ a summed, seat-position measurement is the excitation-admission subsystem's job,
 not a CLI's. Point ``--stimulus-wav`` at the program this session will actually
 measure with; its true peak is read from the bytes, each driver's branch peak is
 rendered from those same bytes through the graph that is actually applied, and
-the ceiling is solved so the stimulus admits for EVERY driver at every commanded
-volume. When that render cannot be exact — no applied graph, a filter type the
-renderer does not model — the ceiling falls back to bounding every driver by the
+the ceiling is solved so no branch reaches full scale at any commanded volume.
+When that render cannot be exact — no applied graph, a filter type the renderer
+does not model — the ceiling falls back to bounding every branch by the
 full-band peak, which is the conservative answer this verb shipped with.
+
+**The declared per-driver level caps do not hold this volume down.** They are
+protocol figures rather than published damage bounds, so the ceiling is digital
+headroom and the caps are named beside it on
+``event=active_speaker.unsegmented_ceiling_bound`` — what each driver receives
+at this ceiling, and how far past its declared figure that lands (owner ruling,
+2026-08-23). What still stops the climb: full scale, the graph's limiters, and —
+live, on measured samples — the profile's ``max_commissioning_level_db_spl``.
 
 **Precondition an operator must check.** The mic's ``Sens Factor`` is quoted at
 its maximum capture volume. Confirm ``amixer -c <card>`` shows the capture
