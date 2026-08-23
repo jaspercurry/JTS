@@ -1532,14 +1532,14 @@ def _check_classification(
     ``docs/measurement-loop-doctrine.md`` §2 gives a prediction the power to
     propose and never to dispose. A filter inside this gate's caps and bands
     spends nothing the household can hear more of, so §4's closed list has no
-    component-damage mechanism to name for it, §3 puts every defect outside that
-    list under "discloses and recommends a next action; it never blocks", and
-    §5's nanny test fails a refusal here — trying an unclassified feature and
-    measuring the result is exactly the reversible experiment that doctrine
-    protects. What it cost while it did refuse is on the record: a role whose
-    incumbent carried a Lowshelf could not keep it, because no banked verdict
-    vouches for a filter the fit engine placed, so naming the role deleted the
-    shelf (#2863).
+    component-damage mechanism to name for it; §3 rules that every defect
+    outside that list "discloses and recommends a next action. It never
+    blocks."; and §5's nanny test fails a refusal here — trying an unclassified
+    feature and measuring the result is exactly the reversible experiment that
+    doctrine protects. What it cost while it did refuse is on the record: even
+    once a shelf itself became legal, nothing vouches for a filter the FIT
+    ENGINE placed, so a role whose incumbent carried one could not repeat it and
+    naming the role deleted it (#2863).
 
     A verdict vouches when it is the NEAREST banked one to the filter's centre
     and its classification matches the filter's sign — ``defect_cuttable_at``
