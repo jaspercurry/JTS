@@ -2841,6 +2841,10 @@ jasper-seat-level --stimulus-wav /var/lib/jasper/.../check.wav --mic-serial 810-
 # a different band, an explicit calibration file, machine-readable
 jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
     --target-db-spl 72 --tolerance-db 2 --json
+
+# instrumented: every settle window's per-sample dB SPL series, one DEBUG line
+# per window, for when a stop needs explaining rather than just reporting
+jasper-seat-level --stimulus-wav check.wav --mic-serial 810-8494 --verbose
 ```
 
 **It owns its climb and reuses everything else.** The pass runs its own
@@ -2931,6 +2935,23 @@ speaker quieter than the room from being falsely aborted while it climbs through
 the floor — and a mic that is not listening never emerges at all, because its
 ambient reading IS its signal reading.
 
+**The climb can put that floor back down, and says so when it does.** The
+ambient window is one median of one half-second, so a transient inside it would
+otherwise be "the room" for the whole run: on jts3 (2026-08-23) a pass measured
+57.18 dB SPL of ambient while its own −50.00 dB reading was 50.21 and the
+previous pass's was 50.59, and it published three NEGATIVE rises — tone readings
+quieter than the room they were taken in — which put its first four readings
+below `required_rise_db` on a baseline nothing measured. The tone is *playing*,
+so a climb reading is the room plus the speaker and cannot be quieter than the
+room; the floor is therefore the quietest level the mic reported during the
+pass. The receipt publishes the measured window (`ramp.ambient_db_spl`), the
+floor the rise gate used (`ramp.ambient_effective_db_spl`) and whether they
+differ (`ramp.ambient_corrected`), and the CLI states the substitution on its
+own line. Nothing is refused and nothing retries. The correction is
+structurally inert on the failure `mic_not_observing` guards: a mic that is not
+observing reports a constant, so its ambient reading IS its quietest reading and
+the floor never moves.
+
 **Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
 header line that the curve parser has always skipped
 ([`calibration.py`](../jasper/audio_measurement/calibration.py),
@@ -2954,13 +2975,29 @@ refusal restores the household volume and banks nothing.
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
 | `mic_not_observing` | the volume reached the headroom ceiling and the mic never rose above the room; the detail names the ceiling and the rise it required |
-| `spl_ceiling_exceeded` | a measured reading crossed `max_commissioning_level_db_spl` |
+| `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window it stopped in is published beside it (below) |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
 | `seat_level_watchdog_expired` | the whole-operation watchdog fired — something the pass awaited never returned |
 | `seat_level_interrupted` | the operator stopped the pass (SIGINT); the stimulus was cut and the household volume restored |
 | `mic_feed_lost` / `mic_clipping` | no finite sample in a reading window, and a clipped capture |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
+
+**A sample-domain stop publishes the window it abandoned.** The two stops that
+run on every sample — `spl_ceiling_exceeded` and `mic_clipping` — end a window
+part-way through, so there is no settled median for the volume they stopped at.
+The refusal carries that window instead, on the receipt as `ramp.window` and in
+the same sentence the CLI prints: how many samples it saw, their min/median/max
+dB SPL, and the sample that tripped with its offset from the volume step. Read
+the median against the max. A median far below the max is ONE excursion on top
+of a settled level; a median at the max is a level that rose and stayed — and
+before 2026-08-23 nothing this verb emitted could tell those apart, which is
+what left the jts3 75 dB SPL refusals unexplained (`captures/new-horn-2026-08`:
+a +6.5-7 dB excursion about 0.95 s after the step, crossing an 80.0 stop that a
+settled ~74 dB SPL was comfortably inside). The prior window's own settled
+median and the volume it was taken at are named beside it, because that is the
+number the window has to be read against. `--verbose` adds the whole per-sample
+series.
 
 Read the journal, not the code, to find out what happened:
 
@@ -2969,7 +3006,9 @@ Read the journal, not the code, to find out what happened:
 | `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the bite (and its fraction), and the amixer precondition |
 | `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
 | `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
-| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken |
+| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, when a sample-domain stop abandoned a window, that window's `window_*` facts and the `prior_*` settled reading they must be read against |
+| `_ambient_corrected` | the climb contradicted the ambient window, so the room floor moved down: the measured figure, the effective one, and the volume that produced it |
+| `_window_samples` | DEBUG only, behind `--verbose`: ONE line per settle window (`window=ambient` or the commanded volume) carrying every sample as `offset:dB SPL`. This is how a rising edge is reconstructed — the per-sample record exists nowhere else |
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 | `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |
 
