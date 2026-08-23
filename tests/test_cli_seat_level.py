@@ -17,7 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.calibration import (
+    MicSensitivity,
+    resolve_mic_sensitivity,
+)
 from jasper.cli import seat_level
 
 CAL_WITH_SENS = (
@@ -38,7 +41,7 @@ def _args(**overrides):
 def test_resolve_sensitivity_reads_an_explicit_calibration_file(tmp_path):
     path = tmp_path / "umik2.txt"
     path.write_text(CAL_WITH_SENS)
-    assert seat_level._resolve_sensitivity(_args(calibration_file=str(path))) == (
+    assert resolve_mic_sensitivity(calibration_file=str(path)) == (
         MicSensitivity(sens_factor_db=-12.07, analog_gain_db=18.0, serial="8108494")
     )
 
@@ -56,7 +59,7 @@ def test_resolve_sensitivity_is_none_when_there_is_no_absolute_reference(
     path = tmp_path / name
     if text is not None:
         path.write_text(text)
-    assert seat_level._resolve_sensitivity(_args(calibration_file=str(path))) is None
+    assert resolve_mic_sensitivity(calibration_file=str(path)) is None
 
 
 def test_missing_calibration_refuses_before_the_mic_is_opened(tmp_path, monkeypatch):

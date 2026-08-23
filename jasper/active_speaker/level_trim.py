@@ -10,6 +10,15 @@ import math
 from collections.abc import Sequence
 
 
+#: Floor for any single per-driver attenuation, in dB. The one owner of the
+#: bound, because two modules solve attenuation-only driver trims from measured
+#: evidence -- this module's chain solver and
+#: :mod:`jasper.active_speaker.driver_base_trim`'s banked base trim -- and a
+#: second literal would let a banked artifact be validated against a different
+#: floor than the one the solver clamped it to.
+MAX_ATTENUATION_DB = -60.0
+
+
 class LevelTrimError(ValueError):
     """Adjacent level evidence cannot produce a complete trim chain."""
 

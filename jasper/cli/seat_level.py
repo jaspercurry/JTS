@@ -76,10 +76,14 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlanError,
     unsegmented_stimulus_ceiling_db,
 )
+from jasper.audio_measurement.calibration import (
+    MIC_CALIBRATION_UNAVAILABLE_DETAIL,
+    REFUSE_MIC_CALIBRATION_UNAVAILABLE,
+    resolve_mic_sensitivity,
+)
 
 logger = logging.getLogger(__name__)
 
-REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
 REFUSE_MIC_ABSENT = "measurement_mic_absent"
 REFUSE_TARGET_REJECTED = "seat_spl_target_rejected"
 REFUSE_CEILING_UNDERIVABLE = "driver_cap_ceiling_underivable"
@@ -88,37 +92,6 @@ REFUSE_STIMULUS_MISSING = "stimulus_wav_missing"
 
 def _refused(reason: str, detail: str) -> tuple[SeatLevelResult, str]:
     return SeatLevelResult(status="refused", reason=reason), detail
-
-
-def _resolve_sensitivity(args: argparse.Namespace) -> Any:
-    """The mic's absolute reference, from an explicit file or the stored record.
-
-    Returns ``None`` when no calibration can be read — the caller REFUSES; a
-    guessed sensitivity would silently mis-scale every SPL decision.
-    """
-    from jasper.audio_measurement.calibration import (
-        find_stored_calibration,
-        parse_calibration_sensitivity,
-    )
-
-    path: Path | None = None
-    if args.calibration_file:
-        path = Path(args.calibration_file)
-    elif args.mic_serial:
-        record = find_stored_calibration(
-            provider=args.mic_provider,
-            model_key=args.mic_model,
-            serial=args.mic_serial,
-        )
-        if record is not None:
-            path = Path(record.raw_path)
-    if path is None:
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    return parse_calibration_sensitivity(text)
 
 
 def stimulus_peak_dbfs(path: Path) -> float:
@@ -249,13 +222,15 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
     if not stimulus.is_file():
         return _refused(REFUSE_STIMULUS_MISSING, f"no such stimulus WAV: {stimulus}")
 
-    sensitivity = _resolve_sensitivity(args)
+    sensitivity = resolve_mic_sensitivity(
+        calibration_file=args.calibration_file,
+        mic_serial=args.mic_serial,
+        mic_provider=args.mic_provider,
+        mic_model=args.mic_model,
+    )
     if sensitivity is None:
         return _refused(
-            REFUSE_MIC_CALIBRATION_UNAVAILABLE,
-            "no parseable 'Sens Factor' calibration for this microphone — pass "
-            "--calibration-file, or store the vendor file via the /correction "
-            "wizard. Absolute SPL is never guessed.",
+            REFUSE_MIC_CALIBRATION_UNAVAILABLE, MIC_CALIBRATION_UNAVAILABLE_DETAIL
         )
 
     mic = resolve_wired_mic()

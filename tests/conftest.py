@@ -269,6 +269,24 @@ def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_driver_base_trim(tmp_path_factory, monkeypatch):
+    """Point the measured driver base trim at a per-test (absent) temp file.
+
+    ``baseline_profile._measured_level_trims`` PREFERS this statefile over the
+    guided captures, so on a speaker that has actually run ``jasper-driver-trim``
+    the default /var/lib/jasper path would silently replace the trim every
+    level-match and profile test pins. Absent here means the derivation falls
+    back to the guided captures and then the datasheet estimate — the hermetic
+    baseline; a test that exercises a BANKED trim re-points the same env var at
+    a file it wrote, which is the override the daemon-side reader honours too.
+    """
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_DRIVER_BASE_TRIM_STATE",
+        str(tmp_path_factory.mktemp("driver-base-trim") / "driver_base_trim.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
     """Point the output-hardware reconciler's record at a per-test (absent)
     temp file.

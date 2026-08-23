@@ -1,0 +1,307 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The measured per-driver BASE TRIM — one writer, one reader.
+
+The relative level a driver needs so the acoustic sum is level across every
+declared crossover. Until this artifact exists a speaker ships the trim
+``baseline_profile._derive_corrections`` derives from the drivers' DECLARED
+sensitivities, which is a datasheet claim about some other cabinet: on
+2026-08-23 a DE250 rated on B&C's ME45 horn but installed on an R-OSSE
+waveguide seeded a −10.8 dB tweeter trim nobody had measured. This module is
+where that estimate becomes an observation.
+
+Ownership, deliberately narrow:
+
+* **one writer** — :mod:`jasper.cli.driver_trim`, after per-driver captures
+  analysed through :func:`~jasper.active_speaker.driver_acoustics.analyze_driver_capture`;
+* **one reader** — ``baseline_profile._measured_level_trims``, which prefers a
+  banked base trim over the guided-capture derivation and falls back to it;
+* **absent is normal.** A speaker that has never run the trim step behaves
+  exactly as it did before this module existed — the guided captures, then the
+  datasheet estimate.
+
+**No estimator lives here.** The per-driver level is
+``driver_acoustics._overlap_band_levels``' mean deconvolved magnitude over the
+one-octave band log-symmetric about the declared Fc, and the chain from
+adjacent-driver deltas to a per-role attenuation is
+``level_trim.attenuation_from_group_deltas``. Both already ship and both are
+already what the profile consumes; this module only banks their answer. Minting
+a third way to measure an inter-driver level gap is the defect
+``intervention.check_level_consistency`` and ``baseline_profile._estimator_cross_check``
+exist to disclose, and it is not reopened here.
+
+**Re-keying is a loud refusal, never a migration.** The record names the
+declaration it was measured against (the crossover preview's own fingerprint).
+A speaker whose declaration has moved — a different Fc, a different driver, a
+re-save at ``/sound`` — has a banked trim that answers a question nobody is
+asking any more, so the reader refuses it with one remediation ("re-run
+``jasper-driver-trim``") and falls back. Under the owner's 2026-08-23
+no-legacy-config ruling this file grows no tolerant readers for older stored
+shapes: a breaking change to the payload refuses the same way, and re-measuring
+is the accepted cost.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import time
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from jasper.atomic_io import atomic_write_json
+
+from .level_trim import (
+    MAX_ATTENUATION_DB,
+    LevelTrimError,
+    attenuation_from_group_deltas,
+)
+
+SCHEMA_VERSION = 1
+BASE_TRIM_KIND = "jts_active_speaker_driver_base_trim"
+DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_driver_base_trim.json")
+STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DRIVER_BASE_TRIM_STATE"
+
+#: What the reader did with the banked record, for the level-match ledger.
+STATUS_ABSENT = "absent"
+STATUS_APPLIED = "applied"
+STATUS_DECLARATION_CHANGED = "declaration_changed"
+STATUS_ROLES_CHANGED = "roles_changed"
+STATUS_UNUSABLE = "unusable"
+
+#: The single remediation string. One sentence, one verb, in every surface that
+#: refuses a banked trim, so an operator never has to reconcile two wordings.
+REMEASURE_REMEDIATION = "re-run jasper-driver-trim to measure this speaker again"
+
+
+class DriverBaseTrimError(ValueError):
+    """A base-trim record was asked to be written outside its own envelope."""
+
+
+def base_trim_state_path(path: str | Path | None = None) -> Path:
+    """Where the base trim lives: an explicit path, the env override, or the
+    default. One resolver, so every surface probes the file the reader reads."""
+    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    out = float(value)
+    return out if math.isfinite(out) else None
+
+
+def solve_base_trims(
+    levels_db: Mapping[str, Mapping[str, Mapping[float, float]]],
+    roles: Sequence[str],
+    regions: Sequence[tuple[str, str, float]],
+) -> dict[str, float]:
+    """Per-role attenuation from measured, ledger-normalized overlap levels.
+
+    ``levels_db`` is ``speaker_group_id -> role -> declared Fc -> level``, where
+    each level is the overlap-band level MINUS that capture's own effective
+    excitation peak — the excitation-ledger normalize that makes captures taken
+    at different protected drive levels comparable, exactly as
+    ``baseline_profile._measured_level_trims`` does it.
+
+    Fail-closed in one direction only: a speaker group missing a usable level
+    for either driver of any declared crossover is DROPPED, and no qualifying
+    group returns ``{}`` so the caller keeps the estimate it already had. The
+    surviving groups are averaged and normalized up by
+    :func:`~jasper.active_speaker.level_trim.attenuation_from_group_deltas`, so
+    the loudest driver lands at 0 dB and every trim is an attenuation.
+    """
+    ordered = tuple(roles)
+    chains: list[list[tuple[str, str, float]]] = []
+    for group_id in sorted(levels_db):
+        by_role = levels_db[group_id]
+        if not isinstance(by_role, Mapping):
+            continue
+        deltas: list[tuple[str, str, float]] = []
+        for lower, upper, fc in regions:
+            lower_levels = by_role.get(lower)
+            upper_levels = by_role.get(upper)
+            level_lo = (
+                _finite(lower_levels.get(fc))
+                if isinstance(lower_levels, Mapping)
+                else None
+            )
+            level_up = (
+                _finite(upper_levels.get(fc))
+                if isinstance(upper_levels, Mapping)
+                else None
+            )
+            if level_lo is None or level_up is None:
+                deltas = []
+                break
+            deltas.append((lower, upper, level_up - level_lo))
+        if deltas:
+            chains.append(deltas)
+    if not chains:
+        return {}
+    try:
+        return attenuation_from_group_deltas(
+            ordered, chains, minimum_db=MAX_ATTENUATION_DB
+        )
+    except LevelTrimError:
+        return {}
+
+
+def load_base_trim(*, state_path: str | Path | None = None) -> dict[str, Any] | None:
+    """The persisted record, or ``None`` when there is none to read.
+
+    Absent-tolerant and never raises: an unreadable, malformed, wrong-kind, or
+    wrong-schema file is indistinguishable from no file at all, because the
+    consumer's fallback — the guided captures, then the datasheet estimate — is
+    the conservative answer in every one of those cases.
+    """
+    path = base_trim_state_path(state_path)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("kind") != BASE_TRIM_KIND
+        or raw.get("artifact_schema_version") != SCHEMA_VERSION
+    ):
+        return None
+    return raw
+
+
+def banked_base_trims(
+    declaration_fingerprint: str | None,
+    roles: Sequence[str],
+    *,
+    state_path: str | Path | None = None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """The banked trim for THIS declaration, or ``({}, why-not)``.
+
+    Every rejection is reported rather than swallowed: a banked trim that is
+    silently ignored looks exactly like a speaker that was never measured, and
+    the operator would have no way to tell the two apart.
+
+    The trims are re-validated against the writer's own envelope on the way out
+    (finite, attenuation-only, at or above
+    :data:`~jasper.active_speaker.level_trim.MAX_ATTENUATION_DB`), so a corrupt
+    or hand-edited statefile can only make this speaker QUIETER than the
+    estimate it replaces, never louder.
+    """
+    ordered = tuple(roles)
+    record = load_base_trim(state_path=state_path)
+    if record is None:
+        return {}, {"status": STATUS_ABSENT}
+    banked_fingerprint = record.get("declaration_fingerprint")
+    meta: dict[str, Any] = {
+        "measured_at": record.get("measured_at"),
+        "declaration_fingerprint": banked_fingerprint,
+        "state_path": str(base_trim_state_path(state_path)),
+    }
+    if (
+        not isinstance(declaration_fingerprint, str)
+        or not declaration_fingerprint
+        or banked_fingerprint != declaration_fingerprint
+    ):
+        return {}, {
+            **meta,
+            "status": STATUS_DECLARATION_CHANGED,
+            "expected_declaration_fingerprint": declaration_fingerprint,
+            "remediation": REMEASURE_REMEDIATION,
+        }
+    raw_trims = record.get("trims_db")
+    if not isinstance(raw_trims, Mapping) or set(raw_trims) != set(ordered):
+        return {}, {
+            **meta,
+            "status": STATUS_ROLES_CHANGED,
+            "roles": sorted(ordered),
+            "remediation": REMEASURE_REMEDIATION,
+        }
+    trims: dict[str, float] = {}
+    for role in ordered:
+        value = _finite(raw_trims.get(role))
+        if value is None or value > 0.0 or value < MAX_ATTENUATION_DB:
+            return {}, {
+                **meta,
+                "status": STATUS_UNUSABLE,
+                "detail": f"{role} trim is outside the attenuation-only envelope",
+                "remediation": REMEASURE_REMEDIATION,
+            }
+        trims[role] = value
+    return trims, {**meta, "status": STATUS_APPLIED, "trims": dict(trims)}
+
+
+def write_base_trim(
+    *,
+    trims_db: Mapping[str, float],
+    levels_db: Mapping[str, Mapping[str, Mapping[float, float]]],
+    roles: Sequence[str],
+    regions: Sequence[tuple[str, str, float]],
+    declaration_fingerprint: str,
+    microphone: Mapping[str, Any],
+    state_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Publish one measured base trim. Called ONLY on a complete solve.
+
+    Raises :class:`DriverBaseTrimError` when the record would not survive
+    :func:`banked_base_trims` — writing a value the reader rejects is a silent
+    no-op dressed up as success.
+    """
+    ordered = tuple(roles)
+    if not isinstance(declaration_fingerprint, str) or not declaration_fingerprint:
+        raise DriverBaseTrimError("a base trim must name the declaration it measured")
+    if set(trims_db) != set(ordered):
+        raise DriverBaseTrimError(
+            f"trims cover {sorted(trims_db)!r}, not the declared roles "
+            f"{sorted(ordered)!r}"
+        )
+    trims: dict[str, float] = {}
+    for role in ordered:
+        value = _finite(trims_db.get(role))
+        if value is None or value > 0.0 or value < MAX_ATTENUATION_DB:
+            raise DriverBaseTrimError(
+                f"{role} trim {trims_db.get(role)!r} dB is outside the "
+                f"({MAX_ATTENUATION_DB:g}, 0.0] dB attenuation-only envelope"
+            )
+        trims[role] = round(value, 1)
+    path = base_trim_state_path(state_path)
+    payload = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": BASE_TRIM_KIND,
+        "measured_at": _utc_now(),
+        "state_path": str(path),
+        "declaration_fingerprint": declaration_fingerprint,
+        "roles": list(ordered),
+        "trims_db": trims,
+        # The evidence behind the trims, so a reader can re-derive them without
+        # the WAVs: one ledger-normalized level per group, per role, per
+        # declared Fc. Fc keys are stringified because JSON has no float key.
+        "levels_db": {
+            group_id: {
+                role: {
+                    f"{float(fc):g}": round(float(level), 2)
+                    for fc, level in sorted(by_fc.items())
+                }
+                for role, by_fc in sorted(by_role.items())
+            }
+            for group_id, by_role in sorted(levels_db.items())
+        },
+        "crossovers": [
+            {"lower_role": lower, "upper_role": upper, "declared_fc_hz": float(fc)}
+            for lower, upper, fc in regions
+        ],
+        "microphone": dict(microphone),
+        # Named so the absence reads as a decision, not an oversight: one mic
+        # position per driver measures the ON-AXIS ratio, and a waveguide's
+        # on-axis level overstates its power output against a cone's. The
+        # listening-window average is the arm-walk program's question.
+        "geometry_claim": "on_axis_single_position",
+    }
+    atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
+    return payload

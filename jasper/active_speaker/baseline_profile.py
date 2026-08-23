@@ -61,8 +61,16 @@ from .crossover_contract import (
     legacy_manual_preservation_state,
 )
 from .crossover_preview import crossover_preview_fingerprint
+from .driver_base_trim import (
+    STATUS_DECLARATION_CHANGED as BASE_TRIM_DECLARATION_CHANGED,
+    banked_base_trims,
+)
 from .driver_pad import effective_sensitivity_db
-from .level_trim import LevelTrimError, attenuation_from_group_deltas
+from .level_trim import (
+    MAX_ATTENUATION_DB as _MAX_ATTENUATION_DB,
+    LevelTrimError,
+    attenuation_from_group_deltas,
+)
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -95,8 +103,6 @@ _DEFAULT_PERSISTED_BASS_PROFILE = object()
 # get no derived trim, so the least-sensitive (reference) driver and any ties
 # stay at unity.
 _SENSITIVITY_TRIM_EPS_DB = 0.05
-# Floor for any single attenuation, mirroring the explicit-gain clamp below.
-_MAX_ATTENUATION_DB = -60.0
 
 # How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
 # may disagree about the same pair of drivers before the measured value is
@@ -418,20 +424,16 @@ def _overlap_level_at(
     (good SNR, not silent, not clipped, enough bins). Anything else returns None,
     so a missing / low-SNR / clipped capture cannot contribute a measured trim.
     """
+    from .driver_acoustics import usable_overlap_level_db
+
     if not isinstance(record, Mapping):
         return None
     acoustic = record.get("acoustic")
     if not isinstance(acoustic, Mapping) or acoustic.get("verdict") != "present":
         return None
-    for entry in acoustic.get("overlap_levels") or ():
-        if not isinstance(entry, Mapping) or not entry.get("usable"):
-            continue
-        entry_fc = _finite_float(entry.get("fc_hz"))
-        if entry_fc is None:
-            continue
-        if abs(entry_fc - fc) <= max(tol_hz, fc * 0.01):
-            return _finite_float(entry.get("level_db"))
-    return None
+    return usable_overlap_level_db(
+        acoustic.get("overlap_levels") or (), fc, tol_hz=tol_hz
+    )
 
 
 def _effective_excitation_dbfs(record: Any) -> float | None:
@@ -461,6 +463,7 @@ def _effective_excitation_dbfs(record: Any) -> float | None:
 def _measured_level_trims(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
+    crossover_preview: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     """Per-role attenuation-only trim from the MEASURED overlap-band level deltas.
 
@@ -472,6 +475,18 @@ def _measured_level_trims(
     across every crossover — the MEASURED refinement of the datasheet sensitivity
     trim ``_derive_corrections`` otherwise seeds.
 
+    TWO evidence sources answer that one question, and this function is the
+    single owner of which one wins. The PREFERRED source is the base trim
+    :mod:`jasper.active_speaker.driver_base_trim` banks — the headless
+    ``jasper-driver-trim`` step every driver goes through before any crossover
+    or linearization work, whose captures are driven by the speaker itself
+    rather than by a household holding a phone. The FALLBACK, unchanged, is the
+    guided per-driver captures the relay flow promotes. Both feed the same
+    estimator and the same chain solver; a banked trim is preferred only because
+    it is the deliberate measurement, not because it is a better one.
+    ``crossover_preview`` is what a banked trim is keyed to: absent it (the
+    cross-check path), only the guided captures are considered.
+
     Returns ``(trims_by_role, meta)``. ``trims_by_role`` is empty (fail-closed)
     unless at least one speaker group has a usable overlap level for BOTH drivers
     of EVERY crossover — any silent / clipped / low-SNR / missing capture drops
@@ -482,6 +497,26 @@ def _measured_level_trims(
         DRIVER_PLACEMENT_POLICY_ID,
         capture_proof_valid,
     )
+
+    roles = required_driver_roles(preset.way_count)
+    declaration_fingerprint = (
+        crossover_preview_fingerprint(crossover_preview)
+        if isinstance(crossover_preview, Mapping) and crossover_preview
+        else None
+    )
+    base_trims, base_trim_meta = banked_base_trims(declaration_fingerprint, roles)
+    if base_trims:
+        return base_trims, {
+            "source": "banked_base_trim",
+            "base_trim": base_trim_meta,
+            "comparison": "declared_crossover_gain_ledger_normalized",
+            "groups_total": 0,
+            "groups_measured": 0,
+            "measured_group_ids": [],
+            "deltas": [],
+            "incomparable_groups": [],
+            "trims": dict(base_trims),
+        }
 
     active_comparison_set = measurements.get("active_comparison_set")
     latest = measurements.get("latest_by_target")
@@ -498,7 +533,6 @@ def _measured_level_trims(
         if isinstance(record, Mapping)
     ]
 
-    roles = required_driver_roles(preset.way_count)
     regions = sorted(preset.crossover_regions, key=lambda region: region.fc_hz)
 
     by_group: dict[str, dict[str, Mapping[str, Any]]] = {}
@@ -594,6 +628,8 @@ def _measured_level_trims(
         deltas.extend(group_deltas)
 
     meta: dict[str, Any] = {
+        "source": "guided_captures",
+        "base_trim": base_trim_meta,
         "groups_total": len(by_group),
         "groups_measured": len(per_group_delta_chains),
         "measured_group_ids": sorted({
@@ -742,7 +778,26 @@ def _derive_corrections(
     # estimates. Manual tuning keeps an operator pin authoritative. Automatic
     # tuning is an explicit replacement operation, so its measured result wins
     # over the old manual pins (measured > pin > estimate > sensitivity).
-    measured_trims, level_match = _measured_level_trims(preset, measurements)
+    measured_trims, level_match = _measured_level_trims(
+        preset, measurements, crossover_preview
+    )
+    base_trim_meta = level_match.get("base_trim")
+    if (
+        isinstance(base_trim_meta, Mapping)
+        and base_trim_meta.get("status") == BASE_TRIM_DECLARATION_CHANGED
+    ):
+        # Refused, and said so. A banked trim that is silently dropped is
+        # indistinguishable from a speaker that was never measured, and the
+        # operator would have no way to tell which one they are looking at.
+        issues.append(_issue(
+            "warning",
+            "driver_base_trim_declaration_changed",
+            (
+                "the banked measured base trim was taken against a different "
+                "driver declaration than this one; JTS ignored it — "
+                + str(base_trim_meta.get("remediation") or "")
+            ).strip(),
+        ))
     if level_match.get("incomparable_groups"):
         issues.append(_issue(
             "warning",
@@ -1663,6 +1718,7 @@ def _estimator_cross_check(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
     candidate_trims_db: Mapping[str, float],
+    crossover_preview: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Where the two level-match ESTIMATORS disagree, per role, as copy strings.
 
@@ -1696,7 +1752,9 @@ def _estimator_cross_check(
     if not candidate_trims_db:
         return []
     try:
-        point_trims, _meta = _measured_level_trims(preset, measurements)
+        point_trims, _meta = _measured_level_trims(
+            preset, measurements, crossover_preview
+        )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         # The point-at-Fc reader is fail-closed by design and this is a
         # disclosure path; an unreadable measurements blob means "no second
@@ -2240,7 +2298,10 @@ def build_baseline_profile_candidate(
         # different frames for one physical quantity, and until now nothing
         # compared them.
         estimator_notes = _estimator_cross_check(
-            preset, measurements, dict(measured_candidate.role_attenuations_db),
+            preset,
+            measurements,
+            dict(measured_candidate.role_attenuations_db),
+            crossover_preview,
         )
         if estimator_notes:
             correction_issues.append(_issue(
