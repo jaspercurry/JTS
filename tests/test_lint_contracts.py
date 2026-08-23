@@ -1385,7 +1385,10 @@ MAX_LINES_BY_PATH = {
     # #2720 gate round 1 adds +8 (S1's refusal-code precedence argument —
     # the freshest fact wins over a stale rejection stamp, and the comment
     # carries why the relay's inverted twin is flagged-not-changed).
-    "jasper/web/correction_crossover_v2_wired.py": 940,
+    # ...and 940 -> 938 on the same PR's gate round 2, giving back what the
+    # module docstring stopped restating: the retake's four terms are stated
+    # once, where they are implemented, and pointed at from here.
+    "jasper/web/correction_crossover_v2_wired.py": 938,
     # Born 2026-08-18 (#2662 W2b, capped in the #2720 gate fix round) at
     # exactly this size: the wired capture ENGINE — the measurement-kernel
     # half (device probe, S32 recorder, gap accounting, zero-run scan, WAV
