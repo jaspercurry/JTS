@@ -688,23 +688,28 @@ def resolve_driver_protection_slope_db_per_octave(
 ) -> float | None:
     """The manufacturer's PUBLISHED high-pass slope condition, or ``None``.
 
-    The second of this file's confirmed-record readers, and the frequency
-    sibling of :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`
-    — that function reads the declared minimum crossover FREQUENCY off the
-    confirmed target, and this one reads the slope condition the manufacturer
-    attaches to it (``recommended_highpass_slope_db_per_octave``, the owner
-    field ``driver_protection``'s decision-9 block describes).  One parse site
-    for each half, so the two cannot end up disagreeing about what was
-    declared.
+    The second of this file's confirmed-record readers, and the slope half of
+    the pair whose frequency half is
+    :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`.
+    One parse site each, so the two halves of one declaration cannot disagree.
 
-    **It reads the DECLARATION, deliberately not the derived requirement.**
-    ``required_protection_filters[highpass].minimum_slope_db_per_octave`` sits
-    on the same record and is the obvious-looking source, but it is
-    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` — a code figure,
-    which by the 2026-08-22 ruling may prefill and disclose but never refuse.
-    Reading it here is what made the topology gate refuse a DE250 at order 2
-    "below the protected driver's declared minimum of 24 dB/octave" when B&C
-    publish 12, and the 2026-08-23 owner ruling struck that.
+    **The two halves read DIFFERENT fields, and that asymmetry is the point.**
+    The frequency half reads ``required_protection_filters[highpass].cutoff_hz``
+    — a projection, but a LOSSLESS one:
+    :func:`~jasper.active_speaker.driver_protection.apply_driver_low_limit`
+    stamps that cutoff as the declared frequency verbatim, with no floor
+    applied.  The slope beside it is not lossless — it is
+    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, so reading it
+    cannot tell a published 24 from a published 12 raised to 24.  This function
+    therefore reads the OWNER field instead
+    (``recommended_highpass_slope_db_per_octave``, the pair
+    ``driver_protection``'s decision-9 block describes), which a confirmed
+    target carries only when the manufacturer actually published one.
+
+    Reading the projection was what made the topology gate refuse a DE250 at
+    order 2 "below the protected driver's declared minimum of 24 dB/octave"
+    when B&C publish 12 — a code figure refusing a household's choice, which
+    the 2026-08-22 ruling bars and the 2026-08-23 owner ruling struck.
 
     **It exists for the topology gate**
     (:func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`):
