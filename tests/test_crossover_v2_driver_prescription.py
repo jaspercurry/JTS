@@ -1994,7 +1994,20 @@ def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
     charges ``peak + HEADROOM_MARGIN_DB`` before the split, and the charge
     exceeds the lift — so the overlap lands BELOW unity. That is the argument
     the docstring makes; this is the measurement it rests on.
+
+    **Two numbers, and they are different on purpose.** The gate's arithmetic
+    gives the cap-implied BOUND (12.0 + 1.0 = 13.0 =
+    :data:`~.driver_prescription.MAX_SPL_SPEND_BOUND_DB`), which is what one
+    accepted document can cost at worst. What the emitter actually returns is
+    lower — ``linearization_headroom_db`` reads the branch the graph emits, and
+    the tweeter's own LR4 high-pass takes the realized peak below the gate's —
+    so this calls the emitter rather than restating a decimal. A prose number
+    nobody computes is this repo's known drift class.
     """
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+
+    from tests.test_active_speaker_profile import _two_way_preset
+
     packet = _speaker(tmp_path, classification=_boostable())
     # Cornered at the top of the tweeter's declared band: everything below is
     # covered, the whole overlap included.
@@ -2017,12 +2030,29 @@ def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
     assert prescription.composed_boost_db == pytest.approx(
         DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
     )
-    charge = prescription.composed_boost_db + HEADROOM_MARGIN_DB
-    assert charge == pytest.approx(MAX_SPL_SPEND_BOUND_DB, abs=1e-6)
-    # The bound that matters: after the pre-split charge the overlap sits BELOW
-    # unity, so admitting the shelf raised nothing the household can hear.
-    assert float(np.max(covered - charge)) == pytest.approx(-1.0, abs=0.001)
-    assert float(np.max(covered - charge)) < 0.0
+    # (a) the cap-implied BOUND, from this gate's own arithmetic.
+    bound = prescription.composed_boost_db + HEADROOM_MARGIN_DB
+    assert bound == pytest.approx(MAX_SPL_SPEND_BOUND_DB, abs=1e-6)
+    # (b) what the EMITTER returns for the same filter on the shipped two-way,
+    # computed rather than quoted. Lower than (a), because the branch carries
+    # its own LR4 high-pass at 1600 Hz.
+    realized = camilla_yaml.linearization_headroom_db(
+        {"tweeter": [
+            {key: value for key, value in prescription.filters[0].items()
+             if key != "role"}
+        ]},
+        branch_context=camilla_yaml._branch_context(
+            ActiveSpeakerPreset.from_mapping(_two_way_preset("mono")), {},
+        ),
+    )
+    assert realized == pytest.approx(12.9812, abs=0.0001)
+    assert realized < bound
+    # The bound that matters, on BOTH numbers: after the pre-split charge the
+    # overlap sits BELOW unity, so admitting the shelf raised nothing the
+    # household can hear.
+    assert float(np.max(covered - bound)) == pytest.approx(-1.0, abs=0.001)
+    assert float(np.max(covered - realized)) == pytest.approx(-0.9812, abs=0.0001)
+    assert float(np.max(covered - realized)) < 0.0
 
 
 def test_a_cut_in_the_overlap_is_untouched_by_the_knee_ruling(tmp_path):

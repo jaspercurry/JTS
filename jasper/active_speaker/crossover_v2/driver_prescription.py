@@ -653,10 +653,14 @@ COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 #: (``camilla_yaml.linearization_headroom_db``, ``peak + HEADROOM_MARGIN_DB``)
 #: then attenuates the program by more than the shelf raises it. Measured on
 #: the shipped two-way: a +12 dB Lowshelf cornered at 20 kHz reads +12.0000 dB
-#: flat across the whole overlap, composes to 12.0000, is charged 13.0000 —
-#: :data:`MAX_SPL_SPEND_BOUND_DB` exactly — and lands the overlap at
-#: **-1.0000 dB** net, BELOW unity. Adding a bar for that would be the nanny
-#: ``docs/measurement-loop-doctrine.md`` §5 names.
+#: flat across the whole overlap and composes to 12.0000, so it is charged **up
+#: to** 13.0000 = :data:`MAX_SPL_SPEND_BOUND_DB` — and **12.9812 realized**
+#: (net **-0.9812**), because ``linearization_headroom_db`` reads the branch
+#: the graph actually emits and the tweeter's own LR4 high-pass at 1600 Hz
+#: takes the realized peak to 11.9812 before the margin is added. The cap-
+#: implied 13.0000 is the BOUND; 12.9812 is what the emitter returns. Either
+#: way the overlap lands BELOW unity, which is the claim — and adding a bar for
+#: it would be the nanny ``docs/measurement-loop-doctrine.md`` §5 names.
 BOOST_IN_CROSSOVER_OVERLAP = "driver_boost_in_crossover_overlap"
 
 # SIX slugs stood beside that one until 2026-08-23, all of them the
