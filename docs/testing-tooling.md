@@ -2781,7 +2781,7 @@ docstring at the top of `driver_trim.py` carries the exact shape.
 
 | refusal | what to do |
 |---|---|
-| `driver_captures_missing` / `driver_captures_invalid` | the manifest is absent, unparseable, or names a role this speaker does not declare |
+| `driver_captures_missing` / `driver_captures_invalid` | the manifest is absent, unparseable, names a role this speaker does not declare, captures one driver twice, or names a `capture_geometry` the analysis does not read |
 | `excitation_ledger_invalid` | a capture's gain ledger does not add up, so its level cannot be put on a common reference |
 | `driver_declaration_unavailable` | no staging-ready crossover preview to key the trim to — save the base config at `/sound` |
 | `capture_unusable` | a driver analysed as silent, out-of-band, or unusable, or its overlap band was gated out — capture it again |
@@ -2803,7 +2803,11 @@ this behaves exactly as it did before the verb existed.
 the ON-AXIS ratio, and a waveguide's on-axis level overstates its power output
 against a cone's, so the record carries `geometry_claim:
 on_axis_single_position` and the listening-window average stays the arm-walk
-program's question. It is a magnitude answer only — never a phase, delay, or
+program's question. The record also names the geometry each driver was read
+under, and a group whose drivers were not all read under one geometry gets a
+`driver_base_trim_mixed_capture_geometry` disclosure on the profile — the trim
+is still applied, because a measurement across two distances still beats the
+datasheet gap; what it loses is the claim that both levels came from one. It is a magnitude answer only — never a phase, delay, or
 polarity decision — and a single level, so thermal compression is out of
 frame.
 

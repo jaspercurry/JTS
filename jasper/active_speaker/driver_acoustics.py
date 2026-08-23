@@ -141,11 +141,10 @@ SUMMED_VERDICTS = frozenset(
     {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM, VERDICT_UNUSABLE_CAPTURE}
 )
 
-# The capture geometries the analysis accepts, exported for the same reason the
-# verdicts are: a caller that carries a geometry from an operator-authored
-# document can check it at its own door and refuse in its own vocabulary,
-# instead of discovering an out-of-vocabulary value as a DriverAcousticsError
-# raised mid-analysis.
+# The capture geometries the analysis reads. Exported so a caller carrying a
+# geometry out of an operator-authored document can check it at its own door
+# and refuse in its own vocabulary, instead of discovering an
+# out-of-vocabulary value as a DriverAcousticsError raised mid-analysis.
 CAPTURE_GEOMETRIES = frozenset({"near_field", "reference_axis"})
 
 
