@@ -3215,10 +3215,15 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
 
     **The corner REFUSES; the slope only DISCLOSES**, and the split is the
     2026-08-23 owner ruling ("if it was in the safe overall envelope, it's safe
-    to test"), not a weakening. ``min_corner_hz`` reaches here from the driver's
-    own declared protective floor, and a crossover below it puts the
-    low-frequency excursion hazard band on a compression driver — a named damage
-    mechanism, so it stays a refusal. ``min_slope_db_per_octave`` reaches here
+    to test"), not a weakening. ``min_corner_hz`` reaches here as
+    :data:`~jasper.active_speaker.graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`
+    (400 Hz) — an absolute code floor, not this driver's declaration, which is
+    enforced at the pin (``declared_floor_hz``) and at apply
+    (:func:`_assert_tweeter_crossover_honours_declared_floor`). It stays a
+    refusal because a crossover below it puts the low-frequency excursion hazard
+    band on a compression driver — a named damage mechanism, which is what the
+    doctrine's section 4 lets a code figure refuse on.
+    ``min_slope_db_per_octave`` reaches here
     as :data:`PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE`, a hardcoded 24 that
     no datasheet contains; refusing an order-2 crossover against it is the
     same nanny the ruling struck at
