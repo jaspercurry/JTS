@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import logging
 import sys
 import threading
 import time
@@ -486,11 +487,14 @@ async def test_failed_graph_mutation_restores_the_pre_swap_volume(
 
 
 @pytest.mark.asyncio
-async def test_already_quiet_speaker_is_not_ducked_across_a_swap(
+async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     tmp_path: Path,
 ) -> None:
-    """Below the point where the duck would clamp there is nothing audible to
-    step, so the swap runs without one."""
+    """Guards the clamp boundary only. A fader within GRAPH_SWAP_DUCK_DB of
+    MIN_MAIN_VOLUME_DB cannot be ducked further without clamping, so the swap
+    runs without one. It is unreachable from the product fader range — 0-1%%
+    listening is around -60 dB and the duck still applies there; the deepest a
+    stacked cue plus swap duck reaches is about -125 dB."""
     fake = _FakeClient()
     fake.volume.values.append(camilla_module.MIN_MAIN_VOLUME_DB + 1.0)
     fake.ops.clear()
@@ -1177,3 +1181,28 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
             break
     else:  # pragma: no cover - the method exists
         raise AssertionError("normalize_config_raw not found in jasper/camilla.py")
+
+
+@pytest.mark.asyncio
+async def test_failed_duck_release_logs_a_named_event(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """A release the websocket drops leaves the speaker quiet in a band the
+    reconciler will not heal, so it has to be visible in the journal."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    real_set_main_volume = fake.volume.set_main_volume
+
+    def fail_on_release(value: float) -> None:
+        if fake.volume.values:
+            raise CamillaUnavailable("websocket closed before the release")
+        real_set_main_volume(value)
+
+    fake.volume.set_main_volume = fail_on_release  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="jasper.camilla"):
+        assert await cam.reload()
+
+    assert "event=camilla.graph_swap_duck_restore_failed" in caplog.text
+    assert "target_db=0.0" in caplog.text

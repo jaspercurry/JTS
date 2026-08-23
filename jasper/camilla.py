@@ -63,6 +63,63 @@ GRAPH_SWAP_DUCK_DB = 40.0
 
 _T = TypeVar("_T")
 
+# "What the fader should read right now, ignoring any duck." `VolumeCoordinator`
+# owns that fact and is not constructible from here (it needs persistence and
+# the renderer backend), so a process that has one registers it. Per process
+# rather than per controller: graph swaps run on ad-hoc `primary_controller()`
+# instances no coordinator ever sees. Same callable `Ducker` already takes.
+CanonicalTargetDbProvider = Callable[[], Awaitable[float]]
+
+_canonical_target_db_provider: CanonicalTargetDbProvider | None = None
+
+
+def set_canonical_target_db_provider(
+    provider: CanonicalTargetDbProvider | None,
+) -> None:
+    """Register this process's canonical main_volume target."""
+    global _canonical_target_db_provider
+    _canonical_target_db_provider = provider
+
+
+async def _duck_release_target_db(
+    camilla: "CamillaController",
+    *,
+    snapshot_db: float,
+    duck_depth_db: float,
+) -> float:
+    """Where a duck holder should land the fader when it lets go.
+
+    ``min(canonical, current + duck_depth_db)`` — give back this holder's own
+    attenuation and nothing else, and never end above the level that should be
+    in effect. Both halves are load-bearing, and the two duck holders here
+    (`CueDuck` and the graph-swap bracket) can interleave in either order:
+
+    * replaying the entry snapshot strands the fader, because whichever holder
+      exits last replays a value the other one had already ducked — and a deep
+      drop is exactly what `maybe_reconcile_camilla` leaves alone;
+    * a bare relative release fails the other way, clamping to 0 dB — loud —
+      when a volume change lands inside the window.
+
+    ``duck_depth_db`` is the positive attenuation this holder applied.
+    """
+    current_db = await camilla.get_volume_db(best_effort=True)
+    released_db = (
+        snapshot_db if current_db is None else current_db + abs(duck_depth_db)
+    )
+    provider = _canonical_target_db_provider
+    if provider is None:
+        return min(snapshot_db, released_db)
+    try:
+        canonical_db = await provider()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "canonical volume target unavailable; releasing duck against "
+            "the entry snapshot instead",
+            exc_info=True,
+        )
+        return min(snapshot_db, released_db)
+    return min(canonical_db, released_db)
+
 
 @dataclass
 class _ThreadAttempt:
@@ -730,13 +787,25 @@ class CamillaController:
                 await asyncio.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
                 yield
             finally:
-                # Best-effort so a restore failure cannot mask the mutation's
-                # own error, and shielded because an interrupted restore leaves
-                # the speaker ducked — quiet, but the reconciler reads that as
-                # somebody's duck and will not undo it.
-                await asyncio.shield(
-                    self.set_volume_db(before_db, best_effort=True)
-                )
+                # Shielded because an interrupted release leaves the speaker
+                # ducked — quiet, but the reconciler reads that as somebody's
+                # duck and will not undo it.
+                await asyncio.shield(self._release_graph_swap_duck(before_db))
+
+    async def _release_graph_swap_duck(self, before_db: float) -> None:
+        """Let the swap duck go, best-effort, and say so when it does not."""
+        target_db = await _duck_release_target_db(
+            self, snapshot_db=before_db, duck_depth_db=GRAPH_SWAP_DUCK_DB,
+        )
+        # Best-effort so a release failure cannot mask the mutation's own
+        # error; the event is what keeps a stranded quiet fader visible.
+        if not await self.set_volume_db(target_db, best_effort=True):
+            log_event(
+                logger,
+                "camilla.graph_swap_duck_restore_failed",
+                target_db=f"{target_db:.1f}",
+                level=logging.WARNING,
+            )
 
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
@@ -945,23 +1014,25 @@ def crossover_controller() -> CamillaController:
 
 
 class CueDuck:
-    """Snapshot-based duck for brief cue playback.
+    """Duck for brief cue playback.
 
     Async context manager — `__aenter__` snapshots pre-duck camilla
-    main_volume and drops by `duck_db` (additive); `__aexit__`
-    writes the snapshot back. Distinct from `Ducker` (which restores
-    to the live coordinator-canonical target so remote twists during a
-    long voice turn win): cues are short and passive, the user
-    isn't actively adjusting volume mid-cue, so simple snapshot
-    semantics is more predictable than reading a target that may
-    have shifted in the duck window from a 1 Hz source-state poll
-    or other interleaved writer.
+    main_volume and drops by `duck_db` (additive); `__aexit__` releases
+    through :func:`_duck_release_target_db`, which gives back this duck's own
+    attenuation without ever ending above the canonical target.
+
+    It used to replay the snapshot instead, on the reasoning that a cue is
+    short and passive. That holds while a cue is the only duck, and fails as
+    soon as it interleaves with a graph-swap duck: whichever of the two exits
+    last replays a value the other had already ducked, and the fader is
+    stranded tens of dB quiet somewhere the reconciler's duck carve-out will
+    not heal.
 
     Best-effort across the chain: if camilla is unreachable when we
-    snapshot, we skip ducking entirely (nothing to restore to). If
-    the duck write itself is dropped (camilla restarting), we still
-    write the snapshot on exit — harmless in the common case where
-    that's what camilla already shows.
+    snapshot, we skip ducking entirely (nothing to release to). If
+    the duck write itself is dropped (camilla restarting), exit still
+    writes — harmless in the common case where the release target is
+    what camilla already shows.
     """
 
     def __init__(self, camilla: "CamillaController", duck_db: float) -> None:
@@ -983,9 +1054,12 @@ class CueDuck:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._pre_db is None:
             return
-        await self._camilla.set_volume_db(
-            self._pre_db, best_effort=True,
+        target_db = await _duck_release_target_db(
+            self._camilla,
+            snapshot_db=self._pre_db,
+            duck_depth_db=self._duck_db,
         )
+        await self._camilla.set_volume_db(target_db, best_effort=True)
 
 
 class Ducker:

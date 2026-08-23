@@ -561,7 +561,8 @@ self-healing property no matter how the drift was introduced.
 4. Deep quiet drift is skipped (`expected - current >=
    RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
    setting `_voice_session_active`, so a 25 dB drop below expected can
-   be intentional. Deep loud drift is **not** skipped. If Camilla is
+   be intentional. The graph-swap duck below rides the same carve-out.
+   Deep loud drift is **not** skipped. If Camilla is
    much louder than the canonical level, the reconciler pulls it back
    even when the drift is larger than 10 dB.
 5. The unlocked 1 Hz preflight is only a hint that repair may be needed.
@@ -652,6 +653,15 @@ volume setting. The duck rides `main_volume`, not `main_mute`, because
 of at least `RECONCILE_DUCK_SKIP_DB` is left alone as somebody's duck. The
 statefile-plus-restart path needs no duck: CamillaDSP stops and starts, so the
 speaker is silent across it rather than stepping.
+
+Both duck holders — that bracket and `CueDuck` — release through
+`_duck_release_target_db`, which writes `min(canonical, current + own depth)`.
+Each gives back only the attenuation it applied, so either interleaving order
+ends at the canonical target; replaying the entry snapshot instead stranded the
+fader wherever the other holder had left it. The canonical target comes from
+whichever `VolumeCoordinator` the process registered
+(`set_canonical_target_db_provider`); with none registered the release falls
+back to the entry snapshot.
 
 ## AirPlay is always camilla-as-master
 

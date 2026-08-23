@@ -3106,3 +3106,67 @@ async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
     await coord.maybe_reconcile_camilla()
 
     assert client.db == pytest.approx(expected_db)
+
+
+# ---------- graph-swap duck composed with CueDuck ---------------------------
+
+# enter/exit sequences for the two holders. The two orders the review probed
+# are `bracket_first_cue_last` and `cue_first_bracket_last`; the other two are
+# the strictly-nested cases they bracket.
+_INTERLEAVINGS = {
+    "bracket_first_cue_last": ["B_enter", "C_enter", "B_exit", "C_exit"],
+    "bracket_outer_cue_inner": ["B_enter", "C_enter", "C_exit", "B_exit"],
+    "cue_first_bracket_last": ["C_enter", "B_enter", "C_exit", "B_exit"],
+    "cue_outer_bracket_inner": ["C_enter", "B_enter", "B_exit", "C_exit"],
+}
+
+
+@pytest.mark.parametrize("order", sorted(_INTERLEAVINGS))
+async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
+    order, tmp_path, monkeypatch,
+):
+    """After ANY interleaving, once both holders have exited, the fader is at
+    the canonical target — and it is never above it while either still holds.
+
+    Replaying entry snapshots stranded it instead: whichever holder exited last
+    wrote back a value the other had already ducked, tens of dB quiet, in the
+    one band `maybe_reconcile_camilla` deliberately refuses to heal.
+    """
+    from jasper import camilla as camilla_module
+
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    canonical_db = percent_to_db(70)
+    client = _MinimalCamillaClient(db=canonical_db)
+    cam = _real_controller(client, tmp_path)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    await coord.set_listening_level(70)
+    monkeypatch.setattr(
+        camilla_module,
+        "_canonical_target_db_provider",
+        coord.get_camilla_target_db,
+    )
+
+    cue = camilla_module.CueDuck(cam, -25.0)
+    bracket = cam._graph_mutation("test.swap")
+    steps = {
+        "B_enter": bracket.__aenter__,
+        "B_exit": lambda: bracket.__aexit__(None, None, None),
+        "C_enter": cue.__aenter__,
+        "C_exit": lambda: cue.__aexit__(None, None, None),
+    }
+    for step in _INTERLEAVINGS[order]:
+        await steps[step]()
+        assert client.db <= canonical_db + 1e-6, (
+            f"after {step} the fader sat above the canonical target — a duck "
+            "released something it did not apply"
+        )
+
+    assert client.db == pytest.approx(canonical_db), (
+        f"{order} left the fader stranded at {client.db:.1f} dB "
+        f"(canonical {canonical_db:.1f} dB)"
+    )

@@ -525,11 +525,53 @@ def _specs_for_role(role: str) -> tuple[WizardSpec, ...]:
     return ()
 
 
+def _register_canonical_volume_target() -> None:
+    """Teach this process the canonical fader target.
+
+    Correction and crossover applies run their graph swaps here, and a swap's
+    duck release has to know the level that should be in effect — otherwise it
+    replays an entry snapshot that an interleaved voice cue had already ducked
+    and strands the fader quiet. The coordinator is built per call rather than
+    held: a wizard process is socket-activated and stays light, and a release
+    happens once per apply.
+    """
+    from jasper.camilla import primary_controller, set_canonical_target_db_provider
+
+    async def canonical_target_db() -> float:
+        from jasper.renderer import RendererClient
+        from jasper.volume_coordinator import VolumeCoordinator
+        from jasper.volume_persistence import VolumePersistence
+
+        coord = VolumeCoordinator(
+            camilla=primary_controller(),
+            persistence=VolumePersistence(
+                os.environ.get(
+                    "JASPER_VOLUME_STATE_PATH",
+                    "/var/lib/jasper/speaker_volume.json",
+                )
+            ),
+            backend=RendererClient(
+                librespot_state_path=os.environ.get(
+                    "JASPER_LIBRESPOT_STATE",
+                    "/run/librespot/state.json",
+                ),
+            ),
+        )
+        try:
+            coord.load_persisted_level()
+            return await coord.get_camilla_target_db()
+        finally:
+            await coord.aclose()
+
+    set_canonical_target_db_provider(canonical_target_db)
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    _register_canonical_volume_target()
 
     # Port assignments mirror nginx-jasper.conf, jasper-web.socket, and
     # each wizard's CLI default. The registry above is the local source
