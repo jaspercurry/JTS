@@ -2210,7 +2210,7 @@ def read_loaded_camilla_graph(config_path: str | None = None) -> LoadedCamillaGr
 
     Statefile -> ``config_path`` -> the config's ``devices:`` subset, through the
     same public reader (``read_camilla_statefile_config_path``) every other
-    surface uses, so this adds no fourth copy of the statefile scan and honours
+    surface uses, so this adds no copy of the statefile scan and honours
     ``JASPER_CAMILLA_STATEFILE``.
 
     ``config_path`` OVERRIDES the statefile read, and exists because the

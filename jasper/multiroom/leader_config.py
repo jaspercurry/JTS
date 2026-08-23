@@ -339,9 +339,12 @@ def active_leader_pipe_path() -> str:
     any read failure resolves to ``""`` (degraded — fail visible)."""
     # The statefile's one reader — the ``JASPER_CAMILLA_STATEFILE`` override,
     # the shipped default, and the ``config_path`` parse all live in
-    # active_speaker.environment. Lazy, like every other import in this module.
-    # It costs /state nothing: the same `_get_state` response already imports
-    # active_speaker.environment for its `active_speaker_parked` section.
+    # active_speaker.environment. Lazy like every other import in this module,
+    # and free for all three daemons that reach this function: jasper-control's
+    # `_get_state` already imports that module for `active_speaker_parked`;
+    # jasper-web builds every role-eligible wizard at startup, and `/sound`
+    # pulls it under the same role set that gates `/rooms`; the doctor's
+    # correction module imports it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
     config_path = read_camilla_statefile_config_path()

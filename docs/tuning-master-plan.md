@@ -441,11 +441,12 @@ deviation rows as they close.
     literal path, and regex parse) folds onto
     `active_speaker/environment.py`. Its scope was that one duplicate;
     the premise that the other readers of `JASPER_CAMILLA_STATEFILE` kept
-    documented reasons held for one of four. The three that did not —
-    `cli/doctor/correction.py`, `audio_runtime_plan.py`, and
-    `multiroom/leader_config.py` — fold in #2848; `fanin/converge.py`
-    resolves the statefile PATH only, never the parse, and keeps its
-    written reason. (S)
+    documented reasons did not hold. #2848 folds all four: the three
+    parser duplicates (`cli/doctor/correction.py`,
+    `audio_runtime_plan.py`, `multiroom/leader_config.py`) and
+    `fanin/converge.py`'s override lookup, which resolved the statefile
+    PATH by hand though it never parsed `config_path`. Converge keeps
+    its written reason for passing `--statefile` at all. (S)
 2.12 Rename the two `vocabulary.py` modules (attribution's taxonomy vs
     crossover_v2's household refusal copy) so the names say which is
     which. (S)

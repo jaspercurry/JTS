@@ -20,10 +20,14 @@ Two shapes of test, because either alone is insufficient:
   the canonical one, which the first test would not notice while the copy
   happened to agree.
 
-The fourth production reader of ``JASPER_CAMILLA_STATEFILE``,
-``jasper.fanin.converge``, resolves the statefile PATH to pass as ``--statefile``
-and never parses ``config_path``; it is out of this contract's scope. So are the
-three ``deploy/bin`` shell helpers, which cannot import Python.
+Out of scope, and named so the floor is legible: ``jasper.fanin.converge``
+resolves the statefile PATH to pass as ``--statefile`` and never parses
+``config_path`` (it takes that path from this same owner). So are the FOUR shell
+parses, which cannot import Python — ``jasper-apply-airplay-mode``'s awk and the
+sed in ``jasper-camilla-pipe-guard`` and ``jasper-camilla-crossover-guard`` under
+``deploy/bin``, plus a fourth in ``deploy/lib/jasper-camilla-guard-common.sh``
+that both guards source. That last one is invisible to a grep for the env-var
+name, because it takes the statefile as ``$STATEFILE``.
 """
 
 from __future__ import annotations
@@ -165,6 +169,49 @@ def test_runtime_plan_delegates_to_the_canonical_reader(
     assert plan.camilla_config_hash == audio_plan.camilla_config_hash_for_path(
         str(config)
     )
+
+
+def test_converge_passes_the_owner_resolved_statefile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """``--statefile`` and the check it guards must name ONE statefile.
+
+    ``converge._reemit_graph_at_ring`` never parses ``config_path``, but it does
+    have to name the statefile ``applied_profile_displacement`` reads — that
+    identity is the entire reason the flag is passed instead of left to
+    argparse's default. Both now resolve through ``camilla_statefile_path``, so
+    an operator override moves them together.
+
+    The empty override is here because it is the one input where the retired
+    hand-rolled lookup and the owner disagreed: it sent ``""`` while the
+    displacement check read ``"."``, so a re-emit could re-point one statefile
+    while the divergence check had inspected another.
+    """
+
+    from jasper.fanin import converge
+
+    seen: list[list[str]] = []
+
+    def fake_main(argv: list[str]) -> int:
+        seen.append(list(argv))
+        return 0
+
+    monkeypatch.setattr("jasper.cli.active_speaker.main", fake_main)
+
+    override = str(tmp_path / "override.yml")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", override)
+    converge._reemit_graph_at_ring()
+    assert seen == [
+        ["baseline-reemit", "--endpoint", "ring", "--statefile", override]
+    ]
+
+    seen.clear()
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", "")
+    converge._reemit_graph_at_ring()
+    assert seen == [
+        ["baseline-reemit", "--endpoint", "ring", "--statefile", "."]
+    ]
+    assert str(env_mod.camilla_statefile_path()) == "."
 
 
 def test_leader_pipe_path_delegates_to_the_canonical_reader(
