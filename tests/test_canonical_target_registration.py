@@ -52,6 +52,9 @@ _ENTRY_POINTS = {
     # solo restore both swap the graph (leader_config / follower_config /
     # active_leader_config).
     "jasper/multiroom/reconcile.py": "main",
+    # `jasper-fanin-coupling-reconcile` — `reconcile_current_dsp` reloads the
+    # profile config (jasper/sound/runtime.py).
+    "jasper/fanin/coupling_reconcile.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.

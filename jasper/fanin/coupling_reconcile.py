@@ -5438,6 +5438,12 @@ def main(argv: "list[str] | None" = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # `reconcile_current_dsp` swaps the live graph from this process, so its
+    # swap duck needs a canonical target to release to.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
+
     parser = argparse.ArgumentParser(
         prog="jasper-fanin-coupling-reconcile",
         description="Arm/disarm the fan-in -> CamillaDSP coupling in order.",
