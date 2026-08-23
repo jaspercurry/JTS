@@ -700,12 +700,18 @@ _PRESCRIPTION_FIELDS = frozenset({
     # FORWARD-compatible, not backward: this reader accepts everything
     # `to_dict` emits, but an OLDER build handed a NEWER receipt refuses it as
     # an unknown field — true of the boost class's fields, of #2863's
-    # `displaced_*`, and of `unvouched_filters` above. Harmless today and recorded
-    # rather than fixed, because no production caller reads a receipt back —
-    # `driver_prescription_from_mapping` has test callers only, and the two
-    # production readers are handed a prescriber's DOCUMENT, which never
-    # carries these. A future field that a rollback path had to read would
-    # need the tolerant reader this class has not yet had reason to build.
+    # `displaced_*`, and of `unvouched_filters` above. Harmless: no production
+    # caller reads a receipt back — `driver_prescription_from_mapping` has test
+    # callers only, and the two production readers are handed a prescriber's
+    # DOCUMENT, which never carries these.
+    #
+    # An OLDER receipt read by a NEWER build is fine and needs nothing: this is
+    # an allowlist, not a required list, so a missing field takes its dataclass
+    # default — `unvouched_filters=None`, which is the honest "nobody computed
+    # this" rather than a substituted zero. And by the owner's 2026-08-23
+    # no-legacy-config ruling that is where it stops: a stored shape this
+    # contract can no longer parse REFUSES, with "re-author against the current
+    # contract" as the remediation. No tolerant reader, no legacy field list.
 })
 
 #: Fields ONE filter may carry. ``role`` is the addition that makes this class

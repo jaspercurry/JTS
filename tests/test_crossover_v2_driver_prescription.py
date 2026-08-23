@@ -3453,6 +3453,30 @@ def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet)
     assert read_back.prescriber_operator == "jasper"
 
 
+def test_a_pre_change_receipt_reads_back_without_a_tolerant_path(packet):
+    """The 2026-08-23 no-legacy-config ruling, checked rather than assumed.
+
+    A receipt banked before this change carries no ``unvouched_filters``. That
+    needs no tolerance and gets none: ``_PRESCRIPTION_FIELDS`` is an ALLOWLIST,
+    so a missing key simply takes its dataclass default — ``None``, the honest
+    "nobody computed this", never a substituted zero.
+
+    The floor this checks is the one shape that actually changed. A stored
+    document this contract genuinely could not parse would refuse loudly with
+    "re-author against the current contract"; nothing in this change creates
+    one, which is why there is no such refusal to pin.
+    """
+    banked = _gate(packet, _document([_cut()], packet)).to_dict()
+    pre_change = {k: v for k, v in banked.items() if k != "unvouched_filters"}
+    assert "unvouched_filters" not in pre_change
+
+    read_back = driver_prescription_from_mapping(pre_change)
+
+    assert read_back is not None
+    assert read_back.unvouched_filters is None
+    assert read_back.filters[0]["freq"] == TWEETER_FEATURE_HZ
+
+
 def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
     assert driver_prescription_from_mapping(None) is None
     assert driver_prescription_from_mapping({"kind": "nope"}) is None
