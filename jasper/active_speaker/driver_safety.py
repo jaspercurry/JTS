@@ -28,6 +28,7 @@ from jasper.output_topology import OutputTopology
 from ._common import LEGACY_DROPPED_DRIVER_FIELDS
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
+    LOW_LIMIT_DECLARED,
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     apply_driver_low_limit,
     driver_low_limit_plausibility_band_hz,
@@ -2271,12 +2272,12 @@ def _profile_core(
         # linearization fit band, the protection posture, and the grading bands
         # cannot disagree about where this driver stops.
         style = driver_styles.get(target_id) or "unspecified"
+        low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
         derived = apply_driver_low_limit(visible, role=role, driver_style=style)
         for field in ("hard_excitation_band_hz", "measurement_band_hz",
                       "required_protection_filters"):
             if _canonical_json(derived.get(field)) == _canonical_json(visible.get(field)):
                 continue
-            low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
             provenance[field] = {
                 "confidence": "unknown",
                 "basis": (
@@ -2311,6 +2312,11 @@ def _profile_core(
                     unknowns.append(supersede_note)
             if derived_note not in unknowns:
                 unknowns.append(derived_note)
+        declared_limit = (
+            low_limit
+            if low_limit is not None and low_limit.provenance == LOW_LIMIT_DECLARED
+            else None
+        )
         entry: dict[str, Any] = {
             "target_id": target_id,
             "target_fingerprint": str(physical["target_fingerprint"]),
@@ -2328,6 +2334,35 @@ def _profile_core(
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
+            # The low limit's OWNER travels with its projections (#2603), so a
+            # reader of the confirmed profile can tell the manufacturer's
+            # declaration from what this build derived FROM it. Until #2891 the
+            # target carried only the projections, and the derived
+            # ``required_protection_filters`` high-pass was the only slope on
+            # the record -- a ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``
+            # that no reader could unmix, which is how the topology gate came
+            # to refuse a household's order-2 pin against a 24 the datasheet
+            # never printed.
+            #
+            # DECLARED provenance only. ``apply_driver_low_limit`` also fills
+            # these two on an INFERRED limit (one read back out of a stored
+            # protective high-pass), and persisting that would promote a
+            # guess into the field whose whole meaning is "the manufacturer
+            # published this" -- so the inferred case stores neither and a
+            # reader of such a target still finds the limit exactly where it
+            # has always been. The pair travels together because
+            # ``normalise_driver_safety_fields`` refuses a slope with no
+            # frequency to condition, and because a target holding one half
+            # would resolve its own low limit by the inferred path and
+            # disagree with itself.
+            "recommended_highpass_hz": (
+                declared_limit.frequency_hz if declared_limit is not None else None
+            ),
+            "recommended_highpass_slope_db_per_octave": (
+                declared_limit.slope_db_per_octave
+                if declared_limit is not None
+                else None
+            ),
             "hard_excitation_band_hz": derived.get("hard_excitation_band_hz"),
             "required_protection_filters": derived.get(
                 "required_protection_filters", []
@@ -2648,6 +2683,14 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "physical_output_index",
                 "model",
                 "manufacturer",
+                # Optional, not required: a profile stored before #2891 carries
+                # neither, and it is still a sound declaration -- its
+                # projections re-derive from its own protective high-pass by
+                # the legacy path, so it stays confirmed rather than being
+                # invalidated by a deploy. It simply has no published slope to
+                # gate a pinned crossover with until the next /sound/ save.
+                "recommended_highpass_hz",
+                "recommended_highpass_slope_db_per_octave",
                 "hard_excitation_band_hz",
                 "required_protection_filters",
                 "measurement_band_hz",
@@ -2765,11 +2808,22 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             "level_duration_limits",
             "cabinet",
         }
-        raw_safety = {key: target[key] for key in safety_fields if key in target}
-        if _canonical_json(raw_safety) != _canonical_json(normalised_safety):
+        # The low limit's OWNER pair is canonicalised with the projections but
+        # is NOT re-derived below, and the split is what keeps a pre-#2891
+        # profile readable: it carries neither owner field, so both sides of
+        # this comparison omit them and agree -- while re-deriving it would
+        # ADD a ``recommended_highpass_hz`` the stored target never had and
+        # report every such profile stale on the deploy that shipped the field.
+        declared_fields = safety_fields | {
+            "recommended_highpass_hz",
+            "recommended_highpass_slope_db_per_octave",
+        }
+        raw_declared = {key: target[key] for key in declared_fields if key in target}
+        if _canonical_json(raw_declared) != _canonical_json(normalised_safety):
             raise DriverSafetyProfileError(
                 f"{field_name} safety fields are not canonical"
             )
+        raw_safety = {key: target[key] for key in safety_fields if key in target}
         # ... and they must still be the PROJECTION of this target's own
         # declared low limit (#2603). A stored profile whose bands and
         # protective high-pass disagree about where the driver stops is exactly
