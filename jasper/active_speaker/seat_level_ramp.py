@@ -428,7 +428,7 @@ def mic_is_not_observing(
     The measured SPL stop is deliberately NOT in that list. It cannot be: a mic
     that is not observing reports a level that does not move with the volume, so
     its reading never approaches the stop however far the ramp climbs — a
-    -90 dBFS feed reads about 16 dB SPL against an 80 dB SPL stop the whole way
+    -90 dBFS feed reads about 16 dB SPL against an 85 dB SPL stop the whole way
     up. Citing it here would be citing a guard that is structurally inert on the
     exact failure mode this predicate is about.
 

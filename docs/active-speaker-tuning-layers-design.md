@@ -779,18 +779,19 @@ Three things are **session-level one-timers at 0°**, not per-capture work:
    carries a frequency-shaped `correction_db` curve, **not** an absolute
    sensitivity — so the anchor's input has to be read before it can be
    targeted. The band is legal under the declared commissioning ceiling, with
-   **no headroom on some speakers, which is worth saying plainly**:
-   `SafetyEnvelope` declares `initial_sweep_level_db_spl` (default 65.0) and
-   `max_commissioning_level_db_spl` (default 85.0), each validated into 45–85
+   **5 dB of headroom on every shipped preset since the 2026-08-23 owner
+   ruling**: `SafetyEnvelope` declares `initial_sweep_level_db_spl`
+   (default 65.0) and `max_commissioning_level_db_spl` (default 85.0), each
+   validated into 45–85
    ([`jasper/active_speaker/profile.py`](../jasper/active_speaker/profile.py)),
-   and the ramp reads neither. The reference preset
-   (`bc_de250_dayton_e150he44_v1.json`) declares 85, but the Epique preset
-   (`epique_e150he44_eminence_f110m8_safe_v1.json`) and the preview-staging
-   path both declare **80** — so on those the ratified band's top sits exactly
-   at the ceiling. That is legal by the 2026-08-17 boundary ruling above (a
-   value at the declared limit is a sanctioned operating point, no nanny
-   margin) and is a real constraint for the anchor to respect, not a spare
-   5 dB;
+   and the ramp reads neither. Both shipped presets
+   (`bc_de250_dayton_e150he44_v1.json` and
+   `epique_e150he44_eminence_f110m8_safe_v1.json`) declare **85**, and the
+   preview-staging path rides that dataclass default rather than restating it
+   — so the ratified band's top sits 5 dB under the ceiling. A band top AT
+   the declared limit would still be legal by the 2026-08-17 boundary ruling
+   above (a value at the declared limit is a sanctioned operating point, no
+   nanny margin); the anchor simply no longer sits at it;
 3. **~2 s per-driver drift sentinels between phases**, which replace the
    per-capture pilot on the wired path (see constraint 4 below).
 
@@ -1767,8 +1768,7 @@ vocabulary and `SUMMED_SWEEP_PHASES` membership, `position_angle_deg`'s
 (15 captures, 13 displayed minutes) and its 9 → 3 stage-1 shape under a
 `STAGE1_INCLUDES_LATERAL` flag flip, the ramp's dBFS window and the
 calibration reader's lack of a sensitivity term, the declared commissioning
-SPL fields including the two 80 dB presets, the three N≥3 policy floors, and
-the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
+SPL fields, the three N≥3 policy floors, and the pilot pair's duration. The per-pose ~41.6 s is a representative figure at
 the display constants, not a fixed one — it moves with topology — so it is
 cited as representative rather than verified. Nothing else in this doc was
 re-verified in that pass.
@@ -1860,7 +1860,7 @@ readings above 4 kHz (three at 12.1, two at 18.4) are the 1/12-octave smoothing
 floor rather than distinct resonances, so those are lower bounds on narrowness —
 which is why rule 2 warns against sizing a Q ceiling against 6.6.
 
-**The `Last verified:` footer below was deliberately NOT bumped**, nine times
+**The `Last verified:` footer below was deliberately NOT bumped**, ten times
 now and for one reason: the footer is a whole-document claim, and no pass
 re-read the whole document against the code. The 2026-08-18 pass added a
 section and trued up two entries it contradicted. The pass that shipped the
@@ -1886,7 +1886,12 @@ and Option (a) paragraphs, its per-angle-per-driver-capture bullet, and the
 per-pose-replay parenthesis below. The pass that deleted `horn_coverage_deg`
 (#2872) trued up the two places this file called its Bessel-beamwidth consumer
 pending: the speaker-class section's landed-so-far list, and the issue
-ledger's #1675 entry, which had gone on calling a completed issue open. Every
+ledger's #1675 entry, which had gone on calling a completed issue open. The
+pass that raised the commissioning SPL stop to 85 under the owner's 2026-08-23
+ruling trued up the SPL-anchor one-timer's headroom paragraph, which had named
+the Epique preset and the preview-staging path as declaring 80, and dropped the
+2026-08-18 audit note's "the two 80 dB presets" tail — that pass did verify
+those fields, but restating their values is what went stale. Every
 one of those was a claim the change in hand falsified; none verified anything
 else here.
 
