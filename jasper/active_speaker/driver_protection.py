@@ -629,17 +629,6 @@ class DriverLowLimit:
             PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "frequency_hz": self.frequency_hz,
-            "slope_db_per_octave": self.slope_db_per_octave,
-            "derived_protection_slope_db_per_octave": (
-                self.derived_protection_slope_db_per_octave
-            ),
-            "provenance": self.provenance,
-            "rationale": self.rationale,
-        }
-
 
 def _declared_highpass_filter(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
     filters = driver.get("required_protection_filters")
