@@ -11,13 +11,17 @@ Four things are pinned here and they fail in different ways:
   prescriber can never be granted a move the deterministic path could not make,
   and re-deriving one of them moves both. The two BOOST ceilings are the
   sibling prescription class's instead, and pinned as such;
-* **the classification bar is load-bearing** — a filter with no verdict of its
-  own sign for its target is refused, and the mutation that removes the check
-  makes an accepted document out of a refused one;
-* **a boost is admitted only against measured evidence** — a nearest
-  ``defect-boostable`` verdict that reported its own depth, bounded by that
-  depth and by a composed budget; two independent gates, each proved while
-  the other is inert;
+* **the classification reading DISCLOSES and never refuses** (owner ruling,
+  2026-08-23) — a filter with no verdict of its own sign for its target is
+  COUNTED onto ``unvouched_filters``, and the mutation that re-adds the refusal
+  kills a document the gate now admits;
+* **a boost is bounded by what it COSTS, not by what vouches for it** — the
+  per-filter and composed caps and the crossover knee, which together hold the
+  maximum-SPL spend at 13.0 dB; the depth a verdict reports rides the receipt
+  for a reader to weigh;
+* **a document may carry any filter the EMITTER can build** — ``Peaking``,
+  ``Highshelf``, ``Lowshelf`` — in the only placements the emitter can name
+  them, so a shelf accepted here cannot raise at emission;
 * **an accepted prescription reaches the emitted graph through the SAME
   per-branch seam the fit uses**, and survives the emitter's own independent
   re-validation there.
@@ -29,7 +33,6 @@ laptop.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import math
@@ -40,6 +43,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, chain_response
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
@@ -99,6 +103,7 @@ from jasper.active_speaker.linearization_fit import (
     PER_FILTER_CUT_CAP_DB,
     linearization_filters_by_role,
 )
+from jasper.camilla_config_contract import SHELF_Q
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_crossover_v2_blend_prescription import _bundle
@@ -653,6 +658,12 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert bounds["min_boost_db"] == DRIVER_MIN_BOOST_DB
     assert bounds["max_filter_boost_db"] == DRIVER_MAX_FILTER_BOOST_DB
     assert bounds["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
+    # The EMITTER's set, not a second literal: the contract a prescriber reads
+    # and the graph its filters will be built into name the same filters.
+    assert set(bounds["biquad_types"]) == set(
+        camilla_yaml.LINEARIZATION_BIQUAD_TYPES
+    )
+    assert "leading" in bounds["where_a_shelf_may_sit"]
     fmt = driver_prescription_response_format()
     # Per SIGN and as a PAIR: a reader walking the keys must find a bar for
     # each sign, not one key that structurally only covers cuts.
@@ -662,27 +673,35 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert "eligible_classification" not in bar
     assert fmt["boosts"]["eligible_classification"] == DEFECT_BOOSTABLE
     assert fmt["boosts"]["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
-    # ONE thing, and the matching-sign verdict is NOT it: a cut owes a
-    # `defect-cuttable` verdict identically, so the sign rule is stated once for
-    # both signs under `classification_bar`. Counting it as a boost's own debt
-    # told a prescriber a symmetric bar was asymmetric.
-    owed = fmt["boosts"]["a_boost_owes_one_thing_a_cut_does_not"]
+    # NOTHING, since 2026-08-23: the depth bar that was a boost's one extra
+    # debt is a disclosure now, so what differs between the signs is the COST
+    # and not a bar. A contract still claiming an asymmetric bar would send a
+    # prescriber to satisfy one that no longer exists.
+    owed = fmt["boosts"]["a_boost_owes_nothing_a_cut_does_not"]
+    assert "maximum SPL" in owed
     assert "depth_db" in owed
-    assert "classification_bar" in owed
+    assert "a_boost_owes_one_thing_a_cut_does_not" not in fmt["boosts"]
     assert set(fmt["refusal_reasons"]) == DRIVER_PRESCRIPTION_REFUSAL_REASONS
     # Every boost refusal the gate can raise is named in the block a prescriber
     # reads, so a bar it can walk into is a bar it was told about.
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
     assert set(fmt["boosts"]["refusals"]) == {
-        dp.FEATURE_NOT_BOOSTABLE,
-        dp.FEATURE_DEPTH_UNAVAILABLE,
-        dp.BOOST_EXCEEDS_FEATURE_DEPTH,
         dp.BOOST_IN_CROSSOVER_OVERLAP,
         dp.FILTER_BOOST_TOO_HIGH,
         dp.FILTER_BOOST_TOO_SHALLOW,
         dp.COMPOSED_BOOST_EXCEEDED,
-        dp.BOOST_UNVOUCHED,
     }
+    # …and the four the 2026-08-23 ruling retired are gone from the module
+    # entirely, not merely from this block: a prescriber that could still read
+    # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
+    # nothing applies.
+    for retired in (
+        "driver_feature_not_classified", "driver_feature_not_cuttable",
+        "driver_feature_not_boostable", "driver_feature_depth_unavailable",
+        "driver_boost_exceeds_feature_depth", "driver_boost_unvouched",
+    ):
+        assert retired not in DRIVER_PRESCRIPTION_REFUSAL_REASONS
+        assert not hasattr(dp, retired.upper().removeprefix("DRIVER_"))
     assert "OVERLAP" in fmt["boosts"]["not_at_the_crossover_knee"].upper()
 
 
@@ -878,7 +897,17 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
 
 @pytest.mark.parametrize("filters", [
     None, {}, "filters", [None], [[]],
-    [{"role": "tweeter", "biquad_type": "Highshelf", "freq": 5000.0, "q": 2.0,
+    # The emitter's set is the whole set: a type outside it is what the graph
+    # cannot be built out of. `Notch` is a real CamillaDSP biquad and still
+    # refused, so this pins the emitter's vocabulary rather than merely
+    # "unknown strings are refused".
+    [{"role": "tweeter", "biquad_type": "Notch", "freq": 5000.0, "q": 2.0,
+      "gain": -3.0}],
+    [{"role": "tweeter", "biquad_type": None, "freq": 5000.0, "q": 2.0,
+      "gain": -3.0}],
+    # A Peaking still owes its own Q; only a shelf is excused, because only a
+    # shelf's Q is a number the emitter drops.
+    [{"role": "tweeter", "biquad_type": "Peaking", "freq": 5000.0,
       "gain": -3.0}],
     [{"biquad_type": "Peaking", "freq": 5000.0, "q": 2.0, "gain": -3.0}],
     [{"role": " ", "biquad_type": "Peaking", "freq": 5000.0, "q": 2.0, "gain": -3.0}],
@@ -895,10 +924,12 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
     [dict(_cut(), extra=1)],
 ])
 def test_the_gate_refuses_every_malformed_filter(packet, filters):
-    """Peaking only, role required, no coercion, and no unknown field.
+    """The emitter's own filter set, role required, no coercion, no unknown field.
 
-    A shelf is refused because per-driver LEVEL is the trim's fact and the fit's
-    normalization ledger, neither of which an intake may reach past.
+    A type outside ``camilla_yaml.LINEARIZATION_BIQUAD_TYPES`` is refused
+    because the graph cannot be built out of it — the one bound on the filter
+    vocabulary that survived the 2026-08-23 ruling, since it names a real
+    failure at emission rather than a prediction about the outcome.
     """
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(filters, packet))
@@ -934,49 +965,57 @@ def test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape(packet, pa
 @pytest.mark.parametrize("classification", [
     INTERFERENCE_BARRED, ROOM, DEFECT_BOOSTABLE, UNRESOLVED, "something-new",
 ])
-def test_only_a_defect_cuttable_verdict_admits_a_cut(tmp_path, classification):
-    """Every other verdict is refused, and the refusal names which it was.
+def test_only_a_defect_cuttable_verdict_vouches_for_a_cut(tmp_path, classification):
+    """Every other verdict leaves the cut UNVOUCHED — disclosed, not refused.
 
     A cancellation is lowered along with the direct sound; a room arrival is not
     the speaker's to correct; a minimum-phase DIP would be deepened by a cut,
-    not filled. An unknown string satisfies nothing, which is why the register
-    keeps it rather than rejecting it — a refusal can quote it.
+    not filled. Every one of those is a prediction about the OUTCOME, and the
+    owner's 2026-08-23 ruling gives a prediction no power to refuse: the
+    document is admitted with the count on it, and the round measures.
     """
     packet = _speaker(tmp_path, classification=_classification([
         _verdict(TWEETER_FEATURE_HZ, classification),
     ]))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
+    prescription = _gate(packet, _document([_cut()], packet))
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CUTTABLE
-    assert excinfo.value.evidence["classification"] == classification
+    assert prescription.unvouched_filters == 1
+    assert prescription.classification_basis == ()
+    assert prescription.to_dict()["unvouched_filters"] == 1
 
 
-def test_an_unclassified_frequency_is_go_and_measure_not_no(tmp_path):
-    """The two refusals are different instructions and must stay apart.
+def test_an_unclassified_frequency_is_unvouched_and_still_admitted(tmp_path):
+    """Nothing banked at 5 kHz: the filter is counted, not refused.
 
-    "Nothing was classified there" sends a prescriber to run the classifier;
-    "the feature there is barred" tells it the answer is no and that a different
-    filter will not fix it.
+    It used to be `driver_feature_not_classified`, an instruction to go and run
+    the classifier. Classifying is still the better move and the contract still
+    says so — what changed is that it is no longer a precondition, because
+    "we have not measured this feature yet" names no component-damage
+    mechanism.
     """
     packet = _speaker(tmp_path, classification=_classification([
         _verdict(WOOFER_FEATURE_HZ),
     ]))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
+    prescription = _gate(packet, _document([_cut()], packet))
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+    assert prescription.unvouched_filters == 1
+    assert prescription.classification_basis == ()
 
 
-def test_a_packet_with_no_banked_classification_refuses_every_cut(tmp_path):
+def test_a_packet_with_no_banked_classification_vouches_for_nothing(tmp_path):
+    """No classification at all reads as "all of them", not as "nobody knows".
+
+    ``None`` is what a durable read-back reports, and the two are different
+    facts a receipt may not spell the same way.
+    """
     packet = _speaker(tmp_path, classification=False)
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
+    prescription = _gate(packet, _document([_cut(), _cut(freq=6000.0)], packet))
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+    assert prescription.unvouched_filters == 2
+    assert prescription.classification_basis == ()
 
 
 def test_a_prescription_that_cuts_nothing_needs_no_classification(tmp_path):
@@ -1018,37 +1057,51 @@ def test_a_filter_may_not_borrow_a_distant_features_verdict(tmp_path, octaves):
     freq = TWEETER_FEATURE_HZ * (2.0 ** octaves)
     document = _document([_cut(freq=freq)], packet)
 
-    if abs(octaves) <= VERDICT_MATCH_TOLERANCE_OCTAVES:
-        assert _gate(packet, document).filters[0]["freq"] == pytest.approx(freq)
-        return
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, document)
-    assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+    prescription = _gate(packet, document)
+
+    assert prescription.filters[0]["freq"] == pytest.approx(freq)
+    inside = abs(octaves) <= VERDICT_MATCH_TOLERANCE_OCTAVES
+    assert prescription.unvouched_filters == (0 if inside else 1)
+    assert bool(prescription.classification_basis) is inside
 
 
-def test_the_classification_check_is_load_bearing_not_decorative(
+def test_the_classification_disclosure_is_measured_not_asserted(
     packet, tmp_path, monkeypatch
 ):
-    """The mutation: remove the check and a refused document is accepted.
+    """The mutation: blind the disclosure and the count stops telling the truth.
 
-    An argument in place of a guard guards nothing. This is the positive
-    control for every refusal above — without it, they would all still pass on
-    a gate whose classification arm had been deleted, because each of them
-    ALSO clears a shape bound.
+    A number a caller could have hardcoded discloses nothing. The control is
+    that the SAME document reads differently against two records — barred at
+    5 kHz, cuttable at 5 kHz — so the count is being computed from the evidence
+    rather than from the document's own shape.
     """
     barred = _speaker(tmp_path / "barred", classification=_classification([
         _verdict(TWEETER_FEATURE_HZ, INTERFERENCE_BARRED),
     ]))
-    document = _document([_cut()], barred)
+    vouching = _speaker(tmp_path / "vouching", classification=_classification([
+        _verdict(TWEETER_FEATURE_HZ),
+    ]))
 
+    assert _gate(barred, _document([_cut()], barred)).unvouched_filters == 1
+    assert _gate(
+        vouching, _document([_cut()], vouching)
+    ).unvouched_filters == 0
+
+    # The pre-fix shape lives here as the mutation, so a reviewer can see the
+    # refusal that used to stand: re-add it and the barred document dies.
+    real = dp._check_classification
+
+    def refusing(filters, verdicts):
+        basis, unvouched = real(filters, verdicts)
+        if unvouched:
+            raise BlendPrescriptionRefused(
+                "driver_feature_not_cuttable", "the pre-2026-08-23 bar",
+            )
+        return basis, unvouched
+
+    monkeypatch.setattr(dp, "_check_classification", refusing)
     with pytest.raises(BlendPrescriptionRefused):
-        _gate(barred, document)
-
-    monkeypatch.setattr(dp, "_check_classification", lambda filters, verdicts: ())
-    accepted = _gate(barred, document)
-
-    assert accepted.filters[0]["freq"] == TWEETER_FEATURE_HZ
-    assert accepted.classification_basis == ()
+        _gate(barred, _document([_cut()], barred))
 
 
 def test_a_defect_verdict_is_necessary_and_the_contract_says_not_sufficient():
@@ -1073,9 +1126,14 @@ def test_the_contract_names_the_row_list_a_bar_actually_reads():
     """
     contract = driver_prescription_response_format()
 
+    reads = contract["classification_bar"]["it_discloses_and_never_refuses"]
     assert "verdicts[]" in contract["bounds"]["match_a_cut_to_its_feature"]
-    assert "verdicts[]" in contract["classification_bar"]["note"]
-    assert "lab_rows[]" in contract["classification_bar"]["note"]
+    assert "verdicts[]" in reads
+    assert "lab_rows[]" in reads
+    # …and it says, in the block a prescriber reads, that it is evidence rather
+    # than a gate — the fact the whole 2026-08-23 ruling turns on.
+    assert "Nothing about it refuses" in reads
+    assert "unvouched_filters" in reads
 
 
 def test_the_nearest_verdict_decides_and_a_further_cuttable_one_cannot_vouch():
@@ -1192,8 +1250,8 @@ def test_two_real_gaps_sit_inside_the_match_tolerance_and_both_are_peak_dip():
 
 
 @pytest.mark.parametrize(("freq_hz", "role", "accepted"), [
-    # The four dips. Every one of them refuses, and 4582 / 8530 are the two the
-    # old any-cuttable-vouches rule ACCEPTED by borrowing 4149 / 9509.
+    # The four dips. Not one of them is vouched, and 4582 / 8530 are the two
+    # the old any-cuttable-vouches rule VOUCHED for by borrowing 4149 / 9509.
     (1037.0, "woofer", False),
     (4582.0, "tweeter", False),
     (6245.0, "tweeter", False),
@@ -1203,30 +1261,31 @@ def test_two_real_gaps_sit_inside_the_match_tolerance_and_both_are_peak_dip():
     (5396.0, "tweeter", True),
     (9509.0, "tweeter", True),
 ])
-def test_the_banked_record_refuses_every_dip_and_accepts_every_peak(
+def test_the_banked_record_vouches_for_every_peak_and_no_dip(
     tmp_path, freq_hz, role, accepted
 ):
     """The regression, on the real record, at the frequencies that mattered.
 
-    Cutting a minimum-phase dip deepens it — the harm ``driver_feature_not_cuttable``
-    names in its own docstring — so a rule that let a neighbouring peak vouch was
-    the gate accepting the exact proposal it exists to stop.
+    The nearest-verdict rule is what stops a neighbouring peak vouching for a
+    cut sitting on a dip — 4582 and 8530 are the two the old any-cuttable rule
+    accepted by borrowing 4149 / 9509. Every one of these documents is now
+    ADMITTED; what the rule decides is the count on it, and that is still the
+    number an operator reads before staging.
     """
     packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
     # The role is whichever driver's declared band holds the frequency — 1037 Hz
     # is under the tweeter's 1.6 kHz protective floor, so it is the woofer's.
     document = _document([_cut(role=role, freq=freq_hz)], packet)
 
+    prescription = _gate(packet, document)
+
+    assert prescription.filters[0]["freq"] == freq_hz
+    assert prescription.unvouched_filters == (0 if accepted else 1)
     if accepted:
-        assert _gate(packet, document).filters[0]["freq"] == freq_hz
-        return
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, document)
-    assert excinfo.value.reason == dp.FEATURE_NOT_CUTTABLE
-    # The refusal quotes the feature the filter is ON, never the neighbour.
-    assert excinfo.value.evidence["hz"] == freq_hz
-    assert excinfo.value.evidence["classification"] == DEFECT_BOOSTABLE
-    assert "deepens it" in excinfo.value.detail
+        # The basis quotes the feature the filter is ON, never the neighbour.
+        assert prescription.classification_basis[0].verdict.freq_hz == freq_hz
+    else:
+        assert prescription.classification_basis == ()
 
 
 def test_the_old_any_cuttable_rule_would_have_accepted_the_dips():
@@ -1333,17 +1392,20 @@ def test_a_document_may_carry_a_cut_and_a_boost_and_each_pays_its_own_bar(tmp_pa
 # --- the classification bar, boost half ------------------------------------- #
 
 
-def test_a_boost_aimed_at_a_peak_is_refused_by_the_peaks_own_verdict(tmp_path):
-    """9509 Hz on the real record is a cuttable PEAK. Boosting one grows it."""
+def test_a_boost_aimed_at_a_peak_is_unvouched_by_the_peaks_own_verdict(tmp_path):
+    """9509 Hz on the real record is a cuttable PEAK. Boosting one grows it.
+
+    Which is a prediction about the outcome, so since 2026-08-23 it is counted
+    rather than refused: the boost still pays every CAP, and the round measures
+    whether growing the peak is what happened.
+    """
     packet = _speaker(tmp_path, classification=_classification(_banked_rows(depth_db=6.0)))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=9509.0)], packet))
+    prescription = _gate(packet, _document([_boost(freq=9509.0)], packet))
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_BOOSTABLE
-    assert excinfo.value.evidence["hz"] == 9509.0
-    assert excinfo.value.evidence["classification"] == DEFECT_CUTTABLE
-    assert "grows it" in excinfo.value.detail
+    assert prescription.unvouched_filters == 1
+    assert prescription.classification_basis == ()
+    assert prescription.prescription_class == "boost"
 
 
 def test_a_boost_may_not_borrow_a_neighbouring_dips_verdict(tmp_path):
@@ -1351,29 +1413,31 @@ def test_a_boost_may_not_borrow_a_neighbouring_dips_verdict(tmp_path):
 
     4149 Hz is a cuttable PEAK with the 4582 Hz boostable DIP 0.143 octaves
     away — inside the match tolerance. A rule that let any boostable verdict in
-    radius vouch would ACCEPT a boost sitting squarely on the peak, which is the
-    precise proposal ``defect_boostable_at``'s nearest-decides rule exists to
-    refuse. Same shape at 9509 (peak) beside 8530 (dip).
+    radius vouch would REPORT a boost sitting squarely on the peak as backed by
+    evidence, which is the precise claim ``defect_boostable_at``'s
+    nearest-decides rule exists to prevent. Same shape at 9509 (peak) beside
+    8530 (dip). The document is admitted either way; what borrowing would
+    corrupt is the number an operator reads.
     """
     packet = _speaker(tmp_path, classification=_classification(_banked_rows(depth_db=6.0)))
 
     for peak_hz, borrowable_dip_hz in ((4149.0, 4582.0), (9509.0, 8530.0)):
         gap = abs(math.log2(borrowable_dip_hz / peak_hz))
         assert gap < VERDICT_MATCH_TOLERANCE_OCTAVES, "or this proves nothing"
-        with pytest.raises(BlendPrescriptionRefused) as excinfo:
-            _gate(packet, _document([_boost(freq=peak_hz)], packet))
-        assert excinfo.value.reason == dp.FEATURE_NOT_BOOSTABLE
-        # The refusal quotes the feature the filter is ON, never the neighbour.
-        assert excinfo.value.evidence["hz"] == peak_hz
+        prescription = _gate(packet, _document([_boost(freq=peak_hz)], packet))
+        assert prescription.unvouched_filters == 1
+        assert prescription.classification_basis == ()
 
 
-def test_the_borrowed_neighbour_bar_is_as_strong_at_the_take_as_at_staging(tmp_path):
+def test_the_take_reads_the_same_vouch_the_staging_step_disclosed(tmp_path):
     """#2752's whole-row banking is load-bearing for BOOSTS too, not only cuts.
 
     The take re-runs the gate against the verdicts the staging step banked. If
     that set dropped the PEAKS, a boost edited onto 4149 Hz would find only the
-    4582 Hz dip, nothing to outrank it, and would be accepted a round after it
-    was refused. Banking the whole row set is what makes the two answers equal.
+    4582 Hz dip, nothing to outrank it, and would come back VOUCHED a round
+    after it was disclosed as unvouched. Banking the whole row set is what makes
+    the two counts equal — which is the property the anchor buys now that the
+    vouch discloses rather than refuses.
     """
     _stage_driver(
         tmp_path,
@@ -1390,24 +1454,27 @@ def test_the_borrowed_neighbour_bar_is_as_strong_at_the_take_as_at_staging(tmp_p
     envelope["prescription_sha256"] = spool.prescription_sha256(payload)
     spool.prescription_spool_path().write_text(json.dumps(envelope))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=2, accepts=frozenset({DRIVER_PRESCRIPTION_KIND}),
-        )
+    taken = spool.take_staged_prescription(
+        round_ordinal=2, accepts=frozenset({DRIVER_PRESCRIPTION_KIND}),
+    )
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_BOOSTABLE
-    assert excinfo.value.evidence["hz"] == 4149.0
+    assert taken.prescription.filters[0]["freq"] == 4149.0
+    assert taken.prescription.unvouched_filters == 1
+    assert taken.prescription.classification_basis == ()
 
 
-def test_a_boost_at_an_unclassified_frequency_is_go_and_measure_not_no(tmp_path):
-    """12 kHz is past every banked feature. Different instruction, different slug."""
+def test_a_boost_at_an_unclassified_frequency_is_unvouched_and_admitted(tmp_path):
+    """12 kHz is past every banked feature: counted, not refused.
+
+    The spend is what still binds — this boost pays the per-filter and composed
+    caps exactly as a vouched one does.
+    """
     packet = _speaker(tmp_path, classification=_boostable())
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=12000.0)], packet))
+    prescription = _gate(packet, _document([_boost(freq=12000.0)], packet))
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
-    assert "feeds" in excinfo.value.detail
+    assert prescription.unvouched_filters == 1
+    assert prescription.composed_boost_db == pytest.approx(3.0, abs=0.01)
 
 
 def test_a_boost_is_admitted_on_the_horizontal_records_own_evidence(tmp_path):
@@ -1441,91 +1508,77 @@ def test_a_boost_is_admitted_on_the_horizontal_records_own_evidence(tmp_path):
     assert driver_prescription_route(gated) == LINEARIZATION_CANDIDATE_FIELD
 
 
-def test_the_row_that_refused_for_blindness_now_refuses_only_for_depth(tmp_path):
+def test_the_depthless_record_still_vouches_for_a_boost_on_its_own_dip(tmp_path):
     """The disposition that was reported wrong twice, re-derived at HEAD.
 
-    1037.0 Hz refused ``driver_boost_vertically_blind`` while every OTHER row
-    on that depthless record refused ``driver_feature_depth_unavailable`` —
-    blindness was checked BEFORE depth, and the two send a prescriber to
-    different instruments. With the door open the record answers with one
-    voice: the only thing between it and a boost is a measurement nobody
-    banked. Re-bank with a ``depth_db`` per row and propose again.
-    """
-    packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(role="woofer", freq=1037.0)], packet))
-    assert excinfo.value.reason == dp.FEATURE_DEPTH_UNAVAILABLE
-
-
-def test_a_verdict_with_no_depth_refuses_rather_than_guessing_one(tmp_path):
-    """The real 2026-08-19 rows verbatim: NOT ONE of them carries a depth.
-
-    This refusal is therefore the operational flag as well as the safety bar —
-    it is what the record on disk today produces, and re-banking with a
-    ``depth_db`` per row is a measurement session's job rather than this gate's.
-    A boost bounded by a guessed depth is a boost bounded by nothing.
+    1037.0 Hz refused ``driver_boost_vertically_blind`` (closed #2805), then
+    ``driver_feature_depth_unavailable`` (closed 2026-08-23). NOT ONE row of the
+    real 2026-08-19 record carries a depth, so under the depth bar that record
+    could not produce a single boost. It now vouches on the classification
+    alone, and the depth — when a round banks one — rides the receipt for a
+    reader to weigh rather than deciding for them.
     """
     packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
     assert all(v.depth_db is None for v in packet_feature_classifications(packet))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=4582.0)], packet))
+    prescription = _gate(
+        packet, _document([_boost(role="woofer", freq=1037.0)], packet),
+    )
 
-    assert excinfo.value.reason == dp.FEATURE_DEPTH_UNAVAILABLE
-    assert excinfo.value.evidence["depth_db"] is None
+    assert prescription.unvouched_filters == 0
+    assert prescription.classification_basis[0].verdict.freq_hz == 1037.0
+    assert prescription.classification_basis[0].verdict.depth_db is None
 
 
-def test_a_boost_may_not_be_deeper_than_the_dip_it_is_aimed_at(tmp_path):
-    """The feature is the bound, not the ceiling. 1.46 dB dip, +1.6 dB boost.
+def test_a_boost_deeper_than_its_dip_is_admitted_and_the_depth_is_on_the_receipt(
+    tmp_path,
+):
+    """The feature is EVIDENCE, not the bound. 1.46 dB dip, +1.6 dB boost.
 
     Both numbers are far inside every policy ceiling this gate applies, which is
-    the point: the measured depth is a TIGHTER bound than the constants, and it
-    is the one that binds here.
+    the point: overshooting a dip is a prediction that the correction misses,
+    not a mechanism that damages anything, so the caps are what bind and the
+    measured depth is what the receipt reports. A reader can still re-derive the
+    old bar from the banked row, which is why the number has to be there.
     """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=1.46)]))
 
-    assert _gate(
-        packet, _document([_boost(gain=1.46)], packet)
-    ).filters[0]["gain"] == 1.46
+    prescription = _gate(packet, _document([_boost(gain=1.6)], packet))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(gain=1.6)], packet))
-
-    assert excinfo.value.reason == dp.BOOST_EXCEEDS_FEATURE_DEPTH
-    assert excinfo.value.evidence["depth_db"] == 1.46
-    assert excinfo.value.evidence["gain_db"] == 1.6
+    assert prescription.filters[0]["gain"] == 1.6
+    assert prescription.unvouched_filters == 0
+    assert prescription.classification_basis[0].verdict.depth_db == 1.46
+    assert prescription.to_dict()["classification_basis"][0]["depth_db"] == 1.46
 
 
-@pytest.mark.parametrize(("depth", "reason"), [
-    # A depth that cannot bound anything refuses every boost, rather than
-    # admitting one because the subtraction happened to come out favourably.
-    (0.0, dp.BOOST_EXCEEDS_FEATURE_DEPTH),
-    (-2.0, dp.BOOST_EXCEEDS_FEATURE_DEPTH),
+@pytest.mark.parametrize("depth", [
+    # A depth that could bound nothing, and the values
     # `feature_classification.finite_number` — the reader that fills
-    # `FeatureVerdict.depth_db` — rejects bool (it is an int in Python), strings,
-    # and non-finite values, so each arrives as "no depth reported" rather than
-    # as a number. Named in full because the tree holds a dozen `_finite*`
-    # helpers and a bare name greps to the wrong one.
-    (True, dp.FEATURE_DEPTH_UNAVAILABLE),
-    (float("inf"), dp.FEATURE_DEPTH_UNAVAILABLE),
-    ("3.0", dp.FEATURE_DEPTH_UNAVAILABLE),
+    # `FeatureVerdict.depth_db` — rejects: bool (an int in Python), strings, and
+    # non-finite values, each of which arrives as "no depth reported". Named in
+    # full because the tree holds a dozen `_finite*` helpers and a bare name
+    # greps to the wrong one.
+    0.0, -2.0, True, float("inf"), "3.0", None,
 ])
-def test_a_depth_that_cannot_bound_a_boost_refuses_it(tmp_path, depth, reason):
-    """Fail-closed on every unusable depth — the bar is never skipped."""
+def test_an_unusable_depth_no_longer_decides_anything(tmp_path, depth):
+    """Every one of these refused a boost before 2026-08-23. None does now.
+
+    The vouch reads the CLASSIFICATION; the depth is a column beside it. A
+    document whose fate turned on a field the classifier often does not bank was
+    the shape that kept the real record from producing any boost at all.
+    """
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=depth)]))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(gain=1.0)], packet))
+    prescription = _gate(packet, _document([_boost(gain=1.0)], packet))
 
-    assert excinfo.value.reason == reason
+    assert prescription.unvouched_filters == 0
+    assert prescription.filters[0]["gain"] == 1.0
 
 
 def test_a_nonsense_depth_is_still_capped_by_the_policy_ceilings(tmp_path):
-    """Defence in depth, the other direction: the measured depth is normally
-    the TIGHTER bound, but a banked row claiming a 500 dB dip does not widen
-    what may be prescribed — the per-filter ceiling and the composed budget
-    still bind, so neither bound is trusted on its own."""
+    """A banked row claiming a 500 dB dip does not widen what may be
+    prescribed: the per-filter ceiling and the composed budget are the bounds,
+    and no number a prescriber or a classifier supplies can move them."""
     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=500.0)]))
 
     assert _gate(
@@ -1537,28 +1590,6 @@ def test_a_nonsense_depth_is_still_capped_by_the_policy_ceilings(tmp_path):
             [_boost(gain=DRIVER_MAX_FILTER_BOOST_DB + 0.01)], packet
         ))
     assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
-
-
-def test_the_depth_bar_is_load_bearing_not_decorative(tmp_path, monkeypatch):
-    """The mutation: strip the depth from the verdicts and the over-deep boost
-    is ADMITTED. A bar no mutation can flip is a bar nothing is resting on."""
-    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=1.46)]))
-    document = _document([_boost(gain=1.6)], packet)
-
-    with pytest.raises(BlendPrescriptionRefused):
-        _gate(packet, document)
-
-    # The pre-fix shape: a gate that never consulted the measured depth.
-    real = dp._boost_basis
-
-    def depth_blind(position, role, freq, gain, verdicts):
-        return real(position, role, freq, gain, tuple(
-            dataclasses.replace(v, depth_db=max(gain, v.depth_db or 0.0))
-            for v in verdicts
-        ))
-
-    monkeypatch.setattr(dp, "_boost_basis", depth_blind)
-    assert _gate(packet, document).filters[0]["gain"] == 1.6
 
 
 # --- the shape bounds, boost half ------------------------------------------- #
@@ -1900,15 +1931,18 @@ def test_the_knee_ruling_does_not_reach_tonights_targets(tmp_path, freq):
     ).filters[0]["freq"] == freq
 
 
-# --- the route: the SECOND gate, on every value object however it was built -- #
+# --- the route: one field, and no condition on reaching it ------------------ #
 
 
-def test_the_route_refuses_a_boost_carrying_no_vouching_verdict(tmp_path):
-    """A prescription built directly has no classification basis and no route.
+def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
+    """A prescription built directly has no classification basis and routes anyway.
 
-    ``read_driver_prescription`` is not the only way a value object comes into
-    existence, so the promise that an unvouched boost can never populate the
-    candidate field has to be a property of the SEAM, not of the call graph.
+    ``driver_prescription_route`` used to restate ``_check_classification``'s bar
+    as a property of the SEAM, so an unvouched boost could not populate the
+    candidate field however the object was constructed. The 2026-08-23 ruling
+    made that bar a disclosure, and a seam-level restatement of a removed
+    refusal would be the same refusal wearing a second name. What still bounds a
+    boost built this way is the emitter, which re-validates every entry.
     """
     packet = _speaker(tmp_path, classification=_boostable())
     accepted = _gate(packet, _document([_cut()], packet))
@@ -1921,93 +1955,59 @@ def test_the_route_refuses_a_boost_carrying_no_vouching_verdict(tmp_path):
         passbands_hz=accepted.passbands_hz,
     )
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        driver_prescription_to_candidate_fields(boost, fitted=None)
-    assert excinfo.value.reason == dp.BOOST_UNVOUCHED
-    assert excinfo.value.evidence["unvouched"][0]["gain_db"] == 2.0
-
-    with pytest.raises(BlendPrescriptionRefused):
-        driver_prescription_route(boost)
+    assert driver_prescription_route(boost) == LINEARIZATION_CANDIDATE_FIELD
+    fields = driver_prescription_to_candidate_fields(boost, fitted=None)
+    assert fields[LINEARIZATION_CANDIDATE_FIELD]["tweeter"]["filters"][0][
+        "gain"
+    ] == 2.0
 
 
-def test_a_rehydrated_boost_refuses_because_the_reader_rebuilds_no_basis(tmp_path):
+def test_a_rehydrated_boost_carries_no_basis_and_still_routes(tmp_path):
     """The durable read-back applies no bound and reconstructs no verdict.
 
-    That is deliberate — the bounds have one owner and it is the boundary — so
-    the route is what stops a banked boost re-entering a candidate through a
-    reader that never re-asked the evidence.
+    That is deliberate — the bounds have one owner and it is the boundary. What
+    it costs is the disclosure, not the route: ``unvouched_filters`` comes back
+    ``None`` (nobody computed it) rather than ``0`` (computed, all vouched), so
+    a receipt read back out of durable state cannot claim evidence it never
+    re-derived.
     """
     packet = _speaker(tmp_path, classification=_boostable())
     accepted = _gate(packet, _document([_boost()], packet))
     assert accepted.classification_basis  # the gate DID vouch for it
+    assert accepted.unvouched_filters == 0
 
     read_back = driver_prescription_from_mapping(accepted.to_dict())
 
     assert read_back.prescription_class == "boost"
     assert read_back.classification_basis == ()
     assert read_back.composed_boost_db is None
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        driver_prescription_to_candidate_fields(read_back, fitted=None)
-    assert excinfo.value.reason == dp.BOOST_UNVOUCHED
+    assert read_back.unvouched_filters is None
+    assert driver_prescription_route(read_back) == LINEARIZATION_CANDIDATE_FIELD
 
 
-def test_a_cut_shaped_basis_cannot_vouch_for_a_boost_at_the_route(tmp_path):
-    """SF-UNPINNED-GUARDS (a). The route filters the basis by VERDICT CLASS.
+def test_the_basis_names_the_filter_it_vouched_for_by_role_and_frequency(tmp_path):
+    """Matching is by ``(role, freq)``, never by position in the list.
 
-    A basis entry exists for every admitted filter, cuts included — so matching
-    on `(role, freq)` alone would let a CUT's `defect-cuttable` basis vouch for
-    a boost laundered onto the same frequency. The route's
-    `verdict.classification == DEFECT_BOOSTABLE` filter is the only thing
-    between that document and the candidate field.
+    Nothing refuses on it any more, but the receipt's basis is still keyed that
+    way and the CLI's own disclosure re-derives the unvouched NAMES from it — a
+    basis matched by position would name the wrong filters on a document whose
+    vouched and unvouched filters interleave.
     """
     packet = _speaker(tmp_path, classification=_boostable())
-    accepted = _gate(packet, _document([_cut()], packet))
-    assert accepted.classification_basis[0].verdict.classification == DEFECT_CUTTABLE
 
-    # Same role, same frequency, same (real, gate-written) basis — sign flipped.
-    laundered = dataclasses.replace(
-        accepted,
-        filters=({**dict(accepted.filters[0]), "gain": 2.0},),
-        prescription_class="boost",
+    prescription = _gate(
+        packet,
+        _document([_boost(freq=12000.0), _cut(), _boost()], packet),
     )
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        driver_prescription_route(laundered)
-    assert excinfo.value.reason == dp.BOOST_UNVOUCHED
-
-
-def test_a_basis_for_a_different_filter_cannot_vouch_for_this_one(tmp_path):
-    """Matching is by ``(role, freq)``, never by position in the list."""
-    packet = _speaker(tmp_path, classification=_boostable())
-    accepted = _gate(packet, _document([_boost()], packet))
-    moved = dataclasses.replace(
-        accepted,
-        filters=({**dict(accepted.filters[0]), "freq": TWEETER_FEATURE_HZ},),
-    )
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        driver_prescription_route(moved)
-    assert excinfo.value.reason == dp.BOOST_UNVOUCHED
-
-
-def test_the_route_is_load_bearing_and_the_classification_bar_is_the_other_gate(
-    tmp_path, monkeypatch,
-):
-    """Two independent gates, each shown refusing while the other is inert.
-
-    Disable the route and the classification bar still refuses an unvouchable
-    boost at the boundary; the previous tests disable the bar (by constructing
-    around it) and show the route refusing.
-    """
-    packet = _speaker(tmp_path, classification=_boostable())
-    monkeypatch.setattr(
-        dp, "driver_prescription_route", lambda p: LINEARIZATION_CANDIDATE_FIELD
-    )
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=TWEETER_FEATURE_HZ)], packet))
-
-    assert excinfo.value.reason == dp.FEATURE_NOT_BOOSTABLE
+    assert prescription.unvouched_filters == 1
+    backed = {
+        (basis.role, basis.filter_freq_hz)
+        for basis in prescription.classification_basis
+    }
+    assert backed == {("tweeter", TWEETER_FEATURE_HZ), ("tweeter", TWEETER_DIP_HZ)}
+    assert "12000 Hz" in cli._vouch_phrase(prescription)
+    assert "5000 Hz" not in cli._vouch_phrase(prescription)
 
 
 def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
@@ -3122,16 +3122,14 @@ def test_the_take_is_offered_the_whole_classification_not_the_vouching_subset(
     ]
 
 
-def test_a_filter_moved_onto_a_nearby_dip_refuses_at_take_on_the_dips_own_verdict(
-    tmp_path,
-):
-    """The STRONG claim: the take's bar is the staging step's, not a weaker one.
+def test_a_filter_moved_onto_a_nearby_dip_reads_unvouched_at_take(tmp_path):
+    """The STRONG claim: the take's reading is the staging step's, not a weaker one.
 
     A cut honestly aimed at the tweeter's classified peak, moved a seventh of an
-    octave onto the minimum-phase dip beside it, is the exact proposal
-    ``defect_cuttable_at``'s nearest-verdict rule exists to refuse — and it
-    still has a cuttable verdict inside the match radius to borrow. It must
-    refuse on the DIP, which it can only do if the dip was banked.
+    octave onto the minimum-phase dip beside it, still has a cuttable verdict
+    inside the match radius to borrow. The nearest-verdict rule is what stops it
+    borrowing, and the take can only apply that rule if the DIP was banked —
+    which is what the whole-row anchor buys.
     """
     _stage_driver(
         tmp_path,
@@ -3144,14 +3142,12 @@ def test_a_filter_moved_onto_a_nearby_dip_refuses_at_take_on_the_dips_own_verdic
     )
     _move_staged_filter(TWEETER_NEARBY_DIP_HZ)
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-        )
+    staged = spool.take_staged_prescription(
+        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+    )
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CUTTABLE
-    assert excinfo.value.evidence["classification"] == DEFECT_BOOSTABLE
-    assert excinfo.value.evidence["hz"] == pytest.approx(TWEETER_NEARBY_DIP_HZ)
+    assert staged.prescription.unvouched_filters == 1
+    assert staged.prescription.classification_basis == ()
 
 
 def test_a_filter_moved_onto_a_peak_no_filter_targeted_is_admitted_at_take(tmp_path):
@@ -3187,22 +3183,23 @@ def test_a_filter_moved_onto_a_peak_no_filter_targeted_is_admitted_at_take(tmp_p
     assert staged.prescription.classification_basis[0].verdict.freq_hz == unclaimed_hz
 
 
-def test_a_filter_moved_off_its_verdict_refuses_on_the_classification_bar(tmp_path):
-    """The far move, refused for the other of the bar's two reasons.
+def test_a_filter_moved_off_every_verdict_reads_unvouched_at_take(tmp_path):
+    """The far move: 12 kHz is outside every banked verdict's match radius.
 
-    12 kHz is outside every banked verdict's match radius, so nothing was
-    classified there at all — a different instruction to the prescriber than the
-    dip above, and the reason the bar returns two slugs rather than a boolean.
+    Nothing was classified there at all, so nothing vouches — the same answer
+    the staging step would have given, which is the equality the anchor exists
+    for. It is a count, not a refusal: what the take still refuses is a document
+    whose digest does not match the one that was banked.
     """
     _stage_driver(tmp_path, ordinal=4)
     _move_staged_filter(12_000.0)
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        spool.take_staged_prescription(
-            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
-        )
+    staged = spool.take_staged_prescription(
+        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+    )
 
-    assert excinfo.value.reason == dp.FEATURE_NOT_CLASSIFIED
+    assert staged.prescription.filters[0]["freq"] == 12_000.0
+    assert staged.prescription.unvouched_filters == 1
 
 
 def _cli_stage(tmp_path: Path, rows: list[dict[str, Any]]) -> int:
@@ -3429,7 +3426,14 @@ def test_a_mangled_durable_block_reads_as_absent_never_as_half_a_prescription():
 
 
 def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):
-    """The class is re-derived from the gains, never trusted from the document."""
+    """The class is re-derived from the gains, never trusted from the document.
+
+    It is the receipt's own attribution key, so an edited record that kept
+    ``"cut"`` would file a boost under the wrong heading. The read-back applies
+    no BOUND — the bounds have one owner and it is the boundary — so what stops
+    an over-deep edit reaching CamillaDSP is the emitter's own re-validation,
+    never this reader.
+    """
     prescription = _gate(packet, _document([_cut()], packet))
     record = prescription.to_dict()
     record["filters"][0]["gain"] = 2.0
@@ -3437,8 +3441,7 @@ def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):
     read_back = driver_prescription_from_mapping(record)
 
     assert read_back.prescription_class == "boost"
-    with pytest.raises(BlendPrescriptionRefused):
-        driver_prescription_to_candidate_fields(read_back, fitted=None)
+    assert read_back.unvouched_filters is None
 
 
 # --------------------------------------------------------------------------- #
@@ -3571,9 +3574,10 @@ def test_dropping_an_incumbent_lowshelf_is_charged_as_the_boost_it_is(tmp_path):
 def test_repeating_the_incumbent_leaves_the_true_small_delta(tmp_path):
     """The same document, authored as the total it is, reads as what it is.
 
-    Every repeated filter needs its own banked ``defect-cuttable`` verdict —
-    ``_check_classification`` vouches per filter and makes no exception for one
-    the graph is already playing — so this round banks four.
+    No filter needs a verdict any more — ``_check_classification`` counts
+    instead of refusing — and these four are exactly the case that makes the
+    difference: the fit engine placed them, so nothing vouches for any of them.
+    The count says so and the document is admitted.
     """
     peaking = [
         entry for entry in INCUMBENT_TWEETER if entry["biquad_type"] == "Peaking"
@@ -3581,10 +3585,7 @@ def test_repeating_the_incumbent_leaves_the_true_small_delta(tmp_path):
     packet = _speaker(
         tmp_path,
         incumbent={"tweeter": peaking},
-        classification=_classification([
-            _verdict(TWEETER_FEATURE_HZ),
-            *(_verdict(entry["freq"]) for entry in peaking),
-        ]),
+        classification=_classification([_verdict(TWEETER_FEATURE_HZ)]),
     )
     kept = [
         {"role": "tweeter", **entry} for entry in peaking
@@ -3593,6 +3594,9 @@ def test_repeating_the_incumbent_leaves_the_true_small_delta(tmp_path):
     prescription = _gate(packet, _document(kept, packet))
 
     assert prescription.displaced_filters == 3
+    # Three repeats with no verdict of their own; only the new bell at 5 kHz
+    # sits on the one banked feature.
+    assert prescription.unvouched_filters == 3
     # Only the document's own added bell separates the two cascades, and a
     # −1.0 dB cut can only make the prescribed side QUIETER — so nothing rises
     # above the incumbent anywhere.
@@ -3600,33 +3604,169 @@ def test_repeating_the_incumbent_leaves_the_true_small_delta(tmp_path):
     assert prescription.displaced_boost_role is None
 
 
-def test_an_incumbent_shelf_can_never_be_repeated_so_naming_the_role_drops_it(
-    tmp_path,
-):
-    """The structural corner two rulings make between them, pinned (#2863).
+def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path):
+    """The 2026-08-23 ruling on the exact document that motivated it (#2863).
 
-    ``_parse_filters`` admits Peaking and nothing else — "a prescriber that
-    wants a shelf is asking for a different quantity" — while the merge is a
-    TOTAL for every role a document names. So a role whose incumbent carries a
-    shelf cannot be totalled: naming it deletes the shelf, and there is no
-    document that does not. That is exactly the 2026-08-22 round, and it is why
-    the disclosure below is the only signal there is to give.
+    The whole four-filter tweeter chain the round was playing, repeated as the
+    TOTAL it is, with one bell moved from −2.863 dB to −1.0 dB. Before the
+    ruling this document did not exist: ``_parse_filters`` refused the Lowshelf
+    outright and ``_check_classification`` refused every filter the fit engine
+    placed, so naming the role always deleted the shelf and always cost the
+    6.074 dB step nobody chose.
+
+    The delta is +1.863 dB and it is exactly the gain change: the other three
+    filters are identical, so the two cascades differ only at 7309.7 Hz, where
+    one carries −1.0 dB and the other −2.863 dB.
     """
     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
-    shelf = {"role": "tweeter", **INCUMBENT_TWEETER[0]}
+    kept = [{"role": "tweeter", **entry} for entry in INCUMBENT_TWEETER]
+    kept[2] = dict(kept[2], gain=-1.0)
+
+    prescription = _gate(packet, _document(kept, packet))
+
+    assert [f["biquad_type"] for f in prescription.filters] == [
+        "Lowshelf", "Peaking", "Peaking", "Peaking",
+    ]
+    assert prescription.displaced_filters == 4
+    assert prescription.displaced_boost_db == pytest.approx(1.863, abs=0.01)
+    assert prescription.displaced_boost_role == "tweeter"
+    # Every one of the four is a fit-engine filter, so nothing vouches for any
+    # of them — disclosed, and admitted.
+    assert prescription.unvouched_filters == 4
+    # …and the packet says the shelf may be repeated, where the shelf is
+    # listed, so a prescriber meets the rule beside the filter it applies to.
+    # The claim and the gate that makes it true are pinned together.
+    note = packet["incumbent"]["linearization"]["note"]
+    assert "shelves included" in note
+    assert "must lead the role's chain" in note
+
+
+def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
+    """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
+
+    ``camilla_yaml._emit_driver_linearization_definitions`` builds a shelf's
+    ``FilterSpec`` with no ``q`` at all, and ``profile._biquad_coeffs`` forces
+    ``SHELF_Q`` for both shelf types whatever the record says — so a banked
+    number that was not that one would be a number nothing in the loop reads.
+    The gate writes the emitter's, whether the document states one or not.
+    """
+    packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+    stated = {"role": "tweeter", **INCUMBENT_TWEETER[0], "q": 8.0}
+    silent = {key: value for key, value in stated.items() if key != "q"}
+
+    for document in (stated, silent):
+        prescription = _gate(packet, _document([document], packet))
+        assert prescription.filters[0]["q"] == SHELF_Q
+        # …and it survives the emitter's own independent re-validation.
+        assert linearization_filters_by_role(
+            driver_prescription_to_candidate_fields(prescription, fitted=None)[
+                LINEARIZATION_CANDIDATE_FIELD
+            ]
+        )["tweeter"][0]["q"] == SHELF_Q
+
+
+@pytest.mark.parametrize(("filters", "legal"), [
+    # Leading shelf, with and without bells behind it — the fit engine's own
+    # two shapes.
+    ((("Lowshelf", 5844.0), ("Peaking", 3249.0)), True),
+    ((("Highshelf", 5844.0),), True),
+    # A Highshelf TAPER, last, after a Lowshelf lead (#1668).
+    ((("Lowshelf", 5000.0), ("Peaking", 3249.0), ("Highshelf", 9000.0)), True),
+    # …and every placement the emitter raises on.
+    ((("Peaking", 3249.0), ("Lowshelf", 5844.0)), False),
+    ((("Lowshelf", 5000.0), ("Highshelf", 9000.0), ("Peaking", 3249.0)), False),
+    ((("Highshelf", 5000.0), ("Highshelf", 9000.0)), False),
+    ((("Lowshelf", 5000.0), ("Lowshelf", 9000.0)), False),
+])
+def test_a_shelf_may_only_sit_where_the_emitter_can_name_it(tmp_path, filters, legal):
+    """The emitter's structural rule, applied at intake instead of at emission.
+
+    ``camilla_yaml._validate_linearization_shelf_structure`` raises on any other
+    placement, because position is what names the emitted filter and two
+    shelves in "peak" slots would collide. A document accepted here and refused
+    there is the one failure shape a gate exists to prevent, so the door
+    consumes that module's own ``linearization_slot`` classifier rather than
+    restating the rule.
+    """
+    packet = _speaker(tmp_path)
+    document = _document(
+        [{"role": "tweeter", "biquad_type": kind, "freq": hz, "q": 2.0,
+          "gain": -2.0} for kind, hz in filters],
+        packet,
+    )
+
+    if legal:
+        prescription = _gate(packet, document)
+        assert len(prescription.filters) == len(filters)
+        # The emitter agrees, which is the claim this test is really making.
+        assert linearization_filters_by_role(
+            driver_prescription_to_candidate_fields(prescription, fitted=None)[
+                LINEARIZATION_CANDIDATE_FIELD
+            ]
+        )["tweeter"]
+        return
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, document)
+    assert excinfo.value.reason == dp.FILTER_MALFORMED
+    assert "shelf may only lead" in excinfo.value.detail
+
+
+def test_a_shelf_pays_the_same_caps_as_a_bell(tmp_path):
+    """The widened vocabulary widened no bound. Both signs, both caps.
+
+    A shelf reaches its full gain across a whole half-band, so it is exactly the
+    filter that could have slipped past a cap written for a bell. It does not:
+    ``_check_composed`` reads the evaluated cascade, and a Highshelf reads its
+    own gain over the top of the band.
+    """
+    packet = _speaker(tmp_path, classification=_boostable())
+    shelf = {"role": "tweeter", "biquad_type": "Highshelf", "freq": 8000.0,
+             "q": 2.0}
+
+    at_the_rail = _gate(
+        packet, _document([dict(shelf, gain=DRIVER_MAX_FILTER_BOOST_DB)], packet),
+    )
+    assert at_the_rail.composed_boost_db == pytest.approx(
+        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+    )
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([shelf], packet))
+        _gate(packet, _document(
+            [dict(shelf, gain=DRIVER_MAX_FILTER_BOOST_DB + 0.01)], packet,
+        ))
+    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
-    assert excinfo.value.reason == dp.FILTER_MALFORMED
-    assert "Peaking" in excinfo.value.detail
-    # …and the packet SAYS so where the shelf is listed, so a prescriber meets
-    # the constraint beside the filter it applies to rather than by being
-    # refused. The claim and the gate that makes it true are pinned together.
-    assert (
-        "only Peaking filters"
-        in packet["incumbent"]["linearization"]["note"]
-    )
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document(
+            [dict(shelf, gain=-DRIVER_MAX_FILTER_CUT_DB - 0.01)], packet,
+        ))
+    assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
+
+
+def test_a_negative_gain_shelf_never_puts_the_branch_above_unity(tmp_path):
+    """``branch_chain_peak_db``'s cut-only short-circuit, re-proved for shelves.
+
+    That short-circuit answers ``min(0, trim_db)`` without evaluating anything
+    when no filter gain is positive, on the premise that a cascade of cuts is
+    ``<= 0 dB`` everywhere. Admitting shelves put a new filter shape inside that
+    premise, so it is measured here rather than assumed: at the fixed
+    Butterworth ``SHELF_Q`` a negative-gain shelf is maximally flat and never
+    overshoots, worst 7.7e-15 dB over the emitter's own charge grid.
+    """
+    worst = 0.0
+    for kind in ("Lowshelf", "Highshelf"):
+        for corner in (100.0, 500.0, 1600.0, 5844.67, 12000.0):
+            for gain in (-0.5, -3.0, -6.074, -12.0):
+                response = chain_response(
+                    [{"biquad_type": kind, "freq": corner, "q": SHELF_Q,
+                      "gain": gain}],
+                    np.asarray(CHAIN_GRID_HZ, dtype=float),
+                )
+                worst = max(worst, float(
+                    np.max(20.0 * np.log10(np.abs(response)))
+                ))
+
+    assert worst < 1e-12
 
 
 def test_a_displaced_incumbent_is_disclosed_and_never_refused(tmp_path):

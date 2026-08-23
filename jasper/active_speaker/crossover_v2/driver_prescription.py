@@ -1154,8 +1154,9 @@ def _check_bounds(
     producer of the receipt's class field, exactly as the blend gate's is.
 
     A document may mix signs; the class names what it is capable of, not what
-    every filter does. Each filter is still bounded by its OWN sign here, and
-    the classification bar is likewise per filter.
+    every filter does. Each filter is bounded by its OWN sign here, and
+    :func:`_check_classification` reads the evidence per filter by the same
+    sign.
     """
     overlaps = _crossover_overlaps(passbands)
     for position, entry in enumerate(filters):
@@ -1709,12 +1710,12 @@ def read_driver_prescription(
     value ("this evidence does not say"), unlike the three above it.
 
     **Order is deliberate.** Shape, then identity, then the bands, then the
-    per-filter bounds, then the composed cascade, then the classification bar,
-    and last the route. Each stage sends a prescriber somewhere different, and
-    reporting a later failure for an earlier cause would send it to re-derive a
-    number that was fine. The classification bar sits AFTER the shape bounds on
-    purpose: a filter that is out of band or too deep is wrong whatever the
-    feature there turns out to be, and classifying is the expensive errand.
+    per-filter bounds, then the composed cascade — every refusal, in the order
+    that sends a prescriber somewhere different, because reporting a later
+    failure for an earlier cause would send it to re-derive a number that was
+    fine. The two DISCLOSURES run last, after the document is known to be
+    admissible, so one the gate was going to refuse anyway never pays for their
+    evaluation.
 
     **The bounds are inclusive.** A filter exactly at a ceiling is legal; one
     past it is refused.
@@ -1899,10 +1900,12 @@ def driver_prescription_to_candidate_fields(
     own ordinary path. That keeps the no-prescription path byte-identical to
     today's.
 
-    **It re-asks the route rather than trusting that the gate already did**, on
-    the blend seam's rule: this function is the last thing between a
-    prescription and a fingerprinted candidate field, and asking the one owner
-    of the rule again costs a function call.
+    **It asks the route rather than spelling the field**, on the blend seam's
+    rule: this function is the last thing between a prescription and a
+    fingerprinted candidate field, and the one owner of "which field" answering
+    again costs a function call. Since 2026-08-23 that answer carries no
+    condition — see :func:`driver_prescription_route` — so this is a
+    single-source-of-truth call and no longer a second gate.
     """
     if prescription is None:
         return {}

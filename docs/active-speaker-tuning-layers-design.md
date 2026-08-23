@@ -1517,30 +1517,29 @@ this stage reads as more finished than it is.
 
 | rule | the decision it has to make | ships? | what ships beside it |
 |---|---|---|---|
-| 1 classify first | per-bin minimum-phase classification | **partial** | the **bar** ships for the prescribed per-driver class, both signs — a cut with no `defect-cuttable` verdict for its target is refused `driver_feature_not_cuttable`, a boost with no `defect-boostable` one `driver_feature_not_boostable` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). The **instrument** ships too — [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py) / `jasper-classify-features`, controls-gated — but it types detected FEATURES rather than bins, runs OFFLINE over a banked round rather than inside one, and reads only horizontal captures — disclosed once in the evidence packet's `not_evaluated` block, not refused per verdict. `positional_support` remains the cross-position half for the blend boost class |
+| 1 classify first | per-bin minimum-phase classification | **partial** | the **reading** ships for the prescribed per-driver class, both signs — every filter is checked against the banked verdicts (nearest decides, sign must match) and the ones no verdict backs are counted onto `prescription.unvouched_filters` ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py), vocabulary in [`feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)). It **discloses and does not refuse** since the owner's 2026-08-23 ruling: the vouch is a prediction about whether a filter will help, and a refusal on it cost more than it saved — a role whose incumbent carried a shelf could never keep it (#2863). The **instrument** ships too — [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py) / `jasper-classify-features`, controls-gated — but it types detected FEATURES rather than bins, runs OFFLINE over a banked round rather than inside one, and reads only horizontal captures — disclosed once in the evidence packet's `not_evaluated` block, not refused per verdict. `positional_support` remains the cross-position half for the blend boost class |
 | 2 width-matched filters | choosing Q from a feature's measured width | **no** | the clamp itself, `BLEND_FILTER_Q = 2.0` — widened for cuts by [PR #2730](https://github.com/jaspercurry/JTS/pull/2730) (merged). A banked feature's `measured_q` is now *reported* to a prescriber in the packet's classification block, but nothing in the tree chooses a Q from it |
 | 3 correct in the owning branch | routing a defect to per-driver vs shared | **partial** | ships for the **prescribed** path: the two classes have separate gates, separate bands and separate candidate fields, so a per-driver defect can only reach `linearization` and a region-wide one can only reach `blend_correction` — neither gate can accept the other's filter. The **deterministic** path still makes no such routing decision |
-| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **partial** | ships for the **per-driver prescribed** class since [PR #2754](https://github.com/jaspercurry/JTS/pull/2754): a boost is admitted only against a nearest banked `defect-boostable` verdict that reports its own `depth_db`, no deeper than that depth, and inside a per-role composed budget that bounds the maximum-SPL spend at 13.0 dB ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)) — 5.0 dB until ruling R8 widened the per-filter and composed boost caps to 12 dB on 2026-08-22. Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised, and the per-driver bar is a gate on a proposal rather than a stage that derives one |
+| 4 boosts pay a bar | the **blend-stage** boost route, gated on min-phase + multi-angle + budget | **no**, for the evidence half | what ships on the **per-driver prescribed** class is the SPEND half: a per-role composed budget that bounds the maximum-SPL spend at 13.0 dB, plus the per-filter caps and the crossover-knee bar ([`driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py)) — 5.0 dB until ruling R8 widened the boost caps to 12 dB on 2026-08-22. The EVIDENCE half shipped in [PR #2754](https://github.com/jaspercurry/JTS/pull/2754) and was withdrawn on 2026-08-23: a nearest `defect-boostable` verdict reporting its own `depth_db`, and a boost no deeper than it, are now disclosed rather than required — the owner ruled that a candidate inside the caps may be tested, and NOT ONE row of the 2026-08-19 record carries a depth, so the bar refused every boost that record could have produced. Layer 1a's boost bounds also ship and were exercised in series 1 — `MAX_LINEARIZATION_BOOST_DB`, enforced in `runtime_contract.py`. The **blend** stage's own five-condition bar has still never been exercised |
 | 5 frozen reference | a frozen-reference comparator | **no** | `flat_spec` / `flat_spec_views`, which self-reference |
 | 6 audibility floors | — | n/a | a review discipline, not code either way |
 
-So **two of six still fail the test outright** (2, 5), and **three more ship
-only on the prescribed path** (1, 3, 4) — a gate that refuses a bad proposal,
+So **three of six now fail the test outright** (2, 4, 5), and **two more ship
+only on the prescribed path** (1, 3) — a gate that refuses a bad proposal,
 never a stage that derives the right one. For rules 2 and 5 the campaign
 produced its verdicts with laptop-side analysis and none of that analysis has
-been promoted into the product. Rule 4's evidence now has a shipped producer —
+been promoted into the product. Rule 4's evidence has a shipped producer —
 [`feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
 emits a `depth_db` per feature — but it runs OFFLINE over a banked round rather
-than inside one, so a round still carries a verdict only when somebody
-classified it, and a boost against a depthless verdict refuses by name. Every
-capture that producer reads is horizontal, disclosed on the prescription path
-in the evidence packet's `not_evaluated` block rather than gated per verdict;
-the boost bar itself is classification and measured depth alone. So the shipped
-path to an admitted boost is now **reachable** — it was not while the geometry
-refused every one — and what answers whether a boost HELPS is where it has
-always been: the measured round that follows, on the owner's acceptance
-protocol for this route (bounded pre-registered probe boost → all-seats
-non-regression → near-field spot-check, recorded in
+than inside one, so a round carries a verdict only when somebody classified it,
+and since 2026-08-23 nothing on the prescription path gates on either the
+verdict or the depth: both are DISCLOSED beside the proposal. Every capture that
+producer reads is horizontal, disclosed the same way in the evidence packet's
+`not_evaluated` block. So the shipped path to an admitted boost is **open** —
+what bounds one is what it costs — and what answers whether a boost HELPS is
+where it has always been: the measured round that follows, on the owner's
+acceptance protocol for this route (bounded pre-registered probe boost →
+all-seats non-regression → near-field spot-check, recorded in
 [#2783](https://github.com/jaspercurry/JTS/issues/2783)).
 
 **What "partial" is buying, said plainly**, because the distinction is the
