@@ -104,6 +104,7 @@ def _write_authority(
     *,
     staged: dict | None = None,
     applied_config: Path | None = None,
+    startup_hold: bool = False,
 ) -> dict[str, Path]:
     applied = tmp_path / "applied-baseline.json"
     if applied_config is not None:
@@ -113,11 +114,18 @@ def _write_authority(
         )
     staged_path = tmp_path / "staged-metadata.json"
     staged_path.write_text(json.dumps(staged or {}), encoding="utf-8")
+    # A tmp hold-marker path keeps every selector test hermetic w.r.t. the real
+    # /run marker: absent by default (no hold), present only when startup_hold=True
+    # exercises the re-commission deadlock guard.
+    hold_marker = tmp_path / "staged-startup-hold"
+    if startup_hold:
+        hold_marker.touch()
     return {
         "applied_baseline_path": applied,
         "profile_path": tmp_path / "bass-profile.json",
         "intent_path": tmp_path / "bass-intent.json",
         "staged_metadata_path": staged_path,
+        "staged_startup_hold_path": hold_marker,
     }
 
 
@@ -3323,6 +3331,42 @@ def test_safe_graph_decision_prefers_applied_baseline_over_staged_current(
     assert decision.preferred_graph is not None
     assert decision.preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
     assert decision.selected_config_path == str(baseline_path)
+
+
+def test_safe_graph_preserves_staged_anchor_while_startup_load_hold_active(
+    tmp_path: Path,
+) -> None:
+    # Re-commission deadlock guard. Identical to
+    # test_safe_graph_decision_prefers_applied_baseline_over_staged_current
+    # (current=all-muted-startup anchor, an approved baseline exists, identity
+    # confirmed) EXCEPT a protected startup-load hold is in flight. The reconcile
+    # that load_protected_startup_config kicks must NOT restore the baseline over
+    # the anchor — that drift is what makes commission-load's persist phase fail
+    # closed. With the hold active the selector preserves the anchor instead.
+    topology = _active_topology("mono", "active_2_way")
+    current_path = tmp_path / "active_speaker_staged_startup.yml"
+    current_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
+    baseline_path = tmp_path / "active_speaker_baseline.yml"
+    baseline_path.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
+
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=current_path,
+        preferred_config_path=baseline_path,
+        **_write_authority(
+            tmp_path,
+            staged=_staged_metadata(topology, current_path),
+            applied_config=baseline_path,
+            startup_hold=True,
+        ),
+    )
+
+    # Preserve the anchor, NOT restore the baseline — the only difference from
+    # the no-hold test above, which selects the baseline on the same inputs.
+    assert decision.status == "preserve_current"
+    assert decision.current_graph is not None
+    assert decision.current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    assert decision.selected_config_path == str(current_path)
 
 
 def test_safe_graph_decision_parks_active_topology_without_staged_graph(
