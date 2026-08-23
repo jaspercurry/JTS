@@ -221,6 +221,19 @@ def bind_measure_capture(
     match is not unique, because a replay reading the wrong capture is exactly
     the silent-wrong-answer this tool exists to avoid.
     """
+    # The sidecar's ``phase`` is the JOURNEY vocabulary — what
+    # ``crossover_v2/spatial.py`` and ``planning.py`` stamp on the records they
+    # write — so the constant is asked of its owner rather than spelled here.
+    # Which vocabulary matters even though it cannot be seen: the STIMULUS
+    # phases carry the same word (``program.PROGRAM_PHASE_MEASURE`` is also
+    # ``"measure"``, which is why #2868 gave them a prefix), so a literal is
+    # right only by coincidence and a wrong import stays silently right for
+    # exactly as long as that coincidence holds.
+    # ``harmonic_evidence._bind_measure_captures`` gates the same sidecars on
+    # the same field with this same constant (``_scope_captures`` is the
+    # session-id half, applied to what that binder returns).
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+
     analysis = candidate["analysis"]
     keys = ("epsilon_ppm", "predicted_ripple_db", "alignment_confidence")
     hits: list[tuple[Path, dict[str, Any]]] = []
@@ -230,7 +243,7 @@ def bind_measure_capture(
         except (OSError, ValueError):
             continue
         diagnostic = meta.get("diagnostic") or {}
-        if meta.get("phase") != "measure":
+        if meta.get("phase") != PHASE_MEASURE:
             continue
         if any(
             not isinstance(diagnostic.get(key), (int, float))

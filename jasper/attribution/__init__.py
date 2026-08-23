@@ -12,8 +12,8 @@ with evidence and confidence, *before* prescribing.
 
 **What this package is, as of WO-1 (schema + persistence).**
 
-* :mod:`~jasper.attribution.closed_sets` — the three closed sets: fix classes
-  (§3.3), confidence tiers (§3.2), probe ids (§5).
+* :mod:`~jasper.attribution.closed_sets` — the closed sets: fix classes
+  (§3.3), confidence tiers (§3.2), probe ids (§5), corpus evidence tiers (§4).
 * :mod:`~jasper.attribution.mechanisms` — the pure-data registry of
   declarations, the shipped ``REASON_REGISTRY`` shape (§2). Seeded with the
   mechanisms a shipped instrument can actually reach today; WO-4 seeds the
@@ -43,7 +43,7 @@ existing. A session with no findings behaves exactly as it does today.
 
 from __future__ import annotations
 
-from .closed_sets import CONFIDENCE_TIERS, FIX_CLASSES, PROBES
+from .closed_sets import CONFIDENCE_TIERS, EVIDENCE_TIERS, FIX_CLASSES, PROBES
 from .findings import (
     EVIDENCE_STORE_BUNDLE,
     EVIDENCE_STORE_CAPTURE_RING,
@@ -92,6 +92,7 @@ __all__ = [
     "EVIDENCE_STORE_BUNDLE",
     "EVIDENCE_STORE_CAPTURE_RING",
     "EVIDENCE_STORE_LAPTOP_ARCHIVE",
+    "EVIDENCE_TIERS",
     "FINDING_SCHEMA",
     "FINDING_SET_SCHEMA",
     "FIX_CLASSES",

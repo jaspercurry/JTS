@@ -436,8 +436,9 @@ def test_household_prose_stays_excluded_while_operator_prose_is_carried(tmp_path
     The state file is load-bearing and was missing when this test was first
     written: with no state supplied, ``withheld_state_fields`` is empty because
     there was nothing to withhold, so the assertion passed whatever
-    ``_STATE_WITHHELD`` said. Emptying that tuple passed all 27 tests. Supplying
-    household copy is what makes the boundary real.
+    ``_STATE_WITHHELD`` said. Emptying that tuple passed every test in this
+    file — not one of them was reading the boundary. Supplying household copy
+    is what makes the boundary real.
 
     Mutation-checked after the fix: ``_STATE_WITHHELD = ()`` now fails here.
     """

@@ -3487,14 +3487,19 @@ automatic rollback now genuinely runs. Which stage binds it is declared once, in
   A retained winning record also carries its compact executable candidate and
   bounded prediction so publication never re-analyzes a different Fc.
 - `fc_candidate_set` / `resolve_fc_search_band` in `crossover_v2/fc_sweep.py`
-  (re-exported from the flow module under the same names) — the set,
-  bounded by four declarations: the HF driver's hard floor, the lower driver's
-  ceiling, the INTERSECTED declared `crossover_search_band_hz` (a two-way Fc
-  puts both drivers at Fc, so every participating role must admit it, and an
-  undeclared role means no proposal), and the ka beaming ceiling from the
-  declared diameter. Candidate order is the configured Fc first, then sorted
-  unique alternatives. The configured Fc is mandatory even when a bound
-  excludes it — otherwise the speaker has no golden candidate.
+  (both deleted — the candidate set with the sweep at ticket 2.3, the
+  search-band resolver by the 2026-08-22 owner ruling, #2870; neither name is
+  exported or re-exported any more) — the set, bounded by four declarations:
+  the HF driver's hard floor, the lower driver's ceiling, the INTERSECTED
+  declared `crossover_search_band_hz` (a two-way Fc puts both drivers at Fc,
+  so every participating role had to admit it, and an undeclared role meant no
+  proposal), and the ka beaming ceiling from the declared diameter. Candidate
+  order was the configured Fc first, then sorted unique alternatives, and the
+  configured Fc was mandatory even when a bound excluded it — otherwise the
+  speaker had no golden candidate. Only two of those four bounds outlived the
+  sweep, both of them declared hard-excitation edges: the search band named no
+  damage mechanism, and #1675 had already made the beaming ceiling disclosure
+  rather than a fence. The spine's file map says what `fc_sweep.py` holds now.
 - `CrossoverV2Conductor._sweep_fc_candidates` — runs at MEASURE-consume,
   because the raw capture is alive only there. Per candidate:
   re-corner the sections, re-point THREE prior fields (`crossover_fc_hz`, the
