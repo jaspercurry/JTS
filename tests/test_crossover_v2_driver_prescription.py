@@ -3887,7 +3887,13 @@ def test_the_cli_tells_the_operator_what_staging_this_would_delete(tmp_path, cap
 
 
 def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog):
-    """The disclosure's durable reader: the journal line that banks the stage."""
+    """The disclosures' durable reader: the journal line that banks the stage.
+
+    BOTH of them, on one line, because an operator greps one event for what a
+    staged document is about to do: what it deletes (#2863) and how much of it
+    the round's own evidence backs (2026-08-23). A field written with no reader
+    is a field that rots.
+    """
     with caplog.at_level(
         logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
     ):
@@ -3899,3 +3905,28 @@ def test_the_staged_event_reports_what_the_document_will_delete(tmp_path, caplog
 
     assert "displaced_filters=4" in caplog.text
     assert "displaced_boost_role=tweeter" in caplog.text
+    # The document's one filter sits on the banked 5 kHz feature, so it IS
+    # vouched — a zero that was measured, which is the answer this line has to
+    # be able to give as clearly as a non-zero one.
+    assert "unvouched_filters=0" in caplog.text
+
+
+def test_the_staged_event_counts_a_document_the_evidence_does_not_back(
+    tmp_path, caplog,
+):
+    """The non-zero arm. With the zero above it, both driver spellings are pinned.
+
+    The third — ``null``, which the blend class writes because it has no such
+    evidence — is the sibling of ``composed_boost_role=null`` two tests up and
+    is not asserted here; this file stages only the driver class.
+    """
+    with caplog.at_level(
+        logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
+    ):
+        _stage_driver(
+            tmp_path,
+            filters=[_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)],
+            classification=_classification([_verdict(WOOFER_FEATURE_HZ)]),
+        )
+
+    assert "unvouched_filters=1" in caplog.text
