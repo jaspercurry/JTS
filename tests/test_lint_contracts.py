@@ -534,16 +534,21 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
-    # 2026-08-23 (#2879, gate round 2). Two files, and for once the two numbers
-    # the entry below insists on reporting separately are the SAME number: that
-    # entry left both at EXACTLY their ceilings, so there is no slack left to
-    # spend and every line here is new.
-    #  * `crossover_v2_flow` ceiling 13,056 -> 13,076, +20. ONE of them is
-    #    executable: the geometry-locked retake's refusal predicate moves from
-    #    `tier_is_externally_positioned(self._tier)` to a `positions_gated` the
-    #    host resolves and hands down (one ctor argument, one field, ORed with
+    # 2026-08-23 (#2879, gate rounds 2 and 3). Two files, and for once the two
+    # numbers the entry below insists on reporting separately are the SAME
+    # number: that entry left both at EXACTLY their ceilings, so there is no
+    # slack left to spend and every line here is new. Round 3 moved NEITHER
+    # ceiling — its journal field and docstring fixes were paid for out of its
+    # own prose, in the same files, so the two figures below still hold.
+    #  * `crossover_v2_flow` ceiling 13,056 -> 13,076, +20. SIX of the lines it
+    #    touches are non-comment — FIVE added and one modified, counted rather
+    #    than eyeballed: the ctor argument, the field's three lines (ORed with
     #    the tier's own answer so a caller that resolved no shape cannot drop
-    #    the arm's gate). The rest is that branch's own enumeration, which had
+    #    the arm's gate), the refusal's `gated=` journal field, and the
+    #    predicate itself moving from `tier_is_externally_positioned(self.
+    #    _tier)` to `self._positions_gated`. (This note first said "ONE is
+    #    executable", counting the predicate and forgetting everything that
+    #    feeds it.) The rest is that branch's own enumeration, which had
     #    to become three numbered items because they no longer share an owner:
     #    two dishonesties are the ARM's (a pose it cannot reach, recorded as
     #    though it had been) and the third is the GATE's (the retry

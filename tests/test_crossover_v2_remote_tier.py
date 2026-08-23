@@ -766,7 +766,7 @@ def test_a_geometry_locked_remote_group_refuses_instead_of_prompting(monkeypatch
     }
 
 
-def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch):
+def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch, caplog):
     """S4a's predicate is the GATE, not the tier (#2879 round-2 SF2).
 
     Driven on the shape the finding names: a hand-walked Full **stage 2**,
@@ -795,10 +795,20 @@ def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch):
     attempt = _walk(held, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
     last = CLOUD_VERIFY_INDEXES[-1]
     _lock(monkeypatch)
+    caplog.set_level(logging.WARNING, logger=flow.__name__)
 
     verdict = _run_phase(held, last, attempt)
     assert verdict["accepted"] is False
     assert verdict["code"] == REASON_GEOMETRY_RETAKE_UNREACHABLE
+    # The journal names the PREDICATE, not just the tier: a stage-2 session is
+    # constructed without one, so `tier=` alone would say nothing about why
+    # this refused.
+    refused = [
+        r.getMessage() for r in caplog.records
+        if "crossover_v2_geometry_retake_unreachable" in r.getMessage()
+    ]
+    assert len(refused) == 1, refused
+    assert "gated=true" in refused[0]
     # ONE surface owns the answer: no prompt is handed back for a spot the gate
     # would go on contradicting.
     assert not verdict.get("prompt")
