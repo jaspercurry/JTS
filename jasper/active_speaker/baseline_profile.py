@@ -835,14 +835,14 @@ def _derive_corrections(
             "info",
             "driver_base_trim_mixed_capture_geometry",
             (
-                "the banked base trim read some drivers near-field and others "
-                "on the reference axis ("
+                "the banked base trim did not read every driver under one "
+                "capture geometry ("
                 + ", ".join(
                     str(group_id)
                     for group_id in base_trim_meta["mixed_geometry_group_ids"]
                 )
-                + "); the trim is applied, and its drivers were not compared "
-                "from one geometry"
+                + "); the trim is applied, and those drivers were not "
+                "compared from a single acoustic distance"
             ),
         ))
     if level_match.get("incomparable_groups"):
