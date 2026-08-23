@@ -47,9 +47,64 @@ def test_read_identity_assembles_all_fields(monkeypatch, tmp_path):
     assert ident.peer_id == "abc-123"
 
 
-def test_read_identity_hostname_defaults_when_unset(monkeypatch):
+def test_read_identity_hostname_defaults_when_unset(monkeypatch, tmp_path):
+    """Neither source names a hostname -> the literal default.
+
+    The identity file is bound to an absent tmp path so the assertion does
+    not depend on /var/lib/jasper/identity.env being missing (it is present
+    on a Pi, and its recorded hostname now feeds this fallback)."""
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
     assert identity.read_identity().hostname == "jts.local"
+
+
+def test_read_identity_hostname_falls_back_to_recorded_configured_hostname(
+    monkeypatch, tmp_path,
+):
+    """A CLI run over ssh gets no EnvironmentFile, so JASPER_HOSTNAME is unset
+    and the process must read the hostname the reconciler recorded — otherwise
+    every box prints "jts.local" (F1: `jasper-crossover-prescriber status` on
+    jts3)."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_OS_HOSTNAME=jts3\n"
+        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts3-2.local\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts3.local\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    # The CONFIGURED name, not the OS name and not what Avahi renamed us to:
+    # identity reads the *intended* side of that file, never the observed one.
+    assert identity.read_identity().hostname == "jts3.local"
+
+
+def test_read_identity_hostname_env_wins_over_recorded(monkeypatch, tmp_path):
+    """A daemon's EnvironmentFile is fresher than the reconciler's 5-minute
+    snapshot, so a set JASPER_HOSTNAME wins over the recorded one."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=stale.local\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts5.local")
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    assert identity.read_identity().hostname == "jts5.local"
+
+
+def test_read_identity_hostname_ignores_a_blank_recorded_hostname(
+    monkeypatch, tmp_path,
+):
+    """An identity.env whose configured line is empty is not a hostname —
+    fall through to the default rather than returning ""."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_OS_HOSTNAME=jts3\n"
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    assert identity.read_identity().hostname == identity.DEFAULT_HOSTNAME
 
 
 def test_read_identity_peer_id_empty_on_missing_file(monkeypatch, tmp_path):
@@ -74,9 +129,10 @@ def test_read_identity_never_raises_when_name_read_blows_up(monkeypatch):
 def test_read_identity_total_with_all_sources_genuinely_absent(monkeypatch, tmp_path):
     """The everything-unset path, driven through the REAL speaker_name readers
     against an empty tmp state file (not mocked-to-raise): no env vars, an
-    empty/missing speaker_name.env, a missing peer_id, and default_room
-    yielding "". read_identity composes a sensible all-defaults identity and
-    never raises — the hermetic 'fresh install, nothing configured' case."""
+    empty/missing speaker_name.env, a missing peer_id, a missing identity.env,
+    and default_room yielding "". read_identity composes a sensible
+    all-defaults identity and never raises — the hermetic 'fresh install,
+    nothing configured' case."""
     empty_state = tmp_path / "speaker_name.env"  # never created -> read_state hits FileNotFoundError
     # Bind the real readers to the empty tmp path so we don't depend on the
     # absence of a real /var/lib/jasper/speaker_name.env (present on a Pi).
@@ -92,6 +148,7 @@ def test_read_identity_total_with_all_sources_genuinely_absent(monkeypatch, tmp_
     monkeypatch.setattr(identity, "PEER_ID_FILE", str(tmp_path / "peer_id"))  # absent
     monkeypatch.delenv("JASPER_PEER_ROOM", raising=False)
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "identity.env"))  # absent
 
     ident = identity.read_identity()
     assert ident.name == identity.speaker_name.DEFAULT_SPEAKER_NAME  # "JTS"

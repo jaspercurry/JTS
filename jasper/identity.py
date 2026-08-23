@@ -26,7 +26,10 @@ what Avahi actually advertises after RFC 6762 collision renames, as
 snapshotted by ``jasper-identity-reconcile`` into
 ``/var/lib/jasper/identity.env``. Intended vs observed disagreeing is
 exactly the drift the reconciler surfaces; consumers pick the side
-they mean.
+they mean. The hostname fallback below crosses to that file for the
+one value it records on the *intended* side — the reconciler's
+snapshot of ``JASPER_HOSTNAME`` — and never for the observed names,
+so the split holds.
 """
 from __future__ import annotations
 
@@ -34,7 +37,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from . import speaker_name
+from . import identity_state, speaker_name
 from .peering import config as peering_config
 
 logger = logging.getLogger(__name__)
@@ -44,8 +47,9 @@ logger = logging.getLogger(__name__)
 # generating it is peering's job; identity is a reader, not a writer.
 PEER_ID_FILE = peering_config.PEER_ID_FILE
 
-# Default mDNS hostname when JASPER_HOSTNAME is unset. Matches every other
-# surface (the wizards, control_advert) so identity agrees with them.
+# Default mDNS hostname when neither the environment nor identity.env names
+# one. Matches every other surface (the wizards, control_advert) so identity
+# agrees with them.
 DEFAULT_HOSTNAME = "jts.local"
 
 # Legacy env var from the pre-identity peering room. Read here only as a
@@ -103,13 +107,41 @@ def _resolve_room() -> str:
         return ""
 
 
+def _resolve_hostname() -> str:
+    """mDNS hostname with process-env-wins precedence (never raises).
+
+      1. JASPER_HOSTNAME in the process environment
+      2. the reconciler's recorded CONFIGURED hostname from identity.env
+      3. DEFAULT_HOSTNAME
+
+    Step 2 is what makes a CLI honest. ``JASPER_HOSTNAME`` reaches a daemon
+    through its unit's ``EnvironmentFile=``; a command run over ssh gets no
+    such file, so env-or-literal alone printed ``jts.local`` on every box —
+    ``jasper-crossover-prescriber status`` did exactly that on jts3.
+    ``identity.env`` is the one file a bare shell can reach that records the
+    same intent, because ``jasper-identity-reconcile`` snapshots
+    ``JASPER_HOSTNAME`` into it (deploy/bin/jasper-identity-reconcile,
+    ``CONFIGURED_HOSTNAME``).
+
+    Read through :func:`jasper.identity_state.snapshot` rather than by
+    spelling the file's key here: ``identity_state`` owns identity.env's
+    vocabulary, and it is total, so this stays total too.
+    """
+    configured = os.environ.get("JASPER_HOSTNAME", "").strip()
+    if configured:
+        return configured
+    recorded = str(identity_state.snapshot().get("configured_hostname") or "").strip()
+    return recorded or DEFAULT_HOSTNAME
+
+
 def read_identity() -> SpeakerIdentity:
     """Resolve this speaker's identity. TOTAL — never raises.
 
     name     — jasper.speaker_name.runtime_name() (env → state → "JTS")
     room     — identity home wins, then legacy JASPER_PEER_ROOM, then
                peering.config.default_room() (see _resolve_room)
-    hostname — JASPER_HOSTNAME or "jts.local"
+    hostname — JASPER_HOSTNAME, then identity.env's recorded configured
+               hostname, then "jts.local" (see _resolve_hostname)
     peer_id  — /var/lib/jasper/peer_id stripped, "" on any failure
     """
     try:
@@ -119,8 +151,7 @@ def read_identity() -> SpeakerIdentity:
         name = speaker_name.DEFAULT_SPEAKER_NAME
 
     room = _resolve_room()
-    hostname = (os.environ.get("JASPER_HOSTNAME", DEFAULT_HOSTNAME).strip()
-                or DEFAULT_HOSTNAME)
+    hostname = _resolve_hostname()
     peer_id = _read_peer_id()
 
     return SpeakerIdentity(name=name, room=room, hostname=hostname, peer_id=peer_id)
