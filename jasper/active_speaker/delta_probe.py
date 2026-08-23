@@ -331,24 +331,26 @@ VERDICT_FRAME_MISMATCH = "frame_mismatch"
 #: flow treats an unknown: no evidence to refuse on, and no permission
 #: granted either.
 VERDICT_UNAVAILABLE = "unavailable"
-#: Only the HEARING-SAFETY half of this probe ran (#2614). The caller had the
-#: applied graph's own declared transfer but no CHANGE axis — the reachable
-#: case is a previous graph that cannot be named, whether because none was ever
-#: applied, because its record cannot be read, or because the crossover corner
-#: moved out from under it and the branches are composed through a crossover
-#: that graph never ran; the journal names which — so "did the speaker put
-#: more energy into a driver than the graph declared" is answerable and "did
-#: the correction realize the shape it commanded" is not.
+#: This map carries the MODEL's departure and no grade of anything else
+#: (#2614; series-2 D1). The caller had the applied graph's own declared
+#: transfer but no CHANGE axis — the reachable case is a previous graph that
+#: cannot be named, whether because none was ever applied, because its record
+#: cannot be read, or because the crossover corner moved out from under it and
+#: the branches are composed through a crossover that graph never ran; the
+#: journal names which — so neither "did the correction realize the shape it
+#: commanded" nor "did the speaker put more energy into a driver than the
+#: graph declared" is answerable here.
 #:
 #: **Not a pass, and deliberately not a rollback.** The two directional
-#: findings on this map are real and reach
+#: findings are absences (:func:`_safety_only` has the reasoning):
+#: :attr:`DeltaProbeMap.safety_anchored` is False, so neither reaches
 #: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`
-#: exactly as they do on a full map, so an overshoot still comes off the
-#: speaker. What is missing is the shape grade, and a missing grade is not
-#: evidence of a defect — the same rule :data:`VERDICT_UNAVAILABLE` carries.
-#: It is its own word rather than ``matched`` because a household and a receipt
-#: must be able to tell "the shape check passed" from "the shape check did not
-#: run", and rather than ``unavailable`` because something WAS measured.
+#: as a hazard. What that axis then ANSWERS is its own — the clipped-capture
+#: check needs no probe and still holds here. A missing grade is not
+#: evidence of a defect — the same rule :data:`VERDICT_UNAVAILABLE` carries,
+#: and this is its own word rather than ``matched`` because a household and a
+#: receipt must be able to tell "the shape check passed" from "the shape check
+#: did not run", and rather than ``unavailable`` because something WAS measured.
 VERDICT_SAFETY_ONLY = "safety_only"
 
 #: Why the shape half did not run on a :data:`VERDICT_SAFETY_ONLY` map. One

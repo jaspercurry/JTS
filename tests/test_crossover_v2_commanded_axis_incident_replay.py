@@ -1278,7 +1278,10 @@ def test_the_session_run_of_the_probe_carries_the_state_axis_to_the_classifier(c
 # committed alternative-Fc candidate, which took the whole probe down with it:
 # the two directional hearing-safety rules never ran, ``evaluate_applied_safety``
 # reported SAFE on a round where nothing had looked, and nothing said so. The
-# STATE axis needs no corner match, so the safety half runs on that alone.
+# STATE axis needs no corner match, so the probe runs on that alone — and since
+# series-2 D1 what it grades there is the MODEL's departure, not the speaker's
+# delivered energy: the two directional rules still do not run, but now the
+# verdict, ``safety_anchored`` and the axis's own reason all say so.
 
 
 def _alternative_fc_probe(*, hot_db: float, declared: bool = True):
@@ -1327,8 +1330,13 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     """
     import logging
 
+    from types import SimpleNamespace
+
     from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
     from jasper.active_speaker.crossover_v2.verification import (
+        CLIPPED_RUN_CHECK,
+        SAFETY_CLIPPED_CAPTURE,
+        SAFETY_NO_FINDING_UNMEASURED,
         evaluate_applied_safety,
     )
     from jasper.active_speaker.delta_probe import (
@@ -1351,10 +1359,33 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     assert probe.max_signed_error_db == pytest.approx(2.5856, abs=5e-4)
     assert probe.rollback is False
 
+    # Exactly what a 4 dB-hot ``safety_only`` map hands the hard-stop axis
+    # (#2855). The constant's own prose used to say the two directional findings
+    # "reach ``evaluate_applied_safety`` exactly as they do on a full map, so an
+    # overshoot still comes off the speaker" — written 2026-08-16 and falsified
+    # by D1 two days later without the sentence being opened. Both findings
+    # arrive as absences, the reason says the realized-energy check could not
+    # look rather than looked-and-found-nothing, and the only thing that DID
+    # travel is the model's departure, on the quality axis where it belongs.
     safety = evaluate_applied_safety(probe=probe, integrity=None)
     assert safety.status is SafetyStatus.SAFE
+    assert safety.reason == SAFETY_NO_FINDING_UNMEASURED
     assert safety.evidence["safety_anchored"] is False
     assert safety.evidence["probe_shape_graded"] is False
+    assert safety.evidence["boost_over_declared_bound"] is False
+    assert safety.evidence["realized_louder_than_commanded"] is False
+    assert safety.evidence["model_departure_over_tolerance"] is True
+    # The reason above is a statement about the two FINDINGS, not a promise
+    # that nothing can take the graph off here: the clipped check is a
+    # different instrument, needs no probe, and still holds on this map.
+    # ``round_evidence`` passes the round's real integrity report to this axis
+    # unconditionally, so this pairing is reachable rather than theoretical.
+    clipped = evaluate_applied_safety(
+        probe=probe,
+        integrity=SimpleNamespace(failed=(CLIPPED_RUN_CHECK,), not_evaluated=()),
+    )
+    assert clipped.status is SafetyStatus.UNSAFE
+    assert clipped.reason == SAFETY_CLIPPED_CAPTURE
     # ...and the journal put the half-grade in front of whoever reads the round.
     assert "verdict=safety_only" in caplog.text
 
