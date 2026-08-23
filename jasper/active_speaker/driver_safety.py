@@ -1608,10 +1608,10 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
 
 
 def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
-    """Return the per-target code-policy bounds this reply has to clear.
+    """Return the LIMITS section: its heading, its preamble, and its bounds.
 
-    One gate enforces them, on the one line emitted here: the low-limit band by
-    :func:`validate_research_low_limit_plausibility` at intake.
+    One gate enforces them, on the one line emitted per target: the low-limit
+    band by :func:`validate_research_low_limit_plausibility` at intake.
 
     Read from the low-limit band owner rather than restated as prose constants,
     so the ask cannot drift from what the gate actually refuses.  Naming the
@@ -1632,6 +1632,12 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     audio pipeline... No limit unless we have no headroom to give."  A level
     limit is now asked for only where a manufacturer publishes one.
 
+    The heading is emitted only when a bound exists.  Every remaining bound is
+    per-target and optional (a low-frequency role has no low-limit anchor at
+    all), so a request can legitimately have none — and a heading whose two
+    preamble sentences say "these bounds" above an empty list describes a gate
+    that is not there.
+
     These lines are prompt text only.  ``request`` itself, and therefore
     ``request_fingerprint``, is untouched.
     """
@@ -1640,32 +1646,16 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     for target in request.get("targets", []):
         if not isinstance(target, Mapping):
             continue
-        bounds: list[str] = []
         band = driver_low_limit_plausibility_band_hz(
             str(target.get("role") or ""),
             driver_style=target.get("driver_style"),
         )
-        if band is not None:
-            bounds.append(
-                "recommended_highpass_hz between "
-                f"{band[0]:g} and {band[1]:g} if published, else null"
-            )
-        if not bounds:
+        if band is None:
             continue
-        lines.append(f"- {target.get('target_id')}: " + "; ".join(bounds) + ".")
-    return lines
-
-
-def _limits_section(request: Mapping[str, Any]) -> list[str]:
-    """The LIMITS heading and its preamble, emitted only when a bound exists.
-
-    Every bound here is per-target and optional (a low-frequency role has no
-    low-limit anchor at all), so a request can legitimately have none — and a
-    heading whose two preamble sentences say "these bounds" above an empty list
-    describes a gate that is not there.
-    """
-
-    lines = _driver_research_prompt_limits(request)
+        lines.append(
+            f"- {target.get('target_id')}: recommended_highpass_hz between "
+            f"{band[0]:g} and {band[1]:g} if published, else null."
+        )
     if not lines:
         return []
     return [
@@ -1822,7 +1812,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a datasheet says stricter.",
             "max_effective_peak_dbfs is the one key in that object that IS a datasheet fact, so send it ONLY when the manufacturer publishes a level limit for this driver — a maximum input level, or a power rating stated as a limit you can convert. Omit the key entirely when they publish none; that is the ordinary answer and it is not a gap to record in unknowns. Never estimate it, and never send a protocol default in its place: this build chooses the measurement level from the driver's declared sensitivity against its low-frequency sibling's own limit, and a made-up number here would override that with a guess.",
             "",
-            *_limits_section(request),
+            *_driver_research_prompt_limits(request),
             "RESULT SHAPE",
             "```json",
             "{",
