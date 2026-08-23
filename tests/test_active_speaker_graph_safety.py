@@ -331,7 +331,7 @@ def _tweeter_hp_view(order: int):
 
 
 def test_the_emitted_graph_is_still_proved_against_the_derived_slope():
-    """#2891's blast-radius floor: the EMIT side did not move.
+    """#2897's blast-radius floor: the EMIT side did not move.
 
     The 2026-08-23 ruling narrowed what may refuse a household's PINNED
     crossover. It changed nothing about proving that a graph this build emitted

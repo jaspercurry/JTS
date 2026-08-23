@@ -1940,7 +1940,7 @@ Owning modules and their gates:
   a published condition unchecked here is unchecked anywhere. It reads the
   published number and not the derived
   `required_protection_filters[highpass].minimum_slope_db_per_octave` since
-  [#2891](https://github.com/jaspercurry/JTS/issues/2891): that field is
+  [#2897](https://github.com/jaspercurry/JTS/pull/2897): that field is
   `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, and refusing a
   household's order-2 pin against a 24 dB/octave figure no datasheet contains is
   what the 2026-08-23 owner ruling struck. The commissioning recommendation is

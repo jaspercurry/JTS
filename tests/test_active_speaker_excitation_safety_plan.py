@@ -210,7 +210,7 @@ def test_a_maker_that_publishes_no_slope_gives_the_gate_nothing_to_refuse_on():
 
 
 def test_a_profile_stored_before_the_owner_pair_landed_reads_as_unpublished():
-    """A pre-#2891 target carries only the projections. It is a sound
+    """A pre-#2897 target carries only the projections. It is a sound
     declaration and stays confirmed, but it has no published slope on it — so
     the gate applies no slope bound until the next /sound/ save, which is the
     de-nanny direction rather than a fabricated 24."""

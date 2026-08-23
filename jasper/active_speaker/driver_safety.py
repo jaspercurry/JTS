@@ -2336,7 +2336,7 @@ def _profile_core(
             "manufacturer": visible.get("manufacturer"),
             # The low limit's OWNER travels with its projections (#2603), so a
             # reader of the confirmed profile can tell the manufacturer's
-            # declaration from what this build derived FROM it. Until #2891 the
+            # declaration from what this build derived FROM it. Until #2897 the
             # target carried only the projections, and the derived
             # ``required_protection_filters`` high-pass was the only slope on
             # the record -- a ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``
@@ -2683,7 +2683,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
                 "physical_output_index",
                 "model",
                 "manufacturer",
-                # Optional, not required: a profile stored before #2891 carries
+                # Optional, not required: a profile stored before #2897 carries
                 # neither, and it is still a sound declaration -- its
                 # projections re-derive from its own protective high-pass by
                 # the legacy path, so it stays confirmed rather than being
@@ -2809,7 +2809,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
             "cabinet",
         }
         # The low limit's OWNER pair is canonicalised with the projections but
-        # is NOT re-derived below, and the split is what keeps a pre-#2891
+        # is NOT re-derived below, and the split is what keeps a pre-#2897
         # profile readable: it carries neither owner field, so both sides of
         # this comparison omit them and agree -- while re-deriving it would
         # ADD a ``recommended_highpass_hz`` the stored target never had and

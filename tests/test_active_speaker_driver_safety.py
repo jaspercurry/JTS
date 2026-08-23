@@ -1332,7 +1332,7 @@ def _de250_manual() -> dict:
 
 def test_a_confirmed_target_carries_the_declared_pair_beside_its_projections(
 ) -> None:
-    """The un-fusing (#2891). Two slopes, both on the record, distinguishable.
+    """The un-fusing (#2897). Two slopes, both on the record, distinguishable.
 
     Before this, a confirmed target held only ``max(published, 24)`` on the
     derived protective high-pass, and no reader could recover what the
@@ -1392,7 +1392,7 @@ def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
 
 
 def test_a_profile_stored_before_the_declared_pair_stays_confirmed() -> None:
-    """#2891's read-back tolerance, measured rather than argued.
+    """#2897's read-back tolerance, measured rather than argued.
 
     The confirmed fingerprint is computed from the profile's OWN stored
     targets, so adding a field to what the BUILDER writes cannot re-key an

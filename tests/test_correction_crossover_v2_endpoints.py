@@ -12271,7 +12271,7 @@ _PIN_ORDER = 4
 #: makes 2400.0 admissible and 6500.0 — past the woofer's own declared ceiling —
 #: refusable.
 #: What the fixture tweeter's MAKER publishes, and the only slope the gate may
-#: refuse on since #2891. It is deliberately different from the 24.0 stamped on
+#: refuse on since #2897. It is deliberately different from the 24.0 stamped on
 #: the protective high-pass below — that number is
 #: ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, a code figure, and
 #: a fixture where the two agreed could not tell which one reached the gate.
@@ -12531,7 +12531,7 @@ def test_an_order_2_pin_is_admitted_when_the_maker_published_no_slope(
 
     The confirmed target still carries a 24 dB/octave protective high-pass —
     that is what this build EMITS — but its maker published no slope condition,
-    so there is nothing for the gate to refuse. Before #2891 the derived 24
+    so there is nothing for the gate to refuse. Before #2897 the derived 24
     reached the gate wearing the manufacturer's clothes and this pin came back
     ``topology_slope_below_declared_requirement``.
     """
@@ -12588,7 +12588,7 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
     assert accepted.checked_against_floor_hz == 300.0
     assert accepted.checked_against_ceiling_hz == 6000.0
     # The PUBLISHED condition reached the gate end to end, and the derived 24.0
-    # sitting beside it on the same profile target did not (#2891).
+    # sitting beside it on the same profile target did not (#2897).
     assert accepted.checked_against_slope_db_per_octave == (
         _PUBLISHED_TWEETER_HP_SLOPE_DB_PER_OCTAVE
     )
