@@ -452,8 +452,10 @@ P3 ladder adjudicates (§8). Two honesty bounds ride with M6 into WO-4:
   tested-negative.** Wave steepening's primary signature is HD2 rising
   ~6 dB/oct with a level dependence, and our tweeter H2 sits at the
   measurement floor in both supported bands. A proper test needs high horn
-  SPL, and the declared compression-driver level limit (`max_peak
-  −65 dBFS`) may put that outside the safety envelope. Record
+  SPL, and whether that sits inside the safety envelope is a question for the
+  measured SPL stop rather than for a level constant — the −65 dBFS figure
+  this bullet used to cite is the naked-tone class default, superseded on the
+  proven-high-pass path by the sensitivity derivation. Record
   **bounded-untestable** — the honest tier between "measured low" and
   "unknown."
 

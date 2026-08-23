@@ -61,7 +61,7 @@ from jasper.audio_measurement.calibration import (
     MicSensitivity,
     parse_calibration_sensitivity,
 )
-from jasper.audio_measurement.ramp import LevelSample
+from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, LevelSample
 
 # The real header of the household UMIK-2 (serial 810-8494), verbatim, plus two
 # curve rows so the file is a realistic whole.
@@ -389,6 +389,26 @@ def test_ramp_window_is_the_band_converted_through_the_mic():
     # The kernel's own overshoot invariant holds: the staircase provably stops
     # below the window rather than climbing into it.
     assert config.pre_window < config.window_low_dbfs
+
+
+def test_full_scale_clamps_a_headroom_ceiling_that_asks_for_gain():
+    """The rail that survives the 2026-08-23 de-nanny, pinned.
+
+    ``unsegmented_stimulus_ceiling_db`` is digital headroom now, so a quiet
+    stimulus legitimately asks for a ceiling ABOVE 0 dB — a -12 dBFS program
+    has 12 dB of room. The main volume has none: 0 dB is full scale, the
+    ``devices.volume_limit`` the graph ships with, and the kernel's own rail.
+    The ramp must never command above it however much headroom the stimulus
+    has.
+
+    Mutation guard: drop ``min(..., HARD_CEILING_DBFS)`` from
+    ``build_seat_level_ramp_config`` and this asks the fader for +12 dB.
+    """
+    config = slr.build_seat_level_ramp_config(
+        target=TARGET, sensitivity=UMIK2, max_main_volume_db=12.0
+    )
+    assert config.cap_ceil_db == 0.0
+    assert HARD_CEILING_DBFS == 0.0
 
 
 def test_ramp_config_refuses_a_band_the_mic_cannot_capture():

@@ -556,12 +556,19 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
     ):
         assert f'"{kept}"' in result_shape
     for sub_key in (
-        "max_effective_peak_dbfs",
         "max_sweep_duration_s",
         "max_repeat_count",
         "minimum_cooldown_s",
     ):
         assert sub_key in result_shape
+    # `max_effective_peak_dbfs` is deliberately NOT in the result shape. It is
+    # the one datasheet fact in that object, and the template's own number was
+    # the class default -- so the shape taught the assistant to send a figure
+    # this file had injected, which everything downstream then read as a
+    # declaration (owner ruling, 2026-08-23). It is still ACCEPTED, and the
+    # prose above the shape still asks for it where a maker publishes one.
+    assert "max_effective_peak_dbfs" not in result_shape
+    assert "max_effective_peak_dbfs is the one key" in prompt
     for candidate_key in (
         "between_roles",
         "frequency_hz",
@@ -1956,14 +1963,40 @@ def test_v2_research_refuses_role_or_model_mismatch(field: str, value: str) -> N
 
 
 def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
+    # The 2026-08-23 ruling REVERSED the first half of this test, for the same
+    # reason #2603 and #2874 reversed the rest of it one layer down: a class
+    # figure may not refuse a declaration. A declared peak LOUDER than the
+    # tweeter class default used to land `max_effective_peak_above_code_policy`
+    # and hold the profile `incomplete`; it now saves confirmed, and
+    # `resolve_driver_excitation_ceilings` honours -64.0 verbatim rather than
+    # clamping it back to -65.
     topology = mono_output_topology(card_id=None)
-    unsafe_peak = _manual_settings()
-    unsafe_peak["drivers"][1]["level_duration_limits"][
+    louder_than_class_default = _manual_settings()
+    louder_than_class_default["drivers"][1]["level_duration_limits"][
         "max_effective_peak_dbfs"
     ] = -64.0
-    assert "tweeter:max_effective_peak_above_code_policy" in _blocked_codes(
-        topology, unsafe_peak
+    saved = build_driver_safety_profile(
+        topology,
+        manual_settings=louder_than_class_default,
+        driver_research=None,
+        saved_at="2026-07-13T12:00:00Z",
     )
+    assert saved["status"] == "confirmed"
+    assert _issue_codes(saved) == set()
+
+    # And a target that declares NO level limit at all is confirmable too --
+    # the ordinary shape now that the ask requests one only where a maker
+    # publishes it.
+    undeclared = _manual_settings()
+    undeclared["drivers"][1]["level_duration_limits"].pop("max_effective_peak_dbfs")
+    no_level = build_driver_safety_profile(
+        topology,
+        manual_settings=undeclared,
+        driver_research=None,
+        saved_at="2026-07-13T12:00:00Z",
+    )
+    assert no_level["status"] == "confirmed"
+    assert _issue_codes(no_level) == set()
 
     # #2603 REVERSED the second half of this test. A declared low limit below
     # the class default used to be refused (`highpass_below_code_policy`);
@@ -2989,14 +3022,17 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
         if item["kind"] == "highpass"
     )
     assert highpass["cutoff_hz"] == float(driver["recommended_highpass_hz"])
-    # All four limit fields survive normalisation (the original null defect).
+    # The three protocol limit fields survive normalisation (the original null
+    # defect). The fourth, `max_effective_peak_dbfs`, is absent by design since
+    # the 2026-08-23 ruling -- and the profile is confirmed anyway, which is
+    # the half of that ruling this test is the guard for.
     for field in (
-        "max_effective_peak_dbfs",
         "max_sweep_duration_s",
         "max_repeat_count",
         "minimum_cooldown_s",
     ):
         assert driver["level_duration_limits"].get(field) is not None
+    assert "max_effective_peak_dbfs" not in driver["level_duration_limits"]
 
 
 def test_prompt_asks_for_a_best_estimate_declared_with_a_source() -> None:
@@ -3381,18 +3417,20 @@ def test_prompt_limits_are_read_from_code_policy_not_restated(
         f"{band[1]:g} if published, else null"
         in limits_block
     )
-    assert (
-        f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
-        in limits_block
-    )
     # A floor read as a target would talk a researcher DOWN from a stricter
     # published requirement.
     assert "not recommended values" in limits_block
     assert "the published one wins" in limits_block
 
-    # The woofer has no high-pass floor, and inventing one here would be a
-    # second, drifting copy of the policy.
-    assert "mono:woofer: max_effective_peak_dbfs at or below 0." in limits_block
+    # No level bound is stated, for either driver. The section carried
+    # `max_effective_peak_dbfs at or below <class default>` until 2026-08-23 --
+    # a code figure a researcher had to clear, whose reply this build then read
+    # as a declaration. The owner struck it.
+    assert "max_effective_peak_dbfs" not in limits_block
+    assert f"at or below {policy.max_auto_level_dbfs:g}" not in limits_block
+    # The woofer has no high-pass floor and no level bound, so it contributes
+    # no LIMITS line at all rather than an invented one.
+    assert "mono:woofer:" not in limits_block
 
 
 def test_protection_filter_without_numbers_is_refused_by_name() -> None:
@@ -3483,7 +3521,13 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
         }],
         "measurement_band_hz": [4500, 18000],
         "level_duration_limits": {
-            "max_effective_peak_dbfs": tweeter_peak_dbfs,
+            # ``None`` omits the key entirely -- the ordinary reply since the
+            # 2026-08-23 ruling, since Dayton publish no level limit.
+            **(
+                {}
+                if tweeter_peak_dbfs is None
+                else {"max_effective_peak_dbfs": tweeter_peak_dbfs}
+            ),
             "max_sweep_duration_s": 4,
             "max_repeat_count": 3,
             "minimum_cooldown_s": 2,
@@ -3693,72 +3737,63 @@ def _cx120_confirmed_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, d
     return profile, declared_effective_driver_sensitivities(draft)
 
 
-def test_template_tweeter_peak_lands_on_the_derivation_sentinel() -> None:
-    """The template's tweeter peak is a SENTINEL, and the chain is pinned.
+def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
+    """The retired round trip, pinned as its own absence.
 
-    ``max_effective_peak_dbfs`` is not merely a ceiling for a high-frequency
-    role. ``resolve_driver_excitation_ceilings`` treats a declared value that
-    EQUALS the class default as "no driver-specific level intent was
-    expressed" and replaces it with a sensitivity-derived ceiling; a value one
-    dB either side is honoured literally. #2186 made the research ask an
-    automated writer of that value, and it deliberately lands on the sentinel.
+    Until 2026-08-23 the ask emitted a class-default tweeter peak in RESULT
+    SHAPE and named the same figure under LIMITS, then
+    ``resolve_driver_excitation_ceilings`` read a declared value EQUAL to that
+    figure as "no driver-specific level intent". Every link of that chain was
+    this file writing a number and this file reading it back as a declaration.
 
-    Three links, so any one drifting breaks loudly here rather than silently
-    moving a real measurement level by up to 30 dB:
-      1. the RESULT SHAPE template's tweeter peak,
-      2. ``driver_protection_profile(...).max_auto_level_dbfs``,
-      3. the value the excitation plan actually compares against.
+    What replaces it: the ask emits no level ceiling anywhere, and the
+    delegation is carried by the field's ABSENCE — a provenance fact rather
+    than a magic value.
     """
 
     from jasper.active_speaker.driver_protection import driver_protection_profile
 
     policy = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+    prompt = _mono_prompt()
 
-    # Link 1 == link 2.
-    template_peak = _prompt_json_example(_mono_prompt())["drivers"][0][
-        "level_duration_limits"
-    ]["max_effective_peak_dbfs"]
-    assert float(template_peak) == policy.max_auto_level_dbfs
-
-    # ... and the prose that steers a reply onto it points at the same number.
-    limits_block, _, _ = _mono_prompt().partition("\nRESULT SHAPE\n")
-    _, _, limits_block = limits_block.partition("\nLIMITS\n")
+    # No injected number, in the template or in the prose.
     assert (
-        f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
-        in limits_block
+        "max_effective_peak_dbfs"
+        not in _prompt_json_example(prompt)["drivers"][0]["level_duration_limits"]
     )
+    assert f"at or below {policy.max_auto_level_dbfs:g}" not in prompt
+    assert "send exactly the ceiling" not in prompt
 
-    # Link 2 == link 3, proved behaviourally rather than by reading a constant:
-    # the policy value triggers derivation, one dB quieter does not.
-    on_sentinel, sensitivities = _cx120_confirmed_profile(
-        tweeter_peak_dbfs=policy.max_auto_level_dbfs
-    )
-    off_sentinel, _ = _cx120_confirmed_profile(
-        tweeter_peak_dbfs=policy.max_auto_level_dbfs - 1
-    )
+    # Absence delegates, through the real resolver.
+    undeclared, sensitivities = _cx120_confirmed_profile(tweeter_peak_dbfs=None)
     tweeter_fp = next(
-        t["target_fingerprint"] for t in on_sentinel["targets"] if t["role"] == "tweeter"
+        t["target_fingerprint"] for t in undeclared["targets"] if t["role"] == "tweeter"
     )
     _band, derived = resolve_driver_excitation_ceilings(
-        on_sentinel,
+        undeclared,
         tweeter_fp,
         program_admission=True,
         declared_sensitivities=sensitivities,
     )
-    _band, literal = resolve_driver_excitation_ceilings(
-        off_sentinel,
-        next(
-            t["target_fingerprint"]
-            for t in off_sentinel["targets"]
-            if t["role"] == "tweeter"
-        ),
-        program_admission=True,
-        declared_sensitivities=sensitivities,
-    )
-    assert derived != policy.max_auto_level_dbfs, (
-        "the declared class default must be superseded on the proven-HP path"
-    )
-    assert literal == pytest.approx(policy.max_auto_level_dbfs - 1)
+    assert derived == pytest.approx(-20.7)
+    assert derived != policy.max_auto_level_dbfs
+
+    # A declared value is honoured literally, in BOTH directions from the class
+    # figure. Louder used to be clamped back to it (and refused at save); that
+    # was a code figure overruling a declaration, and it is gone.
+    for declared in (policy.max_auto_level_dbfs - 1, policy.max_auto_level_dbfs + 1):
+        profile, sens = _cx120_confirmed_profile(tweeter_peak_dbfs=declared)
+        _band, literal = resolve_driver_excitation_ceilings(
+            profile,
+            next(
+                t["target_fingerprint"]
+                for t in profile["targets"]
+                if t["role"] == "tweeter"
+            ),
+            program_admission=True,
+            declared_sensitivities=sens,
+        )
+        assert literal == pytest.approx(declared)
 
 
 def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> None:
@@ -3816,24 +3851,32 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
     assert quieter_ceiling == pytest.approx(-66.0)
 
 
-def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itself(
-) -> None:
+def test_prompt_asks_for_a_published_level_limit_or_none_at_all() -> None:
     """The guidance has to survive being read literally.
 
-    An earlier draft said "use the ceiling listed under LIMITS" and then "a
-    ceiling is not a recommendation" two clauses later, which is a
-    contradiction and hid the sentinel entirely.
+    Two earlier drafts failed that. One said "use the ceiling listed under
+    LIMITS" and then "a ceiling is not a recommendation" two clauses later.
+    The one after it steered a reply onto a class figure this file had
+    written — honest about the delegation, but still a round trip through the
+    researcher. The ask now states one rule with no number in it.
     """
 
     prompt = _mono_prompt()
     assert "a ceiling is not a recommendation" not in prompt
-    assert "send exactly the ceiling listed under LIMITS" in prompt
-    assert "hands the level choice to this build's own protection logic" in prompt
-    # The condition on delegation is stated, not implied.
-    assert "only once a protective high-pass is proven in the signal path" in prompt
-    # And the other branch: quieter is literal.
-    assert "taken literally and is never raised" in prompt
-    assert "Never send a value above the ceiling." in prompt
+    assert "send exactly the ceiling" not in prompt
+    assert "use -20 for a woofer" not in prompt
+    # One rule: publish it or omit it.
+    assert "ONLY when the manufacturer publishes a level limit" in prompt
+    assert "Omit the key entirely when they publish none" in prompt
+    # Omission is not a gap to be filled with an estimate, which is exactly
+    # what the general estimate contract would otherwise tell it to do.
+    assert "Never estimate it, and never send a protocol default" in prompt
+    # And what fills the silence is named, so the omission does not read as a
+    # missing safety bound.
+    assert (
+        "declared sensitivity against its low-frequency sibling's own limit"
+        in prompt
+    )
 
 
 @pytest.mark.parametrize(
@@ -3845,16 +3888,23 @@ def test_prompt_explains_the_tweeter_peak_delegation_without_contradicting_itsel
         # ends. It is now a warning that saves, and the refusing arm sits at
         # the research-reply intake -- both pinned in
         # ``test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typist``.
-        # An estimate louder than the high-frequency ceiling.
+        # An estimate louder than the high-frequency class default used to be
+        # the level case here. It left with the 2026-08-23 ruling for the same
+        # reason the low limit left with #2874: a class figure is not entitled
+        # to refuse a declaration. A declared peak is now honoured verbatim,
+        # and the only bound left on it is digital full scale -- a real
+        # no-headroom bound, refused at the parse
+        # (``_normalise_level_duration_limits``: "must be <= 0"), which is why
+        # it cannot be expressed as an issue code here. What remains in this
+        # object are the three protocol numbers, and a reply that omits one is
+        # still incomplete however well sourced it is.
         (
             "level_duration_limits",
             {
-                "max_effective_peak_dbfs": -60,
-                "max_sweep_duration_s": 4,
                 "max_repeat_count": 3,
                 "minimum_cooldown_s": 2,
             },
-            "tweeter:max_effective_peak_above_code_policy",
+            "tweeter:max_sweep_duration_s_missing",
         ),
         # Nesting: a measurement band reaching outside the hard excitation
         # band. Since #2870 deleted the crossover search band this is the ONLY

@@ -8,9 +8,11 @@ The closed sweep/level ledger below derives every field passed to Shared's
 persisted admission types. It deliberately remains pure: the production
 adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
 playback, and writer-lock lifetime. The one deliberate exception is the
-``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two when
-it supersedes a stale HF class-default ceiling with the sensitivity-derived
-one (or names why it could not), and one when a proven-HP high-frequency
+``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two around
+the undeclared-HF ceiling (one when the sensitivity derivation supersedes it,
+carrying the delegation that let it and the low-frequency ANCHOR the derived
+number is a delta from; one naming why it could not derive), and one when a
+proven-HP high-frequency
 role's excitation floor follows its declared hard band below its declared
 analysis window (#1654). Audit lines, not state mutations; see the W6.5 and
 "Low-side asymmetry" rulings in that function's docstring.
@@ -394,15 +396,28 @@ def _derived_hf_ceiling_dbfs(
     safety_profile: Mapping[str, Any],
     hf_role: str,
     declared_sensitivities: Mapping[str, Any] | None,
-) -> float | None:
-    """The sensitivity-derived ceiling for ``hf_role``, or ``None`` when the
-    declared specs cannot support one (missing declared sensitivity on either
-    side) -- the caller then keeps the existing class-default ceiling.
+) -> tuple[float, str, float] | None:
+    """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``, or ``None``.
+
+    ``None`` when the declared specs cannot support a derivation (missing
+    declared sensitivity on either side) -- the caller then keeps the existing
+    class-default ceiling.
 
     Conservative across multiple low-frequency siblings (a 3-way's woofer AND
     mid): takes the MINIMUM derived candidate across every low-frequency
     target with a declared sensitivity, so the high-frequency driver's
     ceiling never exceeds what is safe against any one of them.
+
+    **The anchor is returned, not just consumed, because it MOVES.** This
+    ceiling is a delta from a low-frequency sibling's own cap, and that cap is
+    itself a :func:`declared_level_ceiling_dbfs` answer. A woofer that declares
+    a level limit anchors the derivation there; one that declares none anchors
+    it at the woofer class default, which for a low-frequency role is full
+    scale (``MAX_TEST_LEVEL_DBFS``) -- so the same tweeter derives -30.8 under
+    a woofer declaring -20 and -10.8 under a woofer declaring nothing. Both are
+    correct answers to different declarations, and the difference is 20 dB on a
+    compression driver, so the caller names the anchor on its log line instead
+    of leaving an operator to infer the contract shape from the level.
     """
 
     sens_hf = _declared_sensitivity(declared_sensitivities, hf_role)
@@ -411,7 +426,7 @@ def _derived_hf_ceiling_dbfs(
     targets = safety_profile.get("targets")
     if not isinstance(targets, list):
         return None
-    candidates: list[float] = []
+    candidates: list[tuple[float, str, float]] = []
     for candidate in targets:
         if not isinstance(candidate, Mapping):
             continue
@@ -425,19 +440,114 @@ def _derived_hf_ceiling_dbfs(
         if not lf_fingerprint:
             continue
         try:
+            # The cap comes from the one derivation path (which also validates
+            # this sibling's shape and skips it below if malformed). Only the
+            # PROVENANCE is read off the second call: for a low-frequency role
+            # the two return the same number by construction, since the
+            # supersede branch below is high-frequency-only and this call does
+            # not take the proven-HP path.
             _lf_band, lf_cap = resolve_driver_excitation_ceilings(
                 safety_profile, lf_fingerprint
             )
+            _same_cap, lf_anchor = declared_level_ceiling_dbfs(candidate)
         except ExcitationSafetyPlanError:
             continue
         candidates.append(
-            derive_hf_measurement_ceiling_dbfs(
-                declared_lf_driver_cap_dbfs=lf_cap,
-                sens_hf_db=sens_hf,
-                sens_lf_db=sens_lf,
+            (
+                derive_hf_measurement_ceiling_dbfs(
+                    declared_lf_driver_cap_dbfs=lf_cap,
+                    sens_hf_db=sens_hf,
+                    sens_lf_db=sens_lf,
+                ),
+                lf_anchor,
+                lf_cap,
             )
         )
-    return min(candidates) if candidates else None
+    # ``min`` on the derived ceiling, and the anchor that PRODUCED it rides
+    # along -- reporting a different sibling's anchor beside the binding
+    # number would be a receipt that names the wrong cause.
+    return min(candidates, key=lambda item: item[0]) if candidates else None
+
+
+#: How a target's effective-peak ceiling got its number. The same three-way
+#: shape :func:`jasper.active_speaker.driver_protection.resolve_driver_low_limit`
+#: uses for the low limit, and for the same reason: "who decided this?" is a
+#: provenance question, and answering it by comparing a value against a code
+#: figure is how a magic number ends up steering a derivation.
+LEVEL_CEILING_DECLARED = "declared"
+LEVEL_CEILING_UNDECLARED = "undeclared"
+LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
+
+
+def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
+    """One target's effective-peak ceiling and where that number came from.
+
+    **The one owner of this question**, because the field is optional and two
+    readers with two local interpretations of "absent" is exactly how one of
+    them came to raise on the shape the other calls ordinary (2026-08-23).
+    Floor, checked rather than asserted: a grep of ``jasper/`` for
+    ``max_effective_peak_dbfs`` finds exactly one direct dict access, the one
+    below; the two callers that want the answer are
+    :func:`resolve_driver_excitation_ceilings` and
+    ``commissioning_runtime.prepare_summed_excitation``, and everything further
+    downstream (``web.correction_crossover_backend``,
+    ``audio_measurement.level_solver``) takes the already-resolved number as an
+    argument. A third reader belongs here too.
+
+    ``max_effective_peak_dbfs`` is OPTIONAL, and absent is the ordinary answer.
+    It is the one datasheet fact in ``level_duration_limits``, so since the
+    2026-08-23 owner ruling the research ask requests it only where a
+    manufacturer publishes a level limit and ``_target_issues`` no longer
+    requires it. **Absent** therefore means "no published level limit for this
+    driver" — ``LEVEL_CEILING_UNDECLARED`` — which is exactly the
+    no-driver-specific-level-intent the sensitivity derivation answers; the
+    class default stands as the seed until it does.
+
+    A **declared** value is honoured verbatim, never clamped down to the class
+    figure. It is a published limit or an operator's own choice, and the same
+    ruling bars a code figure from overruling either; the one bound that
+    survives on it is digital full scale, enforced where the value is parsed
+    (``driver_safety._normalise_level_duration_limits`` refuses a peak above
+    0 dBFS). Until that ruling this was ``min(declared, class_default)``, so a
+    household value typed LOUDER than the seed was silently clamped back — the
+    trap the old comment here anticipated and left open.
+
+    ``LEVEL_CEILING_LEGACY_CLASS_SEED`` is the third case and the only one that
+    compares a value: a profile SAVED under the retired contract carries the
+    class default itself, because the ask told the researcher to send exactly
+    that number to mean "no level intent". It said then what absence says now,
+    so it is read that way rather than silently regressing an already-
+    commissioned speaker's tweeter by tens of decibels. It is named on the
+    supersede log line so the residual is visible, and the arm is deletable
+    once no stored profile carries a seed -- with the whole sensitivity
+    derivation behind it, tracked with its inventory and its unblock check as
+    `#2913 <https://github.com/jaspercurry/JTS/issues/2913>`_.
+    """
+
+    profile_limits = target.get("level_duration_limits")
+    if not isinstance(profile_limits, Mapping):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    protection = driver_protection_profile(
+        str(target.get("role") or ""),
+        driver_style=target.get("driver_style"),
+    )
+    declared_peak = profile_limits.get("max_effective_peak_dbfs")
+    if declared_peak is None:
+        return float(protection.max_auto_level_dbfs), LEVEL_CEILING_UNDECLARED
+    if (
+        isinstance(declared_peak, bool)
+        or not isinstance(declared_peak, (int, float))
+        or not math.isfinite(float(declared_peak))
+    ):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    peak = float(declared_peak)
+    if peak == float(protection.max_auto_level_dbfs):
+        return peak, LEVEL_CEILING_LEGACY_CLASS_SEED
+    return peak, LEVEL_CEILING_DECLARED
 
 
 def resolve_driver_excitation_ceilings(
@@ -471,9 +581,9 @@ def resolve_driver_excitation_ceilings(
     the two drivers' declared sensitivities, rather than pinned at the
     naked-tone class default (sized for an UNPROTECTED tone, not a HP-proven
     one). Every other caller (isolated driver capture, the v1 ramp solver,
-    ear-check ramps) defaults to ``False`` and keeps exactly today's
-    ``min(declared, class_default)`` ceiling -- one conditional, no new
-    subsystem.
+    ear-check ramps) defaults to ``False`` and keeps the declared ceiling, or
+    the class default when no level limit is published -- one conditional, no
+    new subsystem.
 
     ``declared_sensitivities`` is the per-role declared datasheet sensitivity
     mapping read from the DECLARATION (the design draft's ``manual_settings``
@@ -572,58 +682,27 @@ def resolve_driver_excitation_ceilings(
         float(hard_band[1]),
     )
     permitted_band = FrequencyBand(lower, upper)
-    protection = driver_protection_profile(
-        role,
-        driver_style=target.get("driver_style"),
-    )
-    declared_peak = float(profile_limits["max_effective_peak_dbfs"])
-    maximum_peak = min(declared_peak, protection.max_auto_level_dbfs)
+    maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
     # Supersede-the-seed rule (W6.5): only on the proven-HP path, only for
-    # high-frequency roles, and only when the declared cap still EQUALS the
-    # class-default seed the wizard writes at declaration time -- a value
-    # that exactly matches the seed is the unedited default, not a deliberate
-    # operator choice, so it is safe to replace with the derived ceiling. A
-    # declared value that differs (even if quieter) is a real household
-    # choice and is always respected as-is, never overridden.
+    # high-frequency roles, and only when NO driver-specific level was declared
+    # -- see :func:`declared_level_ceiling_dbfs` for what that means and how a
+    # stored profile still says it. A declared value is a real published or
+    # household choice and is always respected as-is, never overridden.
     #
-    # Known corner: a household value typed LOUDER than the class default
-    # (e.g. -50 against the -65 seed) also fails this equality, so no
-    # derivation runs -- and the min() above still clamps it back to -65.
-    # Safe direction (quieter than the typed intent), but the intent is
-    # silently unmet; wizard-side validation of the declared HF cap is the
-    # noted follow-up.
-    #
-    # #2186 widened who writes this value. The driver-research ask now tells an
-    # assistant to send exactly this class default for a tweeter with no
-    # published level limit, so a research reply is an AUTOMATED writer landing
-    # deliberately on the sentinel. That is intended and it does not change the
-    # premise -- it extends it: "equals the seed" used to mean "the operator
-    # left the wizard default alone", and now also means "the reply had no
-    # driver-specific level knowledge". Both are the same claim, that no
-    # driver-specific level intent was expressed, which is exactly when
-    # deriving from sensitivity is the better answer. A reply that DOES know
-    # better sends a different number and is honoured literally by the branch
-    # below never running.
-    #
-    # The discontinuity is real and deliberate: on this path -65.0 resolves to
-    # the sensitivity-derived ceiling -- since the provisional absolute hedge
-    # was retired on 2026-08-20, that is the low-frequency sibling's own cap
-    # less the declared sensitivity delta, tens of decibels louder than the
-    # seed -- while -66.0 resolves to -66.0. Anything that changes the class
-    # default, or the value
-    # the research template emits, must move both together --
-    # tests/test_active_speaker_driver_safety.py's
-    # test_template_tweeter_peak_lands_on_the_derivation_sentinel pins the
-    # three-way chain (template value == class default == this comparison).
+    # The step is real and deliberate: on this path a delegated ceiling
+    # resolves to the sensitivity-derived one -- since the provisional absolute
+    # hedge was retired on 2026-08-20, that is the low-frequency sibling's own
+    # cap less the declared sensitivity delta, tens of decibels louder than the
+    # class seed -- while a declared -66.0 resolves to -66.0.
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES
-        and declared_peak == protection.max_auto_level_dbfs
+        and level_provenance != LEVEL_CEILING_DECLARED
     ):
-        derived_peak = _derived_hf_ceiling_dbfs(
+        derived = _derived_hf_ceiling_dbfs(
             safety_profile, role, declared_sensitivities
         )
-        if derived_peak is None:
+        if derived is None:
             # Named skip: the proven-HP path WOULD derive here but a declared
             # sensitivity is missing on one side, so the (usually far too
             # quiet) class default stays in force. Without this line a
@@ -636,7 +715,9 @@ def resolve_driver_excitation_ceilings(
                 reason="declared_sensitivity_missing",
                 ceiling_dbfs=f"{maximum_peak:.1f}",
             )
-        elif derived_peak != maximum_peak:
+            return permitted_band, maximum_peak
+        derived_peak, anchor, anchor_cap = derived
+        if derived_peak != maximum_peak:
             log_event(
                 logger,
                 "active_speaker.excitation_ceiling_superseded",
@@ -644,6 +725,16 @@ def resolve_driver_excitation_ceilings(
                 role=role,
                 legacy_ceiling_dbfs=f"{maximum_peak:.1f}",
                 derived_ceiling_dbfs=f"{derived_peak:.1f}",
+                delegation=level_provenance,
+                # The ANCHOR this number is a delta from, named. A
+                # low-frequency sibling that declares no level limit anchors
+                # the derivation at ITS class default, which for a
+                # low-frequency role IS full scale -- so the high-frequency
+                # ceiling moves with the sibling's contract shape, and an
+                # operator triaging a level must be able to see which shape
+                # produced it rather than inferring it from a number.
+                anchor=anchor,
+                anchor_cap_dbfs=f"{anchor_cap:.1f}",
             )
             maximum_peak = derived_peak
     return permitted_band, maximum_peak

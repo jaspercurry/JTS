@@ -121,7 +121,12 @@ damage:
   `jasper/active_speaker/camilla_yaml.py` — and the volume /
   `HARD_CEILING_DBFS` rail (`jasper/audio_measurement/ramp.py`)
 - declared per-driver excitation bands and level-duration limits —
-  `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`
+  `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`.
+  **Declared** is the load-bearing word, and since 2026-08-23 it is enforced
+  as such: `max_effective_peak_dbfs` is optional, a value on the record is
+  honoured verbatim rather than clamped to a class default, and it bounds the
+  per-driver composed level rather than the un-segmented measurement volume
+  (row (h))
 - the commissioning level stop — `max_commissioning_level_db_spl`
   (`jasper/active_speaker/profile.py`)
 - firmware brick hazards, e.g. the XVF `SAVE_CONFIGURATION` ban
@@ -135,9 +140,10 @@ LLM) to weigh. It must never refuse an experiment on its own.
 ### Known deviations at 2026-08-21, and where each stands
 
 Five tested refusals sat outside the list above when this doc was ratified,
-none naming a component-damage mechanism; a sixth and a seventh were found
-afterwards and are carried here on the same terms. **Six are now closed and one
-is retained by ruling, so this table tracks nothing outstanding.** Rows are
+none naming a component-damage mechanism; a sixth, a seventh, and an eighth
+were found afterwards and are carried here on the same terms. **Seven are now
+closed and one is retained by ruling, so this table tracks nothing
+outstanding.** Rows are
 struck as they close and a struck row stays, so a reader meeting one of these
 names in an old round or an old commit can tell it was retired on purpose:
 
@@ -150,6 +156,7 @@ names in an old round or an old commit can tell it was retired on purpose:
 | e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | **RETAINED by ruling R8** (`docs/tuning-master-plan.md`): "Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver)" — a stated limit of the instrument, not a prior about the outcome |
 | ~~f~~ | ~~`TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` refused a pinned order against a code floor while calling it "declared"~~ | `jasper/active_speaker/crossover_v2/topology_prescription.py` | **CLOSED 2026-08-23** — found after ratification. The gate read `required_protection_filters[highpass].minimum_slope_db_per_octave`, which is `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, so jts3's DE250 — B&C publish "1.6 kHz — 12 dB/oct. or higher" — had a 2400 Hz order-2 pin refused "below the protected driver's declared minimum of 24 dB/octave". The owner ruled: "If it was in the safe overall envelope, it's safe to test." The refusal survives but now compares the PUBLISHED condition only, which makes it a declared-value refusal rather than a class floor and puts it inside section 4 on the same footing as the declared excitation bands; a maker who publishes nothing gets no slope refusal at all, and the 24 dB/octave commissioning figure discloses on the receipt (`recommended_slope_db_per_octave`) beside the design page's existing `tweeter_slope_below_recommended_floor` warning ([#2897](https://github.com/jaspercurry/JTS/pull/2897)) |
 | ~~g~~ | ~~the driver door's classification bar~~ — ~~`driver_feature_not_classified`~~, ~~`driver_feature_not_cuttable`~~, ~~`driver_feature_not_boostable`~~, ~~`driver_feature_depth_unavailable`~~, ~~`driver_boost_exceeds_feature_depth`~~, ~~`driver_boost_unvouched`~~ | `jasper/active_speaker/crossover_v2/driver_prescription.py` | **CLOSED 2026-08-23.** Not in the table when it was ratified — a seventh deviation, found by its cost: a role whose incumbent carried a Lowshelf could never keep it, because nothing vouches for a filter the fit engine placed, so naming the role always deleted the shelf ([#2863](https://github.com/jaspercurry/JTS/issues/2863)). The vouch is a prediction about whether a filter will help, so it now discloses `unvouched_filters` on the propose/stage report and refuses nothing. The caps that bound what a filter COSTS are untouched |
+| ~~h~~ | ~~`level_duration_limits.max_effective_peak_dbfs` bounded the un-segmented measurement VOLUME~~, and ~~`max_effective_peak_above_code_policy`~~ refused a declared level against a class default | `jasper/active_speaker/session_volume_plan.py`, `jasper/active_speaker/driver_safety.py` | **CLOSED 2026-08-23** — found after ratification, an eighth deviation, by its cost. `jasper-seat-level --target-db-spl 75` refused `spl_target_unreachable` at 68.3 dB SPL on the new-horn box: the ceiling was `min(driver caps) − stimulus peak`, and the binding cap was the tweeter's, derived from a woofer figure the research ask itself had told the assistant to send. The ask's own words for that object are "measurement-protocol discipline, not datasheet facts", so no term in the chain named a damage mechanism, and ~30 dB of digital headroom sat unused. The owner ruled: "It's a fixed-gain amp — we do ALL volume via software... No limit unless we have no headroom to give." The un-segmented ceiling is now full scale less the binding branch peak and DISCLOSES each declared cap it drives past on `event=active_speaker.unsegmented_ceiling_bound`; the save-time refusal is deleted and the field is optional. The per-driver cap keeps its other job — setting and admitting each driver's composed segment level, where it is level-MATCHING rather than a ceiling — so it stays inside section 4 above on the declared-value footing |
 
 ## 5. The nanny test
 
@@ -204,5 +211,12 @@ six slugs was grepped for a live producer and none remains. Rows (a)-(e) were
 not re-derived that day either; their account is the 2026-08-22 pass above.
 Sections 1-6 were re-read and stand unchanged. So the date below records rows
 (f) and (g) and nothing else.
+
+Row (h) was added and closed the same day, on its own again, and the section 4
+bullet it qualifies was re-derived with it: `max_effective_peak_above_code_policy`
+was grepped for a live producer and none remains, and
+`unsegmented_stimulus_ceiling_db`'s one production caller
+(`jasper/cli/seat_level.py`) was read against the new derivation. No other row
+and no other bullet was re-derived that day.
 
 Last verified: 2026-08-23

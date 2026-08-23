@@ -218,9 +218,12 @@ def driver_protection_policy_view(
     the /sound/ page always loads with a topology.)
 
     It exists because the browser has to answer one question before anything is
-    saved, and it is policy the browser must not own a second copy of: *is this
-    target's declared peak sitting on the delegation sentinel?* — which needs
-    that target's ``max_auto_level_dbfs``.  The confirmed safety profile
+    saved, and it is policy the browser must not own a second copy of: *has
+    this target delegated its level?*  Since the 2026-08-23 ruling that is
+    normally answered by the peak being ABSENT, but a profile saved under the
+    retired contract carries the class default itself and means the same thing,
+    so the page still needs that target's ``max_auto_level_dbfs`` to recognise
+    it.  The confirmed safety profile
     carries the same number in ``code_owned_policy``, but only **after** a
     save; the echo-back panel renders straight after a paste.
 
@@ -1605,22 +1608,35 @@ def _prompt_example_highpass_hz(request: Mapping[str, Any]) -> float:
 
 
 def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
-    """Return the per-target code-policy bounds this reply has to clear.
+    """Return the LIMITS section: its heading, its preamble, and its bounds.
 
-    Two gates enforce them, one per line emitted here: the low-limit band by
-    :func:`validate_research_low_limit_plausibility` at intake, the peak ceiling
-    by ``_target_issues`` on the save.
+    One gate enforces them, on the one line emitted per target: the low-limit
+    band by :func:`validate_research_low_limit_plausibility` at intake.
 
-    Read from ``driver_protection_profile`` — the one owner of that policy —
-    rather than restated as prose constants, so the ask cannot drift from what
-    the gate actually refuses.  Naming the bounds in the ask is what lets an
-    *estimated* answer land instead of deadlocking: the gate still refuses an
-    out-of-bounds value on its own, so telling the researcher the bound can
-    only raise the chance of an acceptable first reply, never widen it.
+    Read from the low-limit band owner rather than restated as prose constants,
+    so the ask cannot drift from what the gate actually refuses.  Naming the
+    bound in the ask is what lets an *estimated* answer land instead of
+    deadlocking: the gate still refuses an out-of-bounds value on its own, so
+    telling the researcher the bound can only raise the chance of an acceptable
+    first reply, never widen it.
 
     They are bounds, not recommended values.  The prompt says so out loud
     because a floor stated without that caveat reads as a target, and would
     talk a researcher *down* from a stricter published requirement.
+
+    **There is no level bound here, and its absence is the point.**  The ask
+    carried ``max_effective_peak_dbfs at or below <class default>`` until
+    2026-08-23, which made a code figure the ceiling a researcher had to clear
+    — for a tweeter, −65 dBFS — and then treated the number that came back as a
+    declaration.  The owner struck it: "There should not be any nannies in our
+    audio pipeline... No limit unless we have no headroom to give."  A level
+    limit is now asked for only where a manufacturer publishes one.
+
+    The heading is emitted only when a bound exists.  Every remaining bound is
+    per-target and optional (a low-frequency role has no low-limit anchor at
+    all), so a request can legitimately have none — and a heading whose two
+    preamble sentences say "these bounds" above an empty list describes a gate
+    that is not there.
 
     These lines are prompt text only.  ``request`` itself, and therefore
     ``request_fingerprint``, is untouched.
@@ -1630,25 +1646,25 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     for target in request.get("targets", []):
         if not isinstance(target, Mapping):
             continue
-        policy = driver_protection_profile(
-            str(target.get("role") or ""),
-            driver_style=target.get("driver_style"),
-        )
-        bounds: list[str] = []
         band = driver_low_limit_plausibility_band_hz(
             str(target.get("role") or ""),
             driver_style=target.get("driver_style"),
         )
-        if band is not None:
-            bounds.append(
-                "recommended_highpass_hz between "
-                f"{band[0]:g} and {band[1]:g} if published, else null"
-            )
-        bounds.append(
-            f"max_effective_peak_dbfs at or below {policy.max_auto_level_dbfs:g}"
+        if band is None:
+            continue
+        lines.append(
+            f"- {target.get('target_id')}: recommended_highpass_hz between "
+            f"{band[0]:g} and {band[1]:g} if published, else null."
         )
-        lines.append(f"- {target.get('target_id')}: " + "; ".join(bounds) + ".")
-    return lines
+    if not lines:
+        return []
+    return [
+        "LIMITS",
+        "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
+        "The minimum-crossover bound is a PLAUSIBILITY range, not a target. A published figure inside it is believed even when it sits below what is typical for the driver type; a figure outside it is refused as a mis-read rather than believed.",
+        *lines,
+        "",
+    ]
 
 
 def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
@@ -1682,8 +1698,8 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     researcher's best reality-grounded number from the driver's published facts
     and physics, declared as an estimate, with one citation.  Safety never
     lived in a number's timidity: it lives in ``_target_issues`` (below), the
-    per-style plausibility screen on the reply, the peak ceiling, and the
-    quiet-start ramp.  A wrong best-estimate degrades a measurement; it cannot
+    per-style plausibility screen on the reply, and the quiet-start ramp.  A
+    wrong best-estimate degrades a measurement; it cannot
     blow a driver, while
     prompt-level lowballing costs real performance — a needlessly high cutoff
     robs usable range, a needlessly low level under-drives the measurement —
@@ -1691,10 +1707,22 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     arbiter: /sound/ echoes every consumed value back with its published or
     estimated badge and its source before anything is saved.
 
+    **``max_effective_peak_dbfs`` is asked for as a published fact or not at
+    all (owner ruling, 2026-08-23).**  The ask used to name a class-default
+    ceiling under LIMITS and tell the assistant to "send exactly the ceiling"
+    for a tweeter with no published limit — so the reply's number was a figure
+    this file had injected, and everything downstream then read it as a
+    declaration.  On the new-horn box that round trip pinned a 75 dB SPL seat
+    target at 68.3 dB with ~30 dB of digital headroom unused.  The demand is
+    gone, the key is optional, and the level a measurement runs at comes from
+    the sensitivity derivation instead
+    (:func:`jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`).
+    A manufacturer-published level limit is still asked for and still binds.
+
     What did **not** move is the protection itself.  A REPLY that lands outside
     code policy is still refused by name rather than silently clamped, so an
-    operator sees the bound and decides — the peak ceiling and band nesting in
-    ``_target_issues``, and the per-style low-limit band in
+    operator sees the bound and decides — band nesting in ``_target_issues``,
+    and the per-style low-limit band in
     :func:`validate_research_low_limit_plausibility`, which screens the paste
     before any of it becomes a declaration.  (That last one used to refuse from
     ``_target_issues`` too, over the SAVED values; #2874 split it by author, and
@@ -1781,15 +1809,10 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends. Its LOWER edge is derived from recommended_highpass_hz, so what matters here is the upper edge.",
             "measurement_band_hz is the driver's published frequency-response range — for example a compression driver rated 1.0-18.0 kHz sends [1000, 18000]. Send the published range even when it extends below the minimum crossover; this build clamps the analysis window up into the allowed band itself.",
             "Nest the bands: the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
-            "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send all four numbers, and unless a datasheet says stricter use max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2.",
-            "For max_effective_peak_dbfs, use -20 for a woofer, mid, or full-range driver. For a tweeter with no published level limit, send exactly the ceiling listed under LIMITS: that hands the level choice to this build's own protection logic, which raises it only once a protective high-pass is proven in the signal path.",
-            "Send a lower tweeter number only when you mean it as a deliberate quieter limit — anything below the ceiling is taken literally and is never raised. Never send a value above the ceiling.",
+            "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a datasheet says stricter.",
+            "max_effective_peak_dbfs is the one key in that object that IS a datasheet fact, so send it ONLY when the manufacturer publishes a level limit for this driver — a maximum input level, or a power rating stated as a limit you can convert. Omit the key entirely when they publish none; that is the ordinary answer and it is not a gap to record in unknowns. Never estimate it, and never send a protocol default in its place: this build chooses the measurement level from the driver's declared sensitivity against its low-frequency sibling's own limit, and a made-up number here would override that with a guess.",
             "",
-            "LIMITS",
-            "This build refuses a reply outside these bounds. They are outer bounds, not recommended values: when a published requirement is stricter, the published one wins.",
-            "The minimum-crossover bound is a PLAUSIBILITY range, not a target. A published figure inside it is believed even when it sits below what is typical for the driver type; a figure outside it is refused as a mis-read rather than believed.",
             *_driver_research_prompt_limits(request),
-            "",
             "RESULT SHAPE",
             "```json",
             "{",
@@ -1808,7 +1831,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "recommended_highpass_slope_db_per_octave": 12,',
             f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
             f'    "measurement_band_hz": [{hp - 1000}, 18000],',
-            '    "level_duration_limits": {"max_effective_peak_dbfs":-65,"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
+            '    "level_duration_limits": {"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',
@@ -2067,8 +2090,13 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
     if not isinstance(measurement, list):
         reasons.append(f"{role}:measurement_band_missing")
     limits = target.get("level_duration_limits")
+    # ``max_effective_peak_dbfs`` is deliberately NOT in this tuple. It is the
+    # one key in the object that would be a datasheet fact, so it is optional:
+    # most makers publish no level limit, and requiring one only ever produced
+    # an invented number. Its absence is how a target says "no published level
+    # limit", which resolve_driver_excitation_ceilings reads as the delegation
+    # the sensitivity derivation answers (owner ruling, 2026-08-23).
     required_limit_fields = (
-        "max_effective_peak_dbfs",
         "max_sweep_duration_s",
         "max_repeat_count",
         "minimum_cooldown_s",
@@ -2079,18 +2107,6 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
         for field in required_limit_fields:
             if limits.get(field) is None:
                 reasons.append(f"{role}:{field}_missing")
-    policy = driver_protection_profile(
-        role,
-        driver_style=target.get("driver_style"),
-    )
-    if isinstance(limits, Mapping):
-        peak = limits.get("max_effective_peak_dbfs")
-        if (
-            isinstance(peak, (int, float))
-            and not isinstance(peak, bool)
-            and float(peak) > policy.max_auto_level_dbfs
-        ):
-            reasons.append(f"{role}:max_effective_peak_above_code_policy")
     if isinstance(hard, list) and isinstance(measurement, list):
         if not _band_subset(measurement, hard):
             reasons.append(f"{role}:measurement_band_outside_hard_band")

@@ -98,6 +98,64 @@ def test_a_missing_stimulus_refuses_first(tmp_path, capsys):
     assert seat_level.REFUSE_STIMULUS_MISSING in capsys.readouterr().out
 
 
+def test_the_verb_installs_a_handler_so_its_receipt_reaches_the_journal(
+    tmp_path,
+):
+    """The disclosure receipt has a production reader, proved without caplog.
+
+    ``unsegmented_stimulus_ceiling_db`` logs the caps this ceiling drives past
+    at INFO. The root logger defaults to WARNING and this module registers no
+    handler of its own, so before ``main`` called ``basicConfig`` every field
+    of that receipt was computed and discarded on a real run — and a guard
+    written with ``caplog.at_level("INFO")`` cannot see that, because forcing
+    the level is precisely the thing production does not do.
+
+    So this test takes the root logger away from pytest for the duration:
+    handlers cleared, level restored to the WARNING default, ``main`` run for
+    real, and then a record emitted through the module's OWN logger at INFO
+    has to arrive somewhere. Restored in ``finally`` either way.
+    """
+    import logging
+
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_WITH_SENS)
+
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    received: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            received.append(record)
+
+    try:
+        root.handlers = []
+        root.setLevel(logging.WARNING)
+        code = seat_level.main(
+            [
+                "--stimulus-wav",
+                str(tmp_path / "nope.wav"),
+                "--calibration-file",
+                str(cal),
+            ]
+        )
+        assert code == 1
+        # ``basicConfig`` ran and it ran at INFO, not at the WARNING default
+        # that hid the event.
+        assert root.handlers, "the CLI installed no log handler"
+        assert root.level == logging.INFO
+        root.addHandler(_Capture())
+        logging.getLogger(
+            "jasper.active_speaker.session_volume_plan"
+        ).info("event=active_speaker.unsegmented_ceiling_bound probe=1")
+    finally:
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+
+    assert any("unsegmented_ceiling_bound" in r.getMessage() for r in received)
+
+
 def test_the_verb_requires_a_way_to_find_the_calibration(tmp_path):
     with pytest.raises(SystemExit):
         seat_level.main(["--stimulus-wav", str(tmp_path / "x.wav")])
@@ -591,19 +649,18 @@ def _jts3_safety_profile(topology):
 
 
 def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkeypatch):
-    """Both conservatisms, retired together, through the REAL derivation.
+    """The de-nannied ceiling through the REAL derivation.
 
     Real ``_derive_bounds``, real ``unsegmented_stimulus_ceiling_db``, real
     branch render, real driver-safety profile — only the topology and the
-    statefile lookup are stubbed. The three ceilings and the two deltas between
-    them are what this PR is:
+    statefile lookup are stubbed.
 
-      1. naked sensitivities + full-band peak — what shipped
-      2. pad-folded + full-band  — moved by EXACTLY the pad
-      3. pad-folded + per-branch — moved by EXACTLY (full-band peak - the
-         BINDING branch's peak)
+    Two things are pinned end to end. The ceiling is full scale less the
+    LOUDEST branch peak the render found, which on this fixture is the woofer's;
+    and it clears the ceiling the declared caps used to impose (-21.2 dB on
+    these numbers) by tens of decibels, which is the 2026-08-23 ruling.
 
-    The magnitudes are this fixture's own — a branch delta is a property of one
+    The magnitudes are this fixture's own — a branch peak is a property of one
     stimulus through one graph and is never transferable, which is the whole
     reason the render is redone per stimulus rather than cached.
     """
@@ -649,33 +706,31 @@ def test_the_honest_ceiling_end_to_end_on_a_jts3_shaped_speaker(tmp_path, monkey
 
     peak = seat_level.stimulus_peak_dbfs(stimulus)
     fingerprints = [t["target_fingerprint"] for t in targets]
-    naked = unsegmented_stimulus_ceiling_db(
+    full_band = unsegmented_stimulus_ceiling_db(
         profile, fingerprints, stimulus_peak_dbfs=peak,
         declared_sensitivities={"woofer": _SENS_WOOFER, "tweeter": _SENS_TWEETER},
     )
-    padded = unsegmented_stimulus_ceiling_db(
-        profile, fingerprints, stimulus_peak_dbfs=peak,
-        declared_sensitivities={
-            "woofer": _SENS_WOOFER, "tweeter": _SENS_TWEETER + _PAD_DB,
-        },
-    )
 
-    # 1. What shipped: min(-8.0, -33.2) - (-12.0).
-    assert naked == pytest.approx(-21.2, abs=0.01)
-    # 2. Pad-folded: the move is exactly the pad, and nothing else.
-    assert padded - naked == pytest.approx(-_PAD_DB, abs=0.01)
-    # 3. Per-branch, from the render: the tweeter still binds, the woofer alone
-    #    would have allowed more, and the move is exactly the peak the binding
-    #    branch does NOT receive.
+    # The bound with no render: full scale less the stimulus's own peak.
+    assert full_band == pytest.approx(-peak, abs=0.01)
+    # With the render: full scale less the LOUDEST branch, which is the woofer
+    # here — the quiet tweeter branch no longer holds the volume down.
     branch = seat_level._applied_branch_peaks(stimulus, targets)
     assert set(branch) == set(fingerprints)
     assert branch[by_role["tweeter"]] < branch[by_role["woofer"]]
-    assert ceiling_db == pytest.approx(
-        min(-18.8 - branch[by_role["tweeter"]], -8.0 - branch[by_role["woofer"]]),
-        abs=0.01,
+    assert ceiling_db == pytest.approx(-branch[by_role["woofer"]], abs=0.01)
+    assert ceiling_db - full_band == pytest.approx(
+        peak - max(branch.values()), abs=0.01
     )
-    assert ceiling_db - padded == pytest.approx(peak - min(branch.values()), abs=0.01)
-    assert ceiling_db > naked
+    # The ruling, as a number: the declared caps used to pin this ceiling at
+    # min(-8.0, -33.2) - peak. Mutation guard — restore that term and the
+    # ceiling collapses to it, tens of decibels below what the box can drive.
+    declared_cap_ceiling = min(
+        -18.8 - branch[by_role["tweeter"]], -8.0 - branch[by_role["woofer"]]
+    )
+    assert ceiling_db > declared_cap_ceiling
+    assert min(-8.0, -33.2) - peak == pytest.approx(-21.2, abs=0.01)
+    assert ceiling_db > -21.2
     # The commissioning SPL stop is a SEPARATE bound and is untouched by any of
     # this — it is still a real number from the preset.
     assert 45.0 <= spl_ceiling <= 85.0
