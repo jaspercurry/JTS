@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import os
@@ -44,6 +45,11 @@ MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
 CAMILLA_OPERATION_TIMEOUT_S = 2.0
 CAMILLA_ATTEMPT_BUDGET_S = 5.0
 _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
+
+# CamillaDSP ramps main volume and mute changes over `volume_ramp_time`,
+# which is 400 ms when a config leaves it unset — as every JTS config does.
+# Hold a mute slightly past that so the fade has finished.
+MAIN_VOLUME_RAMP_SETTLE_S = 0.45
 
 _T = TypeVar("_T")
 
@@ -674,6 +680,40 @@ class CamillaController:
                 return None
             raise
 
+    @contextlib.asynccontextmanager
+    async def _graph_mutation(self, source: str):
+        """Admit one CamillaDSP graph mutation, faded out and back in.
+
+        A mutation can move the graph's own gain by tens of dB while the
+        volume setting is unchanged — loudest when a boosted correction is
+        removed and the headroom attenuation it carried goes away. Muting
+        across the mutation turns that instant step into a fade down and a
+        fade back up: CamillaDSP ramps mute instead of applying it at once,
+        and keeps volume/mute as process state that survives the reload.
+
+        A speaker that is already muted has no step to fade, so the fade is
+        skipped — which also makes this safe to nest.
+        """
+        from jasper.dsp_apply import camilla_graph_mutation
+
+        async with camilla_graph_mutation(
+            source=source,
+            lock_path=self._graph_mutation_lock_path,
+        ):
+            reading = await self.get_volume_and_mute()
+            if reading is None or reading[1]:
+                yield
+                return
+            await self.set_main_mute(True)
+            try:
+                await asyncio.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
+                yield
+            finally:
+                # Best-effort so a restore failure cannot mask the mutation's
+                # own error. A speaker left quiet is the safe direction, and
+                # the next volume write clears the flag.
+                await self.set_main_mute(False, best_effort=True)
+
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
@@ -689,13 +729,9 @@ class CamillaController:
             c.config.set_file_path(path)
             c.general.reload()
             return True
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.set_config_file_path",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.set_config_file_path"):
                 return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:
@@ -724,13 +760,9 @@ class CamillaController:
                 logger.warning("camilla active config rejected: empty config")
                 return False
             raise ValueError("config must be a non-empty YAML string")
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.set_active_config_raw",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.set_active_config_raw"):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True
         except CamillaUnavailable as e:
@@ -776,9 +808,9 @@ class CamillaController:
         than the caller's own text (the readback is a normalized superset).
 
         **Must NOT take ``camilla_graph_mutation``.** Its neighbours
-        :meth:`set_active_config_raw` and :meth:`patch_config` both do, so
-        "make it match its siblings" is the tempting wrong edit — but this call
-        mutates nothing, and the live-graph boundary
+        :meth:`set_active_config_raw` and :meth:`patch_config` both do, through
+        :meth:`_graph_mutation`, so "make it match its siblings" is the tempting
+        wrong edit — but this call mutates nothing, and the live-graph boundary
         (``runtime_contract.classify_active_bass_extension_graph``) invokes it
         from *inside* that lock on live paths — among them
         ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
@@ -828,13 +860,9 @@ class CamillaController:
                 logger.warning("camilla config patch rejected: empty patch")
                 return False
             raise ValueError("patch must be a non-empty mapping")
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.patch_config",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.patch_config"):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:
@@ -848,13 +876,8 @@ class CamillaController:
         room-correction wizard's 'Reset to flat' action when the path
         is already pointed at the branch's flat base config — saves a
         redundant set_file_path call."""
-        from jasper.dsp_apply import camilla_graph_mutation
-
         try:
-            async with camilla_graph_mutation(
-                source="camilla.reload",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.reload"):
                 await self._call(lambda c: c.general.reload())
                 return True
         except CamillaUnavailable as e:

@@ -643,6 +643,12 @@ an atomic protocol. A higher-level DSP transaction that needs rollback must
 retain and restore its prior path; the transport timeout does not turn an
 ambiguous response into proof that a mutation did or did not land.
 
+Every graph mutation — load, inline apply, patch, reload, and the rollback
+loads a failed transaction issues — runs inside a momentary main mute
+(`CamillaController._graph_mutation`), so a swap that changes the graph's own
+headroom gain fades down and back up instead of stepping at an unchanged
+volume setting.
+
 ## AirPlay is always camilla-as-master
 
 shairport-sync exposes `SetAirplayVolume` as a method that should
