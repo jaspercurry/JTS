@@ -14,15 +14,23 @@ seat SPL lands inside the operator's band, and bank the volume that got there
 to consume.
 
 **How the ramp moves: the remaining gap IS the step.** Each reading measures
-the seat SPL; the next step is ``target_db_spl - measured_db_spl``, saturated at
-one named upward cap (:data:`AUDIBLE_RAMP_STEP_DB`, the same number
-:mod:`jasper.active_speaker.calibration_level` declares as
-``upward_step_limit_db`` — one constant owns "how far may one audible upward
-step move the room"). So the ramp takes big strides while it is far away and
-naturally shrinking ones as it closes: three big bites carry it across jts3's
-61 dB SPL room and a fourth, aimed at the measured gap, lands a 75 dB SPL target
-— five readings, about five audible seconds, where the retired ladder spent 51 s
-and never arrived.
+the seat SPL; the next step is ``target_db_spl - measured_db_spl``, saturated
+upward at one BITE — and the bite is sized as a fraction of THIS run's own span,
+:data:`BITE_FRACTION` of ``ceiling - start``, computed once before the tone.
+
+**Why a fraction of the range and not a number of dB.** This ships to anyone's
+hardware and nobody here knows what their amplifier does; an unknown gain only
+changes WHERE inside the span the speaker becomes audible, never how wide the
+span is. So a range-fraction sweeps any chain in at most ``ceil(1 /
+BITE_FRACTION)`` bites, while a fixed dB constant is a guess about a stranger's
+amp that is too slow on a quiet one and too coarse on a hot one. Start low —
+because we do not know what will get us to the right volume — and keep taking
+the same bite until audio appears.
+
+So the ramp takes full bites while it is far away and naturally shrinking ones as
+it closes: on jts3 five bites carry it across a 61 dB SPL room and two more,
+aimed at the measured gap, land a 75 dB SPL target — seven readings, about seven
+audible seconds, where the retired ladder spent 51 s and never arrived.
 
 This assumes only that the chain is LOCALLY monotone in dB — not that it is
 globally linear. Every step re-measures, so a chain that answers a 10 dB
@@ -107,7 +115,6 @@ from jasper.correction.coordinator import (
 )
 from jasper.log_event import log_event
 
-from .calibration_level import AUDIBLE_RAMP_STEP_DB
 from .seat_level_reference import (
     SeatLevelTarget,
     SeatLevelTargetError,
@@ -141,10 +148,25 @@ SEAT_LEVEL_GATE_OWNER = "seat-level"
 MIC_SETTLE_S = 0.5
 
 # The quiet floor the climb starts from. Deliberately low and deliberately
-# uninformed: with bites this big the start stops being load-bearing (from here
-# the ramp crosses a 61 dB SPL room in three bites), so paying for a smarter one
-# would buy a second or two at the cost of machinery the pass does not need.
+# uninformed — we do not know what a stranger's amplifier does, so we start
+# under anything that could hurt and let the bites find the level. A start
+# derived from the measured room was built and dropped: it bought a second and
+# cost a helper, a constant, and a refusal.
 SEAT_LEVEL_START_DB = -50.0
+
+# One bite, as a fraction of the run's OWN span (ceiling - start). The single
+# dimensionless knob in the climb, and dimensionless on purpose: it is the only
+# shape that is hardware-independent. An unknown amplifier moves WHERE inside
+# the span the speaker becomes audible; it does not change the span, so 0.15
+# sweeps any chain in at most ceil(1 / 0.15) = 7 bites whatever the gain. A
+# fixed dB bite would instead be a guess about someone else's amp — too slow on
+# a quiet one, too coarse on a hot one.
+#
+# NOT the same question as calibration_level's AUDIBLE_RAMP_STEP_DB, which
+# clamps ONE call to the calibration `set` endpoint at 10 dB. That is a
+# per-request bound on an operator-driven jump; this is a climb bite sized to
+# the span the ramp has to sweep. Two questions, two vocabularies, deliberately.
+BITE_FRACTION = 0.15
 
 # The rise a reading must clear to count as the SPEAKER rather than the room —
 # read by the runaway guard and by convergence, which is why it is one number.
@@ -345,6 +367,16 @@ async def _settle_reading(
     return _Reading(rms_dbfs=statistics.median(readings), samples=len(readings))
 
 
+def bite_db(*, start_db: float, ceiling_db: float) -> float:
+    """One bite: :data:`BITE_FRACTION` of the span this run has to sweep.
+
+    Computed once, before the tone, from the run's own start and ceiling — so
+    the climb's step size is a property of the range in front of it rather than
+    a constant chosen against hardware nobody here has seen.
+    """
+    return BITE_FRACTION * max(0.0, float(ceiling_db) - float(start_db))
+
+
 def mic_is_not_observing(
     *, max_rise_db: float, min_rise_db: float, at_ceiling: bool
 ) -> bool:
@@ -367,15 +399,18 @@ def mic_is_not_observing(
 def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
     """This pass's own worst case, priced as the readings it actually takes.
 
-    One ambient reading, one reading per capped step from the derived start to
-    the ceiling, and one per allowed miss — each costing a transport drain plus
-    a window — plus :data:`WATCHDOG_SLACK_S`. Priced against the ACTUAL start
-    and the ACTUAL step cap, so it cannot repeat the retired kernel's mistake of
-    budgeting a continuous climb for a walk that does not climb continuously.
+    One ambient reading, one reading per bite from the start to the ceiling, and
+    one per allowed miss — each costing a settle drain plus a median window —
+    plus :data:`WATCHDOG_SLACK_S`. Priced against the ACTUAL start and the
+    ACTUAL bite, so it cannot repeat the retired kernel's mistake of budgeting a
+    continuous climb for a walk that does not climb continuously. Because the
+    bite is a fixed fraction of the span, the bite count is the same
+    ``ceil(1 / BITE_FRACTION)`` for every chain.
     """
+    bite = bite_db(start_db=start_db, ceiling_db=ceiling_db)
     span_db = max(0.0, float(ceiling_db) - float(start_db))
-    steps = math.ceil(span_db / AUDIBLE_RAMP_STEP_DB) if span_db > 0.0 else 0
-    readings = 1 + steps + MAX_MISSED_FULL_STEPS
+    bites = math.ceil(span_db / bite) if bite > 0.0 else 0
+    readings = 1 + bites + MAX_MISSED_FULL_STEPS
     per_reading = MIC_SETTLE_S + MIC_SETTLE_S
     return MIC_SETTLE_S + readings * per_reading + WATCHDOG_SLACK_S
 
@@ -636,7 +671,8 @@ async def run_seat_level_ramp(
             ambient_dbfs=f"{ambient_dbfs:.1f}",
             ambient_db_spl=f"{ambient_db_spl:.1f}",
             start_db=f"{start_db:.2f}",
-            step_cap_db=f"{AUDIBLE_RAMP_STEP_DB:.1f}",
+            bite_db=f"{bite_db(start_db=start_db, ceiling_db=ceiling_db):.2f}",
+            bite_fraction=f"{BITE_FRACTION:g}",
             required_rise_db=f"{min_rise_db:.1f}",
             watchdog_s=f"{watchdog_s:.0f}",
             # The absolute SPL is only as true as the capture gain the vendor's
@@ -807,15 +843,17 @@ async def _walk_to_the_band(
     last_step_was_full = False
     previous: tuple[float, float] | None = None
     slope_db_per_db: float | None = None
+    bite = bite_db(start_db=start_db, ceiling_db=ceiling_db)
     max_readings = 1 + math.ceil(
-        max(0.0, ceiling_db - start_db) / AUDIBLE_RAMP_STEP_DB
+        max(0.0, ceiling_db - start_db) / bite
     ) + MAX_MISSED_FULL_STEPS
 
     def telemetry(final_volume_db: float) -> dict[str, Any]:
         return {
             "start_db": round(start_db, 2),
             "ceiling_db": round(ceiling_db, 2),
-            "step_cap_db": AUDIBLE_RAMP_STEP_DB,
+            "bite_db": round(bite, 2),
+            "bite_fraction": BITE_FRACTION,
             "ambient_dbfs": round(ambient_dbfs, 2),
             "ambient_db_spl": round(ambient_db_spl, 2),
             "required_rise_db": round(min_rise_db, 2),
@@ -959,12 +997,12 @@ async def _walk_to_the_band(
                     required_rise_db=f"{min_rise_db:.2f}",
                 )
 
-            # The remaining gap IS the step, saturated upward by the one shared
-            # audible-step cap. Downward moves are uncapped: they reduce risk.
+            # The remaining gap IS the step, saturated upward by this run's own
+            # bite. Downward moves are uncapped: they reduce risk.
             step_db = capped_gap_step_db(
                 measured_db=observed_db_spl,
                 target_db=target.target_db_spl,
-                cap_db=AUDIBLE_RAMP_STEP_DB,
+                cap_db=bite,
             )
             next_db = min(volume_db + step_db, ceiling_db)
             if abs(next_db - volume_db) <= STEP_EPSILON_DB:

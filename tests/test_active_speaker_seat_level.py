@@ -157,6 +157,11 @@ CEILING_DB = -6.0
 ROOM_DB_SPL = 45.0
 SPL_CEILING = 85.0
 TARGET = SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5)
+# One bite for the shared rig, read from the module so a fraction change cannot
+# leave these assertions asserting a stale number.
+DEFAULT_BITE_DB = slr.bite_db(
+    start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=CEILING_DB
+)
 
 
 class FakeClock:
@@ -429,22 +434,49 @@ def test_the_cap_saturates_upward_only():
     )
 
 
-def test_the_seat_level_cap_is_the_shared_audible_step_limit():
-    """One constant owns "how far may one audible upward step move the room".
+def test_the_bite_is_a_fraction_of_the_runs_own_span():
+    """Hardware-independent by construction, which a dB constant cannot be.
 
-    Minting a second one here is the duplication this pass exists not to add:
-    ``calibration_level`` already declares ``upward_step_limit_db`` in every
-    payload it returns, and the ramp must not disagree with it.
+    An unknown amplifier moves WHERE inside the span the speaker becomes
+    audible; it does not change the span. So the bite count to sweep any chain
+    is the same whatever the gain, which is the whole reason this is a fraction
+    and not a number of dB.
     """
-    from jasper.active_speaker.calibration_level import (
-        AUDIBLE_RAMP_STEP_DB,
-        calibration_level_payload,
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-6.8) == pytest.approx(
+        slr.BITE_FRACTION * 43.2
     )
+    # Same fraction of a span half as wide is half as big -- and either way the
+    # sweep takes at most ceil(1 / BITE_FRACTION) bites.
+    narrow = slr.bite_db(start_db=-50.0, ceiling_db=-28.4)
+    assert narrow == pytest.approx(slr.bite_db(start_db=-50.0, ceiling_db=-6.8) / 2)
+    for ceiling in (-6.8, -28.4, 0.0, -40.0):
+        span = ceiling - (-50.0)
+        bite = slr.bite_db(start_db=-50.0, ceiling_db=ceiling)
+        assert math.ceil(span / bite) == math.ceil(1 / slr.BITE_FRACTION)
 
-    assert slr.AUDIBLE_RAMP_STEP_DB is AUDIBLE_RAMP_STEP_DB
-    payload = calibration_level_payload()
-    assert payload["software_gain_guard"]["upward_step_limit_db"] == (
-        slr.AUDIBLE_RAMP_STEP_DB
+
+def test_a_degenerate_span_yields_no_bite_rather_than_a_divide_by_zero():
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-50.0) == 0.0
+    assert slr.bite_db(start_db=-6.8, ceiling_db=-50.0) == 0.0
+
+
+def test_the_climb_bite_is_deliberately_not_the_calibration_step_limit():
+    """Two questions, two vocabularies — recorded so it does not read as drift.
+
+    ``calibration_level.AUDIBLE_RAMP_STEP_DB`` clamps ONE call to the
+    calibration ``set`` endpoint: a per-request bound on an operator-driven
+    jump. The climb bite is sized to the span this run has to sweep. An earlier
+    draft of this pass borrowed the calibration constant as its cap; that made
+    the bite a guess about a stranger's amplifier, which is exactly what the
+    range-fraction exists to avoid.
+    """
+    from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
+
+    assert AUDIBLE_RAMP_STEP_DB == 10.0  # unchanged; this PR does not touch it
+    assert not hasattr(slr, "AUDIBLE_RAMP_STEP_DB")
+    # ...and the bite genuinely differs from it on a real span.
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-6.8) != pytest.approx(
+        AUDIBLE_RAMP_STEP_DB
     )
 
 
@@ -539,8 +571,10 @@ def test_the_start_is_low_and_uninformed_on_purpose(tmp_path):
     """The bite size, not the start, is what makes the pass fast.
 
     A start derived from the measured room was tried and dropped: from -50 dB
-    the ramp still crosses a 61 dB SPL room in three bites, so the derivation
-    bought a second and cost a constant, a helper, and a refusal.
+    the bites still cross a 61 dB SPL room in five of them, so the derivation
+    bought a second and cost a constant, a helper, and a refusal. Keeping the
+    start low is also what makes the bite fraction meaningful -- it is a
+    fraction of the span BETWEEN this floor and the ceiling.
     """
     result, _volume, _tone, _clock = _jts3_pass(tmp_path)
     assert result.ramp["start_db"] == pytest.approx(slr.SEAT_LEVEL_START_DB)
@@ -556,17 +590,22 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     for a walk that was settle-gated, which is how a 51 s budget expired 25 dB
     below its own ceiling. This prices the readings the pass really takes.
     """
-    seconds = slr._watchdog_seconds(start_db=-30.8, ceiling_db=-6.8)
-    # 24 dB of span is 3 capped bites; plus the first reading and the two
-    # allowed misses, that is 6 readings of (settle + window), the ambient
-    # window, and the slack.
+    seconds = slr._watchdog_seconds(start_db=-50.0, ceiling_db=-6.8)
+    # Any span is ceil(1 / BITE_FRACTION) bites; plus the first reading and the
+    # two allowed misses, that is a fixed reading count of (settle + window),
+    # the ambient window, and the slack.
     per_reading = 2 * slr.MIC_SETTLE_S
+    bites = math.ceil(1 / slr.BITE_FRACTION)
     assert seconds == pytest.approx(
-        slr.MIC_SETTLE_S + 6 * per_reading + slr.WATCHDOG_SLACK_S
+        slr.MIC_SETTLE_S
+        + (1 + bites + slr.MAX_MISSED_FULL_STEPS) * per_reading
+        + slr.WATCHDOG_SLACK_S
     )
-    # A quieter room means a lower start, more steps, and a longer budget --
-    # it tracks the pass instead of being a fixed number.
-    assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) > seconds
+    # ...and because the bite scales with the span, the budget is the SAME for a
+    # wider one: the bite count is what the watchdog prices, and it is fixed.
+    assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) == pytest.approx(
+        seconds
+    )
 
 
 # --- the incident: a 61 dB SPL room, a 75 dB SPL target ---------------------
@@ -578,6 +617,9 @@ JTS3_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
 # captures/new-horn-2026-08: 75 dB SPL was predicted at -12.099 dB main volume,
 # so the chain maps commanded volume to seat SPL as `volume + 87.099`.
 JTS3_GAIN_DB = UMIK2.dbfs_from_db_spl(75.0) - (-12.099)
+_JTS3_BITE_DB = slr.bite_db(
+    start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+)
 
 
 class StampingTone(BlockingTone):
@@ -630,7 +672,7 @@ def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
     return result, volume, tone, clock
 
 
-def test_the_noisy_room_that_timed_out_now_converges_in_five_readings(tmp_path):
+def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path):
     """The incident, reproduced and fixed.
 
     On 2026-08-22 this exact condition — ambient 61 dB SPL, target 75 dB SPL,
@@ -638,22 +680,23 @@ def test_the_noisy_room_that_timed_out_now_converges_in_five_readings(tmp_path):
     25 dB under its own ceiling, because the ladder started at -50 dB (~26 dB
     UNDER the room) and its noise gate discarded 1138 of 1194 samples while the
     clock ran. The gap-stepped ramp starts where the room says and lands in the
-    band in five readings.
+    band in seven readings.
     """
     result, _volume, tone, _clock = _jts3_pass(tmp_path)
 
     assert result.status == "converged", (result.reason, result.detail)
     steps = result.ramp["steps"]
-    assert len(steps) == 5, steps
+    assert len(steps) == 7, steps
     assert result.ramp["start_db"] == pytest.approx(slr.SEAT_LEVEL_START_DB)
-    # Three capped bites cross the room, then one closing step aimed at the
-    # measured gap lands in the band.
+    assert result.ramp["bite_db"] == pytest.approx(_JTS3_BITE_DB, abs=0.01)
+    # Full bites while buried in the room, then steps aimed at the measured gap
+    # once the speaker emerges from it.
     volumes = [step["volume_db"] for step in steps]
-    assert volumes[:4] == [
-        pytest.approx(-50.0), pytest.approx(-40.0),
-        pytest.approx(-30.0), pytest.approx(-20.0),
-    ]
-    assert -14.0 < volumes[4] < -12.0
+    rises = [b - a for a, b in zip(volumes, volumes[1:])]
+    assert volumes[0] == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert rises[:4] == [pytest.approx(_JTS3_BITE_DB)] * 4
+    assert rises[-1] < _JTS3_BITE_DB  # the closing step is the measured gap
+    assert -14.0 < volumes[-1] < -12.0
     assert JTS3_TARGET.low_db_spl <= result.measured_db_spl <= JTS3_TARGET.high_db_spl
     assert -14.0 < result.reference_volume_db < -12.0
     # Under the ceiling and under the commissioning stop, throughout.
@@ -664,7 +707,7 @@ def test_the_noisy_room_that_timed_out_now_converges_in_five_readings(tmp_path):
 def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
     """The owner's requirement, measured rather than asserted.
 
-    Five readings at one mic-settle drain plus one median window each. The
+    Seven readings at one mic-settle drain plus one median window each. The
     ambient window before it is SILENT — nothing plays — so it is not audible
     time at all.
     """
@@ -676,7 +719,7 @@ def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
     # Three readings account for it, plus the fade-before-tone-kill that follows
     # the last one -- which is audible time as well, and is bounded by the fade's
     # own step size.
-    readings_s = 5 * (2 * slr.MIC_SETTLE_S)
+    readings_s = 7 * (2 * slr.MIC_SETTLE_S)
     fade_s = (abs(-12.0 - slr.FADE_FLOOR_DB) / slr.FADE_STEP_DB) * slr.FADE_STEP_S
     assert readings_s <= audible_s <= readings_s + fade_s + slr.MIC_SETTLE_S
 
@@ -694,7 +737,7 @@ def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
     # Below the retired trust floor (ambient + 10 dB) and still counted.
     assert first["rise_db"] < 10.0
     assert first["samples"] > 0
-    assert first["gap_db"] > slr.AUDIBLE_RAMP_STEP_DB
+    assert first["gap_db"] > _JTS3_BITE_DB
 
 
 # --- the comfort cap --------------------------------------------------------
@@ -714,9 +757,9 @@ def test_no_single_step_raises_the_room_by_more_than_the_cap(tmp_path):
     volumes = [step["volume_db"] for step in result.ramp["steps"]]
     rises = [b - a for a, b in zip(volumes, volumes[1:])]
     assert rises, volumes
-    assert max(rises) <= slr.AUDIBLE_RAMP_STEP_DB + 1e-6
+    assert max(rises) <= DEFAULT_BITE_DB + 1e-6
     # ...and the cap really bound: at least one step was a full cap stride.
-    assert max(rises) == pytest.approx(slr.AUDIBLE_RAMP_STEP_DB)
+    assert max(rises) == pytest.approx(DEFAULT_BITE_DB)
 
 
 def test_removing_the_cap_lets_one_step_lunge_the_whole_gap(tmp_path, monkeypatch):
@@ -737,7 +780,7 @@ def test_removing_the_cap_lets_one_step_lunge_the_whole_gap(tmp_path, monkeypatc
 
     volumes = [step["volume_db"] for step in result.ramp["steps"]]
     rises = [b - a for a, b in zip(volumes, volumes[1:])]
-    assert max(rises) > slr.AUDIBLE_RAMP_STEP_DB + 1.0
+    assert max(rises) > DEFAULT_BITE_DB + 1.0
 
 
 # --- the two-miss refusal, and the slope it discloses ------------------------
@@ -766,12 +809,17 @@ class LaggingMic(Mic):
 def test_two_full_gap_steps_that_miss_refuse_with_the_measured_slope(tmp_path):
     volume = Volume()
     tone = BlockingTone()
+    # Reads 72 dB SPL at the start -- inside one bite of the 75-80 band, so the
+    # ramp commands the WHOLE measured gap rather than a truncated bite, and the
+    # chain answers each dB with 0.15 dB. Two such steps miss, and that is the
+    # point at which the honest answer is the measured slope.
+    slope = 0.15
     mic = LaggingMic(
         volume,
         tone,
-        gain_db=UMIK2.dbfs_from_db_spl(72.0),
+        gain_db=UMIK2.dbfs_from_db_spl(72.0) - slr.SEAT_LEVEL_START_DB * slope,
         ambient_dbfs=UMIK2.dbfs_from_db_spl(50.0),
-        slope=0.15,
+        slope=slope,
     )
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
@@ -801,7 +849,7 @@ def test_a_capped_step_never_spends_the_miss_budget(tmp_path):
     capped = [
         b - a
         for a, b in zip(volumes, volumes[1:])
-        if abs((b - a) - slr.AUDIBLE_RAMP_STEP_DB) < 1e-6
+        if abs((b - a) - DEFAULT_BITE_DB) < 1e-6
     ]
     assert len(capped) > slr.MAX_MISSED_FULL_STEPS
 

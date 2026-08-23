@@ -2960,7 +2960,7 @@ Read the journal, not the code, to find out what happened:
 
 | `event=active_speaker.seat_level_…` | says |
 |---|---|
-| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the step cap, and the amixer precondition |
+| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the bite (and its fraction), and the amixer precondition |
 | `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
 | `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
 | `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken |
@@ -2976,16 +2976,22 @@ existed. `jasper-doctor`'s `seat-SPL measurement reference` line reports which
 state that file is in.
 
 **How it climbs**: the remaining gap IS the step —
-`target_db_spl - measured_db_spl`, saturated upward by the shared
-`AUDIBLE_RAMP_STEP_DB` (10 dB, `jasper/active_speaker/calibration_level.py`'s
-own `upward_step_limit_db`; downward moves are uncapped because they reduce
-risk). Big bites while far away, shrinking ones as it closes, every one of them
-re-measured — so the chain only has to be locally monotone in dB, not linear.
+`target_db_spl - measured_db_spl`, saturated upward by one BITE, and the bite is
+`BITE_FRACTION` (0.15) of **this run's own span**, `ceiling - start`, computed
+once before the tone. A fraction rather than a number of dB because this ships
+to anyone's hardware: an unknown amplifier changes WHERE inside the span the
+speaker becomes audible, never how wide the span is, so a range-fraction sweeps
+any chain in at most `ceil(1 / 0.15) = 7` bites whatever the gain. (Deliberately
+NOT `calibration_level.AUDIBLE_RAMP_STEP_DB`, which bounds one call to that
+module's `set` endpoint — a different question.) Downward moves are uncapped
+because they reduce risk. Big bites while far away, shrinking ones as it closes,
+every one of them re-measured — so the chain only has to be locally monotone in
+dB, not linear.
 No sample is discarded for being quiet: a window with nothing above the room in
 it still yields the room's own level, the gap from there is large, and the ramp
 bites again. That is the fix for the 2026-08-22 jts3 incident, where a 0.75 dB
 rung behind a noise gate threw away 1138 of 1194 samples and timed out after
-51 s, 25 dB below its own ceiling.
+51 s, 25 dB below its own ceiling. The same rig now converges in 7 readings and 7.8 audible seconds.
 
 One deploy-time knob, bounded and falling back to its default on a bad value:
 `JASPER_SEAT_LEVEL_MIN_RISE_DB` (how far above ambient counts as the speaker
