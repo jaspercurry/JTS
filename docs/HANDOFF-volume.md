@@ -662,10 +662,10 @@ fader wherever the other holder had left it.
 
 The canonical target is per process. jasper-voice hands over its long-lived
 coordinator's `get_camilla_target_db`; every other process that swaps the graph
-— jasper-web, jasper-correction-web, jasper-control, the multiroom reconciler,
-and the fan-in coupling reconciler — calls
-`install_env_canonical_target_provider()` at startup, which builds a
-coordinator per release. Which processes those are is pinned by
+calls `install_env_canonical_target_provider()` at startup, which builds a
+coordinator per release. Which processes those are is a maintained list, not a
+derived one — read `_ENTRY_POINTS` in the pin below for the current set rather
+than trusting a count restated here. Which processes those are is pinned by
 [`tests/test_canonical_target_registration.py`](../tests/test_canonical_target_registration.py):
 a lost registration line compiles fine and would silently put that daemon's
 swaps back on snapshot releases.

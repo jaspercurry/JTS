@@ -204,6 +204,39 @@ def _isolate_startup_hold_marker(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_canonical_target_provider():
+    """Reset the process-global canonical main_volume target around each test.
+
+    ``jasper.camilla.set_canonical_target_db_provider`` is per process by
+    design: a graph swap's duck release runs on ad-hoc ``primary_controller()``
+    instances that no ``VolumeCoordinator`` ever sees, so the target is
+    registered once per daemon rather than passed down. A test process has no
+    such boundary. Any test that enters a daemon's ``main()`` installs a real
+    provider for the rest of that xdist worker —
+    ``tests/test_web_correction_setup.py``'s
+    ``test_main_wires_idle_tracker_to_capture_entry_restore`` calls
+    ``correction_setup.main()`` — and every later duck release answers THAT
+    provider's level instead of its own fixture's. Observed as two failures
+    sharing ``percent_to_db(50)`` = −25.2525 under full-suite ordering while
+    every targeted subset stayed green.
+
+    Both sides matter, as with the width cache above: clearing BEFORE stops a
+    test inheriting a provider, restoring AFTER stops it handing one forward.
+
+    ``Ducker`` needs no equivalent — it takes ``target_db_provider`` as a
+    constructor argument, so its provider is instance state, not a global.
+    """
+    from jasper import camilla
+
+    saved = camilla._canonical_target_db_provider
+    camilla.set_canonical_target_db_provider(None)
+    try:
+        yield
+    finally:
+        camilla.set_canonical_target_db_provider(saved)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
     """Point the automatic-capture entry stash at a per-test temp file.
 

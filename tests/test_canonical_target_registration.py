@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Every process that swaps the CamillaDSP graph registers a canonical target.
+"""Each daemon named below registers a canonical main_volume target.
 
 `CamillaController._graph_mutation` ducks the main fader across a swap and
 releases it to ``min(canonical, current + own depth)``. With no canonical
@@ -17,6 +17,17 @@ compiles fine, and nothing else in the process would notice. It also caught a
 real miss — the registration first landed only in `jasper/web/__main__.py`,
 while correction and crossover applies run in the separate
 `jasper-correction-web` process (`jasper.web.correction_setup:main`).
+
+**What this file does NOT establish.** `_ENTRY_POINTS` is hand-maintained and
+nothing checks it against pyproject's `console_scripts` or the `ExecStart`
+lines under `deploy/`, so it asserts only that the daemons LISTED register —
+never that the list is every daemon that swaps. The frozen set below does not
+close that gap either: it catches a mutator call appearing in a NEW module, but
+a new CALLER of an already-frozen module is invisible to it. Both misses have
+happened here — `jasper-active-speaker` swaps through
+`commission_wiring.commission_load_config`, a module already in the frozen set,
+and was found by review rather than by either guard. Adding a provenance check
+is the tightening these two tables still want.
 """
 from __future__ import annotations
 
@@ -55,6 +66,11 @@ _ENTRY_POINTS = {
     # `jasper-fanin-coupling-reconcile` — `reconcile_current_dsp` reloads the
     # profile config (jasper/sound/runtime.py).
     "jasper/fanin/coupling_reconcile.py": "main",
+    # `jasper-active-speaker` — commissioning applies the candidate graph
+    # inline. Its mutator call lives in `commission_wiring.py`, so the frozen
+    # set below sees nothing new when a caller like this one is added; only
+    # this table catches it.
+    "jasper/cli/active_speaker.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.
