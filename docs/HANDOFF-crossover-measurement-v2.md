@@ -5498,7 +5498,13 @@ no retries-as-bodge). Treat these as regression fences.
    is why the additive form had to go. The target-band floor is unchanged.
 7. **The −65 dB tweeter cap is a relic** (#1595). The HF measurement
    ceiling is derived from sensitivity (invariant 1/2 above); the old
-   seed read near-inaudible (27 dB in-band SNR) on the DE250.
+   seed read near-inaudible (27 dB in-band SNR) on the DE250. Since
+   2026-08-23 the research ask no longer emits it and the field is
+   optional, so a profile saved from here on says the same thing by
+   leaving `max_effective_peak_dbfs` OUT; a stored seed is still read as
+   that same delegation. The derived cap sets each driver's composed
+   segment level — it never bounds the seat-level volume ceiling, which
+   is digital headroom.
 8. **Apply must translate fingerprint vocabularies** (#1596). The seam's
    freshness guard compares the *baseline* candidate's fingerprint;
    forwarding the *measured* fingerprint made every apply refuse
