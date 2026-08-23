@@ -643,11 +643,15 @@ an atomic protocol. A higher-level DSP transaction that needs rollback must
 retain and restore its prior path; the transport timeout does not turn an
 ambiguous response into proof that a mutation did or did not land.
 
-Every graph mutation — load, inline apply, patch, reload, and the rollback
-loads a failed transaction issues — runs inside a momentary main mute
-(`CamillaController._graph_mutation`), so a swap that changes the graph's own
-headroom gain fades down and back up instead of stepping at an unchanged
-volume setting.
+Every websocket graph mutation — load, inline apply, patch, reload, and the
+rollback loads a failed transaction issues — runs inside a deep main-fader
+duck (`CamillaController._graph_mutation`), so a swap that changes the graph's
+own headroom gain fades down and back up instead of stepping at an unchanged
+volume setting. The duck rides `main_volume`, not `main_mute`, because
+`maybe_reconcile_camilla` treats a mute as drift it must correct while a drop
+of at least `RECONCILE_DUCK_SKIP_DB` is left alone as somebody's duck. The
+statefile-plus-restart path needs no duck: CamillaDSP stops and starts, so the
+speaker is silent across it rather than stepping.
 
 ## AirPlay is always camilla-as-master
 

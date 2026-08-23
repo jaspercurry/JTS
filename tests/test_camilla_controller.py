@@ -52,7 +52,7 @@ class _FakeVolume:
 
     def set_main_volume(self, value: float) -> None:
         self.values.append(float(value))
-        self._ops.append("set_main_volume")
+        self._ops.append(f"vol={value:g}")
 
     def set_main_mute(self, value: bool) -> None:
         self.muted = bool(value)
@@ -108,8 +108,8 @@ class _FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def _instant_graph_mutation_fade(monkeypatch):
-    """Every graph mutation holds a mute for the Camilla volume ramp. Tests
+def _instant_graph_mutation_duck(monkeypatch):
+    """Every graph mutation holds a duck for the Camilla volume ramp. Tests
     that are not about the fade itself should not pay that wall time."""
     monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
 
@@ -369,53 +369,69 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
 
 
 @pytest.mark.asyncio
-async def test_every_graph_mutation_is_bracketed_by_a_mute(tmp_path: Path) -> None:
+async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> None:
     """The headroom gain can move tens of dB across a swap at an unchanged
-    volume; each mutation must fade out before it and back in after it."""
+    volume; each mutation must duck the fader before it and restore after."""
     fake = _FakeClient()
-    cam = _controller(fake, tmp_path)
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
 
+    cam = _controller(fake, tmp_path)
     assert await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
-    assert fake.ops == ["mute=True", "set_file_path", "reload", "mute=False"]
+    assert fake.ops == [f"vol={duck:g}", "set_file_path", "reload", "vol=0"]
 
     fake.ops.clear()
     assert await cam.set_active_config_raw("---\nfilters: {}\n")
-    assert fake.ops == ["mute=True", "set_active_raw", "mute=False"]
+    assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=0"]
 
     fake.ops.clear()
     assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
-    assert fake.ops == ["mute=True", "query:PatchConfig", "mute=False"]
+    assert fake.ops == [f"vol={duck:g}", "query:PatchConfig", "vol=0"]
 
     fake.ops.clear()
     assert await cam.reload()
-    assert fake.ops == ["mute=True", "reload", "mute=False"]
+    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
 
 
 @pytest.mark.asyncio
-async def test_graph_swap_holds_the_mute_for_the_camilla_volume_ramp(
+async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
+    """The duck rides main_volume on purpose: a mute reads to the volume
+    coordinator's 1 Hz reconciler as mute drift, which bypasses both of its
+    skip paths and would clear the bracket mid-swap."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.reload()
+
+    assert fake.volume.mutes == []
+
+
+@pytest.mark.asyncio
+async def test_graph_swap_holds_the_duck_for_the_camilla_volume_ramp(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """Camilla ramps the mute; the swap waits for that fade to finish."""
+    """Camilla ramps the volume change; the swap waits for that fade."""
     monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.2)
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
 
     started = time.monotonic()
     assert await cam.reload()
 
     assert time.monotonic() - started >= 0.2
-    assert fake.ops == ["mute=True", "reload", "mute=False"]
+    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
 
 
 @pytest.mark.asyncio
-async def test_dsp_apply_fades_both_the_load_and_its_rollback(
+async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
     tmp_path: Path,
 ) -> None:
     """The restore direction is the loud one — undoing a boosted correction
-    gives the attenuation back. Its rollback load fades like the first."""
+    gives the attenuation back. Its rollback load ducks like the first."""
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
     candidate = tmp_path / "candidate.yml"
     candidate.write_text("devices: {}\n", encoding="utf-8")
     prior = tmp_path / "prior.yml"
@@ -442,15 +458,18 @@ async def test_dsp_apply_fades_both_the_load_and_its_rollback(
 
     assert fake.file_paths == [str(candidate), str(prior)]
     assert fake.ops == [
-        "mute=True", "set_file_path", "reload", "mute=False",
-        "mute=True", "set_file_path", "reload", "mute=False",
+        f"vol={duck:g}", "set_file_path", "reload", "vol=0",
+        f"vol={duck:g}", "set_file_path", "reload", "vol=0",
     ]
-    assert fake.volume.muted is False
 
 
 @pytest.mark.asyncio
-async def test_failed_graph_mutation_leaves_no_stuck_mute(tmp_path: Path) -> None:
+async def test_failed_graph_mutation_restores_the_pre_swap_volume(
+    tmp_path: Path,
+) -> None:
     fake = _FakeClient()
+    fake.volume.values.append(-18.0)
+    fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
     def boom(path: str) -> None:
@@ -462,24 +481,24 @@ async def test_failed_graph_mutation_leaves_no_stuck_mute(tmp_path: Path) -> Non
         await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
 
     assert fake.file_paths == []
-    assert fake.ops == ["mute=True", "mute=False"]
-    assert fake.volume.muted is False
+    assert fake.ops == ["vol=-58", "vol=-18"]
+    assert fake.volume.main_volume() == pytest.approx(-18.0)
 
 
 @pytest.mark.asyncio
-async def test_already_muted_speaker_is_not_re_muted_across_a_swap(
+async def test_already_quiet_speaker_is_not_ducked_across_a_swap(
     tmp_path: Path,
 ) -> None:
-    """Nothing can step while the speaker is silent, so the fade is skipped —
-    which is also what keeps a nested mutation from unmuting the outer one."""
+    """Below the point where the duck would clamp there is nothing audible to
+    step, so the swap runs without one."""
     fake = _FakeClient()
-    fake.volume.muted = True
+    fake.volume.values.append(camilla_module.MIN_MAIN_VOLUME_DB + 1.0)
+    fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
     assert await cam.reload()
 
     assert fake.ops == ["reload"]
-    assert fake.volume.muted is True
 
 
 @pytest.mark.asyncio

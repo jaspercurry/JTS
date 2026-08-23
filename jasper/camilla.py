@@ -46,10 +46,20 @@ CAMILLA_OPERATION_TIMEOUT_S = 2.0
 CAMILLA_ATTEMPT_BUDGET_S = 5.0
 _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
 
-# CamillaDSP ramps main volume and mute changes over `volume_ramp_time`,
-# which is 400 ms when a config leaves it unset — as every JTS config does.
-# Hold a mute slightly past that so the fade has finished.
+# CamillaDSP ramps main volume changes over `volume_ramp_time`, which is
+# 400 ms when a config leaves it unset — as every JTS config does, pinned by
+# `tests/test_camilla_volume_ramp_default.py`. Hold the duck slightly past
+# that so the fade has finished.
 MAIN_VOLUME_RAMP_SETTLE_S = 0.45
+
+# How far a graph mutation ducks the main fader before swapping. Deep enough
+# that `volume_coordinator.RECONCILE_DUCK_SKIP_DB` (10 dB) reads it as
+# somebody's duck and leaves it alone — the 1 Hz reconciler is cross-process
+# and does not take the DSP writer lock, so riding that carve-out is what
+# keeps it from writing the fader back up mid-swap. Also deeper than the
+# largest headroom charge a swap has been measured to carry (22.5 dB), so the
+# graph changes under something already inaudible.
+GRAPH_SWAP_DUCK_DB = 40.0
 
 _T = TypeVar("_T")
 
@@ -682,17 +692,22 @@ class CamillaController:
 
     @contextlib.asynccontextmanager
     async def _graph_mutation(self, source: str):
-        """Admit one CamillaDSP graph mutation, faded out and back in.
+        """Admit one CamillaDSP graph mutation, ducked across the swap.
 
         A mutation can move the graph's own gain by tens of dB while the
         volume setting is unchanged — loudest when a boosted correction is
-        removed and the headroom attenuation it carried goes away. Muting
-        across the mutation turns that instant step into a fade down and a
-        fade back up: CamillaDSP ramps mute instead of applying it at once,
-        and keeps volume/mute as process state that survives the reload.
+        removed and the headroom attenuation it carried goes away. Ducking the
+        main fader by :data:`GRAPH_SWAP_DUCK_DB` turns that instant step into a
+        fade down and a fade back up, because CamillaDSP ramps a volume change
+        instead of applying it at once and keeps the fader as process state
+        that survives the reload.
 
-        A speaker that is already muted has no step to fade, so the fade is
-        skipped — which also makes this safe to nest.
+        The duck deliberately rides ``main_volume`` rather than ``main_mute``:
+        a mute reads to `VolumeCoordinator.maybe_reconcile_camilla` as mute
+        drift, which bypasses both of its skip paths, so its 1 Hz tick would
+        clear the bracket mid-swap. A drop this deep reads as somebody's duck
+        and is left alone. It also keeps the two existing ``main_mute``
+        writers — the coordinator and the floor-tone audition — the only ones.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -700,19 +715,28 @@ class CamillaController:
             source=source,
             lock_path=self._graph_mutation_lock_path,
         ):
-            reading = await self.get_volume_and_mute()
-            if reading is None or reading[1]:
+            before_db = await self.get_volume_db()
+            if (
+                before_db is None
+                or before_db - GRAPH_SWAP_DUCK_DB <= MIN_MAIN_VOLUME_DB
+            ):
+                # Unreadable (only a test double returns None from a strict
+                # read), or already so quiet the duck would clamp: nothing
+                # audible can step, so swap without one.
                 yield
                 return
-            await self.set_main_mute(True)
+            await self.set_volume_db(before_db - GRAPH_SWAP_DUCK_DB)
             try:
                 await asyncio.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
                 yield
             finally:
                 # Best-effort so a restore failure cannot mask the mutation's
-                # own error. A speaker left quiet is the safe direction, and
-                # the next volume write clears the flag.
-                await self.set_main_mute(False, best_effort=True)
+                # own error, and shielded because an interrupted restore leaves
+                # the speaker ducked — quiet, but the reconciler reads that as
+                # somebody's duck and will not undo it.
+                await asyncio.shield(
+                    self.set_volume_db(before_db, best_effort=True)
+                )
 
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,

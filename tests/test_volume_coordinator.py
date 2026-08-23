@@ -3003,3 +3003,106 @@ async def test_bluez_transport_path_shares_backoff_with_other_probes(monkeypatch
 
     assert await vc_mod._bluez_alsa_active_transport_path() is None
     assert calls["n"] == 0
+
+
+# ---------- graph-swap duck vs. the 1 Hz reconciler -------------------------
+
+
+class _MinimalCamillaClient:
+    """Just enough pycamilladsp surface to run a REAL `CamillaController`."""
+
+    def __init__(self, db: float) -> None:
+        self.volume = self
+        self.config = self
+        self.general = self
+        self.db = float(db)
+        self.muted = False
+        self.reload_count = 0
+
+    def main_volume(self) -> float:
+        return self.db
+
+    def main_mute(self) -> bool:
+        return self.muted
+
+    def set_main_volume(self, value: float) -> None:
+        self.db = float(value)
+
+    def set_main_mute(self, value: bool) -> None:
+        self.muted = bool(value)
+
+    def reload(self) -> None:
+        self.reload_count += 1
+
+
+def _real_controller(client: _MinimalCamillaClient, tmp_path):
+    from jasper.camilla import CamillaController
+
+    cam = CamillaController("127.0.0.1", 1234)
+    cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
+
+    async def call(fn):
+        return fn(client)
+
+    cam._call = call  # type: ignore[method-assign]
+    return cam
+
+
+async def test_reconciler_leaves_a_graph_swap_duck_alone(tmp_path, monkeypatch):
+    """The reconciler is cross-process and takes no DSP writer lock, so the
+    bracket survives its 1 Hz tick only by riding `RECONCILE_DUCK_SKIP_DB`.
+
+    A mute-based bracket did not: mute drift bypasses both skip paths, the
+    reconciler un-muted mid-swap, and the swap landed at full volume.
+    """
+    from jasper import camilla as camilla_module
+
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    expected_db = percent_to_db(70)
+    client = _MinimalCamillaClient(db=expected_db)
+    cam = _real_controller(client, tmp_path)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    await coord.set_listening_level(70)
+    assert client.db == pytest.approx(expected_db)
+
+    async with cam._graph_mutation("test.swap"):
+        ducked = client.db
+        assert ducked == pytest.approx(
+            expected_db - camilla_module.GRAPH_SWAP_DUCK_DB
+        )
+
+        # The observer tick, with the coordinator's real reconcile logic.
+        await coord.maybe_reconcile_camilla()
+
+        assert client.db == pytest.approx(ducked), (
+            "the reconciler wrote the fader back up mid-swap — the graph "
+            "would change under an un-ducked speaker"
+        )
+        assert client.muted is False
+
+    assert client.db == pytest.approx(expected_db)
+
+
+async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
+    """The duck carve-out this bracket rides is directional — it must not have
+    turned the reconciler's loud-direction safety correction into a skip."""
+    expected_db = percent_to_db(40)
+    client = _MinimalCamillaClient(db=expected_db)
+    cam = _real_controller(client, tmp_path)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    await coord.set_listening_level(40)
+
+    client.db = 0.0  # some other writer left camilla far too loud
+    await coord.maybe_reconcile_camilla()
+
+    assert client.db == pytest.approx(expected_db)
