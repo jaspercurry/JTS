@@ -534,6 +534,35 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-23 (#2879, gate round 2). Two files, and for once the two numbers
+    # the entry below insists on reporting separately are the SAME number: that
+    # entry left both at EXACTLY their ceilings, so there is no slack left to
+    # spend and every line here is new.
+    #  * `crossover_v2_flow` ceiling 13,056 -> 13,076, +20. ONE of them is
+    #    executable: the geometry-locked retake's refusal predicate moves from
+    #    `tier_is_externally_positioned(self._tier)` to a `positions_gated` the
+    #    host resolves and hands down (one ctor argument, one field, ORed with
+    #    the tier's own answer so a caller that resolved no shape cannot drop
+    #    the arm's gate). The rest is that branch's own enumeration, which had
+    #    to become three numbered items because they no longer share an owner:
+    #    two dishonesties are the ARM's (a pose it cannot reach, recorded as
+    #    though it had been) and the third is the GATE's (the retry
+    #    re-authorizes the same plan entry, so the published bearing and the
+    #    screen name two different places). A reader who cannot tell those apart
+    #    cannot tell why a person — who could walk to the wider spot — is
+    #    refused too.
+    #  * `correction_crossover_v2` ceiling 9,408 -> 9,430, +22, and all of it is
+    #    the position gate saying what it now IS. Five surfaces still called the
+    #    hold the remote tier's alone: the class docstring, the endpoint
+    #    constant, the hold-budget rationale ("a machine move"), and two of
+    #    `gate`'s own comments. The docstring costs the most, because the two
+    #    gated shapes need a reason EACH — the arm has no hand to tap, the wired
+    #    round has a hand but no capture page for it to tap on — and it is where
+    #    a reader learns the gate never asks which of them is on the floor. Two
+    #    lines are stage 2's `positions_gated=` and its note that that ctor is
+    #    handed no tier at all, which is why its groups prompted for a 75 cm
+    #    rung even on the arm.
+    #
     # 2026-08-22 (#2879, the human release source). Three files, and the third
     # is the big one — a provider gaining a verb it did not have.
     #
@@ -910,7 +939,7 @@ MAX_LINES_BY_PATH = {
     # file its code was shrinking, and again when the fix round's own six prose
     # corrections did the same — so every one of them was rewritten in place.
     # Both are the guard refusing the trade it exists to refuse.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_056,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_076,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1300,7 +1329,7 @@ MAX_LINES_BY_PATH = {
     # result wait went with the sweep whose compute ceiling it published — see
     # `_mint_source_session`, which now states why the page's own 90 s floor
     # governs instead.
-    "jasper/web/correction_crossover_v2.py": 9_408,
+    "jasper/web/correction_crossover_v2.py": 9_430,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

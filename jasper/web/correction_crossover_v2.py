@@ -8114,10 +8114,8 @@ def prepare_v2_verify(
             # Stage 1's twin, and the ONLY statement of the fact this session
             # gets: this ctor is handed no ``tier`` at all, so before #2879 a
             # geometry-locked stage-2 group prompted for the 75 cm rung even on
-            # the arm. The gate above and this argument now read one shape.
-            positions_gated=(
-                plan_shape is not None and plan_shape.positions_gated
-            ),
+            # the arm. The gate above and this now read one shape.
+            positions_gated=bool(plan_shape and plan_shape.positions_gated),
             available=available_stage_priors(
                 commanded_delta=commanded_delta is not None,
                 predicted_sum=predicted_sum is not None,

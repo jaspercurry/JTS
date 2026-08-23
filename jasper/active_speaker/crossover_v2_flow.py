@@ -5074,12 +5074,10 @@ class CrossoverV2Session:
         # riding into the durable state and out to `/state`.
         self._tier = normalize_tier(tier) if tier else ""
         # #2879, the POSE-STATEMENT axis (:attr:`V2PlanShape.positions_gated`):
-        # are this walk's begins HELD until something reports the microphone in
-        # place? The HOST resolves it, because it is the half that knows the
-        # capture source, and hands the answer down rather than having this
-        # re-derive it. ORed with the tier's own answer instead of replacing it,
-        # so a caller that resolved no shape — every test that builds a session
-        # by hand — can never silently drop the arm's gate.
+        # are this walk's begins HELD until the microphone is reported in place?
+        # Resolved by the HOST, the half that knows the capture source, and
+        # handed down. ORed with the tier's own answer rather than replacing it,
+        # so a caller that resolved no shape cannot silently drop the arm's gate.
         self._positions_gated = (
             tier_is_externally_positioned(self._tier) or bool(positions_gated)
         )
