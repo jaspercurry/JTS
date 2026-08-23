@@ -2704,14 +2704,13 @@ def packet_incumbent_linearization(
             # ``blend_filters_from_mapping`` applies, for the same reason: this
             # system writes floats, so a string here is by definition a record
             # something else wrote.
-            raw = (entry.get("freq"), entry.get("q"), entry.get("gain"))
-            if any(
-                not isinstance(value, (int, float)) or isinstance(value, bool)
-                for value in raw
-            ):
-                return None
-            freq, q, gain = (float(value) for value in raw)
-            if not all(map(math.isfinite, (freq, q, gain))):
+            numbers: list[float] = []
+            for value in (entry.get("freq"), entry.get("q"), entry.get("gain")):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    return None
+                numbers.append(float(value))
+            freq, q, gain = numbers
+            if not all(map(math.isfinite, numbers)):
                 return None
             if freq <= 0.0 or q <= 0.0:
                 return None
