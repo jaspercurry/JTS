@@ -440,10 +440,16 @@ def _derived_hf_ceiling_dbfs(
         if not lf_fingerprint:
             continue
         try:
+            # The cap comes from the one derivation path (which also validates
+            # this sibling's shape and skips it below if malformed). Only the
+            # PROVENANCE is read off the second call: for a low-frequency role
+            # the two return the same number by construction, since the
+            # supersede branch below is high-frequency-only and this call does
+            # not take the proven-HP path.
             _lf_band, lf_cap = resolve_driver_excitation_ceilings(
                 safety_profile, lf_fingerprint
             )
-            _lf_declared, lf_anchor = declared_level_ceiling_dbfs(candidate)
+            _same_cap, lf_anchor = declared_level_ceiling_dbfs(candidate)
         except ExcitationSafetyPlanError:
             continue
         candidates.append(
