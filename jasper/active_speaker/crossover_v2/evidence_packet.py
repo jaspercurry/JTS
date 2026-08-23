@@ -576,10 +576,11 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
     drops a non-finite bound.
 
-    That does NOT retire this branch. Both writers refuse a NEW non-finite
-    value; neither rewrites a file an older build already banked one into, and
-    ``json.loads`` accepts the bare ``NaN`` literal on the way back in. This
-    reader still meets what is on disk.
+    That retires neither this branch nor its argument: the two inputs at the
+    top of this docstring are the ones it exists for, and the classifier still
+    writes a ``NaN`` for a feature whose neighbourhood scatter is zero. What
+    those two writers change is only that a THIRD and FOURTH input can no
+    longer join them.
     """
     if isinstance(value, float):
         if math.isfinite(value):
