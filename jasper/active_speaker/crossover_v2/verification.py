@@ -1089,13 +1089,14 @@ def evaluate_applied_safety(
     evidence: dict[str, Any] = {
         # Which instruments actually looked, so "safe" can be read honestly.
         "probe_graded": bool(verdict),
-        # ...and HOW MUCH of the probe looked (#2614). A ``safety_only`` map is
-        # a real grade of the two directional findings and no grade at all of
-        # the correction's shape — the case where the previous graph cannot be
-        # named and the change axis goes with it. ``probe_graded``
-        # alone cannot say that, and a reader who took it for a full grade
-        # would read "safe" as "the shape check passed" on a round where it
-        # never ran.
+        # ...and HOW MUCH of the probe looked (#2614). A ``safety_only`` map
+        # grades the MODEL's departure and no more — the case where the previous
+        # graph cannot be named and the change axis goes with it, so the shape
+        # half never ran and, since series-2 D1, neither did the hearing half
+        # (``safety_anchored`` below is the second half of that pair).
+        # ``probe_graded`` alone cannot say that, and a reader who took it for a
+        # full grade would read "safe" as "the shape check passed" on a round
+        # where it never ran.
         "probe_shape_graded": bool(verdict) and verdict != VERDICT_SAFETY_ONLY,
         "probe_verdict": verdict,
         "probe_reason": (

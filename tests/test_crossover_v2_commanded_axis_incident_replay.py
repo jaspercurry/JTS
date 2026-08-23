@@ -1329,6 +1329,7 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
 
     from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
     from jasper.active_speaker.crossover_v2.verification import (
+        SAFETY_NO_FINDING_UNMEASURED,
         evaluate_applied_safety,
     )
     from jasper.active_speaker.delta_probe import (
@@ -1351,10 +1352,22 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     assert probe.max_signed_error_db == pytest.approx(2.5856, abs=5e-4)
     assert probe.rollback is False
 
+    # Exactly what a 4 dB-hot ``safety_only`` map hands the hard-stop axis
+    # (#2855). The constant's own prose used to say the two directional findings
+    # "reach ``evaluate_applied_safety`` exactly as they do on a full map, so an
+    # overshoot still comes off the speaker" — written 2026-08-16 and falsified
+    # by D1 two days later without the sentence being opened. Both findings
+    # arrive as absences, the reason says the realized-energy check could not
+    # look rather than looked-and-found-nothing, and the only thing that DID
+    # travel is the model's departure, on the quality axis where it belongs.
     safety = evaluate_applied_safety(probe=probe, integrity=None)
     assert safety.status is SafetyStatus.SAFE
+    assert safety.reason == SAFETY_NO_FINDING_UNMEASURED
     assert safety.evidence["safety_anchored"] is False
     assert safety.evidence["probe_shape_graded"] is False
+    assert safety.evidence["boost_over_declared_bound"] is False
+    assert safety.evidence["realized_louder_than_commanded"] is False
+    assert safety.evidence["model_departure_over_tolerance"] is True
     # ...and the journal put the half-grade in front of whoever reads the round.
     assert "verdict=safety_only" in caplog.text
 
