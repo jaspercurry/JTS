@@ -1384,10 +1384,10 @@ def _check_displaced(
     so a role's incumbent filters are deleted by a document that names the role
     and does not repeat them. :func:`_check_composed` cannot see that: it reads
     the document's own cascade, which is exactly right for the caps it enforces
-    and says nothing about what the cascade replaced. On 2026-08-22 a five-cut
-    tweeter document displaced a −6.037 dB Lowshelf at 5844.67 Hz, and the
-    round measured a 6.065 dB tilt step for a change no gate had a number for
-    (#2863).
+    and says nothing about what the cascade replaced. On 2026-08-22 a
+    five-filter tweeter document displaced a −6.037 dB Lowshelf at 5844.67 Hz,
+    and the round measured a 6.065 dB tilt step for a change no gate had a
+    number for (#2863).
 
     **It DISCLOSES and never refuses, and the mechanism test is why.** The
     composed caps guard one thing — maximum-SPL spend, charged by
