@@ -6740,6 +6740,7 @@ def _with_banked_base_trim(
     dbt.write_base_trim(
         trims_db=trims,
         levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
+        capture_geometries={"mono": {role: "near_field" for role in trims}},
         roles=tuple(trims),
         regions=[("woofer", "tweeter", 2000.0)],
         declaration_fingerprint=(

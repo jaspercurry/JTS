@@ -484,8 +484,9 @@ def _measured_level_trims(
     guided per-driver captures the relay flow promotes. Both feed the same
     estimator and the same chain solver; a banked trim is preferred only because
     it is the deliberate measurement, not because it is a better one.
-    ``crossover_preview`` is what a banked trim is keyed to: absent it (the
-    cross-check path), only the guided captures are considered.
+    ``crossover_preview`` is what a banked trim is keyed to, so a caller with
+    none has nothing to match a banked record against and gets the guided
+    captures alone.
 
     Returns ``(trims_by_role, meta)``. ``trims_by_role`` is empty (fail-closed)
     unless at least one speaker group has a usable overlap level for BOTH drivers
@@ -514,14 +515,25 @@ def _measured_level_trims(
         # because the per-crossover evidence lives in the record itself, which
         # ``base_trim.state_path`` names.
         banked_group_ids = base_trim_meta.get("speaker_group_ids") or []
+        banked_groups_total = base_trim_meta.get("groups_total")
         return base_trims, {
             "source": "banked_base_trim",
             "base_trim": base_trim_meta,
             "comparison": "declared_crossover_gain_ledger_normalized",
-            "groups_total": len(banked_group_ids),
+            "groups_total": (
+                banked_groups_total
+                if isinstance(banked_groups_total, int)
+                else len(banked_group_ids)
+            ),
             "groups_measured": len(banked_group_ids),
             "measured_group_ids": list(banked_group_ids),
             "deltas": [],
+            # Empty because the writer already refused every group that could
+            # populate it: ``jasper-driver-trim`` stops on a capture with no
+            # auditable excitation ledger and on one the analysis cannot use, so
+            # a group that reached the record was comparable. What this path
+            # does NOT carry is placement attestation, which ``comparison``
+            # above names rather than implying by an empty list.
             "incomparable_groups": [],
             "trims": dict(base_trims),
         }
@@ -811,6 +823,27 @@ def _derive_corrections(
                 "or estimated trim — "
                 + str(base_trim_meta.get("remediation") or "")
             ).strip(),
+        ))
+    if isinstance(base_trim_meta, Mapping) and base_trim_meta.get(
+        "mixed_geometry_group_ids"
+    ):
+        # DISCLOSED, not refused. Two drivers of one group read at different
+        # acoustic distances still produce a trim, and the measured trim still
+        # beats the datasheet estimate; what the household loses is the claim
+        # that the delta came from one geometry, so JTS says so and keeps it.
+        issues.append(_issue(
+            "info",
+            "driver_base_trim_mixed_capture_geometry",
+            (
+                "the banked base trim read some drivers near-field and others "
+                "on the reference axis ("
+                + ", ".join(
+                    str(group_id)
+                    for group_id in base_trim_meta["mixed_geometry_group_ids"]
+                )
+                + "); the trim is applied, and its drivers were not compared "
+                "from one geometry"
+            ),
         ))
     if level_match.get("incomparable_groups"):
         issues.append(_issue(

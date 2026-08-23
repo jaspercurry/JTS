@@ -70,7 +70,7 @@ Usage::
         --mic-serial 810-8494
 
 Exit 0 only on a banked base trim; 1 on any refusal, with the ``REFUSE_*``
-reason on stdout and in the ``event=`` line.
+reason on stderr — on stdout under ``--json`` — and in the ``event=`` line.
 """
 
 from __future__ import annotations
@@ -82,6 +82,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.log_event import log_event
 from jasper.active_speaker.driver_base_trim import (
     DriverBaseTrimError,
@@ -178,14 +179,19 @@ def _capture_levels(
     preset: Any,
     captures_dir: Path,
     curve: Any,
-) -> dict[str, dict[str, dict[float, float]]]:
-    """``group -> role -> declared Fc -> ledger-normalized overlap level``."""
+) -> tuple[
+    dict[str, dict[str, dict[float, float]]], dict[str, dict[str, str]]
+]:
+    """``(group -> role -> declared Fc -> ledger-normalized level, group -> role
+    -> capture geometry)``. The second map is banked with the record so a reader
+    can see under which geometry each driver was read."""
     from jasper.active_speaker.commissioning_capture import (
         driver_crossover_fcs,
         driver_passband_hz,
     )
     from jasper.active_speaker.crossover_contract import verified_driver_excitation
     from jasper.active_speaker.driver_acoustics import (
+        CAPTURE_GEOMETRIES,
         VERDICT_PRESENT,
         analyze_driver_capture,
         usable_overlap_level_db,
@@ -230,16 +236,28 @@ def _capture_levels(
                 REFUSE_CAPTURES_INVALID,
                 f"{group_id}:{role} needs an existing wav and its sweep_meta",
             )
+        geometry = str(entry.get("capture_geometry") or "near_field")
+        if geometry not in CAPTURE_GEOMETRIES:
+            # Checked here so an out-of-vocabulary geometry is a refusal in this
+            # verb's own words rather than a DriverAcousticsError traceback out
+            # of the analysis, which is what "the manifest is checked whole
+            # before any capture is deconvolved" promises.
+            raise TrimRefusal(
+                REFUSE_CAPTURES_INVALID,
+                f"{group_id}:{role} names capture_geometry {geometry!r}; the "
+                f"analysis reads {' or '.join(sorted(CAPTURE_GEOMETRIES))}",
+            )
         checked.append((
             group_id,
             role,
             wav,
             sweep_meta,
-            str(entry.get("capture_geometry") or "near_field"),
+            geometry,
             float(excitation["effective_peak_dbfs"]),
         ))
 
     levels: dict[str, dict[str, dict[float, float]]] = {}
+    geometries: dict[str, dict[str, str]] = {}
     for group_id, role, wav, sweep_meta, geometry, effective_peak in checked:
         fcs = driver_crossover_fcs(preset, role)
         result = analyze_driver_capture(
@@ -271,7 +289,8 @@ def _capture_levels(
             levels.setdefault(group_id, {}).setdefault(role, {})[fc] = (
                 level - effective_peak
             )
-    return levels
+        geometries.setdefault(group_id, {})[role] = geometry
+    return levels, geometries
 
 
 def _run(args: argparse.Namespace) -> dict[str, Any]:
@@ -308,7 +327,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "which to level one driver against another",
         )
 
-    levels = _capture_levels(entries, preset, captures_dir, curve)
+    levels, geometries = _capture_levels(entries, preset, captures_dir, curve)
     trims = solve_base_trims(levels, roles, regions)
     if not trims:
         raise TrimRefusal(
@@ -320,6 +339,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         return write_base_trim(
             trims_db=trims,
             levels_db=levels,
+            capture_geometries=geometries,
             roles=roles,
             regions=regions,
             declaration_fingerprint=declaration_fingerprint,
@@ -373,6 +393,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Without a handler ``logging.lastResort`` floors at WARNING, which discards
+    # ``event=active_speaker.driver_trim_banked`` — the one line attributing a
+    # banked trim to the run that measured it. ``basicConfig`` at INFO in
+    # ``main`` is what the sibling ``event=``-emitting CLIs do, and NOT
+    # ``_logging.configure_verbose_logging``, whose no-``--verbose`` floor is
+    # the level that hides this; ``crossover_prescriber.main`` carries the full
+    # rationale for both choices.
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     args = build_parser().parse_args(argv)
     if not args.calibration_file and not args.mic_serial:
         build_parser().error("pass --calibration-file or --mic-serial")

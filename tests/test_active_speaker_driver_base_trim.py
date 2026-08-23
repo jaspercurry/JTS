@@ -132,6 +132,7 @@ def _bank(tmp_path: Path, **overrides) -> Path:
     payload = dict(
         trims_db={"woofer": 0.0, "tweeter": -20.0},
         levels_db={"mono": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}}},
+        capture_geometries={"mono": {"woofer": "near_field", "tweeter": "near_field"}},
         roles=TWO_WAY,
         regions=TWO_WAY_REGIONS,
         declaration_fingerprint="a" * 64,

@@ -102,11 +102,73 @@ def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _fc_key(fc: float) -> str:
+    """How a declared Fc is spelled as a JSON key. One writer, one reader: the
+    record's evidence is keyed this way and the reader re-derives which groups
+    it covers by looking the same keys back up."""
+    return f"{float(fc):g}"
+
+
 def _finite(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     out = float(value)
     return out if math.isfinite(out) else None
+
+
+def _levelled_group_ids(
+    levels: Mapping[str, Any], crossovers: Any
+) -> list[str]:
+    """The groups the record actually levelled: those carrying a finite level
+    for BOTH drivers of EVERY crossover it names.
+
+    The same completeness rule :func:`solve_base_trims` applies before a group
+    contributes a delta chain, re-derived from the banked evidence so the set
+    the readiness gate reads is measured rather than asserted. An unreadable
+    ``crossovers`` list yields no group, which is the fail-closed direction:
+    the caller falls back to the trim it already had.
+    """
+    required: list[tuple[str, str, str]] = []
+    for region in crossovers if isinstance(crossovers, list) else ():
+        if not isinstance(region, Mapping):
+            return []
+        lower = str(region.get("lower_role") or "")
+        upper = str(region.get("upper_role") or "")
+        fc = _finite(region.get("declared_fc_hz"))
+        if not lower or not upper or fc is None:
+            return []
+        required.append((lower, upper, _fc_key(fc)))
+    if not required:
+        return []
+    levelled: list[str] = []
+    for group_id, by_role in levels.items():
+        if not str(group_id) or not isinstance(by_role, Mapping):
+            continue
+        if all(
+            isinstance(by_role.get(role), Mapping)
+            and _finite(by_role[role].get(fc_key)) is not None
+            for lower, upper, fc_key in required
+            for role in (lower, upper)
+        ):
+            levelled.append(str(group_id))
+    return sorted(levelled)
+
+
+def _mixed_geometry_group_ids(geometries: Mapping[str, Any]) -> list[str]:
+    """Groups whose drivers were NOT all captured under one geometry.
+
+    Disclosed, never refused. The delta between two drivers read at one mic
+    position is what the trim is built on, and reading one near-field and the
+    other on the reference axis compares two different acoustic distances — a
+    small effect, but one nothing in the record otherwise says out loud.
+    """
+    mixed: list[str] = []
+    for group_id, by_role in geometries.items():
+        if not str(group_id) or not isinstance(by_role, Mapping):
+            continue
+        if len({str(value) for value in by_role.values()}) > 1:
+            mixed.append(str(group_id))
+    return sorted(mixed)
 
 
 def solve_base_trims(
@@ -205,15 +267,17 @@ def banked_base_trims(
     A caller that hands over NO declaration gets
     :data:`STATUS_DECLARATION_CHANGED` too, sharing the status because it earns
     the same answer: a record that cannot be keyed to the declaration in front
-    of us is not evidence about this speaker. Today that caller is
-    ``baseline_profile._estimator_cross_check``, which discards this meta, so
-    the shared word reaches no operator-facing string.
+    of us is not evidence about this speaker.
 
     The trims are re-validated against the writer's own envelope on the way out
     (finite, attenuation-only, at or above
-    :data:`~jasper.active_speaker.level_trim.MAX_ATTENUATION_DB`), so a corrupt
-    or hand-edited statefile can only make this speaker QUIETER than the
-    estimate it replaces, never louder.
+    :data:`~jasper.active_speaker.level_trim.MAX_ATTENUATION_DB`). That envelope
+    is relative to UNITY and that is the whole of its guarantee: no accepted
+    trim is a boost, and none is deeper than the floor the solver clamps to. It
+    says nothing about the datasheet estimate the record replaces — a
+    hand-edited tweeter trim of −5.0 dB where the estimate held −10.8 dB is
+    inside the envelope and runs that driver 5.8 dB louder than the unmeasured
+    speaker would have.
     """
     ordered = tuple(roles)
     record = load_base_trim(state_path=state_path)
@@ -255,19 +319,41 @@ def banked_base_trims(
                 "remediation": REMEASURE_REMEDIATION,
             }
         trims[role] = value
+    levels = record.get("levels_db")
+    geometries = record.get("capture_geometries")
+    if not isinstance(levels, Mapping) or not isinstance(geometries, Mapping):
+        return {}, {
+            **meta,
+            "status": STATUS_UNUSABLE,
+            "detail": "the record carries no readable per-driver evidence",
+            "remediation": REMEASURE_REMEDIATION,
+        }
+    measured = _levelled_group_ids(levels, record.get("crossovers"))
+    if not measured:
+        return {}, {
+            **meta,
+            "status": STATUS_UNUSABLE,
+            "detail": (
+                "no speaker group in the record carries a level for both "
+                "drivers of every declared crossover"
+            ),
+            "remediation": REMEASURE_REMEDIATION,
+        }
     return trims, {
         **meta,
         "status": STATUS_APPLIED,
         "trims": dict(trims),
-        # WHICH speaker groups this trim was measured on, not merely how many.
+        # WHICH speaker groups this trim was measured on, not merely how many,
+        # and DERIVED from the record's own evidence rather than read off the
+        # bare keys of ``levels_db``: the record banks every group it captured,
+        # including one the solve dropped for a driver it never got a level for.
         # ``crossover_contract.automatic_candidate_readiness`` gates on the
         # measured-group SET against the topology's required one, so a record
         # that levelled only the left cabinet of a stereo pair must not read as
         # having levelled both.
-        "speaker_group_ids": sorted(
-            str(group_id) for group_id in (record.get("levels_db") or {})
-            if str(group_id)
-        ),
+        "speaker_group_ids": measured,
+        "groups_total": sum(1 for group_id in levels if str(group_id)),
+        "mixed_geometry_group_ids": _mixed_geometry_group_ids(geometries),
     }
 
 
@@ -275,6 +361,7 @@ def write_base_trim(
     *,
     trims_db: Mapping[str, float],
     levels_db: Mapping[str, Mapping[str, Mapping[float, float]]],
+    capture_geometries: Mapping[str, Mapping[str, str]],
     roles: Sequence[str],
     regions: Sequence[tuple[str, str, float]],
     declaration_fingerprint: str,
@@ -305,6 +392,28 @@ def write_base_trim(
             )
         trims[role] = round(value, 1)
     path = base_trim_state_path(state_path)
+    # The evidence behind the trims, so a reader can re-derive them without the
+    # WAVs: one ledger-normalized level per group, per role, per declared Fc.
+    # Fc keys are stringified because JSON has no float key.
+    banked_levels = {
+        group_id: {
+            role: {
+                _fc_key(fc): round(float(level), 2)
+                for fc, level in sorted(by_fc.items())
+            }
+            for role, by_fc in sorted(by_role.items())
+        }
+        for group_id, by_role in sorted(levels_db.items())
+    }
+    banked_crossovers = [
+        {"lower_role": lower, "upper_role": upper, "declared_fc_hz": float(fc)}
+        for lower, upper, fc in regions
+    ]
+    if not _levelled_group_ids(banked_levels, banked_crossovers):
+        raise DriverBaseTrimError(
+            "no speaker group carries a level for both drivers of every declared "
+            "crossover, so this record's own reader would refuse it"
+        )
     payload = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": BASE_TRIM_KIND,
@@ -313,24 +422,17 @@ def write_base_trim(
         "declaration_fingerprint": declaration_fingerprint,
         "roles": list(ordered),
         "trims_db": trims,
-        # The evidence behind the trims, so a reader can re-derive them without
-        # the WAVs: one ledger-normalized level per group, per role, per
-        # declared Fc. Fc keys are stringified because JSON has no float key.
-        "levels_db": {
-            group_id: {
-                role: {
-                    f"{float(fc):g}": round(float(level), 2)
-                    for fc, level in sorted(by_fc.items())
-                }
-                for role, by_fc in sorted(by_role.items())
-            }
-            for group_id, by_role in sorted(levels_db.items())
-        },
-        "crossovers": [
-            {"lower_role": lower, "upper_role": upper, "declared_fc_hz": float(fc)}
-            for lower, upper, fc in regions
-        ],
+        "levels_db": banked_levels,
+        "crossovers": banked_crossovers,
         "microphone": dict(microphone),
+        # Under WHICH geometry each driver was read, per group. The trim is a
+        # delta between two drivers, so two drivers read at different acoustic
+        # distances is a fact about the answer's footing; the reader discloses
+        # it as ``mixed_geometry_group_ids`` rather than guessing it away.
+        "capture_geometries": {
+            group_id: {role: str(geometry) for role, geometry in sorted(by_role.items())}
+            for group_id, by_role in sorted(capture_geometries.items())
+        },
         # Named so the absence reads as a decision, not an oversight: one mic
         # position per driver measures the ON-AXIS ratio, and a waveguide's
         # on-axis level overstates its power output against a cone's. The

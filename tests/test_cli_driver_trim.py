@@ -135,7 +135,7 @@ def test_two_captures_driven_at_different_levels_are_normalized_before_compariso
         "tweeter": _FakeResult(-42.0),
     })
 
-    levels = driver_trim._capture_levels(
+    levels, _geometries = driver_trim._capture_levels(
         driver_trim._load_captures_manifest(captures_dir),
         _preset(),
         captures_dir,
@@ -159,7 +159,7 @@ def test_a_real_level_gap_survives_the_normalize(tmp_path: Path, monkeypatch):
         "tweeter": _FakeResult(-38.0),
     })
 
-    levels = driver_trim._capture_levels(
+    levels, _geometries = driver_trim._capture_levels(
         driver_trim._load_captures_manifest(captures_dir),
         _preset(),
         captures_dir,

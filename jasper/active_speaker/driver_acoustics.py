@@ -141,6 +141,13 @@ SUMMED_VERDICTS = frozenset(
     {SUMMED_BLEND_OK, SUMMED_POLARITY_OR_DELAY_PROBLEM, VERDICT_UNUSABLE_CAPTURE}
 )
 
+# The capture geometries the analysis accepts, exported for the same reason the
+# verdicts are: a caller that carries a geometry from an operator-authored
+# document can check it at its own door and refuse in its own vocabulary,
+# instead of discovering an out-of-vocabulary value as a DriverAcousticsError
+# raised mid-analysis.
+CAPTURE_GEOMETRIES = frozenset({"near_field", "reference_axis"})
+
 
 class DriverAcousticsError(ValueError):
     """Raised for malformed inputs (bad channel index, unreadable sweep meta)."""
@@ -399,7 +406,7 @@ def _capture_to_magnitude(
     caller MUST measure its signal side on the same table it passes here — the
     two are subtracted per ``band_id``.
     """
-    if capture_geometry not in {"near_field", "reference_axis"}:
+    if capture_geometry not in CAPTURE_GEOMETRIES:
         raise DriverAcousticsError(
             f"unsupported capture_geometry: {capture_geometry!r}"
         )

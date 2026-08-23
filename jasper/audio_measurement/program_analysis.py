@@ -673,12 +673,11 @@ RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
 
 # A trim is a passive level-match: never net gain (> 0 dB), and never beyond
-# the shared -60 dB attenuation floor used across the active-speaker
-# candidate/profile machinery
-# (jasper.active_speaker.measured_crossover_candidate._MAX_ATTENUATION_DB /
-# baseline_profile._MAX_ATTENUATION_DB). Mirrored locally rather than
-# imported, the same way those two mirror each other — this module does not
-# import jasper.active_speaker (see the module docstring). solve_branch_trims's
+# the shared -60 dB attenuation floor the active-speaker candidate/profile
+# machinery reads from its one owner,
+# jasper.active_speaker.level_trim.MAX_ATTENUATION_DB. Mirrored locally rather
+# than imported because this module does not import jasper.active_speaker (see
+# the module docstring). solve_branch_trims's
 # own min()-based formula keeps its output in this range implicitly; the
 # ripple-optimal scan must enforce it explicitly, since an unconstrained
 # ripple minimum has no such guarantee (a flatter-but-physically-invalid
