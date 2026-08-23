@@ -5025,6 +5025,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         tier: str = "",
+        positions_gated: bool = False,
         driver_spacing_m: float = 0.0,
         accepted_phases: Sequence[str] = (),
         applied: bool = False,
@@ -5072,6 +5073,16 @@ class CrossoverV2Session:
         # option. Validated so an unknown id fails at construction rather than
         # riding into the durable state and out to `/state`.
         self._tier = normalize_tier(tier) if tier else ""
+        # #2879, the POSE-STATEMENT axis (:attr:`V2PlanShape.positions_gated`):
+        # are this walk's begins HELD until something reports the microphone in
+        # place? The HOST resolves it, because it is the half that knows the
+        # capture source, and hands the answer down rather than having this
+        # re-derive it. ORed with the tier's own answer instead of replacing it,
+        # so a caller that resolved no shape — every test that builds a session
+        # by hand — can never silently drop the arm's gate.
+        self._positions_gated = (
+            tier_is_externally_positioned(self._tier) or bool(positions_gated)
+        )
         self._preset = source_preset
         self._roles = roles
         self._woofer, self._tweeter = roles[0], roles[1]
@@ -8065,20 +8076,31 @@ class CrossoverV2Session:
             group_already_closed=phase in self._group_geometry,
             have_take_to_replace=position is not None,
         )
-        if retake is not None and tier_is_externally_positioned(self._tier):
-            # REFUSE rather than prompt for a move this operator cannot make
-            # (owner ruling: refuse, don't mislead). Both rungs of
-            # ``CLOUD_GEOMETRY_RETRY_PROMPTS`` are out of an external
-            # positioner's reach — rung 1 is 75 cm off the mark, past every
-            # pose in the walk, and rung 2 adds a move ABOVE mark height, the
-            # exact axis this tier excludes by construction.
+        if retake is not None and self._positions_gated:
+            # REFUSE rather than prompt (owner ruling: refuse, don't mislead) —
+            # for EITHER gated shape, because the predicate that matters is
+            # "these begins are HELD", not "an arm is moving". Prompting anyway
+            # did three dishonest things at once, and the third belongs to the
+            # gate rather than to the arm:
             #
-            # Prompting anyway did three dishonest things at once: it asked a
-            # driver for a pose it cannot reach, it recorded the un-made pose's
-            # 75 cm offset as the position's durable evidence, and the position
-            # gate published the PREVIOUS entry's stale angle as the target. The
-            # retry budget is deliberately NOT spent and no take is dropped —
-            # nothing here is a retry, so the group keeps the evidence it
+            #   1. it asked for a pose an external positioner cannot reach —
+            #      rung 1 of ``CLOUD_GEOMETRY_RETRY_PROMPTS`` is 75 cm off the
+            #      mark, past every pose in the walk, and rung 2 adds a move
+            #      ABOVE mark height, the exact axis the remote tier excludes
+            #      by construction;
+            #   2. it recorded that un-made pose's 75 cm offset as the
+            #      position's durable evidence; and
+            #   3. the retry re-authorizes the SAME plan entry, so the position
+            #      gate republishes that entry's ORIGINAL bearing as the target
+            #      while the screen names the wider spot. Two answers to where
+            #      the microphone should be — and a person, who could perfectly
+            #      well walk to the wider spot, is exactly who cannot be told
+            #      which of the two to believe. The bearing has no rung-2
+            #      spelling at all: the gate states a horizontal angle and
+            #      rung 2 is a HEIGHT.
+            #
+            # The retry budget is deliberately NOT spent and no take is dropped
+            # — nothing here is a retry, so the group keeps the evidence it
             # legitimately has for whatever the session does with it next.
             log_event(
                 logger,

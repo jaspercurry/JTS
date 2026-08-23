@@ -2185,7 +2185,6 @@ POST /crossover/v2/retake    v2 conductor, GATED WIRED sessions only (#2879):
                              (jasper/capture_relay/session.py). Empty body
                              (WHICH slot is the walk's own fact); 409 when no
                              wired session is waiting
-
 HTTPS fallback              non-/correction/ paths 302 + no-store back to HTTP
 ```
 

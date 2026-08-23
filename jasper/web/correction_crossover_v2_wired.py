@@ -61,7 +61,6 @@ A voluntary RETAKE is initiated locally, through the host's
 §2.6 terms. Those terms are stated once, where they are implemented
 (:func:`build_v2_wired_run_and_consume`), rather than a second time here.
 
-
 Deferred to W3 (stated, not implied): the wizard UI for wired sessions —
 including the retake's own affordance, which today is that bare POST — and a
 named household-facing reason for a mid-session mic loss (today that is

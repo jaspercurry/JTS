@@ -149,7 +149,6 @@ def courtesy_prelude_for_phase(phase: str) -> bool:
       that same gate until the person releases them — inside a session the
       room has already been told is running.
 
-
     A repeat therefore carries no information the household does not have, and
     it costs 3.6 s (0.6 s of beeps + a 3.0 s settle) of held-still silence each
     time. Every capture used to pay it; on a Full journey only the three that

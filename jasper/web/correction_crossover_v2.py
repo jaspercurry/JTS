@@ -6364,22 +6364,24 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 # the position gate — the arm's, and the hand-released round's
 # --------------------------------------------------------------------------- #
 
-#: How long ONE position hold waits for its external driver before the session
-#: refuses rather than holding forever.
+#: How long ONE position hold waits for whoever is moving the microphone
+#: before the session refuses rather than holding forever.
 #:
 #: A hold is UNBOUNDED as far as the transport is concerned — the capture page
 #: re-posts the same begin every 1.5 s and each re-post rearms the runner's
 #: inactivity deadline (``capture_relay.session.run_capture_plan``) — so nothing
-#: below this module would ever end a hold whose driver died. That is the right
-#: default for the household-facing apply hold it was built for, where a person
-#: is standing there; it is the wrong one here, where the other end is a program
-#: that can crash silently and leave the speaker holding its measurement volume,
-#: its paused voice, and the relay slot indefinitely.
+#: below this module would ever end a hold nobody answers. That is right for the
+#: household-facing apply hold it was built for, where a person stands at the
+#: phone; it is wrong here, where the release comes from somewhere this process
+#: cannot see — a program that crashes silently, or a person who walked away —
+#: leaving the speaker holding its measurement volume, its paused voice, and the
+#: relay slot indefinitely.
 #:
-#: Ten minutes because the thing being waited on is a machine move: seconds to
-#: swing an arm, plus whatever settle the driver takes, plus room for a driver
-#: that is retrying its own transport. It is an order of magnitude past the
-#: move and an order of magnitude short of "nobody is coming".
+#: Ten minutes because it covers BOTH movers and the slower one sets it: an arm
+#: swings in seconds plus its driver's settle and transport retries; a person
+#: walking a tape to the next bearing and posting the release is the longer of
+#: the two. Either way it is an order of magnitude past the move and an order of
+#: magnitude short of "nobody is coming".
 #:
 #: **This is a PER-HOLD bound, and it is not the operative total.** The session's
 #: own wall-clock ceiling
@@ -6393,14 +6395,14 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: sentence read 2520 s, 4.2 holds' worth, and the FIFTH full hold of a
 #: nine-capture walk exceeding it — the pause dropped both the ceiling and the
 #: captures, and left more hold per position, not less.)
-#: A driver that stalls once is caught
-#: here by name; a driver that is merely slow at every position is caught by the
+#: A mover that stalls once is caught
+#: here by name; one that is merely slow at every position is caught by the
 #: ceiling, and since issue #2506 that death has its OWN name too —
 #: :data:`SESSION_CEILING_EXPIRED_CODE`, raised by :meth:`PositionGate.gate`
 #: once :func:`enforce_session_volume_ceiling_if_stale` reports the walk
 #: outlived its ceiling. Whether the per-hold budget should instead be DERIVED
 #: from the ceiling and the capture count is still open; the two bounds are
-#: named separately on purpose, because they describe different drivers.
+#: named separately on purpose, because they describe different failures.
 REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
@@ -6428,21 +6430,31 @@ POSITION_GATE_TERMINAL_CODES = frozenset(
     }
 )
 
-#: The endpoint an external driver POSTs to report the microphone in place.
+#: The endpoint whoever moved the microphone POSTs to report it in place — the
+#: arm's driver, or the person on a hand-released round (#2879). One endpoint,
+#: because the report is the same fact either way.
 POSITION_READY_ENDPOINT = "/correction/crossover/v2/position-ready"
 
 
 class PositionGate:
-    """Holds each remote capture's begin until a driver reports the angle reached.
+    """Holds a gated session's begin until the angle reached is reported.
 
-    **Why a gate exists at all.** The hand-walked tiers make every prompted pose
-    a TAP: the person who just moved the microphone is the one who says it has
-    arrived, so the tone can never play into an arm still in flight. A remote
-    session has no hand, so its entries auto-begin
-    (:data:`~jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_COUNTDOWN`) —
-    and this is what replaces the promise the tap was making. The driver moves
-    the positioner, waits its own settle, and POSTs; only then is the begin
-    admitted.
+    **Why a gate exists at all.** A prompted pose is a promise that the
+    microphone has arrived, and the tone must not play before something makes
+    it. Two shapes need THIS to make it
+    (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.positions_gated`):
+
+    * the REMOTE tier has no hand, so its entries auto-begin behind a countdown
+      (:data:`~jasper.active_speaker.crossover_v2_flow.AUTO_ADVANCE_COUNTDOWN`)
+      and the gate REPLACES the promise the tap was making — the driver moves
+      the arm, waits its own settle, and POSTs;
+    * a HAND-WALKED round on the WIRED source keeps its tap, but that tap is on
+      a capture page that does not exist here, so without the hold the local
+      walk fires every capture back to back while the household is still
+      walking. The person releases each begin instead.
+
+    Either way the hold ends only when a release names this ``(index,
+    attempt)``; the gate never asks WHO moved the microphone.
 
     **The mechanism is the shipped soft-hold, not a new one.**
     :class:`~jasper.capture_relay.session.CaptureBeginDeferred` is the
@@ -6451,19 +6463,19 @@ class PositionGate:
     IDENTICAL begin every 1.5 s, the attempt budget is not spent, and the
     session does not end. Nothing on the capture page changes to support this —
     which matters, because that page is a separately deployed artifact and a
-    release-order coupling is exactly what this tier must not introduce.
+    release-order coupling is exactly what a gated shape must not introduce.
 
     **Every begin is gated, including the 0° ones.** CHECK, MEASURE, the entry
-    baseline, and stage 2's anchor are design-axis captures; a driver has to put
-    the arm back there as deliberately as it moved away, and a gate that assumed
-    "probably still on axis" would measure whatever the last pose left behind.
-    Gating is per ``(index, attempt)``, so a retake re-gates — the same uniform
-    rule rather than a special case that has to be reasoned about.
+    baseline, and stage 2's anchor are design-axis captures; the microphone has
+    to be put back there as deliberately as it was moved away, and a gate that
+    assumed "probably still on axis" would measure whatever the last pose left
+    behind. Gating is per ``(index, attempt)``, so a retake re-gates — the same
+    uniform rule rather than a special case that has to be reasoned about.
 
-    **Two bounds end a hold, and they name different drivers** (issue #2506).
-    :data:`REMOTE_POSITION_HOLD_BUDGET_S` is the per-hold one: a driver that
+    **Two bounds end a hold, and they name different failures** (issue #2506).
+    :data:`REMOTE_POSITION_HOLD_BUDGET_S` is the per-hold one: a mover that
     STOPPED answering. The session's own wall-clock ceiling is the cumulative
-    one: a driver answering every position, just too slowly to finish the walk.
+    one: a mover answering every position, just too slowly to finish the walk.
     The second is not measured here — this class keeps no session clock, because
     the ceiling already has an owner (``SessionVolumePlan``'s ``opened_at`` plus
     the stage's stamped ceiling) and a second clock for one bound is a second
@@ -6488,7 +6500,7 @@ class PositionGate:
     def gate(self, index: int, attempt: int, entry: Any) -> None:
         """Admit this begin, or raise to hold/refuse it.
 
-        Returns cleanly once the driver has released this ``(index, attempt)``;
+        Returns cleanly once this ``(index, attempt)`` has been released;
         raises :class:`CaptureBeginDeferred` while it has not, and
         :class:`CaptureBeginRefused` when the hold outlived
         :data:`REMOTE_POSITION_HOLD_BUDGET_S`, when the whole walk outlived the
@@ -6506,7 +6518,7 @@ class PositionGate:
         screen = getattr(entry, "screen", None) or {}
         raw_degrees = screen.get(POSITION_DEG_KEY)
         if raw_degrees is None:
-            # Fail loud rather than measure an unknown position. A remote plan
+            # Fail loud rather than measure an unknown position. A GATED plan
             # emits the key on EVERY entry, so reaching this means the plan and
             # the gate disagree about the session's shape.
             with self._lock:
@@ -6551,7 +6563,7 @@ class PositionGate:
                     "Nothing reported the microphone in place, so the "
                     "measurement stopped waiting.",
                 )
-            # Checked SECOND, so a stalled driver keeps the specific diagnosis
+            # Checked SECOND, so a stalled mover keeps the specific diagnosis
             # even when both bounds are past: "nothing answered this position"
             # is the more actionable of the two, and the cumulative name would
             # otherwise absorb it on any walk long enough to reach the ceiling.
@@ -6603,7 +6615,7 @@ class PositionGate:
             f"Waiting for the microphone to reach {target:+d}°.",
         )
 
-    # -- the driver's side -------------------------------------------------- #
+    # -- the releasing side ------------------------------------------------- #
 
     def pending(self) -> dict[str, Any] | None:
         """What this session is waiting for, or ``None`` — the envelope's read."""
@@ -6672,10 +6684,10 @@ class PositionGate:
         """Report the microphone in place for the pending capture.
 
         ``index`` is checked against what is actually pending rather than
-        ignored: a driver that retries its POST after the capture already began
-        must NOT release the NEXT position, which is the one hazard an
-        untargeted latch would introduce. A retry that still matches the pending
-        index is idempotent.
+        ignored: a release re-POSTed after the capture already began must NOT
+        release the NEXT position, which is the one hazard an untargeted latch
+        would introduce. A retry that still matches the pending index is
+        idempotent.
 
         Raises :class:`ValueError` when nothing is pending or the index names a
         different capture — the caller maps that to a 409.
@@ -6738,7 +6750,6 @@ class V2PreparedSession:
     #: ``POST /crossover/v2/retake`` through the same slot as
     #: :attr:`request_complete`, and honoured in either window where the walk
     #: is waiting on a person: a HELD BEGIN, or the held-set window.
-
     request_retake: Callable[[], None] | None = None
 
 
@@ -7702,6 +7713,10 @@ def prepare_v2_session(
                 provenance=capture_provenance,
             ),
             tier=plan_shape.tier,
+            # The gate's own fact, handed down rather than re-derived from the
+            # tier: a geometry-locked retake asks for a pose no HELD walk can
+            # state, so the group refuses it for either gated shape.
+            positions_gated=plan_shape.positions_gated,
             index_phase_map=opening.plan.index_phase_map,
             post_apply_verifies=opening.plan.post_apply_verifies,
             driver_spacing_m=context.driver_spacing_m,
@@ -8096,6 +8111,13 @@ def prepare_v2_verify(
         opening = open_stage(
             STAGE_VERIFY_CAPABILITIES,
             index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
+            # Stage 1's twin, and the ONLY statement of the fact this session
+            # gets: this ctor is handed no ``tier`` at all, so before #2879 a
+            # geometry-locked stage-2 group prompted for the 75 cm rung even on
+            # the arm. The gate above and this argument now read one shape.
+            positions_gated=(
+                plan_shape is not None and plan_shape.positions_gated
+            ),
             available=available_stage_priors(
                 commanded_delta=commanded_delta is not None,
                 predicted_sum=predicted_sum is not None,

@@ -502,25 +502,34 @@ human and is #2506's problem, while a **transport** blip no longer does. Both
 still end the run if they outlast their budgets, so the envelope-stall
 detection above stays the driver's backstop.
 
-**A geometry-locked group refuses rather than prompting.** If the pre-apply
-group's echo estimates cluster, the hand-walked tiers ask for a wider retake —
-75 cm out, and on the second rung 75 cm out *and above* mark height. An
-external positioner can serve neither, so a remote session ends with
-`geometry_retake_unreachable` and recommends running a Full measurement by
-hand. It never asks for a pose the positioner cannot reach.
+**A geometry-locked group refuses rather than prompting — on EITHER gated
+shape** (#2879). If a group's echo estimates cluster, a screen-paced walk asks
+for a wider retake: 75 cm out, and on the second rung 75 cm out *and above*
+mark height. A gated walk cannot serve that, for two reasons. An external
+positioner cannot **reach** either rung. And any gated retry re-authorizes the
+same plan entry, so the position gate goes on publishing that entry's original
+bearing while the screen names the wider spot — two answers to where the
+microphone should be, which a person could walk to but could not be told which
+of to believe (and rung 2 is a HEIGHT, which a bearing cannot spell at all).
+So a gated session ends with `geometry_retake_unreachable` and recommends the
+screen-paced instrument that can ask for those spots. The predicate is
+`positions_gated`, not the tier: before #2879 stage 2 was constructed with no
+tier at all, so its groups prompted for the 75 cm rung even on the arm.
 
-**Two clocks end a hold, and they name different drivers.** An unanswered hold
+**Two clocks end a hold, and they name different failures.** An unanswered hold
 does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) refuses it as
-`position_hold_expired`, because a dead driver would otherwise pin the
-measurement volume, the paused voice, and the relay slot indefinitely. That is
+`position_hold_expired`, because a mover that stopped — a crashed driver, or a
+person who walked away — would otherwise pin the measurement volume, the paused
+voice, and the relay slot indefinitely. That is
 a **per-hold** bound and not the operative total — the session's own wall-clock
 ceiling (`session_wall_clock_ceiling_s`, 1800 s for stage 1 and 2040 s for
-stage 2 at the shipped shape) covers the whole walk, so a driver that answers
+stage 2 at the shipped shape) covers the whole walk, so a mover that answers
 every position but answers slowly ends on that ceiling with no single hold ever
 expiring. That death has its own name too, since
 [issue #2506](https://github.com/jaspercurry/JTS/issues/2506):
 `session_ceiling_expired`, refused by the gate on the next held begin after the
-lazy ceiling enforcement (the same envelope poll a driver is already making)
+lazy ceiling enforcement (the same envelope poll the releasing side already
+makes)
 reports the walk stale. It is checked **after** the per-hold budget, so a
 genuine stall keeps the more actionable sentence when both bounds are past. No
 new budget is introduced by that name: past the ceiling the session volume
@@ -3279,7 +3288,6 @@ every later capture is begun deliberately: by the household's tap, by the
 remote tier's position gate, or — on a hand-walked round running on the WIRED
 source (#2879) — by both, the tap behind a gate the person releases. Five of a
 Full journey's eight captures no longer
-
 pay it: 18.0 s, on top of the 37.2 s the shorter verify walk saves.
 
 One consequence to know when reading `program_for_phase`: the summed sweep is

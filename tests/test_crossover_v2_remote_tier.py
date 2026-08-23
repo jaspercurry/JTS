@@ -929,7 +929,6 @@ def test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate():
     """The byte-identity promise, restated for the new fact: nothing about the
     arm's plan moves. (``_GOLDEN_REMOTE_PLAN_BYTES`` proves it in hashes; this
     says which two fields the split could plausibly have disturbed.)"""
-
     plan = _stage1(TIER_REMOTE)
     for entry in plan.entries:
         assert entry.screen["auto_advance"] == AUTO_ADVANCE_COUNTDOWN
