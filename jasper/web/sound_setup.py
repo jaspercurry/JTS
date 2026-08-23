@@ -3234,6 +3234,18 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
 
 
 def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
+    """End the combined test now; ``reason`` is a semantic flag, not a label.
+
+    ``reason: "operator_confirmed"`` means "the operator heard it" and is the
+    only client-supplied value that completes the test — it is what makes the
+    recorded result ``captured`` and unlocks
+    ``/active-speaker/summed-validation``. The default ``"operator_stop"``, any
+    other string, and a stop that arrives before audio started all leave the
+    test incomplete. A client that does not want this rendezvous at all should
+    pass ``duration_ms`` to ``/active-speaker/summed-test`` instead and let the
+    play end itself.
+    """
+
     with _SUMMED_TEST_TONE_LOCK:
         payload = _stop_summed_test_tone_locked(reason=reason)
     log_event(

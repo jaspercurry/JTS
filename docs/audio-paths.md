@@ -711,7 +711,7 @@ playback authority.
 they do not apply the normal active profile. `/sound/active-speaker/summed-test`
 is the audible exception: it temporarily loads the protected all-drivers-live
 commissioning graph through the active-speaker runtime lane, plays the bounded
-looped combined speech test on `correction_substream`, accepts live level
+combined speech test on `correction_substream`, accepts live level
 changes through `/sound/active-speaker/summed-test/level`, records only an
 audible completed result, and rolls back. A play completes two ways: the
 operator confirms hearing it, or the request's own `duration_ms` budget elapses
