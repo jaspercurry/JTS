@@ -1897,9 +1897,10 @@ def _incumbent_block(
     Why it is load-bearing: a per-driver prescription is a total for every role
     it names (:class:`~.driver_prescription.DriverPrescription`), so a role's
     incumbent filters are DELETED by any document that names the role and does
-    not repeat them. On 2026-08-22 that deleted a −6.037 dB Lowshelf at
+    not repeat them. On 2026-08-22 that deleted a −6.0744 dB Lowshelf at
     5844.67 Hz the prescriber had never been shown, and the round measured a
-    6.065 dB tilt step for it (issue #2863).
+    6.065 dB tilt step for it (issue #2863). The gain is the banked one, read
+    from that round's ``pre_apply_profile.linearization.tweeter``.
     """
     from jasper.active_speaker.baseline_profile import profile_linearization
 
@@ -1958,8 +1959,10 @@ def _incumbent_block(
                 "driver prescription is a TOTAL for every role it names: every "
                 "filter listed here for a role you name and do not repeat is "
                 "DELETED from the graph. A document may carry any filter listed "
-                "here, shelves included, so repeat what you mean to keep — a "
-                "shelf must lead the role's chain, as it does here"
+                "here, shelves included, so repeat what you mean to keep. A "
+                "shelf must LEAD its role's chain (or, a Highshelf taper, end "
+                "it after a Lowshelf lead); the door refuses any other "
+                "placement by name"
             ),
         },
     }

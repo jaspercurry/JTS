@@ -691,7 +691,7 @@ def test_the_response_format_states_every_bound_the_gate_applies():
         dp.FILTER_BOOST_TOO_SHALLOW,
         dp.COMPOSED_BOOST_EXCEEDED,
     }
-    # …and the four the 2026-08-23 ruling retired are gone from the module
+    # …and all six the 2026-08-23 ruling retired are gone from the module
     # entirely, not merely from this block: a prescriber that could still read
     # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
     # nothing applies.
@@ -3693,10 +3693,13 @@ def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path
     assert prescription.unvouched_filters == 4
     # …and the packet says the shelf may be repeated, where the shelf is
     # listed, so a prescriber meets the rule beside the filter it applies to.
-    # The claim and the gate that makes it true are pinned together.
+    # The claim and the gate that makes it true are pinned together — the note
+    # promises only what the door guarantees (a placement rule and a named
+    # refusal), never that any particular listed record already satisfies it.
     note = packet["incumbent"]["linearization"]["note"]
     assert "shelves included" in note
-    assert "must lead the role's chain" in note
+    assert "must LEAD its role's chain" in note
+    assert "refuses any other placement by name" in note
 
 
 def test_the_report_names_each_filters_own_type(tmp_path, capsys):
@@ -3823,37 +3826,44 @@ def test_a_shelf_pays_the_same_caps_as_a_bell(tmp_path):
     assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
 
 
+def _shelf_pair(lead_hz: float, taper_hz: float, gain: float) -> list[dict[str, Any]]:
+    """The one shelf shape the emitter can name: Lowshelf lead, Highshelf taper.
+
+    Placement is by INDEX, never by frequency — ``linearization_slot`` reads
+    position — so ``taper_hz`` below ``lead_hz`` is a legal document, and that
+    is the case the composed cap has to catch.
+    """
+    return [
+        {"role": "tweeter", "biquad_type": "Lowshelf", "freq": lead_hz,
+         "gain": gain},
+        {"role": "tweeter", "biquad_type": "Highshelf", "freq": taper_hz,
+         "gain": gain},
+    ]
+
+
 @pytest.mark.parametrize(("lead_hz", "taper_hz"), [
-    # All above the tweeter/woofer overlap ceiling: a shelf pays the crossover
-    # knee bar exactly as a bell does, so a +12 dB lead at 2 kHz refuses
+    # All above the tweeter/woofer overlap ceiling: a BELL pays the crossover
+    # knee bar on its centre, so a +12 dB filter centred at 2 kHz refuses
     # `driver_boost_in_crossover_overlap` before it ever reaches the cap.
     (3500.0, 5000.0), (4000.0, 5000.0), (5000.0, 12000.0), (8000.0, 16000.0),
 ])
-def test_the_one_legal_shelf_pair_at_the_rail_does_not_stack_past_the_cap(
+def test_a_shelf_pair_whose_corners_do_not_overlap_composes_to_the_rail(
     tmp_path, lead_hz, taper_hz,
 ):
-    """Two shelves is the widest shape the emitter can name; both at +12 dB.
+    """Both shelves at +12 dB, cornered so their covered sides do not meet.
 
-    The obvious hearing-safety question the widened vocabulary raises: a shelf
-    holds its full gain across a whole half-band, so can the ONE legal pair — a
-    Lowshelf lead plus its Highshelf taper (#1668) — stack past
-    ``DRIVER_MAX_COMPOSED_BOOST_DB``? Measured, not reasoned: no. A Lowshelf is
-    at its gain BELOW its corner and a Highshelf ABOVE its, so where one is at
-    +12 the other is at unity, and the cascade reads exactly the rail.
+    A Lowshelf is at its gain BELOW its corner and a Highshelf ABOVE its, so
+    with ``lead_hz < taper_hz`` the two authorities are disjoint: where one is
+    at +12 the other is at unity, and the cascade reads exactly the rail.
 
     The number matters as much as the verdict. It composes AT 12.0, not under
     it, so this pair is admitted and charged the full
     :data:`MAX_SPL_SPEND_BOUND_DB` — the same worst case one Peaking at the rail
-    already attains. The widened vocabulary reaches the designed maximum and
-    does not move it.
+    already attains. This ORDERING reaches the designed maximum without moving
+    it; the reversed one below is what the cap is actually for.
     """
     packet = _speaker(tmp_path, classification=_boostable())
-    pair = [
-        {"role": "tweeter", "biquad_type": "Lowshelf", "freq": lead_hz,
-         "gain": DRIVER_MAX_FILTER_BOOST_DB},
-        {"role": "tweeter", "biquad_type": "Highshelf", "freq": taper_hz,
-         "gain": DRIVER_MAX_FILTER_BOOST_DB},
-    ]
+    pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
 
     prescription = _gate(packet, _document(pair, packet))
 
@@ -3868,6 +3878,43 @@ def test_the_one_legal_shelf_pair_at_the_rail_does_not_stack_past_the_cap(
             [dict(pair[0], gain=DRIVER_MAX_FILTER_BOOST_DB + 1.0), pair[1]], packet,
         ))
     assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
+
+
+@pytest.mark.parametrize(("lead_hz", "taper_hz", "composed_db"), [
+    # Measured on this gate's own reading, not predicted.
+    (5000.0, 3500.0, 15.7900),
+    (12000.0, 5000.0, 20.9683),
+    (16000.0, 8000.0, 21.0577),
+    (18000.0, 3200.0, 23.7529),
+])
+def test_a_shelf_pair_whose_corners_cross_is_refused_by_the_composed_cap(
+    tmp_path, lead_hz, taper_hz, composed_db,
+):
+    """The reversed ordering, where the disjoint-authority argument is FALSE.
+
+    Corner the Lowshelf ABOVE the Highshelf and both cover the band between
+    them, so their gains ADD there — up to **+23.75 dB** on the pairs swept
+    here, nearly twice the rail. Placement is by INDEX and not by frequency, so
+    this is a perfectly legal document that ``_check_shelf_placement`` admits.
+
+    **What holds the rail is therefore the COMPOSED CAP, not the geometry.**
+    The sibling test above reads exactly 12.0 because its corners are disjoint,
+    and quoting that mechanism as the reason two shelves cannot stack would be
+    a narrow fact with a universal tail — true of one ordering, false of this
+    one. ``_check_composed`` evaluates the cascade rather than trusting either
+    argument, which is why it catches the case the argument misses.
+    """
+    packet = _speaker(tmp_path, classification=_boostable())
+    pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document(pair, packet))
+
+    assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
+    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(
+        composed_db, abs=0.001
+    )
+    assert composed_db > DRIVER_MAX_COMPOSED_BOOST_DB
 
 
 def test_a_negative_gain_shelf_never_puts_the_branch_above_unity(tmp_path):

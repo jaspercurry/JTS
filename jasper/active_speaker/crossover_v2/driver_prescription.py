@@ -620,11 +620,9 @@ FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 FILTER_BOOST_TOO_SHALLOW = "driver_filter_boost_too_shallow"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 
-#: The boost's centre sits where two drivers' declared bands overlap — the
+#: A BELL's centre sits where two drivers' declared bands overlap — the
 #: crossover knee. Owner ruling, 2026-08-19 (hearing lens), and the one
-#: evidence-shaped bar on this door the 2026-08-23 ruling left standing: it is
-#: a BAND bound, not a prediction about the feature there, and what it protects
-#: is the crossover stage's own quantity.
+#: evidence-shaped bar on this door the 2026-08-23 ruling left standing.
 #:
 #: A per-driver boost there is charged nothing by the crossover stage and still
 #: moves the SUMMED response, which is the crossover's own quantity to own.
@@ -634,10 +632,31 @@ COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 #: whatever leaks through still reaches the sum and removing it spends no
 #: headroom", and no round has observed it failing.
 #:
-#: The bar is on the CENTRE only, which is the owner's never-nanny calibration
-#: rather than an oversight: a boost centred just outside the overlap still
-#: reaches into it on its skirt, and what adjudicates the summed response there
-#: is the deciding-frame measurement, not a wider refusal here.
+#: **What it bounds is a BELL's reach, through its centre — not the overlap as
+#: a band.** A Peaking filter's ``freq`` IS its placement, so the centre check
+#: is a bound on where the lift lives. Deliberately only the centre, which is
+#: the owner's never-nanny calibration rather than an oversight: a bell centred
+#: just outside still reaches in on its skirt (a Q-0.5 +12 dB bell at 3200 Hz
+#: puts +11.93 dB into the shipped two-way's 1600-3000 Hz overlap and is
+#: admitted), and what adjudicates the summed response there is the
+#: deciding-frame measurement, not a wider refusal here.
+#:
+#: **A SHELF is a different geometry and this bar does not reach it.** Its
+#: ``freq`` is "a CORNER, not a placement: its authority is the whole band to
+#: one side of it" (``linearization_fit._blind_zone_placements``, which skips
+#: shelves by type for exactly this reason), so a Lowshelf cornered ABOVE the
+#: overlap covers the overlap at its full gain however far away it is cornered
+#: — and asking whether that one frequency is inside the knee is the same
+#: category error. **No shelf-side bar is added, because the consequence is
+#: measured bounded**: the per-filter and composed caps hold the covered side
+#: to :data:`DRIVER_MAX_COMPOSED_BOOST_DB`, and the emitter's PRE-SPLIT charge
+#: (``camilla_yaml.linearization_headroom_db``, ``peak + HEADROOM_MARGIN_DB``)
+#: then attenuates the program by more than the shelf raises it. Measured on
+#: the shipped two-way: a +12 dB Lowshelf cornered at 20 kHz reads +12.0000 dB
+#: flat across the whole overlap, composes to 12.0000, is charged 13.0000 —
+#: :data:`MAX_SPL_SPEND_BOUND_DB` exactly — and lands the overlap at
+#: **-1.0000 dB** net, BELOW unity. Adding a bar for that would be the nanny
+#: ``docs/measurement-loop-doctrine.md`` §5 names.
 BOOST_IN_CROSSOVER_OVERLAP = "driver_boost_in_crossover_overlap"
 
 # SIX slugs stood beside that one until 2026-08-23, all of them the
@@ -1452,9 +1471,12 @@ def _check_displaced(
     and does not repeat them. :func:`_check_composed` cannot see that: it reads
     the document's own cascade, which is exactly right for the caps it enforces
     and says nothing about what the cascade replaced. On 2026-08-22 a
-    five-filter tweeter document displaced a −6.037 dB Lowshelf at 5844.67 Hz,
+    five-filter tweeter document displaced a −6.0744 dB Lowshelf at 5844.67 Hz,
     and the round measured a 6.065 dB tilt step for a change no gate had a
-    number for (#2863).
+    number for (#2863). The gain is the banked one, read from that round's
+    ``pre_apply_profile.linearization.tweeter``; earlier revisions of this
+    sentence and of ``evidence_packet``'s twin both said −6.037, which is one
+    measured number spelled two ways.
 
     **It DISCLOSES and never refuses, and the mechanism test is why.** The
     composed caps guard one thing — maximum-SPL spend, charged by
