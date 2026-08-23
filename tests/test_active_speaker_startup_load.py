@@ -8,6 +8,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+import pytest
+
 import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker.startup_hold import startup_hold_marker_path
 from jasper.active_speaker.calibration_level import calibration_level_payload
@@ -594,6 +596,111 @@ def test_startup_load_releases_the_staged_hold_when_the_apply_fails(
     assert result["load"]["status"] == "failed"
     assert held == [True]  # the hold really was taken before the apply
     assert not marker.exists()  # and given back when the apply failed
+
+
+def test_startup_load_proceeds_when_a_root_owned_marker_already_holds(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # End-to-end shape of the gate's blocker: /correction/ (root, UMask=0077)
+    # left a root:root 0600 marker that nothing releases, then /sound/ runs the
+    # protected load. touch() raises there, but the anchor IS held, so the load
+    # must PROCEED rather than refuse with a remedy that cannot fix it.
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
+    fake = FakeCamilla(str(prior))
+    state_path = tmp_path / "startup_load.json"
+    reconcile_calls = _record_reconcile_triggers(monkeypatch)
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+
+    marker = startup_hold_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("", encoding="utf-8")  # the sibling root writer's leftover
+
+    real_touch = Path.touch
+
+    def touch_denied_for_the_marker(self, *args, **kwargs):
+        if self == marker:
+            raise PermissionError(13, "Permission denied")
+        return real_touch(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "touch", touch_denied_for_the_marker)
+
+    result = asyncio.run(
+        load_protected_startup_config(
+            _topology(),
+            load_config=fake.set_config_file_path,
+            get_current_config_path=fake.get_config_file_path,
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+
+    assert result["load"]["status"] == "loaded"
+    assert fake.loaded_paths == [staged["config"]["path"]]
+    assert reconcile_calls  # the reconcile was kicked, under a real hold
+    assert marker.exists()
+
+
+def test_startup_load_releases_the_staged_hold_on_a_non_dsp_apply_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # apply_dsp_config raises types that do NOT subclass DspApplyError on the
+    # writer-lock path the web surfaces contend for. Those escape the handler
+    # that renders a payload, so without the catch-all the pre-apply hold would
+    # leak and keep preserving a silent anchor this session never loaded.
+    from jasper.dsp_apply import DspWriterLockTimeout
+
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
+    fake = FakeCamilla(str(prior))
+    state_path = tmp_path / "startup_load.json"
+    _record_reconcile_triggers(monkeypatch)
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    marker = startup_hold_marker_path()
+
+    async def raise_lock_timeout(**_kwargs):
+        assert marker.exists()  # the hold really was taken before the apply
+        raise DspWriterLockTimeout(
+            tmp_path / "dsp.lock",
+            timeout_s=5.0,
+            waited_s=5.0,
+            source="active_speaker_startup_load",
+        )
+
+    monkeypatch.setattr(startup_load_mod, "apply_dsp_config", raise_lock_timeout)
+
+    with pytest.raises(DspWriterLockTimeout):
+        asyncio.run(
+            load_protected_startup_config(
+                _topology(),
+                load_config=fake.set_config_file_path,
+                get_current_config_path=fake.get_config_file_path,
+                path_safety_evidence_path=_write_path_safety(
+                    tmp_path / "path_safety.json",
+                    staged=staged,
+                    current_config_path=prior,
+                ),
+                state_path=state_path,
+                validate=_valid_config,
+            )
+        )
+
+    assert not marker.exists()  # released on the way out, and the type re-raised
 
 
 def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(

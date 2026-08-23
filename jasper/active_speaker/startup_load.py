@@ -941,8 +941,8 @@ async def load_protected_startup_config(
                     "could not hold the staged startup anchor at "
                     f"{hold_marker}: the reconcile this load kicks would "
                     "restore the saved baseline over it. The writing service "
-                    "needs write access to that directory — jasper-web.service "
-                    "declares it as RuntimeDirectory=jasper-active-speaker.",
+                    "needs write access to that directory, which a sandboxed "
+                    "unit gets from RuntimeDirectory=jasper-active-speaker.",
                 )
             ],
         )
@@ -1006,6 +1006,16 @@ async def load_protected_startup_config(
             type(exc).__name__,
         )
         return {"preflight": preflight, "load": payload}
+    except BaseException:
+        # The hold is taken before the apply, so every escape from the apply has
+        # to give it back — not just the one this function renders a payload for.
+        # `apply_dsp_config` raises at least two non-`DspApplyError` types on the
+        # lock path both web writers contend for (`DspWriterLockTimeout`,
+        # `BassExtensionApplyPending`), and those leave the anchor off the
+        # durable statefile exactly as a failed apply does. Release, then re-raise
+        # unchanged: the caller's error handling is not this function's to alter.
+        release_staged_startup_hold()
+        raise
 
     payload = _loaded_state_payload(
         status="loaded",

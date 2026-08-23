@@ -24,27 +24,43 @@ reboot; only a live, in-flight startup-load session sees the hold. This mirrors
 ``jasper.control.measurement_hold``'s "nothing persisted; a reboot drops it =
 intended crash-safety" philosophy.
 
-Two units reach the writers, and they are not both root. ``jasper-web``
-(``User=jasper-web``, ``ProtectSystem=strict``) writes the hold from ``/sound/``'s
-``POST /active-speaker/load-startup-config`` and clears it from
-``/active-speaker/rollback-startup-config``; ``jasper-correction-web`` (root)
-writes it from ``/correction/``'s driver-capture and level-match arms, which
-reach the same ``load_protected_startup_config`` through
-``web_commissioning._ensure_commission_startup_anchor``. ``ProtectSystem=strict``
-mounts the hierarchy read-only apart from ``/dev``, ``/proc``, and ``/sys``, so
-``jasper-web`` cannot write anywhere under ``/run`` on its own — it owns the
-directory through ``RuntimeDirectory=jasper-active-speaker``
-(``deploy/jasper-web.service``), which systemd creates as ``jasper-web:jasper``
-mode 0755 and excludes from ``ProtectSystem=``. Root writes and 0755 reads need
-nothing further, so no supplementary group is involved.
+THREE units reach the writers, and they are not all root, nor all the same
+sandbox:
+
+* ``jasper-web`` (``User=jasper-web``, ``ProtectSystem=strict``) — writes the
+  hold from the ``/sound/`` commissioning flow and its
+  ``POST /active-speaker/load-startup-config`` route, and is the only unit that
+  clears it, from ``/active-speaker/rollback-startup-config``.
+* ``jasper-correction-web`` (root, ``ProtectSystem=full``, ``UMask=0077``) —
+  writes it from ``/correction/``'s driver-capture and level-match arms, which
+  reach the same ``load_protected_startup_config`` through
+  ``web_commissioning._ensure_commission_startup_anchor``.
+* ``jasper-web-streambox.service`` (root, ``ProtectSystem=full``) — the same
+  ``python -m jasper.web`` process, installed AS ``jasper-web.service`` on a
+  streambox, so it serves the same routes as the first entry from a root
+  identity and an unrestricted ``/run``.
+
+``ProtectSystem=strict`` mounts the hierarchy read-only apart from ``/dev``,
+``/proc``, and ``/sys``, so only the first of the three cannot write under
+``/run`` on its own; it owns the directory through
+``RuntimeDirectory=jasper-active-speaker`` (``deploy/jasper-web.service``), which
+systemd creates as ``jasper-web:jasper`` mode 0755 and excludes from
+``ProtectSystem=``. The two root writers and the root reader need nothing
+further, so no supplementary group is involved.
 
 Fail direction: a write failure never raises here, but it is not silent —
 ``load_protected_startup_config`` refuses the load with the
 ``staged_startup_hold_unavailable`` blocker before it applies anything, because
-the reconcile it would kick undoes an unheld anchor. A read failure resolves to
-"no hold", which restores the saved baseline — audio, never silence, and never
-louder. A failed CLEAR is fail-safe on its own: the baseline restore just waits
-for the next rollback or reboot.
+the reconcile it would kick undoes an unheld anchor. **A write failure over an
+EXISTING marker is not a failure to hold:** the two root writers create the
+marker ``root:root`` 0600 under their ``UMask=0077``, which ``jasper-web``
+cannot ``touch()`` — but the marker's PRESENCE is the hold, and the reader
+decides on exactly that, so the writer answers from the marker rather than from
+its own call. Release works from either identity because ``unlink`` needs write
+on the 0755 DIRECTORY, not on the file. A read failure resolves to "no hold",
+which restores the saved baseline — audio, never silence, and never louder. A
+failed CLEAR is fail-safe on its own: the baseline restore just waits for the
+next rollback or reboot.
 """
 
 from __future__ import annotations
@@ -107,14 +123,29 @@ def hold_staged_startup(path: str | Path | None = None) -> bool:
         marker.touch()
         return True
     except OSError as exc:
+        # The marker being PRESENT is the hold — that is exactly what the reader
+        # decides on — so an existing marker this caller merely cannot rewrite
+        # still holds the anchor. ``touch()`` raises ``PermissionError`` on such a
+        # file, and the sibling root writers leave one: their ``UMask=0077`` makes
+        # the marker ``root:root`` 0600, which a non-root writer cannot rewrite.
+        # Releasing it still works from either side, because ``unlink`` needs
+        # write on the 0755 DIRECTORY, not on the file. So answer from the
+        # marker, not from this call's outcome; a genuine cannot-create still
+        # answers False and the load still refuses.
+        held = False
+        try:
+            held = marker.exists()
+        except OSError:
+            held = False
         log_event(
             logger,
             "active_speaker.staged_startup_hold_write_failed",
             level=logging.WARNING,
             path=marker,
             error=type(exc).__name__,
+            held=held,
         )
-        return False
+        return held
 
 
 def release_staged_startup_hold(path: str | Path | None = None) -> bool:

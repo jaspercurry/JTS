@@ -223,20 +223,28 @@ above; this is only the entry points:
   never loud, so this is gated only on the hold, not on identity (#2814's identity
   gate stays on the approved-runtime rungs).
   **The unit owns the marker directory, and a load that cannot be held refuses.**
-  Two units reach the writer: `jasper-web` (`User=jasper-web`,
+  **Three** units reach the writer: `jasper-web` (`User=jasper-web`,
   `ProtectSystem=strict`) through the `/sound/` commissioning flow and its
-  `POST /active-speaker/load-startup-config` route, and `jasper-correction-web`
-  (root) through `/correction/`'s driver-capture and level-match arms; both
-  arrive at the same function, the latter via
-  `web_commissioning._ensure_commission_startup_anchor`.
-  `ProtectSystem=strict` mounts the hierarchy read-only apart from `/dev`,
-  `/proc`, and `/sys`, so `jasper-web` cannot create `/run/jasper-active-speaker`
-  itself; `deploy/jasper-web.service` declares
+  `POST /active-speaker/load-startup-config` route; `jasper-correction-web`
+  (root, `ProtectSystem=full`, `UMask=0077`) through `/correction/`'s
+  driver-capture and level-match arms, via
+  `web_commissioning._ensure_commission_startup_anchor`; and
+  `jasper-web-streambox.service` (root, `ProtectSystem=full`), which is the same
+  `python -m jasper.web` process installed AS `jasper-web.service` on a
+  streambox. `jasper-web` is the only one that clears the hold, and the only one
+  whose sandbox blocks it: `ProtectSystem=strict` mounts the hierarchy read-only
+  apart from `/dev`, `/proc`, and `/sys`, so it cannot create
+  `/run/jasper-active-speaker` itself. `deploy/jasper-web.service` declares
   `RuntimeDirectory=jasper-active-speaker` (mode 0755,
   `RuntimeDirectoryPreserve=yes` because the unit is socket-activated and idles
   out while a hold is live), which systemd creates as `jasper-web:jasper` and
-  excludes from `ProtectSystem=`. The root writer and the root reconciler's read
-  need nothing further. When the hold cannot be taken,
+  excludes from `ProtectSystem=`. The two root writers and the root reconciler's
+  read need nothing further. **A marker that already exists still holds**, even
+  when this writer cannot rewrite it — the root writers leave it `root:root`
+  0600, `touch()` raises there, and `hold_staged_startup` therefore answers from
+  the marker's presence rather than from its own call; `unlink` needs write on
+  the 0755 directory, not on the file, so release works from either identity.
+  When the hold cannot be taken at all,
   `load_protected_startup_config` returns `status="blocked"` with the
   `staged_startup_hold_unavailable` blocker naming the directory — it applies
   nothing, because a load whose durable half the next reconcile would undo must

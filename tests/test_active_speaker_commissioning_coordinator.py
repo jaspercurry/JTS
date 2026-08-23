@@ -1019,6 +1019,46 @@ def test_summed_test_failure_message_maps_the_rest_of_the_anchor_family():
     assert "Confirm outputs" in proof_missing
 
 
+def test_staged_hold_unavailable_copy_beats_the_anchor_family_and_never_says_retry():
+    """The two household surfaces must not contradict each other.
+
+    `staged_startup_hold_unavailable` always rides the SAME payload as
+    `commission_startup_anchor_load_failed` (the anchor helper wraps the load's
+    refusal), and `summed_test_failure_message` returns the FIRST family that
+    matches. The anchor family says "Press Play combined test to retry"; the
+    /sound/ JS ladder entry for this same code says retrying cannot clear it.
+    Both cannot be true, so this code's own entry has to win — which is an
+    ordering fact, not just a registration fact, and ordering is what this pins.
+    """
+
+    both = summed_test_failure_message([
+        {
+            "severity": "blocker",
+            "code": "commission_startup_anchor_load_failed",
+            "message": "could not load the silent active-speaker setup",
+        },
+        {
+            "severity": "blocker",
+            "code": "staged_startup_hold_unavailable",
+            "message": "could not hold the staged startup anchor",
+        },
+    ])
+    assert "Open System status" in both
+    assert "retry" not in both.lower(), (
+        "retrying cannot clear a hold the speaker cannot take — the anchor "
+        "family's retry copy must not win over this code's own entry"
+    )
+    # Alone, it says the same thing.
+    alone = summed_test_failure_message([
+        {
+            "severity": "blocker",
+            "code": "staged_startup_hold_unavailable",
+            "message": "could not hold the staged startup anchor",
+        },
+    ])
+    assert alone == both
+
+
 def test_summed_test_failure_message_surfaces_an_unmapped_blocker_reason():
     """An unknown blocker fails loud: its own reason, never generic-only.
 
