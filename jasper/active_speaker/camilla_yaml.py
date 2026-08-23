@@ -3092,8 +3092,15 @@ pipeline:
 # WAV so the CamillaDSP graph stays static (no reload mid-program). This graph
 # maps each program capture channel to its driver's PHYSICAL output path.
 
-# LR4 is the shipped crossover slope; 24 dB/oct is the protective-HP floor slope
-# a tweeter crossover high-pass must meet by construction (design §5.4).
+# LR4 is the shipped crossover slope, and 24 dB/oct is the slope this build
+# COMMISSIONS a tweeter crossover high-pass at (design §5.4). It is a code
+# figure, not a declaration, so since the 2026-08-23 owner ruling it may
+# disclose a shallower crossover and may prove a protective filter this build
+# itself derived — it may NOT refuse a crossover order a household pinned. See
+# ``_assert_tweeter_crossover_hp_satisfies_floor`` for which half of that gate
+# is a refusal and which is a log line, and
+# ``driver_protection.PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`` for the same
+# distinction on the declaration side.
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
@@ -3199,15 +3206,33 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
     min_corner_hz: float,
     min_slope_db_per_octave: float,
 ) -> None:
-    """Refuse a preset whose tweeter crossover HP would violate the protective floor.
+    """Refuse a preset whose tweeter crossover HP crosses BELOW the declared floor.
 
     In the program graph the tweeter is protected by its TARGET crossover
     high-pass alone (the extra bring-up protective HP is dropped so the measured
-    branch is the applied crossover shoulder — design §5.4). That is only safe
-    when the crossover Fc / slope already satisfies the declared protective-HP
-    floor. This build-time gate proves it from the preset BEFORE any YAML is
-    emitted, so a preset that crosses the tweeter too low (or too gently) is
-    refused loudly rather than measured behind an under-protective high-pass.
+    branch is the applied crossover shoulder — design §5.4), so this build-time
+    gate reads that crossover from the preset BEFORE any YAML is emitted.
+
+    **The corner REFUSES; the slope only DISCLOSES**, and the split is the
+    2026-08-23 owner ruling ("if it was in the safe overall envelope, it's safe
+    to test"), not a weakening. ``min_corner_hz`` reaches here from the driver's
+    own declared protective floor, and a crossover below it puts the
+    low-frequency excursion hazard band on a compression driver — a named damage
+    mechanism, so it stays a refusal. ``min_slope_db_per_octave`` reaches here
+    as :data:`PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE`, a hardcoded 24 that
+    no datasheet contains; refusing an order-2 crossover against it is the
+    same nanny the ruling struck at
+    :func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`,
+    one stage later and after the round had already been measured.
+
+    Why that was not caught with the rest of it: this branch runs only when the
+    caller omits ``protection_sections_by_role``, which the MEASURE call site
+    supplies and the **VERIFY** one does not — so an order-2 pin was admitted,
+    measured, applied, and then refused at VERIFY's emit. The manufacturer's
+    published condition is enforced at the pin, where the declaration is
+    readable; here there is no profile to read one from, so the shortfall is
+    logged (``result=tweeter_hp_slope_below_commissioning_floor``) and the graph
+    is emitted.
     """
     for role in required_driver_roles(preset.way_count):
         if role != "tweeter":
@@ -3234,19 +3259,20 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
                 f"declared protective floor {min_corner_hz:g} Hz"
             )
         if order * 6.0 < min_slope_db_per_octave:
+            # Disclosed, never refused — see this function's docstring. WARNING
+            # rather than ERROR because nothing is blocked: the household chose
+            # a shallower crossover than this build commissions at, the corner
+            # above already cleared the declared floor, and the manufacturer's
+            # published condition (if any) was applied at the pin.
             log_event(
                 logger,
                 "active_speaker.program_emit_gate",
-                level=logging.ERROR,
-                result="blocked_tweeter_hp_slope_below_floor",
+                level=logging.WARNING,
+                result="tweeter_hp_slope_below_commissioning_floor",
                 preset_id=preset.preset_id,
                 order=order,
-                min_slope_db_per_octave=f"{min_slope_db_per_octave:g}",
-            )
-            raise ActiveSpeakerConfigError(
-                f"tweeter crossover high-pass slope {order * 6.0:g} dB/oct is "
-                f"below the declared protective floor "
-                f"{min_slope_db_per_octave:g} dB/oct"
+                slope_db_per_octave=f"{order * 6.0:g}",
+                commissioning_floor_db_per_octave=f"{min_slope_db_per_octave:g}",
             )
 
 

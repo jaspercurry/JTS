@@ -85,15 +85,17 @@ them:
   only against the protective filter this build emitted from that same derived
   number — never against a corner a household pinned.
 
-One dormant exception, named so a later reader is not surprised by it:
-``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor`` refuses the
+There was a SECOND copy of exactly this refusal, and it was live rather than
+dead: ``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor`` refused the
 CROSSOVER high-pass at ``order * 6 < PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE``
-(hardcoded 24) — a second copy of exactly the refusal this ruling struck.  It is
-unreachable today: ``emit_active_speaker_program_config`` runs it only on its
-``protection_sections_by_role is None`` branch, and the one production caller
-always supplies that mapping.  But the parameter defaults to ``None``, so it is
-one omitted keyword from firing.  If that branch is ever revived it needs the
-same published-vs-derived split as this gate.
+(a hardcoded 24) on ``emit_active_speaker_program_config``'s
+``protection_sections_by_role is None`` branch — which the VERIFY stage takes,
+because ``correction_crossover_v2`` builds ``bind_production_play`` twice and
+only the MEASURE one supplies that mapping.  An order-2 pin admitted here was
+therefore measured, applied, and refused at VERIFY's emit.  That slope half is
+now a WARNING log
+(``result=tweeter_hp_slope_below_commissioning_floor``) and its CORNER half
+— the one naming a damage mechanism — is still a refusal.
 
 So a published condition that is not checked here is not checked anywhere,
 which is why this is the one place it is applied.

@@ -1941,11 +1941,14 @@ Owning modules and their gates:
   `graph_safety.output_highpass_protected` reads the corner and no order;
   `graph_safety.tweeter_guard_present` reads `order` absent or `>= 2.0`, which
   every emittable order clears; crossover apply compares corner frequencies
-  only. (One dormant exception:
-  `camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor` refuses the
-  crossover HP against a hardcoded 24, on the
-  `protection_sections_by_role is None` branch the single production caller
-  never takes — one omitted keyword from firing.) So a published condition
+  only. (A second copy of this refusal lived in
+  `camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor`, on the
+  `protection_sections_by_role is None` branch the **VERIFY** stage takes —
+  `correction_crossover_v2` builds `bind_production_play` twice and only the
+  MEASURE one supplies that mapping — so an order-2 pin was measured, applied,
+  and then refused at emit. Its slope half is now a WARNING log
+  (`result=tweeter_hp_slope_below_commissioning_floor`); its corner half is
+  still a refusal.) So a published condition
   unchecked here is unchecked anywhere. It reads the published number and not
   the derived
   `required_protection_filters[highpass].minimum_slope_db_per_octave` since
