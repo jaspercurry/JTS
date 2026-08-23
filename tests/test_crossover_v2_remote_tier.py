@@ -81,9 +81,13 @@ from jasper.web.correction_crossover_v2 import (
 
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
+    CLOUD_VERIFY_INDEXES,
     FC_HZ,
+    STAGE2_MAP,
+    VERIFY_INDEX,
     FakeSeams,
     _cloud_conductor,
+    _conductor,
     _lock,
     _run_phase,
     _walk,
@@ -723,9 +727,77 @@ def test_a_geometry_locked_remote_group_refuses_instead_of_prompting(monkeypatch
     }
 
 
+def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch):
+    """S4a's predicate is the GATE, not the tier (#2879 round-2 SF2).
+
+    Driven on the shape the finding names: a hand-walked Full **stage 2**,
+    gated because it opened on the wired source, walking its ``cloud_verify``
+    group into a lock. The person could perfectly well walk to 75 cm — what
+    they could not do is be told two places at once, which is what prompting
+    here produces: the retry re-authorizes the SAME plan entry, so the position
+    gate goes on publishing that entry's original bearing while the screen
+    names the wider spot.
+
+    It also covers the ARM's stage 2, which reached this branch unrefused
+    before the predicate moved: ``prepare_v2_verify`` constructs its session
+    with no ``tier`` at all, so the old ``tier_is_externally_positioned`` read
+    answered False for every stage-2 group including remote's.
+    """
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    held = _conductor(
+        fakes,
+        tier=TIER_FULL,
+        positions_gated=True,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
+        applied=True,
+    )
+    attempt = _walk(held, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
+    last = CLOUD_VERIFY_INDEXES[-1]
+    _lock(monkeypatch)
+
+    verdict = _run_phase(held, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == REASON_GEOMETRY_RETAKE_UNREACHABLE
+    # ONE surface owns the answer: no prompt is handed back for a spot the gate
+    # would go on contradicting.
+    assert not verdict.get("prompt")
+    # Nothing was spent and nothing was dropped: this is not a retry.
+    assert last in {
+        int(pid.rsplit("_", 1)[1])
+        for pid in held.group_positions(flow.PHASE_CLOUD_VERIFY)
+    }
+
+
+def test_the_same_stage_2_group_still_prompts_when_nothing_holds_its_begins(
+    monkeypatch,
+):
+    """The control for the test above, ONE field apart: the ordinary phone
+    round walks the identical stage-2 group with no gate, so there is no second
+    answer to contradict and the household IS asked for the wider spot."""
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    ungated = _conductor(
+        fakes,
+        tier=TIER_FULL,
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
+        applied=True,
+    )
+    attempt = _walk(ungated, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES[:-1]), 1)
+    last = CLOUD_VERIFY_INDEXES[-1]
+    _lock(monkeypatch)
+
+    verdict = _run_phase(ungated, last, attempt)
+    assert verdict["accepted"] is False
+    assert verdict["code"] == flow.REASON_CLOUD_GEOMETRY_LOCKED
+    assert verdict["prompt"] == flow.CLOUD_GEOMETRY_RETRY_PROMPTS[0]
+
+
 def test_a_hand_walked_group_still_gets_its_wider_retake_prompt(monkeypatch):
-    """The other half of S4a: the refusal is scoped to externally positioned
-    sessions, and a household that CAN walk to 75 cm is still asked to."""
+    """The other half of S4a: the refusal is scoped to GATED sessions, and a
+    household whose begins nothing holds is still asked to walk to 75 cm."""
     fakes = FakeSeams()
     walked = _cloud_conductor(fakes, tier=TIER_FULL)
     attempt = _walk(walked, (1, 2), 1)
