@@ -1344,7 +1344,11 @@ def correction_rollback_failed_message(rollback_anchor_available: bool | None) -
     the capability it reports is ``rollback_anchor_refusal is None``, and that
     refusal has FOUR named codes — nothing applied, no stashed profile, the
     output topology changed since the apply, and the stash naming a graph this
-    round did not displace. On jts3, 2026-08-22, the last of those told a
+    round did not displace. (Those are the four STATIC gates; the fifth,
+    ``ANCHOR_RUNNING_CONFIG_DIVERGED``, needs a live CamillaDSP reading the
+    capability probe deliberately does not take, so it reaches a household
+    through the restore endpoint rather than through this bool.) On jts3,
+    2026-08-22, the last of the four told a
     household with an intact stash and an intact displaced record that their
     speaker had never been corrected, and sent the operator after the wrong
     diagnosis. One sentence true of all four is the honest rendering of a bool

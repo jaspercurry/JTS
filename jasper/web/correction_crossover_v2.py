@@ -93,6 +93,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.round_anchor import (
     ROUND_ANCHOR_STATE_KEY,
     restore_target_diverged,
+    displaced_restore_target,
     round_anchor_record,
     running_config_diverged,
     stashed_restore_target,
@@ -801,11 +802,9 @@ def observe_apply_success(
             "correction.crossover_v2_apply_inherited_stale_anchor",
             level=logging.WARNING,
             stash_config_path=stash_path,
-            displaced_config_path=str(
-                (state[ROUND_ANCHOR_STATE_KEY] or {})
-                .get("displaced", {})
-                .get("config_path") or ""
-            ),
+            displaced_config_path=displaced_restore_target(
+                state[ROUND_ANCHOR_STATE_KEY]
+            )[0],
         )
 
 
@@ -9288,11 +9287,9 @@ def handle_v2_restore(
                 stash_config_path=stashed_restore_target(
                     (state or {}).get("pre_apply_profile")
                 )[0],
-                displaced_config_path=str(
-                    ((state or {}).get(ROUND_ANCHOR_STATE_KEY) or {})
-                    .get("displaced", {})
-                    .get("config_path") or ""
-                ),
+                displaced_config_path=displaced_restore_target(
+                    (state or {}).get(ROUND_ANCHOR_STATE_KEY)
+                )[0],
             )
         raise CrossoverV2Refused(refusal.message)
     # No refusal means the anchor cleared all five checks, so the state is

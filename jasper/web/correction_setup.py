@@ -7321,6 +7321,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         ),
                     )
                 except ValueError as e:
+                    # A refusal (CrossoverV2Refused) and a malformed body
+                    # (BadRequest) are both the CALLER being told no, and they
+                    # stay quiet. Anything else arriving as a ValueError is the
+                    # speaker faulting on its own apply path and leaves no
+                    # other record: this arm answers 400 with the raw string
+                    # and, unlike its 500 sibling below, logged nothing. #2839
+                    # gave `save_v2_state` an `allow_nan=False` refusal that
+                    # lands exactly here, so the fault half is now named.
+                    from jasper.web.correction_crossover_v2 import (
+                        CrossoverV2Refused,
+                    )
+                    if not isinstance(e, (BadRequest, CrossoverV2Refused)):
+                        log_event(
+                            logger,
+                            "correction.crossover_v2_apply_fault",
+                            level=logging.ERROR,
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
                     self._send_json(
                         {"ok": False, "error": str(e)},
                         status=HTTPStatus.BAD_REQUEST,

@@ -2869,7 +2869,10 @@ apply actually displaced is still open, and is the design question the
 2026-08-15 resurrection bounds.
 
 **The no-anchor sentence names no cause (#2859).** `rollback_anchor_available`
-is one bool over all five preconditions, and its household sentence used to end
+is one bool over the FOUR static preconditions the capability probe can
+answer — it calls `rollback_anchor_refusal` with no `running_config_path`,
+so the live fifth check cannot fire there — and its household sentence used
+to end
 "this was its first measured crossover" — true of `ANCHOR_NO_PRE_APPLY_PROFILE`
 and of no other code on the list. On 2026-08-22 a jts3 speaker with an intact
 stash and an intact displaced record hit `ANCHOR_STASH_NOT_DISPLACED` and was

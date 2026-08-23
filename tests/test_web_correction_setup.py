@@ -815,6 +815,52 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     assert b"200" in resp.split(b"\r\n", 1)[0]
 
 
+def test_an_apply_fault_is_recorded_but_an_apply_refusal_stays_quiet(
+    monkeypatch, caplog,
+):
+    """#2839 gate round: the 400 arm answered with a raw string and logged
+    nothing.
+
+    A ``CrossoverV2Refused`` reaching here is the household being told no, and
+    it has the round's own journal behind it. Anything ELSE arriving as a
+    ValueError is the speaker faulting on its own apply path — which is what
+    ``save_v2_state``'s ``allow_nan=False`` refusal now is — and this arm was
+    its only surface, so it left no record at all. The sibling 500 arm has
+    always logged; this one now does, for the fault half only.
+    """
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    def _raise(exc):
+        def _handler(raw, run_async, camilla_factory, *, status):
+            raise exc
+        return _handler
+
+    # The fault half: a bare ValueError, exactly what json's non-finite
+    # refusal is.
+    monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
+        ValueError("Out of range float values are not JSON compliant: nan")
+    ))
+    with caplog.at_level(logging.ERROR):
+        resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert "crossover_v2_apply_fault" in caplog.text
+    assert "not JSON compliant" in caplog.text
+
+    # …and an ordinary refusal is still a silent 400.
+    caplog.clear()
+    monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
+        v2host_mod.CrossoverV2Refused("nothing to apply")
+    ))
+    with caplog.at_level(logging.ERROR):
+        resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert "crossover_v2_apply_fault" not in caplog.text
+
+
 def test_restore_refusal_maps_to_400_not_500(monkeypatch):
     """W6 run-8 Blocker Q regression pin: the v2-aware Undo endpoint must
     answer a named 400 for an ordinary refusal, never the legacy path's bare

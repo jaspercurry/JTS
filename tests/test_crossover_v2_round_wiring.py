@@ -743,12 +743,20 @@ def test_the_no_anchor_arm_states_no_cause(monkeypatch):
     )
 
     sentence = correction_rollback_failed_message(False)
-    # Every one of these turns the capability False, and the sentence is the
-    # SAME sentence for all of them.
+    # FIVE gates, FOUR of them reachable by the capability probe: it calls
+    # ``rollback_anchor_refusal`` with no ``running_config_path``, and
+    # ``running_config_diverged(anchor, None)`` is False for every way the
+    # question cannot be answered — so ANCHOR_RUNNING_CONFIG_DIVERGED is the
+    # live check ``handle_v2_restore`` adds at the moment of action, and it
+    # reaches this sentence only through that door.
     assert len({
         ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
-        ANCHOR_STASH_NOT_DISPLACED, ANCHOR_RUNNING_CONFIG_DIVERGED,
-    }) == 5
+        ANCHOR_STASH_NOT_DISPLACED,
+    }) == 4
+    assert ANCHOR_RUNNING_CONFIG_DIVERGED not in {
+        ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
+        ANCHOR_STASH_NOT_DISPLACED,
+    }
     assert "first" not in sentence.lower()
     assert "never" not in sentence.lower()
     # The remedies are the half that IS true of all of them.

@@ -58,6 +58,7 @@ __all__ = [
     "ROUND_ANCHOR_STATE_KEY",
     "restore_target_diverged",
     "round_anchor_record",
+    "displaced_restore_target",
     "running_config_diverged",
     "stashed_restore_target",
 ]
@@ -121,6 +122,23 @@ def _identity(path: Any, sha256: Any = None) -> dict[str, str]:
         return {"config_path": "", "sha256": ""}
     digest = str(sha256 or "") or (config_file_sha256(text) or "")
     return {"config_path": text, "sha256": digest}
+
+
+def displaced_restore_target(anchor: Any) -> tuple[str, str]:
+    """The ``(config_path, sha256)`` an anchor says this round DISPLACED.
+
+    :func:`stashed_restore_target`'s mirror, over the other record. The two
+    are asked together wherever the disagreement between them is the finding,
+    so they are written together here rather than transcribed at each site.
+    """
+    record = anchor if isinstance(anchor, Mapping) else {}
+    displaced = record.get("displaced")
+    if not isinstance(displaced, Mapping):
+        return "", ""
+    return (
+        str(displaced.get("config_path") or ""),
+        str(displaced.get("sha256") or ""),
+    )
 
 
 def stashed_restore_target(pre_apply_profile: Any) -> tuple[str, str]:

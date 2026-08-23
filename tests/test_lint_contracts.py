@@ -1363,7 +1363,13 @@ MAX_LINES_BY_PATH = {
     # it rides on: `round_anchor.stashed_restore_target` retires the two inline
     # `config`/`path`/`sha256` transcriptions this file carried (-6), which is
     # the trade that distinguishes it from a third one.
-    "jasper/web/correction_crossover_v2.py": 9_453,
+    # Gate round on that PR: 9,453 -> 9,450, LOWERED. `displaced_restore_target`
+    # is `stashed_restore_target`'s mirror over the other record, and giving the
+    # symmetric half a name retires the two five-line `displaced`/`config_path`
+    # walks this file still spelled by hand. The pair is asked together wherever
+    # their disagreement is the finding, so writing one and transcribing the
+    # other was the asymmetry the seam existed to remove.
+    "jasper/web/correction_crossover_v2.py": 9_450,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
