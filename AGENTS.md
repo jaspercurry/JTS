@@ -769,7 +769,9 @@ Browser phone-mic measurement pages should use
 for mono mic constraints, inline AudioWorklet loading, graph cleanup,
 RMS-to-dBFS conversion, mono WAV encoding, and the invariant that mic
 nodes never feed browser speaker output. Keep feature policy in the
-owning page/module: `/balance/` owns the one-speaker ramp threshold,
+owning page/module: `/balance/` owns only the 500 Hz–2 kHz meter policy
+(its ramp envelope lives in [`jasper/multiroom/balance.py`](jasper/multiroom/balance.py)
+and the floor/target threshold in [`jasper/measurement/level.py`](jasper/measurement/level.py)),
 `/sync/` owns marker timing and upload, `/correction/` owns calibrated
 mic/device selection and capture-quality evidence. Do not migrate
 `/correction/` onto the shared helper without an on-device browser pass;
