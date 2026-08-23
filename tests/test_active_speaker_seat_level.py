@@ -2,36 +2,45 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Calibrated seat-SPL leveling: the conversion, the guards, the banked result.
+"""Calibrated seat-SPL leveling: the climb, the guards, the banked result.
 
 Synthetic throughout — a fake clock, a fake confirming volume pair, a blocking
 tone, and a mic that hears the POWER SUM of a room floor and a speaker that only
 contributes while the tone plays. No ALSA, no CamillaDSP, no microphone.
 
 That mic model is the point of this file. A speaker quieter than the room pins
-the reading at ambient for the first several steps, so the level does not track
-the commanded volume down there — and every rule about "is the microphone
-actually hearing this" has to survive that without either false-aborting a
-healthy chain or passing a mic that is not listening.
+the reading at ambient for the first steps, so the level does not track the
+commanded volume down there — and every rule about "is the microphone actually
+hearing this" has to survive that without either false-aborting a healthy chain
+or passing a mic that is not listening.
 
 What must hold, and what would break if it did not:
 
 * the dBFS -> dB SPL conversion matches a hand-computed value from a real
   UMIK-2 header — every SPL decision downstream is this arithmetic;
+* the step is the measured gap, saturated by the ONE shared audible-step cap
+  ``calibration_level`` already declares; the mutation test drops the
+  saturation and shows a single step lunging the whole way;
+* the start comes from the measured room, so jts3's 61 dB SPL / 75 dB SPL
+  incident — 51 s of timeout at -31.6 dB — converges in three readings and
+  under ten audible seconds;
 * a mic that is plugged in but NOT observing the speaker aborts the climb
   (``mic_not_observing``) instead of walking the volume to the ceiling; the
-  mutation test below removes the guard and shows the ramp doing exactly that;
-* a speaker quieter than the room is NOT aborted, and the no-op control shows
-  the first-reading-relative rule really did abort it;
-* a non-finite feed scores as no rise rather than leaving the guard unarmed;
+  mutation test disarms the guard and shows the ramp doing exactly that;
+* a speaker quieter than the room is NOT aborted, and the control shows a
+  first-reading-relative rule really would abort it;
+* two steps that commanded the whole measured gap and still missed refuse with
+  the measured dB-per-dB slope, rather than chasing a non-monotone chain;
 * a stuck-constant mic never banks a reference, and the control shows that
-  without a measured ambient floor it banked the ramp's own start volume;
-* a measured level above the profile's commissioning ceiling aborts;
-* an unreachable target refuses and banks NOTHING;
+  without the rise-against-ambient test it banks the ramp's own start volume;
+* a measured level above the profile's commissioning ceiling aborts, and an
+  unreachable target refuses and banks NOTHING;
 * the household volume is restored on every exit path — converged, refused,
-  aborted, raised — and the hold is visible to the shared recovery machinery;
-* only a converged, in-window lock writes a reference, and the reader accepts
-  it only inside the safe envelope.
+  aborted, raised, and CANCELLED — and the hold is visible to the shared
+  recovery machinery;
+* only a reading inside the band that rose clear of the room writes a
+  reference, its document keeps its exact shape, and the reader accepts it
+  only inside the safe envelope.
 """
 
 from __future__ import annotations
@@ -61,7 +70,7 @@ from jasper.audio_measurement.calibration import (
     MicSensitivity,
     parse_calibration_sensitivity,
 )
-from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, LevelSample
+from jasper.audio_measurement.ramp import LevelSample, capped_gap_step_db
 
 # The real header of the household UMIK-2 (serial 810-8494), verbatim, plus two
 # curve rows so the file is a realistic whole.
@@ -137,13 +146,22 @@ def _control_unreachable(monkeypatch):
         svp, "read_measurement_hold", lambda: None,
     )
 
-# Below the runaway guard's abort level (start + probe span) on purpose, so
-# ``max(commanded)`` in the guard tests reads the RAMP's peak and not the
-# household level the latch restores at the end.
+# The household level the latch records and restores. Below anything the ramp
+# commands, so a test that reads the restored value cannot confuse it with a
+# volume the climb happened to pass through.
 HOUSEHOLD_VOLUME_DB = -44.0
 CEILING_DB = -6.0
+# A realistically quiet listening room. Every rig's chain gain is expressed
+# against this floor, so an unrealistic one would model a speaker no room ever
+# meets and make the rise assertions meaningless.
+ROOM_DB_SPL = 45.0
 SPL_CEILING = 85.0
 TARGET = SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5)
+# One bite for the shared rig, read from the module so a fraction change cannot
+# leave these assertions asserting a stale number.
+DEFAULT_BITE_DB = slr.bite_db(
+    start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=CEILING_DB
+)
 
 
 class FakeClock:
@@ -220,7 +238,7 @@ class Mic:
         tone: BlockingTone,
         *,
         gain_db: float = -10.0,
-        ambient_dbfs: float = -80.0,
+        ambient_dbfs: float | None = None,
         deaf: bool = False,
         stuck_dbfs: float = -75.0,
         nan_once_playing: bool = False,
@@ -228,7 +246,11 @@ class Mic:
         self._volume = volume
         self._tone = tone
         self.gain_db = gain_db
-        self.ambient_dbfs = ambient_dbfs
+        self.ambient_dbfs = (
+            UMIK2.dbfs_from_db_spl(ROOM_DB_SPL)
+            if ambient_dbfs is None
+            else ambient_dbfs
+        )
         self.deaf = deaf
         self.stuck_dbfs = stuck_dbfs
         self.nan_once_playing = nan_once_playing
@@ -293,13 +315,13 @@ async def _level(
     return result
 
 
-def _always_ambient(value: float):
-    """A stand-in for the ambient measurement that reports a fixed floor."""
+def _far_chain_gain_db() -> float:
+    """A chain that needs more capped bites than the miss budget allows misses.
 
-    async def _measure(next_samples, *, clock, sleep, window_s=None):
-        return value
-
-    return _measure
+    At the start it measures 5 dB UNDER the room, so the first bites are
+    ambient-dominated -- and the band is ~37 dB up from there.
+    """
+    return gain_for_seat_spl(ROOM_DB_SPL - 5.0, at_volume_db=slr.SEAT_LEVEL_START_DB)
 
 
 def _rig(**mic_kwargs) -> tuple[Volume, BlockingTone, Mic]:
@@ -375,24 +397,148 @@ def test_target_tolerance_must_be_a_real_positive_width(tolerance):
         )
 
 
-# --- the ramp config --------------------------------------------------------
+# --- the shared climb policy ------------------------------------------------
 
 
-def test_ramp_window_is_the_band_converted_through_the_mic():
-    config = slr.build_seat_level_ramp_config(
-        target=TARGET, sensitivity=UMIK2, max_main_volume_db=CEILING_DB
+def test_the_step_is_the_measured_gap():
+    # 62.3 dB SPL measured, 75 wanted: the step is the 12.7 dB that remain,
+    # saturated by the cap. No staircase rung size is guessed anywhere.
+    assert capped_gap_step_db(measured_db=62.3, target_db=75.0, cap_db=100.0) == (
+        pytest.approx(12.7)
     )
-    assert config.window_low_dbfs == pytest.approx(-31.07)
-    assert config.window_high_dbfs == pytest.approx(-26.07)
-    assert config.cap_ceil_db == CEILING_DB
-    assert config.start_db == slr.SEAT_LEVEL_START_DB
-    # The kernel's own overshoot invariant holds: the staircase provably stops
-    # below the window rather than climbing into it.
-    assert config.pre_window < config.window_low_dbfs
+    assert capped_gap_step_db(measured_db=67.4, target_db=75.0, cap_db=10.0) == (
+        pytest.approx(7.6)
+    )
+    # Uncapped by default: a caller whose own geometry bounds the jump passes
+    # no cap (the phone-relay kernel's settled jump).
+    assert capped_gap_step_db(measured_db=0.0, target_db=90.0) == pytest.approx(90.0)
+
+
+def test_the_cap_saturates_upward_only():
+    # Up: capped. Down: never — a downward move reduces risk, the same
+    # asymmetry calibration_level states for its own upward_step_limit_db.
+    assert capped_gap_step_db(measured_db=40.0, target_db=75.0, cap_db=10.0) == (
+        pytest.approx(10.0)
+    )
+    assert capped_gap_step_db(measured_db=95.0, target_db=75.0, cap_db=10.0) == (
+        pytest.approx(-20.0)
+    )
+
+
+def test_the_bite_is_a_fraction_of_the_runs_own_span():
+    """Hardware-independent by construction, which a dB constant cannot be.
+
+    An unknown amplifier moves WHERE inside the span the speaker becomes
+    audible; it does not change the span. So the bite count to sweep any chain
+    is the same whatever the gain, which is the whole reason this is a fraction
+    and not a number of dB.
+    """
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-6.8) == pytest.approx(
+        slr.BITE_FRACTION * 43.2
+    )
+    # Same fraction of a span half as wide is half as big -- and either way the
+    # sweep takes at most ceil(1 / BITE_FRACTION) bites.
+    narrow = slr.bite_db(start_db=-50.0, ceiling_db=-28.4)
+    assert narrow == pytest.approx(slr.bite_db(start_db=-50.0, ceiling_db=-6.8) / 2)
+    for ceiling in (-6.8, -28.4, 0.0, -40.0):
+        span = ceiling - (-50.0)
+        bite = slr.bite_db(start_db=-50.0, ceiling_db=ceiling)
+        assert math.ceil(span / bite) == math.ceil(1 / slr.BITE_FRACTION)
+
+
+def test_a_degenerate_span_yields_no_bite_rather_than_a_divide_by_zero():
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-50.0) == 0.0
+    assert slr.bite_db(start_db=-6.8, ceiling_db=-50.0) == 0.0
+
+
+def test_the_climb_bite_is_deliberately_not_the_calibration_step_limit():
+    """Two questions, two vocabularies — recorded so it does not read as drift.
+
+    ``calibration_level.AUDIBLE_RAMP_STEP_DB`` clamps ONE call to the
+    calibration ``set`` endpoint: a per-request bound on an operator-driven
+    jump. The climb bite is sized to the span this run has to sweep. An earlier
+    draft of this pass borrowed the calibration constant as its cap; that made
+    the bite a guess about a stranger's amplifier, which is exactly what the
+    range-fraction exists to avoid.
+    """
+    from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
+
+    assert AUDIBLE_RAMP_STEP_DB == 10.0  # unchanged; this PR does not touch it
+    assert not hasattr(slr, "AUDIBLE_RAMP_STEP_DB")
+    # ...and the bite genuinely differs from it on a real span.
+    assert slr.bite_db(start_db=-50.0, ceiling_db=-6.8) != pytest.approx(
+        AUDIBLE_RAMP_STEP_DB
+    )
+
+
+def test_the_kernel_jump_is_the_same_policy():
+    """The phone-relay kernel's settled jump computes the shared step too.
+
+    ``RampController._apply_jump`` aims at the window midpoint from a settled
+    read; that is ``capped_gap_step_db`` with no cap. Pinned so a future edit
+    cannot quietly fork a second arithmetic for the same question.
+    """
+    import inspect
+
+    from jasper.audio_measurement.ramp import RampController
+
+    source = inspect.getsource(RampController._apply_jump)
+    assert "capped_gap_step_db(" in source
+
+
+# --- the window conversion, the ceiling, and the start ----------------------
+
+
+def test_the_window_is_the_band_converted_through_the_mic():
+    low, high = slr.validate_seat_level_window(target=TARGET, sensitivity=UMIK2)
+    assert low == pytest.approx(-31.07)
+    assert high == pytest.approx(-26.07)
+
+
+def test_the_window_refuses_a_band_the_mic_cannot_capture():
+    # A mic gained so hot it already reads +20 dBFS at the 94 dB SPL calibrator
+    # clips long before 80 dB SPL: 80 + 20 - 94 = +6 dBFS, past full scale.
+    hot = MicSensitivity(sens_factor_db=20.0)
+    with pytest.raises(
+        slr.SeatLevelRampError, match=slr.REFUSE_SPL_TARGET_UNCAPTURABLE
+    ):
+        slr.validate_seat_level_window(target=TARGET, sensitivity=hot)
+
+
+@pytest.mark.parametrize(
+    "ceiling_db",
+    [
+        pytest.param(-55.0, id="below_the_start"),
+        pytest.param(slr.SEAT_LEVEL_START_DB, id="at_the_start"),
+        pytest.param(float("nan"), id="not_a_number"),
+    ],
+)
+def test_a_ceiling_with_no_room_to_climb_refuses(tmp_path, ceiling_db):
+    """One comparison, two failures — and a NaN is the second one.
+
+    ``not start_db < ceiling_db`` is False for a ceiling at or under the start
+    AND for a non-finite one, because every NaN comparison is False. A ramp with
+    nowhere to climb must say so rather than command a single volume.
+    """
+    volume, tone, mic = _rig(gain_db=-10.0)
+    with pytest.raises(
+        slr.SeatLevelRampError, match=slr.REFUSE_VOLUME_CEILING_TOO_LOW
+    ):
+        asyncio.run(
+            _level(
+                mic=mic,
+                volume=volume,
+                tone=tone,
+                tmp_path=tmp_path,
+                max_main_volume_db=ceiling_db,
+            )
+        )
+    assert not tone.started
+    assert not (tmp_path / "seat_level_reference.json").exists()
 
 
 def test_full_scale_clamps_a_headroom_ceiling_that_asks_for_gain():
-    """The rail that survives the 2026-08-23 de-nanny, pinned.
+    """The rail that survives the 2026-08-23 de-nanny, pinned (#2910).
 
     ``unsegmented_stimulus_ceiling_db`` is digital headroom now, so a quiet
     stimulus legitimately asks for a ceiling ABOVE 0 dB — a -12 dBFS program
@@ -402,51 +548,311 @@ def test_full_scale_clamps_a_headroom_ceiling_that_asks_for_gain():
     has.
 
     Mutation guard: drop ``min(..., HARD_CEILING_DBFS)`` from
-    ``build_seat_level_ramp_config`` and this asks the fader for +12 dB.
+    ``seat_level_ceiling_db`` and this asks the fader for +12 dB.
     """
-    config = slr.build_seat_level_ramp_config(
-        target=TARGET, sensitivity=UMIK2, max_main_volume_db=12.0
-    )
-    assert config.cap_ceil_db == 0.0
+    from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
+
+    assert slr.seat_level_ceiling_db(12.0) == 0.0
     assert HARD_CEILING_DBFS == 0.0
+    # ...and an honest sub-rail ceiling is passed through untouched.
+    assert slr.seat_level_ceiling_db(-6.8) == pytest.approx(-6.8)
 
 
-def test_ramp_config_refuses_a_band_the_mic_cannot_capture():
-    # A mic gained so hot it already reads +20 dBFS at the 94 dB SPL calibrator
-    # clips long before 80 dB SPL: 80 + 20 - 94 = +6 dBFS, past full scale.
-    hot = MicSensitivity(sens_factor_db=20.0)
-    with pytest.raises(slr.SeatLevelRampError, match=slr.REFUSE_SPL_TARGET_UNCAPTURABLE):
-        slr.build_seat_level_ramp_config(
-            target=TARGET, sensitivity=hot, max_main_volume_db=CEILING_DB
-        )
+def test_the_start_is_low_and_uninformed_on_purpose(tmp_path):
+    """The bite size, not the start, is what makes the pass fast.
+
+    A start derived from the measured room was tried and dropped: from -50 dB
+    the bites still cross a 61 dB SPL room in five of them, so the derivation
+    bought a second and cost a constant, a helper, and a refusal. Keeping the
+    start low is also what makes the bite fraction meaningful -- it is a
+    fraction of the span BETWEEN this floor and the ceiling.
+    """
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path)
+    assert result.ramp["start_db"] == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert result.ramp["steps"][0]["volume_db"] == pytest.approx(
+        slr.SEAT_LEVEL_START_DB
+    )
 
 
-def test_ramp_config_refuses_a_ceiling_with_no_room_to_climb():
-    with pytest.raises(slr.SeatLevelRampError, match=slr.REFUSE_VOLUME_CEILING_TOO_LOW):
-        slr.build_seat_level_ramp_config(
-            target=TARGET, sensitivity=UMIK2, max_main_volume_db=-55.0
-        )
+def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
+    """Derived from the ACTUAL start and the ACTUAL step cap.
+
+    The retired kernel budgeted ``span / ramp_rate`` — a continuous climb —
+    for a walk that was settle-gated, which is how a 51 s budget expired 25 dB
+    below its own ceiling. This prices the readings the pass really takes.
+    """
+    seconds = slr._watchdog_seconds(start_db=-50.0, ceiling_db=-6.8)
+    # Any span is ceil(1 / BITE_FRACTION) bites; plus the first reading and the
+    # two allowed misses, that is a fixed reading count of (settle + window),
+    # the ambient window, and the slack.
+    per_reading = 2 * slr.MIC_SETTLE_S
+    bites = math.ceil(1 / slr.BITE_FRACTION)
+    assert seconds == pytest.approx(
+        slr.MIC_SETTLE_S
+        + (1 + bites + slr.MAX_MISSED_FULL_STEPS) * per_reading
+        + slr.WATCHDOG_SLACK_S
+    )
+    # ...and because the bite scales with the span, the budget is the SAME for a
+    # wider one: the bite count is what the watchdog prices, and it is fixed.
+    assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) == pytest.approx(
+        seconds
+    )
 
 
-def test_ramp_config_refuses_a_band_too_narrow_for_the_overshoot_invariant():
-    with pytest.raises(slr.SeatLevelRampError, match=slr.REFUSE_RAMP_CONFIG_INVALID):
-        slr.build_seat_level_ramp_config(
-            target=SeatLevelTarget(target_db_spl=77.5, tolerance_db=0.3),
+# --- the incident: a 61 dB SPL room, a 75 dB SPL target ---------------------
+
+
+JTS3_AMBIENT_DB_SPL = 61.0
+JTS3_CEILING_DB = -6.8
+JTS3_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
+# captures/new-horn-2026-08: 75 dB SPL was predicted at -12.099 dB main volume,
+# so the chain maps commanded volume to seat SPL as `volume + 87.099`.
+JTS3_GAIN_DB = UMIK2.dbfs_from_db_spl(75.0) - (-12.099)
+_JTS3_BITE_DB = slr.bite_db(
+    start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+)
+
+
+class StampingTone(BlockingTone):
+    """A tone that records when it started, so audible seconds are measurable."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__()
+        self._clock = clock
+        self.started_at: float | None = None
+        self.cancelled_at: float | None = None
+
+    async def play(self) -> None:
+        self.started_at = self._clock.now()
+        await super().play()
+
+    def cancel(self) -> None:
+        if self.cancelled_at is None:
+            self.cancelled_at = self._clock.now()
+        super().cancel()
+
+
+def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
+    """The jts3 rig: a 61 dB SPL room, the measured chain, the real ceiling."""
+    clock = FakeClock()
+    volume = Volume()
+    tone = StampingTone(clock)
+    mic = Mic(
+        volume,
+        tone,
+        gain_db=gain_db,
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(JTS3_AMBIENT_DB_SPL),
+    )
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=JTS3_TARGET,
             sensitivity=UMIK2,
-            max_main_volume_db=CEILING_DB,
+            max_main_volume_db=JTS3_CEILING_DB,
+            spl_ceiling_db_spl=80.0,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
         )
+    )
+    return result, volume, tone, clock
+
+
+def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path):
+    """The incident, reproduced and fixed.
+
+    On 2026-08-22 this exact condition — ambient 61 dB SPL, target 75 dB SPL,
+    ceiling -6.8 dB — refused ``ramp_timeout`` after 51 s at -31.6 dB, still
+    25 dB under its own ceiling, because the ladder started at -50 dB (~26 dB
+    UNDER the room) and its noise gate discarded 1138 of 1194 samples while the
+    clock ran. The gap-stepped ramp starts where the room says and lands in the
+    band in seven readings.
+    """
+    result, _volume, tone, _clock = _jts3_pass(tmp_path)
+
+    assert result.status == "converged", (result.reason, result.detail)
+    steps = result.ramp["steps"]
+    assert len(steps) == 7, steps
+    assert result.ramp["start_db"] == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert result.ramp["bite_db"] == pytest.approx(_JTS3_BITE_DB, abs=0.01)
+    # Full bites while buried in the room, then steps aimed at the measured gap
+    # once the speaker emerges from it.
+    volumes = [step["volume_db"] for step in steps]
+    rises = [b - a for a, b in zip(volumes, volumes[1:])]
+    assert volumes[0] == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert rises[:4] == [pytest.approx(_JTS3_BITE_DB)] * 4
+    assert rises[-1] < _JTS3_BITE_DB  # the closing step is the measured gap
+    assert -14.0 < volumes[-1] < -12.0
+    assert JTS3_TARGET.low_db_spl <= result.measured_db_spl <= JTS3_TARGET.high_db_spl
+    assert -14.0 < result.reference_volume_db < -12.0
+    # Under the ceiling and under the commissioning stop, throughout.
+    assert max(step["volume_db"] for step in steps) < JTS3_CEILING_DB
+    assert max(step["observed_db_spl"] for step in steps) < 80.0
+
+
+def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
+    """The owner's requirement, measured rather than asserted.
+
+    Seven readings at one mic-settle drain plus one median window each. The
+    ambient window before it is SILENT — nothing plays — so it is not audible
+    time at all.
+    """
+    _result, _volume, tone, clock = _jts3_pass(tmp_path)
+
+    assert tone.started_at is not None and tone.cancelled_at is not None
+    audible_s = tone.cancelled_at - tone.started_at
+    assert audible_s < 10.0
+    # Three readings account for it, plus the fade-before-tone-kill that follows
+    # the last one -- which is audible time as well, and is bounded by the fade's
+    # own step size.
+    readings_s = 7 * (2 * slr.MIC_SETTLE_S)
+    fade_s = (abs(-12.0 - slr.FADE_FLOOR_DB) / slr.FADE_STEP_DB) * slr.FADE_STEP_S
+    assert readings_s <= audible_s <= readings_s + fade_s + slr.MIC_SETTLE_S
+
+
+def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
+    """The starvation the noise gate caused, pinned as its absence.
+
+    At the start the speaker measures far under the 61 dB SPL room, so the
+    first reading is ambient-dominated — the exact population the
+    retired kernel's trust floor threw away. Here it is EVIDENCE: it is what
+    sizes the first step.
+    """
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path)
+    first = result.ramp["steps"][0]
+    # Below the retired trust floor (ambient + 10 dB) and still counted.
+    assert first["rise_db"] < 10.0
+    assert first["samples"] > 0
+    assert first["gap_db"] > _JTS3_BITE_DB
+
+
+# --- the comfort cap --------------------------------------------------------
+
+
+def test_no_single_step_raises_the_room_by_more_than_the_cap(tmp_path):
+    """A large gap is covered in capped strides, never one lunge.
+
+    From a very quiet room the ramp has ~50 dB to cover. Every upward move must
+    still be at most one audible step, because an operator is sitting in front
+    of the speaker.
+    """
+    volume, tone, mic = _rig(gain_db=_far_chain_gain_db())
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.status == "converged", (result.reason, result.detail)
+    volumes = [step["volume_db"] for step in result.ramp["steps"]]
+    rises = [b - a for a, b in zip(volumes, volumes[1:])]
+    assert rises, volumes
+    assert max(rises) <= DEFAULT_BITE_DB + 1e-6
+    # ...and the cap really bound: at least one step was a full cap stride.
+    assert max(rises) == pytest.approx(DEFAULT_BITE_DB)
+
+
+def test_removing_the_cap_lets_one_step_lunge_the_whole_gap(tmp_path, monkeypatch):
+    """Mutation proof for the cap above.
+
+    Neuter ONLY the saturation — the step becomes the raw measured gap — and
+    re-run the identical scenario. One step now raises the room by far more
+    than an audible step's worth, which is precisely what the cap exists to
+    prevent.
+    """
+    monkeypatch.setattr(
+        slr,
+        "capped_gap_step_db",
+        lambda *, measured_db, target_db, cap_db=None: target_db - measured_db,
+    )
+    volume, tone, mic = _rig(gain_db=_far_chain_gain_db())
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    volumes = [step["volume_db"] for step in result.ramp["steps"]]
+    rises = [b - a for a, b in zip(volumes, volumes[1:])]
+    assert max(rises) > DEFAULT_BITE_DB + 1.0
+
+
+# --- the two-miss refusal, and the slope it discloses ------------------------
+
+
+class LaggingMic(Mic):
+    """A chain that answers a commanded dB with only a fraction of a dB.
+
+    Not a fault — a real compressor, a protection limiter, or an amp near its
+    rail behaves like this. The ramp must not chase it forever: two steps that
+    commanded the whole measured gap and still missed is the point at which the
+    honest answer is the measured slope.
+    """
+
+    def __init__(self, *args, slope: float = 0.15, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.slope = slope
+
+    def _rms_dbfs(self) -> float:
+        if not self._tone.started:
+            return self.ambient_dbfs
+        speaker = (self._volume.value * self.slope) + self.gain_db
+        return _power_sum_db(self.ambient_dbfs, speaker)
+
+
+def test_two_full_gap_steps_that_miss_refuse_with_the_measured_slope(tmp_path):
+    volume = Volume()
+    tone = BlockingTone()
+    # Reads 72 dB SPL at the start -- inside one bite of the 75-80 band, so the
+    # ramp commands the WHOLE measured gap rather than a truncated bite, and the
+    # chain answers each dB with 0.15 dB. Two such steps miss, and that is the
+    # point at which the honest answer is the measured slope.
+    slope = 0.15
+    mic = LaggingMic(
+        volume,
+        tone,
+        gain_db=UMIK2.dbfs_from_db_spl(72.0) - slr.SEAT_LEVEL_START_DB * slope,
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(50.0),
+        slope=slope,
+    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_LEVEL_UNCONVERGED, (
+        result.reason, result.ramp
+    )
+    # The refusal is an instrument answer: it says what the chain measured.
+    assert "dB per commanded dB" in (result.detail or "")
+    assert result.ramp["slope_db_per_db"] is not None
+    assert result.ramp["slope_db_per_db"] < 0.5
+    assert result.reference_volume_db is None
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_capped_step_never_spends_the_miss_budget(tmp_path):
+    """A truncated move is not a failed prediction.
+
+    The quiet-room pass above takes several cap-limited strides before it can
+    aim at the band. If those counted as misses it would refuse after two
+    strides instead of converging — so the pass that converges IS the proof,
+    read here off its own telemetry.
+    """
+    volume, tone, mic = _rig(gain_db=_far_chain_gain_db())
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert result.status == "converged", (result.reason, result.detail)
+    volumes = [step["volume_db"] for step in result.ramp["steps"]]
+    capped = [
+        b - a
+        for a, b in zip(volumes, volumes[1:])
+        if abs((b - a) - DEFAULT_BITE_DB) < 1e-6
+    ]
+    assert len(capped) > slr.MAX_MISSED_FULL_STEPS
 
 
 # --- convergence ------------------------------------------------------------
 
 
-def test_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
+def test_a_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
     volume, tone, mic = _rig(gain_db=-10.0)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
-    assert result.status == "converged", result.reason
+    assert result.status == "converged", (result.reason, result.detail)
     # G = -10, so the band [-31.07, -26.07] dBFS is reached at [-21.07, -16.07]
     # dB of main volume.
     assert -21.07 <= result.reference_volume_db <= -16.07
@@ -466,10 +872,43 @@ def test_converged_ramp_banks_the_volume_that_measured_the_band(tmp_path):
     assert banked["mic_sensitivity"]["analog_gain_db"] == 18.0
 
 
-def test_the_ramp_never_commands_above_the_stimulus_ceiling(tmp_path):
+def test_the_banked_artifact_keeps_its_exact_shape(tmp_path):
+    """The document's consumers did not change, so neither may its keys.
+
+    ``session_volume_plan.measurement_reference_volume_db`` and
+    ``jasper-doctor`` read this file; a rework of HOW the volume was found must
+    leave WHAT is written byte-identical in shape.
+    """
     volume, tone, mic = _rig(gain_db=-10.0)
     asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
-    assert max(volume.commanded) <= CEILING_DB + 1e-9
+
+    banked = json.loads((tmp_path / "seat_level_reference.json").read_text())
+    assert set(banked) == {
+        "artifact_schema_version",
+        "kind",
+        "updated_at",
+        "state_path",
+        "reference_volume_db",
+        "measured_db_spl",
+        "target",
+        "mic_sensitivity",
+        "max_main_volume_db",
+    }
+    assert banked["artifact_schema_version"] == 1
+    assert banked["kind"] == "jts_active_speaker_seat_level_reference"
+    assert set(banked["target"]) == {
+        "target_db_spl", "tolerance_db", "low_db_spl", "high_db_spl",
+    }
+    # Rounding is part of the shape: 3 decimals for volumes, 2 for the SPL.
+    assert banked["reference_volume_db"] == round(banked["reference_volume_db"], 3)
+    assert banked["measured_db_spl"] == round(banked["measured_db_spl"], 2)
+    assert banked["max_main_volume_db"] == pytest.approx(CEILING_DB)
+
+
+def test_the_ramp_never_commands_above_the_stimulus_ceiling(tmp_path):
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert max(step["volume_db"] for step in result.ramp["steps"]) <= CEILING_DB + 1e-9
 
 
 # --- the runaway guard, and the ambient floor it reads ----------------------
@@ -477,16 +916,15 @@ def test_the_ramp_never_commands_above_the_stimulus_ceiling(tmp_path):
 
 def test_a_mic_that_is_not_observing_aborts_the_climb(tmp_path):
     volume, tone, mic = _rig(deaf=True)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.status == "refused"
     assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
-    # It stopped near the probe span, NOT at the ceiling: the whole point.
-    highest = max(volume.commanded)
-    assert highest <= slr.SEAT_LEVEL_START_DB + slr.MIC_RESPONSE_PROBE_DB + 2.0
-    assert highest < CEILING_DB
+    # It ran out of ceiling -- the only non-arbitrary place to ask -- and named
+    # the mic rather than blaming a quiet amplifier.
+    highest = max(step["volume_db"] for step in result.ramp["steps"])
+    assert highest == pytest.approx(CEILING_DB)
+    assert "never rose" in (result.detail or "")
     assert tone.cancelled
     assert not (tmp_path / "seat_level_reference.json").exists()
 
@@ -496,102 +934,94 @@ def test_removing_the_runaway_guard_lets_a_dead_mic_walk_to_the_ceiling(
 ):
     """Mutation proof for the guard above.
 
-    Neuter ONLY the runaway predicate and re-run the identical dead-mic
-    scenario. The hazard then happens: the staircase walks the speaker to the
-    ceiling on a mic that never heard a thing. Neither the kernel's
-    feed-liveness timeout (samples ARE arriving) nor its trust floor (they are
-    merely dropped) prevents that climb — only this guard does.
+    Disarm ONLY the predicate and re-run the identical dead-mic scenario. The
+    ramp then walks the speaker to the ceiling on a mic that never heard a
+    thing, and reports the wrong diagnosis. Nothing else in the pass stops that
+    climb.
     """
-    monkeypatch.setattr(
-        slr._MicObservationGuard, "_runaway", lambda self, commanded_db: False
-    )
+    monkeypatch.setattr(slr, "mic_is_not_observing", lambda **_kw: False)
     volume, tone, mic = _rig(deaf=True)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
-    assert max(volume.commanded) == pytest.approx(CEILING_DB)
     assert result.reason != slr.REFUSE_MIC_NOT_OBSERVING
-    assert CEILING_DB - (slr.SEAT_LEVEL_START_DB + slr.MIC_RESPONSE_PROBE_DB) > 20.0
+    # ...and the wrong diagnosis is what an operator would have chased.
+    assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
 
 
 @pytest.mark.parametrize(
-    "seat_spl_at_start, ambient_db_spl",
+    "seat_spl_at_ceiling, ambient_db_spl",
     [
-        pytest.param(35.0, 45.0, id="chain_80_ambient_45"),
-        pytest.param(32.0, 42.0, id="chain_85_ambient_42"),
+        pytest.param(85.0, 45.0, id="ceiling_85_ambient_45"),
+        pytest.param(90.0, 42.0, id="ceiling_90_ambient_42"),
     ],
 )
 def test_a_speaker_quieter_than_the_room_is_not_falsely_aborted(
-    tmp_path, seat_spl_at_start, ambient_db_spl
+    tmp_path, seat_spl_at_ceiling, ambient_db_spl
 ):
-    """The gate's false-abort cases, and they must converge.
+    """The guard's false-abort cases, and they must converge.
 
-    At the quiet start the speaker is 10 dB BELOW the room, so the mic reads
-    ambient and the level does not track the commanded volume at all down
-    there. Measuring rise against the ambient floor (rather than against the
+    At the start the speaker is well BELOW the room, so the mic reads ambient
+    and the level does not track the commanded volume at all down there. Measuring rise against the ambient floor (rather than against the
     first reading) is what lets this chain climb through the room and converge.
     """
-    gain = gain_for_seat_spl(seat_spl_at_start, at_volume_db=slr.SEAT_LEVEL_START_DB)
+    gain = gain_for_seat_spl(seat_spl_at_ceiling, at_volume_db=CEILING_DB)
     volume, tone, mic = _rig(
         gain_db=gain, ambient_dbfs=UMIK2.dbfs_from_db_spl(ambient_db_spl)
     )
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
-    assert result.status == "converged", result.reason
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert result.status == "converged", (result.reason, result.detail)
     assert TARGET.low_db_spl <= result.measured_db_spl <= TARGET.high_db_spl
+    # The first reading really was buried in the room -- otherwise this proves
+    # nothing about the ambient-relative rule.
+    assert result.ramp["steps"][0]["rise_db"] < slr.MIC_RESPONSE_MIN_RISE_DB
 
 
 def test_a_first_reading_relative_guard_would_have_aborted_those(tmp_path):
-    """The no-op control for the test above: the OLD rule really did fire.
+    """The no-op control for the test above: a first-reading rule really fires.
 
-    Swap the ambient-relative predicate back to the first-reading-relative one
-    the gate found, leave everything else identical, and the same healthy chain
-    is refused. This is what makes the pass above evidence rather than a
-    coincidence.
+    Score the rise against the FIRST reading instead of the measured ambient,
+    leave everything else identical, and the same healthy chain is refused.
+    That is what makes the pass above evidence rather than a coincidence.
     """
-    gain = gain_for_seat_spl(35.0, at_volume_db=slr.SEAT_LEVEL_START_DB)
-
-    def _first_reading_relative(self, commanded_db: float) -> bool:
-        if self._first_seen is None:
-            self._first_seen = self._max_rms_dbfs
-        if commanded_db - self._start_volume_db < 12.0:
-            return False
-        return (self._max_rms_dbfs or 0.0) - (self._first_seen or 0.0) < 6.0
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        slr._MicObservationGuard, "_first_seen", None, raising=False
+    gain = gain_for_seat_spl(85.0, at_volume_db=CEILING_DB)
+    volume, tone, mic = _rig(
+        gain_db=gain, ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0)
     )
-    monkeypatch.setattr(
-        slr._MicObservationGuard, "_runaway", _first_reading_relative
-    )
-    try:
-        volume, tone, mic = _rig(
-            gain_db=gain, ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0)
-        )
-        result = asyncio.run(
-            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-        )
-    finally:
-        monkeypatch.undo()
-    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    real_reading = slr._settle_reading
+    first: list[float] = []
+
+    async def _first_relative(*args, **kwargs):
+        reading = await real_reading(*args, **kwargs)
+        if reading.rms_dbfs is None:
+            return reading
+        if not first:
+            # Pretend the pre-tone ambient window measured the first IN-TONE
+            # reading, which is what a first-reading-relative rule scores rise
+            # against.
+            first.append(reading.rms_dbfs)
+        return reading
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(slr, "_settle_reading", _first_relative)
+        asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    # The first in-tone reading sits AT the room, far above the true speaker
+    # level -- so a rule anchored there demands the chain rise 6 dB over the
+    # room's own floor before it has emerged, and refuses the healthy chain.
+    assert first
+    assert UMIK2.db_spl_from_dbfs(first[0]) == pytest.approx(45.0, abs=1.5)
 
 
 def test_a_non_finite_feed_cannot_defeat_the_guard(tmp_path):
     """NaN scores as no rise, never as no evidence.
 
     The ambient window sees finite room samples; every sample once the tone
-    starts is NaN. Nothing raises the observed maximum, so the rise stays zero
-    and the guard fires — rather than sitting unarmed while the volume climbs.
+    starts is NaN, so no window can form a median and the feed reads as lost
+    rather than as a silently unarmed guard.
     """
     volume, tone, mic = _rig(gain_db=-10.0, nan_once_playing=True)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
-    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
-    assert max(volume.commanded) < CEILING_DB
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert result.reason == slr.REFUSE_MIC_FEED_LOST
+    assert result.reference_volume_db is None
 
 
 def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
@@ -621,49 +1051,62 @@ def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
     )
     assert result.reason == slr.REFUSE_MIC_FEED_LOST
     assert not tone.started
+    assert not volume.commanded  # the latch is opened only after ambient
 
 
 # --- convergence needs a real rise, not just an in-band number --------------
 
 
+class StuckOncePlaying(Mic):
+    """Reads the room before the tone and a fixed in-band level after it.
+
+    The failure the rise test exists for, in the only shape that can defeat a
+    band check: a mic pinned at a value that happens to sit inside the target
+    window.
+    """
+
+    def _rms_dbfs(self) -> float:
+        if not self._tone.started:
+            return self.ambient_dbfs
+        return self.stuck_dbfs
+
+
 def test_a_stuck_constant_in_band_mic_refuses_instead_of_banking(tmp_path):
-    """The gate's repro: a mic pinned at a value that happens to sit inside the
-    target window settles and confirms, and used to bank -50.0 dB — the ramp's
-    own start volume — as a measured reference. Its ambient reading IS its
-    signal reading, so its rise is zero and convergence now refuses."""
     in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
-    volume, tone, mic = _rig(deaf=True, stuck_dbfs=in_band_dbfs)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    volume = Volume()
+    tone = BlockingTone()
+    # Ambient only 2 dB under the stuck level: the reading sits inside the
+    # band, but it never rises clear of the room.
+    mic = StuckOncePlaying(
+        volume, tone, ambient_dbfs=in_band_dbfs - 2.0, stuck_dbfs=in_band_dbfs
     )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.status == "refused"
     assert result.reference_volume_db is None
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
-def test_without_a_measured_ambient_floor_the_stuck_mic_banks_minus_fifty(
+def test_without_the_rise_test_the_stuck_mic_banks_its_own_start(
     tmp_path, monkeypatch
 ):
-    """The control that names the fix: measuring the room is what stops it.
+    """The control that names the fix: the rise against ambient is what stops it.
 
-    Replace the measured ambient floor with a floor so low nothing can be
-    ambient-dominated — which is exactly the pre-fix state, where the kernel was
-    handed no noise floor at all — and change NOTHING else. The same stuck mic
-    now settles, confirms, and banks the ramp's own quiet start volume as a
-    "measured" reference: the gate's reported -50.0 dB, reproduced.
+    Drop the required rise to zero — which is what a band-only convergence rule
+    is — and change NOTHING else. The same stuck mic banks the ramp's own start
+    volume as a "measured" reference.
     """
-    monkeypatch.setattr(
-        slr, "measure_ambient_dbfs", _always_ambient(-120.0)
-    )
+    monkeypatch.setenv("JASPER_SEAT_LEVEL_MIN_RISE_DB", "1.0")
     in_band_dbfs = UMIK2.dbfs_from_db_spl(TARGET.target_db_spl)
-    volume, tone, mic = _rig(deaf=True, stuck_dbfs=in_band_dbfs)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    volume = Volume()
+    tone = BlockingTone()
+    mic = StuckOncePlaying(
+        volume, tone, ambient_dbfs=in_band_dbfs - 2.0, stuck_dbfs=in_band_dbfs
     )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.status == "converged"
-    assert result.reference_volume_db == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert result.reference_volume_db == pytest.approx(result.ramp["start_db"])
     assert (tmp_path / "seat_level_reference.json").exists()
 
 
@@ -671,15 +1114,38 @@ def test_without_a_measured_ambient_floor_the_stuck_mic_banks_minus_fifty(
 
 
 def test_a_measured_level_over_the_commissioning_ceiling_aborts(tmp_path):
-    # G = +35 puts the very first reading once the tone starts at -15 dBFS ==
-    # 91 dB SPL, above the profile's 85 dB SPL ceiling.
-    volume, tone, mic = _rig(gain_db=35.0)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    # A chain hot enough that the very first tone reads past the 85 dB SPL stop.
+    volume, tone, mic = _rig(
+        gain_db=gain_for_seat_spl(90.0, at_volume_db=slr.SEAT_LEVEL_START_DB)
     )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert "commissioning stop" in (result.detail or "")
     assert tone.cancelled
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_clipped_capture_aborts_rather_than_reading_a_level(tmp_path):
+    volume = Volume()
+    tone = BlockingTone()
+
+    class Clipping(Mic):
+        async def next_samples(self):
+            batch = await super().next_samples()
+            if self._tone.started:
+                batch[0] = LevelSample(
+                    seq=batch[0].seq,
+                    t_client_ms=batch[0].t_client_ms,
+                    rms_dbfs=batch[0].rms_dbfs,
+                    peak_dbfs=0.0,
+                    clip=True,
+                )
+            return batch
+
+    mic = Clipping(volume, tone, gain_db=-10.0)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert result.reason == slr.REFUSE_MIC_CLIPPING
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
@@ -687,16 +1153,58 @@ def test_a_measured_level_over_the_commissioning_ceiling_aborts(tmp_path):
 
 
 def test_an_unreachable_target_refuses_and_banks_nothing(tmp_path):
-    # G = -40: quiet enough that the band needs ~+11 dB of main volume, far
-    # above the cap -- but loud enough to clear the room floor on the way, so
-    # this is a genuine ceiling refusal and not a mic that never spoke.
-    volume, tone, mic = _rig(gain_db=-40.0)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    # A chain quiet enough that even the ceiling measures below the band -- but
+    # loud enough to clear the room floor on the way, so this is a genuine
+    # ceiling refusal and not a mic that never spoke.
+    volume, tone, mic = _rig(
+        gain_db=gain_for_seat_spl(TARGET.low_db_spl - 1.0, at_volume_db=CEILING_DB)
     )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.reason == slr.REFUSE_SPL_TARGET_UNREACHABLE
+    assert "raise the external amplifier" in (result.detail or "")
     assert result.reference_volume_db is None
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_the_watchdog_refuses_a_pass_whose_feed_never_returns(tmp_path, monkeypatch):
+    """The backstop, and it is a backstop only.
+
+    Nothing in the ramp's own shape can reach this: it fires when something the
+    pass awaits never returns at all.
+    """
+    monkeypatch.setattr(slr, "_watchdog_seconds", lambda **_kw: 0.05)
+    volume = Volume()
+    tone = BlockingTone()
+    calls = {"n": 0}
+
+    async def _hangs_once_playing():
+        calls["n"] += 1
+        if calls["n"] > 40:
+            await asyncio.Event().wait()  # never returns
+        return [
+            LevelSample(seq=calls["n"], t_client_ms=0, rms_dbfs=-70.0, peak_dbfs=-67.0)
+        ]
+
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=_hangs_once_playing,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+    assert result.reason == slr.REFUSE_WATCHDOG_EXPIRED
+    assert "watchdog" in (result.detail or "")
+    assert tone.cancelled
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
@@ -704,9 +1212,23 @@ def test_an_unreachable_target_refuses_and_banks_nothing(tmp_path):
     "mic_kwargs",
     [
         pytest.param({"gain_db": -10.0}, id="converged"),
-        pytest.param({"gain_db": -40.0}, id="unreachable"),
+        pytest.param(
+            {
+                "gain_db": gain_for_seat_spl(
+                    TARGET.low_db_spl - 1.0, at_volume_db=CEILING_DB
+                )
+            },
+            id="unreachable",
+        ),
         pytest.param({"deaf": True}, id="mic_not_observing"),
-        pytest.param({"gain_db": 35.0}, id="spl_ceiling_exceeded"),
+        pytest.param(
+            {
+                "gain_db": gain_for_seat_spl(
+                    90.0, at_volume_db=slr.SEAT_LEVEL_START_DB
+                )
+            },
+            id="spl_ceiling_exceeded",
+        ),
     ],
 )
 def test_the_household_volume_is_restored_on_every_exit_path(tmp_path, mic_kwargs):
@@ -718,48 +1240,238 @@ def test_the_household_volume_is_restored_on_every_exit_path(tmp_path, mic_kwarg
     assert state["status"] == "resolved"
 
 
-def test_a_raising_ramp_still_restores_the_household_volume(tmp_path):
-    # The `finally` is the contract: even a caller-visible explosion inside the
-    # kernel must not leave the speaker parked at the measurement level.
+# --- stopping the pass at any moment ----------------------------------------
+
+
+def test_cancelling_mid_climb_stops_the_tone_restores_and_banks_nothing(tmp_path):
+    """The owner's stop requirement, and the jts3 `restored: false` loose end.
+
+    A `finally: await ...` is not enough on its own: once the task carrying it
+    is cancelled, its next await raises immediately and the restore is skipped
+    — which is how a stopped pass left the fader 6 dB below where it found it.
+    ``run_teardown`` shields the teardown so the room goes quiet AND the
+    household gets its volume back on the very same interrupt.
+    """
     volume = Volume()
     tone = BlockingTone()
-    calls = {"n": 0}
-
-    async def _boom() -> list[LevelSample]:
-        calls["n"] += 1
-        if calls["n"] <= 30:  # let the ambient window collect a floor first
-            return [
-                LevelSample(
-                    seq=calls["n"], t_client_ms=0, rms_dbfs=-80.0, peak_dbfs=-77.0
-                )
-            ]
-        raise KeyboardInterrupt("operator hit ctrl-c")
-
+    mic = Mic(volume, tone, gain_db=-10.0)
     clock = FakeClock()
+    started = asyncio.Event()
+
+    async def _watched_samples():
+        if tone.started:
+            started.set()
+        return await mic.next_samples()
 
     async def _go():
-        await slr.run_seat_level_ramp(
-            target=TARGET,
-            sensitivity=UMIK2,
-            max_main_volume_db=CEILING_DB,
-            spl_ceiling_db_spl=SPL_CEILING,
-            get_main_volume_db=volume.get,
-            set_main_volume_db=volume.set,
-            play_continuous_tone=tone.play,
-            cancel_tone=tone.cancel,
-            next_samples=_boom,
-            clock=clock.now,
-            sleep=clock.sleep,
-            volume_state_path=tmp_path / "seat_level_volume.json",
-            reference_state_path=tmp_path / "seat_level_reference.json",
+        task = asyncio.ensure_future(
+            slr.run_seat_level_ramp(
+                target=TARGET,
+                sensitivity=UMIK2,
+                max_main_volume_db=CEILING_DB,
+                spl_ceiling_db_spl=SPL_CEILING,
+                get_main_volume_db=volume.get,
+                set_main_volume_db=volume.set,
+                play_continuous_tone=tone.play,
+                cancel_tone=tone.cancel,
+                next_samples=_watched_samples,
+                clock=clock.now,
+                sleep=clock.sleep,
+                volume_state_path=tmp_path / "seat_level_volume.json",
+                reference_state_path=tmp_path / "seat_level_reference.json",
+            )
+        )
+        await started.wait()
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_go())
+
+    assert tone.cancelled                                   # the room goes quiet
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)  # ...and gets its level back
+    state = json.loads((tmp_path / "seat_level_volume.json").read_text())
+    assert state["status"] == "resolved"
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_teardown_step_survives_a_repeated_cancellation(tmp_path):
+    """What ``run_teardown`` is for, measured against the plain ``await``.
+
+    CancelledError is delivered ONCE, so a bare ``finally: await ...`` does
+    survive a single cancel. It is the SECOND cancel — an operator pressing
+    Ctrl-C twice, or a supervisor that re-cancels — that strands the restore.
+    Both halves are asserted here so the claim is a measurement, not a story.
+    """
+
+    async def _probe(*, shielded: bool, cancels: int) -> list[str]:
+        done: list[str] = []
+
+        async def _restore() -> None:
+            await asyncio.sleep(0.01)
+            done.append("restored")
+
+        async def _body() -> None:
+            try:
+                await asyncio.sleep(10)
+            finally:
+                if shielded:
+                    await slr.run_teardown("probe", _restore())
+                else:
+                    await _restore()
+
+        task = asyncio.ensure_future(_body())
+        await asyncio.sleep(0)
+        for _ in range(cancels):
+            task.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return done
+
+    assert asyncio.run(_probe(shielded=False, cancels=1)) == ["restored"]
+    assert asyncio.run(_probe(shielded=False, cancels=2)) == []
+    assert asyncio.run(_probe(shielded=True, cancels=2)) == ["restored"]
+    # Bounded on purpose: past the shield budget the operator gets out.
+    assert asyncio.run(
+        _probe(shielded=True, cancels=slr.TEARDOWN_SHIELD_ATTEMPTS + 1)
+    ) == []
+
+
+def test_a_restore_that_fails_is_published_not_assumed(tmp_path):
+    """``restored`` MEANS something, so a stranded fader cannot read as success.
+
+    The volume seam raises when CamillaDSP rejects a write. The pass must not
+    quietly log that and hand back a result indistinguishable from one that put
+    the household level back.
+    """
+
+    class Refusing(Volume):
+        def __init__(self) -> None:
+            super().__init__()
+            self.allow = True
+
+        async def set(self, db: float) -> bool:
+            if not self.allow:
+                raise RuntimeError("camilladsp rejected the volume write")
+            return await super().set(db)
+
+    volume = Refusing()
+    tone = BlockingTone()
+    mic = Mic(volume, tone, gain_db=-10.0)
+    real_close = SessionVolumePlan.close
+
+    async def _close_after_break(self, *a, **kw):
+        volume.allow = False
+        return await real_close(self, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SessionVolumePlan, "close", _close_after_break)
+        result = asyncio.run(
+            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
         )
 
-    with pytest.raises(KeyboardInterrupt):
-        asyncio.run(_go())
+    assert result.restored is False
+    assert result.to_dict()["restored"] is False
+    assert volume.value != pytest.approx(HOUSEHOLD_VOLUME_DB)
+
+
+def test_a_completed_pass_publishes_that_it_restored(tmp_path):
+    volume, tone, mic = _rig(gain_db=-10.0)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    assert result.restored is True
     assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
 
 
-def test_an_unconfirmable_volume_latch_refuses_before_any_ramp(tmp_path):
+def test_the_sigint_path_reports_the_restore_it_measured(tmp_path):
+    """S3: prose and JSON must agree about the fader.
+
+    ``restored: null`` beside a detail claiming "volume restored" is exactly the
+    dishonesty this field exists to kill, so the CLI's interrupt refusal carries
+    the value the pass's own teardown measured.
+    """
+    from jasper.cli import seat_level as cli
+
+    volume, tone, mic = _rig(gain_db=-10.0)
+    clock = FakeClock()
+    started = asyncio.Event()
+
+    async def _watched():
+        if tone.started:
+            started.set()
+        return await mic.next_samples()
+
+    async def _go():
+        task = asyncio.ensure_future(
+            slr.run_seat_level_ramp(
+                target=TARGET,
+                sensitivity=UMIK2,
+                max_main_volume_db=CEILING_DB,
+                spl_ceiling_db_spl=SPL_CEILING,
+                get_main_volume_db=volume.get,
+                set_main_volume_db=volume.set,
+                play_continuous_tone=tone.play,
+                cancel_tone=tone.cancel,
+                next_samples=_watched,
+                clock=clock.now,
+                sleep=clock.sleep,
+                volume_state_path=tmp_path / "seat_level_volume.json",
+                reference_state_path=tmp_path / "seat_level_reference.json",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError as exc:
+            return slr.interrupted_restore_outcome(exc)
+        raise AssertionError("the cancellation did not propagate")
+
+    measured = asyncio.run(_go())
+    # The pass really did restore, and really did say so on the exception.
+    assert measured is True
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
+
+    # ...and the CLI turns that into a refusal whose prose and JSON agree.
+    result, detail = cli._refused(
+        slr.REFUSE_INTERRUPTED, f"stopped. {cli._restore_phrase(measured)}",
+        restored=measured,
+    )
+    assert result.restored is True
+    assert result.to_dict()["restored"] is True
+    assert "was restored" in detail
+
+
+def test_an_unobservable_interrupt_never_claims_a_restore(tmp_path):
+    """The last-resort path knows nothing, and must say nothing.
+
+    A KeyboardInterrupt that escaped the pass entirely carries no stamp, so the
+    honest report is "could not be observed" and a null field -- never prose
+    asserting a restore that no one measured.
+    """
+    from jasper.cli import seat_level as cli
+
+    assert slr.interrupted_restore_outcome(KeyboardInterrupt()) is None
+    phrase = cli._restore_phrase(None)
+    assert "could not be observed" in phrase
+    assert "restored." not in phrase  # never an assertion of success
+
+    result, detail = cli._refused(
+        slr.REFUSE_INTERRUPTED, f"stopped. {phrase}", restored=None
+    )
+    assert result.restored is None
+    assert result.to_dict()["restored"] is None
+    assert "could not be observed" in detail
+
+    # A failed restore is reported as a failure, with the remedy.
+    failed = cli._restore_phrase(False)
+    assert "NOT restored" in failed
+    assert "volume-recovery screen" in failed
+
+
+def test_an_unconfirmable_volume_latch_refuses_before_any_tone(tmp_path):
     class Drifting(Volume):
         async def set(self, db: float) -> bool:
             self.commanded.append(float(db))
@@ -768,10 +1480,9 @@ def test_an_unconfirmable_volume_latch_refuses_before_any_ramp(tmp_path):
     volume = Drifting()
     tone = BlockingTone()
     mic = Mic(volume, tone, gain_db=-10.0)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
     assert result.reason == slr.REFUSE_VOLUME_LATCH_UNCONFIRMED
+    assert "did not confirm" in (result.detail or "")
     assert not tone.started
 
 
@@ -797,9 +1508,7 @@ def test_a_live_measurement_session_refuses_the_leveling_pass(tmp_path):
         )
     )
     volume, tone, mic = _rig(gain_db=-10.0)
-    result = asyncio.run(
-        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
     assert result.reason == slr.REFUSE_SESSION_ALREADY_LIVE
     assert "already running" in (result.detail or "")

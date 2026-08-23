@@ -760,21 +760,13 @@ def test_a_ceiling_above_digital_zero_is_still_clamped_to_the_0_dB_rail():
     """``volume_limit 0.0`` is untouched, and the ramp is where it is enforced.
 
     An honest ceiling can now land ABOVE 0 dB — the JTS3-shaped fixture's does.
-    The ramp config already clamps its cap to ``HARD_CEILING_DBFS``, so the
-    derived number widens how far the ramp may climb but can never command
-    positive main volume. Nothing in this PR touches that clamp; this pins that
-    it still holds against the new, larger input.
+    The ramp clamps its ceiling to ``HARD_CEILING_DBFS``, so the derived number
+    widens how far the ramp may climb but can never command positive main
+    volume. Nothing in this PR touches that clamp; this pins that it still holds
+    against the new, larger input.
     """
-    from jasper.active_speaker.seat_level_ramp import build_seat_level_ramp_config
-    from jasper.active_speaker.seat_level_reference import SeatLevelTarget
+    from jasper.active_speaker.seat_level_ramp import seat_level_ceiling_db
     from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
 
-    ramp = build_seat_level_ramp_config(
-        target=SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5),
-        sensitivity=MicSensitivity(
-            sens_factor_db=-12.07, analog_gain_db=18.0, serial="8108494"
-        ),
-        max_main_volume_db=12.68,
-    )
     assert HARD_CEILING_DBFS == 0.0
-    assert ramp.cap_ceil_db == HARD_CEILING_DBFS
+    assert seat_level_ceiling_db(12.68) == HARD_CEILING_DBFS

@@ -427,9 +427,9 @@ least-sensitive driver ~40 dB under its own ceiling and collapses its SNR
 below the trim floor. The reference half defaults to the codified
 `MEASUREMENT_REFERENCE_VOLUME_DB = −20 dB` and is replaced by a MEASURED
 value once an operator runs the calibrated seat-SPL leveling step
-(`jasper-seat-level`, `jasper/active_speaker/seat_level_ramp.py`): it ramps
-the volume against a calibrated mic at the seat until the room reads the
-requested dB SPL band, then banks that volume. The caps half is unaffected —
+(`jasper-seat-level`, `jasper/active_speaker/seat_level_ramp.py`): it steps
+the volume by the measured gap against a calibrated mic at the seat until the
+room reads the requested dB SPL band, then banks that volume. The caps half is unaffected —
 `min` keeps every driver's ceiling binding either way. It is an input to program
 admission (one definition path), and it is **never adjusted after CHECK**:
 the gain solve operates strictly within [SNR floor, 0 dBFS − 6 dB guard]; if

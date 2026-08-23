@@ -13,7 +13,7 @@ bench validation"). This module is where that guess becomes an observation.
 Ownership, deliberately narrow:
 
 * **one writer** — :mod:`jasper.active_speaker.seat_level_ramp`, after a
-  closed-loop ramp converged on a calibrated seat SPL;
+  closed-loop ramp measured a calibrated seat SPL inside the requested band;
 * **one reader** — ``session_volume_plan.measurement_reference_volume_db``;
 * **absent is normal.** A box that has never run the leveling step, or whose
   statefile is unreadable/implausible, resolves to the codified ``-20.0``
