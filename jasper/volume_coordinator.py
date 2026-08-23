@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -2715,3 +2716,53 @@ async def _busctl_set_property(
         )
         return False
     return True
+
+
+def install_env_canonical_target_provider() -> None:
+    """Register a canonical main_volume target built from this host's env.
+
+    Every process that performs a CamillaDSP graph swap needs one. A swap's
+    duck release lands at ``min(canonical, current + own depth)``; with no
+    canonical target it falls back to the entry snapshot, which an interleaved
+    voice cue may already have ducked, and the fader strands tens of dB quiet
+    inside the band `maybe_reconcile_camilla` refuses to heal.
+
+    A process that already owns a long-lived coordinator registers that
+    coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead
+    (jasper-voice does). The rest call this: the coordinator is built per call
+    rather than held, because a release happens once per graph swap and a
+    socket-activated wizard has to stay light.
+
+    Which processes call it is pinned by
+    ``tests/test_canonical_target_registration.py``.
+    """
+    from jasper.camilla import (
+        primary_controller,
+        set_canonical_target_db_provider,
+    )
+
+    async def canonical_target_db() -> float:
+        from jasper.renderer import RendererClient
+
+        coord = VolumeCoordinator(
+            camilla=primary_controller(),
+            persistence=VolumePersistence(
+                os.environ.get(
+                    "JASPER_VOLUME_STATE_PATH",
+                    "/var/lib/jasper/speaker_volume.json",
+                )
+            ),
+            backend=RendererClient(
+                librespot_state_path=os.environ.get(
+                    "JASPER_LIBRESPOT_STATE",
+                    "/run/librespot/state.json",
+                ),
+            ),
+        )
+        try:
+            coord.load_persisted_level()
+            return await coord.get_camilla_target_db()
+        finally:
+            await coord.aclose()
+
+    set_canonical_target_db_provider(canonical_target_db)

@@ -2159,6 +2159,12 @@ def main(argv: list[str] | None = None) -> int:
     from .. import flight_recorder
     flight_recorder.install("control")
 
+    # The live pair-balance trim patches the graph from this process, so its
+    # swap duck needs a canonical target to release to.
+    from ..volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
+
     # System metrics sampler — 5 s ring buffer for the /system dashboard.
     # Daemon thread, exits with the process.
     from .system_metrics import SystemSampler
