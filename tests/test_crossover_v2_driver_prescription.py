@@ -43,7 +43,11 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
-from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, chain_response
+from jasper.active_speaker.branch_chain import (
+    CHAIN_GRID_HZ,
+    HEADROOM_MARGIN_DB,
+    chain_response,
+)
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2 import prescription_spool as spool
 from jasper.active_speaker.crossover_v2.blend_prescription import (
@@ -1939,6 +1943,86 @@ def test_a_boost_in_the_declared_band_overlap_is_refused(tmp_path):
     # derived from the declared bands the gate already holds.
     assert excinfo.value.evidence["overlap_hz"] == [1600.0, 3000.0]
     assert excinfo.value.evidence["overlap_roles"] == ["tweeter", "woofer"]
+
+
+def test_the_knee_bar_bounds_a_bells_centre_and_not_the_overlap_as_a_band(tmp_path):
+    """What the knee bar reaches, and what it deliberately does not.
+
+    Its subject is a BELL: a Peaking's ``freq`` IS its placement, so bounding
+    the centre bounds where the lift lives. Only the centre, which is the
+    owner's never-nanny calibration — a bell centred just OUTSIDE still reaches
+    in on its skirt and is admitted, and the deciding-frame measurement is what
+    adjudicates the summed response there.
+
+    Both halves are pinned because the docstring on
+    :data:`~.driver_prescription.BOOST_IN_CROSSOVER_OVERLAP` states the second
+    one as a measured number, and a safety claim no test asserts is where the
+    drift starts.
+    """
+    packet = _speaker(tmp_path, classification=_boostable([
+        _dip(hz=3200.0, depth_db=20.0),
+    ]))
+    # Centred just above the woofer's 3 kHz ceiling, and WIDE, so its skirt
+    # covers the overlap it is not centred in.
+    outside = {"role": "tweeter", "biquad_type": "Peaking", "freq": 3200.0,
+               "q": 0.5, "gain": DRIVER_MAX_FILTER_BOOST_DB}
+
+    prescription = _gate(packet, _document([outside], packet))
+
+    assert prescription.filters[0]["freq"] == 3200.0
+    # …and it really does reach in: the skirt puts nearly its full gain across
+    # the overlap the bar refused a CENTRE in.
+    overlap = np.geomspace(1600.0, 3000.0, 2000)
+    reach = float(np.max(20.0 * np.log10(np.abs(chain_response(
+        [{key: value for key, value in outside.items() if key != "role"}], overlap,
+    )))))
+    assert reach == pytest.approx(11.93, abs=0.01)
+
+
+def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
+    """The shelf half of the knee bar's scope, measured (SF1).
+
+    A shelf's ``freq`` is a CORNER, not a placement — ``linearization_fit.
+    _blind_zone_placements`` skips shelves by type for exactly this reason — so
+    a Lowshelf cornered ABOVE the overlap covers the overlap at its FULL gain,
+    however far away the corner sits. The knee bar cannot see that and no
+    shelf-side bar was added, because the consequence is bounded by arithmetic
+    the emitter already performs.
+
+    The chain, end to end: the composed cap holds the covered side to
+    :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB`, the emitter
+    charges ``peak + HEADROOM_MARGIN_DB`` before the split, and the charge
+    exceeds the lift — so the overlap lands BELOW unity. That is the argument
+    the docstring makes; this is the measurement it rests on.
+    """
+    packet = _speaker(tmp_path, classification=_boostable())
+    # Cornered at the top of the tweeter's declared band: everything below is
+    # covered, the whole overlap included.
+    shelf = {"role": "tweeter", "biquad_type": "Lowshelf", "freq": 20000.0,
+             "gain": DRIVER_MAX_FILTER_BOOST_DB}
+
+    prescription = _gate(packet, _document([shelf], packet))
+
+    # Admitted — the knee bar is a centre check and does not reach this.
+    assert prescription.filters[0]["biquad_type"] == "Lowshelf"
+    # Flat at its full gain right across the overlap.
+    overlap = np.geomspace(1600.0, 3000.0, 2000)
+    covered = 20.0 * np.log10(np.abs(chain_response(
+        [{key: value for key, value in prescription.filters[0].items()
+          if key != "role"}], overlap,
+    )))
+    assert float(np.min(covered)) == pytest.approx(12.0, abs=0.001)
+    assert float(np.max(covered)) == pytest.approx(12.0, abs=0.001)
+    # …and the spend it is charged is the full published bound, no more.
+    assert prescription.composed_boost_db == pytest.approx(
+        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+    )
+    charge = prescription.composed_boost_db + HEADROOM_MARGIN_DB
+    assert charge == pytest.approx(MAX_SPL_SPEND_BOUND_DB, abs=1e-6)
+    # The bound that matters: after the pre-split charge the overlap sits BELOW
+    # unity, so admitting the shelf raised nothing the household can hear.
+    assert float(np.max(covered - charge)) == pytest.approx(-1.0, abs=0.001)
+    assert float(np.max(covered - charge)) < 0.0
 
 
 def test_a_cut_in_the_overlap_is_untouched_by_the_knee_ruling(tmp_path):
