@@ -773,6 +773,12 @@ NEW_HORN_RUNS = {
         ),
         "stop_sample_db_spl": 80.50,
         "slope_estimate": 0.895,
+        # Every consecutive pair with the room's power taken back out, and the
+        # stop sample measured against the previous window's median. Both are
+        # quoted in prose below, so both are pinned here rather than left to
+        # rot away from the readings above.
+        "room_subtracted_slopes": (0.897, -0.286, 1.098, 0.970),
+        "stop_sample_slope": 2.119,
     },
     "run2": {
         "ambient_db_spl": 47.82,
@@ -785,6 +791,8 @@ NEW_HORN_RUNS = {
         ),
         "stop_sample_db_spl": 80.90,
         "slope_estimate": 0.725,
+        "room_subtracted_slopes": (0.605, 0.866, 0.619, 0.758),
+        "stop_sample_slope": 2.217,
     },
 }
 
@@ -939,17 +947,26 @@ def test_the_new_horn_climb_was_bite_limited_at_every_reading(name):
 
 @pytest.mark.parametrize("name", sorted(NEW_HORN_RUNS))
 def test_the_new_horn_slope_estimate_never_reached_unity(name):
-    """No reading pair in either run showed an expansive chain to act on.
+    """The pair the estimator held never reached unity in either run.
 
     A chain that answered a commanded dB with more than a dB would be visible
-    here, and it is not: every consecutive pair of banked readings measured
-    under 1.0 dB SPL per commanded dB. Subtracting the room does not lift the
-    pair the estimator actually used either, so "the readings were still
-    emerging from the room" does not account for the estimate being low.
+    in the readings, and the ones this estimate rests on are not: every RAW
+    consecutive pair of banked readings measured under 1.0 dB SPL per commanded
+    dB, and the pair the estimator actually used — the last two — stays under
+    1.0 with the room's power taken back out too (0.970 for run 1, 0.758 for
+    run 2). So "the readings were still emerging from the room" does not
+    account for the estimate being low.
 
-    The 2.21 dB SPL per dB figure quoted for these runs is not in this set: it
-    is the abandoned window's single sample measured against the previous
-    window's twelve-sample median, which is a different statistic.
+    Room-subtracting DOES lift other pairs past 1.0 — run 1's -35.00 → -27.50
+    is 1.098 — which is why the claim above is scoped to the estimator's own
+    pair and to the raw statistic the assertion checks, rather than to every
+    pair in the run.
+
+    The ~2.2 dB SPL per dB figure quoted for these runs is not in this set at
+    all: it is the abandoned window's single sample measured against the
+    previous window's twelve-sample median, which is a different statistic
+    (2.217 for run 2, which is where the quoted figure comes from; run 1's
+    equivalent is 2.119).
     """
     run = NEW_HORN_RUNS[name]
     slopes = _consecutive_slopes(run["readings"])
@@ -959,13 +976,26 @@ def test_the_new_horn_slope_estimate_never_reached_unity(name):
     assert slopes[-1] == pytest.approx(run["slope_estimate"], abs=0.002)
 
     room = run["ambient_db_spl"]
-    (a_db, a_spl), (b_db, b_spl) = run["readings"][-2:]
-    room_subtracted = (
-        _room_subtracted_db(b_spl, room) - _room_subtracted_db(a_spl, room)
-    ) / (b_db - a_db)
-    assert room_subtracted < 1.0
-    # ...and both readings were already well clear of the room by the pass's own
-    # emergence bar, so neither was room-pinned.
+    subtracted = _consecutive_slopes(
+        [
+            (volume_db, _room_subtracted_db(spl, room))
+            for volume_db, spl in run["readings"]
+        ]
+    )
+    assert subtracted == pytest.approx(run["room_subtracted_slopes"], abs=0.001)
+    # The estimator's own pair stays under unity room-subtracted too...
+    assert subtracted[-1] < 1.0
+    # ...while OTHER pairs can cross it once the room is out, which is exactly
+    # why the claim above is scoped to this pair rather than to the run.
+    assert (max(subtracted) > 1.0) == (name == "run1")
+    # The statistic the quoted ~2.2 figure comes from, which is none of these.
+    (_last_db, last_spl) = run["readings"][-1]
+    assert (run["stop_sample_db_spl"] - last_spl) / NEW_HORN_BITE_DB == pytest.approx(
+        run["stop_sample_slope"], abs=0.001
+    )
+    # ...and both readings the estimator used were already well clear of the
+    # room by the pass's own emergence bar, so neither was room-pinned.
+    (_a_db, a_spl), (_b_db, b_spl) = run["readings"][-2:]
     assert a_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
     assert b_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
 
