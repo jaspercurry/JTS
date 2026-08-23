@@ -3056,9 +3056,36 @@ def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
 # see a projection that coerces. These pin the layer that actually decides.
 
 
+def _plant_unbankable_v2_state(state: Any) -> None:
+    """Plant durable state that ``save_v2_state`` itself would REFUSE.
+
+    Since #2839 the writer passes ``allow_nan=False``, so it can no longer
+    produce a state file carrying a non-finite number. A file written by a
+    build that predates that guard still can, and ``json.loads`` accepts the
+    bare ``NaN`` / ``Infinity`` literals on the way back in — so the FILE, not
+    the writer, is the surface the reader guards below defend, exactly as
+    ``10 ** 400`` is (JSON integers are unbounded and no writer produces one
+    either). Written the way that build would have: the envelope through the
+    real writer, the value it now refuses spliced in after.
+    """
+    v2host.save_v2_state({"session_id": "cap_placeholder"})
+    path = Path(v2host._state_path())
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(
+        json.dumps({**envelope, **state}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _findings_state(rows: Any) -> None:
-    """Durable state whose projection is exactly ``rows``."""
-    v2host.save_v2_state({
+    """Durable state whose projection is exactly ``rows``.
+
+    Planted as a file rather than through ``save_v2_state``: the rows here are
+    hostile by construction, and some of them are values the writer refuses
+    since #2839 — see :func:`_plant_unbankable_v2_state`. The subject of these
+    tests is the projection layer, not the writer.
+    """
+    _plant_unbankable_v2_state({
         "session_id": "cap_projection",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": True,
@@ -4815,6 +4842,32 @@ def test_observe_apply_success_clears_a_stale_apply_blocked_nudge():
     })
     v2host.observe_apply_success("fp-1")
     assert v2host.load_v2_state()["apply_blocked"] is None
+
+
+def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
+    """#2839: the writer fails, not the packet.
+
+    The crossover-v2 evidence packet copies fields out of this state verbatim
+    and fingerprints them, and ``evidence_identity.json_fingerprint`` refuses a
+    non-finite number — so a NaN banked here costs the round its WHOLE evidence
+    packet, at a reader, hours after the code that produced it returned.
+    ``allow_nan=False`` moves the failure to this writer, where that code is
+    still on the stack.
+
+    Nothing half-written, and that is structural rather than lucky:
+    ``json.dumps`` raises while evaluating an ARGUMENT, so ``atomic_write_text``
+    is never entered and the prior state is still on disk afterwards.
+    """
+    v2host.save_v2_state({"session_id": "cap_ok", "applied": False})
+    good = v2host.load_v2_state()
+
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            v2host.save_v2_state({
+                "session_id": "cap_bad",
+                "verify": {"claims": {"residual_db": bad}},
+            })
+        assert v2host.load_v2_state() == good
 
 
 def test_observe_apply_success_stashes_the_pre_apply_profile():
@@ -10171,7 +10224,9 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
     v2host.save_v2_state({"session_id": "s", "applied": True})
     assert v2host._applied_offset_gate() == 0.0
     for bad in ("loud", None, True, float("nan"), float("inf")):
-        v2host.save_v2_state({
+        # Planted as a file: two of these are values ``save_v2_state`` refuses
+        # since #2839, and it is a state FILE this gate has to survive.
+        _plant_unbankable_v2_state({
             "session_id": "s", "applied": True,
             "expected_post_apply_offset_db": bad,
         })

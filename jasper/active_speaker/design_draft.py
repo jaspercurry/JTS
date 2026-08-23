@@ -1560,7 +1560,9 @@ def save_design_draft(
         # contract as the sibling Layer-A stores.
         atomic_write_text(
             target,
-            json.dumps(draft, indent=2, sort_keys=True) + "\n",
+            # allow_nan=False: fail at the writer that produced the non-finite
+            # value, not at the evidence packet hours later (#2839).
+            json.dumps(draft, allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
             durable=durable,

@@ -1334,7 +1334,20 @@ MAX_LINES_BY_PATH = {
     # result wait went with the sweep whose compute ceiling it published — see
     # `_mint_source_session`, which now states why the page's own 90 s floor
     # governs instead.
-    "jasper/web/correction_crossover_v2.py": 9_430,
+    # 2026-08-23, the post-#2888 burn-down: 9,430 -> 9,435, +5, of which ONE
+    # executes. The one is the `PHASE_MEASURE` import that retires a bare
+    # `"measure"` literal — a second spelling of the journey phase vocabulary
+    # this file already reads through the constant at twelve other sites
+    # (counted, not estimated). The other four are two two-line comments, both
+    # earning their lines by naming a failure invisible at the site: that
+    # `save_v2_state` banks with `allow_nan=False` because a NaN written here
+    # costs the round its whole evidence packet at a reader hours later
+    # (#2839), and that the phase constant is the JOURNEY one and NOT
+    # `program.PROGRAM_PHASE_MEASURE`, which is the same string `"measure"` —
+    # so the wrong import reads correct today and breaks the moment either
+    # value moves. Refusing five lines here would buy a smaller number with a
+    # duplicated vocabulary and two silent traps.
+    "jasper/web/correction_crossover_v2.py": 9_435,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

@@ -79,6 +79,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     CAPABILITY_FINDINGS,
     CAPABILITY_PREDICTED_SUM as CAPABILITY_PREDICTED_SUM,
     CAPABILITY_ROLLBACK,
+    PHASE_MEASURE,
     STAGE_MEASURE_CAPABILITIES,
     STAGE_VERIFY_CAPABILITIES,
     StageOpening,
@@ -524,7 +525,9 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     with _state_lock:
         atomic_write_text(
             _state_path(),
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            # allow_nan=False: fail at the writer that produced the non-finite
+            # value, not at the evidence packet hours later (#2839).
+            json.dumps(payload, allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             group_from_parent=True,
             durable=durable,
@@ -543,7 +546,9 @@ def _update_current_review(
             or str(state.get("session_id") or "") != session_id
             or not isinstance(candidate, Mapping)
             or str(candidate.get("fingerprint") or "") != candidate_fingerprint
-            or "measure" not in (state.get("accepted_phases") or ())
+            # The JOURNEY phase, not program.PROGRAM_PHASE_MEASURE — both are
+            # the string "measure", so the wrong one reads correct today.
+            or PHASE_MEASURE not in (state.get("accepted_phases") or ())
             or state.get("accepted_sound_revision") != sound_revision
             or (state.get("applied") is True and not allow_applied)
         ):
