@@ -6726,6 +6726,7 @@ def _with_banked_base_trim(
     *,
     trims: dict[str, float],
     declaration: str | None = None,
+    geometries: dict[str, str] | None = None,
 ) -> dict:
     """``_baseline_payload``, with a base trim banked against this speaker's own
     declaration (or, when ``declaration`` is given, against a different one)."""
@@ -6740,7 +6741,9 @@ def _with_banked_base_trim(
     dbt.write_base_trim(
         trims_db=trims,
         levels_db={"mono": {role: {2000.0: -40.0} for role in trims}},
-        capture_geometries={"mono": {role: "near_field" for role in trims}},
+        capture_geometries={
+            "mono": geometries or {role: "near_field" for role in trims}
+        },
         roles=tuple(trims),
         regions=[("woofer", "tweeter", 2000.0)],
         declaration_fingerprint=(
@@ -6817,6 +6820,51 @@ def test_a_base_trim_for_another_declaration_falls_back_and_says_why(
         if issue["code"] == "driver_base_trim_not_applied"
     )
     assert dbt.REMEASURE_REMEDIATION in message
+
+
+def test_a_trim_whose_drivers_were_read_under_two_geometries_is_disclosed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Disclosed, NOT refused. A near-field woofer against a reference-axis
+    tweeter is still a measurement, and still a better starting point than the
+    datasheet gap; what the household loses is the claim that the two levels
+    came from one acoustic distance, so JTS applies the trim and says so."""
+    topology = _dual_apple_topology()
+    payload = _with_banked_base_trim(
+        topology,
+        _research_with_sensitivity(),
+        tmp_path,
+        monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -19.4},
+        geometries={"woofer": "near_field", "tweeter": "reference_axis"},
+    )
+
+    assert payload["corrections"]["tweeter"]["gain_db"] == -19.4
+    assert payload["corrections_source"]["tweeter"] == "measured"
+    codes = {issue["code"] for issue in payload["issues"]}
+    assert "driver_base_trim_mixed_capture_geometry" in codes
+    assert "driver_base_trim_not_applied" not in codes
+    disclosure = next(
+        issue for issue in payload["issues"]
+        if issue["code"] == "driver_base_trim_mixed_capture_geometry"
+    )
+    assert disclosure["severity"] == "info"
+    assert "mono" in disclosure["message"]
+
+
+def test_one_geometry_throughout_discloses_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = _with_banked_base_trim(
+        _dual_apple_topology(),
+        _research_with_sensitivity(),
+        tmp_path,
+        monkeypatch,
+        trims={"woofer": 0.0, "tweeter": -19.4},
+    )
+    assert "driver_base_trim_mixed_capture_geometry" not in {
+        issue["code"] for issue in payload["issues"]
+    }
 
 
 def test_a_banked_trim_far_from_the_datasheet_still_meets_the_existing_frame_check(

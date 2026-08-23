@@ -276,6 +276,43 @@ def test_a_capture_naming_an_undeclared_role_refuses(tmp_path: Path):
     assert excinfo.value.reason == driver_trim.REFUSE_CAPTURES_INVALID
 
 
+def test_an_unknown_capture_geometry_refuses_before_anything_is_analysed(
+    tmp_path: Path, monkeypatch
+):
+    """The manifest is checked WHOLE before the first deconvolution, and a
+    geometry the analysis cannot read is part of "whole": otherwise a typo
+    surfaces as a ``DriverAcousticsError`` traceback out of the analysis
+    instead of a refusal in this verb's own vocabulary."""
+    captures_dir = _two_captures(
+        tmp_path, woofer_gain_db=-40.0, tweeter_gain_db=-40.0
+    )
+    manifest = json.loads(
+        (captures_dir / driver_trim.CAPTURES_MANIFEST_NAME).read_text()
+    )
+    manifest["captures"][1]["capture_geometry"] = "reference-axis"
+    (captures_dir / driver_trim.CAPTURES_MANIFEST_NAME).write_text(
+        json.dumps(manifest)
+    )
+    analysed: list[str] = []
+
+    def _record_then_fail(wav, sweep_meta, **kwargs):
+        analysed.append(Path(wav).stem)
+        raise AssertionError("no capture may be analysed after a bad manifest")
+
+    monkeypatch.setattr(da, "analyze_driver_capture", _record_then_fail)
+
+    with pytest.raises(driver_trim.TrimRefusal) as excinfo:
+        driver_trim._capture_levels(
+            driver_trim._load_captures_manifest(captures_dir),
+            _preset(),
+            captures_dir,
+            None,
+        )
+    assert excinfo.value.reason == driver_trim.REFUSE_CAPTURES_INVALID
+    assert "reference-axis" in excinfo.value.detail
+    assert analysed == []
+
+
 @pytest.mark.parametrize(
     "result, why",
     [
@@ -422,7 +459,12 @@ def test_end_to_end_recovers_a_known_level_gap_and_banks_it(
     record = dbt.load_base_trim(state_path=state)
     assert record is not None
     assert record["trims_db"]["woofer"] == 0.0
-    assert record["trims_db"]["tweeter"] == pytest.approx(-12.0, abs=0.6)
+    # A couple of 0.1 dB quanta, which is all the slack the chain has: the
+    # solver and the writer each round to 0.1 dB, and this synthesized pass
+    # lands on -12.0 exactly. Wide enough to absorb the quantization, tight
+    # enough that a +0.5 dB bias injected into one driver's read fails here
+    # (it passes at the abs=0.6 this replaced).
+    assert record["trims_db"]["tweeter"] == pytest.approx(-12.0, abs=0.15)
     assert record["declaration_fingerprint"] == "c" * 64
     assert record["microphone"]["serial"] == "8108494"
     assert record["microphone"]["sens_factor_db"] == -12.07
@@ -457,3 +499,48 @@ def test_a_speaker_with_no_declaration_refuses_rather_than_banking_an_unkeyed_tr
     assert code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == driver_trim.REFUSE_DECLARATION_UNAVAILABLE
+
+
+def test_main_installs_an_info_handler_so_the_banked_line_is_not_dropped(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """``event=active_speaker.driver_trim_banked`` is the one line attributing a
+    banked trim to the run that measured it, and it is INFO. Without a handler
+    Python's ``lastResort`` floors at WARNING and drops it, so a trim could
+    replace another with nothing anywhere saying so."""
+    import logging
+
+    from jasper.log_event import log_event
+
+    captures_dir = _two_captures(
+        tmp_path, woofer_gain_db=-40.0, tweeter_gain_db=-40.0
+    )
+    cal = tmp_path / "umik2.txt"
+    cal.write_text(CAL_TEXT)
+    monkeypatch.setattr(
+        driver_trim, "_resolve_declaration",
+        lambda: (_preset(), {"kind": "preview"}, "d" * 64),
+    )
+    _stub_analysis(monkeypatch, {
+        "woofer": _FakeResult(-50.0),
+        "tweeter": _FakeResult(-38.0),
+    })
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    # A fresh CLI interpreter has no root handler; under pytest the capture
+    # plugin's own handlers would make basicConfig a silent no-op.
+    root.handlers.clear()
+    try:
+        assert driver_trim.main([
+            "--captures-dir", str(captures_dir),
+            "--calibration-file", str(cal),
+            "--state", str(tmp_path / "base_trim.json"),
+        ]) == 0
+        assert root.handlers, "main() must configure a root handler (basicConfig)"
+        assert root.getEffectiveLevel() <= logging.INFO
+        # The exact line that had no handler before now reaches one.
+        log_event(driver_trim.logger, "active_speaker.driver_trim_banked", trims="x")
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+    capsys.readouterr()

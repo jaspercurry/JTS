@@ -273,6 +273,95 @@ def test_a_tampered_record_can_only_fail_closed(tmp_path: Path, trim, why):
     assert meta["status"] == dbt.STATUS_UNUSABLE
 
 
+@pytest.mark.parametrize(
+    "field, value, why",
+    [
+        pytest.param("levels_db", 7, "a number cannot be walked for groups",
+                     id="levels_numeric"),
+        pytest.param("levels_db", "mono", "a string iterates into four ids",
+                     id="levels_string"),
+        pytest.param("levels_db", None, "no evidence is not 'measured everywhere'",
+                     id="levels_none"),
+        pytest.param("capture_geometries", 7, "geometry must be walkable too",
+                     id="geometries_numeric"),
+    ],
+)
+def test_a_record_whose_evidence_is_not_readable_refuses(
+    tmp_path: Path, field, value, why
+):
+    """``speaker_group_ids`` gates readiness, so it is derived from the
+    record's evidence and never guessed. Unreadable evidence is refused rather
+    than turned into a group set nobody measured."""
+    state = _bank(tmp_path)
+    record = json.loads(state.read_text())
+    record[field] = value
+    state.write_text(json.dumps(record))
+    trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert trims == {}, why
+    assert meta["status"] == dbt.STATUS_UNUSABLE
+    assert meta["remediation"] == dbt.REMEASURE_REMEDIATION
+    assert "speaker_group_ids" not in meta
+
+
+def test_the_reader_names_only_the_groups_the_record_actually_levelled(
+    tmp_path: Path
+):
+    """The record banks EVERY group it captured, including one the solve
+    dropped for a driver it never got a level for. Readiness gates on the
+    measured-group set, so the right cabinet's half-capture must not read as a
+    levelled cabinet."""
+    state = _bank(
+        tmp_path,
+        levels_db={
+            "left": {"woofer": {2000.0: -50.0}, "tweeter": {2000.0: -30.0}},
+            "right": {"woofer": {2000.0: -50.0}},  # the tweeter never landed
+        },
+        capture_geometries={
+            "left": {"woofer": "near_field", "tweeter": "near_field"},
+            "right": {"woofer": "near_field"},
+        },
+    )
+    _trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert meta["status"] == dbt.STATUS_APPLIED
+    assert meta["speaker_group_ids"] == ["left"]
+    assert meta["groups_total"] == 2
+
+
+def test_a_pair_read_under_two_geometries_is_disclosed_not_refused(tmp_path: Path):
+    """Near-field and reference-axis are different acoustic distances, so a
+    delta taken across them rests on less than the record otherwise claims.
+    The trim still beats the datasheet estimate, so it is applied and the
+    mixture is named."""
+    state = _bank(
+        tmp_path,
+        capture_geometries={
+            "mono": {"woofer": "near_field", "tweeter": "reference_axis"}
+        },
+    )
+    trims, meta = dbt.banked_base_trims("a" * 64, TWO_WAY, state_path=state)
+    assert trims == {"woofer": 0.0, "tweeter": -20.0}
+    assert meta["status"] == dbt.STATUS_APPLIED
+    assert meta["mixed_geometry_group_ids"] == ["mono"]
+
+
+def test_one_geometry_throughout_discloses_nothing(tmp_path: Path):
+    _trims, meta = dbt.banked_base_trims(
+        "a" * 64, TWO_WAY, state_path=_bank(tmp_path)
+    )
+    assert meta["mixed_geometry_group_ids"] == []
+
+
+def test_write_refuses_a_record_no_group_of_which_is_complete(tmp_path: Path):
+    """Same promise as the envelope checks above: a record its own reader would
+    refuse is a silent no-op dressed up as success."""
+    with pytest.raises(dbt.DriverBaseTrimError):
+        _bank(
+            tmp_path,
+            levels_db={"mono": {"woofer": {2000.0: -50.0}}},
+            capture_geometries={"mono": {"woofer": "near_field"}},
+        )
+
+
 def test_the_state_path_honours_the_env_override(tmp_path: Path, monkeypatch):
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "elsewhere.json"))
     assert dbt.base_trim_state_path() == tmp_path / "elsewhere.json"
