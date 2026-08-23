@@ -59,7 +59,10 @@ quoted in ``driver_safety`` is what governs: declared values are the only
 refusing authority; code figures may prefill, disclose, and fall back.  So the
 bound is now the PUBLISHED condition
 (``excitation_safety_plan.resolve_driver_protection_slope_db_per_octave``), a
-driver whose maker published no slope gets no slope refusal at all, and the
+driver with no published condition ON THE RECORD gets no slope refusal at all
+— which covers both a datasheet that prints none AND a safety profile saved
+before the field that carries one existed, so every speaker commissioned before
+this change has no slope bound until its next ``/sound/`` save — and the
 commissioning recommendation rides the record as
 :attr:`TopologyPrescription.recommended_slope_db_per_octave` instead.
 
