@@ -1999,7 +1999,7 @@ def test_active_speaker_stop_and_level_payloads_are_no_audio(
 
     assert armed["status"] == "armed"
     assert armed["playback_allowed"] is False
-    assert guarded["test_signal"]["requested_level_dbfs"] == -79.0
+    assert guarded["test_signal"]["requested_level_dbfs"] == -70.0
     assert guarded["issues"][0]["code"] == "upward_step_limited"
     assert status["status"] == "armed"
     assert stopped["status"] == "stopped"

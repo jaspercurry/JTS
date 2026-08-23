@@ -2898,7 +2898,13 @@ async def _active_speaker_rollback_startup_config_payload(
 # COMMISSION_TONE_* and SUMMED_COMMISSION_SPEECH_BACKEND are imported from
 # jasper.active_speaker.web_commissioning at the top of this module — they are
 # the owner's objects, not /sound/ copies. Do not re-declare them here.
+#: Operator stop reasons that mean "I heard it" — the only client-supplied
+#: strings that complete a combined test. The loop's own budget end is NOT in
+#: here: it passes ``completed=True`` directly, so a client cannot borrow the
+#: machine's reason string to claim a completion it did not earn.
 SUMMED_TEST_CONFIRM_STOP_REASONS = {"operator_confirmed"}
+#: End reason for a play that ran the caller's whole ``duration_ms`` budget.
+SUMMED_TEST_DURATION_ELAPSED_REASON = "duration_elapsed"
 SUMMED_TEST_MAX_LOOP_SECONDS = 10 * 60.0
 _COMMISSION_TONE_LOCK = threading.Lock()
 _COMMISSION_TONE_SESSION: dict[str, Any] | None = None
@@ -3144,21 +3150,51 @@ def _summed_test_playback_at_session_level(
     return out
 
 
+def _summed_test_play_budget_seconds(value: Any) -> float | None:
+    """Seconds of audible combined test the request asked for, or ``None``.
+
+    ``None`` — an absent, unparseable, or non-positive ``duration_ms`` — is the
+    open-ended loop: play until the operator stops it or the watchdog expires
+    it. A budget is clamped to :data:`SUMMED_TEST_MAX_LOOP_SECONDS`, which
+    stays the hard bound on how long this route can hold the single global
+    combined-test lane.
+    """
+
+    try:
+        seconds = float(value) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0.0:
+        return None
+    return min(seconds, SUMMED_TEST_MAX_LOOP_SECONDS)
+
+
 def _summed_test_stopped_playback(
     playback: dict[str, Any],
     *,
     commissioning_load: dict[str, Any] | None = None,
     fanin_gate: dict[str, Any] | None = None,
     reason: str = "operator_stop",
+    completed: bool = False,
 ) -> dict[str, Any]:
-    confirmed = reason in SUMMED_TEST_CONFIRM_STOP_REASONS
+    """Shape one ended combined-test play.
+
+    A play is ``completed`` — and therefore ``captured``-eligible in
+    :func:`jasper.active_speaker.measurement.record_summed_test_artifact` — in
+    exactly two cases: the operator confirmed hearing it, or the caller passes
+    ``completed=True`` because the play ran its whole requested budget with at
+    least one whole stimulus repeat played cleanly. Every other end (a plain
+    stop, a stop before audio, the watchdog) leaves the record incomplete.
+    """
+
+    completed = completed or reason in SUMMED_TEST_CONFIRM_STOP_REASONS
     out = dict(playback)
     out.update(
         {
-            "status": "completed" if confirmed else "stopped",
+            "status": "completed" if completed else "stopped",
             "backend": SUMMED_COMMISSION_SPEECH_BACKEND,
-            "audio_emitted": bool(confirmed),
-            "confirmable": bool(confirmed),
+            "audio_emitted": bool(completed),
+            "confirmable": bool(completed),
             "stop_reason": reason,
             "issues": [
                 issue for issue in playback.get("issues", []) if isinstance(issue, dict)
@@ -3198,6 +3234,18 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
 
 
 def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
+    """End the combined test now; ``reason`` is a semantic flag, not a label.
+
+    ``reason: "operator_confirmed"`` means "the operator heard it" and is the
+    only client-supplied value that completes the test — it is what makes the
+    recorded result ``captured`` and unlocks
+    ``/active-speaker/summed-validation``. The default ``"operator_stop"``, any
+    other string, and a stop that arrives before audio started all leave the
+    test incomplete. A client that does not want this rendezvous at all should
+    pass ``duration_ms`` to ``/active-speaker/summed-test`` instead and let the
+    play end itself.
+    """
+
     with _SUMMED_TEST_TONE_LOCK:
         payload = _stop_summed_test_tone_locked(reason=reason)
     log_event(
@@ -3601,8 +3649,20 @@ async def _active_speaker_play_summed_commission_tone(
     preset: Any,
     crossover_preview: dict[str, Any] | None,
     camilla_factory: Callable[[], Any],
+    play_budget_s: float | None = None,
 ) -> dict[str, Any]:
-    """Play one bounded combined-driver tone through the real active graph."""
+    """Play one bounded combined-driver tone through the real active graph.
+
+    ``play_budget_s`` is the caller's requested audible-play budget (the
+    request's ``duration_ms``). With one, the looped speech stimulus stops
+    itself once the budget has elapsed and this returns a *completed* play, so
+    a client that cannot stop the test while its own start request is in
+    flight still gets a ``captured`` record. Without one, the loop keeps
+    playing until the operator stops it or the watchdog expires it. Whole
+    repeats either way: the budget is checked between repeats, never mid-word,
+    so a completed play is always at least one clean stimulus repeat and can
+    overrun the budget by up to one.
+    """
 
     global _SUMMED_TEST_TONE_SESSION
 
@@ -3733,57 +3793,65 @@ async def _active_speaker_play_summed_commission_tone(
                 if _SUMMED_TEST_TONE_SESSION is session:
                     session["level_dbfs"] = level_dbfs
                     session["load_payload"] = load_payload
+            def _ended(reason: str, *, completed: bool = False) -> dict[str, Any]:
+                """End the loop at the session's live level, with the reason."""
+
+                current_playback = _summed_test_playback_at_session_level(
+                    artifact_playback,
+                    session,
+                )
+                current_playback.update(
+                    {
+                        "audio_device": {"pcm": correction_play_device()},
+                        "stimulus": stimulus,
+                    }
+                )
+                return _summed_test_stopped_playback(
+                    current_playback,
+                    commissioning_load=current_playback.get(
+                        "commissioning_load", load_payload
+                    ),
+                    fanin_gate=fanin_gate,
+                    reason=reason,
+                    completed=completed,
+                )
+
             heard_audio = False
             loop_count = 0
             watchdog_deadline = time.monotonic() + SUMMED_TEST_MAX_LOOP_SECONDS
+            play_deadline = (
+                None
+                if play_budget_s is None
+                else time.monotonic() + play_budget_s
+            )
             while True:
                 stop_reason = _summed_test_session_stop_reason(session)
                 if stop_reason:
-                    current_playback = _summed_test_playback_at_session_level(
-                        artifact_playback,
-                        session,
-                    )
-                    current_playback.update(
-                        {
-                            "audio_device": {"pcm": correction_play_device()},
-                            "stimulus": stimulus,
-                        }
-                    )
-                    playback_result = _summed_test_stopped_playback(
-                        current_playback,
-                        commissioning_load=current_playback.get(
-                            "commissioning_load", load_payload
-                        ),
-                        fanin_gate=fanin_gate,
-                        reason=(
-                            stop_reason
-                            if heard_audio
-                            else (
-                                "operator_stop_before_audio"
-                                if stop_reason in SUMMED_TEST_CONFIRM_STOP_REASONS
-                                else "operator_stop"
-                            )
-                        ),
+                    playback_result = _ended(
+                        stop_reason
+                        if heard_audio
+                        else (
+                            "operator_stop_before_audio"
+                            if stop_reason in SUMMED_TEST_CONFIRM_STOP_REASONS
+                            else "operator_stop"
+                        )
                     )
                     break
                 if time.monotonic() >= watchdog_deadline:
-                    current_playback = _summed_test_playback_at_session_level(
-                        artifact_playback,
-                        session,
-                    )
-                    current_playback.update(
-                        {
-                            "audio_device": {"pcm": correction_play_device()},
-                            "stimulus": stimulus,
-                        }
-                    )
-                    playback_result = _summed_test_stopped_playback(
-                        current_playback,
-                        commissioning_load=current_playback.get(
-                            "commissioning_load", load_payload
-                        ),
-                        fanin_gate=fanin_gate,
-                        reason="watchdog_timeout",
+                    playback_result = _ended("watchdog_timeout")
+                    break
+                if (
+                    play_deadline is not None
+                    and loop_count >= 1
+                    and time.monotonic() >= play_deadline
+                ):
+                    # `loop_count >= 1` is the honesty condition: it counts
+                    # stimulus repeats that reached aplay exit 0, so a budget
+                    # shorter than one repeat still buys real audio before this
+                    # claims the play completed.
+                    playback_result = _ended(
+                        SUMMED_TEST_DURATION_ELAPSED_REASON,
+                        completed=True,
                     )
                     break
                 started_proc = popen_correction_play(
@@ -3811,45 +3879,11 @@ async def _active_speaker_play_summed_commission_tone(
                         )
                     await asyncio.sleep(0.03)
                 if watchdog_expired:
-                    current_playback = _summed_test_playback_at_session_level(
-                        artifact_playback,
-                        session,
-                    )
-                    current_playback.update(
-                        {
-                            "audio_device": {"pcm": correction_play_device()},
-                            "stimulus": stimulus,
-                        }
-                    )
-                    playback_result = _summed_test_stopped_playback(
-                        current_playback,
-                        commissioning_load=current_playback.get(
-                            "commissioning_load", load_payload
-                        ),
-                        fanin_gate=fanin_gate,
-                        reason="watchdog_timeout",
-                    )
+                    playback_result = _ended("watchdog_timeout")
                     break
                 stop_reason = _summed_test_session_stop_reason(session)
                 if stop_reason:
-                    current_playback = _summed_test_playback_at_session_level(
-                        artifact_playback,
-                        session,
-                    )
-                    current_playback.update(
-                        {
-                            "audio_device": {"pcm": correction_play_device()},
-                            "stimulus": stimulus,
-                        }
-                    )
-                    playback_result = _summed_test_stopped_playback(
-                        current_playback,
-                        commissioning_load=current_playback.get(
-                            "commissioning_load", load_payload
-                        ),
-                        fanin_gate=fanin_gate,
-                        reason=stop_reason,
-                    )
+                    playback_result = _ended(stop_reason)
                     break
                 if started_proc.returncode != 0:
                     raise RuntimeError(f"aplay exited {started_proc.returncode}")
@@ -4734,7 +4768,20 @@ async def _active_speaker_summed_test_payload(
     *,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
-    """Run and record one bounded combined-driver test for validation."""
+    """Run and record one bounded combined-driver test for validation.
+
+    This request blocks for as long as the test plays, and returns once it has
+    ended. ``duration_ms`` is how long to play: with it the audible loop stops
+    itself, the response is a ``completed`` play, and the recorded test is
+    ``captured`` — so one client can run the test and then POST
+    ``/active-speaker/summed-validation`` in sequence, with no second
+    connection and no race against ``active_summed_test_running``. Without
+    ``duration_ms`` the loop runs until ``/active-speaker/summed-test/stop``
+    arrives on another connection (``reason: "operator_confirmed"`` to complete
+    it) or the watchdog expires it; a stop that is not a confirmation leaves
+    the test incomplete, which is what "the operator did not say they heard
+    it" means.
+    """
 
     from jasper.active_speaker.calibration_level import (
         calibration_level_payload,
@@ -4781,6 +4828,7 @@ async def _active_speaker_summed_test_payload(
         else persisted_calibration_level
     )
     startup_gate_level = calibration_level_payload()
+    play_budget_s = _summed_test_play_budget_seconds(raw.get("duration_ms"))
     safe_session = load_safe_playback_state()
     wants_audio = bool(raw.get("audio"))
     if wants_audio and safe_session.get("status") != "armed":
@@ -4801,7 +4849,6 @@ async def _active_speaker_summed_test_payload(
         requested_level_dbfs=calibration_level.get("test_signal", {}).get(
             "requested_level_dbfs"
         ),
-        requested_duration_ms=raw.get("duration_ms"),
         playback_allowed=(
             wants_audio and safe_session.get("status") == "armed" and protected_loaded
         ),
@@ -4853,6 +4900,7 @@ async def _active_speaker_summed_test_payload(
             preset=preset,
             crossover_preview=resolved_preview,
             camilla_factory=camilla_factory,
+            play_budget_s=play_budget_s,
         )
     else:
         playback = start_tone_playback(
@@ -4887,6 +4935,8 @@ async def _active_speaker_summed_test_payload(
         requested_level_dbfs=str(requested_level),
         audio_requested=str(wants_audio),
         audio_emitted=str(bool(playback.get("audio_emitted"))),
+        play_budget_s=str(play_budget_s),
+        stop_reason=str(playback.get("stop_reason")),
         blockers=len(playback.get("issues") or []),
         artifact=str((playback.get("artifact") or {}).get("wav_basename")),
     )

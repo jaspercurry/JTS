@@ -89,7 +89,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 123 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 125 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -117,11 +117,14 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # two are the one event that says whether a household action silenced the
     # speaker AND whether the silence actually landed, so both stay greppable.
     # The digest catches a missed, swapped, or newly invented wrapper without
-    # checking in the full tuple.
+    # checking in the full tuple. The combined test adds two more: the
+    # `play_budget_s` it honoured (a float or None) and the `stop_reason` the
+    # play ended on, which together say why one run was captured and another
+    # was not.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 123
+    assert len(wrapped_fields) == 125
     assert hashlib.sha256(signature).hexdigest() == (
-        "a97c375547b8228c09cb5e6262bb8d631ef9ce0e8d77ac4124ba5e6d51a1cbc9"
+        "08ed98ecd464607da40d39bab5571d6e0db8e552566c26a0c3532503ed30d5bc"
     )
 
 

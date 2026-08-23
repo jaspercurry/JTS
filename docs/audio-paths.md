@@ -711,9 +711,11 @@ playback authority.
 they do not apply the normal active profile. `/sound/active-speaker/summed-test`
 is the audible exception: it temporarily loads the protected all-drivers-live
 commissioning graph through the active-speaker runtime lane, plays the bounded
-looped combined speech test on `correction_substream`, accepts live level
-changes through `/sound/active-speaker/summed-test/level`, records only the
-audible operator-confirmed result, and rolls back. Stopped-before-audio,
+combined speech test on `correction_substream`, accepts live level
+changes through `/sound/active-speaker/summed-test/level`, records only an
+audible completed result, and rolls back. A play completes two ways: the
+operator confirms hearing it, or the request's own `duration_ms` budget elapses
+after at least one whole stimulus repeat played cleanly. Stopped-before-audio,
 watchdog-expired, artifact-only, or stale summed-test records remain evidence of
 an incomplete check, not unlock tokens for the baseline compiler.
 Driver evidence is accepted only for the current saved physical target and

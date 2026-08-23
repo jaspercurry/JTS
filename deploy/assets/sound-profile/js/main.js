@@ -4444,7 +4444,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'Changes apply while the test audio is playing.' :
       (disabled ?
         'Preparing the test path. Level changes will be available in a moment.' :
-        'Choose a careful level. You can adjust it while the test audio plays.');
+        'Choose a careful level. You can adjust it while the test audio plays (about 12 seconds).');
     return '<label class="active-speaker-summed-level">' +
       '<span class="active-speaker-summed-level__head">' +
         '<span>Combined test level</span>' +
@@ -7158,9 +7158,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       return;
     }
     if (!await jtsConfirm(
-      'Play a looped spoken combined test for "' + label +
+      'Play a spoken combined test for "' + label +
         '" at ' + fmtDb(combinedTestLevelDbfs()) +
-        '? JTS uses the prepared crossover and keeps the test level bounded.',
+        '? JTS uses the prepared crossover, keeps the test level bounded, and ' +
+        'stops the test when it finishes.',
       {danger: true}
     )) {
       return;
