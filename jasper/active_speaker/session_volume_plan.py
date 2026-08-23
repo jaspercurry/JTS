@@ -289,10 +289,12 @@ def unsegmented_stimulus_ceiling_db(
         declared_sensitivities=declared_sensitivities,
     )
     peak = float(stimulus_peak_dbfs)
-    binding = _binding_branch_peak_dbfs(fingerprints, branch_peaks_dbfs)
-    incomplete = binding is None and branch_peaks_dbfs is not None
-    if binding is None:
-        binding = peak
+    rendered = _binding_branch_peak_dbfs(fingerprints, branch_peaks_dbfs)
+    # Which bound was used is a fact about the RENDER, never a comparison of
+    # the two numbers: a branch whose peak happens to equal the stimulus peak
+    # would otherwise report the bound it did not take.
+    incomplete = rendered is None and branch_peaks_dbfs is not None
+    binding = peak if rendered is None else rendered
     ceiling = MAX_TEST_LEVEL_DBFS - binding
     detail, declared_cap_ceiling = _declared_cap_disclosure(
         fingerprints,
@@ -304,7 +306,7 @@ def unsegmented_stimulus_ceiling_db(
     log_event(
         logger,
         "active_speaker.unsegmented_ceiling_bound",
-        bound="full_band" if binding == peak else "per_branch",
+        bound="per_branch" if rendered is not None else "full_band",
         # Named rather than inferred from ``bound``: silently serving the
         # conservative bound reads as "the graph is just this tight" and sends
         # an operator hunting the wrong number.
@@ -317,6 +319,18 @@ def unsegmented_stimulus_ceiling_db(
         drivers=detail,
     )
     return ceiling
+
+
+def _usable_branch_peak(value: Any) -> float | None:
+    """One rendered branch peak, or ``None`` when it is not a usable number.
+
+    The single owner of "is this branch fact usable", so the bound and the
+    disclosure below cannot disagree about which branches resolved.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    peak = float(value)
+    return peak if math.isfinite(peak) else None
 
 
 def _binding_branch_peak_dbfs(
@@ -334,14 +348,10 @@ def _binding_branch_peak_dbfs(
         return None
     peaks: list[float] = []
     for fingerprint in fingerprints:
-        branch_peak = branch_peaks_dbfs.get(fingerprint)
-        if (
-            isinstance(branch_peak, bool)
-            or not isinstance(branch_peak, (int, float))
-            or not math.isfinite(float(branch_peak))
-        ):
+        branch_peak = _usable_branch_peak(branch_peaks_dbfs.get(fingerprint))
+        if branch_peak is None:
             return None
-        peaks.append(float(branch_peak))
+        peaks.append(branch_peak)
     return max(peaks) if peaks else None
 
 
@@ -366,16 +376,11 @@ def _declared_cap_disclosure(
     parts: list[str] = []
     cap_ceilings: list[float] = []
     for fingerprint, cap in zip(fingerprints, caps):
-        branch_peak = peaks.get(fingerprint)
-        known = (
-            isinstance(branch_peak, (int, float))
-            and not isinstance(branch_peak, bool)
-            and math.isfinite(float(branch_peak))
-        )
-        received = float(branch_peak) if known else stimulus_peak_dbfs
+        rendered = _usable_branch_peak(peaks.get(fingerprint))
+        received = stimulus_peak_dbfs if rendered is None else rendered
         at_ceiling = received + ceiling_db
         cap_ceilings.append(cap - received)
-        shown = f"{received:.2f}" if known else "none"
+        shown = "none" if rendered is None else f"{rendered:.2f}"
         parts.append(
             f"{fingerprint}:cap={cap:.2f},branch={shown}"
             f",at_ceiling={at_ceiling:.2f},past_cap={at_ceiling - cap:+.2f}"
