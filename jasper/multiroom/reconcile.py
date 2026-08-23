@@ -1845,6 +1845,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Step 5 below swaps the live CamillaDSP graph, so its swap duck needs a
+    # canonical target to release to.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
+
     cfg = load_config()
     requested_cfg = cfg
     prior_role_status = read_effective_role_status(FOLLOWER_STATUS_FILE)

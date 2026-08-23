@@ -24,7 +24,11 @@ from ..audio_io import (
     make_tts_playout,
 )
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
-from ..camilla import CamillaController, Ducker
+from ..camilla import (
+    CamillaController,
+    Ducker,
+    set_canonical_target_db_provider,
+)
 from ..config import Config, VoiceProviderNotConfigured
 from ..conversation_history import (
     ConversationStore,
@@ -755,6 +759,10 @@ async def run() -> None:
         spotify_device_name=cfg.spotify_device_name,
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
+    # Every duck holder in this process — Ducker, CueDuck, and the graph-swap
+    # bracket — releases against the coordinator's canonical target so their
+    # interleavings cannot strand the fader at a value one of them had ducked.
+    set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
     # Ducker built after the coordinator so restore follows the active
     # output topology. Current production routes TTS/cues into fan-in
     # before CamillaDSP, so ducking must also happen in fan-in; otherwise

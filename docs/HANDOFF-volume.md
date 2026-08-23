@@ -561,7 +561,8 @@ self-healing property no matter how the drift was introduced.
 4. Deep quiet drift is skipped (`expected - current >=
    RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
    setting `_voice_session_active`, so a 25 dB drop below expected can
-   be intentional. Deep loud drift is **not** skipped. If Camilla is
+   be intentional. The graph-swap duck below rides the same carve-out.
+   Deep loud drift is **not** skipped. If Camilla is
    much louder than the canonical level, the reconciler pulls it back
    even when the drift is larger than 10 dB.
 5. The unlocked 1 Hz preflight is only a hint that repair may be needed.
@@ -642,6 +643,32 @@ directly; it is not covered by this daemon availability guarantee.
 an atomic protocol. A higher-level DSP transaction that needs rollback must
 retain and restore its prior path; the transport timeout does not turn an
 ambiguous response into proof that a mutation did or did not land.
+
+Every websocket graph mutation — load, inline apply, patch, reload, and the
+rollback loads a failed transaction issues — runs inside a deep main-fader
+duck (`CamillaController._graph_mutation`), so a swap that changes the graph's
+own headroom gain fades down and back up instead of stepping at an unchanged
+volume setting. The duck rides `main_volume`, not `main_mute`, because
+`maybe_reconcile_camilla` treats a mute as drift it must correct while a drop
+of at least `RECONCILE_DUCK_SKIP_DB` is left alone as somebody's duck. The
+statefile-plus-restart path needs no duck: CamillaDSP stops and starts, so the
+speaker is silent across it rather than stepping.
+
+Both duck holders — that bracket and `CueDuck` — release through
+`_duck_release_target_db`, which writes `min(canonical, current + own depth)`.
+Each gives back only the attenuation it applied, so either interleaving order
+ends at the canonical target; replaying the entry snapshot instead stranded the
+fader wherever the other holder had left it.
+
+The canonical target is per process. jasper-voice hands over its long-lived
+coordinator's `get_camilla_target_db`; every other process that swaps the graph
+calls `install_env_canonical_target_provider()` at startup, which builds a
+coordinator per release. Which processes those are is a maintained list, not a
+derived one — read `_ENTRY_POINTS` in the pin below for the current set rather
+than trusting a count restated here. Which processes those are is pinned by
+[`tests/test_canonical_target_registration.py`](../tests/test_canonical_target_registration.py):
+a lost registration line compiles fine and would silently put that daemon's
+swaps back on snapshot releases.
 
 ## AirPlay is always camilla-as-master
 

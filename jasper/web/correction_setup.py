@@ -8313,6 +8313,12 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # Correction and crossover applies swap the live graph from this process,
+    # so their swap duck needs a canonical target to release to.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
+
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
     _claim_crossover_state_owners()

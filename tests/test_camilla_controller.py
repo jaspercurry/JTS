@@ -7,8 +7,10 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import logging
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -24,21 +26,39 @@ from jasper.camilla import (
     crossover_controller,
     primary_controller,
 )
-from jasper.dsp_apply import BassExtensionApplyPending, dsp_writer_lock
+from jasper.dsp_apply import (
+    BassExtensionApplyPending,
+    CamillaConfigValidationResult,
+    DspApplyError,
+    ValidationStatus,
+    apply_dsp_config,
+    dsp_writer_lock,
+)
 
 from ._async_wait import wait_signalled
 
 
 class _FakeVolume:
-    def __init__(self) -> None:
+    def __init__(self, ops: list[str]) -> None:
         self.values: list[float] = []
         self.mutes: list[bool] = []
+        self.muted = False
+        self._ops = ops
+
+    def main_volume(self) -> float:
+        return self.values[-1] if self.values else 0.0
+
+    def main_mute(self) -> bool:
+        return self.muted
 
     def set_main_volume(self, value: float) -> None:
         self.values.append(float(value))
+        self._ops.append(f"vol={value:g}")
 
     def set_main_mute(self, value: bool) -> None:
+        self.muted = bool(value)
         self.mutes.append(bool(value))
+        self._ops.append(f"mute={self.muted}")
 
 
 class _FakeClient:
@@ -48,7 +68,8 @@ class _FakeClient:
         playback_peak_value: list[float | None] | None = None,
         playback_rms_value: list[float | None] | None = None,
     ) -> None:
-        self.volume = _FakeVolume()
+        self.ops: list[str] = []
+        self.volume = _FakeVolume(self.ops)
         self.config = self
         self.general = self
         self.levels = self
@@ -62,6 +83,7 @@ class _FakeClient:
 
     def set_active_raw(self, value: str) -> None:
         self.active_raw_values.append(value)
+        self.ops.append("set_active_raw")
 
     def active_raw(self):
         return self.active_raw_value
@@ -74,13 +96,23 @@ class _FakeClient:
 
     def set_file_path(self, path: str) -> None:
         self.file_paths.append(path)
+        self.ops.append("set_file_path")
 
     def reload(self) -> None:
         self.reload_count += 1
+        self.ops.append("reload")
 
     def query(self, command: str, *, arg=None):
         self.queries.append((command, arg))
+        self.ops.append(f"query:{command}")
         return None
+
+
+@pytest.fixture(autouse=True)
+def _instant_graph_mutation_duck(monkeypatch):
+    """Every graph mutation holds a duck for the Camilla volume ramp. Tests
+    that are not about the fade itself should not pay that wall time."""
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
 
 
 def _controller(fake: _FakeClient, tmp_path: Path | None = None) -> CamillaController:
@@ -335,6 +367,142 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
     ]
     assert fake.file_paths == [str(tmp_path / "candidate.yml")]
     assert fake.reload_count == 2
+
+
+@pytest.mark.asyncio
+async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> None:
+    """The headroom gain can move tens of dB across a swap at an unchanged
+    volume; each mutation must duck the fader before it and restore after."""
+    fake = _FakeClient()
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
+
+    cam = _controller(fake, tmp_path)
+    assert await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
+    assert fake.ops == [f"vol={duck:g}", "set_file_path", "reload", "vol=0"]
+
+    fake.ops.clear()
+    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=0"]
+
+    fake.ops.clear()
+    assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
+    assert fake.ops == [f"vol={duck:g}", "query:PatchConfig", "vol=0"]
+
+    fake.ops.clear()
+    assert await cam.reload()
+    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
+
+
+@pytest.mark.asyncio
+async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
+    """The duck rides main_volume on purpose: a mute reads to the volume
+    coordinator's 1 Hz reconciler as mute drift, which bypasses both of its
+    skip paths and would clear the bracket mid-swap."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.reload()
+
+    assert fake.volume.mutes == []
+
+
+@pytest.mark.asyncio
+async def test_graph_swap_holds_the_duck_for_the_camilla_volume_ramp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Camilla ramps the volume change; the swap waits for that fade."""
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.2)
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
+
+    started = time.monotonic()
+    assert await cam.reload()
+
+    assert time.monotonic() - started >= 0.2
+    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
+
+
+@pytest.mark.asyncio
+async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
+    tmp_path: Path,
+) -> None:
+    """The restore direction is the loud one — undoing a boosted correction
+    gives the attenuation back. Its rollback load ducks like the first."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    duck = -camilla_module.GRAPH_SWAP_DUCK_DB
+    candidate = tmp_path / "candidate.yml"
+    candidate.write_text("devices: {}\n", encoding="utf-8")
+    prior = tmp_path / "prior.yml"
+    prior.write_text("devices: {}\n", encoding="utf-8")
+
+    async def confirm_never_matches() -> str:
+        return str(prior)
+
+    with pytest.raises(DspApplyError):
+        await apply_dsp_config(
+            source="test_apply",
+            candidate_path=candidate,
+            load_config=lambda path: cam.set_config_file_path(
+                path, best_effort=False,
+            ),
+            prior_config_path=prior,
+            get_current_config_path=confirm_never_matches,
+            validate=lambda path: CamillaConfigValidationResult(
+                status=ValidationStatus.VALID,
+                path=str(path),
+            ),
+            state_path=tmp_path / "state.json",
+        )
+
+    assert fake.file_paths == [str(candidate), str(prior)]
+    assert fake.ops == [
+        f"vol={duck:g}", "set_file_path", "reload", "vol=0",
+        f"vol={duck:g}", "set_file_path", "reload", "vol=0",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_graph_mutation_restores_the_pre_swap_volume(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeClient()
+    fake.volume.values.append(-18.0)
+    fake.ops.clear()
+    cam = _controller(fake, tmp_path)
+
+    def boom(path: str) -> None:
+        raise CamillaUnavailable("websocket closed mid-swap")
+
+    fake.set_file_path = boom  # type: ignore[method-assign]
+
+    with pytest.raises(CamillaUnavailable):
+        await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
+
+    assert fake.file_paths == []
+    assert fake.ops == ["vol=-58", "vol=-18"]
+    assert fake.volume.main_volume() == pytest.approx(-18.0)
+
+
+@pytest.mark.asyncio
+async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
+    tmp_path: Path,
+) -> None:
+    """Guards the clamp boundary only. A fader within GRAPH_SWAP_DUCK_DB of
+    MIN_MAIN_VOLUME_DB cannot be ducked further without clamping, so the swap
+    runs without one. It is unreachable from the product fader range — 0-1%%
+    listening is around -60 dB and the duck still applies there; the deepest a
+    stacked cue plus swap duck reaches is about -125 dB."""
+    fake = _FakeClient()
+    fake.volume.values.append(camilla_module.MIN_MAIN_VOLUME_DB + 1.0)
+    fake.ops.clear()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.reload()
+
+    assert fake.ops == ["reload"]
 
 
 @pytest.mark.asyncio
@@ -949,9 +1117,9 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     apply) and ``multiroom.follower_config``'s
     ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``; those
     are examples, not an exhaustive set. Its neighbours
-    ``set_active_config_raw`` and ``patch_config`` both take
-    ``camilla_graph_mutation``, so making this one "consistent" with them is a
-    plausible three-line edit.
+    ``set_active_config_raw`` and ``patch_config`` both take the lock through
+    ``CamillaController._graph_mutation``, so making this one "consistent"
+    with them is a plausible one-line edit.
 
     NOT a deadlock, and this docstring said so until it was measured: the
     writer lock is re-entrant per *task*, and the boundary reaches this method
@@ -968,8 +1136,10 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     import of the lock. ``camilla_graph_mutation`` is an
     ``asynccontextmanager``, so its result inherits ``AsyncContextDecorator`` —
     ``@camilla_graph_mutation(...)`` is valid Python that takes the lock
-    without the body ever mentioning it. Every sibling in this module imports
-    it locally, so a module-scope import is itself the smell.
+    without the body ever mentioning it. ``_graph_mutation`` is the module's
+    only local importer of it, so a module-scope import is itself the smell.
+    The body check matches the ``_graph_mutation`` suffix so it catches the
+    wrapper as well as the lock it wraps.
     """
 
     source = (
@@ -1004,10 +1174,35 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
                 )
             ]
             code = "\n".join(ast.unparse(part) for part in considered)
-            assert "camilla_graph_mutation" not in code, (
+            assert "_graph_mutation" not in code, (
                 "normalize_config_raw must not take the graph-mutation lock — "
                 "the live-graph boundary calls it from inside that lock"
             )
             break
     else:  # pragma: no cover - the method exists
         raise AssertionError("normalize_config_raw not found in jasper/camilla.py")
+
+
+@pytest.mark.asyncio
+async def test_failed_duck_release_logs_a_named_event(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    """A release the websocket drops leaves the speaker quiet in a band the
+    reconciler will not heal, so it has to be visible in the journal."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    real_set_main_volume = fake.volume.set_main_volume
+
+    def fail_on_release(value: float) -> None:
+        if fake.volume.values:
+            raise CamillaUnavailable("websocket closed before the release")
+        real_set_main_volume(value)
+
+    fake.volume.set_main_volume = fail_on_release  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="jasper.camilla"):
+        assert await cam.reload()
+
+    assert "event=camilla.graph_swap_duck_restore_failed" in caplog.text
+    assert "target_db=0.0" in caplog.text

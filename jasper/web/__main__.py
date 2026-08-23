@@ -530,6 +530,11 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # `/eq/` and `/sound/` apply generated DSP configs from this process, so
+    # their graph swaps need a canonical target to release the swap duck to.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
 
     # Port assignments mirror nginx-jasper.conf, jasper-web.socket, and
     # each wizard's CLI default. The registry above is the local source

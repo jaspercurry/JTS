@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import os
@@ -45,7 +46,79 @@ CAMILLA_OPERATION_TIMEOUT_S = 2.0
 CAMILLA_ATTEMPT_BUDGET_S = 5.0
 _WEBSOCKET_DEFAULT_TIMEOUT_LOCK = threading.Lock()
 
+# CamillaDSP ramps main volume changes over `volume_ramp_time`, which is
+# 400 ms when a config leaves it unset — as every JTS config does, pinned by
+# `tests/test_camilla_volume_ramp_default.py`. Hold the duck slightly past
+# that so the fade has finished.
+MAIN_VOLUME_RAMP_SETTLE_S = 0.45
+
+# How far a graph mutation ducks the main fader before swapping. Deep enough
+# that `volume_coordinator.RECONCILE_DUCK_SKIP_DB` (10 dB) reads it as
+# somebody's duck and leaves it alone — the 1 Hz reconciler is cross-process
+# and does not take the DSP writer lock, so riding that carve-out is what
+# keeps it from writing the fader back up mid-swap. Also deeper than the
+# largest headroom charge a swap has been measured to carry (22.5 dB), so the
+# graph changes under something already inaudible.
+GRAPH_SWAP_DUCK_DB = 40.0
+
 _T = TypeVar("_T")
+
+# "What the fader should read right now, ignoring any duck." `VolumeCoordinator`
+# owns that fact and is not constructible from here (it needs persistence and
+# the renderer backend), so a process that has one registers it. Per process
+# rather than per controller: graph swaps run on ad-hoc `primary_controller()`
+# instances no coordinator ever sees. Same callable `Ducker` already takes.
+CanonicalTargetDbProvider = Callable[[], Awaitable[float]]
+
+_canonical_target_db_provider: CanonicalTargetDbProvider | None = None
+
+
+def set_canonical_target_db_provider(
+    provider: CanonicalTargetDbProvider | None,
+) -> None:
+    """Register this process's canonical main_volume target."""
+    global _canonical_target_db_provider
+    _canonical_target_db_provider = provider
+
+
+async def _duck_release_target_db(
+    camilla: "CamillaController",
+    *,
+    snapshot_db: float,
+    duck_depth_db: float,
+) -> float:
+    """Where a duck holder should land the fader when it lets go.
+
+    ``min(canonical, current + duck_depth_db)`` — give back this holder's own
+    attenuation and nothing else, and never end above the level that should be
+    in effect. Both halves are load-bearing, and the two duck holders here
+    (`CueDuck` and the graph-swap bracket) can interleave in either order:
+
+    * replaying the entry snapshot strands the fader, because whichever holder
+      exits last replays a value the other one had already ducked — and a deep
+      drop is exactly what `maybe_reconcile_camilla` leaves alone;
+    * a bare relative release fails the other way, clamping to 0 dB — loud —
+      when a volume change lands inside the window.
+
+    ``duck_depth_db`` is the positive attenuation this holder applied.
+    """
+    current_db = await camilla.get_volume_db(best_effort=True)
+    released_db = (
+        snapshot_db if current_db is None else current_db + abs(duck_depth_db)
+    )
+    provider = _canonical_target_db_provider
+    if provider is None:
+        return min(snapshot_db, released_db)
+    try:
+        canonical_db = await provider()
+    except (CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError):
+        logger.warning(
+            "canonical volume target unavailable; releasing duck against "
+            "the entry snapshot instead",
+            exc_info=True,
+        )
+        return min(snapshot_db, released_db)
+    return min(canonical_db, released_db)
 
 
 @dataclass
@@ -674,6 +747,66 @@ class CamillaController:
                 return None
             raise
 
+    @contextlib.asynccontextmanager
+    async def _graph_mutation(self, source: str):
+        """Admit one CamillaDSP graph mutation, ducked across the swap.
+
+        A mutation can move the graph's own gain by tens of dB while the
+        volume setting is unchanged — loudest when a boosted correction is
+        removed and the headroom attenuation it carried goes away. Ducking the
+        main fader by :data:`GRAPH_SWAP_DUCK_DB` turns that instant step into a
+        fade down and a fade back up, because CamillaDSP ramps a volume change
+        instead of applying it at once and keeps the fader as process state
+        that survives the reload.
+
+        The duck deliberately rides ``main_volume`` rather than ``main_mute``:
+        a mute reads to `VolumeCoordinator.maybe_reconcile_camilla` as mute
+        drift, which bypasses both of its skip paths, so its 1 Hz tick would
+        clear the bracket mid-swap. A drop this deep reads as somebody's duck
+        and is left alone. It also keeps the two existing ``main_mute``
+        writers — the coordinator and the floor-tone audition — the only ones.
+        """
+        from jasper.dsp_apply import camilla_graph_mutation
+
+        async with camilla_graph_mutation(
+            source=source,
+            lock_path=self._graph_mutation_lock_path,
+        ):
+            before_db = await self.get_volume_db()
+            if (
+                before_db is None
+                or before_db - GRAPH_SWAP_DUCK_DB <= MIN_MAIN_VOLUME_DB
+            ):
+                # Unreadable (only a test double returns None from a strict
+                # read), or already so quiet the duck would clamp: nothing
+                # audible can step, so swap without one.
+                yield
+                return
+            await self.set_volume_db(before_db - GRAPH_SWAP_DUCK_DB)
+            try:
+                await asyncio.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
+                yield
+            finally:
+                # Shielded because an interrupted release leaves the speaker
+                # ducked — quiet, but the reconciler reads that as somebody's
+                # duck and will not undo it.
+                await asyncio.shield(self._release_graph_swap_duck(before_db))
+
+    async def _release_graph_swap_duck(self, before_db: float) -> None:
+        """Let the swap duck go, best-effort, and say so when it does not."""
+        target_db = await _duck_release_target_db(
+            self, snapshot_db=before_db, duck_depth_db=GRAPH_SWAP_DUCK_DB,
+        )
+        # Best-effort so a release failure cannot mask the mutation's own
+        # error; the event is what keeps a stranded quiet fader visible.
+        if not await self.set_volume_db(target_db, best_effort=True):
+            log_event(
+                logger,
+                "camilla.graph_swap_duck_restore_failed",
+                target_db=f"{target_db:.1f}",
+                level=logging.WARNING,
+            )
+
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
@@ -689,13 +822,9 @@ class CamillaController:
             c.config.set_file_path(path)
             c.general.reload()
             return True
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.set_config_file_path",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.set_config_file_path"):
                 return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:
@@ -724,13 +853,9 @@ class CamillaController:
                 logger.warning("camilla active config rejected: empty config")
                 return False
             raise ValueError("config must be a non-empty YAML string")
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.set_active_config_raw",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.set_active_config_raw"):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True
         except CamillaUnavailable as e:
@@ -776,9 +901,9 @@ class CamillaController:
         than the caller's own text (the readback is a normalized superset).
 
         **Must NOT take ``camilla_graph_mutation``.** Its neighbours
-        :meth:`set_active_config_raw` and :meth:`patch_config` both do, so
-        "make it match its siblings" is the tempting wrong edit — but this call
-        mutates nothing, and the live-graph boundary
+        :meth:`set_active_config_raw` and :meth:`patch_config` both do, through
+        :meth:`_graph_mutation`, so "make it match its siblings" is the tempting
+        wrong edit — but this call mutates nothing, and the live-graph boundary
         (``runtime_contract.classify_active_bass_extension_graph``) invokes it
         from *inside* that lock on live paths — among them
         ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
@@ -828,13 +953,9 @@ class CamillaController:
                 logger.warning("camilla config patch rejected: empty patch")
                 return False
             raise ValueError("patch must be a non-empty mapping")
-        from jasper.dsp_apply import camilla_graph_mutation
 
         try:
-            async with camilla_graph_mutation(
-                source="camilla.patch_config",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.patch_config"):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:
@@ -848,13 +969,8 @@ class CamillaController:
         room-correction wizard's 'Reset to flat' action when the path
         is already pointed at the branch's flat base config — saves a
         redundant set_file_path call."""
-        from jasper.dsp_apply import camilla_graph_mutation
-
         try:
-            async with camilla_graph_mutation(
-                source="camilla.reload",
-                lock_path=self._graph_mutation_lock_path,
-            ):
+            async with self._graph_mutation("camilla.reload"):
                 await self._call(lambda c: c.general.reload())
                 return True
         except CamillaUnavailable as e:
@@ -898,23 +1014,25 @@ def crossover_controller() -> CamillaController:
 
 
 class CueDuck:
-    """Snapshot-based duck for brief cue playback.
+    """Duck for brief cue playback.
 
     Async context manager — `__aenter__` snapshots pre-duck camilla
-    main_volume and drops by `duck_db` (additive); `__aexit__`
-    writes the snapshot back. Distinct from `Ducker` (which restores
-    to the live coordinator-canonical target so remote twists during a
-    long voice turn win): cues are short and passive, the user
-    isn't actively adjusting volume mid-cue, so simple snapshot
-    semantics is more predictable than reading a target that may
-    have shifted in the duck window from a 1 Hz source-state poll
-    or other interleaved writer.
+    main_volume and drops by `duck_db` (additive); `__aexit__` releases
+    through :func:`_duck_release_target_db`, which gives back this duck's own
+    attenuation without ever ending above the canonical target.
+
+    It used to replay the snapshot instead, on the reasoning that a cue is
+    short and passive. That holds while a cue is the only duck, and fails as
+    soon as it interleaves with a graph-swap duck: whichever of the two exits
+    last replays a value the other had already ducked, and the fader is
+    stranded tens of dB quiet somewhere the reconciler's duck carve-out will
+    not heal.
 
     Best-effort across the chain: if camilla is unreachable when we
-    snapshot, we skip ducking entirely (nothing to restore to). If
-    the duck write itself is dropped (camilla restarting), we still
-    write the snapshot on exit — harmless in the common case where
-    that's what camilla already shows.
+    snapshot, we skip ducking entirely (nothing to release to). If
+    the duck write itself is dropped (camilla restarting), exit still
+    writes — harmless in the common case where the release target is
+    what camilla already shows.
     """
 
     def __init__(self, camilla: "CamillaController", duck_db: float) -> None:
@@ -936,9 +1054,12 @@ class CueDuck:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._pre_db is None:
             return
-        await self._camilla.set_volume_db(
-            self._pre_db, best_effort=True,
+        target_db = await _duck_release_target_db(
+            self._camilla,
+            snapshot_db=self._pre_db,
+            duck_depth_db=self._duck_db,
         )
+        await self._camilla.set_volume_db(target_db, best_effort=True)
 
 
 class Ducker:
