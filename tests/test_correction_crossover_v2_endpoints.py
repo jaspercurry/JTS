@@ -100,6 +100,7 @@ from jasper.capture_relay.session import (
     mint_session,
     register_session,
 )
+from jasper.active_speaker.crossover_v2.round_anchor import round_anchor_record
 from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_relay as v2relay
@@ -3056,9 +3057,36 @@ def test_a_fresh_measurement_clears_a_previous_sessions_ripple_reservation():
 # see a projection that coerces. These pin the layer that actually decides.
 
 
+def _plant_unbankable_v2_state(state: Any) -> None:
+    """Plant durable state that ``save_v2_state`` itself would REFUSE.
+
+    Since #2839 the writer passes ``allow_nan=False``, so it can no longer
+    produce a state file carrying a non-finite number. A file written by a
+    build that predates that guard still can, and ``json.loads`` accepts the
+    bare ``NaN`` / ``Infinity`` literals on the way back in — so the FILE, not
+    the writer, is the surface the reader guards below defend, exactly as
+    ``10 ** 400`` is (JSON integers are unbounded and no writer produces one
+    either). Written the way that build would have: the envelope through the
+    real writer, the value it now refuses spliced in after.
+    """
+    v2host.save_v2_state({"session_id": "cap_placeholder"})
+    path = Path(v2host._state_path())
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(
+        json.dumps({**envelope, **state}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _findings_state(rows: Any) -> None:
-    """Durable state whose projection is exactly ``rows``."""
-    v2host.save_v2_state({
+    """Durable state whose projection is exactly ``rows``.
+
+    Planted as a file rather than through ``save_v2_state``: the rows here are
+    hostile by construction, and some of them are values the writer refuses
+    since #2839 — see :func:`_plant_unbankable_v2_state`. The subject of these
+    tests is the projection layer, not the writer.
+    """
+    _plant_unbankable_v2_state({
         "session_id": "cap_projection",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "applied": True,
@@ -4815,6 +4843,87 @@ def test_observe_apply_success_clears_a_stale_apply_blocked_nudge():
     })
     v2host.observe_apply_success("fp-1")
     assert v2host.load_v2_state()["apply_blocked"] is None
+
+
+def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
+    """#2839: the writer fails, not the packet.
+
+    The crossover-v2 evidence packet copies fields out of this state verbatim
+    and fingerprints them, and ``evidence_identity.json_fingerprint`` refuses a
+    non-finite number — so a NaN banked here costs the round its WHOLE evidence
+    packet, at a reader, hours after the code that produced it returned.
+    ``allow_nan=False`` moves the failure to this writer, where that code is
+    still on the stack.
+
+    Nothing half-written, and that is structural rather than lucky:
+    ``json.dumps`` raises while evaluating an ARGUMENT, so ``atomic_write_text``
+    is never entered and the prior state is still on disk afterwards.
+    """
+    v2host.save_v2_state({"session_id": "cap_ok", "applied": False})
+    good = v2host.load_v2_state()
+
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            v2host.save_v2_state({
+                "session_id": "cap_bad",
+                "verify": {"claims": {"residual_db": bad}},
+            })
+        assert v2host.load_v2_state() == good
+
+
+def test_the_apply_names_the_moment_it_inherits_a_stale_undo_stash(caplog, tmp_path):
+    """#2859: the divergence is CREATED here, and until now said nothing.
+
+    ``jasper-sound reconcile-current-dsp`` is a legitimate graph writer that is
+    (correctly) ignorant of the active-speaker profile system, so a deploy
+    moves the live graph without touching the record ``pre_apply_profile`` is
+    frozen from. The next apply stamps a ``displaced`` identity the stash does
+    not name — and every one of the four field occurrences was diagnosed hours
+    later, at a restore, from a refusal that could not say when.
+
+    Nothing is refused and nothing is re-anchored: the stash is written exactly
+    as passed, and ``applied`` still lands. The line is observability.
+    """
+    displaced = tmp_path / "sound_current.yml"
+    displaced.write_text("the graph this apply replaced\n", encoding="utf-8")
+    stale = tmp_path / "active_speaker_baseline_candidate_ff12ef1da447.yml"
+    stale.write_text("what the record still names\n", encoding="utf-8")
+
+    v2host.save_v2_state({"session_id": "cap_stale", "candidate": {"fingerprint": "fp"}})
+    with caplog.at_level(logging.WARNING):
+        v2host.observe_apply_success(
+            "fp",
+            pre_apply_profile={"config": {"path": str(stale), "sha256": "deadbeef"}},
+            round_anchor=round_anchor_record({
+                "apply": {"prior_config_path": str(displaced)},
+                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
+            }),
+        )
+
+    assert "crossover_v2_apply_inherited_stale_anchor" in caplog.text
+    assert str(stale) in caplog.text and str(displaced) in caplog.text
+    # Reported, not acted on: the stash is untouched and the apply stands.
+    state = v2host.load_v2_state()
+    assert state["pre_apply_profile"]["config"]["path"] == str(stale)
+    assert state["applied"] is True
+
+    # …and a coherent apply is silent, which is what makes the line a signal.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        v2host.observe_apply_success(
+            "fp",
+            pre_apply_profile={
+                "config": {
+                    "path": str(displaced),
+                    "sha256": config_file_sha256(str(displaced)),
+                },
+            },
+            round_anchor=round_anchor_record({
+                "apply": {"prior_config_path": str(displaced)},
+                "profile": {"config": {"path": "new.yml", "sha256": "cafe"}},
+            }),
+        )
+    assert "inherited_stale_anchor" not in caplog.text
 
 
 def test_observe_apply_success_stashes_the_pre_apply_profile():
@@ -10171,7 +10280,9 @@ def test_applied_offset_gate_reports_nothing_known_rather_than_guessing():
     v2host.save_v2_state({"session_id": "s", "applied": True})
     assert v2host._applied_offset_gate() == 0.0
     for bad in ("loud", None, True, float("nan"), float("inf")):
-        v2host.save_v2_state({
+        # Planted as a file: two of these are values ``save_v2_state`` refuses
+        # since #2839, and it is a state FILE this gate has to survive.
+        _plant_unbankable_v2_state({
             "session_id": "s", "applied": True,
             "expected_post_apply_offset_db": bad,
         })

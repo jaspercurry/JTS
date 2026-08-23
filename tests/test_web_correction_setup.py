@@ -815,6 +815,94 @@ def test_apply_applied_status_still_maps_to_200(monkeypatch):
     assert b"200" in resp.split(b"\r\n", 1)[0]
 
 
+def test_an_apply_400_is_always_recorded_fault_as_error_refusal_as_warning(
+    monkeypatch, caplog,
+):
+    """#2839 gate round: the apply 400 arm answered with a raw string and
+    journaled nothing.
+
+    ``test_crossover_v2_refusal_is_logged_not_silent`` had already ruled that
+    shape a defect on the session/verify arm — "the 400 response is correct for
+    the browser; the gap was purely observability" — so NOTHING leaving this
+    arm is silent either. What the two halves differ in is severity, because
+    they are different events:
+
+    * a ``CrossoverV2Refused`` or a ``BadRequest`` is the caller being told no,
+      and is journaled at WARNING under ``correction.crossover_v2_refused`` —
+      the sibling's own vocabulary and field set, and the sibling exempts a
+      malformed body no more than this does;
+    * anything else is the speaker faulting on its own apply path, which
+      ``save_v2_state``'s ``allow_nan=False`` refusal made reachable, and is
+      journaled at ERROR under ``correction.crossover_v2_apply_fault``.
+
+    Both directions asserted, and each asserted NOT to carry the other's event:
+    one arm emitting both names would make the severity split meaningless.
+    """
+    from jasper.web import correction_crossover_v2 as v2host_mod
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    def _raise(exc):
+        def _handler(raw, run_async, camilla_factory, *, status):
+            raise exc
+        return _handler
+
+    def _levels(event: str) -> list[str]:
+        """Levels of THIS arm's records for ``event``.
+
+        Filtered by event name rather than read off ``caplog.records`` whole:
+        an unrelated backend probe logs its own ERROR during the drive, so a
+        bare level list would assert something other than what it reads.
+        """
+        return [
+            r.levelname for r in caplog.records
+            if r.getMessage().startswith(f"event={event}")
+        ]
+
+    # The fault half: a bare ValueError, exactly what json's non-finite
+    # refusal is.
+    monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
+        ValueError("Out of range float values are not JSON compliant: nan")
+    ))
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=correction_setup.logger.name):
+        resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert "event=correction.crossover_v2_apply_fault" in caplog.text
+    assert "not JSON compliant" in caplog.text
+    assert "event=correction.crossover_v2_refused" not in caplog.text
+    assert _levels("correction.crossover_v2_apply_fault") == ["ERROR"]
+
+    # The refusal half: same 400, recorded, one level down and under the
+    # vocabulary that already answers "a v2 route refused".
+    caplog.clear()
+    monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
+        v2host_mod.CrossoverV2Refused("nothing to apply")
+    ))
+    with caplog.at_level(logging.WARNING, logger=correction_setup.logger.name):
+        resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert "event=correction.crossover_v2_refused" in caplog.text
+    assert "route=/crossover/v2/apply" in caplog.text
+    assert "nothing to apply" in caplog.text
+    assert "event=correction.crossover_v2_apply_fault" not in caplog.text
+    assert _levels("correction.crossover_v2_refused") == ["WARNING"]
+
+    # A malformed body takes the refusal arm too, because the sibling this
+    # borrows from exempts it no more than a typed refusal.
+    caplog.clear()
+    monkeypatch.setattr(v2host_mod, "handle_v2_apply", _raise(
+        correction_setup.BadRequest("apply body must be an object")
+    ))
+    with caplog.at_level(logging.WARNING, logger=correction_setup.logger.name):
+        resp = _drive("/crossover/v2/apply", method="POST", body=b"{}")
+    assert b"400" in resp.split(b"\r\n", 1)[0]
+    assert "event=correction.crossover_v2_refused" in caplog.text
+    assert _levels("correction.crossover_v2_refused") == ["WARNING"]
+
+
 def test_restore_refusal_maps_to_400_not_500(monkeypatch):
     """W6 run-8 Blocker Q regression pin: the v2-aware Undo endpoint must
     answer a named 400 for an ordinary refusal, never the legacy path's bare

@@ -27,7 +27,9 @@ different needs:
     management UI stays reachable because the allowlist learns
     ``jts-2.local`` within one reconciler period.
   * :func:`snapshot` — the ``/state.resilience.identity`` and doctor
-    surface; reads fresh, derives a status, never raises.
+    surface, and the reader :mod:`jasper.identity` falls back to for the
+    recorded ``configured_hostname``; reads fresh, derives a status,
+    never raises.
 
 A missing file (fresh install before the first reconciler run, dev
 checkout) degrades to "no extra names / status=absent" — exactly the
@@ -37,7 +39,12 @@ Scope split with :mod:`jasper.identity`: that module reads the
 *intended* identity (display name, room, configured hostname, stable
 peer_id — who the speaker is supposed to be). This one reads the
 *observed* network identity (what the LAN currently resolves). The
-reconciler exists precisely because the two can disagree.
+reconciler exists precisely because the two can disagree. The one
+place they meet is ``JASPER_IDENTITY_CONFIGURED_HOSTNAME``, which
+records intent rather than observation: this file is where a process
+with no ``EnvironmentFile=`` — any CLI run over ssh — can still read
+it, so ``jasper.identity`` takes its hostname from here when the
+environment is silent.
 """
 from __future__ import annotations
 

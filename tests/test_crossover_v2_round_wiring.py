@@ -70,6 +70,7 @@ from jasper.active_speaker.delta_probe import (
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     DELTA_PROBE_REASON_BY_VERDICT,
+    correction_rollback_failed_message,
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
@@ -713,6 +714,60 @@ def test_the_no_anchor_arm_does_not_send_the_household_to_undo(monkeypatch):
     # …and it names remedies that exist.
     assert "measure again" in sentence.lower()
     assert "Sound page" in sentence
+    # #2859: and it asserts no CAUSE. This arm is reached by four named
+    # refusals, only some of which are "this speaker was never corrected" —
+    # see test_the_no_anchor_arm_states_no_cause below.
+    assert "first measured crossover" not in sentence
+
+
+def test_the_no_anchor_arm_states_no_cause(monkeypatch):
+    """#2859 defect 1, pinned at the sentence rather than at a screen.
+
+    ``rollback_anchor_available=False`` reports one capability —
+    ``rollback_anchor_refusal(state) is None`` — and that refusal has FOUR
+    named codes. The sentence used to end "this was its first measured
+    crossover", which is a claim about only one of them. On jts3, 2026-08-22,
+    a speaker with an intact stash and an intact displaced record hit
+    ``ANCHOR_STASH_NOT_DISPLACED`` and was told it had never been corrected.
+
+    Enumerated from the refusal's own code set, not from the two the incident
+    happened to involve: any code that can produce ``False`` here has to be a
+    code the sentence is true of.
+    """
+    from jasper.web.correction_crossover_v2 import (
+        ANCHOR_NOT_APPLIED,
+        ANCHOR_NO_PRE_APPLY_PROFILE,
+        ANCHOR_RUNNING_CONFIG_DIVERGED,
+        ANCHOR_STASH_NOT_DISPLACED,
+        ANCHOR_TOPOLOGY_CHANGED,
+    )
+
+    sentence = correction_rollback_failed_message(False)
+    # FIVE gates, FOUR of them reachable by the capability probe: it calls
+    # ``rollback_anchor_refusal`` with no ``running_config_path``, and
+    # ``running_config_diverged(anchor, None)`` is False for every way the
+    # question cannot be answered — so ANCHOR_RUNNING_CONFIG_DIVERGED is the
+    # live check ``handle_v2_restore`` adds at the moment of action, and it
+    # reaches this sentence only through that door.
+    assert len({
+        ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
+        ANCHOR_STASH_NOT_DISPLACED,
+    }) == 4
+    assert ANCHOR_RUNNING_CONFIG_DIVERGED not in {
+        ANCHOR_NOT_APPLIED, ANCHOR_NO_PRE_APPLY_PROFILE, ANCHOR_TOPOLOGY_CHANGED,
+        ANCHOR_STASH_NOT_DISPLACED,
+    }
+    assert "first" not in sentence.lower()
+    assert "never" not in sentence.lower()
+    # The remedies are the half that IS true of all of them.
+    assert "measure again" in sentence.lower()
+    assert "Sound page" in sentence
+    # …and the other arm is untouched, so this is a narrowing and not a
+    # deletion of the branch.
+    assert "Tap Undo" in correction_rollback_failed_message(True)
+    assert correction_rollback_failed_message(None) == (
+        correction_rollback_failed_message(True)
+    )
 
 
 def test_the_attempted_and_failed_arm_keeps_its_undo_pointer(monkeypatch):

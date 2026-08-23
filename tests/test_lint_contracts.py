@@ -944,7 +944,14 @@ MAX_LINES_BY_PATH = {
     # file its code was shrinking, and again when the fix round's own six prose
     # corrections did the same — so every one of them was rewritten in place.
     # Both are the guard refusing the trade it exists to refuse.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_076,
+    #
+    # 2026-08-23, the post-#2888 burn-down: 13,076 -> 13,075, LOWERED rather
+    # than left as slack. The line is incidental — two pre-D1 prose blocks in
+    # `_run_delta_probe` were rewritten to say what that branch does since
+    # #2693, and the true statement is one line shorter than the false one —
+    # but this file has sat ON its ceiling by design, and banking an unearned
+    # line for the next author is how zero slack stops meaning anything.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_075,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1334,7 +1341,35 @@ MAX_LINES_BY_PATH = {
     # result wait went with the sweep whose compute ceiling it published — see
     # `_mint_source_session`, which now states why the page's own 90 s floor
     # governs instead.
-    "jasper/web/correction_crossover_v2.py": 9_430,
+    # 2026-08-23, the post-#2888 burn-down: 9,430 -> 9,435, +5, of which ONE
+    # executes. The one is the `PHASE_MEASURE` import that retires a bare
+    # `"measure"` literal — a second spelling of the journey phase vocabulary
+    # this file already reads through the constant at twelve other sites
+    # (counted, not estimated). The other four are two two-line comments, both
+    # earning their lines by naming a failure invisible at the site: that
+    # `save_v2_state` banks with `allow_nan=False` because a NaN written here
+    # costs the round its whole evidence packet at a reader hours later
+    # (#2839), and that the phase constant is the JOURNEY one and NOT
+    # `program.PROGRAM_PHASE_MEASURE`, which is the same string `"measure"` —
+    # so the wrong import reads correct today and breaks the moment either
+    # value moves. Refusing five lines here would buy a smaller number with a
+    # duplicated vocabulary and two silent traps.
+    # 2026-08-23 (#2859, same batch): 9,435 -> 9,453. The whole +18 is one
+    # observability check at `observe_apply_success` — the moment a stale Undo
+    # stash is INHERITED, which four field incidents each had to reconstruct
+    # hours later from a restore refusal that could not say when the divergence
+    # was created. It refuses nothing and rewrites nothing, so the file gains a
+    # log line and its argument and no behaviour. Paid for in part by the seam
+    # it rides on: `round_anchor.stashed_restore_target` retires the two inline
+    # `config`/`path`/`sha256` transcriptions this file carried (-6), which is
+    # the trade that distinguishes it from a third one.
+    # Gate round on that PR: 9,453 -> 9,450, LOWERED. `displaced_restore_target`
+    # is `stashed_restore_target`'s mirror over the other record, and giving the
+    # symmetric half a name retires the two five-line `displaced`/`config_path`
+    # walks this file still spelled by hand. The pair is asked together wherever
+    # their disagreement is the finding, so writing one and transcribing the
+    # other was the asymmetry the seam existed to remove.
+    "jasper/web/correction_crossover_v2.py": 9_450,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

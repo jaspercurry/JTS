@@ -131,6 +131,47 @@ def test_save_design_draft_durable_fsyncs_the_write(tmp_path: Path, monkeypatch)
     assert len(fsync_calls) == 2  # file fsync + parent-directory fsync
 
 
+def test_save_design_draft_refuses_a_non_finite_number_and_writes_nothing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2839: the writer fails, not the packet.
+
+    ``evidence_packet._drivers_block`` copies ``driver_safety_profile
+    .confirmation`` out of this draft WHOLE, and
+    ``evidence_identity.json_fingerprint`` refuses a non-finite number — so a
+    NaN banked here costs the round its whole evidence packet, at a reader,
+    long after the code that produced it returned. ``allow_nan=False`` moves
+    the failure to this writer.
+
+    Driven by replacing the composed draft rather than by feeding a NaN through
+    a real input, because this is a GUARD at the write boundary: it must hold
+    for whatever a future composer puts in the draft, not only for the fields
+    today's normalisers happen to leave open.
+
+    Nothing half-written, and that is structural: ``json.dumps`` raises while
+    evaluating an ARGUMENT, so ``atomic_write_text`` is never entered and the
+    prior revision is still on disk afterwards.
+    """
+    from jasper.active_speaker import design_draft as design_draft_mod
+
+    path = tmp_path / "active_speaker_design_draft.json"
+    save_design_draft(_topology(), path=path)
+    good = path.read_text(encoding="utf-8")
+
+    real_build = design_draft_mod.build_design_draft
+
+    def _build_with_a_nan(*args, **kwargs):
+        draft = real_build(*args, **kwargs)
+        draft["driver_safety_profile"] = {"confirmation": float("nan")}
+        return draft
+
+    monkeypatch.setattr(design_draft_mod, "build_design_draft", _build_with_a_nan)
+    with pytest.raises(ValueError):
+        save_design_draft(_topology(), path=path)
+
+    assert path.read_text(encoding="utf-8") == good
+
+
 def test_the_store_publishes_under_its_parent_group_so_the_wizard_can_read_it(
     tmp_path: Path,
 ) -> None:

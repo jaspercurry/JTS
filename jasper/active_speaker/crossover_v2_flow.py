@@ -10872,19 +10872,18 @@ class CrossoverV2Session:
         ``_verify_absolute_result`` gives (``no_trusted_crossover_region``) for
         the same missing fact.
 
-        **A missing CHANGE axis no longer silences the hearing-safety half**
-        (#2614). A round whose branches are composed through a crossover the
-        applied graph never ran has no nameable previous graph — an operator's
-        topology pin is the live producer of that shape, and a first-ever round
-        reaches it with no applied graph at all — so the commanded delta is
-        absent, and until this the whole probe was absent with it: the two
-        directional findings never ran, and ``evaluate_applied_safety`` reported
-        SAFE on a round where nothing had looked. The STATE axis needs no corner
-        match, so when it is present the probe runs its safety half on that
-        alone and reports
-        :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — which
-        is not a pass, carries no shape grade, and says on the record that the
-        shape check did not run and why.
+        **A missing CHANGE axis leaves the STATE axis, and only the MODEL's own
+        departure is graded on it** (#2614, narrowed by series-2 D1). A round
+        whose branches are composed through a crossover the applied graph never
+        ran has no nameable previous graph — an operator's topology pin is the
+        live producer of that shape, and a first-ever round reaches it with no
+        applied graph at all — so the commanded delta is absent, and before
+        #2614 the whole probe was absent with it. The STATE axis needs no corner
+        match, so when it is present the probe reports
+        :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — not a
+        pass, no shape grade, and no directional safety finding either: those
+        are differenced against a pre-apply capture this path has none of, so
+        ``safety_anchored`` is False and the record says which half did not run.
 
         Returns ``None`` when the tracking curve, the trusted band, or BOTH
         axes are missing. ``None`` is the same thing
@@ -10931,9 +10930,9 @@ class CrossoverV2Session:
                 return None
             # The STATE axis in the commanded slot, and the classifier told so.
             # ``realized − commanded`` is still ``measured − predicted``, which
-            # is what the two directional findings are measured on; no entry
-            # anchor goes with it, because that is a change measurement and
-            # shares no reference with a state axis.
+            # grades the MODEL's departure; the two directional findings are not
+            # measured here at all, and no entry anchor goes with it — that is a
+            # change measurement, sharing no reference with a state axis.
             probe = classify_delta_probe(
                 freqs, (measured_s - predicted_s) + declared_db, declared_db,
                 band_hz=band_hz, spatial=spatial,
