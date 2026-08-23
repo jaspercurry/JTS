@@ -18,11 +18,12 @@ What must hold, and what would break if it did not:
 
 * the dBFS -> dB SPL conversion matches a hand-computed value from a real
   UMIK-2 header — every SPL decision downstream is this arithmetic;
-* the step is the measured gap, saturated by the ONE shared audible-step cap
-  ``calibration_level`` already declares; the mutation test drops the
+* the step is the measured gap, saturated by the run's OWN bite —
+  ``BITE_FRACTION`` of the span it has to sweep, a different question from the
+  per-request cap ``calibration_level`` declares; the mutation test drops the
   saturation and shows a single step lunging the whole way;
-* the start comes from the measured room, so jts3's 61 dB SPL / 75 dB SPL
-  incident — 51 s of timeout at -31.6 dB — converges in three readings and
+* the start is low and uninformed on purpose, so jts3's 61 dB SPL / 75 dB SPL
+  incident — 51 s of timeout at -31.6 dB — converges in seven readings and
   under ten audible seconds;
 * a mic that is plugged in but NOT observing the speaker aborts the climb
   (``mic_not_observing``) instead of walking the volume to the ceiling; the
@@ -670,8 +671,8 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
     ceiling -6.8 dB — refused ``ramp_timeout`` after 51 s at -31.6 dB, still
     25 dB under its own ceiling, because the ladder started at -50 dB (~26 dB
     UNDER the room) and its noise gate discarded 1138 of 1194 samples while the
-    clock ran. The gap-stepped ramp starts where the room says and lands in the
-    band in seven readings.
+    clock ran. The gap-stepped ramp starts under anything that could hurt and
+    bites its way up, landing in the band in seven readings.
     """
     result, _volume, tone, _clock = _jts3_pass(tmp_path)
 
@@ -707,7 +708,7 @@ def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
     assert tone.started_at is not None and tone.cancelled_at is not None
     audible_s = tone.cancelled_at - tone.started_at
     assert audible_s < 10.0
-    # Three readings account for it, plus the fade-before-tone-kill that follows
+    # Seven readings account for it, plus the fade-before-tone-kill that follows
     # the last one -- which is audible time as well, and is bounded by the fade's
     # own step size.
     readings_s = 7 * (2 * slr.MIC_SETTLE_S)
@@ -729,6 +730,231 @@ def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
     assert first["rise_db"] < 10.0
     assert first["samples"] > 0
     assert first["gap_db"] > _JTS3_BITE_DB
+
+
+# --- the 2026-08-23 new-horn refusals: the trace, and what it rules out -----
+
+
+# Both refused runs, verbatim from captures/new-horn-2026-08/bringup/
+# 83-seatlevel-run1-refused.json and 84-seatlevel-run2-refused.json. Each entry
+# is one BANKED reading: the median of one settle window. The sixth value below
+# is deliberately NOT in that tuple, because it is not a reading -- it is the
+# single sample that tripped the commissioning stop and abandoned its window
+# before any median was taken.
+NEW_HORN_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
+NEW_HORN_STOP_DB_SPL = 80.0
+NEW_HORN_CEILING_DB = 0.0
+NEW_HORN_BITE_DB = slr.bite_db(
+    start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=NEW_HORN_CEILING_DB
+)
+NEW_HORN_STOP_VOLUME_DB = -12.5
+
+NEW_HORN_RUNS = {
+    "run1": {
+        "ambient_db_spl": 49.65,
+        "readings": (
+            (-50.0, 50.78),
+            (-42.5, 53.45),
+            (-35.0, 52.33),
+            (-27.5, 57.90),
+            (-20.0, 64.61),
+        ),
+        "stop_sample_db_spl": 80.50,
+        "slope_estimate": 0.895,
+    },
+    "run2": {
+        "ambient_db_spl": 47.82,
+        "readings": (
+            (-50.0, 49.01),
+            (-42.5, 50.60),
+            (-35.0, 54.81),
+            (-27.5, 58.84),
+            (-20.0, 64.27),
+        ),
+        "stop_sample_db_spl": 80.90,
+        "slope_estimate": 0.725,
+    },
+}
+
+
+def _room_subtracted_db(total_db_spl: float, room_db_spl: float) -> float:
+    """The speaker's own level, with the room's power taken back out."""
+    power = 10.0 ** (total_db_spl / 10.0) - 10.0 ** (room_db_spl / 10.0)
+    return 10.0 * math.log10(power) if power > 0.0 else float("-inf")
+
+
+def _consecutive_slopes(readings) -> list[float]:
+    """dB SPL per commanded dB between consecutive readings."""
+    return [
+        (b_spl - a_spl) / (b_db - a_db)
+        for (a_db, a_spl), (b_db, b_spl) in zip(readings, readings[1:])
+    ]
+
+
+class TracedMic(Mic):
+    """A mic that replays ONE recorded run instead of modelling a chain.
+
+    Every other mic in this file is a model: a room plus a speaker whose level
+    tracks the commanded volume by a fixed gain. This one answers only with
+    levels jts3 actually produced, and REFUSES a volume the run never visited
+    rather than interpolating one. That refusal is the point. The recorded run
+    stops at -12.50 dB, so a climb policy that commands anything else is asking
+    a question this evidence cannot answer, and the test says so by name
+    instead of inventing a level for it.
+    """
+
+    def __init__(self, volume, tone, *, run: dict) -> None:
+        super().__init__(
+            volume,
+            tone,
+            ambient_dbfs=UMIK2.dbfs_from_db_spl(run["ambient_db_spl"]),
+        )
+        self._levels = {
+            round(volume_db, 2): db_spl for volume_db, db_spl in run["readings"]
+        }
+        self._levels[NEW_HORN_STOP_VOLUME_DB] = run["stop_sample_db_spl"]
+
+    def _rms_dbfs(self) -> float:
+        if not self._tone.started:
+            return self.ambient_dbfs
+        key = round(self._volume.value, 2)
+        if key not in self._levels:
+            raise AssertionError(
+                f"the recorded run has no measurement at {key:+.2f} dB "
+                f"(it visited {sorted(self._levels)}); a policy that commands "
+                "this volume needs new bench evidence, not an interpolation"
+            )
+        return UMIK2.dbfs_from_db_spl(self._levels[key])
+
+
+def _new_horn_pass(tmp_path, run: dict):
+    clock = FakeClock()
+    volume = Volume()
+    tone = BlockingTone()
+    mic = TracedMic(volume, tone, run=run)
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=NEW_HORN_TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=NEW_HORN_CEILING_DB,
+            spl_ceiling_db_spl=NEW_HORN_STOP_DB_SPL,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+    return result, volume
+
+
+@pytest.mark.parametrize("name", sorted(NEW_HORN_RUNS))
+def test_the_new_horn_refusal_replays_from_its_own_trace(tmp_path, name):
+    """jts3's two 2026-08-23 refusals, reproduced from the recorded levels.
+
+    Characterization, not approval: this is the behaviour a fix has to change.
+    Both runs climbed in full bites from -50.00 dB, banked five readings, and
+    the sixth window was abandoned by a sample above the profile's 80.0 dB SPL
+    commissioning stop. Nothing was banked and the household volume came back.
+    """
+    run = NEW_HORN_RUNS[name]
+    result, volume = _new_horn_pass(tmp_path, run)
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert result.reference_volume_db is None
+    assert result.measured_db_spl is None
+    assert result.restored is True
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+    steps = result.ramp["steps"]
+    assert [step["volume_db"] for step in steps] == [
+        pytest.approx(volume_db) for volume_db, _ in run["readings"]
+    ]
+    assert result.ramp["final_volume_db"] == pytest.approx(NEW_HORN_STOP_VOLUME_DB)
+    assert result.ramp["bite_db"] == pytest.approx(NEW_HORN_BITE_DB)
+    # The estimate the refusal discloses is the one the box printed. The
+    # tolerance is the receipt's own rounding: it publishes readings to 2 dp,
+    # so a slope re-derived from them can differ from the box's by ~0.0013.
+    assert result.ramp["slope_db_per_db"] == pytest.approx(
+        run["slope_estimate"], abs=0.002
+    )
+    assert volume.commanded[-1] == pytest.approx(HOUSEHOLD_VOLUME_DB)
+
+
+@pytest.mark.parametrize("name", sorted(NEW_HORN_RUNS))
+def test_the_new_horn_climb_was_bite_limited_at_every_reading(name):
+    """The bite bound every step, so the gap term never decided anything.
+
+    This is what rules out one proposed fix. The step is ``min(gap, bite)``; at
+    all five readings of both runs the measured gap was LARGER than the bite, so
+    the commanded sequence -50.00, -42.50, -35.00, -27.50, -20.00, -12.50 is
+    fixed by the bite alone.
+
+    In particular, dividing the gap by the run's OWN measured slope under a
+    unit floor -- ``min(gap / max(slope, 1.0), bite)`` -- reproduces this climb
+    move for move, because every slope this run measured was under 1.0, so the
+    floor makes the divisor exactly 1.0 at every step. Moving this climb takes a
+    smaller bite or a trustworthier reading, not a rescaled gap.
+    """
+    run = NEW_HORN_RUNS[name]
+    readings = run["readings"]
+    for index, (volume_db, observed_db_spl) in enumerate(readings):
+        gap_db = NEW_HORN_TARGET.target_db_spl - observed_db_spl
+        assert gap_db > NEW_HORN_BITE_DB, (volume_db, gap_db)
+        step_db = capped_gap_step_db(
+            measured_db=observed_db_spl,
+            target_db=NEW_HORN_TARGET.target_db_spl,
+            cap_db=NEW_HORN_BITE_DB,
+        )
+        assert step_db == pytest.approx(NEW_HORN_BITE_DB)
+        # The slope the loop's estimator holds when it sizes THIS step: none at
+        # the first reading, else the pair behind it.
+        if index == 0:
+            continue
+        (prev_db, prev_spl) = readings[index - 1]
+        slope = (observed_db_spl - prev_spl) / (volume_db - prev_db)
+        assert max(slope, 1.0) == 1.0
+        assert min(gap_db / max(slope, 1.0), NEW_HORN_BITE_DB) == pytest.approx(
+            step_db
+        )
+
+
+@pytest.mark.parametrize("name", sorted(NEW_HORN_RUNS))
+def test_the_new_horn_slope_estimate_never_reached_unity(name):
+    """No reading pair in either run showed an expansive chain to act on.
+
+    A chain that answered a commanded dB with more than a dB would be visible
+    here, and it is not: every consecutive pair of banked readings measured
+    under 1.0 dB SPL per commanded dB. Subtracting the room does not lift the
+    pair the estimator actually used either, so "the readings were still
+    emerging from the room" does not account for the estimate being low.
+
+    The 2.21 dB SPL per dB figure quoted for these runs is not in this set: it
+    is the abandoned window's single sample measured against the previous
+    window's twelve-sample median, which is a different statistic.
+    """
+    run = NEW_HORN_RUNS[name]
+    slopes = _consecutive_slopes(run["readings"])
+    assert max(slopes) < 1.0, slopes
+    # The estimator's own window is the LAST two banked readings, and it is the
+    # number the box printed (to the receipt's 2 dp rounding).
+    assert slopes[-1] == pytest.approx(run["slope_estimate"], abs=0.002)
+
+    room = run["ambient_db_spl"]
+    (a_db, a_spl), (b_db, b_spl) = run["readings"][-2:]
+    room_subtracted = (
+        _room_subtracted_db(b_spl, room) - _room_subtracted_db(a_spl, room)
+    ) / (b_db - a_db)
+    assert room_subtracted < 1.0
+    # ...and both readings were already well clear of the room by the pass's own
+    # emergence bar, so neither was room-pinned.
+    assert a_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
+    assert b_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
 
 
 # --- the comfort cap --------------------------------------------------------
