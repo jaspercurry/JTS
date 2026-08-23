@@ -197,9 +197,19 @@ def _capture_levels(
     # is deconvolved, so a speaker whose third driver carries a broken ledger
     # is told so immediately instead of after two analyses it will discard.
     checked: list[tuple[str, str, Path, Mapping[str, Any], str, float]] = []
+    seen: set[tuple[str, str]] = set()
     for entry in entries:
         role = str(entry.get("role") or "")
         group_id = str(entry.get("speaker_group_id") or "")
+        if (group_id, role) in seen:
+            # Last-wins would silently pick one of two captures of the same
+            # driver and never say which, so the ambiguity is refused instead.
+            raise TrimRefusal(
+                REFUSE_CAPTURES_INVALID,
+                f"{group_id}:{role} is captured twice; one manifest names one "
+                "capture per driver per speaker group",
+            )
+        seen.add((group_id, role))
         if role not in roles or not group_id:
             raise TrimRefusal(
                 REFUSE_CAPTURES_INVALID,

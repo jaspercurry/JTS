@@ -232,6 +232,29 @@ def test_a_capture_with_no_auditable_ledger_refuses_rather_than_assuming_a_level
     assert excinfo.value.reason == driver_trim.REFUSE_EXCITATION_LEDGER_INVALID
 
 
+def test_the_same_driver_captured_twice_refuses_rather_than_picking_one(
+    tmp_path: Path
+):
+    captures_dir = _two_captures(
+        tmp_path, woofer_gain_db=-40.0, tweeter_gain_db=-40.0
+    )
+    manifest = json.loads(
+        (captures_dir / driver_trim.CAPTURES_MANIFEST_NAME).read_text()
+    )
+    manifest["captures"].append(dict(manifest["captures"][0]))
+    (captures_dir / driver_trim.CAPTURES_MANIFEST_NAME).write_text(
+        json.dumps(manifest)
+    )
+    with pytest.raises(driver_trim.TrimRefusal) as excinfo:
+        driver_trim._capture_levels(
+            driver_trim._load_captures_manifest(captures_dir),
+            _preset(),
+            captures_dir,
+            None,
+        )
+    assert excinfo.value.reason == driver_trim.REFUSE_CAPTURES_INVALID
+
+
 def test_a_capture_naming_an_undeclared_role_refuses(tmp_path: Path):
     captures_dir = _two_captures(
         tmp_path, woofer_gain_db=-40.0, tweeter_gain_db=-40.0
