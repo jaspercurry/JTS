@@ -3823,6 +3823,53 @@ def test_a_shelf_pays_the_same_caps_as_a_bell(tmp_path):
     assert excinfo.value.reason == dp.FILTER_CUT_TOO_DEEP
 
 
+@pytest.mark.parametrize(("lead_hz", "taper_hz"), [
+    # All above the tweeter/woofer overlap ceiling: a shelf pays the crossover
+    # knee bar exactly as a bell does, so a +12 dB lead at 2 kHz refuses
+    # `driver_boost_in_crossover_overlap` before it ever reaches the cap.
+    (3500.0, 5000.0), (4000.0, 5000.0), (5000.0, 12000.0), (8000.0, 16000.0),
+])
+def test_the_one_legal_shelf_pair_at_the_rail_does_not_stack_past_the_cap(
+    tmp_path, lead_hz, taper_hz,
+):
+    """Two shelves is the widest shape the emitter can name; both at +12 dB.
+
+    The obvious hearing-safety question the widened vocabulary raises: a shelf
+    holds its full gain across a whole half-band, so can the ONE legal pair — a
+    Lowshelf lead plus its Highshelf taper (#1668) — stack past
+    ``DRIVER_MAX_COMPOSED_BOOST_DB``? Measured, not reasoned: no. A Lowshelf is
+    at its gain BELOW its corner and a Highshelf ABOVE its, so where one is at
+    +12 the other is at unity, and the cascade reads exactly the rail.
+
+    The number matters as much as the verdict. It composes AT 12.0, not under
+    it, so this pair is admitted and charged the full
+    :data:`MAX_SPL_SPEND_BOUND_DB` — the same worst case one Peaking at the rail
+    already attains. The widened vocabulary reaches the designed maximum and
+    does not move it.
+    """
+    packet = _speaker(tmp_path, classification=_boostable())
+    pair = [
+        {"role": "tweeter", "biquad_type": "Lowshelf", "freq": lead_hz,
+         "gain": DRIVER_MAX_FILTER_BOOST_DB},
+        {"role": "tweeter", "biquad_type": "Highshelf", "freq": taper_hz,
+         "gain": DRIVER_MAX_FILTER_BOOST_DB},
+    ]
+
+    prescription = _gate(packet, _document(pair, packet))
+
+    assert prescription.composed_boost_db == pytest.approx(
+        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+    )
+    assert prescription.composed_boost_db <= DRIVER_MAX_COMPOSED_BOOST_DB + 1e-9
+    # One dB past the rail on either shelf and the per-filter cap takes it
+    # first, so the pair can never be authored deeper than this.
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document(
+            [dict(pair[0], gain=DRIVER_MAX_FILTER_BOOST_DB + 1.0), pair[1]], packet,
+        ))
+    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
+
+
 def test_a_negative_gain_shelf_never_puts_the_branch_above_unity(tmp_path):
     """``branch_chain_peak_db``'s cut-only short-circuit, re-proved for shelves.
 
