@@ -561,22 +561,25 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     finding set are banked
     through :func:`~jasper.active_speaker.commissioning_evidence_store._canonical_json`,
     which passes ``allow_nan=False`` and refuses a non-finite value at write
-    time, so they structurally cannot carry one here. Two further inputs are
-    written with a plain ``json.dumps`` and are NOT guarded:
-    ``save_v2_state`` (:mod:`jasper.web.correction_crossover_v2`) for the flow
-    state, where all four fields this packet copies —
-    ``verify.claims``, ``pre_apply_profile.blend_correction``,
-    ``pre_apply_profile.linearization`` (through
-    :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
-    which selects the authoritative copy and does not screen, so a non-finite
-    gain reaches the packet unguarded) and ``evidence.calibration`` — kill the
-    packet; and
+    time, so they structurally cannot carry one here. The two further inputs
+    that were once unguarded now carry the same ``allow_nan=False`` at their
+    own writers (#2839): ``save_v2_state``
+    (:mod:`jasper.web.correction_crossover_v2`) for the flow state, whose four
+    fields this packet copies — ``verify.claims``,
+    ``pre_apply_profile.blend_correction``, ``pre_apply_profile.linearization``
+    (through :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
+    which selects the authoritative copy and does not screen) and
+    ``evidence.calibration`` — and
     :func:`~jasper.active_speaker.design_draft.save_design_draft`, whose
-    ``driver_safety_profile.confirmation`` is copied whole and does the same.
-    The draft's passbands do NOT, because
+    ``driver_safety_profile.confirmation`` is copied whole. The draft's
+    passbands never needed it, because
     :func:`~.driver_prescription.driver_passbands_from_safety_profile` already
-    drops a non-finite bound. Repairing those two is their writers' change, not
-    this reader's — see the follow-up issue linked from PR #2833.
+    drops a non-finite bound.
+
+    That does NOT retire this branch. Both writers refuse a NEW non-finite
+    value; neither rewrites a file an older build already banked one into, and
+    ``json.loads`` accepts the bare ``NaN`` literal on the way back in. This
+    reader still meets what is on disk.
     """
     if isinstance(value, float):
         if math.isfinite(value):
