@@ -937,6 +937,40 @@ def test_the_gate_refuses_every_malformed_filter(packet, filters):
     assert excinfo.value.reason == dp.FILTER_MALFORMED
 
 
+@pytest.mark.parametrize("biquad_type", [
+    # Every one is a real CamillaDSP biquad the emitter's linearization stage
+    # does not accept, plus the two shapes a hand-written document produces:
+    # wrong case, and no type at all.
+    "Notch", "Highpass", "Lowpass", "Bandpass", "peaking", "LowShelf", None, 3,
+])
+def test_a_type_outside_the_emitters_set_is_refused_by_the_vocabulary_bound(
+    packet, biquad_type,
+):
+    """The vocabulary bound, pinned by the sentence only IT writes.
+
+    The reason alone does not discriminate: ``_check_shelf_placement`` refuses
+    an unknown type too, because ``linearization_slot`` calls anything that is
+    not a leading shelf a "peak" slot. A tree with the vocabulary bound deleted
+    therefore still refuses every case here — with the shelf sentence. Asserting
+    the DETAIL is what makes this test die when the bound goes, which a
+    mutation run confirmed it did not do before (a half-guarded site reading as
+    covered).
+    """
+    document = _document(
+        [{"role": "tweeter", "biquad_type": biquad_type, "freq": 5000.0,
+          "q": 2.0, "gain": -3.0}],
+        packet,
+    )
+
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, document)
+
+    assert excinfo.value.reason == dp.FILTER_MALFORMED
+    assert "must be one of" in excinfo.value.detail
+    for allowed in camilla_yaml.LINEARIZATION_BIQUAD_TYPES:
+        assert allowed in excinfo.value.detail
+
+
 @pytest.mark.parametrize("payload", [
     {"volume_db": -3},
     {"camilladsp_config": {}},
