@@ -8075,15 +8075,13 @@ class CrossoverV2Session:
         )
         if retake is not None and self._positions_gated:
             # REFUSE rather than prompt (owner ruling: refuse, don't mislead) —
-            # for EITHER gated shape, because the predicate that matters is
-            # "these begins are HELD", not "an arm is moving". Prompting anyway
-            # did three dishonest things at once, and the third belongs to the
-            # gate rather than to the arm:
+            # for EITHER gated shape, because what decides is "these begins are
+            # HELD", not "an arm is moving". Prompting did three dishonest
+            # things at once, and the third belongs to the gate, not the arm:
             #
             #   1. it asked for a pose an external positioner cannot reach —
-            #      rung 1 of ``CLOUD_GEOMETRY_RETRY_PROMPTS`` is 75 cm off the
-            #      mark, past every pose in the walk, and rung 2 adds a move
-            #      ABOVE mark height, the axis the remote tier excludes;
+            #      ``CLOUD_GEOMETRY_RETRY_PROMPTS`` rung 1 is 75 cm off the
+            #      mark, past every pose in the walk, and rung 2 goes ABOVE it;
             #   2. it recorded that un-made pose's 75 cm offset as the
             #      position's durable evidence; and
             #   3. the retry re-authorizes the SAME plan entry, so the position
@@ -8103,9 +8101,11 @@ class CrossoverV2Session:
                 session_id=self.session_id,
                 phase=phase,
                 tier=self._tier,
-                # `tier` cannot carry this — stage 2 is constructed without
-                # one, so an arm and a hand-released wired stage 2 both log
-                # `tier=""` and only this tells them apart.
+                # `tier` cannot carry this: stage 2 is constructed without one,
+                # so both gated stage-2 shapes log `tier=""`. This names the
+                # PREDICATE that refused, not WHICH shape — that is constant-true
+                # here by construction, and the mover is recoverable from this
+                # session's `…_remote_session_open` line (`hand_released=`).
                 gated=self._positions_gated,
                 median_tau_us=verdict.get("median_tau_us"),
                 clustered_fraction=verdict.get("clustered_fraction"),
