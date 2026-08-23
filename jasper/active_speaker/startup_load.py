@@ -68,6 +68,7 @@ from .graph_evidence import (
     running_commission_evidence,
     running_graph_matches_staged_anchor,
 )
+from .startup_hold import hold_staged_startup, release_staged_startup_hold
 from ..fanin_coupling import transport_label
 from .safe_playback import load_safe_playback_state
 from .staging import (
@@ -974,6 +975,12 @@ async def load_protected_startup_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_state(payload, state_path=state_path)
+    # Hold the staged anchor BEFORE kicking the reconcile: this durable statefile
+    # is now the deliberate all-muted anchor, and the reconcile re-runs the graph
+    # selector, which would otherwise restore the saved baseline over it and break
+    # the commission that follows (safe_graph_for_current_topology's deadlock
+    # guard reads this marker). Best-effort — a failed set never fails the load.
+    hold_staged_startup()
     _trigger_audio_hardware_reconcile(source="active_speaker_startup_load")
     logger.info(
         "event=active_speaker.startup_load result=loaded candidate=%s prior=%s op_id=%s",
@@ -1073,6 +1080,12 @@ async def rollback_protected_startup_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_state(payload, state_path=state_path)
+    # The staged anchor was abandoned (the statefile is back on the previous
+    # graph), so the startup-load hold no longer applies. Cleared BEFORE the
+    # reconcile kick so this rollback's own reconcile restores the baseline
+    # rather than re-preserving the anchor. Best-effort — a failed clear never
+    # fails the rollback, and the marker is ephemeral (/run) either way.
+    release_staged_startup_hold()
     _trigger_audio_hardware_reconcile(source="active_speaker_startup_rollback")
     logger.info(
         "event=active_speaker.startup_rollback result=rolled_back target=%s op_id=%s",

@@ -8,7 +8,10 @@ import asyncio
 import logging
 from pathlib import Path
 
+import pytest
+
 import jasper.active_speaker.startup_load as startup_load_mod
+from jasper.active_speaker.startup_hold import startup_hold_marker_path
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
@@ -57,6 +60,17 @@ class FakeCamilla:
 class SnapshotFailingCamilla(FakeCamilla):
     async def get_config_file_path(self) -> str:
         raise RuntimeError("camilla unavailable")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_startup_hold_marker(monkeypatch, tmp_path: Path):
+    # A successful load/rollback now writes the ephemeral /run hold marker for
+    # real. Redirect it into the test's tmp dir so the suite never touches the
+    # host's /run and stays hermetic whether or not it runs as root.
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER",
+        str(tmp_path / "staged-startup-hold"),
+    )
 
 
 def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
@@ -430,6 +444,56 @@ def test_startup_load_rolls_back_to_prior_config(monkeypatch, tmp_path: Path) ->
             False,
         ),
     ]
+
+
+def test_startup_load_sets_staged_hold_and_rollback_clears_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # The writer wiring for the re-commission deadlock guard: a successful
+    # protected startup load holds the staged anchor (so the reconcile it kicks
+    # preserves it), and a rollback clears the hold (so the box's baseline can be
+    # restored again).
+    staged = _staged(tmp_path)
+    prior = _protected_prior(tmp_path, staged)
+    fake = FakeCamilla(str(prior))
+    state_path = tmp_path / "startup_load.json"
+    _record_reconcile_triggers(monkeypatch)
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+        str(tmp_path / "active_staged.json"),
+    )
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp_apply.json"))
+    marker = startup_hold_marker_path()
+
+    assert not marker.exists()
+    load = asyncio.run(
+        load_protected_startup_config(
+            _topology(),
+            load_config=fake.set_config_file_path,
+            get_current_config_path=fake.get_config_file_path,
+            path_safety_evidence_path=_write_path_safety(
+                tmp_path / "path_safety.json",
+                staged=staged,
+                current_config_path=prior,
+            ),
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+    assert load["load"]["status"] == "loaded"
+    assert marker.exists()  # anchor is held while the commission is in flight
+
+    rollback = asyncio.run(
+        rollback_protected_startup_config(
+            load_config=fake.set_config_file_path,
+            get_current_config_path=fake.get_config_file_path,
+            state_path=state_path,
+            validate=_valid_config,
+        )
+    )
+    assert rollback["rollback"]["status"] == "rolled_back"
+    assert not marker.exists()  # hold released; baseline restore is allowed again
 
 
 def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(

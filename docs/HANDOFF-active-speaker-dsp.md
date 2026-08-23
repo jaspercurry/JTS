@@ -195,6 +195,21 @@ above; this is only the entry points:
   complete there),
   `/state.resilience.active_speaker_parked` carries the same pair, and
   `/state.audio_health` keeps reporting "Speaker is parked".
+- **Re-commissioning a committed box: the reconcile must not restore the
+  baseline over the staged anchor mid-load.** `load_protected_startup_config`
+  writes the all-muted staged startup anchor to the durable statefile and then
+  kicks `jasper-audio-hardware-reconcile`; on an already-commissioned box that
+  reconcile's selection would otherwise pick `select_active_baseline` and repoint
+  the statefile off the anchor, which then fails `commission-load`'s S3 drift
+  guard ("durable statefile drifted"). `load_protected_startup_config` therefore
+  sets an **ephemeral `/run` hold marker**
+  (`jasper.active_speaker.startup_hold`) around the load and clears it on
+  rollback; while it is present `safe_graph_for_current_topology` preserves the
+  staged all-muted anchor above the baseline-restore rung. The marker is in
+  `/run`, so a normal boot never sees it — a commissioned box still restores its
+  baseline on reboot — and preserving an all-muted anchor keeps the box silent,
+  never loud, so this is gated only on the hold, not on identity (#2814's identity
+  gate stays on the approved-runtime rungs).
 - **The applied baseline candidate is always a source-fingerprinted
   sibling, never the canonical filename, until a promote step runs
   (issue #1666).** `baseline_profile.build_baseline_profile_candidate`

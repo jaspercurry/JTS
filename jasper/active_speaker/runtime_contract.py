@@ -53,6 +53,7 @@ from jasper.output_topology import (
 )
 
 from ._common import issue as _issue
+from .startup_hold import staged_startup_hold_active
 from .camilla_yaml import (
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
@@ -4737,6 +4738,7 @@ def safe_graph_for_current_topology(
     profile_path: str | Path | None = None,
     intent_path: str | Path | None = None,
     staged_metadata_path: str | Path | None = None,
+    staged_startup_hold_path: str | Path | None = None,
     consider_applied_baseline: bool = True,
     staged_config: Mapping[str, Any] | None = None,
 ) -> SafeGraphDecision:
@@ -4893,6 +4895,35 @@ def safe_graph_for_current_topology(
             status="preserve_current",
             selected_config_path=current_path,
             reason="current approved active-speaker runtime graph is legal for saved topology",
+            topology_contract=contract,
+            current_graph=current_graph,
+            preferred_graph=preferred_graph,
+        )
+    # Deadlock guard (re-commission on an already-commissioned box). While a
+    # protected startup-load session is deliberately holding the staged
+    # all-muted startup anchor as the durable graph, the reconciler that load
+    # KICKED must NOT restore the saved baseline over it: doing so drifts the
+    # durable statefile off the anchor, and commission-load's persist phase then
+    # fails closed ("durable statefile drifted"). So the anchor-preserve is
+    # hoisted ABOVE the baseline-restore rung below — but ONLY while the hold is
+    # in flight. The marker is ephemeral (/run), so a NORMAL boot never sees it
+    # and the baseline-restore rung fires exactly as before; a commissioned box
+    # still comes back to audio on reboot. Preserving an all-muted anchor is the
+    # safe direction (silent, never loud), so this needs no identity gate of its
+    # own — #2814's gate stays on the approved-runtime rungs it protects.
+    if (
+        current_graph
+        and current_graph.allowed
+        and current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
+        and staged_startup_hold_active(staged_startup_hold_path)
+    ):
+        return SafeGraphDecision(
+            status="preserve_current",
+            selected_config_path=current_path,
+            reason=(
+                "protected startup-load hold is active; preserving the staged "
+                "all-muted startup anchor for the in-flight commission"
+            ),
             topology_contract=contract,
             current_graph=current_graph,
             preferred_graph=preferred_graph,
