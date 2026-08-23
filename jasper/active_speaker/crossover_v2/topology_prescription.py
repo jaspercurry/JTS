@@ -355,8 +355,9 @@ class TopologyPrescription:
         The one place the order becomes the quantity a manufacturer's minimum
         is expressed in, mirroring
         :func:`~jasper.active_speaker.branch_chain.confirmed_protection_sections`
-        on the way back (it turns a declared slope into the smallest supported
-        order that meets it, by the same ``order * 6`` relation).  Kept here
+        on the way back (it turns the confirmed protective slope into the
+        smallest supported order that meets it, by the same ``order * 6``
+        relation).  Kept here
         rather than at the gate because the module that owns the order owns its
         translation.
         """
@@ -645,7 +646,7 @@ def read_topology_prescription(
     module's docstring).
 
     **The bounds are inclusive.**  An order whose slope exactly meets the
-    declared minimum is legal, and a corner exactly at a declared edge is legal
+    published minimum is legal, and a corner exactly at a declared edge is legal
     — the 2026-08-17 owner ruling on the declared floor ("if the manufacturer
     says 1600, we should be able to do it; no nannies") applied to every edge
     here, and the same ruling's reasoning: exactness is legal in this
