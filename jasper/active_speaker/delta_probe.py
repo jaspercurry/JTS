@@ -343,9 +343,10 @@ VERDICT_UNAVAILABLE = "unavailable"
 #:
 #: **Not a pass, and deliberately not a rollback.** The two directional
 #: findings are absences (:func:`_safety_only` has the reasoning):
-#: :attr:`DeltaProbeMap.safety_anchored` is False, so
+#: :attr:`DeltaProbeMap.safety_anchored` is False, so neither reaches
 #: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`
-#: answers SAFE under its "could not look" reason. A missing grade is not
+#: as a hazard. What that axis then ANSWERS is its own — the clipped-capture
+#: check needs no probe and still holds here. A missing grade is not
 #: evidence of a defect — the same rule :data:`VERDICT_UNAVAILABLE` carries,
 #: and this is its own word rather than ``matched`` because a household and a
 #: receipt must be able to tell "the shape check passed" from "the shape check

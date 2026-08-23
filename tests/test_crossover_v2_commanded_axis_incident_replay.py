@@ -1330,8 +1330,12 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     """
     import logging
 
+    from types import SimpleNamespace
+
     from jasper.active_speaker.crossover_v2.contracts import SafetyStatus
     from jasper.active_speaker.crossover_v2.verification import (
+        CLIPPED_RUN_CHECK,
+        SAFETY_CLIPPED_CAPTURE,
         SAFETY_NO_FINDING_UNMEASURED,
         evaluate_applied_safety,
     )
@@ -1371,6 +1375,17 @@ def test_an_alternative_fc_round_grades_the_model_and_refuses_to_grade_the_drive
     assert safety.evidence["boost_over_declared_bound"] is False
     assert safety.evidence["realized_louder_than_commanded"] is False
     assert safety.evidence["model_departure_over_tolerance"] is True
+    # The reason above is a statement about the two FINDINGS, not a promise
+    # that nothing can take the graph off here: the clipped check is a
+    # different instrument, needs no probe, and still holds on this map.
+    # ``round_evidence`` passes the round's real integrity report to this axis
+    # unconditionally, so this pairing is reachable rather than theoretical.
+    clipped = evaluate_applied_safety(
+        probe=probe,
+        integrity=SimpleNamespace(failed=(CLIPPED_RUN_CHECK,), not_evaluated=()),
+    )
+    assert clipped.status is SafetyStatus.UNSAFE
+    assert clipped.reason == SAFETY_CLIPPED_CAPTURE
     # ...and the journal put the half-grade in front of whoever reads the round.
     assert "verdict=safety_only" in caplog.text
 
