@@ -1103,6 +1103,97 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
     assert "stage=2" in opens[0] and "hand_released=true" in opens[0]
 
 
+def _opened_conductor(monkeypatch, v2host, prepared):
+    """Run a prepared session's real ``_open`` and hand back its conductor.
+
+    ``tests.test_crossover_v2_stage_bridge._open_prepared`` does this for a
+    RELAY session by stubbing the relay runner, which is also where it catches
+    the conductor. A wired session never reaches that runner (``_build_source_run``
+    routes to the wired provider instead), so the capture point here is the
+    router itself — the one seam both sources pass through.
+    """
+    captured: dict = {}
+
+    def _router(_source, conductor, **_kwargs):
+        captured["conductor"] = conductor
+
+        async def _run(_client, _pi_session):
+            return None
+
+        return _run
+
+    monkeypatch.setattr(v2host, "_build_source_run", _router)
+    prepared.open(
+        object(), "http://relay.test", "http://origin.test", "http://return.test",
+    )
+    return captured["conductor"]
+
+
+def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
+    monkeypatch,
+):
+    """The wiring the two behavioural tests above cannot see (#2879 round-2).
+
+    ``test_a_geometry_locked_hand_released_group_refuses_too`` drives a
+    conductor directly, so it proves the RULE. This proves each REAL preparer
+    hands its conductor the fact that rule reads — the gate the host builds and
+    the fact the conductor decides with come off ONE shape, or they are two
+    answers again. Stage 2 needs saying most: its ctor is handed no ``tier`` at
+    all, so before this it decided from a tier it never had. (Its argument also
+    landed one call too early during this fix round, inside ``open_stage``,
+    which every existing test tolerated because nothing opened a stage-2
+    session on this path.)
+
+    Read privately on purpose. The fact selects a refusal branch and is
+    rendered nowhere, so it has no public surface; walking a whole opened
+    stage-2 session into a geometry lock would restate the behavioural test
+    rather than pin the wiring.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (
+            v2host.SOURCE_WIRED,
+            SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
+        ),
+    )
+    stage_1 = v2host.prepare_v2_session(
+        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert stage_1.position_gate is not None
+    assert _opened_conductor(monkeypatch, v2host, stage_1)._positions_gated is True
+
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    stage_2 = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert stage_2.position_gate is not None
+    assert _opened_conductor(monkeypatch, v2host, stage_2)._positions_gated is True
+
+
+def test_a_relay_stage_2_conductor_is_told_nothing_holds_its_begins(monkeypatch):
+    """The control: the ordinary phone round is paced by its own tap, so its
+    conductor must NOT think a gate is republishing bearings behind it."""
+    from jasper.web import correction_crossover_v2 as v2host
+
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_capture_source",
+        lambda: (v2host.SOURCE_RELAY, None),
+    )
+    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
+    prepared = v2host.prepare_v2_verify(
+        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
+        status=_status(), run_async=None, camilla_factory=None,
+    )
+    assert prepared.position_gate is None
+    # The shared harness, because this one DOES reach the relay runner it
+    # stubs — and it mints no wired session, so it needs the relay stub too.
+    conductor, _state = _open_prepared(monkeypatch, prepared)
+    assert conductor._positions_gated is False
+
+
 def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatch):
     """The one-sweep recovery re-verify has no gate and no group (#2879 gate N6).
 

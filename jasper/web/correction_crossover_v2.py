@@ -8111,11 +8111,6 @@ def prepare_v2_verify(
         opening = open_stage(
             STAGE_VERIFY_CAPABILITIES,
             index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
-            # Stage 1's twin, and the ONLY statement of the fact this session
-            # gets: this ctor is handed no ``tier`` at all, so before #2879 a
-            # geometry-locked stage-2 group prompted for the 75 cm rung even on
-            # the arm. The gate above and this now read one shape.
-            positions_gated=bool(plan_shape and plan_shape.positions_gated),
             available=available_stage_priors(
                 commanded_delta=commanded_delta is not None,
                 predicted_sum=predicted_sum is not None,
@@ -8128,6 +8123,11 @@ def prepare_v2_verify(
             # — the pin when the durable state carried one, else the context's
             # own. Resolved once, above.
             source_preset=verify_preset,
+            # Stage 1's twin, and the ONLY statement of the fact this session
+            # gets: this ctor is handed no ``tier`` at all, so before #2879 a
+            # geometry-locked stage-2 group prompted for the 75 cm rung even on
+            # the arm. The gate above and this now read one shape.
+            positions_gated=bool(plan_shape and plan_shape.positions_gated),
             roles_bands=context.roles_bands,
             fc_hz=verify_fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
