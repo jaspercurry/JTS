@@ -453,8 +453,9 @@ def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
     what the guards read), so this budget covers the tone-playing walk only. The
     ambient window is priced in anyway, which makes the budget generous by one
     reading rather than tight by one — the safe direction for a backstop. A feed
-    that never returns during the ambient read is caught by that read's own
-    wall-clock window instead. Priced against the ACTUAL start and the
+    that never returns during the ambient read is not bounded here — nothing has
+    been mutated at that point (no tone, no latch, fader unmoved) and the
+    operator's interrupt is the stop. Priced against the ACTUAL start and the
     ACTUAL bite, so it cannot repeat the retired kernel's mistake of budgeting a
     continuous climb for a walk that does not climb continuously. Because the
     bite is a fixed fraction of the span, the bite count is the same
