@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -1469,6 +1470,57 @@ def test_summed_test_duration_ms_completes_without_a_second_connection(
     assert sound_setup._active_speaker_summed_validation_active_conflict(
         {"speaker_group_id": "mono"}
     ) is None
+
+
+def test_summed_test_budget_already_spent_still_plays_one_whole_repeat(
+    monkeypatch, tmp_path
+):
+    # A budget that has already elapsed by the time the loop first looks does
+    # NOT let the route claim a completed play with no audio behind it: the
+    # first whole stimulus repeat is played and only then does the budget end
+    # the loop. Without that condition this records captured/audio_emitted with
+    # zero aplay spawns, which is the dishonesty the completion claim invites.
+    summed = _summed_test_stubs(monkeypatch, tmp_path)
+    controller = summed["controller"]
+    processes = summed["processes"]
+    _exit_cleanly_after_two_polls(monkeypatch, processes)
+
+    # Burn more than the 10 ms budget on every stop-reason look, so the loop's
+    # first look already finds the budget spent.
+    real_stop_reason = sound_setup._summed_test_session_stop_reason
+    looks: list[bool] = []
+
+    def _spend_the_budget_before_each_look(session):
+        looks.append(True)
+        time.sleep(0.05)
+        return real_stop_reason(session)
+
+    monkeypatch.setattr(
+        sound_setup,
+        "_summed_test_session_stop_reason",
+        _spend_the_budget_before_each_look,
+    )
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_summed_test_payload(
+            {
+                "speaker_group_id": "mono",
+                "audio": True,
+                "level_dbfs": -40.0,
+                "duration_ms": 10,
+            },
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    playback = payload["playback"]
+    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
+    assert len(looks) >= 2, "the loop should have looked at least once"
+    assert len(processes) == 1
+    assert processes[0].returncode == 0
+    assert playback["stop_reason"] == "duration_elapsed"
+    assert playback["audio_emitted"] is True
+    assert latest["captured"] is True
 
 
 def test_summed_test_confirm_during_a_duration_bounded_play_still_wins(
