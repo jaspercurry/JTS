@@ -8,10 +8,10 @@ The closed sweep/level ledger below derives every field passed to Shared's
 persisted admission types. It deliberately remains pure: the production
 adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
 playback, and writer-lock lifetime. The one deliberate exception is the
-``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two when
-it supersedes an undeclared HF ceiling with the sensitivity-derived one (or
-names why it could not), naming both the delegation that let it and the
-low-frequency ANCHOR the derived number is a delta from, and one when a
+``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two around
+the undeclared-HF ceiling (one when the sensitivity derivation supersedes it,
+carrying the delegation that let it and the low-frequency ANCHOR the derived
+number is a delta from; one naming why it could not derive), and one when a
 proven-HP high-frequency
 role's excitation floor follows its declared hard band below its declared
 analysis window (#1654). Audit lines, not state mutations; see the W6.5 and
