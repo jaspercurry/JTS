@@ -1237,7 +1237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Refused rather than multiplied: a multiplier here would be this file's
         # second opinion about another tool's composition rule.
         #
-        # NOT a nanny gate (measurement-loop doctrine §4): what is declined is
+        # NOT a nanny gate (measurement-loop doctrine §5): what is declined is
         # this FLAG, whose own arithmetic is unsound for the regime — a named
         # mechanism, not a forecast that the experiment will disappoint. The
         # experiment itself stays available and the message says how: a staged

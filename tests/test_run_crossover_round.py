@@ -694,7 +694,7 @@ def test_takes_are_refused_for_a_regime_that_stages_more_than_one_stop(
     composition rule.
 
     What is declined is the FLAG, never the experiment — measurement-loop
-    doctrine §4. The refusal has to say so and name the way through, because a
+    doctrine §5. The refusal has to say so and name the way through, because a
     message that only said "no" would be the nanny gate that doctrine forbids:
     the repeat was always the seam's own shape, so a hand-written staged list
     takes N captures per pose at any regime.
