@@ -41,14 +41,17 @@ overnight campaign every MEASURE-phase capture carried those two fields two
 lines apart disagreeing by 8.712 dB — the live fader sat at the household
 volume while the plan declared the measurement one — and no reader compared
 them, so the split was found five days later by fitting the banked curves.
-:func:`volume_fields_agree` is that comparison, run per capture
-(:func:`observe_capture_provenance` logs a WARN when a retained record
-self-contradicts). It is a disclosure and not a gate BY THIS MODULE'S
-CONTRACT — nothing here may break a capture. The fail-CLOSED half runs before
-the stimulus, in the playback path's own volume hold
-(:func:`jasper.active_speaker.volume_latch.hold_measurement_volume`), which
-refuses rather than records; the two share one tolerance so they cannot
-disagree about what "agree" means.
+:func:`volume_fields_agree` is that comparison, run on every record this
+module OBSERVES — which is not every capture, because observation is bought
+only while capture retention is on; :func:`observe_capture_provenance` logs a
+WARN when a retained record self-contradicts. It is a disclosure and not a
+gate BY THIS MODULE'S CONTRACT — nothing here may break a capture. The
+fail-CLOSED half is the one that runs on every capture: the playback path's
+volume hold
+(:meth:`jasper.active_speaker.session_volume_plan.SessionVolumePlan.hold_measurement_volume`,
+over :func:`jasper.active_speaker.volume_latch.hold_fader_at`) proves the
+declared volume before the stimulus and refuses rather than records. The two
+share one tolerance so they cannot disagree about what "agree" means.
 
 ``graph.config_path`` is recorded precisely BECAUSE it is the misleading
 label: side by side with ``kind`` and ``fingerprint`` it shows what the
@@ -374,11 +377,13 @@ async def observe_capture_provenance(
     )
     if not volume_fields_agree(observed):
         # The tripwire, on the two fields that printed the 2026-08-24 defect
-        # from its first capture (#2925 T1-2). Reaching this after the play
-        # path's own fail-closed hold means the fader moved between being
-        # proven and this read, so it names both values rather than only the
-        # delta: a forensic reader months later needs to know WHICH of the two
-        # is the surprise.
+        # from its first capture (#2925 T1-2). TWO ways to reach it, and the
+        # second is the ordinary one: either the fader moved between the play
+        # path's hold proving it and this read, or the hold PROVED NOTHING
+        # because the plan owned no volume to hold (its own WARN,
+        # ``crossover_v2_capture_volume_unheld``, is the companion line). So
+        # this names both values rather than only the delta — a forensic reader
+        # months later needs to know WHICH of the two is the surprise.
         log_event(
             logger,
             "active_speaker.capture_provenance",

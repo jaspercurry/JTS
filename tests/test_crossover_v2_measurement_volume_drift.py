@@ -672,6 +672,7 @@ def _reset_volume_plan():
 def _drive(
     monkeypatch, tmp_path, *, phase: str, cam: _StubCam, plan: Any,
     played: list[str] | None = None,
+    on_emit: Any = None,
 ) -> list[str]:
     """Play one phase through the real seam; return the audio that reached ALSA.
 
@@ -682,9 +683,19 @@ def _drive(
     That is the whole point on the refusal tests: "refuses before any audio" is
     an ORDERING claim, and a test that only catches the exception passes just
     as happily with the hold moved AFTER the stimulus.
+
+    ``on_emit`` fires at the instant either branch hands its WAV to the
+    transport, so a caller can sample what the speaker's level actually WAS
+    when sound left — the only way to assert the loud direction rather than
+    infer it from the write list.
     """
     if played is None:
         played = []
+
+    def _emitted(tag: str) -> None:
+        played.append(tag)
+        if on_emit is not None:
+            on_emit()
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.active_speaker import program_playback as playback_mod
@@ -699,7 +710,7 @@ def _drive(
     )
 
     async def _fake_aplay(bundle_dir, artifact, *, alsa_device=None, timeout_s=60.0):
-        played.append("summed")
+        _emitted("summed")
         return SimpleNamespace(ok=True)
 
     monkeypatch.setattr(playback_mod, "verified_program_aplay", _fake_aplay)
@@ -715,7 +726,7 @@ def _drive(
             return True
 
         async def play_wav() -> Any:
-            played.append("routed")
+            _emitted("routed")
             return SimpleNamespace(ok=True)
 
         async def readmit() -> Any:
@@ -822,15 +833,77 @@ def test_no_declared_volume_discloses_and_does_not_police(
     assert "crossover_v2_capture_volume_unheld" in caplog.text
 
 
+#: The campaign drifted QUIET, so every fixture above walks that direction.
+#: This is the same walk reversed — a household sitting LOUDER than the
+#: measurement volume — which is the direction that matters for hearing safety
+#: and the one no banked evidence exercises.
+LOUD_HOUSEHOLD_DB = -8.0
+
+
+@pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
+def test_a_loud_household_is_pulled_down_before_any_audio(
+    monkeypatch, tmp_path, phase
+):
+    """THE LOUD DIRECTION, at the seam rather than at the primitive.
+
+    #2925's own account: "It was wrong quiet that night; the identical seam
+    reversed is the LOUD direction." The routed path's `SetConfig` clobber
+    restores whatever the config stores, so on a household louder than the
+    measurement volume it hands the stimulus a HOTTER fader than the
+    excitation ledger admitted. Both branches must pull it down, and must do
+    so before the WAV handoff — the ordering is asserted, not inferred, by
+    recording the fader at the moment audio is emitted.
+    """
+    seen_at_emit: list[float] = []
+    cam = _StubCam(volume_db=LOUD_HOUSEHOLD_DB)
+
+    played = _drive(
+        monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(),
+        on_emit=lambda: seen_at_emit.append(cam.volume_db),
+    )
+
+    assert played, "the capture must still happen once the level is proven"
+    assert cam.volume_writes == [DECLARED_DB]
+    # The fader was BELOW the household level at the instant audio was emitted.
+    assert seen_at_emit == [DECLARED_DB]
+    assert seen_at_emit[0] < LOUD_HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
+def test_a_loud_fader_that_will_not_come_down_emits_nothing(
+    monkeypatch, tmp_path, phase
+):
+    """The refusal shape in the loud direction: the setter reports success and
+    the fader stays hot. Nothing may be emitted at that level — this is the
+    case the whole change exists to make impossible."""
+    seen_at_emit: list[float] = []
+    played: list[str] = []
+    cam = _StubCam(volume_db=LOUD_HOUSEHOLD_DB, accepts_writes=False)
+
+    with pytest.raises(MeasurementFaderDrift):
+        _drive(
+            monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(),
+            played=played, on_emit=lambda: seen_at_emit.append(cam.volume_db),
+        )
+
+    assert played == []
+    assert seen_at_emit == []
+    assert cam.volume_db == LOUD_HOUSEHOLD_DB  # untouched, and unheard
+
+
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
 def test_an_unready_plan_never_gets_its_fader_raised(monkeypatch, tmp_path, phase):
     """THE SAFETY GUARD ON THE FIX ITSELF.
 
-    A plan that drained keeps ``measurement_volume_db`` while latching
-    ``unresolved`` — so reading that field unguarded would let this hold raise
-    the fader BACK UP on a speaker whose plan had just failed to restore, or
-    that had emergency-attenuated to −60. The declared volume is only ever
-    taken from a plan ``assert_ready`` accepts.
+    A plan whose restore could not be CONFIRMED keeps ``measurement_volume_db``
+    while latching ``unresolved`` — so reading that field unguarded would let
+    this hold raise the fader BACK UP on a speaker whose plan had just given
+    up. Which shape that is, precisely: a restore whose emergency write LANDED
+    on the hardware but never read back at the floor. A restore that DOES
+    confirm the floor returns ``EMERGENCY_ATTENUATED`` and clears the field to
+    ``None`` via ``_clear_resolved`` — safe for a different reason (nothing
+    left to hold), so it is not this test's subject. The declared volume is
+    only ever taken from a plan ``assert_ready`` accepts.
 
     The two paths then answer differently, and both are correct: the routed
     path never reaches the hold at all, because ``play_program`` asks the same

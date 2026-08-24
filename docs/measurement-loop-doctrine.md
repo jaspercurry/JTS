@@ -123,10 +123,14 @@ damage:
   `measurement_volume_drift` rather than disclosing. Not a new gate but this
   bullet's own mechanism restated at the moment of emission: a fader above the
   declared volume drives every branch past the declared level-duration limits
-  this bullet exists to enforce. It passes the nanny test below by repairing
-  first and refusing only what it cannot prove, so no runnable experiment is
-  blocked (#2925; found the other way round — an overnight campaign measured
-  8.712 dB QUIET, with the ledger equally wrong in the direction that is loud)
+  this bullet exists to enforce. **It trips on two conditions, and the second
+  is the fail-closed half of the same rule** — the fader read and would not
+  hold, OR the fader could not be read at all, because a level that cannot be
+  established cannot be shown to be under the caps either. It passes the nanny
+  test below by repairing first and refusing only what it cannot prove, so no
+  runnable experiment is blocked (#2925; found the other way round — an
+  overnight campaign measured 8.712 dB QUIET, with the ledger equally wrong in
+  the direction that is loud)
 - the output limiters — `STARTUP_LIMITER_CLIP_LIMIT_DB` /
   `BASELINE_LIMITER_CLIP_LIMIT_DB` in
   `jasper/active_speaker/camilla_yaml.py` — and the volume /

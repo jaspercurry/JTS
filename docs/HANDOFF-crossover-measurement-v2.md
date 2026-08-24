@@ -3776,7 +3776,7 @@ unready setup.
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). Relay verdict, terminal exhaustion, defensive replay refusal, apply-seam refusal, and envelope all select the diagnosis from the same paired evidence; retry versus terminal state changes only the action. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every ADMISSION refusal except `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820). The play seam has one other refusal that is not an admission refusal at all and does not land here — `measurement_volume_drift`, below |
-| `measurement_volume_drift` | play seam | 0 (hard stop) | #2925: the main fader was not at the volume this session declared when a stimulus was about to play, and re-asserting it could not be proven, so the capture is refused before any audio. The OPPOSITE claim to `program_unplayable` — the program was admissible; the speaker's level was not the one it was admitted against — which is why it is its own code rather than another slug riding that one. **TWO conditions reach it**, which is why the copy names the observation and never a cause (`locate_failed`'s #2085 lesson): the fader was read and would not hold, or it could not be read at all. Read `event=active_speaker.measurement_fader_drift result=refused` to tell them apart — an empty `observed_db` is the unreadable one. Carries no refusal slugs; the observed/expected pair is on that same line. Terminal because a safety refusal is not something to retry around, and the re-assert has already been tried. A drift the hold DOES repair is not a refusal — it plays, and says so at WARN (`result=repairing` then `result=repaired`) |
+| `measurement_volume_drift` | play seam | 0 (hard stop) | #2925: the main fader was not at the volume this session declared when a stimulus was about to play, and re-asserting it could not be proven, so the capture is refused before any audio. The OPPOSITE claim to `program_unplayable` — the program was admissible; the speaker's level was not the one it was admitted against — which is why it is its own code rather than another slug riding that one. **TWO conditions reach it**, which is why the copy names the observation and never a cause (`locate_failed`'s #2085 lesson): the fader was read and would not hold, or it could not be read at all. Read `event=active_speaker.measurement_fader_drift result=refused` to tell them apart — an empty `observed_db` is the unreadable one. Carries no refusal slugs; the observed/expected pair is on that same line, and `set_confirmed` there is the set-AND-confirm's verdict, not the setter's — `true` on a refusal is the interesting one (the repair landed and the fader moved AGAIN), while `false` covers both "the setter refused" and "the setter said yes and nothing moved". Terminal because a safety refusal is not something to retry around, and the re-assert has already been tried. A drift the hold DOES repair is not a refusal — it plays; see "The fader hold mostly does NOT refuse" below, because on the routed path that is what happens EVERY time |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | JTS cannot use the saved driver-safety declaration (evaluation `stale` — the outputs moved underneath it — or `malformed`). Both are cleared by one ordinary save, which rebuilds the profile from the visible values. Split out of `program_unplayable` (#1820) because it is deterministic and one edit away, so its copy names *review the limits and save them again* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. The slug keeps its wire name; `unconfirmed` no longer occurs, because saving the declaration IS declaring it. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** safety callout here, so "review the limits" would name a panel that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
 | `program_profile_incomplete` | session open | 0 (hard stop) | evaluation `incomplete` — declared values are still missing or do not line up. A save is allowed here (the operator keeps their work) but rebuilds the same `incomplete` profile, so "save again" would be a circle. Copy names the same action `/sound/`'s own callout names in this state: add them under Advanced, then save |
@@ -3794,6 +3794,46 @@ unready setup.
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back. **Since #2521 it sits behind the same frame gate `correction_model_error` does** — a real but in-tolerance depth shortfall riding a room tilt demotes to `frame_mismatch` rather than reverting a tuning on evidence that is entirely instrument |
 | `correction_spatially_costly` | post-apply group | 0 (hard stop) | PR-L5: the map matched at the mark and the cross-position level spread WIDENED past `DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB` — the correction fitted one position's interference rather than the speaker. Placement, not filters. Rolled back |
 | `correction_rollback_failed` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the probe found one of the three defects above AND the automatic rollback could not run (no binding, a refused restore, or a seam that raised). The correction is therefore **still applied**, and this row exists so the copy says so instead of promising a restore that did not happen. Names Undo as the manual action |
+
+**The fader hold mostly does NOT refuse — four things to know about it
+(#2925).** `measurement_volume_drift` above is its rare arm; these are the
+ordinary ones.
+
+1. **The repair pair is the routed path's steady state, not an anomaly.**
+   `event=active_speaker.measurement_fader_drift result=repairing` then
+   `result=repaired` fires on every CHECK/MEASURE capture, forever: the
+   `SetConfig` load/restore that discards `main_volume` is architectural and
+   deliberately not addressed, so the hold finds the fader at the household
+   value every time and puts it back every time. **This doubles as the
+   on-device acceptance criterion** — on the first jts3 run the pair should
+   appear on every routed capture, and its ABSENCE means the hold is not where
+   this doc says it is. The summed path should show neither line.
+2. **The summed path has no readiness gate, on purpose.** The routed path
+   reaches `play_program`, which calls `SessionVolumePlan.assert_ready` and
+   refuses a plan that owns no volume; the summed path has no such call, so
+   when the plan is not ready its capture PLAYS and BANKS unheld, disclosing
+   `event=correction.crossover_v2_capture_volume_unheld`. A second gate here
+   would be a second owner of `assert_ready`'s question. That capture's level
+   is then whatever the fader happened to be at, and its provenance record is
+   what says so (`result=volume_disagreement`).
+3. **A person turning the volume down mid-session is overridden at the next
+   capture.** Authoritative writes — the management UI, a HID remote — are
+   deliberately still allowed to move the fader (the no-nanny rule); the hold
+   then puts it back before the next stimulus, because a capture at a level
+   the ledger did not admit is not a measurement. "I turned it down and it
+   went back up" is correct behaviour, and the `result=repairing` line names
+   the value it found. To measure quieter, end the session and re-open it —
+   the session volume is derived once, at open.
+4. **The summed path's hold runs OUTSIDE the DSP writer lock.** The routed one
+   is inside it (it rides the `play_wav` seam), so nothing else can load a
+   config between proving the fader and emitting. The summed branch takes no
+   lock, so a cross-process `SetConfig` landing in that window could still duck
+   the level under the stimulus. The bound: any such duck re-applies a STORED
+   config volume — the household level — so the exposure is quieter than
+   declared, never louder, and the provenance tripwire catches it whenever
+   retention is on. Closing it properly means giving the summed branch the same
+   lock; not done in #2925, which deliberately did not alter verify-phase
+   behaviour beyond routing it through the shared seam.
 
 **G1 discloses, it does not refuse (owner ruling, 2026-08-03, #2087).** A
 predicted ripple above `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` accepts the
