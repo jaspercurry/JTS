@@ -83,6 +83,10 @@ __all__ = [
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "LATERAL_POSE_REGIME",
+    "POSITION_AXES",
+    "POSITION_AXIS_HORIZONTAL",
+    "POSITION_AXIS_VERTICAL",
+    "PositionGeometry",
     "SCREEN_LOCATE_FAILED",
     "SCREEN_PILOT_LEVEL_COLLAPSE",
     "SCREEN_LINEARITY_FAILED",
@@ -665,6 +669,87 @@ def lateral_pose_curve(
 # --------------------------------------------------------------------------- #
 
 
+#: A pose whose stated displacement from the mark lies in the HORIZONTAL plane
+#: — the microphone is moved around the speaker rather than raised or lowered.
+#: On a rig with a measurement arm that motion is the arm's own: a ROTATION
+#: about the rig's vertical axis.  The word is
+#: :data:`~jasper.active_speaker.crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE`'s
+#: own ("Measured on the horizontal axis only"), reused rather than re-minted.
+#:
+#: It names where the pose's STATED offset lies, not a promise that nothing
+#: else moved: the second geometry-retake rung asks for a sideways move AND a
+#: rise, and records that rise only in its ``prompt``.
+POSITION_AXIS_HORIZONTAL = "horizontal"
+
+#: A pose stated as a move ABOVE or BELOW mark height.  Nothing on this rig
+#: rotates in elevation — the prompts ask for a raise or a lower — so a pose on
+#: this axis carries no bearing at all
+#: (:attr:`PositionGeometry.degrees` is ``None``), which is a different fact
+#: from "0°" and must never read as one.
+POSITION_AXIS_VERTICAL = "vertical"
+
+#: Every axis a pose can be stated on, so a reader can CHECK the value rather
+#: than trust it.
+POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
+
+
+@dataclass(frozen=True)
+class PositionGeometry:
+    """WHERE a prompted capture was taken, as three numbers instead of a sentence.
+
+    The three facts an owner ruling (2026-08-24) named as the minimum a pose
+    record owes a reader: **angle, axis, and distance**.  Before it, a cloud
+    position's only statement of place was the household ``prompt`` string, and
+    the 2026-08 new-horn campaign read that prose as a mic being carried
+    sideways when the rig had rotated — a misreading prose cannot rule out,
+    cannot be diffed, and cannot be compared across rounds.
+
+    **The frame, stated once so nothing downstream has to restate it.**
+    ``degrees`` is the signed whole-degree bearing of the pose measured from the
+    speaker, negative LEFT of the design axis as seen from the microphone
+    looking at the speaker; ``axis`` is which of :data:`POSITION_AXES` that
+    bearing lives on; ``mark_distance_m`` is the speaker-to-MARK distance the
+    bearing is DERIVED AGAINST.  That last one is a reference length, never a
+    surveyed capsule distance: nothing in a round measures how far the
+    microphone actually ended up, so a reader gets the bearing and the length
+    it was taken against, and neither is a claim about the other.
+
+    ``degrees`` is ``None`` wherever no signed bearing was commanded — always on
+    :data:`POSITION_AXIS_VERTICAL`, where the rig raises and lowers the
+    microphone rather than swinging it, and on the horizontal axis for a pose
+    that states a distance but no side (the geometry-locked retake).  ``None``
+    is the honest answer in both; 0 would be a lie that reads as "on the design
+    axis".
+
+    Whole degrees, for the reason the derivation that produces them gives: the
+    poses come from tape-measure offsets to a mark placed "about" 1 m out, and
+    a tenth of a degree would claim a precision the placement never had.
+
+    Derived by ``crossover_v2_flow.position_geometry``, which owns the pose
+    table and the sign convention and names each ``None`` case; carried here
+    because this module owns what a retained take RECORDS.
+    """
+
+    axis: str
+    degrees: int | None
+    mark_distance_m: float
+
+    def __post_init__(self) -> None:
+        if self.axis not in POSITION_AXES:
+            raise ValueError(
+                f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
+            )
+        if self.axis == POSITION_AXIS_VERTICAL and self.degrees is not None:
+            # Loud rather than silently banked: a bearing on the vertical axis
+            # is a number nothing on this rig can have commanded, and a reader
+            # who trusted it would place the microphone somewhere it never was.
+            raise ValueError(
+                "a vertical pose carries no bearing — this rig raises and "
+                f"lowers the microphone rather than swinging it, got "
+                f"{self.degrees!r} degrees"
+            )
+
+
 def cloud_position_record(
     *,
     position_id: str,
@@ -674,6 +759,7 @@ def cloud_position_record(
     prompt: str,
     wide: bool,
     role: str,
+    geometry: PositionGeometry,
     captured_at: float,
     session_id: str,
     gate_window_ms: float | None,
@@ -731,6 +817,18 @@ def cloud_position_record(
     stop being the index").  Recorded whether or not any store retained the
     bytes, because it is what lets a laptop-side WAV be matched back to this
     take at all.
+
+    ``geometry`` is WHERE the microphone was, as fields rather than as English
+    (owner ruling, 2026-08-24).  Until it existed this record carried no
+    geometry at all — the ``prompt`` sentence was the only statement of place,
+    and the 2026-08 new-horn campaign read a rotation out of it as a sideways
+    carry.  The three keys it lands (``position_deg``, ``position_axis``,
+    ``mark_distance_m``) are stamped from the pose the operator was actually
+    given; ``prompt`` stays beside them as the human instruction and stops
+    being the source of truth.  ``position_deg`` deliberately spells the same
+    word :func:`lateral_pose_record` already does — one vocabulary for one
+    question — and is ``None`` wherever no bearing was commanded.  See
+    :class:`PositionGeometry` for the frame all three sit in.
     """
     return {
         "position_id": position_id,
@@ -744,6 +842,9 @@ def cloud_position_record(
         # queue item 1). The prompt string alone cannot be parsed back into a
         # role, so the label rides the record explicitly.
         "role": role,
+        "position_deg": geometry.degrees,
+        "position_axis": geometry.axis,
+        "mark_distance_m": geometry.mark_distance_m,
         "captured_at": captured_at,
         "session_id": session_id,
         "gate_window_ms": gate_window_ms,

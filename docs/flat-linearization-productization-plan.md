@@ -1149,6 +1149,23 @@ summed sweep to MEASURE too, so both clouds carry the on-axis point at the
 same weight — is a legitimate follow-up if ever wanted, but asymmetric
 inclusion (post-apply only) is not.
 
+> **The closing sentence was OVERRULED on 2026-08-24 (owner ruling, fixlist
+> T1-5).** Asymmetric, post-apply-only inclusion of the design axis is what
+> ships: `CLOUD_VERIFY_POSE_PROMPTS` opens with an at-mark
+> `POSITION_ROLE_ONAX` pose, so the post-apply cloud carries an on-axis curve
+> at 1/5 weight (`M − 1` = 5) while the pre-apply cloud carries none. The
+> MECHANISM this paragraph rejected is still rejected and the rest of it still
+> holds — the VERIFY anchor is not joined into the combine, and stays
+> tracking-only. What overruled the conclusion is the cost the 2026-08 new-horn
+> campaign measured: with no on-axis member, a post-apply round banks no summed
+> response at the one place the household sits, and the campaign had to run a
+> separate MEASURE round to get one. The asymmetry is disclosed rather than
+> undisclosed — every seat now records its own `position_deg`, so a reader of
+> either cloud can see exactly which bearings it holds. See
+> `CLOUD_VERIFY_POSE_PROMPTS` in
+> [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) for
+> the ruling of record.
+
 Persisted to
 `crossover_v2/<session>/cloud_measure.json` / `cloud_verify.json` (**a
 mechanism deviation from the work order's literal singular `cloud.json`**:

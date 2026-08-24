@@ -118,7 +118,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -232,6 +232,15 @@ _POSITION_FIELDS = (
     "index",
     "attempt",
     "role",
+    # WHERE the capture was taken, copied through from the same
+    # ``_RECORD_FIELDS`` join every other per-position scalar rides. Before
+    # these existed the ``angle_deg`` block below said a cloud position "carries
+    # no bearing at all"; that was a claim about the RECORD SHAPE and the
+    # 2026-08-24 writer falsified it, so the block is now conditional on what
+    # the rows actually carry (:func:`_angle_deg_block`).
+    "position_deg",
+    "position_axis",
+    "mark_distance_m",
     "take_id",
     "wav_sha256",
     "validity_floor_hz",
@@ -963,20 +972,73 @@ def _positions_block(cloud: dict[str, Any]) -> dict[str, Any]:
         # cannot pair the spread with a grid it was not taken over.
         "cross_seat_sigma": _cross_seat_sigma_block(freqs_hz, rows),
         "redacted_fields": sorted(withheld),
-        # The one fact a reader would otherwise assume was simply uninteresting.
-        "angle_deg": {
-            "status": "not_evaluated",
-            "reason": (
-                "a cloud position is a floor-plan seat and its banked record "
-                "carries no bearing at all; only the coarse role below is. The "
-                "signed whole-degree bearings a round DOES bank belong to a "
-                "lateral walk's poses, which are different captures — see the "
-                "lateral_poses block."
-            ),
-        },
+        # The bearings this round's own seats were prompted at — or, for a
+        # round whose records predate the writer, why there are none.
+        "angle_deg": _angle_deg_block(rows),
         "role_vocabulary": sorted({
             str(row.get("role")) for row in rows if row.get("role")
         }),
+    }
+
+
+def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The cloud seats' own bearings, or the reason this round banks none.
+
+    **This block used to be an unconditional ``not_evaluated``** whose reason
+    said a cloud position's "banked record carries no bearing at all". That was
+    a claim about the RECORD SHAPE, and the 2026-08-24 owner ruling falsified
+    it — :func:`~.spatial.cloud_position_record` now stamps ``position_deg`` /
+    ``position_axis`` / ``mark_distance_m`` on every retained cloud position,
+    for the reason the ruling gives: prose cannot be diffed, and the campaign
+    that prompted it had read a rotation out of a prompt sentence as a sideways
+    carry. Printing the old sentence beside rows carrying degrees would be the
+    opposite of the honesty this block exists for.
+
+    So what survives is the NARROW statement, and only for a round banked
+    before that writer: THIS round's rows carry no bearing. It names
+    ``position_axis`` and ``role`` as the fields that separate the ways that
+    happens, exactly as :func:`_gate_numbers_reason` names
+    ``gate_floor_source`` — a vertical seat and a geometry-retake seat both
+    legitimately bank no degree, and a reason that asserted "banked too early"
+    alone would be a claim this cannot make.
+
+    ``bool`` subclasses ``int``, so this applies the guard
+    :func:`_lateral_poses_block` already does: a ``true`` in the field would
+    otherwise publish 1 as a bearing.
+    """
+    angles = sorted({
+        row["position_deg"] for row in rows
+        if isinstance(row.get("position_deg"), int)
+        and not isinstance(row.get("position_deg"), bool)
+    })
+    if angles:
+        return {
+            "available": True,
+            "angles_deg": angles,
+            "note": (
+                "position_deg is signed whole degrees, negative LEFT of the "
+                "design axis, read off each seat's own record rather than "
+                "parsed out of its prompt. A seat may carry none — a vertical "
+                "pose commands no bearing, and neither does a geometry-locked "
+                "retake, which states a distance but no side — so this set can "
+                "be shorter than n_positions, and positions[].position_axis "
+                "with positions[].role says which seats are missing from it. "
+                "These are cloud seats, not the lateral walk's poses in the "
+                "lateral_poses block; the two are different captures and "
+                "share no row."
+            ),
+        }
+    return {
+        "available": False,
+        "status": "not_evaluated",
+        "reason": (
+            "no position row in this round carries position_deg, so no seat in "
+            "it states a bearing. Different rounds look like this and "
+            "positions[].position_axis with positions[].role separates them: "
+            "one banked before the capture-time writer gained the field, and "
+            "one whose seats commanded no bearing at all — a vertical pose, or "
+            "a geometry-locked retake, which states a distance but no side"
+        ),
     }
 
 
@@ -2223,16 +2285,22 @@ def _not_evaluated(
         # packet read the positions/ sidecars. That claim was about the CORPUS
         # and it was false: a lateral walk banks a signed whole-degree bearing
         # per pose. What remains true, and only when this round banked no walk,
-        # is that this packet carries no bearing for any capture. Printing the
-        # old sentence beside a lateral_poses block full of angles would be the
-        # opposite of the honesty this block exists for.
+        # is that no LATERAL pose in it carries one. Printing the old sentence
+        # beside a lateral_poses block full of angles would be the opposite of
+        # the honesty this block exists for.
+        #
+        # It also used to close with "A cloud position never does", which the
+        # 2026-08-24 geometry ruling falsified in the same way: a retained cloud
+        # position now stamps its own ``position_deg``. So this entry stopped
+        # speaking for the cloud at all and points at the block that does —
+        # which is CONDITIONAL there too, and therefore cannot go stale here.
         entries.append({
             "field": "lateral_poses[].position_deg",
             "reason": (
-                "this round banked no lateral walk poses, so no capture in it "
-                "carries a numeric bearing. A cloud position never does — see "
-                "positions.angle_deg, which is a property of that record shape "
-                "rather than of this round"
+                "this round banked no lateral walk poses, so no pose in it "
+                "carries a numeric bearing. Whether its CLOUD seats do is a "
+                "separate question with its own answer — see "
+                "positions.angle_deg"
             ),
         })
     if gate_numbers_reason:

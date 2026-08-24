@@ -158,13 +158,19 @@ named plan shape** with its own validation:
   hazard.)
 - Tier-aware validation: express admits exactly (N =
   `_min_positions_for_two_wide_offsets()`, M = 1) — **derived from the
-  prompt table, never the literal 5**, exactly as
-  `MIN_CLOUD_VERIFY_POSITIONS` already is and for the same reason: if
+  prompt table, never the literal 5**, the same DISCIPLINE
+  `MIN_CLOUD_VERIFY_POSITIONS` follows and for the same reason: if
   the table's wide moves are ever reordered, the floor must move with
-  them rather than leave express silently one-wide. Extend
+  them rather than leave express silently one-wide. The two floors no
+  longer derive from the SAME table, though — since the 2026-08-24
+  geometry ruling gave the post-apply group its own pose set
+  (`CLOUD_VERIFY_POSE_PROMPTS`), express's N still derives from
+  `CLOUD_POSITION_PROMPTS` (the prompt table this section is about) while
+  `MIN_CLOUD_VERIFY_POSITIONS` derives from its own, so a reorder of one
+  table does not, by itself, move the other's floor. Extend
   `test_cloud_prompts_front_load_the_wide_offsets` to pin the express
   constant alongside the two existing floors. Full keeps the existing
-  (6 ≤ N ≤ 12, M ≥ 5) rules. An M = 1 plan emits no cloud-verify
+  (6 ≤ N ≤ 12, M ≥ 6) rules. An M = 1 plan emits no cloud-verify
   entries and moves the `done_title`/`done_body` screen onto the
   VERIFY entry.
 - The tier rides the durable v2 state, the pipeline payload, and

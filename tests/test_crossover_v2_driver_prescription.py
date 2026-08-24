@@ -3059,11 +3059,21 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     ``packet_positional_evidence`` reads exactly the three it always read.
 
     ``positions.angle_deg`` is the OTHER case worth naming, and it is the
-    closest call here: its ``reason`` prose changed, from a false corpus-wide
-    claim to a true statement about the cloud record's own shape. The FIELD
-    still says what it said — ``not_evaluated`` for a cloud row's angle — so a
-    v1 reader reaches the same conclusion from it; only the sentence explaining
-    why got accurate.
+    closest call here. Its ``reason`` prose changed once already, from a false
+    corpus-wide claim to a true statement about the cloud record's own shape.
+    The 2026-08-24 geometry ruling then falsified THAT too — a cloud position
+    now stamps its own ``position_deg`` — so the block became CONDITIONAL, and
+    the whole entry changes shape on a round that banks bearings.
+
+    That is still not a misreading, for two reasons. The shape it changes INTO
+    is the one ``lateral_poses`` beside it has always had — ``available`` plus
+    the answer, or ``available`` plus ``status``/``reason`` — so a v1 reader of
+    this packet already meets it in the block next door. And the alternative is
+    the `harmonics` case verbatim: keeping the old spelling on a round that HAS
+    bearings would assert "no seat in this round states one", which a reader
+    would act on. A field whose claim became false does not get to keep its
+    spelling. The refusing form is byte-identical for every round banked before
+    the writer, which is every round that exists today.
 
     ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
     additive case again — but it also RENAMED a ``not_evaluated`` entry, from
@@ -3086,7 +3096,10 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     assert len(packet["feature_classification"]["verdicts"][0]) == 7
     assert packet["lateral_poses"]["available"] is False
     assert packet["capture_snr"]["available"] is False
+    # This fixture's rows predate the geometry writer, so the block takes its
+    # refusing form — and the refusing form is unchanged from v1.
     assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
+    assert packet["positions"]["angle_deg"]["available"] is False
     assert packet["positions"]["cross_seat_sigma"]["available"] is True
     assert packet["harmonics"]["available"] is False
 

@@ -423,6 +423,7 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     record = cloud_position_record(
         position_id="angle_01", phase="measure", index=stop.index, attempt=1,
         prompt=stop.prompt.text, wide=stop.prompt.wide, role=stop.prompt.role,
+        geometry=flow.position_geometry(stop.prompt),
         captured_at=0.0, session_id="s", gate_window_ms=None,
         gate_floor_source=None, gate_disclosure=None, gate_moved_rms_db=None,
         gate_reflection_delay_ms=None, validity_floor_hz=None,
@@ -433,6 +434,12 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     assert record["wide"] is True
     assert record["role"] == flow.POSITION_ROLE_OFFAX
     assert record["prompt"] == stop.prompt.text and record["prompt"]
+    # The bearing the stop was RESOLVED at is the bearing the record banks —
+    # ONE derivation off the pose, so a staged angle walk cannot bank a spot
+    # that disagrees with the one it asked for.
+    assert record["position_deg"] == flow.position_angle_deg(stop.prompt) == 22
+    assert record["position_axis"] == "horizontal"
+    assert record["mark_distance_m"] == flow.MARK_DISTANCE_M
 
 
 def test_announced_indexes_delegates_to_the_shipped_owner() -> None:

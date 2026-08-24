@@ -51,21 +51,30 @@ from the seam that already owns it:
       dumps/wav/*.wav                dump-ring captures (optional)
       dumps/sidecar/*.json           dump-ring sidecars, one per wav (optional)
 
-**What this module deliberately does NOT do.** No numeric microphone angle
-is recovered for any position this module reads. That is narrower than "a
-round's bundle never carries one" — :func:`~.spatial.lateral_pose_record`
-DOES stamp a signed whole-degree ``position_deg`` for a per-driver LATERAL
-walk pose, and :mod:`.evidence_packet` now publishes those bearings in its
-``lateral_poses`` block — but every view below reads the CLOUD positions
-block, built from :func:`~.spatial.cloud_position_record`, which carries a
-coarse ``role`` (``onax``/``offax``) and no angle at all. A lateral pose is
-a DIFFERENT capture from a cloud seat, not the same one with more detail,
-so a bearing is not something these views are missing: it is not a property
-a graded seat has. The campaign's ``frozen_reference.py`` carried a
-hardcoded ``index -> degrees`` table for exactly this reason; it is not
-ported. Every view here keys a position by its own stable ``position_id``
-instead (``f"{phase}_{index:02d}"``, assigned once by the walk driver and
-stable across rounds that walk the same shape).
+**What this module deliberately does NOT do.** No view below reads a numeric
+microphone angle, and since the 2026-08-24 geometry ruling that is a CHOICE
+rather than an absence: :func:`~.spatial.cloud_position_record` stamps a
+signed whole-degree ``position_deg`` on every retained cloud seat, beside the
+coarse ``role`` (``onax``/``offax``) these views do read, and
+:func:`~.spatial.lateral_pose_record` has always stamped one for a per-driver
+LATERAL walk pose. What is unchanged is the SEPARATION: a lateral pose is a
+DIFFERENT capture from a cloud seat, not the same one with more detail, and
+both count positions from the front of their own table, so a matching index
+between them is a coincidence rather than a correspondence. Every view here
+keys a position by its own stable ``position_id``
+(``f"{phase}_{index:02d}"``, assigned once by the walk driver and stable
+across rounds that walk the same shape), which is what makes a repeat or an
+agreement comparison line up the SAME prompted spot across rounds.
+
+The campaign's ``frozen_reference.py`` carried a hardcoded
+``index -> degrees`` table because the cloud record had no bearing of its own
+to read. It is still not ported, and now for a better reason: a second
+hand-maintained copy of a fact the record already carries is only a place for
+the two to drift. A view that WANTS the bearing should read ``position_deg``
+off the row — which is why ``PositionCurve.degrees`` is kept rather than
+deleted. It is ``None`` on every cloud seat built below (nothing here reads
+the row's bearing yet) and ``0.0`` on the synthesized VERIFY pose, which is
+not a recovered angle at all but what that phase MEANS.
 """
 
 from __future__ import annotations

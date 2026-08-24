@@ -565,15 +565,27 @@ from the table rather than restating it. Any narrowing therefore moves
 > household-facing control is likewise unaffected: it was never built, and
 > #1941 does not revive it.
 
-What is NOT shipped is a control that lets a household choose a spacing. Its
-home is a rung that owns the **conductor**, not this one: the conductor reads
-the module-level `CLOUD_POSITION_PROMPTS` at three sites (`_cloud_prompt`,
+What is NOT shipped is a control that lets a household choose the PRE-apply
+group's spacing. Its home is a rung that owns the **conductor**, not this
+one: the conductor still reads the module-level `CLOUD_POSITION_PROMPTS` for
+that group at three sites (`_cloud_prompt`'s pre-apply branch,
 `_prompt_shown_for`'s retry rungs, and `_close_measure_cloud_candidate`'s
-geometry rung), so a per-session table is a conductor *field* threaded through
-every construction site — a change in the same class as the eager-fit rider's
-`_close_lock`, and one that should land where the conductor's concurrency and
-lifecycle are already in hand. Until then the table is adjustable by an editor
-under the enforced floor, and not by a household.
+geometry rung), so a per-session table for THIS group is still a conductor
+*field* threaded through every construction site — a change in the same
+class as the eager-fit rider's `_close_lock`, and one that should land where
+the conductor's concurrency and lifecycle are already in hand.
+
+> **The post-apply group already has that field, since the 2026-08-24
+> geometry ruling.** `verify_prompts` threads through
+> `build_v2_verify_capture_plan`, `build_v2_verify_session_spec`, and
+> `CrossoverV2Session.__init__` (resolved once by `verify_pose_table()`,
+> where `None` means the ratified `CLOUD_VERIFY_POSE_PROMPTS`), and
+> `_cloud_prompt` reads `self._verify_prompts` instead of a module constant
+> for `PHASE_CLOUD_VERIFY`. No household-facing picker renders it — the
+> field is a caller's choice, not yet a UI control — so "adjustable by an
+> editor under the enforced floor, and not by a household" is still the
+> honest summary for both tables; only the pre-apply one remains a
+> module-level constant with no per-session override at all.
 
 **Sibling copy the reshaped walk orphans — PR-T4 owns all of it:**
 - The screen-grammar exemplar in
@@ -837,19 +849,25 @@ apply from the screen, because T3 is what makes the screen's Apply real.
 ## Traps (the review hunts these)
 
 - **The wide-offset indices are a computed input, not just copy — and a
-  reorder moves TWO numbers.** `_min_positions_for_two_wide_offsets()`
-  derives from the *index of the second `wide=True` entry* in
-  `CLOUD_POSITION_PROMPTS` (today: wide at 0-based 2, 3, 9, 10 → second
-  wide at index 3 → 5). **Both** `MIN_CLOUD_VERIFY_POSITIONS` (the
-  post-apply group's floor) and `express_cloud_measure_positions()` read
-  it, so reordering the table moves the post-apply floor as well as
-  Express's walk length. The reorder is **not silent** —
+  reorder of the pre-apply table now moves ONE number, not two.**
+  `_min_positions_for_two_wide_offsets()` derives from the *index of the
+  second `wide=True` entry* in whatever table it is handed; called with no
+  argument — as `express_cloud_measure_positions()` calls it — that table is
+  `CLOUD_POSITION_PROMPTS` (today: wide at 0-based 2, 3, 9, 10 → second wide
+  at index 3 → 5), so reordering `CLOUD_POSITION_PROMPTS` moves Express's
+  walk length. `MIN_CLOUD_VERIFY_POSITIONS` (the post-apply group's floor)
+  no longer shares that call: since the 2026-08-24 geometry ruling gave the
+  post-apply group its own pose set, it is checked against
+  `_min_positions_for_two_wide_offsets(CLOUD_VERIFY_POSE_PROMPTS)` instead —
+  a second, independent derivation over a different table. The reorder is
+  **not silent** either way —
   `test_cloud_prompts_front_load_the_wide_offsets` in
-  `tests/test_crossover_v2_conductor.py` asserts
-  `MIN_CLOUD_VERIFY_POSITIONS == derived`,
-  `express_cloud_measure_positions() == derived`, and
-  `len(express_walk) == 4`, and fails loudly on any reorder that moves
-  the second wide prompt. The hazard is not detection, it is the fix:
+  `tests/test_crossover_v2_conductor.py` now asserts
+  `MIN_CLOUD_VERIFY_POSITIONS == _min_positions_for_two_wide_offsets(flow.CLOUD_VERIFY_POSE_PROMPTS)`
+  as its own check, plus `MIN_CLOUD_MEASURE_POSITIONS >= derived` and
+  `express_cloud_measure_positions() == derived` against the pre-apply
+  table's `derived`, and fails loudly on any reorder that moves either
+  table's second wide prompt. The hazard is not detection, it is the fix:
   any reorder states the new derivation and its resulting counts in the
   PR body, and those pins must be **re-derived**, never adjusted to
   match the new output.

@@ -534,6 +534,43 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-24 (the geometry ruling: pose geometry as fields, pose sets as
+    # parameters). ONE file, and NO slack was spent — the entry below (#2925)
+    # left it at exactly its ceiling, and this branch was rebased onto #2925
+    # after it merged, so both figures below are RECOUNTED against that base
+    # rather than carried over: they are this diff's own lines on top of it, not
+    # a rebase artefact. The two deltas happen to be unchanged across the rebase
+    # (#2925 added 2 lines to this file, both far from anything here), which is
+    # a fact worth stating rather than a reason to have skipped the recount.
+    #  * `crossover_v2_flow` ceiling 13,102 -> 13,386, +284, of which 78 are
+    #    code — counted with tokenize (comments, blanks, and every string token
+    #    stripped), not eyeballed. The 78: one derived table
+    #    (`_SIDE_POSE_PROMPTS`) and the post-apply pose set it feeds
+    #    (`VERIFY_MARK_PROMPT` + `CLOUD_VERIFY_POSE_PROMPTS`), the two
+    #    import-time guards that pin `DEFAULT_CLOUD_VERIFY_POSITIONS` and
+    #    `MIN_CLOUD_VERIFY_POSITIONS` to that table, `position_geometry` and its
+    #    at-mark constant, the pose-set parameter threaded through
+    #    `verify_pose_table` / the two stage-2 builders / the session ctor /
+    #    `_cloud_prompt`, a table argument on
+    #    `_min_positions_for_two_wide_offsets` and `cloud_walk_shape`, the
+    #    length guard that refuses a shape and a pose set that disagree, and the
+    #    two call sites that hand a position's geometry to the record writer.
+    #    One check got SHORTER: `_validated_cloud_counts` stopped bounding M by
+    #    a table it can no longer see.
+    #
+    #    The other 206 are prose, and the ratio is the point rather than an
+    #    excuse: the change is small in mechanism and large in RULING. Three of
+    #    those blocks are the only place a fact now lives — why the design axis
+    #    is a MEMBER of the post-apply walk rather than only the anchor in front
+    #    of it (and what the 2026-08-18 trim gave up to pay for it), what
+    #    `offset_cm` actually measures (the misreading that produced this whole
+    #    fixlist item), and why `position_geometry` records `None` instead of
+    #    raising or guessing a zero on the two poses that command no bearing.
+    #    Two more are RE-DERIVATIONS of numbers this file already published and
+    #    that moved: the relay-index arithmetic, which now saturates its ceiling
+    #    exactly, and the post-apply floor, which is derived over a second table.
+    #    Deleting any of them would leave the number without the reason.
+    #
     # 2026-08-24 (#2925, the measurement-volume hold). Two files, +67 between
     # them, and again no slack: the #2923 entry below left both at exactly its
     # ceilings, and these figures are recounted against THOSE — this branch was
@@ -1025,7 +1062,7 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_102,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_386,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic

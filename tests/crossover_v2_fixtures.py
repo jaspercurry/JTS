@@ -1231,6 +1231,26 @@ def _dummy_program():
 # the trim's scope precisely: both are plans whose only entry is the announced
 # anchor, so a byte-identical digest says the prelude rule left the announced
 # capture alone while it took 3.6 s off every other one.
+#
+# RE-DERIVED 2026-08-24 — the geometry ruling's post-apply pose set. ONE PLAN
+# MOVED. Stage 2's walk stopped taking a prefix of ``CLOUD_POSITION_PROMPTS``
+# and took its own table, ``CLOUD_VERIFY_POSE_PROMPTS``, whose first member is
+# the DESIGN AXIS — so ``DEFAULT_CLOUD_VERIFY_POSITIONS`` went 5 → 6 and Full's
+# stage 2 gained one prompted entry. No copy changed on any pose that already
+# existed, and no duration moved.
+#
+#   stage1-full     2918 B → 2918 B  (UNCHANGED, digest included)
+#   stage1-express  1945 B → 1945 B  (UNCHANGED, digest included)
+#   stage2-full     1683 B → 1925 B  (+242; one prompted at-mark entry, plus
+#                                     five progress labels reading "of 6"
+#                                     instead of "of 5" — same digit count)
+#   stage2-express   630 B →  630 B  (UNCHANGED, digest included)
+#   1-entry          329 B →  329 B  (UNCHANGED, digest included)
+#
+# FOUR unchanged digests are the load-bearing check, and they bound the ruling's
+# scope exactly: stage 1 does not walk the post-apply table at all, and neither
+# single-entry stage-2 plan has a prompted pose to gain one — so a change that
+# reached any of them would have been a change to something it was not about.
 _GOLDEN_V2_PLAN_BYTES = {
     "stage1-full": (
         2918,
@@ -1241,10 +1261,11 @@ _GOLDEN_V2_PLAN_BYTES = {
         "74e9e4d773d5f7bfb717c7429421f098f4e89f0276a59340f32928e61826cb64",
     ),
     # Moved by #1964: Full's done_body no longer pre-commits "Verified and
-    # applied." before the first tone plays.
+    # applied." before the first tone plays. Moved again by the 2026-08-24
+    # geometry ruling: the walk gained its design-axis pose.
     "stage2-full": (
-        1683,
-        "0afe4f32026b70fbc72f0c0c799d793221cb43e88949ea1b50a45e73fae8dce6",
+        1925,
+        "485a0ab680e52625c21fda3da47a3dea0cc34e85d6c5d0a68621db08fefebdbf",
     ),
     # Moved by #1964's fix round: Express's upgrade-path phrase drops the
     # withdrawn "verified-everywhere" overclaim for the B2 wording jts.local

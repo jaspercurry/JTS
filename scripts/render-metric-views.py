@@ -42,15 +42,20 @@ This prints the same evaluation re-read without those two properties, side by
 side with the shipped one, so the difference is a number rather than an
 argument.
 
-The angle join, and why it is best-effort: the cloud does not bank a numeric
-angle on a position record — only its role. For an already-captured corpus the
+The angle join, and why it is best-effort: a cloud position record banked
+before the 2026-08-24 geometry ruling carries only its role — the ruling
+added ``position_deg`` to the writer, not to rounds already on disk, and every
+round this tool was built to re-read is one of those. For such a corpus the
 angle is recoverable from the walk driver's own log, which prints
 ``released index=N -> ... "attempt": M, "degrees": D`` for every position it
 released. This tool joins on ``(index, attempt)``, which is unique within one
 walk, and picks a receipt's walk log by requiring that log's released pairs to
 cover every pair the receipt carries. When zero or more than one log qualifies
 it declines and says so: an angle guessed from the wrong walk is worse than no
-angle, and every view already degrades to role-only without one.
+angle, and every view already degrades to role-only without one. A round
+banked SINCE the ruling needs none of this — its rows carry the bearing — and
+reading it from the row is the better path the day this tool is pointed at
+one.
 """
 from __future__ import annotations
 
