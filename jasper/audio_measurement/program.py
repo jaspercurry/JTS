@@ -1155,9 +1155,10 @@ def build_measure_program(
     this fit, a declared 4 is harmless by construction.
 
     **What the fit costs.** A fitted sweep is exactly one cycle at ``f1``
-    shorter than the overshooting one — ``ln(f2/f1)/f1``, 21.9 ms on that
-    150–4000 Hz woofer band — so it carries 10·log10(1 - 21.9/4006) ≈ 0.024 dB
-    less excitation energy. That is the whole SNR cost, and it is negligible
+    shorter than the overshooting one — ``ln(f2/f1)/f1``, 21.89 ms on that
+    150–4000 Hz woofer band, against a 4005.8 ms nominal — so it carries
+    ``-10·log10(3.983876/4.005766)`` = 0.0238 dB less excitation energy.
+    That is the whole SNR cost, and it is negligible
     against the 12 dB SNR floor the capture is graded on. A limit tight enough
     to cost real SNR is a tight DECLARATION, not this rounding, and it shows up
     as the existing ``snr_floor`` verdict rather than being hidden here. A limit

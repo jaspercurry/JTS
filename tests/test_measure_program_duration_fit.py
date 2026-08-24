@@ -237,20 +237,33 @@ def test_the_fitted_length_closes_its_phase():
     assert cycles_at_f1 == pytest.approx(round(cycles_at_f1), abs=1e-9)
 
 
-def test_the_fit_gives_up_less_than_a_hundredth_of_a_decibel_of_energy():
-    """The whole SNR cost of the fit, stated as a number rather than waved at:
-    one cycle at f1 out of a four-second sweep, against a 12 dB SNR floor."""
+def test_the_fit_gives_up_a_hundredth_of_a_decibel_of_energy():
+    """The whole SNR cost of the fit, checked rather than asserted in prose.
+
+    Every decimal ``build_measure_program``'s docstring quotes is pinned here,
+    so a future edit to either has to move both: one cycle at f1 (21.89 ms) off
+    a 4005.8 ms nominal, for 0.0238 dB less excitation energy against a 12 dB
+    SNR floor.
+    """
     import math
 
     nominal = synchronized_sweep_metadata(
-        f1=WOOFER_BAND_HZ[0], f2=WOOFER_BAND_HZ[1], duration_approx_s=4.0,
+        f1=WOOFER_BAND_HZ[0], f2=WOOFER_BAND_HZ[1],
+        duration_approx_s=DEFAULT_WOOFER_SWEEP_S,
         sample_rate=PROGRAM_SAMPLE_RATE_HZ,
     ).duration_s
     fitted = phase_closing_duration_s(
-        *WOOFER_BAND_HZ, at_or_below_s=4.0, sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        *WOOFER_BAND_HZ, at_or_below_s=DEFAULT_WOOFER_SWEEP_S,
+        sample_rate=PROGRAM_SAMPLE_RATE_HZ,
     )
+    assert nominal == pytest.approx(4.005766, abs=5e-7)
+    assert fitted == pytest.approx(3.983876, abs=5e-7)
+    # The step is exactly one cycle at f1 -- ln(f2/f1)/f1.
+    quantum_s = math.log(WOOFER_BAND_HZ[1] / WOOFER_BAND_HZ[0]) / WOOFER_BAND_HZ[0]
+    assert quantum_s == pytest.approx(0.02189, abs=5e-6)
+    assert nominal - fitted == pytest.approx(quantum_s, abs=1e-9)
     cost_db = -10.0 * math.log10(fitted / nominal)
-    assert 0.0 < cost_db < 0.03
+    assert cost_db == pytest.approx(0.0238, abs=5e-5)
 
 
 def test_the_declaration_the_research_prompt_asks_for_composes_admissibly():
