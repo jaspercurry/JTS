@@ -715,18 +715,19 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
     assert max(step["observed_db_spl"] for step in steps) < SPL_CEILING
 
 
-def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
-    """The owner's requirement, measured rather than asserted.
+def test_a_STILL_chain_is_audible_for_under_ten_seconds(tmp_path):
+    """The owner's ten-second requirement, measured -- for a chain that is STILL.
 
-    Seven readings, each two windows on a chain that answers a step at once.
-    The ambient reading before them is SILENT — nothing plays — so it is not
-    audible time at all.
+    Seven readings, each two windows on a modelled chain that answers a step at
+    once and a room with ZERO wander. That is the property this test has always
+    measured, and since #2919 the name has to say so: the ten seconds is a
+    property of a still chain, not of the pass. A room that will not hold still
+    buys windows, and the honest bound for that is in
+    ``test_a_wandering_room_buys_windows_and_audible_seconds`` below.
 
-    This is also the cost check on the #2919 stability wait: settling on
-    AGREEMENT rather than on a guessed drain leaves a still chain paying the
-    same second per reading it always paid, so the owner's ten-second budget
-    survives the honesty fix. Only a level that is genuinely still moving buys
-    more windows, which is the whole point.
+    What it still proves, and why it is worth keeping: settling on AGREEMENT
+    rather than on a guessed drain leaves a still chain paying the same second
+    per reading it always paid. The honesty fix costs the good case nothing.
     """
     result, _volume, tone, clock = _jts3_pass(tmp_path)
 
@@ -1322,6 +1323,15 @@ def test_a_non_finite_feed_cannot_defeat_the_guard(tmp_path):
 
 
 def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
+    """...and after exactly ONE window, never after the settle timeout.
+
+    Since #2919 a reading waits for two windows to AGREE, which is a wait a dead
+    feed must never be made to sit through: `seat_level_ramp.py` promises the
+    one-window exit in four places (the SETTLE_TIMEOUT_S comment, the
+    `_settle_reading` docstring, `.env.example`, `docs/testing-tooling.md`) and
+    until this assertion nothing checked it. The clock is the proof: a window is
+    MIC_WINDOW_S, the timeout is 8 s, and this refusal lands inside the former.
+    """
     volume = Volume()
     tone = BlockingTone()
 
@@ -1349,6 +1359,10 @@ def test_no_ambient_sample_at_all_refuses_before_the_tone(tmp_path):
     assert result.reason == slr.REFUSE_MIC_FEED_LOST
     assert not tone.started
     assert not volume.commanded  # the latch is opened only after ambient
+    # ONE window, and the clock says so: a dead feed does not wait out the
+    # settle timeout while the pass hopes two of its windows will agree.
+    assert clock.now() <= slr.MIC_WINDOW_S + 0.06
+    assert clock.now() < slr.SETTLE_TIMEOUT_S
 
 
 # --- convergence needs a real rise, not just an in-band number --------------
@@ -2972,14 +2986,32 @@ def test_a_runaway_refusal_names_the_floor_its_rise_was_measured_against(tmp_pat
 # model of what is moving.
 
 
+# The interval `_window_reading` sleeps between polls, which under the fake
+# clock is exactly one tick. It is what turns a chain's TIME CONSTANT into the
+# per-poll fraction the mic models below, so these fixtures can be written in
+# seconds rather than in a dimensionless step nobody can reason about.
+MIC_POLL_S = 0.05
+
+
+def _first_order_approach(tau_s: float) -> float:
+    """The per-poll fraction of the remaining gap a tau-second chain closes."""
+    return 1.0 - math.exp(-MIC_POLL_S / tau_s)
+
+
 class RisingMic(Mic):
     """A chain whose level CLIMBS toward its answer instead of onto it.
 
-    A first-order approach in dB: each poll closes ``approach`` of the remaining
-    gap, so the rise is steep at first and shallow later. That shape is what
-    makes a fixed-length window's answer depend on WHEN it looked -- the defect
-    -- and it is also what a stability test terminates on, since consecutive
-    windows converge as the level does.
+    A first-order approach in dB with time constant ``tau_s``: the rise is steep
+    at first and shallow later. That shape is what makes a fixed-length window's
+    answer depend on WHEN it looked -- the defect -- and it is also what a
+    stability test terminates on, since consecutive windows converge as the
+    level does.
+
+    ``tau_s`` is the axis the residual is a function of, which is why it is the
+    constructor argument: settling stops once consecutive medians move less than
+    the agreement bar per window, and what is LEFT to travel at that moment is
+    that rate times tau -- so ``residual ~= (agree_db / MIC_WINDOW_S) * tau_s``,
+    unbounded in tau. The tests below walk that axis.
 
     Deliberately a MODEL of the measured shape and not a replay: #2919's
     mechanism is unnamed, so nothing here claims to be it. What is reproduced is
@@ -2987,10 +3019,15 @@ class RisingMic(Mic):
     retired settle stopped listening.
     """
 
-    def __init__(self, *args, approach: float = 0.06, **kwargs) -> None:
+    def __init__(self, *args, tau_s: float = 0.81, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.approach = approach
+        self.tau_s = tau_s
+        self.approach = _first_order_approach(tau_s)
         self._current: float | None = None
+
+    def residual_db(self, agree_db: float = slr.SETTLED_AGREE_DB) -> float:
+        """What the settle is expected to leave on the table for this chain."""
+        return (agree_db / slr.MIC_WINDOW_S) * self.tau_s
 
     def arrived_db_spl(self, at_volume_db: float) -> float:
         """Where this chain ends up once it has finished climbing."""
@@ -3065,7 +3102,7 @@ def test_a_level_still_climbing_is_not_banked_until_it_stops_moving(tmp_path):
     # -- and the control below shows the retired shape missing by multiples of it.
     assert result.reference_volume_db is not None
     arrived = mic.arrived_db_spl(result.reference_volume_db)
-    assert result.measured_db_spl == pytest.approx(arrived, abs=1.0)
+    assert result.measured_db_spl == pytest.approx(arrived, abs=mic.residual_db())
     assert TARGET.low_db_spl <= result.measured_db_spl <= TARGET.high_db_spl
 
 
@@ -3093,6 +3130,145 @@ def test_the_retired_fixed_settle_banks_a_level_that_never_arrived(tmp_path):
     arrived = mic.arrived_db_spl(result.reference_volume_db)
     # Under-read, in the direction and the order of magnitude the bench measured.
     assert arrived - banked > 2.0, (banked, arrived)
+
+
+def _slow_feed(tau_s: float, *, step_db: float = 20.0, from_db_spl: float = 45.0):
+    """A first-order feed and the asymptote it is climbing toward, in dB SPL."""
+    start = UMIK2.dbfs_from_db_spl(from_db_spl)
+    end = start + step_db
+    state = {"level": start}
+    approach = _first_order_approach(tau_s)
+
+    async def _samples():
+        state["level"] += (end - state["level"]) * approach
+        rms = state["level"]
+        return [
+            LevelSample(
+                seq=1,
+                t_client_ms=0,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+    return _samples, UMIK2.db_spl_from_dbfs(end)
+
+
+def _settle(samples, *, clock, **kwargs):
+    return asyncio.run(
+        slr._settle_reading(
+            samples,
+            sensitivity=UMIK2,
+            spl_ceiling_db_spl=SPL_CEILING,
+            clock=clock.now,
+            sleep=clock.sleep,
+            session_id="test",
+            window="probe",
+            **kwargs,
+        )
+    )
+
+
+def test_the_residual_scales_with_the_chains_own_time_constant(tmp_path):
+    """What agreement bounds is a RATE, so the residual grows without limit.
+
+    Settling stops once consecutive medians move less than the agreement bar per
+    window; what the level has LEFT to travel then is that rate times the
+    chain's time constant. So ``residual ~= (agree_db / MIC_WINDOW_S) * tau`` --
+    about 1 dB per second of tau at the shipped values, and UNBOUNDED in tau.
+
+    Walked as an AXIS rather than pinned at one point, because the module
+    docstring, ``.env.example`` and ``docs/testing-tooling.md`` all state the
+    formula now, and a single fast-end sample would let every one of them drift.
+    Measured here (2026-08-24): tau 0.81 s banks 0.42 dB low, tau 3 s banks
+    2.67 dB low, tau 5 s banks 4.59 dB low. tau = 3 s is inside the range
+    ``SETTLE_TIMEOUT_S``'s own comment says the default covers, so that is an
+    operating region and not a corner -- and its 2.67 dB is the size and the
+    DIRECTION of the very defect #2919 closes. What the fix buys is still large
+    and still real: the jts3 chain this was built for arrives in about 0.9 s,
+    the fast end of this table, against the ~5 dB the fixed settle banked. But
+    "a fraction of a dB" was wrong, everywhere it was written.
+
+    The formula is an UPPER bound, not an estimate: it assumes the settle lands
+    exactly where the rate crosses the bar, while discrete windows always
+    overshoot into a slower one. It is ~2x conservative at the fast end and
+    tightens as tau grows -- asserted both ways below, so neither "the bound
+    holds" nor "the bound is not vacuous" can rot.
+    """
+    measured: list[tuple[float, float, float]] = []
+    for index, tau_s in enumerate((0.81, 3.0, 5.0)):
+        volume, tone, mic = _rising_rig(
+            gain_db=gain_for_seat_spl(80.0, at_volume_db=CEILING_DB),
+            ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+            tau_s=tau_s,
+        )
+        result = asyncio.run(
+            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path / str(index))
+        )
+        assert result.status == "converged", (tau_s, result.reason, result.detail)
+        under_read = (
+            mic.arrived_db_spl(result.reference_volume_db) - result.measured_db_spl
+        )
+        measured.append((tau_s, under_read, mic.residual_db()))
+
+    for tau_s, under_read, bound in measured:
+        # Always an UNDER-read -- the level is still climbing when the windows
+        # agree -- and always inside the formula's bound.
+        assert 0.0 < under_read <= bound, (tau_s, under_read, bound)
+    # It GROWS with tau rather than sitting at some fixed floor: 6x the time
+    # constant is about 6x the error, which is the whole claim.
+    assert [round(u, 2) for _t, u, _b in measured] == sorted(
+        round(u, 2) for _t, u, _b in measured
+    )
+    assert measured[-1][1] > 4.0
+    # ...and the bound is not vacuous at the slow end, where it matters.
+    assert measured[-1][1] / measured[-1][2] > 0.8
+
+
+def test_a_low_window_count_is_not_evidence_of_stillness(tmp_path):
+    """``windows == 2`` has two causes, and they are opposite.
+
+    Either the level was genuinely still, or it was moving so slowly that
+    consecutive medians never differed by the agreement bar at all. The second
+    reads MOST reassuring exactly where the banked level is furthest out, which
+    is why the receipt's ``windows`` is documented as this chain's answer time
+    and never as a confidence score.
+    """
+    clock = FakeClock()
+    samples, asymptote = _slow_feed(tau_s=30.0)
+    reading = _settle(samples, clock=clock)
+
+    # The minimum count -- the same number a perfectly still level produces.
+    assert reading.windows == 2
+    assert reading.refusal is None
+    # ...and it is nearly the whole 20 dB step short of where the level is going.
+    under_read = asymptote - UMIK2.db_spl_from_dbfs(reading.rms_dbfs)
+    assert under_read > 19.0
+    # The formula says so too, and would have said so before the measurement.
+    assert (slr.SETTLED_AGREE_DB / slr.MIC_WINDOW_S) * 30.0 > under_read
+
+
+def test_raising_the_settle_timeout_can_convert_a_refusal_into_an_under_read(tmp_path):
+    """The honest cost of the escape hatch, pinned so the knob's prose cannot lie.
+
+    A longer wait does not make a slow chain settle any truer. The same feed
+    that REFUSES at the shipped timeout -- the honest answer, and the one an
+    operator can act on -- settles at a longer one and banks a number several dB
+    under where the level was going, silently. ``.env.example`` says this at the
+    knob; this is what makes that sentence checkable.
+    """
+    samples, asymptote = _slow_feed(tau_s=10.0)
+    refused = _settle(samples, clock=FakeClock())
+    assert refused.refusal == slr.REFUSE_LEVEL_UNSETTLED
+    assert refused.rms_dbfs is None
+
+    samples, asymptote = _slow_feed(tau_s=10.0)
+    banked = _settle(samples, clock=FakeClock(), timeout_s=3 * slr.SETTLE_TIMEOUT_S)
+    assert banked.refusal is None
+    under_read = asymptote - UMIK2.db_spl_from_dbfs(banked.rms_dbfs)
+    assert under_read > 5.0, under_read
 
 
 def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
@@ -3233,7 +3409,7 @@ def test_the_commissioning_stop_still_fires_on_a_sample_taken_mid_wait(tmp_path)
         # on to the next volume.
         gain_db=gain_for_seat_spl(95.0, at_volume_db=slr.SEAT_LEVEL_START_DB),
         ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
-        approach=0.02,
+        tau_s=2.5,
     )
     result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
 
@@ -3286,3 +3462,152 @@ def test_the_settle_knobs_are_read_from_the_environment(tmp_path, monkeypatch):
 
     assert result.ramp["settle_agree_db"] == pytest.approx(slr.SETTLED_AGREE_DB)
     assert result.ramp["settle_timeout_s"] == pytest.approx(slr.SETTLE_TIMEOUT_S)
+
+
+class AccountingTone(ReplayableTone):
+    """Totals audible seconds across EVERY play/stop pair, not just the first.
+
+    ``StampingTone`` keeps the FIRST cancel and the LAST play, so a pass that
+    stopped the tone for a silent re-measure and started it again reports a
+    nonsense span -- negative, in the runs that produced these numbers. A
+    question about audible exposure needs an instrument that survives the
+    re-measure, so this one accumulates.
+    """
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__()
+        self._clock = clock
+        self._started_at: float | None = None
+        self.audible_s = 0.0
+
+    async def play(self) -> None:
+        self._started_at = self._clock.now()
+        await super().play()
+
+    def cancel(self) -> None:
+        if self.playing and self._started_at is not None:
+            self.audible_s += self._clock.now() - self._started_at
+            self._started_at = None
+        super().cancel()
+
+
+class WanderingRoomMic(Mic):
+    """The jts3 chain in a room that will not hold perfectly still.
+
+    Deterministic rather than random -- a fixed sinusoid on top of the modelled
+    level, so the window counts are reproducible. Real rooms wander; the point
+    is that ANY wander at the agreement bar's scale costs windows, because two
+    consecutive medians have to land within it before a reading may be banked.
+    """
+
+    def __init__(self, *args, wander_db: float = 2.0, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.wander_db = wander_db
+        self._n = 0
+
+    def _rms_dbfs(self) -> float:
+        base = super()._rms_dbfs()
+        self._n += 1
+        return base + self.wander_db * math.sin(self._n * 0.9)
+
+
+def test_the_dead_mic_walks_audible_seconds_are_what_the_docstring_says(tmp_path):
+    """``mic_is_not_observing`` quotes 9.16 s; here is the model that produces it.
+
+    The number is a MODEL -- a synthetic mic on the jts3 rig, as its docstring
+    says -- but it is a stated decimal, and a stated decimal that nothing
+    re-derives is the kind of claim that rots quietly. #2919 already moved it
+    once (8.86 -> 9.16, the fake clock's polling granularity landing differently
+    across two ``MIC_WINDOW_S`` deadlines than one of twice the length); this is
+    what makes the next move visible instead of silent.
+    """
+    clock = FakeClock()
+    volume = Volume()
+    tone = StampingTone(clock)
+    mic = Mic(volume, tone, deaf=True, ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0))
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=JTS3_CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert result.restored is True
+    steps = result.ramp["steps"]
+    assert len(steps) == 8
+    assert [step["windows"] for step in steps] == [2] * 8
+    assert max(step["volume_db"] for step in steps) == pytest.approx(JTS3_CEILING_DB)
+    assert tone.cancelled_at is not None and tone.started_at is not None
+    assert tone.cancelled_at - tone.started_at == pytest.approx(9.16, abs=0.1)
+
+
+def test_a_wandering_room_buys_windows_and_audible_seconds(tmp_path):
+    """The honest audible bound, since the ten-second one is a still chain's.
+
+    A room that wanders at the agreement bar's own scale cannot produce two
+    consecutive agreeing medians quickly, so readings buy windows and the tone
+    plays longer. Measured on the jts3 rig (2026-08-24): zero wander 7.0 s,
+    +/-1 dB 11.3 s, +/-2 dB 22.8 s, +/-3 dB 25.5 s of audible tone -- all
+    CONVERGED, none refused.
+
+    What bounds it is not the wander but the structure: the walk takes at most
+    ``1 + ceil(1 / BITE_FRACTION) + MAX_MISSED_FULL_STEPS`` = 10 readings
+    whatever the span, and no reading outlives ``SETTLE_TIMEOUT_S``, so audible
+    time is at most about ten timeouts -- ~80 s shipped. That is duration, not
+    level: every sample is still checked against the commissioning stop, so the
+    thing that grew is how long a measurement takes, not how loud it gets.
+    """
+    clock = FakeClock()
+    volume = Volume()
+    tone = AccountingTone(clock)
+    mic = WanderingRoomMic(
+        volume,
+        tone,
+        gain_db=JTS3_GAIN_DB,
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(JTS3_AMBIENT_DB_SPL),
+        wander_db=2.0,
+    )
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=JTS3_TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=JTS3_CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+
+    assert result.status == "converged", (result.reason, result.detail)
+    windows = [step["windows"] for step in result.ramp["steps"]]
+    # It really did buy windows -- otherwise this test is measuring the still
+    # chain again under a different name.
+    assert max(windows) > 2, windows
+    # Well past the still chain's ten seconds...
+    assert tone.audible_s > 10.0
+    # ...and inside the structural bound the prose states, which is what an
+    # operator is owed. Ten readings, none outliving the settle timeout.
+    max_readings = 1 + math.ceil(1 / slr.BITE_FRACTION) + slr.MAX_MISSED_FULL_STEPS
+    assert max_readings == 10
+    assert tone.audible_s < max_readings * slr.SETTLE_TIMEOUT_S
+    # Duration grew; LEVEL did not. Every reading stayed under the stop.
+    assert max(step["observed_db_spl"] for step in result.ramp["steps"]) < SPL_CEILING

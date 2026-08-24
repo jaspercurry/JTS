@@ -193,9 +193,17 @@ MIC_WINDOW_S = 0.5
 # The number is sized against the room's own wander at a settled step: on jts3
 # (2026-08-24) a converged window varied 0.42 dB across its thirds while a
 # window that was still climbing moved 6.03 dB, so 0.5 dB separates the two by
-# an order of magnitude. It bounds what banking can miss, too — a reading is
-# banked once consecutive medians move less than this per :data:`MIC_WINDOW_S`,
-# i.e. once the level is moving slower than 1 dB/s.
+# an order of magnitude.
+#
+# **It bounds a RATE, not a distance, and that is the residual.** A reading is
+# banked once consecutive medians move less than this per :data:`MIC_WINDOW_S`
+# — at the shipped values, once the level is moving slower than 1 dB/s (the
+# knob below reaches 6 dB/s at its maximum). What the level has LEFT to travel
+# at that moment is that rate times the chain's own time constant, so the
+# banked level can sit ``(agree_db / MIC_WINDOW_S) x tau`` under the level that
+# eventually arrives — about 1 dB per second of tau at the shipped values, and
+# unbounded in tau. :func:`_settle_reading` states the consequence and the
+# measurements; this is the number that sets its scale.
 #
 # A deploy-time knob for the same reason :data:`MIC_RESPONSE_MIN_RISE_DB` is
 # one: how still a room actually sits is a property only hardware knows, and a
@@ -211,14 +219,29 @@ SETTLED_AGREE_DB = 0.5
 #
 # Generous on purpose — the default covers a chain settling with a time
 # constant of about three seconds, which is well past anything jts3's climb
-# showed — because the cost of being too tight is refusing a healthy chain,
-# while the cost of being generous is audible seconds on a feed that is already
-# broken. A dead feed does NOT wait this out: a window with no finite sample in
-# it is :data:`REFUSE_MIC_FEED_LOST` after one window.
+# showed — because the cost of being too tight is refusing a healthy chain.
+# A dead feed does NOT wait this out: a window with no finite sample in it is
+# :data:`REFUSE_MIC_FEED_LOST` after one window.
+#
+# **This number sets the pass's audible worst case, and a HEALTHY pass can pay
+# it.** Agreement is tested before the timeout, so a window landing at the bound
+# still settles: a chain that keeps disagreeing and then agrees just under the
+# bar spends the whole timeout on a reading that CONVERGES. The walk takes at
+# most ``1 + ceil(1 / BITE_FRACTION) + MAX_MISSED_FULL_STEPS`` = 10 readings
+# whatever the span, so audible time is bounded by about ``10 x
+# SETTLE_TIMEOUT_S`` — ~80 s at the default, ~300 s at the knob's maximum, and
+# the silent re-measure adds none of it. Measured on a synthetic
+# adversarial-but-converging chain (2026-08-24): 53.6 s audible at the default
+# and 207.8 s at the maximum, status ``converged``, zero refusals. Not a
+# hearing hazard — every sample is still under the commissioning stop, and the
+# doctrine's nanny test says a bound that names no damage mechanism does not
+# earn a gate — but it is not "only a broken pass pays this" either, which is
+# why the number is stated rather than left to be discovered.
 #
 # Env-overridable so an operator whose chain settles slower than this has a way
 # forward that is not a redeploy; bounded so the knob cannot turn a leveling
-# pass into an unbounded tone.
+# pass into an unbounded tone. Raising it is not free in the other direction
+# either — see :func:`_settle_reading` on what a longer wait banks.
 SETTLE_TIMEOUT_S = 8.0
 
 # The quiet floor the climb starts from. Deliberately low and deliberately
@@ -456,6 +479,14 @@ class _WindowTrace:
     ``trip`` is the sample that STOPPED the window, recorded outside that cap;
     it is ``None`` for a window that ended on its own deadline and for a clipped
     capture, whose level is meaningless by definition.
+
+    **Not only a sample-domain stop publishes one of these.** Every refusal
+    carrying a reading attaches its last window as ``ramp.stopped_window`` /
+    ``stopped_window_*``, and since #2919 that includes
+    :data:`REFUSE_LEVEL_UNSETTLED` — a reading whose windows never agreed. Its
+    window has ``trip`` ``None`` and ended on its own deadline, so the thing to
+    read there is the median against the medians the refusal's own prose names,
+    not a trip that does not exist.
     """
 
     samples: tuple[tuple[float, float], ...]
@@ -493,7 +524,11 @@ class _WindowTrace:
 
 
 def _window_event_fields(summary: dict[str, Any]) -> dict[str, Any]:
-    """An aborted window's facts as ``stopped_window_*`` fields on a refusal event.
+    """A refusal's last window as ``stopped_window_*`` fields on its event line.
+
+    "The window it stopped in", which is an abandoned one for a sample-domain
+    stop and a completed-but-disagreeing one for
+    :data:`REFUSE_LEVEL_UNSETTLED` — the latter has no ``trip``.
 
     ``stopped_window_``, not ``window_``: ``seat_level_start`` already emits
     ``window_dbfs`` for the TARGET BAND converted to mic dBFS, which is a
@@ -506,7 +541,14 @@ def _window_event_fields(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _window_phrase(summary: dict[str, Any]) -> str:
-    """One sentence of an aborted window, for the operator's own terminal.
+    """One sentence of a refusal's last window, for the operator's own terminal.
+
+    Every refusal that got as far as a reading has one, so the ``trip`` clause
+    is conditional rather than assumed: a sample-domain stop abandoned its
+    window and names the sample that ended it, while
+    :data:`REFUSE_LEVEL_UNSETTLED`'s window ran to its own deadline and has no
+    trip to name — there the median is the whole content, read against the two
+    medians the refusal's own detail already quotes.
 
     Empty for a window that saw no finite sample: the refusal that produces one
     (:data:`REFUSE_MIC_FEED_LOST`) already says exactly that in words, and
@@ -674,13 +716,15 @@ async def _settle_reading(
 ) -> _Reading:
     """Read windows until two consecutive ones agree, and return the later one.
 
-    Two of the three numbers behind "settled" are parameters and the third is
-    not, and the asymmetry is the domain's: ``agree_db`` and ``timeout_s`` are
-    run-scoped and operator-overridable, resolved once in
+    Two of the three numbers behind "settled" reach here as parameters and the
+    third does not, and the asymmetry is the domain's: ``agree_db`` and
+    ``timeout_s`` are run-scoped and operator-overridable, resolved once in
     :func:`run_seat_level_ramp` so one pass has one answer, while
-    :data:`MIC_WINDOW_S` is a fixed property of the meter with no override path
-    — so it is read here rather than threaded, and the receipt can publish it
-    without a second writer to drift against.
+    :data:`MIC_WINDOW_S` is a fixed property of the meter with no override path.
+    This function is where that constant is APPLIED — it is read here and handed
+    to :func:`_window_reading`, which stays a pure function of the length it is
+    given — so the receipt's ``settle_window_s`` has exactly one value to
+    publish and no second writer to drift against.
 
     **The instrument's own stability is what "settled" means here.** There is no
     lag model and no drained transport delay: a window taken while the level is
@@ -706,17 +750,39 @@ async def _settle_reading(
       "two consecutive windows agree" cannot be answered with fewer.
 
     **What agreement does not buy, because the difference is the residual.**
-    Two windows can agree while a level is still going somewhere: a chain whose
-    climb pauses, or a room that wanders back through its own median. What is
-    bounded is the RATE — banking happens only once consecutive medians move
-    less than ``agree_db`` per window — so what is still missed is that rate
-    times whatever the level has left to travel. On a first-order chain that is
-    a fraction of a dB; on one that stalls and resumes it is not bounded here at
-    all. Narrowing it further would need a model of what is moving, which is
-    exactly what this pass does not have and (per #2919) does not need to fix
-    the defect. The tell is published instead: ``windows`` on every step of the
-    receipt, so a reading that settled in two on a chain whose neighbours took
-    five is visible rather than silent.
+    What is bounded is the RATE, never the remaining distance: banking happens
+    once consecutive medians move less than ``agree_db`` per window, and what
+    the level has LEFT to travel at that moment is that rate times the chain's
+    own time constant. So::
+
+        residual ~= (agree_db / MIC_WINDOW_S) x tau
+
+    — about **1 dB per second of tau** at the shipped values, and **unbounded in
+    tau**. Measured end-to-end on the synthetic first-order rig in
+    ``tests/test_active_speaker_seat_level.py`` (2026-08-24, defaults): tau =
+    0.81 s banks 0.42 dB low, tau = 3 s banks 2.67 dB low, tau = 5 s banks
+    4.59 dB low. That last one is the size and the DIRECTION of the very defect
+    #2919 closes, and tau = 3 s is inside the range :data:`SETTLE_TIMEOUT_S`
+    says it covers — so this is a real operating region, not a corner. What the
+    fix buys is still large and still real: the jts3 chain this was built for
+    arrives in about 0.9 s, where the residual is a few tenths of a dB against
+    the ~5 dB the fixed settle banked.
+
+    **A LOW window count is not evidence of stillness.** ``windows == 2`` has
+    two causes and they are opposite: a level that was genuinely still, and a
+    level moving so slowly that consecutive medians never differ by
+    ``agree_db`` at all. The second reads most reassuring exactly where the
+    error is largest — measured on the same rig, a tau = 30 s approach settles
+    in the minimum two windows while banking **19.46 dB** low. Read ``windows``
+    as this chain's answer time, never as a confidence score, and read it
+    against its neighbours: a climb whose readings take 2, 5, 8, 8 windows is
+    describing a chain, while a slow chain that reports 2 everywhere is
+    describing the bar.
+
+    Narrowing the residual would need a model of what is moving — the thing
+    this pass deliberately does not have, and (per #2919) does not need in
+    order to delete a wrong one. What it owes instead is disclosure, which is
+    ``windows`` on every step of the receipt plus this paragraph.
     """
     started = clock()
     previous: float | None = None
@@ -829,18 +895,26 @@ def _watchdog_seconds(
     (:func:`_remeasure_silence`) — each priced at ``settle_timeout_s``, the most
     one reading can spend — plus :data:`WATCHDOG_SLACK_S`.
 
-    That price is deliberately loose, and by how much is worth stating: a
-    settled reading normally costs two windows (about a second), and the FIRST
-    reading that spends its whole timeout refuses the pass, so no run can
-    actually spend the budget this prices. Pricing the ceiling anyway is what
-    keeps the backstop from firing BEFORE the honest per-reading refusal does,
-    which is the retired kernel's mistake in the other direction.
+    **The budget is substantially reachable, and that is why it is priced this
+    way.** A settled reading normally costs two windows, about a second — but
+    agreement is tested BEFORE the timeout, so a window landing at the bound
+    settles rather than refusing, and a chain that keeps disagreeing until just
+    under the bar spends the whole timeout on a reading that CONVERGES. On a
+    synthetic adversarial-but-converging chain (2026-08-24) seven consecutive
+    readings each spent about 7.5 s of the 8 s timeout: 53.6 s audible, status
+    ``converged``, zero refusals. A budget priced at "a second a reading" would
+    have fired the backstop on that healthy pass and reported
+    ``seat_level_watchdog_expired`` — a slug that names nothing — instead of
+    letting it finish. Pricing the ceiling is what keeps this a backstop against
+    a wedged awaitable rather than a governor on the walk's shape.
 
     Scope, because the budget is wider than the thing it guards: the ambient read
     happens BEFORE the timeout scope opens (its result is what the pass logs and
     what the guards read), so this budget covers the tone-playing walk only. The
-    ambient window is priced in anyway, which makes the budget generous by one
-    reading rather than tight by one — the safe direction for a backstop. A feed
+    reading count here is exactly what the walk can spend inside that scope —
+    :func:`_walk_to_the_band`'s own ``max_readings`` plus the one silent
+    re-measure — so the margin is :data:`WATCHDOG_SLACK_S` and nothing else; the
+    leading ``1`` is the reading at the START volume, not the ambient one. A feed
     that never returns during the ambient read is not bounded here — nothing has
     been mutated at that point (no tone, no latch, fader unmoved) and the
     operator's interrupt is the stop. Priced against the ACTUAL start and the
@@ -1365,7 +1439,14 @@ async def _remeasure_silence(
 
     The fader is left exactly where the climb had it: the tone is off, so the
     speaker is silent whatever the volume says, and moving it would mean two
-    more writes to reconcile on a path whose whole job is to observe.
+    more writes to reconcile on a path whose whole job is to observe. The cost
+    of that choice is that both edges here are ABRUPT — the stimulus stops and
+    restarts at a measurement level with no fade, unlike the pass's own
+    end-of-run :func:`_fade_and_stop` — and #2919's settle lengthens the silence
+    they bracket from a fixed second to as much as ``settle_timeout_s``. That is
+    pre-existing behaviour and not a hearing-safety question (every sample is
+    still under the commissioning stop), but it is a real one:
+    https://github.com/jaspercurry/JTS/issues/2929.
 
     Returns the reading and the tone future the caller must now hold, because the
     old one is finished once its player has been cancelled and the caller's own
@@ -1633,9 +1714,13 @@ async def _walk_to_the_band(
                 "gap_db": round(gap_db, 2),
                 "samples": reading.samples,
                 # How many windows this reading needed before two of them
-                # agreed. Two means the level was already still when the pass
-                # looked; more is this chain's own settling time, measured
-                # every run instead of guessed once (#2919).
+                # agreed — this chain's own answer time, measured every run
+                # instead of guessed once (#2919). NOT a confidence score:
+                # `windows == 2` means EITHER the level was already still OR it
+                # was moving too slowly to be caught at the agreement bar, and
+                # the second case is where the banked level is furthest out
+                # (see `_settle_reading` on the residual). Read it against its
+                # neighbours, not on its own.
                 "windows": reading.windows,
             })
             log_event(
