@@ -587,26 +587,30 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     below its own ceiling. This prices the readings the pass really takes.
     """
     seconds = slr._watchdog_seconds(start_db=-50.0, ceiling_db=-6.8)
-    # Any span is ceil(1 / BITE_FRACTION) bites; plus the first reading and the
-    # two allowed misses, that is a fixed reading count of (settle + window),
-    # the ambient window, and the slack.
-    per_reading = 2 * slr.MIC_SETTLE_S
+    # Any span is ceil(1 / BITE_FRACTION) bites; plus the ambient reading and
+    # the two allowed misses, that is a fixed reading count -- each priced at
+    # the MOST one reading can spend, which since #2919 is the settle timeout
+    # rather than a fixed drain-plus-window.
     bites = math.ceil(1 / slr.BITE_FRACTION)
+    readings = 1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.REMEASURE_READINGS
     assert seconds == pytest.approx(
-        slr.MIC_SETTLE_S
-        + (1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.REMEASURE_WINDOWS)
-        * per_reading
-        + slr.WATCHDOG_SLACK_S
+        readings * slr.SETTLE_TIMEOUT_S + slr.WATCHDOG_SLACK_S
     )
     # The silent re-measure is PRICED, not absorbed by the slack: a budget that
-    # leaned on slack for a window the pass can deliberately spend would be the
+    # leaned on slack for a reading the pass can deliberately spend would be the
     # retired kernel's mistake in miniature.
-    assert slr.REMEASURE_WINDOWS == 1
+    assert slr.REMEASURE_READINGS == 1
     # ...and because the bite scales with the span, the budget is the SAME for a
     # wider one: the bite count is what the watchdog prices, and it is fixed.
     assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) == pytest.approx(
         seconds
     )
+    # The budget FOLLOWS the settle timeout, so an operator who widens it does
+    # not get the backstop firing before the honest per-reading refusal can --
+    # which is the failure the retired kernel had in the other direction.
+    assert slr._watchdog_seconds(
+        start_db=-50.0, ceiling_db=-6.8, settle_timeout_s=2 * slr.SETTLE_TIMEOUT_S
+    ) == pytest.approx(seconds + readings * slr.SETTLE_TIMEOUT_S)
 
 
 # --- the incident: a 61 dB SPL room, a 75 dB SPL target ---------------------
@@ -714,21 +718,30 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
 def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
     """The owner's requirement, measured rather than asserted.
 
-    Seven readings at one mic-settle drain plus one median window each. The
-    ambient window before it is SILENT — nothing plays — so it is not audible
-    time at all.
+    Seven readings, each two windows on a chain that answers a step at once.
+    The ambient reading before them is SILENT — nothing plays — so it is not
+    audible time at all.
+
+    This is also the cost check on the #2919 stability wait: settling on
+    AGREEMENT rather than on a guessed drain leaves a still chain paying the
+    same second per reading it always paid, so the owner's ten-second budget
+    survives the honesty fix. Only a level that is genuinely still moving buys
+    more windows, which is the whole point.
     """
-    _result, _volume, tone, clock = _jts3_pass(tmp_path)
+    result, _volume, tone, clock = _jts3_pass(tmp_path)
 
     assert tone.started_at is not None and tone.cancelled_at is not None
     audible_s = tone.cancelled_at - tone.started_at
     assert audible_s < 10.0
+    # This modelled chain answers a step instantly, so every reading settles in
+    # the minimum TWO windows -- asserted off the receipt rather than assumed.
+    assert [step["windows"] for step in result.ramp["steps"]] == [2] * 7
     # Seven readings account for it, plus the fade-before-tone-kill that follows
     # the last one -- which is audible time as well, and is bounded by the fade's
     # own step size.
-    readings_s = 7 * (2 * slr.MIC_SETTLE_S)
+    readings_s = 7 * (2 * slr.MIC_WINDOW_S)
     fade_s = (abs(-12.0 - slr.FADE_FLOOR_DB) / slr.FADE_STEP_DB) * slr.FADE_STEP_S
-    assert readings_s <= audible_s <= readings_s + fade_s + slr.MIC_SETTLE_S
+    assert readings_s <= audible_s <= readings_s + fade_s + slr.MIC_WINDOW_S
 
 
 def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
@@ -2338,7 +2351,11 @@ def test_the_per_sample_series_is_one_debug_line_per_window(tmp_path, caplog):
     """The rising edge, reconstructable without new tooling -- and bounded.
 
     One line per WINDOW, values joined. One line per SAMPLE would be journal
-    spam at ~24 samples a window and eight windows a pass.
+    spam at ~12 samples a window and a dozen-plus windows a pass.
+
+    Since #2919 a reading is SEVERAL windows -- as many as it takes for two of
+    them to agree -- so the count is the settle's own published window counts,
+    and ``attempt=`` is what orders them inside one reading.
     """
     with caplog.at_level(logging.DEBUG, logger=slr.logger.name):
         result = _bench_run(
@@ -2353,10 +2370,18 @@ def test_the_per_sample_series_is_one_debug_line_per_window(tmp_path, caplog):
         if "event=active_speaker.seat_level_window_samples" in record.getMessage()
     ]
 
-    # The ambient window plus one per reading, and not one more.
-    assert len(lines) == 1 + len(result.ramp["steps"])
-    assert sum("window=ambient" in line for line in lines) == 1
-    assert sum("window=-50.00" in line for line in lines) == 1
+    # Every window of every reading and not one more: the ambient reading (a
+    # still room, so the minimum two) plus each climb reading's own count.
+    windows = [step["windows"] for step in result.ramp["steps"]]
+    assert windows == [2] * len(windows), "this fixture's levels never move"
+    assert len(lines) == 2 + sum(windows)
+    assert sum("window=ambient" in line for line in lines) == 2
+    assert sum("window=-50.00" in line for line in lines) == 2
+    # ...and the two windows of one reading are told apart by their attempt.
+    at_start = [line for line in lines if "window=-50.00" in line]
+    assert sorted(
+        int(line.split(" attempt=")[1].split(" ")[0]) for line in at_start
+    ) == [1, 2]
     assert all("\n" not in line for line in lines)
     # Each line carries its own samples as offset:level pairs, and the count it
     # claims is the count it printed.
@@ -2523,7 +2548,7 @@ def test_the_room_is_re_measured_at_most_once(tmp_path):
     assert result.status == "refused"
     assert result.ramp["ambient_remeasured"] is True
     assert tone.plays == 2, "one re-measure, so exactly one replay"
-    assert slr.REMEASURE_WINDOWS == 1
+    assert slr.REMEASURE_READINGS == 1
 
 
 def test_an_honest_ambient_is_never_re_measured(tmp_path):
@@ -2924,3 +2949,334 @@ def test_a_runaway_refusal_names_the_floor_its_rise_was_measured_against(tmp_pat
     assert result.ramp["ambient_remeasured"] is True
     assert f"above the {RUN87_TRUE_ROOM_DB_SPL:.1f} dB SPL room" in (result.detail or "")
     assert f"{RUN87_AMBIENT_DB_SPL:.1f} dB SPL room" not in (result.detail or "")
+
+
+# --- defect 3: a fixed settle banked a level that was still climbing --------
+#
+# jts3, 2026-08-24 (issue #2919). The pass waited a guessed half-second, took a
+# median, and banked it -- however hard the level was still moving. Instrumented
+# per-window rise (the window's last third minus its first third) at equal
+# 7.5 dB commanded steps: -35.00 -> -0.42 dB, -27.50 -> +1.51, -20.00 -> +2.70,
+# -12.50 -> +6.03. The top step's last four samples were its highest four, and
+# three independent runs agree the level ARRIVING at -12.50 dB commanded was
+# about 79-80 dB SPL. Ambient masking and a fixed-time-constant volume ramp were
+# both ruled out by measurement and the mechanism was never named -- which is
+# the shape of the fix: settling on the instrument's own STABILITY needs no
+# model of what is moving.
+
+
+class RisingMic(Mic):
+    """A chain whose level CLIMBS toward its answer instead of onto it.
+
+    A first-order approach in dB: each poll closes ``approach`` of the remaining
+    gap, so the rise is steep at first and shallow later. That shape is what
+    makes a fixed-length window's answer depend on WHEN it looked -- the defect
+    -- and it is also what a stability test terminates on, since consecutive
+    windows converge as the level does.
+
+    Deliberately a MODEL of the measured shape and not a replay: #2919's
+    mechanism is unnamed, so nothing here claims to be it. What is reproduced is
+    the one property that matters -- a level still moving at the moment the
+    retired settle stopped listening.
+    """
+
+    def __init__(self, *args, approach: float = 0.06, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.approach = approach
+        self._current: float | None = None
+
+    def arrived_db_spl(self, at_volume_db: float) -> float:
+        """Where this chain ends up once it has finished climbing."""
+        return UMIK2.db_spl_from_dbfs(
+            _power_sum_db(self.ambient_dbfs, at_volume_db + self.gain_db)
+        )
+
+    def _rms_dbfs(self) -> float:
+        target = super()._rms_dbfs()
+        if not self._tone.started:
+            return target
+        if self._current is None:
+            # The climb starts from the room, which is what the mic was
+            # reporting the instant before the tone began.
+            self._current = self.ambient_dbfs
+        self._current += (target - self._current) * self.approach
+        return self._current
+
+
+async def _retired_fixed_settle(next_samples, **kwargs):
+    """The pre-#2919 reading: drain one window, then believe the next one.
+
+    Written against today's window primitive so the control differs from the
+    production path in exactly ONE thing -- whether the pass waits for two
+    windows to AGREE, or just waits a fixed length and banks whatever it has.
+    """
+    kwargs.pop("agree_db", None)
+    kwargs.pop("timeout_s", None)
+    kwargs.pop("window_s", None)
+    started = kwargs["clock"]()
+    reading = None
+    for attempt in (1, 2):
+        reading = await slr._window_reading(
+            next_samples,
+            attempt=attempt,
+            started=started,
+            window_s=slr.MIC_WINDOW_S,
+            **kwargs,
+        )
+        if reading.rms_dbfs is None:
+            return reading
+    return reading
+
+
+def _rising_rig(**mic_kwargs) -> tuple[Volume, BlockingTone, RisingMic]:
+    volume = Volume()
+    tone = BlockingTone()
+    return volume, tone, RisingMic(volume, tone, **mic_kwargs)
+
+
+def test_a_level_still_climbing_is_not_banked_until_it_stops_moving(tmp_path):
+    """#2919's fix at the user-visible surface: the banked number ARRIVED.
+
+    The chain climbs toward each commanded level rather than snapping to it, so
+    a window taken early reads low. The pass keeps reading until two consecutive
+    windows agree, which costs it more than the minimum two -- and the level it
+    banks is the level the seat actually reaches, not one it was passing
+    through.
+    """
+    volume, tone, mic = _rising_rig(
+        gain_db=gain_for_seat_spl(80.0, at_volume_db=CEILING_DB),
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.status == "converged", (result.reason, result.detail)
+    # It did NOT bank on the first pair of windows: a moving level buys more.
+    windows = [step["windows"] for step in result.ramp["steps"]]
+    assert max(windows) > 2, windows
+    # And what it banked is where the chain ends up at that volume. The residual
+    # a first-order chain still has left when consecutive windows stop
+    # disagreeing is on the order of one agreement bar, so that is the tolerance
+    # -- and the control below shows the retired shape missing by multiples of it.
+    assert result.reference_volume_db is not None
+    arrived = mic.arrived_db_spl(result.reference_volume_db)
+    assert result.measured_db_spl == pytest.approx(arrived, abs=1.0)
+    assert TARGET.low_db_spl <= result.measured_db_spl <= TARGET.high_db_spl
+
+
+def test_the_retired_fixed_settle_banks_a_level_that_never_arrived(tmp_path):
+    """The no-op control: put the guessed settle back and the defect returns.
+
+    Same rig, same chain, one difference -- the reading is a fixed drain plus a
+    fixed median instead of a wait for agreement. It banks a level several dB
+    under the one the seat reaches, which is the 2026-08-24 incident: at
+    -12.50 dB commanded the frame was labelled 75 while the seat arrived at
+    about 79-80 dB SPL.
+    """
+    volume, tone, mic = _rising_rig(
+        gain_db=gain_for_seat_spl(80.0, at_volume_db=CEILING_DB),
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(slr, "_settle_reading", _retired_fixed_settle)
+        result = asyncio.run(
+            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+        )
+
+    banked = result.measured_db_spl
+    assert banked is not None, (result.reason, result.detail)
+    arrived = mic.arrived_db_spl(result.reference_volume_db)
+    # Under-read, in the direction and the order of magnitude the bench measured.
+    assert arrived - banked > 2.0, (banked, arrived)
+
+
+def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
+    """A chain that answers a step at once pays what it always paid.
+
+    The cost side of the fix, asserted on the primitive: two windows is the
+    fewest that can answer "did it stop moving", and a level that is already
+    still needs no more than that. This is why the ten-second budget on the
+    pass above survives an unbounded-looking wait.
+    """
+    clock = FakeClock()
+    constant = UMIK2.dbfs_from_db_spl(70.0)
+
+    async def _samples():
+        return [
+            LevelSample(
+                seq=1,
+                t_client_ms=0,
+                rms_dbfs=constant,
+                peak_dbfs=constant + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+    reading = asyncio.run(
+        slr._settle_reading(
+            _samples,
+            sensitivity=UMIK2,
+            spl_ceiling_db_spl=SPL_CEILING,
+            clock=clock.now,
+            sleep=clock.sleep,
+            session_id="test",
+            window="ambient",
+        )
+    )
+
+    assert reading.refusal is None
+    assert reading.windows == 2
+    assert reading.rms_dbfs == pytest.approx(constant)
+    assert clock.now() == pytest.approx(2 * slr.MIC_WINDOW_S, abs=0.06)
+
+
+class NeverSettlingMic:
+    """A feed that keeps MOVING and never agrees with itself.
+
+    A sawtooth once the tone plays: every window's median sits a long way from
+    the one before it, forever, and every sample stays well under the
+    commissioning stop -- so the only thing that can end one of these readings
+    is the settle timeout. The room is quiet and still BEFORE the tone, so the
+    ambient reading settles normally and the refusal lands mid-climb, where the
+    tone has to be stopped and the household volume handed back.
+    """
+
+    def __init__(self, tone, *, ambient_db_spl: float = 45.0) -> None:
+        self._tone = tone
+        self._ambient_db_spl = ambient_db_spl
+        self._seq = 0
+        self._poll = 0
+
+    async def next_samples(self) -> list[LevelSample]:
+        self._seq += 1
+        if self._tone.started:
+            self._poll += 1
+            db_spl = 55.0 + (self._poll % 20)
+        else:
+            db_spl = self._ambient_db_spl
+        rms = UMIK2.dbfs_from_db_spl(db_spl)
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+
+def test_a_feed_that_never_settles_refuses_instead_of_banking(tmp_path):
+    """The honest end of an unbounded wait: a refusal, not the last number seen.
+
+    A wait with no lag model behind it needs an outer bound, and the one thing
+    that bound must NOT do is bank. The refusal names the two windows that
+    disagreed and how far apart they were, so an operator can tell "the chain is
+    still settling" from "this feed is not a level at all".
+    """
+    tone = BlockingTone()
+    volume = Volume()
+    mic = NeverSettlingMic(tone)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_LEVEL_UNSETTLED
+    assert result.reference_volume_db is None
+    assert result.measured_db_spl is None
+    assert not (tmp_path / "seat_level_reference.json").exists()
+    detail = result.detail or ""
+    assert "still moving" in detail
+    assert "dB apart" in detail
+    assert f"{slr.SETTLED_AGREE_DB:.1f} dB agreement bar" in detail
+    # Stopped and restored like every other refusal.
+    assert tone.cancelled
+    assert result.restored is True
+
+
+def test_an_unsettled_reading_beats_the_whole_operation_watchdog_to_it(tmp_path):
+    """The per-reading bound fires first, so the operator gets the diagnosis.
+
+    ``seat_level_watchdog_expired`` says "something this pass awaited never
+    returned" and names nothing else. If the whole-operation budget were priced
+    below what a reading may spend, every unsettled feed would report that slug
+    instead of the two windows that disagreed -- which is the retired kernel's
+    mistake pointed the other way, and is why the watchdog prices the settle
+    timeout rather than a fixed window.
+    """
+    tone = BlockingTone()
+    volume = Volume()
+    mic = NeverSettlingMic(tone)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_LEVEL_UNSETTLED
+    assert result.ramp["watchdog_s"] > slr.SETTLE_TIMEOUT_S
+
+
+def test_the_commissioning_stop_still_fires_on_a_sample_taken_mid_wait(tmp_path):
+    """#2917's per-sample stop covers the whole wait, not just its first second.
+
+    The stop runs on every sample of every window, so a reading that takes five
+    windows to settle is five windows of samples checked against it -- strictly
+    MORE coverage than the retired fixed settle had, never less. Asserted where
+    it counts: the sample that trips is one a fixed one-second reading would
+    have stopped listening before ever seeing.
+    """
+    volume, tone, mic = _rising_rig(
+        # Climbs past the 85 dB SPL stop, but slowly enough that it is still
+        # under it when a fixed one-second reading would have banked and moved
+        # on to the next volume.
+        gain_db=gain_for_seat_spl(95.0, at_volume_db=slr.SEAT_LEVEL_START_DB),
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+        approach=0.02,
+    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert not (tmp_path / "seat_level_reference.json").exists()
+    window = result.ramp["stopped_window"]
+    assert window["trip_db_spl"] > SPL_CEILING
+    # Offsets run from the moment the READING began, so this says the trip
+    # happened after the second window -- past where the retired settle stopped.
+    assert window["trip_offset_s"] > 2 * slr.MIC_WINDOW_S
+
+
+def test_the_settle_contract_is_published_on_the_receipt(tmp_path):
+    """``steps[].windows`` cannot be read without the bar it was measured against.
+
+    Three numbers, because one of them is operator-overridable and the other two
+    are what make a window count mean anything. The count is also the pass's own
+    measurement of how long this chain takes to answer a step -- the thing the
+    2026-08-24 bench had to instrument by hand to find this defect at all.
+    """
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path)
+    ramp = result.ramp
+
+    assert ramp["settle_window_s"] == pytest.approx(slr.MIC_WINDOW_S)
+    assert ramp["settle_agree_db"] == pytest.approx(slr.SETTLED_AGREE_DB)
+    assert ramp["settle_timeout_s"] == pytest.approx(slr.SETTLE_TIMEOUT_S)
+    assert all(step["windows"] >= 2 for step in ramp["steps"])
+
+
+def test_the_settle_knobs_are_read_from_the_environment(tmp_path, monkeypatch):
+    """Both halves of "settled" are deploy-time knobs, bounded, and disclosed.
+
+    A room that cannot hold the default agreement bar, or a chain that settles
+    slower than the default timeout, has a way forward that is not a redeploy --
+    and the receipt says which numbers the run actually used, because widening
+    the first one lowers the bar for banking.
+    """
+    monkeypatch.setenv("JASPER_SEAT_LEVEL_SETTLED_AGREE_DB", "1.25")
+    monkeypatch.setenv("JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S", "12")
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path)
+
+    assert result.ramp["settle_agree_db"] == pytest.approx(1.25)
+    assert result.ramp["settle_timeout_s"] == pytest.approx(12.0)
+
+    # Out of range falls back to the shipped default rather than being clamped
+    # to a number nobody asked for -- `bounded_env_float`'s own contract.
+    monkeypatch.setenv("JASPER_SEAT_LEVEL_SETTLED_AGREE_DB", "40")
+    monkeypatch.setenv("JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S", "0.05")
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path / "bounded")
+
+    assert result.ramp["settle_agree_db"] == pytest.approx(slr.SETTLED_AGREE_DB)
+    assert result.ramp["settle_timeout_s"] == pytest.approx(slr.SETTLE_TIMEOUT_S)
