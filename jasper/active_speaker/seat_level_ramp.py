@@ -796,10 +796,18 @@ def mic_is_not_observing(
     exact failure mode this predicate is about.
 
     Model-derived cost of the wait (synthetic mic, jts3 rig): the walk tops out
-    AT the ceiling and never above it, 8.86 audible seconds of which 1.0 s sits
-    at the ceiling, refusal ``mic_not_observing``, household volume restored —
-    23.2 dB louder than the retired 20 dB span reached before refusing. An
-    on-metal dead-mic run is on the bench checklist; these numbers are a model.
+    AT the ceiling and never above it, 9.16 audible seconds of which one
+    reading sits at the ceiling, refusal ``mic_not_observing``, household volume
+    restored — 23.2 dB louder than the retired 20 dB span reached before
+    refusing. An on-metal dead-mic run is on the bench checklist; these numbers
+    are a model.
+
+    Re-derived on the same model under #2919's stability wait: eight readings,
+    every one settling in the minimum two windows, because a mic pinned at a
+    constant is the most settled thing there is. The 0.30 s against the 8.86 s
+    this said before is the fake clock's polling granularity landing differently
+    across two ``MIC_WINDOW_S`` deadlines than across one of twice the length;
+    the real per-reading cost of a still level — one second — did not move.
     """
     return max_rise_db < min_rise_db and at_ceiling
 

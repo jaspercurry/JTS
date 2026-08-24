@@ -1210,6 +1210,13 @@ def test_a_mic_that_is_not_observing_aborts_the_climb(tmp_path):
 
     assert result.status == "refused"
     assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    # A mic pinned at a constant is the most SETTLED thing there is, so the
+    # #2919 stability wait costs this walk nothing: every reading agrees with
+    # itself on the second window. That is what keeps the dead-mic walk's
+    # audible cost where `mic_is_not_observing` says it is.
+    assert [step["windows"] for step in result.ramp["steps"]] == [2] * len(
+        result.ramp["steps"]
+    )
     # It ran out of ceiling -- the only non-arbitrary place to ask -- and named
     # the mic rather than blaming a quiet amplifier.
     highest = max(step["volume_db"] for step in result.ramp["steps"])
