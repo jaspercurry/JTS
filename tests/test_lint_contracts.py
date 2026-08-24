@@ -1076,7 +1076,27 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_418,
+    #
+    # 2026-08-24 (#2929, the duck-release reference): 13,418 -> 13,440, +22
+    # physical lines. No code/prose split is stated, for the reason the geometry
+    # entry below states at length — a narrative figure nothing re-derives has
+    # been wrong twice, and the physical count is what this test enforces.
+    #
+    # What earned the room: `bind_program_playback_seams` gains one optional
+    # parameter — a READER for the level the session still owns — and hands it,
+    # uncalled, to both graph swaps. Two executable lines per swap; the rest is
+    # the two paragraphs a later reader needs and cannot re-derive from the
+    # code. Why BOTH swaps carry it: releasing the restore to the household
+    # level moves the drift to the next capture's load, which is the shape a
+    # single-capture test reads as fixed. And why the READER travels rather
+    # than its answer: the gate panel measured a ceiling drain completing
+    # inside the bracket, which a pre-resolved number would have overwritten.
+    # The fix round SHRANK this file's share — the resolver the first draft
+    # added is gone, because passing the reader through needs no wrapper —
+    # so the +22 here is smaller than the +30 the pre-round draft cost.
+    # Every rule about WHICH level may be commanded still lives on
+    # `SessionVolumePlan`; this file learned no new fact about volumes.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_440,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1494,7 +1514,19 @@ MAX_LINES_BY_PATH = {
     # walks this file still spelled by hand. The pair is asked together wherever
     # their disagreement is the finding, so writing one and transcribing the
     # other was the asymmetry the seam existed to remove.
-    "jasper/web/correction_crossover_v2.py": 9_545,
+    #
+    # 2026-08-24 (#2929, the duck-release reference): 9,545 -> 9,563, +18
+    # physical lines, and the same no-split note applies. All of it is
+    # `_held_measurement_volume_db` — the reader the graph swaps ASK at release
+    # time — placed beside `_hold_fader` because the two must ask the SAME
+    # guarded question of the SAME plan, and its docstring is the record of
+    # what went wrong when the release answered a different one. Two of the
+    # lines are the fix round's: the reader became synchronous and is handed
+    # over uncalled, and saying why is what stops the next author "tidying" it
+    # back into an awaited value and reopening the mid-swap-drain window.
+    # Zero policy: the readiness rule it consults lives on `SessionVolumePlan`,
+    # and this file only decides which plan to ask.
+    "jasper/web/correction_crossover_v2.py": 9_563,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

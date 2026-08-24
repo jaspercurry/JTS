@@ -3808,7 +3808,7 @@ unready setup.
 | `delay_exceeds_search_window` | MEASURE | 1 | mic likely off the pictured spot |
 | `locate_failed` | any | 1 | the capture's stimuli could not be located. Since #1838 this requires EVERY stimulus role to clear `LOCATE_MIN_CONFIDENCE` (it was `max()` over the whole capture, so one confidently-located driver cleared the gate for a driver nobody heard), and on MEASURE it also carries the split-out sweep locate-confidence floor (`guard=sweep_locate_confidence` in the diag). Since #1971 VERIFY carries the same 0.3 floor for its summed sweep (`integrity=summed_sweep_heard` in the diag). **Since #2085 its copy is not a literal**: `locate_failed_message` reads `pilot_snr_ok` — a pilot that WAS heard refutes "couldn't hear the speaker", so that capture is told JTS could not line up the test tones, naming no cause, instead of being sent to the volume control (`pilot_heard=` on `event=correction.crossover_v2_result` says which). Relay verdict, terminal exhaustion, defensive replay refusal, apply-seam refusal, and envelope all select the diagnosis from the same paired evidence; retry versus terminal state changes only the action. Since #2093 the timeline ANCHOR those confidences are measured against is cross-checked before this code can be reached — a knife-edge mis-anchor used to fabricate this verdict on pristine captures; see "Timeline anchor" and read `event=program_analysis.anchor` first when triaging one |
 | `program_unplayable` | play seam | 0 (hard stop) | admission refused the program (bug/tamper/infeasible profile). Every ADMISSION refusal except `program_profile_not_confirmed` lands here, and the underlying admission slugs ride out in `state["failure"]["refusals"]` so a support read can tell which one fired (#1820). The play seam has one other refusal that is not an admission refusal at all and does not land here — `measurement_volume_drift`, below |
-| `measurement_volume_drift` | play seam | 0 (hard stop) | #2925: the main fader was not at the volume this session declared when a stimulus was about to play, and re-asserting it could not be proven, so the capture is refused before any audio. The OPPOSITE claim to `program_unplayable` — the program was admissible; the speaker's level was not the one it was admitted against — which is why it is its own code rather than another slug riding that one. **TWO conditions reach it**, which is why the copy names the observation and never a cause (`locate_failed`'s #2085 lesson): the fader was read and would not hold, or it could not be read at all. Read `event=active_speaker.measurement_fader_drift result=refused` to tell them apart — an empty `observed_db` is the unreadable one. Carries no refusal slugs; the observed/expected pair is on that same line, and `set_confirmed` there is the set-AND-confirm's verdict, not the setter's — `true` on a refusal is the interesting one (the repair landed and the fader moved AGAIN), while `false` covers both "the setter refused" and "the setter said yes and nothing moved". Terminal because a safety refusal is not something to retry around, and the re-assert has already been tried. A drift the hold DOES repair is not a refusal — it plays; see "The fader hold mostly does NOT refuse" below. Since #2929 a healthy routed capture produces NEITHER the `repairing` nor the `repaired` line |
+| `measurement_volume_drift` | play seam | 0 (hard stop) | #2925: the main fader was not at the volume this session declared when a stimulus was about to play, and re-asserting it could not be proven, so the capture is refused before any audio. The OPPOSITE claim to `program_unplayable` — the program was admissible; the speaker's level was not the one it was admitted against — which is why it is its own code rather than another slug riding that one. **TWO conditions reach it**, which is why the copy names the observation and never a cause (`locate_failed`'s #2085 lesson): the fader was read and would not hold, or it could not be read at all. Read `event=active_speaker.measurement_fader_drift result=refused` to tell them apart — an empty `observed_db` is the unreadable one. Carries no refusal slugs; the observed/expected pair is on that same line, and `set_confirmed` there is the set-AND-confirm's verdict, not the setter's — `true` on a refusal is the interesting one (the repair landed and the fader moved AGAIN), while `false` covers both "the setter refused" and "the setter said yes and nothing moved". Terminal because a safety refusal is not something to retry around, and the re-assert has already been tried. A drift the hold DOES repair is not a refusal — it plays; see "The fader hold mostly does NOT refuse" below. Since #2929 a healthy routed capture produces `result=held` and NEITHER the `repairing` nor the `repaired` line — read both halves, because absence alone cannot say the hold ran |
 | `program_profile_not_confirmed` | session open / play seam | 0 (hard stop) | JTS cannot use the saved driver-safety declaration (evaluation `stale` — the outputs moved underneath it — or `malformed`). Both are cleared by one ordinary save, which rebuilds the profile from the visible values. Split out of `program_unplayable` (#1820) because it is deterministic and one edit away, so its copy names *review the limits and save them again* and its `next_action` deep-links `/sound/#confirm-safety-limits` instead of inheriting "re-check the driver details", which is the one action that makes it worse. The slug keeps its wire name; `unconfirmed` no longer occurs, because saving the declaration IS declaring it. Normally refused at session open (see pre-flight below), so the phone screen is the backstop, not the usual path |
 | `program_profile_missing` | session open | 0 (hard stop) | evaluation `missing` — no profile exists (never-saved / unreadable / pre-crossover draft). `/sound/` deliberately renders **no** safety callout here, so "review the limits" would name a panel that is not on the page; copy says *finish the driver details in speaker setup* and the action is `/sound/` with no fragment. Pre-flight only: the play-seam admission vocabulary carries one `PROFILE_NOT_CONFIRMED` slug for every un-playable profile state, so only the gate holding the full `DriverSafetyProfileEvaluation` can tell these apart |
 | `program_profile_incomplete` | session open | 0 (hard stop) | evaluation `incomplete` — declared values are still missing or do not line up. A save is allowed here (the operator keeps their work) but rebuilds the same `incomplete` profile, so "save again" would be a circle. Copy names the same action `/sound/`'s own callout names in this state: add them under Advanced, then save |
@@ -3844,13 +3844,23 @@ ordinary ones.
    Both dB values #2925 attributed to "the config" are exactly `percent_to_db`
    outputs (−9.59596 = level 81, −18.181818 = level 64) — that arithmetic is
    what identified the real writer. #2929 hands both the load and the restore
-   swap the level the session plan owns
-   (`SessionVolumePlan.owned_measurement_volume_db`) as the release reference,
-   so the fader lands on the declared volume by construction.
-   **The on-device acceptance criterion is therefore inverted**: on a healthy
-   routed run the pair should appear on NO capture, on either path. A
-   `repairing` line now means something really did move the fader, and is
-   worth investigating rather than filing as normal.
+   swap a READER for the level the session plan owns
+   (`SessionVolumePlan.owned_measurement_volume_db_nowait`, asked at the moment
+   the duck releases), so the fader lands on the declared volume by
+   construction.
+
+   **The on-device acceptance criterion is therefore inverted, and it takes
+   TWO lines, not one.** A healthy routed run shows
+   `result=held` on every capture — the hold ran and found the level already
+   established — and `result=repairing`/`result=repaired` on none. Read them
+   together: "no repair pair" ALONE cannot tell the fix working from the hold
+   never being reached (the #2198 instrument-silence lesson, and the criterion
+   this one replaced carried that liveness proof for free). So the bar is a
+   `held` line per capture AND zero repair pairs; a `repairing` line means
+   something really did move the fader and is worth investigating rather than
+   filing as normal, and a MISSING `held` line means the hold is not where this
+   doc says it is. `held` is INFO on the same `event=` as the drift lines, so
+   one `journalctl` grep answers both halves.
 2. **The summed path has no readiness gate, on purpose.** The routed path
    reaches `play_program`, which calls `SessionVolumePlan.assert_ready` and
    refuses a plan that owns no volume; the summed path has no such call, so
@@ -3871,21 +3881,23 @@ ordinary ones.
    is inside it (it rides the `play_wav` seam), so nothing else can load a
    config between proving the fader and emitting. The summed branch takes no
    lock, so a cross-process fader writer landing in that window can still move
-   the level under the stimulus. **The bound is not "quieter than declared".**
-   Two racer shapes, and only one of them is bounded (#2929):
-   a racing GRAPH SWAP from another daemon releases its own duck to
-   `min(its canonical, its own entry snapshot)`, both of which are at or below
-   the declared level, so that shape can only end quieter; a direct volume
-   writer — the volume coordinator's reconcile, the management UI, a HID
-   remote — carries no such bound. For that second shape the only hard
-   ceilings are `MAX_MAIN_VOLUME_DB` (0.0 dB) and the running config's
-   `volume_limit`, which `ensure_volume_limit_db` refuses above 0 dB, so the
-   worst case is up to (0 − declared) dB ABOVE the admitted level, 12.5 dB on
-   the campaign's numbers. The household level itself has no fixed sign
-   against the declared one: it was quieter in the night's configuration
-   (−21.2 against −12.5) and it can be LOUDER — this branch's own
+   the level under the stimulus. **The bound is not "quieter than declared",
+   and NEITHER racer shape is bounded.** A racing GRAPH SWAP releases its own
+   duck to `min(its canonical, current + |its depth|)` — the second operand is
+   the *live* fader plus the attenuation that racer applied, not this session's
+   entry snapshot (the snapshot appears only in the no-provider fallback) — so
+   it effectively lands on ITS canonical, the household level. A direct volume
+   writer (the coordinator's reconcile, the management UI, a HID remote) has no
+   bound of its own either. Both therefore inherit the household level's sign,
+   and it has none against the declared one: it was quieter in the night's
+   configuration (−21.2 against −12.5) and it can be LOUDER — this branch's own
    `test_a_loud_household_is_pulled_down_before_any_audio` fixture is that
-   case. (The pre-2026-08-22 era is neither: household and measurement
+   case, and in it a racing swap lands the fader ABOVE the declared level. The
+   only hard ceilings are `MAX_MAIN_VOLUME_DB` (0.0 dB) and the running
+   config's `volume_limit`, which `ensure_volume_limit_db` refuses above 0 dB,
+   so the worst case is up to (0 − declared) dB above the admitted level,
+   12.5 dB on the campaign's numbers.
+   (The pre-2026-08-22 era is neither direction: household and measurement
    COINCIDED at −8.0, which is exactly why the bug stayed masked then.) The
    provenance tripwire catches the move whenever retention is
    on. Closing the window properly means giving the summed branch the same
@@ -5150,9 +5162,13 @@ Observation is bought only while the enable marker exists
 household — the play path spends one `Path.exists()` and no provenance
 round-trips. It is NOT free of CamillaDSP round-trips: since #2925 every
 capture, retained or not, also reads the fader once to prove the declared
-measurement volume (and writes once, only when it has drifted). That read is
-the safety ledger's, not the forensic record's, which is why retention does
-not gate it. The block is absent, not `null`, for a capture no play was
+measurement volume (and writes once, only when it has drifted — which since
+#2929 is no longer the routine case). That read is the safety ledger's, not
+the forensic record's, which is why retention does not gate it, and it is also
+why the hold's own `result=held` line — not the provenance record — is the
+liveness half of the acceptance criterion: provenance is retention-gated and
+therefore absent on the household runs the criterion has to be readable
+against. The block is absent, not `null`, for a capture no play was
 observed for; the recorder's `take()` consumes, so a second analyze with no
 play between it and the last one reports nothing rather than the previous
 capture's context.

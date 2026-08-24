@@ -41,9 +41,11 @@ that), CamillaDSP's ``devices`` schema has no field that stores a volume at
 all, and it rejects unknown keys outright. Read at the pinned version, tag
 ``v4.1.3`` (``05e9cfc``), 2026-08-24: ``src/config/mod.rs:806`` is
 ``#[serde(deny_unknown_fields)]`` on ``struct Devices`` and none of its 18
-fields is a fader level; ``ProcessingParameters::new`` occurs once, at
-``src/bin.rs:1119``; ``src/pipeline.rs:270`` re-seeds a rebuilt pipeline from
-the LIVE volume. The mover was JTS's own
+fields is a fader level; the daemon binary constructs
+``ProcessingParameters::new`` once, at ``src/bin.rs:1119`` (the tree's only
+other use is the Criterion harness ``benches/pipeline.rs``); and
+``src/pipeline.rs:270`` re-seeds a rebuilt pipeline from the LIVE volume. The
+mover was JTS's own
 swap duck: ``_duck_release_target_db`` released to ``min(canonical, released)``
 with no reference of its own, and ``canonical`` is the HOUSEHOLD target
 (``percent_to_db(listening_level)``). A measurement volume is louder than the
@@ -240,6 +242,27 @@ async def hold_fader_at(
     if observed is not None and fader_matches(
         observed, target, tolerance_db=tolerance_db
     ):
+        # THE LIVENESS HALF, and it is why "no repair lines" can be read as
+        # evidence at all (#2929). Since the release now lands the fader on the
+        # declared level by construction, the healthy run's repair pair is
+        # ABSENT — and absence is exactly what a hold that never ran also looks
+        # like (the #2198 instrument-silence lesson). This line is what makes
+        # the two distinguishable: it says the hold RAN and found the level
+        # already established. Same `event=` as the drift lines, discriminated
+        # by `result=`, so one vocabulary answers one question. INFO rather
+        # than DEBUG because it is an acceptance criterion a household run has
+        # to be readable against without a log-level change, and it is bounded
+        # by captures per session (~16), not by time.
+        log_event(
+            logger,
+            "active_speaker.measurement_fader_drift",
+            result="held",
+            context=context,
+            expected_db=f"{target:.6f}",
+            observed_db=f"{observed:.6f}",
+            delta_db=f"{observed - target:.6f}",
+            tolerance_db=f"{float(tolerance_db):.6f}",
+        )
         return observed
 
     log_event(

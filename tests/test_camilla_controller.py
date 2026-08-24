@@ -518,7 +518,7 @@ async def test_a_declared_release_target_wins_over_the_quieter_household_one(
     fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=-12.5)
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
     assert fake.volume.main_volume() == pytest.approx(-12.5)
 
     # The control: same swap, no declared reference, household wins.
@@ -577,7 +577,7 @@ async def test_a_declared_target_never_raises_the_fader_above_what_it_took(
     fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=-12.5)
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
 
     assert fake.volume.main_volume() == pytest.approx(-30.0)
 
@@ -602,7 +602,7 @@ async def test_a_declared_target_moves_the_release_never_the_duck(
     fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=-12.5)
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
 
     # Same duck op, same position in the bracket, as the untargeted swap in
     # `test_every_graph_mutation_is_bracketed_by_a_duck`.

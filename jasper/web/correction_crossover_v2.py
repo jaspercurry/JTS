@@ -5650,19 +5650,22 @@ def bind_production_play(
                 artifact=artifact, read_volume_plan=session_volume_plan,
             )
 
-        async def _held_measurement_volume_db() -> float | None:
+        def _held_measurement_volume_db() -> float | None:
             """The declared level the graph swaps release to (#2929).
 
             The SAME plan and the SAME guarded question ``_hold_fader`` below
-            asks — one source of truth, read fresh per swap. Without it the
-            swap duck released to the canonical HOUSEHOLD target, which sits
-            below the measurement volume and therefore won the release's
-            ``min`` every time: every routed capture's fader landed on the
-            household level and the hold repaired it before the stimulus. With
-            it the release lands on the declared level by construction and the
-            hold reads in tolerance without writing.
+            asks. Without it the swap duck released to the canonical HOUSEHOLD
+            target, which sits below the measurement volume and therefore won
+            the release's ``min`` every time: every routed capture's fader
+            landed on the household level and the hold repaired it before the
+            stimulus. With it the release lands on the declared level by
+            construction and the hold reads in tolerance without writing.
+
+            Synchronous, and handed to the swap UNCALLED: the release asks it
+            at the moment it lets go, so a drain that finishes mid-swap is seen
+            rather than overwritten.
             """
-            return await session_volume_plan().owned_measurement_volume_db()
+            return session_volume_plan().owned_measurement_volume_db_nowait()
 
         async def _hold_fader(open_cam: Callable[[], Any]) -> None:
             """Re-prove the session's measurement volume for THIS stimulus.

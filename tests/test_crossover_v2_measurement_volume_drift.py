@@ -147,9 +147,11 @@ def test_an_undrifted_fader_costs_one_read_and_no_write():
 
 
 def test_a_drifted_fader_is_repaired_disclosed_and_re_proven(caplog):
-    """The T1-1 fix. The SetConfig clobber is repaired before any audio — and
-    it is DISCLOSED, because a silently repaired fader is how a whole campaign
-    of stimuli can play at the wrong level without one line of evidence."""
+    """The T1-1 fix. A fader left off the declared level — by the swap duck's
+    release before #2929, by anything at all after it — is repaired before any
+    audio, and DISCLOSED, because a silently repaired fader is how a whole
+    campaign of stimuli can play at the wrong level without one line of
+    evidence."""
     fader = _fader(value=HOUSEHOLD_DB)
     with caplog.at_level(logging.WARNING, logger=LATCH_LOGGER):
         proven = asyncio.run(
@@ -424,7 +426,9 @@ def test_the_plan_holds_its_own_declared_volume(tmp_path):
     """The stateful seam: the plan answers with the volume IT opened, so the
     capture path never has to carry a second copy of that number."""
     plan, fader = _open_plan(tmp_path)
-    fader.state["value"] = HOUSEHOLD_DB  # what a SetConfig replace leaves behind
+    # Where the swap duck's release used to leave the fader: its canonical
+    # reference is the household level (#2929).
+    fader.state["value"] = HOUSEHOLD_DB
     assert asyncio.run(
         plan.hold_measurement_volume(fader.set, fader.get, context="capture:check")
     ) == DECLARED_DB
@@ -782,9 +786,10 @@ def test_the_two_capture_paths_share_one_fader_hold(monkeypatch, tmp_path, phase
     """THE PIN — the defect lived in the SPLIT between the two paths.
 
     The routed MEASURE path loads a program graph and the summed VERIFY path
-    does not, and only the first was clobbered by ``SetConfig``. Both reach the
-    same hold anyway: a discipline that only one path runs is the shape that
-    let a whole campaign's measure phases drift while its verify phases held.
+    does not, so only the first carried a duck bracket whose release pulled the
+    fader to the household level. Both reach the same hold anyway: a discipline
+    that only one path runs is the shape that let a whole campaign's measure
+    phases drift while its verify phases held.
     """
     cam = _StubCam(volume_db=HOUSEHOLD_DB)
     played = _drive(monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan())
@@ -972,13 +977,13 @@ def test_the_release_reference_is_the_plans_own_guarded_answer(tmp_path):
     too, or the two disagree about who owns the fader.
     """
     plan, _fader_io = _open_plan(tmp_path)
-    assert asyncio.run(plan.owned_measurement_volume_db()) == DECLARED_DB
+    assert plan.owned_measurement_volume_db_nowait() == DECLARED_DB
 
     stuck = _fader(value=-5.0, sticks=False)
     asyncio.run(plan.close(stuck.set, stuck.get))
     assert plan.needs_recovery
     assert plan.measurement_volume_db == DECLARED_DB  # the field still says it
-    assert asyncio.run(plan.owned_measurement_volume_db()) is None
+    assert plan.owned_measurement_volume_db_nowait() is None
 
 
 def test_a_cleanly_closed_plan_offers_no_release_reference(tmp_path):
@@ -986,7 +991,7 @@ def test_a_cleanly_closed_plan_offers_no_release_reference(tmp_path):
     must fall back to the canonical target rather than the measurement one."""
     plan, fader = _open_plan(tmp_path)
     asyncio.run(plan.close(fader.set, fader.get))
-    assert asyncio.run(plan.owned_measurement_volume_db()) is None
+    assert plan.owned_measurement_volume_db_nowait() is None
 
 
 def test_both_program_swaps_carry_the_declared_release_reference(monkeypatch, tmp_path):
@@ -1009,13 +1014,14 @@ def test_both_program_swaps_carry_the_declared_release_reference(monkeypatch, tm
         async def set_active_config_raw(
             self, config, *, best_effort=False, held_target_db=None,
         ):
-            seen.append(("load" if "program" in config else "restore", held_target_db))
+            answer = None if held_target_db is None else held_target_db()
+            seen.append(("load" if "program" in config else "restore", answer))
             return True
 
     (tmp_path / "entry.yml").write_text("restore-me\n", encoding="utf-8")
     monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
 
-    async def _owned() -> float:
+    def _owned() -> float:
         return DECLARED_DB
 
     seams = flow_mod.bind_program_playback_seams(
@@ -1041,9 +1047,11 @@ def test_both_program_swaps_carry_the_declared_release_reference(monkeypatch, tm
 def test_a_drained_plan_stops_supplying_a_reference_mid_session(monkeypatch, tmp_path):
     """Read FRESH per swap, never captured once at bind time.
 
-    A plan can drain mid-session (close, ceiling, a failed restore). The swap
-    must notice on its very next load, because a plan that has given up its
-    volume must never pull the fader back up to it.
+    A plan can drain mid-session (close, ceiling, a failed restore), and the
+    swap must notice rather than keep referencing a level nobody owns. This
+    pins the BETWEEN-swaps case; the drain that lands INSIDE one is
+    ``test_a_drain_completing_inside_the_swap_is_not_undone_by_the_release``,
+    and it is why the reader travels instead of its answer.
     """
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
@@ -1057,12 +1065,12 @@ def test_a_drained_plan_stops_supplying_a_reference_mid_session(monkeypatch, tmp
         async def set_active_config_raw(
             self, config, *, best_effort=False, held_target_db=None,
         ):
-            seen.append(held_target_db)
+            seen.append(None if held_target_db is None else held_target_db())
             return True
 
     monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
 
-    async def _owned() -> float | None:
+    def _owned() -> float | None:
         return owned[0]
 
     seams = flow_mod.bind_program_playback_seams(
@@ -1100,7 +1108,7 @@ def test_no_reference_reader_leaves_every_swap_exactly_as_it_was(monkeypatch, tm
         async def set_active_config_raw(
             self, config, *, best_effort=False, held_target_db=None,
         ):
-            seen.append(held_target_db)
+            seen.append(None if held_target_db is None else held_target_db())
             return True
 
     monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
@@ -1200,7 +1208,7 @@ def _capture_sequence(monkeypatch, tmp_path, *, declare_reference: bool):
         levels: list[float] = []
         for _ in range(3):
             reference = (
-                await plan.owned_measurement_volume_db()
+                plan.owned_measurement_volume_db_nowait
                 if declare_reference
                 else None
             )
@@ -1271,3 +1279,172 @@ def test_a_fader_moved_by_something_else_still_refuses_fail_closed(
                 stuck.set, stuck.get, context="capture:check",
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# the mid-swap drain window (#2929 gate panel, found independently by both lenses)
+# --------------------------------------------------------------------------- #
+
+
+def _swap_with_drain_inside(monkeypatch, tmp_path, *, hold_lock: bool):
+    """Complete a drain INSIDE the duck bracket, then let the release run.
+
+    Deterministic, not timing-dependent: the drain is driven from the fake
+    client's own config-apply call, which is exactly the point between the duck
+    and the release. That is the window the remote driver's ~1.5 s
+    ``/crossover/status`` poll can land a wall-clock-ceiling drain in.
+
+    ``hold_lock`` picks which half of the window is probed — a drain still
+    RUNNING at release time (lock held) versus one that already COMPLETED
+    (lock free, state cleared).
+    """
+    from jasper import camilla as camilla_module
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+
+    async def household() -> float:
+        return HOUSEHOLD_DB
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+
+    fake = _FakeCamillaClient(HOUSEHOLD_DB)
+    cam = camilla_module.CamillaController("127.0.0.1", 1234)
+    cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
+    plan = SessionVolumePlan(state_path=tmp_path / "session_volume.json")
+
+    async def set_v(db: float) -> bool:
+        return await cam.set_volume_db(db, best_effort=False)
+
+    async def get_v():
+        return await cam.get_volume_db(best_effort=False)
+
+    drained: list[str] = []
+
+    async def _call(fn):
+        # The rendezvous: fires only for the config apply, i.e. mid-bracket —
+        # after the duck, before the release. Every other call is a plain
+        # pass-through, including the ones `plan.open` makes below.
+        if getattr(fn, "__mid_swap__", False):
+            if hold_lock:
+                await plan._restore_lock.acquire()
+                drained.append("lock_held")
+            else:
+                await plan.close(set_v, get_v)
+                drained.append("closed")
+        return fn(fake)
+
+    cam._call = _call  # type: ignore[method-assign]
+
+    async def _run():
+        opened = await plan.open(DECLARED_DB, set_v, get_v)
+        assert opened is SessionVolumeOpenResult.OPENED
+        assert await cam.get_volume_db() == DECLARED_DB
+
+        def _apply(c):
+            return c.config.set_active_raw("program: graph\n")
+
+        _apply.__mid_swap__ = True  # type: ignore[attr-defined]
+        # Drive the bracket directly so the rendezvous rides the real duck.
+        async with cam._graph_mutation(
+            "test", held_target_db=plan.owned_measurement_volume_db_nowait,
+        ):
+            await cam._call(_apply)
+        if hold_lock:
+            plan._restore_lock.release()
+        return await cam.get_volume_db()
+
+    final_db = asyncio.run(_run())
+    assert drained, "the rendezvous never fired — the probe proves nothing"
+    return final_db
+
+
+def test_a_drain_completing_inside_the_swap_is_not_undone_by_the_release(
+    monkeypatch, tmp_path,
+):
+    """THE TOCTOU BOTH LENSES FOUND, pinned.
+
+    A wall-clock-ceiling drain can complete between the duck and the release.
+    It restores the household volume and reports a confirmed restore — and a
+    release still carrying a reference resolved BEFORE the swap would put the
+    measurement level straight back on a speaker with no owner left to take it
+    down again (measured +13.21 dB by the safety lens against a household
+    drain). Asking the reader AT release time is what closes it: the drained
+    plan answers None and the release takes the canonical household target.
+    """
+    final_db = _swap_with_drain_inside(monkeypatch, tmp_path, hold_lock=False)
+
+    assert final_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_a_drain_still_running_at_release_time_reads_as_unowned(
+    monkeypatch, tmp_path,
+):
+    """The other half of the window, and why the peek is non-blocking.
+
+    A drain holding the restore lock is mid-flight; its outcome is not knowable
+    here without waiting for it, and waiting is forbidden — this runs inside a
+    shielded ``finally``, so a wedged drain would strand a ducked (silent)
+    speaker. Reading that as unowned is the fail-safe answer: the release falls
+    back to canonical, exactly as a non-measurement swap does.
+    """
+    final_db = _swap_with_drain_inside(monkeypatch, tmp_path, hold_lock=True)
+
+    assert final_db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_the_release_reader_is_never_awaited_and_never_waits(monkeypatch, tmp_path):
+    """The contract that keeps the shielded finally safe.
+
+    Two properties, both load-bearing and neither visible from behaviour alone:
+    the reader is SYNC (an awaitable would need an await inside the finally),
+    and it does not block on the plan's lock (a wedged drain must not strand a
+    ducked speaker). A future refactor that makes either one false is what this
+    catches.
+    """
+    import asyncio as _asyncio
+    import inspect
+
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    reader = SessionVolumePlan.owned_measurement_volume_db_nowait
+    assert not inspect.iscoroutinefunction(reader)
+
+    plan, _fader = _open_plan(tmp_path)
+
+    async def _locked_read():
+        await plan._restore_lock.acquire()
+        try:
+            # Would deadlock, not return, if this waited for the lock.
+            return await _asyncio.wait_for(
+                _asyncio.to_thread(plan.owned_measurement_volume_db_nowait),
+                timeout=5.0,
+            )
+        finally:
+            plan._restore_lock.release()
+
+    assert asyncio.run(_locked_read()) is None
+
+
+def test_the_in_tolerance_hold_leaves_a_positive_liveness_line(tmp_path, caplog):
+    """THE ACCEPTANCE CRITERION'S OTHER HALF (#2929 gate, safety SF3).
+
+    "No repair pair" is only evidence if a hold that never RAN looks different
+    from one that ran and agreed. Absence cannot carry that on its own — the
+    #2198 instrument-silence lesson — so the in-tolerance path says so.
+    """
+    plan, fader = _open_plan(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger=LATCH_LOGGER):
+        assert asyncio.run(
+            plan.hold_measurement_volume(fader.set, fader.get, context="capture:check")
+        ) == DECLARED_DB
+
+    assert fader.state["writes"] == []  # still zero writes
+    held = [r for r in caplog.records if "result=held" in r.getMessage()]
+    assert len(held) == 1, "the in-tolerance hold must prove it ran"
+    assert "context=capture:check" in held[0].getMessage()
+    assert "event=active_speaker.measurement_fader_drift" in held[0].getMessage()
