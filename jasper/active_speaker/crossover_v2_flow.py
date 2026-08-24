@@ -29,7 +29,7 @@ per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session. At the shipped defaults a
-FULL-tier commission is 8 captures (3 in stage 1, then 5) and an express one
+FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
 is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
 only. :func:`tier_display_info` derives both from the plans themselves and is
 what the household-facing chooser reads; do not restate the numbers where a
