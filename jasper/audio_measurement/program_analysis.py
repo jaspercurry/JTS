@@ -639,8 +639,9 @@ DRIVER_SNR_ALIGNMENT_KEY = "alignment"
 # hardware corpus (jts3, 5 replayed runs) observed a 1.7-6.3 dB gap between
 # the seed and the ripple optimum; +/-10 dB leaves headroom beyond that range
 # on both sides so the scan is never truncated at its own edge for a real
-# capture, while RIPPLE_TRIM_SANITY_MARGIN_DB below still catches a result
-# that wanders implausibly far from a real level match.
+# capture, while the admission bound below (REALIZED_LEVEL_MATCH_TOLERANCE_DB)
+# still catches a result that wanders further from the level match than the
+# committed pair is allowed to realize.
 RIPPLE_TRIM_SEARCH_WINDOW_DB = 10.0
 RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 
@@ -663,14 +664,38 @@ RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 # plateau by grid quantization alone.
 RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 
-# How far the ripple-optimal trim may move from the band-average seed before
-# it is treated as untrustworthy and discarded in favor of the seed (with a
-# WARNING — never a silent wild trim). Deliberately narrower than the search
-# window above, so the guard has real teeth. Mirrors
-# jasper.active_speaker.crossover_v2.intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB
-# — same reasoning, applied one layer earlier to the raw (pre-linearization)
-# solve.
-RIPPLE_TRIM_SANITY_MARGIN_DB = 6.0
+# How far the ripple-optimal trim may move from the band-average seed before it
+# is discarded in favour of the seed lives BELOW, as
+# REALIZED_LEVEL_MATCH_TOLERANCE_DB, because it is the same number answering the
+# same question. There is deliberately no RIPPLE_TRIM_SANITY_MARGIN_DB here any
+# more; it was 6.0 dB, and deleting it is the fix rather than a tidy-up.
+#
+# **Why the separate constant was a guaranteed refusal.** The polish moves ONE
+# trim off the level-matching solve, and `plan_linearization` publishes that
+# excursion as `polish_delta_db`. The give-back is calibrated to the
+# band-average base, so the excursion passes straight through to the committed
+# pair: the realized inter-driver level error IS the polish delta, identically
+# (fitted chains and measurement frames cancel — verified 8-for-8 against the
+# banked campaign). So a polish admitted at |delta| <= 6.0 and then graded at
+# |delta| <= 3.0 left a 3.0-6.0 dB DEAD BAND in which the polish was accepted
+# and the round it produced could not pass its own level check. That is not a
+# guard with slack; it is two uncoupled thresholds whose gap is a refusal the
+# session manufactures for itself. On jts3 the polish landed 3.9 dB and the
+# round was refused; the campaign it was compared against had lived at 1.5-1.9.
+#
+# Coupling them closes the band by construction: the polish is admitted only
+# where the pair it produces can actually be graded as level-matched, and
+# outside that it is rejected back to the band-average seed — disclosed, never
+# silent. In-repo precedent for binding an admission bound to this same
+# tolerance: `intervention.MIN_TRIM_SANITY_MARGIN_RATIO`.
+#
+# NOT a mirror of `intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB` (6.0),
+# which this comment used to claim it was. That one bounds a different
+# quantity — how far the LINEARIZED re-solve's summed-flatness optimum may
+# drift from the measured level anchor — and its own floor argument wants it
+# at least twice this tolerance. Same word, different question; the old
+# "same reasoning, applied one layer earlier" was the conflation that let a
+# level-match bound inherit a flatness bound's number.
 
 # A trim is a passive level-match: never net gain (> 0 dB), and never beyond
 # the shared -60 dB attenuation floor the active-speaker candidate/profile
@@ -1635,6 +1660,26 @@ class CrossoverCandidate:
     #: correlation's). ``False`` on a selection-less arm is therefore correct
     #: rather than a fallback: the seed shipped, so nothing was pinned.
     polarity_pinned: bool = False
+    #: The ripple polish's trim excursion, when it was REJECTED; ``None`` when
+    #: nothing was thrown away.
+    #:
+    #: On the candidate and not only in the journal, for the reason
+    #: :attr:`left_anchor_lobe` is: the fact is invisible in every number the
+    #: receipt already carries. A rejection commits the band-average seed, so
+    #: ``trim_db[tweeter] == trim_band_average_db[tweeter]`` — byte-identical to
+    #: an admitted polish that happened to move nothing, and to the one-sided
+    #: skip that never ran a scan. Three outcomes, one signature; this field is
+    #: the only one that separates them, and the rejection is the one worth
+    #: separating because it is the only one where a flatness answer was
+    #: computed and discarded.
+    #:
+    #: The value is the SIGNED excursion, in dB, of the discarded polish from
+    #: the seed that shipped instead. Its bound is
+    #: :data:`REALIZED_LEVEL_MATCH_TOLERANCE_DB` — a rejection means the polish
+    #: asked for more inter-driver level error than the committed pair is
+    #: allowed to realize — so the fallback itself needs no field: it is
+    #: ``trim_band_average_db``, already here.
+    ripple_polish_rejected_delta_db: float | None = None
 
 
 @dataclass(frozen=True)
@@ -4311,8 +4356,8 @@ def _select_alignment_pair(
     band-average result), not the ripple-polished tweeter trim: the polish's own
     objective needs a polarity, so scoring the pair at the polished trim would
     be circular. The polish is a level nudge bounded by
-    :data:`RIPPLE_TRIM_SANITY_MARGIN_DB` and does not move where a commanded
-    null falls, so the pair it is applied to is the pair chosen here.
+    :data:`REALIZED_LEVEL_MATCH_TOLERANCE_DB` and does not move where a
+    commanded null falls, so the pair it is applied to is the pair chosen here.
 
     ``delay_bounds_us`` is the preset's declared |delay| range (already
     margin-expanded by ``crossover_v2_flow.alignment_delay_search_bounds_us``).
@@ -6715,6 +6760,16 @@ def _build_candidate(
     # it. A selector that cannot see the woofer must not set the woofer's
     # handoff level, so it is skipped rather than guarded on that geometry.
     ripple_band_straddles_fc = lo_clamped < fc_hz < hi
+    # The rejected excursion, or ``None`` when no polish was thrown away —
+    # which is BOTH the admitted case and the skipped one. It is a candidate
+    # field rather than only this log line because the three outcomes are
+    # otherwise indistinguishable downstream: ``trim_ripple_gain_db``
+    # (``crossover_v2_flow._log_measure_diag``) reads exactly 0.0 for an
+    # admitted no-op polish, for the one-sided skip, AND for a rejection,
+    # since the rejection commits the seed. Only the rejection means a real
+    # flatness answer was computed and discarded, and only it carries a
+    # number worth reading back.
+    ripple_polish_rejected_delta_db: float | None = None
     if ripple_band_straddles_fc:
         trim_t_ripple, _ripple_t_ripple, _seed = solve_ripple_optimal_trim(
             freqs, W, T, fc_hz,
@@ -6723,14 +6778,27 @@ def _build_candidate(
             trim_w_db=trim_w,
             sign=polarity_sign,
         )
-        if abs(trim_t_ripple - trim_t_band_average) > RIPPLE_TRIM_SANITY_MARGIN_DB:
+        # Admitted only where the pair it produces can be GRADED as level
+        # matched — see the tolerance's own block above for why the two are one
+        # number. The excursion passes through to the committed pair, so a
+        # polish this check rejects is one the realized-level gate could only
+        # have reported as an inter-driver level error.
+        polish_delta_db = trim_t_ripple - trim_t_band_average
+        if abs(polish_delta_db) > REALIZED_LEVEL_MATCH_TOLERANCE_DB:
+            ripple_polish_rejected_delta_db = float(polish_delta_db)
             log_event(
                 logger, "program_analysis.ripple_trim_rejected",
                 level=logging.WARNING,
                 woofer_role=woofer_role, tweeter_role=tweeter_role,
                 band_average_trim_db=round(trim_t_band_average, 3),
                 ripple_optimal_trim_db=round(trim_t_ripple, 3),
-                margin_db=RIPPLE_TRIM_SANITY_MARGIN_DB,
+                # The excursion itself, signed, beside the bound that refused
+                # it. `margin_db` used to name a bound this seam owned alone;
+                # it is the realized-level tolerance now, so it is spelled with
+                # that gate's own field name and a reader greps one word for
+                # one question across the round.
+                rejected_delta_db=round(polish_delta_db, 3),
+                tolerance_db=REALIZED_LEVEL_MATCH_TOLERANCE_DB,
             )
             trim_t = trim_t_band_average
         else:
@@ -6870,6 +6938,7 @@ def _build_candidate(
         # for a basin (the `alignment_prescription_not_committed` warning is
         # where that round learns its candidate did not run).
         polarity_pinned=bool(selection is not None and selection.polarity_pinned),
+        ripple_polish_rejected_delta_db=ripple_polish_rejected_delta_db,
     )
     return candidate, (freqs, predicted_db)
 
@@ -7361,6 +7430,12 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             else polarity_label(int(seed_polarity_sign))
         )
         out["left_anchor_lobe"] = bool(getattr(candidate, "left_anchor_lobe", False))
+        rejected_polish_db = getattr(
+            candidate, "ripple_polish_rejected_delta_db", None
+        )
+        out["ripple_polish_rejected_delta_db"] = (
+            None if rejected_polish_db is None else round(float(rejected_polish_db), 3)
+        )
         anchor_delay_us = getattr(candidate, "anchor_delay_us", None)
         if anchor_delay_us is not None:
             out["anchor_delay_us"] = round(float(anchor_delay_us), 3)

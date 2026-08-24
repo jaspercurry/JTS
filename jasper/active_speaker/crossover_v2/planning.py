@@ -365,6 +365,14 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
             {k: round(float(v), 4) for k, v in cand.trim_band_average_db.items()}
             if cand and cand.trim_band_average_db is not None else None
         ),
+        # ...and WHY they coincide, when they do. The two maps above are equal
+        # on three different paths and a forensic reader cannot tell which one
+        # ran; this is the only field that says a flatness answer was computed
+        # and discarded, and by how much. ``None`` on the other two.
+        "ripple_polish_rejected_delta_db": (
+            round(float(cand.ripple_polish_rejected_delta_db), 4)
+            if cand and cand.ripple_polish_rejected_delta_db is not None else None
+        ),
         "predicted_ripple_db": (
             round(float(cand.predicted_ripple_db), 4) if cand else None
         ),

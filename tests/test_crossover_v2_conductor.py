@@ -118,14 +118,12 @@ from jasper.active_speaker.crossover_v2_flow import (
     CLAIM_PASS,
     verify_absolute_tolerance_db,
     REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_RELAY_TIMEOUT,
     REVERIFY_NO_REWALK_HEADLINE,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
-    TEMPLATE_HARD_STOP,
     TIER_EXPRESS,
     WIDE_OFFSET_MIN_CM,
     TIER_FULL,
@@ -8928,7 +8926,7 @@ def test_declared_driver_class_reaches_the_compose_envelope_seam():
     assert c.candidate.linearization["woofer"]["driver_class"] == "unknown"
 
 
-def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check(
+def test_large_raw_shift_is_accepted_by_the_guard_and_disclosed_by_the_level_check(
     caplog,
 ):
     """The two layers, on one fixture — guard pair (a) plus PR-L4 item 1.
@@ -8951,18 +8949,31 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     What PR-L4 item 1 adds is the half the guard never had: a raw trim 20 dB
     away from what these branches justify is *invisible to drift from the
     anchor* — the anchor is the thing that is wrong — and the realized-level
-    check sees it and refuses rather than shipping a 20 dB-mislevelled
-    speaker. This is the 2026-07-27 failure shape in miniature, and (since
-    #2609) item 1 is the ONLY level gate left to catch it — there is no
-    separate frame-disagreement refusal upstream of it any more.
+    check SEES it. This is the 2026-07-27 failure shape in miniature, and
+    (since #2609) item 1 is the only level check left to catch it.
 
-    **The realized verdict is supplied.** Item 1 refuses only when the
-    committed pair's realized inter-driver level misses tolerance; the
-    −20 dB is a raw-trim INPUT the fit's anchor would otherwise repair on its
-    own (giveback alone can bring a healthy pair back in range), so the
-    realized instrument is held at "still mislevelled" here to keep the
-    refusal arm reachable. What this test is about is the guard, not item 1's
-    own arithmetic.
+    **It reports; it no longer refuses** (doctrine deviation (i)). The round
+    proceeds and the candidate is published, carrying the disagreement as a
+    banked finding and a journal line. That is the intended consequence of the
+    demotion and this test is where it is visible end-to-end: the assertions
+    below are inverted from what they were, not deleted.
+
+    **What the demotion does NOT change, since this fixture is exactly where
+    someone would look for it.** ``MIN_TRIM_SANITY_MARGIN_RATIO``'s ``M >= 2T``
+    floor was argued from the gate REFUSING — see that constant for the
+    restated version. The floor still earns its keep, because what it now
+    guarantees is that a fallback big enough to matter is one the gate SAYS
+    something about rather than one it is silent on. What bounds absolute
+    loudness here is unchanged and is elsewhere: the trims are attenuations
+    clamped non-positive, and the output limiters and volume rail sit
+    downstream of every number in this test.
+
+    **The realized verdict is supplied.** Item 1 grades the committed pair's
+    realized inter-driver level; the −20 dB is a raw-trim INPUT the fit's
+    anchor would otherwise repair on its own (giveback alone can bring a
+    healthy pair back in range), so the realized instrument is held at "still
+    mislevelled" here to keep the arm reachable. What this test is about is the
+    guard, not item 1's own arithmetic.
     """
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
@@ -8984,9 +8995,8 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
             iv, "realized_level_match", _still_mislevelled
         )
         _run_phase(c, 1, 1)
-        with pytest.raises(CaptureBeginRefused) as excinfo:
-            _run_phase(c, 2, 2)
-    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
+        # No CaptureBeginRefused: the round proceeds past the level check.
+        _run_phase(c, 2, 2)
     assert LINEARIZATION_TRIM_SANITY_MARGIN_DB > 0  # the constant exists and is positive
     # The guard fires (see the docstring): the anchor carries the raw −20 dB
     # trim almost untouched — this fixture's level-band give-back is 0.917 dB,
@@ -9001,12 +9011,16 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_refused_by_the_level_check
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
     assert "drift_db=9.8" in caplog.text
     assert "committed=anchored" in caplog.text
-    # …and the refusal is item 1's own realized-level check.
-    assert "event=correction.crossover_v2_level_match_refused" in caplog.text
+    # …and item 1's own realized-level check DISCLOSES the 20 dB it sees.
+    assert "event=correction.crossover_v2_level_match_finding" in caplog.text
     assert "tolerance_db=3.0" in caplog.text
-    # Nothing was published or stashed: the speaker is untouched.
-    assert c.candidate is None
-    assert fakes.published_candidates == []
+    assert "difference_db=-20.0" in caplog.text
+    # The round proceeded: a candidate exists and was published, carrying the
+    # finding. Inverted from the pre-demotion assertions on purpose — the
+    # household gets a proposal plus the reservation, not silence.
+    assert c.candidate is not None
+    assert len(fakes.published_candidates) == 1
+    assert fakes.banked_findings != []
 
 
 
@@ -9737,21 +9751,20 @@ def test_an_absent_prediction_names_the_other_cause(caplog):
     assert "why=evaluator_refused" not in caplog.text
 
 
-def test_an_accountability_refusal_names_itself_to_the_host():
-    """The refusal must reach the household as ITS OWN reason, not as a
-    manufactured timeout.
+def test_an_accountability_gate_no_longer_stamps_a_failure_code():
+    """The accountability gate has no refusal left to name to the host.
 
-    The host's ``CaptureBeginRefused`` arm persists
-    ``conductor.last_failure_code`` and falls back to ``relay_timeout`` when it
-    is unset, so a refusal that raised without stamping the code would render
-    "The measurement link timed out" over a session that was deliberately
-    refused. Pinned because the exception's own code is NOT what the host
-    reads.
+    This test used to assert the opposite — that item 1's refusal reached the
+    household as ``driver_levels_disagree`` rather than as a manufactured
+    ``relay_timeout``. The realized-level demotion (doctrine deviation (i))
+    removed the refusal, so the correct assertion is the inverse: the same
+    fixture that used to raise now completes with no failure code stamped at
+    all. Kept rather than deleted because ``last_failure_code`` staying ``None``
+    is exactly what a reader needs to see to know the round really did proceed.
 
     The realized verdict is supplied for the reason its sibling above gives:
-    since the #1866 ruling a frame disagreement banks a finding and proceeds
-    whenever the realized check passes on the pair about to ship, so reaching
-    the refusal at all now needs both instruments to fail."""
+    since the #1866 ruling a frame disagreement banks a finding and proceeds,
+    so a mislevelled pair has to be handed to the gate rather than provoked."""
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
     fakes = FakeSeams()
@@ -9772,29 +9785,30 @@ def test_an_accountability_refusal_names_itself_to_the_host():
         )
         _run_phase(c, 1, 1)
         assert c.last_failure_code is None
-        with pytest.raises(CaptureBeginRefused):
-            _run_phase(c, 2, 2)
-    assert c.last_failure_code == REASON_DRIVER_LEVELS_DISAGREE
+        _run_phase(c, 2, 2)
+    assert c.last_failure_code is None
     assert c.last_failure_code != REASON_RELAY_TIMEOUT
 
 
-def test_reason_registry_covers_the_accountability_refusal():
-    """Every refusal this flow can raise has household copy and a screen — a
-    bare code must never reach a phone (§5.10).
+def test_the_accountability_reasons_are_gone_from_the_registry():
+    """No refusal, no registry row — the nanny burn-down's own bookkeeping.
 
-    One code, not two, since the nanny burn-down: item 2 stopped refusing, so
-    ``correction_not_an_improvement`` and its prescribed sibling have no
-    sentence to own and are gone from the registry. Their absence is asserted
-    too — a registry row for a refusal nothing raises is copy that can never
-    be read, and re-adding one is how the veto would come back quietly.
+    A registry row for a refusal nothing raises is copy that can never be read,
+    and leaving one behind is how a veto comes back quietly: the row is the
+    thing a future change would reach for. Item 2's two went with deviation
+    (c); item 1's ``driver_levels_disagree`` went with deviation (i). All three
+    absences are asserted together because they are one rule applied three
+    times.
+
+    A durable state persisted before either change can still carry these
+    literals, and ``_failure_history_note`` reads the registry with ``.get``,
+    so an old code with no row degrades to the generic clause rather than
+    raising — which is why deleting the row is safe as well as correct.
     """
-    spec = REASON_REGISTRY[REASON_DRIVER_LEVELS_DISAGREE]
-    assert spec.template == TEMPLATE_HARD_STOP
-    assert spec.retry_budget == 0
-    assert spec.message and spec.message.endswith(".")
-    assert REASON_DRIVER_LEVELS_DISAGREE not in TRANSIENT_AUTO_RETRY_CODES
+    assert "driver_levels_disagree" not in REASON_REGISTRY
     assert "correction_not_an_improvement" not in REASON_REGISTRY
     assert "prescribed_correction_not_an_improvement" not in REASON_REGISTRY
+    assert "driver_levels_disagree" not in TRANSIENT_AUTO_RETRY_CODES
 
 
 # --------------------------------------------------------------------------- #
@@ -11055,23 +11069,30 @@ def test_the_commanded_delta_is_the_applied_minus_the_previous_graph():
 
 
 def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
-    """**S6(a).** Item 1 (the realized-level check) is the only level
-    refusal left since the single-datum-owner migration (#2609) deleted the
-    two-voter frame's own refusal arm, and this pins that it still fires on
-    its own evidence rather than having quietly gone dead.
+    """**S6(a).** Item 1 (the realized-level check) is the only level check
+    left since the single-datum-owner migration (#2609) deleted the two-voter
+    frame's own refusal arm, and this pins that it still fires on its own
+    evidence rather than having quietly gone dead.
+
+    **What it does when it fires changed; THAT it fires did not** (doctrine
+    deviation (i)). It banks a finding and the round proceeds. This test is
+    deliberately kept — inverted rather than deleted — because "the demotion"
+    and "the check rotted away" are the two outcomes a reader has to be able to
+    tell apart, and only an assertion that the numbers still reach the journal
+    can do that.
 
     **Item 1's route in this harness is now the ONLY route.** The
     level-consistency check (#2609's ``check_level_consistency``) compares the
-    two per-driver estimators and can BANK a finding, but it has no refusal arm
-    at all — every session reaches item 1 with whatever the anchor computed. A mislevelled committed
-    pair then has item 1 as the only thing standing in front of it. (The
-    ripple polish is not a route around it either — the linearized scan can
-    still move the committed pair, but only through the wild-trim guard,
-    which grades both candidates on this same assertion first.)
+    two per-driver estimators and banks a finding; neither has a refusal arm
+    now, so every session reaches the end with whatever the anchor computed and
+    a disclosure beside it. (The ripple polish is not a route around it either
+    — the linearized scan can still move the committed pair, but only through
+    the wild-trim guard, which grades both candidates on this same assertion
+    first.)
     """
     from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
-    caplog.set_level(logging.ERROR, logger=_DIAG_LOGGER)
+    caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
@@ -11080,7 +11101,7 @@ def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
     # pair: the physical routes that used to mislevel a committed trim are the
     # ones PR-L3 closed, and re-opening one to test the gate that catches it
     # would be testing the wrong thing. What must be pinned is that item 1
-    # still refuses on its own evidence, under its own event.
+    # still reports on its own evidence, under its own event.
     def _match(*_a, **_kw):
         return RealizedLevelMatch(
             level_w_db=0.0, level_t_db=-5.2, difference_db=-5.2,
@@ -11091,20 +11112,20 @@ def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(iv, "realized_level_match", _match)
         _run_phase(c, 1, 1)
-        with pytest.raises(CaptureBeginRefused) as excinfo:
-            _run_phase(c, 2, 2)
+        _run_phase(c, 2, 2)
 
-    assert excinfo.value.code == REASON_DRIVER_LEVELS_DISAGREE
-    # Item 1's own refusal, under its own event.
-    assert "event=correction.crossover_v2_level_match_refused" in caplog.text
+    # Item 1's own disclosure, under its own event.
+    assert "event=correction.crossover_v2_level_match_finding" in caplog.text
+    assert "event=correction.crossover_v2_level_match_refused" not in caplog.text
     # …with both realized levels on the line, so the verdict is re-derivable.
     for ledger_field in (
         "difference_db=", "level_w_db=", "level_t_db=", "tolerance_db=",
     ):
         assert ledger_field in caplog.text
-    # The speaker is untouched.
-    assert c.candidate is None
-    assert fakes.published_candidates == []
+    # The round proceeded and banked its reservation.
+    assert c.candidate is not None
+    assert len(fakes.published_candidates) == 1
+    assert fakes.banked_findings != []
 
 
 def test_prediction_gate_logs_the_improved_path_with_both_terms(caplog):
@@ -11348,7 +11369,7 @@ def test_an_ordinary_session_banks_no_estimator_finding():
 
     Pinned because "banks a finding" is a side effect
     (:func:`~jasper.active_speaker.crossover_v2.accountability.
-    estimator_consistency_record`) and the cheapest way for it to go wrong is
+    level_frame_record`) and the cheapest way for it to go wrong is
     to fire unconditionally — which would put a diagnosis in front of every
     household regardless of evidence.
 

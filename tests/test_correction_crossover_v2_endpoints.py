@@ -68,7 +68,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_CHANNEL_MAP_MISMATCH,
     REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_CORRECTION_MODEL_ERROR,
-    REASON_DRIVER_LEVELS_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
@@ -1184,7 +1183,15 @@ def _skip_purge_grace(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", _instant)
 
 
-def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypatch):
+def test_a_terminal_measure_refusal_posts_its_exact_terminal_event(monkeypatch):
+    """The host-event plumbing, driven by any non-retriable code at MEASURE.
+
+    The code is a STAND-IN and the test is not about which one: what is pinned
+    is that a refusal raised at index 2 reaches the host as its own code rather
+    than as a manufactured timeout. It used to stand in with
+    ``driver_levels_disagree``, which the realized-level demotion (doctrine
+    deviation (i)) deleted along with the refusal it named.
+    """
     _skip_purge_grace(monkeypatch)
     backend = FakePlanRelayBackend()
     spec = build_v2_session_spec(
@@ -1200,7 +1207,7 @@ def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypat
 
     def refuse_measure(index, attempt, result, entry=None):
         if index == 2:
-            raise conductor._refuse(REASON_DRIVER_LEVELS_DISAGREE)
+            raise conductor._refuse(REASON_CORRECTION_MODEL_ERROR)
         return real_consume(index, attempt, result, entry)
 
     monkeypatch.setattr(conductor, "consume_capture", refuse_measure)
@@ -1210,10 +1217,10 @@ def test_measure_accountability_refusal_posts_its_exact_terminal_event(monkeypat
 
     event = backend.host_events[session.session_id][-1]
     assert (event["phase"], event["index"], event["code"]) == (
-        "capture_result", 2, REASON_DRIVER_LEVELS_DISAGREE,
+        "capture_result", 2, REASON_CORRECTION_MODEL_ERROR,
     )
     assert _persisted_failure(v2host.load_v2_state()) == {
-        "code": REASON_DRIVER_LEVELS_DISAGREE,
+        "code": REASON_CORRECTION_MODEL_ERROR,
     }
     assert volume.events == ["open", "abandon"]
 
@@ -1251,7 +1258,7 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
     assert conductor.relay_published_refusal is False
     slot = conductor._slot_of_index(2)
     conductor._slot_attempts[slot] = _flow.SlotAttempts(admitted=1)
-    conductor._last_reason[slot] = REASON_DRIVER_LEVELS_DISAGREE
+    conductor._last_reason[slot] = REASON_CORRECTION_MODEL_ERROR
 
     with pytest.raises(CaptureBeginRefused):
         _run(_build_runner(conductor, VolumeRecorder()), client, session)
@@ -1259,7 +1266,7 @@ def test_the_terminal_rider_defers_to_a_refusal_the_relay_already_published(
     assert conductor.relay_published_refusal is True
     last = backend.host_events[session.session_id][-1]
     assert (last["phase"], last["index"], last["code"]) == (
-        "capture_refused", 2, REASON_DRIVER_LEVELS_DISAGREE,
+        "capture_refused", 2, REASON_CORRECTION_MODEL_ERROR,
     ), backend.host_events[session.session_id]
 
 

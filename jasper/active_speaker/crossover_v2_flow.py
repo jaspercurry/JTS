@@ -2218,7 +2218,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CORRECTION_UNVERIFIABLE_RESULT as REASON_CORRECTION_UNVERIFIABLE_RESULT,
     REASON_DELAY_EXCEEDS_SEARCH_WINDOW as REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
     REASON_DRIFT_BASELINES_DISAGREE as REASON_DRIFT_BASELINES_DISAGREE,
-    REASON_DRIVER_LEVELS_DISAGREE as REASON_DRIVER_LEVELS_DISAGREE,
     REASON_INTERNAL_ERROR as REASON_INTERNAL_ERROR,
     REASON_LOCATE_FAILED as REASON_LOCATE_FAILED,
     REASON_LOW_ALIGNMENT_CONFIDENCE as REASON_LOW_ALIGNMENT_CONFIDENCE,
@@ -9592,20 +9591,19 @@ class CrossoverV2Session:
         household as its own sentence rather than as "the measurement link
         timed out" (see :meth:`_refuse`).
 
-        The two inputs the gate is TOLD rather than reaches for are the
-        prediction threshold and item 1's household reason code; that module's
-        docstring records why each stays owned here. It used to be three:
-        item 2 was handed a reason code to refuse under, and the nanny
-        burn-down took both the code and the refusal.
+        The ONE input the gate is TOLD rather than reaches for is the
+        prediction threshold; that module's docstring records why it stays
+        owned here. It used to be three: item 2 was handed a reason code to
+        refuse under, and the nanny burn-down took both the code and the
+        refusal; item 1's went the same way with the realized-level demotion
+        (doctrine deviation (i)), and there is no level refusal left to name.
 
         **Write-then-say, and the ordering that matters.** The stash is
-        installed before the journal is emitted, which differs from the
-        method this replaced only where nothing can observe it: a decision
-        carries a stash only when it got past the realized-level gate, so no
-        refusal arm writes one. That is pinned rather than argued in
-        ``test_crossover_v2_accountability``. It used to say "both arms": the
-        estimator-consistency gate had a refusal arm of its own until #2609,
-        and now banks and proceeds without one.
+        installed before the journal is emitted. That used to be observable
+        only in the negative — no refusal arm reached the stash — and now it is
+        not observable at all, because no arm here refuses. The ordering is
+        still pinned rather than argued in ``test_crossover_v2_accountability``,
+        which is what keeps it from drifting back.
 
         **The bar has two values, and choosing between them is THIS method's
         job** (PR-B, conductor ruling 2026-08-20). ``prescribed`` names the
@@ -9652,7 +9650,6 @@ class CrossoverV2Session:
                 PRESCRIBED_NON_WORSENING_DB if prescribed_graph
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
-            reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
         )
         if decision.spec_report_written:
             self._measure_predicted_spec_report = decision.spec_report
@@ -11560,6 +11557,14 @@ class CrossoverV2Session:
                 )
                 if cand and cand.trim_band_average_db is not None else None
             ),
+            # The disambiguator for the 0.0 above: non-``None`` only when a
+            # polish was computed and REJECTED, and then it is the excursion
+            # that was thrown away. Without it the line's 0.0 is three
+            # different rounds wearing one face.
+            ripple_polish_rejected_delta_db=(
+                round(float(cand.ripple_polish_rejected_delta_db), 4)
+                if cand and cand.ripple_polish_rejected_delta_db is not None else None
+            ),
             alignment_seed_ripple_db=(
                 round(float(cand.alignment_seed_ripple_db), 4)
                 if cand and cand.alignment_seed_ripple_db is not None else None
@@ -13423,7 +13428,6 @@ __all__ = [
     "REASON_GEOMETRY_RETAKE_UNREACHABLE",
     "REASON_POSITION_TARGET_MISSING",
     "REASON_SESSION_CEILING_EXPIRED",
-    "REASON_DRIVER_LEVELS_DISAGREE",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "spec_report_for_predicted_sum",

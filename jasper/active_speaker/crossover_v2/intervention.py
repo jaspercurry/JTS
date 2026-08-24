@@ -238,11 +238,18 @@ LINEARIZATION_MIN_PAIRED_OCCURRENCES = 3
 # load-bearing**, which is why :data:`MIN_TRIM_SANITY_MARGIN_RATIO` exists
 # below rather than the relation living only in prose. Since #2291 Phase 2 a
 # beyond-margin scan falls back to the anchor, and the claim that a badly
-# levelled anchor then produces a refusal rather than a hot speaker holds only
-# while the margin is at least twice the realized-level tolerance. 6.0 against
-# 2 × 3.0 is exactly on that edge, in two different modules, and this PR made
-# the margin a per-request field — so the relation is now checked at
-# construction (hearing-safety lens, #2313 panel should-fix 1).
+# levelled anchor is one the accountability seam can SEE holds only while the
+# margin is at least twice the realized-level tolerance. 6.0 against 2 × 3.0 is
+# exactly on that edge, in two different modules, and this PR made the margin a
+# per-request field — so the relation is now checked at construction
+# (hearing-safety lens, #2313 panel should-fix 1).
+#
+# NOT the same bound as the MEASURE-path ripple polish's, which is coupled to
+# that tolerance at 1× and lives in `program_analysis`. The two answer different
+# questions and the shared "sanity margin" wording used to hide that: this one
+# bounds a summed-FLATNESS optimum's drift from a measured LEVEL anchor and
+# wants slack over the gate, while the polish's bounds a LEVEL excursion the
+# gate then grades directly and must not exceed it.
 LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 
 #: The margin must be at least this multiple of
@@ -250,15 +257,26 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 #:
 #: **Why two, derived rather than chosen.** The fallback commits the anchor
 #: when the scan drifts past the margin ``M``. The accountability seam then
-#: refuses unless the committed pair's realized level error is within the
-#: tolerance ``T``. For the refusal to be able to catch every fallback that
-#: leaves the speaker hotter than the scan would have, the drift the fallback
-#: can introduce (up to ``M``) has to exceed what the gate tolerates on each
-#: side of the crossover (``T`` on the anchor's side and ``T`` on the scan's) —
-#: i.e. ``M >= 2T``. Below that there is a band of drifts where the anchor is
-#: committed, is louder than the scan by more than the gate can see, and passes:
-#: at ``M = 4.0`` against ``T = 3.0`` the panel measured a tweeter landing
-#: +4.05 dB hotter than legacy would have shipped, *through* a matched gate.
+#: grades the committed pair's realized level error against the tolerance
+#: ``T``. For that grading to be able to SAY SOMETHING about every fallback
+#: that leaves the speaker hotter than the scan would have, the drift the
+#: fallback can introduce (up to ``M``) has to exceed what the gate tolerates
+#: on each side of the crossover (``T`` on the anchor's side and ``T`` on the
+#: scan's) — i.e. ``M >= 2T``. Below that there is a band of drifts where the
+#: anchor is committed, is louder than the scan by more than the gate can see,
+#: and the round is SILENT about it: at ``M = 4.0`` against ``T = 3.0`` the
+#: panel measured a tweeter landing +4.05 dB hotter than legacy would have
+#: shipped, through a matched gate.
+#:
+#: **What the seam does about it changed; what this floor buys did not.** The
+#: argument above was originally written when the seam REFUSED, and read "for
+#: the refusal to be able to catch every fallback". Since the realized-level
+#: demotion (`docs/measurement-loop-doctrine.md` deviation (i)) it discloses
+#: instead, so the floor's job is now to keep such a fallback VISIBLE rather
+#: than to keep it stoppable. The arithmetic is untouched and so is the value —
+#: what would be lost below ``2T`` is still exactly the band the gate cannot
+#: see. Absolute loudness was never this floor's business: the trims are
+#: clamped non-positive and the output limiters and volume rail sit downstream.
 MIN_TRIM_SANITY_MARGIN_RATIO = 2.0
 
 # SIGMA_TOLERABLE_DB (per-tier sigma-tolerance table) is imported above from
@@ -712,6 +730,24 @@ LEVEL_ESTIMATOR_SUSPECT_REASON = "level_estimators_disagree"
 #:
 #: One threshold, one owner. Nothing else in the level path holds a tolerance.
 LEVEL_ESTIMATOR_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
+
+#: Why a capture was flagged: the COMMITTED pair's two realized levels sit
+#: further apart than :data:`REALIZED_LEVEL_MATCH_TOLERANCE_DB`.
+#:
+#: The sibling of :data:`LEVEL_ESTIMATOR_SUSPECT_REASON`, in the same
+#: vocabulary and named by the same rule — what is measured, and nothing more.
+#: *realized_levels*: not two estimates of where the drivers sit, but where the
+#: pair that would ship actually lands. *disagree*: past the tolerance above.
+#:
+#: **It flags a capture; it never refuses one** (doctrine deviation (i)). Until
+#: that demotion this condition raised a household refusal under
+#: ``refusal_copy``'s ``driver_levels_disagree``, which is why this is a NEW
+#: literal rather than that one reused: a durable state persisted before the
+#: change still carries the old string as a *failure code*, and one word meaning
+#: "the session stopped and the speaker was left alone" on one surface and "the
+#: session proceeded and banked an advisory" on another is the collision the
+#: one-vocabulary rule exists to prevent.
+REALIZED_LEVEL_SUSPECT_REASON = "realized_levels_disagree"
 
 
 @dataclass(frozen=True)
@@ -1219,6 +1255,18 @@ class LinearizationPlan:
     """
     trim_band_estimate_db: Mapping[str, float]
     """Per role: the trim solve's own level-match term. The other subordinate."""
+    polish_delta_db: Mapping[str, float]
+    """Per role: how far the base the anchor was handed sits from THIS plan's
+    own band-average solve — i.e. the MEASURE path's ripple polish, measured
+    here rather than taken on trust.
+
+    Zero on the ordinary round. Non-zero means the give-back is calibrated to a
+    base that moved, and the excursion passes straight through to the committed
+    pair as realized inter-driver level error. It is a plan field rather than
+    only a journal field because the realized-level disclosure has to be able to
+    say whether the polish is what it is looking at; see
+    :func:`~.accountability.assess_accountability`.
+    """
     level_consistency: LevelConsistency | None
     """The two per-driver level estimates, graded against each other.
 
@@ -1721,29 +1769,36 @@ def plan_linearization(
     # re-reads to grade the committed pair. Any other band answers a different
     # question, and the difference lands as inter-driver level error.
     #
-    # **The invariant has a PRECONDITION, and it is not always met — state it
-    # rather than assume it.** The give-back is the right adjustment for a base
-    # that came from this same solve. ``raw_trim_db`` usually did:
-    # ``solve_branch_trims`` over these bands produces ``trim_t_band_average``.
-    # But ``program_analysis``' MEASURE path may hand over the RIPPLE-POLISHED
-    # tweeter trim instead — ``solve_ripple_optimal_trim``'s result, a FLATNESS
-    # choice the candidate made, admitted whenever it sits within
-    # ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) of the band average. When it
-    # fires, the base is δ away from what this give-back is calibrated to, and
-    # δ passes straight through: the committed pair lands with exactly δ of
-    # realized inter-driver level error. **That bound is DOUBLE the 3.0 dB
-    # realized-level tolerance**, so a polish inside its own guard can still
-    # push the pair past the level gate on its own.
+    # **The invariant has a PRECONDITION, and it is BOUNDED rather than
+    # assumed.** The give-back is the right adjustment for a base that came from
+    # this same solve. ``raw_trim_db`` usually did: ``solve_branch_trims`` over
+    # these bands produces ``trim_t_band_average``. But ``program_analysis``'
+    # MEASURE path may hand over the RIPPLE-POLISHED tweeter trim instead —
+    # ``solve_ripple_optimal_trim``'s result, a FLATNESS choice the candidate
+    # made. When it fires, the base is δ away from what this give-back is
+    # calibrated to, and δ passes straight through: the committed pair lands
+    # with exactly δ of realized inter-driver level error.
     #
-    # Two things follow, and neither is "fix it here". Whether the anchor should
-    # bind to ``trim_band_average_db`` instead of ``raw_trim_db`` is a real
-    # design question about which datum owns the pair, and it is not this
-    # change's to settle — it is filed for the architect. What IS done here is
-    # to stop the precondition being invisible: the band-average solve is
-    # already computed below for free (``_pre_res_*``), so the polish delta is
-    # published on every round (``polish_delta_db``). The realized-level gate
-    # remains the arbiter and still fails closed above 3.0 dB; this only makes
-    # the reason legible when it does.
+    # **The architect has ruled, and the bound is now the gate's own tolerance**
+    # (`docs/measurement-loop-doctrine.md` deviation (i)). The polish used to be
+    # admitted out to ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) — DOUBLE the
+    # realized-level tolerance — which meant a polish inside its own guard could
+    # push the pair past the level gate on its own, and every δ in 3.0-6.0 dB
+    # produced a round the session was then certain to refuse. That constant is
+    # deleted: `program_analysis` admits the polish only within
+    # ``REALIZED_LEVEL_MATCH_TOLERANCE_DB`` and otherwise falls back to the
+    # band-average seed, disclosed. So the invariant here now holds with a
+    # STATED bound — |δ| ≤ that tolerance — instead of holding conditionally.
+    #
+    # Which datum should own the pair — whether the anchor binds to
+    # ``trim_band_average_db`` or to ``raw_trim_db`` — is still open and still
+    # not this code's to settle (#2653). What the ruling settled is the range,
+    # which is what made the question urgent.
+    #
+    # The precondition stays VISIBLE either way: the band-average solve is
+    # computed below for free (``_pre_res_*``), so the polish delta is published
+    # on every round (``polish_delta_db``) and carried onto the plan, where the
+    # realized-level disclosure reads it as its own attribution.
     #
     # (The repo has met this conflation once already, at
     # :func:`check_level_consistency`, whose own comment names a bound that was
@@ -2319,6 +2374,7 @@ def plan_linearization(
         trim=trim,
         core_level_evidence=core_level_evidence,
         trim_band_estimate_db=banked_trim_estimate_db,
+        polish_delta_db=dict(polish_delta_db),
         level_consistency=level_consistency,
         linearized_predicted_sum=linearized_predicted_sum,
         summation_frame=summation_frame,

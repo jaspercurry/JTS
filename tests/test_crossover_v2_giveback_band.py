@@ -52,7 +52,6 @@ import pytest
 from jasper.active_speaker.crossover_v2.intervention import anchor_trims
 from jasper.audio_measurement.program_analysis import (
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    RIPPLE_TRIM_SANITY_MARGIN_DB,
     realized_branch_level_match,
     solve_branch_trims,
 )
@@ -419,39 +418,36 @@ def test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct():
 
 
 @pytest.mark.parametrize(
-    "polish_delta_db,inside_realized_gate",
+    "polish_delta_db",
     [
-        (2.0, True),    # a polish the realized gate would still admit
-        (5.0, False),   # inside the 6.0 dB polish guard, PAST the 3.0 dB gate
+        2.0,   # a polish inside the coupled bound: applied, and gradeable
+        0.0,   # what a REJECTED polish hands over — the band-average seed
     ],
 )
-def test_a_polished_base_passes_its_delta_straight_through(
-    polish_delta_db, inside_realized_gate,
-):
+def test_a_polished_base_passes_its_delta_straight_through(polish_delta_db):
     """The give-back cannot repair a base it was not calibrated to.
 
     The invariant holds *given* that the anchor's base came from this same
     solve. ``program_analysis``' MEASURE path may instead hand over the
-    RIPPLE-POLISHED tweeter trim — a flatness choice, admitted whenever it sits
-    within ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) of the band average. This
-    pins what happens then, because it is not intuitive and it is not caught by
-    the give-back: **δ of polish becomes exactly δ of realized inter-driver
-    level error**, since the give-back is a per-role constant that knows
-    nothing about how the base was chosen.
+    RIPPLE-POLISHED tweeter trim — a flatness choice. This pins what happens
+    then, because it is not intuitive and it is not caught by the give-back:
+    **δ of polish becomes exactly δ of realized inter-driver level error**,
+    since the give-back is a per-role constant that knows nothing about how the
+    base was chosen.
 
-    **The bound is DOUBLE the gate**, which is the whole reason this is pinned
-    at two points rather than one. A polish sitting comfortably inside its own
-    6.0 dB guard can still put the pair past the 3.0 dB realized-level
-    tolerance — the second case here does exactly that. The realized gate is
-    what catches it, and it fails closed; this test's job is to make the
-    pass-through a stated property rather than a surprise, and to fail loudly
-    if some future change makes the give-back silently absorb a polish instead
-    of letting the gate see it.
+    **That identity is why the polish admission is bound to the realized-level
+    tolerance and not to a number of its own.** It used to be bound to
+    ``RIPPLE_TRIM_SANITY_MARGIN_DB`` (6.0 dB) — double the gate — and the
+    arithmetic above says exactly what that bought: every polish landing in
+    3.0-6.0 dB was admitted and then produced a round whose realized level the
+    gate was guaranteed to report against. Two thresholds, neither measuring
+    anything, and a dead band between them. Coupling them closes it *by
+    construction*, which is what the second case here stands for: a rejected
+    polish hands the band-average seed straight through, so δ is 0.0 and the
+    committed pair lands level.
 
-    Whether the anchor should bind to the band-average solve rather than to
-    whatever ``raw_trim_db`` carries is a live design question for the
-    architect, filed with this PR. This test deliberately does NOT assert a
-    preference — it asserts the arithmetic either answer has to live with.
+    This test asserts the arithmetic, not a preference about which datum should
+    own the pair — that question is still open (#2653).
     """
     freqs, W, T, w_lin, t_lin = _horn_case()
     band_average = _raw_trim_db(freqs, W, T)
@@ -475,10 +471,11 @@ def test_a_polished_base_passes_its_delta_straight_through(
 
     # δ in, δ out. Not "about δ" — exactly δ.
     assert realized == pytest.approx(polish_delta_db, abs=1e-9)
-    # And the gate's verdict on it, so the two cases are not just two numbers.
-    assert (abs(realized) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB) is inside_realized_gate
-    # The polish is legal by its own guard in BOTH cases — that is the point.
-    assert polish_delta_db < RIPPLE_TRIM_SANITY_MARGIN_DB
+    # And therefore: every δ MEASURE can now hand over is one the realized gate
+    # can grade as matched. That is the coupling, stated as the property it
+    # buys rather than as the constant it is written with — a re-widened
+    # admission bound fails here as well as at its own site.
+    assert abs(realized) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 
 # --------------------------------------------------------------------------- #

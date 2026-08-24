@@ -22,9 +22,6 @@ import logging
 
 from jasper.active_speaker.crossover_v2 import accountability, intervention
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_DRIVER_LEVELS_DISAGREE,
-)
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
 from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
@@ -90,6 +87,7 @@ _UNSET = object()
 
 def _state(
     *, suspect=False, matched=True, linearized=("f", "m"), consistency=_UNSET,
+    difference_db=_UNSET, polish_delta_db=None,
 ):
     return LinearizationState(
         outcome="fitted",
@@ -99,12 +97,20 @@ def _state(
                        "radiating_band_hz": (0.0, 1282.3)},
         },
         trim_band_estimate_db={"woofer": 0.1},
+        polish_delta_db=dict(polish_delta_db or {}),
         level_consistency=(
             _consistency(suspect=suspect) if consistency is _UNSET
             else consistency
         ),
         linearized_predicted_sum=linearized,
-        realized_level_match=_match(matched=matched),
+        realized_level_match=_match(
+            matched=matched,
+            # A mismatched pair defaults to a mismatch worth the name. The
+            # 0.2 dB default belongs to the MATCHED case and would make an
+            # unmatched fixture self-contradictory.
+            **({} if difference_db is _UNSET else {"difference_db": difference_db}),
+        ) if matched or difference_db is not _UNSET
+        else _match(matched=False, difference_db=9.0),
     )
 
 
@@ -115,34 +121,127 @@ def _assess(state, **over):
         state=state,
         grade_prediction=lambda _sum: _report(True),
         material_improvement_db=IMPROVEMENT_DB,
-        reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
     )
     kwargs.update(over)
     return accountability.assess_accountability(**kwargs)
 
 
+def _one(decision, event):
+    """The single journal line for ``event`` — asserting there IS exactly one.
+
+    A gate that emitted a line twice, or not at all, would otherwise pass a
+    test that merely searched the journal.
+    """
+    lines = [record for record in decision.journal if record.event == event]
+    assert len(lines) == 1, f"expected exactly one {event}, got {len(lines)}"
+    return lines[0]
+
+
 # --------------------------------------------------------------------------- #
-# 1. a refusal must not touch a stash it never reached
+# 1. no arm of this gate refuses any more
 # --------------------------------------------------------------------------- #
+#
+# There were two refusal arms here. The single-datum-owner migration (#2609)
+# deleted the level-consistency one: a suspect verdict banks a finding and
+# proceeds. The realized-level demotion (doctrine deviation (i)) took the last
+# one, for the same never-nanny reason plus a located cost of its own — see
+# ``test_a_mislevelled_pair_discloses_and_the_round_proceeds``.
 #
 # The conductor writes the stash BEFORE it emits the journal, which is not the
-# order the replaced method used. That reordering is unobservable for exactly
-# one reason — a decision only carries a stash when it got PAST the
-# realized-level refusal arm — and "unobservable for a reason" is an argument,
-# not a guard. This is the guard.
-#
-# The level-consistency verdict used to have a second refusal arm here (a
-# disagreement past tolerance that also failed the realized-level check). The
-# single-datum-owner migration deleted it: a suspect verdict banks a finding
-# and proceeds, it never refuses, so there is no second case left to guard.
+# order the replaced method used. That used to be unobservable because no
+# refusal arm reached a stash; now it is unobservable because no arm refuses.
+# The ordering claim is asserted directly instead of through a refusal.
 
 
-def test_a_refusal_arm_never_carries_a_stash():
+def test_a_mislevelled_pair_discloses_and_the_round_proceeds():
+    """The last level refusal, burnt down — doctrine deviation (i).
+
+    A committed pair whose realized inter-driver levels sit past the tolerance
+    used to raise ``driver_levels_disagree`` at the confirm seam and leave the
+    speaker alone. It was a QUALITY check naming no component-damage mechanism,
+    so §4's closed list never covered it and §3's disclose-and-recommend rule
+    always did.
+
+    It also had a cost the estimator arm did not: the number it graded is the
+    MEASURE ripple polish's trim excursion, and the polish was admitted out to
+    6.0 dB while this gate refused past 3.0 — a dead band in which the session
+    manufactured its own refusal. ``program_analysis`` closes that band by
+    coupling the admission to this same tolerance.
+
+    Four promises, each asserted. The round is not refused. The disclosure
+    still carries every number the refusal carried. It names the polish, so a
+    reader can tell whether the polish explains it. And item 2 still runs,
+    which it never did behind a refusal.
+
+    **Mutation guard.** Restoring the refusal — a ``refusal_reason`` on this
+    path — fails the first assertion, and re-adding the early ``return`` fails
+    the last.
+    """
     decision = _assess(_state(suspect=False, matched=False))
 
-    assert decision.refusal_reason == REASON_DRIVER_LEVELS_DISAGREE
-    assert decision.spec_report_written is False
-    assert decision.spec_report is None
+    assert decision.refusal_reason is None
+    line = _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+    assert line.level == logging.WARNING
+    assert line.fields["reason"] == intervention.REALIZED_LEVEL_SUSPECT_REASON
+    assert line.fields["difference_db"] == 9.0
+    assert line.fields["tolerance_db"] == TOLERANCE_DB
+    assert line.fields["level_w_db"] == 0.0
+    assert line.fields["level_t_db"] == 9.0
+    # Item 2 ran, which is only reachable because item 1 stopped returning.
+    assert decision.spec_report_written is True
+
+
+def test_the_mislevelled_disclosure_names_the_polish_that_could_explain_it():
+    """The attribution, and why it is worth carrying.
+
+    With the admission coupled to this gate's tolerance, a polish can no longer
+    push the realized error past the bar on its own — so a firing here means a
+    NON-polish source of inter-driver mismatch, which is exactly the thing a
+    disclosure exists to surface. The reader can only draw that conclusion if
+    the round says what the polish did, so it rides both the journal line and
+    the banked record.
+
+    **Mutation guard.** Dropping ``polish_delta_db`` from either surface fails
+    here; the two assertions are deliberately on different surfaces.
+    """
+    decision = _assess(_state(
+        suspect=False, matched=False,
+        polish_delta_db={"woofer": 0.0, "tweeter": 1.25},
+    ))
+
+    line = _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+    assert line.fields["polish_delta_db"] == {"woofer": 0.0, "tweeter": 1.25}
+    assert decision.finding is not None
+    assert decision.finding["polish_delta_db_tweeter"] == 1.25
+    assert decision.finding["reason"] == intervention.REALIZED_LEVEL_SUSPECT_REASON
+
+
+def test_an_estimator_disagreement_still_owns_the_reason_when_both_fire():
+    """One reason field, and the more specific diagnosis wins.
+
+    Both checks grade the same disease and both can fire on one round. The
+    record carries ONE ``reason``, so the precedence is a decision rather than
+    an accident: the estimator disagreement is the narrower finding and keeps
+    it, exactly as its gate runs first. Nothing is lost — both sets of numbers
+    ride the record either way, which is what this asserts.
+    """
+    decision = _assess(_state(suspect=True, matched=False))
+
+    assert decision.refusal_reason is None
+    assert decision.finding["reason"] == intervention.LEVEL_ESTIMATOR_SUSPECT_REASON
+    # The realized numbers ride anyway, so the precedence costs no evidence.
+    assert decision.finding["realized_difference_db"] == 9.0
+    assert decision.finding["worst_delta_db"] is not None
+    # Both journal lines fired, in emission order — the more specific
+    # diagnosis first, which is the same precedence the reason field carries.
+    # Asserted here because no arm returns early any more, so the ordering can
+    # no longer be demonstrated by which line a refusal cut off.
+    events = [record.event for record in decision.journal]
+    assert events.index(accountability.EVENT_LEVEL_ESTIMATOR_FINDING) < events.index(
+        accountability.EVENT_LEVEL_MATCH_FINDING
+    )
+    _one(decision, accountability.EVENT_LEVEL_ESTIMATOR_FINDING)
+    _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
 
 
 def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
