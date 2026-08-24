@@ -5686,7 +5686,11 @@ def bind_production_play(
             )
 
             # Observing costs CamillaDSP round-trips, so it is bought only when
-            # retention is on; absent the marker this path is one Path.exists().
+            # retention is on; absent the marker it is one ``Path.exists()``.
+            # The FADER HOLD below is not covered by this gate and never was
+            # meant to be (#2925): it buys one more read on every capture,
+            # retained or not, because it answers for the safety ledger rather
+            # than for the forensic record.
             observing = provenance is not None and capture_dump_enabled()
 
             if phase in SUMMED_SWEEP_PHASES:

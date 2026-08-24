@@ -534,7 +534,7 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
-    # 2026-08-24 (#2925, the measurement-volume hold). Two files, +63 between
+    # 2026-08-24 (#2925, the measurement-volume hold). Two files, +67 between
     # them, and again no slack: the entry below left both at exactly their
     # ceilings. Both numbers are small because the work landed OUTSIDE these
     # files — the fader primitives are 85 executable lines in `volume_latch`
@@ -545,7 +545,7 @@ MAX_LINES_BY_PATH = {
     #  * `crossover_v2_flow` ceiling 13,081 -> 13,083, +2. ONE executable line
     #    and one `__all__` entry: the new reason code's re-export, exactly the
     #    two lines every other reason code costs this file.
-    #  * `correction_crossover_v2` ceiling 9,466 -> 9,527, +61, of which 19 are
+    #  * `correction_crossover_v2` ceiling 9,466 -> 9,531, +65, of which 19 are
     #    executable: the classifier's arm for the drift refusal (2), the
     #    `_hold_fader` closure that asks the plan and discloses a `None` (12),
     #    and the two call sites — one per capture path — with the `play_wav`
@@ -1441,9 +1441,7 @@ MAX_LINES_BY_PATH = {
     # walks this file still spelled by hand. The pair is asked together wherever
     # their disagreement is the finding, so writing one and transcribing the
     # other was the asymmetry the seam existed to remove.
-    "jasper/web/correction_crossover_v2.py": 9_527,
-    #
-    "jasper/web/correction_crossover_v2.py": 9_480,
+    "jasper/web/correction_crossover_v2.py": 9_531,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
