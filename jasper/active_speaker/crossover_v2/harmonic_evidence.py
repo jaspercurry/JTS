@@ -290,28 +290,40 @@ def _banked_sweep_durations_s(
     re-derived. ``None`` for every round banked before that field existed, and
     the caller's existing nominal-duration reproduction is unchanged for them.
 
-    **Every failure mode is fail-soft: this returns ``None``, never raises.**
-    Malformed or partial values (wrong type, non-finite, non-positive, a
-    missing role) are treated as absent — a hand-edited or partially-written
-    state file composes at nominal rather than raising, on the same fail-soft
-    rule the rest of this module reads state with. A value that IS a positive
-    finite float but is too short to close even one cycle at its role's f1
-    (the same guard :func:`~jasper.audio_measurement.sweep.
-    synchronized_sweep_metadata` enforces at compose time — woofer 150–4000 Hz
-    raises below ~10.9 ms, tweeter 1600–20000 Hz below ~0.8 ms) is caught the
-    same way: this asks that SAME kernel function whether the value is usable
-    rather than restating its ``round(...) < 1`` rule as a second copy that
-    could drift from it, and treats a "no" as absent rather than letting the
-    kernel's ``ValueError`` escape uncaught into a caller expecting only
-    :class:`HarmonicEvidenceRefused`. Gate finding, #2923 fix round: an
-    escaped ``ValueError`` here misclassified the round at the CLI as
-    ``EXIT_ROUND_UNREADABLE`` instead of the honest, named
-    ``EXIT_REFUSED``/``PROGRAM_NOT_REPRODUCIBLE``.
+    **Every VALUE's own failure mode is fail-soft: an unusable value makes
+    this return ``None``, never raise.** (A structurally unusable ``bands``
+    argument is a different question this function does not own — see
+    below.) Malformed or partial values (wrong type, non-finite,
+    non-positive, a missing role) are treated as absent — a hand-edited or
+    partially-written state file composes at nominal rather than raising, on
+    the same fail-soft rule the rest of this module reads state with.
+
+    A value that IS a positive finite float but is too short to close even
+    one cycle at f1 is caught the same way — but the ceiling checked against
+    is the band the COMPOSER will actually sweep, not the raw declared one.
+    :func:`~jasper.audio_measurement.program.build_measure_program` composes
+    over ``_intersect_band(band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)``
+    (150–23,000 Hz), so a declared upper edge at or above 24 kHz — an
+    ordinary tweeter/horn datasheet figure — clamps DOWN to 23,000 Hz before
+    Nyquist (24,000 Hz at this module's 48 kHz sample rate) ever enters the
+    question. Validating the RAW declared edge instead was the gate's #2923
+    fix-round-2 finding: a perfectly reproducible round with a real
+    datasheet-wide band failed the kernel's Nyquist check here and lost its
+    bank. This asks the SAME kernel function, about the SAME intersected
+    band the composer computes — both imported rather than restated, so
+    neither the "is this duration usable" rule nor the "what band does this
+    role actually sweep" rule can drift into a second copy of itself.
     """
     raw = state.get("measure_sweep_durations_s")
     if not isinstance(raw, Mapping):
         return None
-    from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
+    from jasper.audio_measurement.program import (
+        MEASURE_SWEEP_F_HI_HZ,
+        MEASURE_SWEEP_F_LO_HZ,
+        PROGRAM_SAMPLE_RATE_HZ,
+        FrequencyBand,
+        _intersect_band,
+    )
     from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 
     durations: dict[str, float] = {}
@@ -321,7 +333,18 @@ def _banked_sweep_durations_s(
             return None
         if not math.isfinite(value) or value <= 0.0:
             return None
-        f1, f2 = bands[role]
+        # The band the composer will actually sweep over — same clamp, same
+        # constants, same function ``build_measure_program``'s own ``_band()``
+        # closure calls. Deliberately OUTSIDE the try/except below: a ``bands``
+        # argument that does not intersect the measurement window at all is
+        # not a malformed VALUE this function fails soft over — the caller's
+        # own unconditional ``RoleBand(..., FrequencyBand(*bands[role]))``
+        # already reaches this same intersection unguarded moments later on
+        # the nominal-composition path, so swallowing it here would not
+        # prevent the escape, only relocate it by one frame.
+        f1, f2 = _intersect_band(
+            FrequencyBand(*bands[role]), MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ,
+        )
         try:
             synchronized_sweep_metadata(
                 f1=f1, f2=f2, duration_approx_s=float(value),
@@ -363,7 +386,12 @@ def rebuild_measure_program(
     every attempt below, which is what lets a fitted round reproduce at all. A
     round that did not bank it composes at nominal, exactly as before this
     field existed — a fitted-but-unbanked round still, honestly, cannot
-    reproduce.
+    reproduce. A round that banked something but the value turned out
+    unusable falls back to the SAME nominal composition, but the refusal
+    below still says so accurately: "did not bank" and "banked something
+    unusable" are different facts about a round, and a refusal that reported
+    the second as the first would send an operator to fix a bank that was
+    never the problem.
     """
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -397,6 +425,15 @@ def rebuild_measure_program(
         RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
         RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
     )
+    # WHETHER the state carries a banking attempt at all, independent of
+    # whether that attempt turned out usable (:func:`_banked_sweep_durations_s`
+    # collapses both "never banked" and "banked something unusable" to the
+    # same ``None`` — the right call for COMPOSING, since either way the
+    # replay must fall back to nominal, but the WRONG call for the refusal
+    # note below, which must not tell an operator "this round did not bank"
+    # when the state file plainly shows that it did).
+    raw_banked_durations = state.get("measure_sweep_durations_s")
+    banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     for prelude in (shipped, not shipped):
@@ -415,20 +452,34 @@ def rebuild_measure_program(
             )
             if program.program_id == want:
                 return program, float(downstream), bool(prelude)
-    duration_cause = (
-        "this round's sweeps were FITTED to a declared duration limit "
-        "(#2921) — the composer shortens a sweep whose nominal length "
-        "would overshoot that limit. This round did not bank the realized "
-        "durations (#2923), so this replay composes at the nominal length "
-        "and cannot match a fitted program"
-        if banked_durations is None else
-        "this round banked its realized sweep durations (#2923) and this "
-        "replay composed at exactly them, so a duration fit is a LESS LIKELY "
-        "cause here than it is for an unbanked round — check (1), (3), and "
-        "(4) first — but it is not ruled out: a hand-edited banked value, or "
-        "a genuine duration-limit change replayed against a byte-identical "
-        "band, could still leave the banked figure wrong for this program"
-    )
+    if not banked_durations_present:
+        duration_cause = (
+            "this round's sweeps were FITTED to a declared duration limit "
+            "(#2921) — the composer shortens a sweep whose nominal length "
+            "would overshoot that limit. This round did not bank the "
+            "realized durations (#2923), so this replay composes at the "
+            "nominal length and cannot match a fitted program"
+        )
+    elif banked_durations is None:
+        duration_cause = (
+            "this round's state carries a measure_sweep_durations_s entry, "
+            "but the value for at least one role could not be used to "
+            "compose a real sweep (malformed, non-positive, too short for "
+            "one cycle at f1, or outside the measurable band) — TREATED "
+            "THE SAME AS ABSENT, so this replay composes at the nominal "
+            "length and cannot match a fitted program. This is a bank that "
+            "exists but is not usable, not a round that never banked"
+        )
+    else:
+        duration_cause = (
+            "this round banked its realized sweep durations (#2923) and "
+            "this replay composed at exactly them, so a duration fit is a "
+            "LESS LIKELY cause here than it is for an unbanked round — "
+            "check (1), (3), and (4) first — but it is not ruled out: a "
+            "hand-edited banked value, or a genuine duration-limit change "
+            "replayed against a byte-identical band, could still leave the "
+            "banked figure wrong for this program"
+        )
     raise HarmonicEvidenceRefused(
         PROGRAM_NOT_REPRODUCIBLE,
         {
@@ -436,7 +487,19 @@ def rebuild_measure_program(
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
             "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
             "downstream_grid_step_db": 0.5,
-            "measure_sweep_durations_banked": banked_durations is not None,
+            # Two booleans, not one: "was anything banked" and "was what was
+            # banked usable" are different facts, and collapsing them lost
+            # the distinction a present-but-unusable bank needs (#2923 fix
+            # round 2). A round absent from banking is (False, False); a
+            # round that banked something unusable is (True, False); a round
+            # whose bank was read and used to compose every attempt above is
+            # (True, True) — reaching THIS raise even so means the banked
+            # duration was fine and something else (gain plan, bands, or
+            # simply a ``want`` this program was never going to match) is
+            # the actual cause, exactly what the LESS-LIKELY-cause branch of
+            # ``duration_cause`` below says.
+            "measure_sweep_durations_banked": banked_durations_present,
+            "measure_sweep_durations_usable": banked_durations is not None,
             "note": (
                 "no session volume in the grid reproduces the banked program id "
                 "with the courtesy prelude either on or off. Four causes, and "

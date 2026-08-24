@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -638,13 +638,20 @@ def test_the_solve_recovers_the_session_volume_the_round_never_banked():
 # --------------------------------------------------------------------------- #
 
 
-def _fitted_program_at(downstream_db: float, *, woofer_limit_s: float = 3.5):
+def _fitted_program_at(
+    downstream_db: float,
+    *,
+    woofer_limit_s: float = 3.5,
+    bands: Mapping[str, tuple[float, float]] | None = None,
+):
     """A real MEASURE program whose woofer sweep is FITTED (#2921) below the
     4.0 s nominal default.
 
     Deterministic regardless of the band: the nominal always realizes AT OR
     ABOVE its own request (``phase_closing_duration_s``'s own guarantee), so
-    any limit below the 4.0 s default forces the fit.
+    any limit below the 4.0 s default forces the fit. ``bands`` defaults to
+    ``he_bands()``'s own pair — pass a wider one (e.g. a tweeter upper edge
+    at or above 24 kHz) to exercise the composer's own MEASURE-window clamp.
     """
     from jasper.active_speaker.crossover_v2.programs import (
         PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase,
@@ -653,11 +660,12 @@ def _fitted_program_at(downstream_db: float, *, woofer_limit_s: float = 3.5):
         FrequencyBand, RoleBand, build_measure_program,
     )
 
+    resolved = bands if bands is not None else he_bands()
     return build_measure_program(
         {"woofer": -6.0, "tweeter": -31.2},
         (
-            RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
-            RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
+            RoleBand("woofer", 0, FrequencyBand(*resolved["woofer"])),
+            RoleBand("tweeter", 1, FrequencyBand(*resolved["tweeter"])),
         ),
         sweep_duration_limits_s={"woofer": woofer_limit_s},
         downstream_gain_db=downstream_db,
@@ -708,6 +716,7 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
     note = excinfo.value.evidence["note"]
     assert "FITTED" in note
     assert "#2921" in note
@@ -796,6 +805,13 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
     escaped ``ValueError`` — that escape used to mis-classify the round at
     ``jasper-read-distortion`` as ``EXIT_ROUND_UNREADABLE`` instead of
     ``EXIT_REFUSED``.
+
+    The state file DOES carry a ``measure_sweep_durations_s`` entry here —
+    this is the fix round 2 honesty requirement: the round banked SOMETHING,
+    it just was not usable, and the refusal must say that rather than "did
+    not bank" (which is the true story for a genuinely-absent key, pinned by
+    ``test_a_duration_fitted_round_that_predates_banking_still_names_its_cause``
+    above).
     """
     floor_s = _one_cycle_floor_s(he_bands()["woofer"])
     state = _state(
@@ -806,7 +822,86 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
         he.rebuild_measure_program(state, he_bands())
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
+    note = excinfo.value.evidence["note"]
+    assert "did not bank" not in note
+    assert "carries a measure_sweep_durations_s entry" in note
+    assert "TREATED THE SAME AS ABSENT" in note
+
+
+# --------------------------------------------------------------------------- #
+# gate fix round 2 (#2923): the guard must validate the band the COMPOSER
+# actually sweeps (post-intersection), not the raw declared one
+# --------------------------------------------------------------------------- #
+
+
+#: An ordinary compression-driver/horn datasheet upper edge — comfortably
+#: past the 24 kHz Nyquist boundary at this module's 48 kHz sample rate, and
+#: past ``he_bands()``'s own 20 kHz, which is exactly why the round-1 tests
+#: never exercised the composer's [150, 23000] Hz clamp: 20 kHz is already
+#: inside it, so intersecting changes nothing.
+_DATASHEET_WIDE_BANDS = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 30_000.0)}
+
+
+def test_a_datasheet_wide_declared_band_reproduces_a_fitted_round():
+    """The round-2 regression, reproduced then proved fixed.
+
+    A tweeter declared to 30 kHz used to fail the kernel's Nyquist check
+    here (raw ``f2=30000 >= 24000``) even though the composer clamps to
+    23,000 Hz before that check is ever reached — a perfectly reproducible
+    round lost its bank and fell back to nominal-only search. The direct
+    ``_banked_sweep_durations_s`` call below is the "evidence" half: it
+    proves the value was ACCEPTED as usable, not merely that some other path
+    happened to also reproduce.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+
+    program = _fitted_program_at(-20.0, bands=_DATASHEET_WIDE_BANDS)
+    durations = priors.measure_sweep_durations_s(program)
+    assert durations is not None
+
+    state = _state(
+        candidate={"program_id": program.program_id},
+        measure_sweep_durations_s=durations,
+    )
+    accepted = he._banked_sweep_durations_s(state, _DATASHEET_WIDE_BANDS)
+    assert accepted is not None
+    assert accepted == pytest.approx(durations)
+
+    rebuilt, downstream, prelude = he.rebuild_measure_program(
+        state, _DATASHEET_WIDE_BANDS
+    )
+
+    assert rebuilt.program_id == program.program_id
+    assert downstream == pytest.approx(-20.0)
+    assert prelude is False
+
+
+def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
+    """Even when the round refuses for an UNRELATED reason (here: a
+    ``program_id`` that simply does not match anything, standing in for a
+    wrong gain plan or wrong bands), a usable ≥24 kHz bank must still read
+    as banked AND usable in the evidence — not as "did not bank" merely
+    because its band happens to need the composer's clamp.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+
+    program = _fitted_program_at(-20.0, bands=_DATASHEET_WIDE_BANDS)
+    durations = priors.measure_sweep_durations_s(program)
+    assert durations is not None
+    state = _state(
+        candidate={"program_id": "not-a-real-id"},
+        measure_sweep_durations_s=durations,
+    )
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS)
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is True
+    assert "did not bank" not in excinfo.value.evidence["note"]
 
 
 def test_a_sidecar_carrying_no_gate_field_is_refused_rather_than_read_ungated():
