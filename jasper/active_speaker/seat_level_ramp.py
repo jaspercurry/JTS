@@ -1116,20 +1116,21 @@ async def _remeasure_silence(
     hands back the same low level. So the observing/banking guard fails on
     ``P(the first ambient window was low)`` **plus** ``P(the first window was
     high AND the re-measure lands low inside the same lull)``, where before this
-    pass existed it failed on the first term alone. **The second term is added, not
-    traded**: the first is untouched by this pass, so the BANKING guard is
-    marginally worse than it was and the honest ledger is two-sided. What this
+    pass existed it failed on the first term alone. **The second term is added,
+    not traded**: the first is untouched by this pass, so the BANKING guard is
+    marginally worse than it was, and the honest ledger is two-sided. What this
     pass buys is on the other error type — a contaminated ambient window used to
     disqualify GOOD readings for the rest of a run (jts3 run 87, the defect this
-    exists for), and no longer does. Narrow cost, real benefit, different
-    failure modes; the pre-#2918 rule refuses the worked case below, which is
-    asserted rather than asserted-about in
-    ``test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited``. A
-    worked
-    known-bad case (ambient window 66, a mic that never responds, a lull holding
-    60 across both windows, a later 67 clearing the 6 dB bar and BANKING) is
-    pinned as a documented limitation in
-    ``tests/test_active_speaker_seat_level.py``. Closing it needs a separator
+    exists for) and no longer does. Narrow cost, real benefit, different failure
+    modes.
+
+    The worked known-bad case — ambient window 66, a mic that never responds, a
+    lull holding 60 across both windows, a later 67 clearing the 6 dB bar and
+    BANKING — is pinned as a documented limitation in
+    ``tests/test_active_speaker_seat_level.py``, and the pre-#2918 rule REFUSES
+    that same case, which is asserted there rather than claimed
+    (``test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited``).
+    Closing it needs a separator
     between "the level moved" and "the level moved BECAUSE of the speaker" — a
     response test, deliberately not built here: at these reading counts it is
     spoofable, and the doctrine's no-nannies rule (§5) says a gate earns its
