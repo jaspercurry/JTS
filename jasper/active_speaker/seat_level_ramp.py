@@ -669,11 +669,18 @@ async def _settle_reading(
     sleep: Callable[[float], Awaitable[None]],
     session_id: str,
     window: str,
-    window_s: float = MIC_WINDOW_S,
     agree_db: float = SETTLED_AGREE_DB,
     timeout_s: float = SETTLE_TIMEOUT_S,
 ) -> _Reading:
     """Read windows until two consecutive ones agree, and return the later one.
+
+    Two of the three numbers behind "settled" are parameters and the third is
+    not, and the asymmetry is the domain's: ``agree_db`` and ``timeout_s`` are
+    run-scoped and operator-overridable, resolved once in
+    :func:`run_seat_level_ramp` so one pass has one answer, while
+    :data:`MIC_WINDOW_S` is a fixed property of the meter with no override path
+    — so it is read here rather than threaded, and the receipt can publish it
+    without a second writer to drift against.
 
     **The instrument's own stability is what "settled" means here.** There is no
     lag model and no drained transport delay: a window taken while the level is
@@ -726,7 +733,7 @@ async def _settle_reading(
             window=window,
             attempt=windows,
             started=started,
-            window_s=window_s,
+            window_s=MIC_WINDOW_S,
         )
         if reading.rms_dbfs is None:
             return replace(reading, windows=windows)
@@ -744,7 +751,7 @@ async def _settle_reading(
                     refusal=REFUSE_LEVEL_UNSETTLED,
                     detail=(
                         f"the level was still moving after {windows} windows of "
-                        f"{float(window_s):g} s: the last two read "
+                        f"{MIC_WINDOW_S:g} s: the last two read "
                         f"{was:.1f} then {now:.1f} dB SPL ({moved_db:+.1f} dB "
                         f"apart, against a {float(agree_db):.1f} dB agreement "
                         f"bar), and the {float(timeout_s):.0f} s settle timeout "
@@ -1450,7 +1457,7 @@ async def _walk_to_the_band(
             ),
             "required_rise_db": round(min_rise_db, 2),
             # What "settled" meant for THIS run. `steps[].windows` cannot be
-            # read without them, and one of the three is operator-overridable.
+            # read without them, and two of the three are operator-overridable.
             "settle_window_s": MIC_WINDOW_S,
             "settle_agree_db": round(agree_db, 2),
             "settle_timeout_s": round(settle_timeout_s, 1),

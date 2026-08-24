@@ -3019,7 +3019,6 @@ async def _retired_fixed_settle(next_samples, **kwargs):
     """
     kwargs.pop("agree_db", None)
     kwargs.pop("timeout_s", None)
-    kwargs.pop("window_s", None)
     started = kwargs["clock"]()
     reading = None
     for attempt in (1, 2):
@@ -3250,8 +3249,8 @@ def test_the_commissioning_stop_still_fires_on_a_sample_taken_mid_wait(tmp_path)
 def test_the_settle_contract_is_published_on_the_receipt(tmp_path):
     """``steps[].windows`` cannot be read without the bar it was measured against.
 
-    Three numbers, because one of them is operator-overridable and the other two
-    are what make a window count mean anything. The count is also the pass's own
+    Three numbers, because two of them are operator-overridable and the third is
+    what makes a window count mean anything. The count is also the pass's own
     measurement of how long this chain takes to answer a step -- the thing the
     2026-08-24 bench had to instrument by hand to find this defect at all.
     """
