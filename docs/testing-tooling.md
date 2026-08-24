@@ -2969,11 +2969,13 @@ What is bounded is a RATE, never the remaining distance: banking happens once
 consecutive medians move less than the bar per window, and what the level has
 LEFT to travel then is that rate times the chain's own time constant, so
 `residual ≈ (agree_db / MIC_WINDOW_S) × τ` — about **1 dB per second of τ** at
-the shipped values, and **unbounded in τ**. Measured on the synthetic
-first-order rig: τ = 0.81 s banks 0.42 dB low, τ = 3 s banks 2.67 dB low, τ = 5 s
-banks 4.59 dB low. τ = 3 s is inside the range the shipped timeout says it
-covers, so that is an operating region, and its 2.67 dB is the size and
-direction of the very defect #2919 closes. The fix is still large and still real
+the shipped values, and **unbounded in τ**. Measured on ONE READING on the
+synthetic first-order rig: a τ = 0.81 s chain reads 0.28 dB under the level it
+is heading for, τ = 3 s reads 2.11 under, τ = 5 s reads 4.16 under. τ = 3 s is
+inside the range the shipped timeout says it covers, so that is an operating
+region, and its 2.11 dB is the size and direction of the very defect #2919
+closes. Those are per-reading figures — what the pass *banks* is bounded
+separately by the confirm below, and none of them is a banked error. The fix is still large and still real
 — the jts3 chain arrives in about 0.9 s, the fast end of that table, against the
 ~5 dB the fixed settle banked — but a low `windows` count is **not** evidence of
 stillness: `windows == 2` means either the level was already still OR it was

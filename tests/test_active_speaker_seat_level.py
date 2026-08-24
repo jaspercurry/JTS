@@ -50,6 +50,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 
 import pytest
@@ -3223,14 +3224,15 @@ def test_the_residual_scales_with_the_chains_own_time_constant(tmp_path):
     Walked as an AXIS rather than pinned at one point, because the module
     docstring, ``.env.example`` and ``docs/testing-tooling.md`` all state the
     formula now, and a single fast-end sample would let every one of them drift.
-    Measured here (2026-08-24): tau 0.81 s banks 0.42 dB low, tau 3 s banks
-    2.67 dB low, tau 5 s banks 4.59 dB low. tau = 3 s is inside the range
-    ``SETTLE_TIMEOUT_S``'s own comment says the default covers, so that is an
-    operating region and not a corner -- and its 2.67 dB is the size and the
-    DIRECTION of the very defect #2919 closes. What the fix buys is still large
-    and still real: the jts3 chain this was built for arrives in about 0.9 s,
-    the fast end of this table, against the ~5 dB the fixed settle banked. But
-    "a fraction of a dB" was wrong, everywhere it was written.
+    Measured by THIS fixture (2026-08-24): tau 0.81 s reads 0.28 dB under the
+    level it is heading for, tau 3 s reads 2.11 under, tau 5 s reads 4.16 under.
+    tau = 3 s is inside the range ``SETTLE_TIMEOUT_S``'s own comment says the
+    default covers, so that is an operating region and not a corner -- and its
+    2.11 dB is the size and the DIRECTION of the very defect #2919 closes. What
+    the fix buys is still large and still real: the jts3 chain this was built
+    for arrives in about 0.9 s, the fast end of this table, against the ~5 dB
+    the fixed settle banked. But "a fraction of a dB" was wrong, everywhere it
+    was written.
 
     The formula is an UPPER bound, not an estimate: it assumes the settle lands
     exactly where the rate crosses the bar, while discrete windows always
@@ -3573,10 +3575,45 @@ def test_readings_that_never_agree_refuse_with_the_band_they_would_not_hold(tmp_
     assert result.reason == slr.REFUSE_LEVEL_UNSETTLED
     detail = result.detail or ""
     assert "reached the band and would not hold still" in detail
-    assert "agreement bar" in detail
-    assert "would not hold still" in detail
-    # The disagreement is greppable in the journal on its own event, too.
     assert not (tmp_path / "seat_level_reference.json").exists()
+
+    # The quoted evidence has to EXIST, and substring assertions do not check
+    # that: this refusal used to attribute its pair to the volume the walk had
+    # stepped to afterwards -- a volume at which no reading was ever taken -- and
+    # every substring assertion above still passed. So parse what the sentence
+    # claims and find it in the receipt.
+    quoted = re.search(
+        r"readings (\d+) and (\d+) at (-?\d+\.\d+) dB read "
+        r"(\d+\.\d+) then (\d+\.\d+) dB SPL \(([+-]\d+\.\d+) dB apart",
+        detail,
+    )
+    assert quoted is not None, detail
+    earlier_n, later_n = int(quoted.group(1)), int(quoted.group(2))
+    at_db = float(quoted.group(3))
+    was, now, moved = (float(quoted.group(i)) for i in (4, 5, 6))
+
+    steps = result.ramp["steps"]
+    # Consecutive readings, in range, and both really taken at the named volume.
+    assert later_n == earlier_n + 1
+    assert 1 <= earlier_n and later_n <= len(steps)
+    earlier, later = steps[earlier_n - 1], steps[later_n - 1]
+    assert earlier["volume_db"] == pytest.approx(at_db, abs=0.005)
+    assert later["volume_db"] == pytest.approx(at_db, abs=0.005)
+    # ...and the levels and the gap are the receipt's own, not a paraphrase.
+    assert earlier["observed_db_spl"] == pytest.approx(was, abs=0.05)
+    assert later["observed_db_spl"] == pytest.approx(now, abs=0.05)
+    # The gap is checked against the RECEIPT's levels, not the sentence's own
+    # rounded ones: the printed gap carries two decimals precisely so a
+    # sub-bar-looking miss cannot print as meeting the bar, and it is the true
+    # gap that has to be right.
+    assert moved == pytest.approx(
+        later["observed_db_spl"] - earlier["observed_db_spl"], abs=0.011
+    )
+    # The pair genuinely missed the bar it is quoted against.
+    assert abs(moved) > slr.SETTLED_AGREE_DB
+    # And it is NOT simply the last reading pair -- which is what made the old
+    # "the last two readings at {current volume}" wording read as plausible.
+    assert later_n < len(steps)
 
 
 def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
@@ -3962,16 +3999,20 @@ def test_a_wandering_room_buys_windows_and_audible_seconds(tmp_path):
 
     A room that wanders at the agreement bar's own scale cannot produce two
     consecutive agreeing medians quickly, so readings buy windows and the tone
-    plays longer. Measured on the jts3 rig (2026-08-24): zero wander 7.0 s,
-    +/-1 dB 11.3 s, +/-2 dB 22.8 s, +/-3 dB 25.5 s of audible tone -- all
-    CONVERGED, none refused.
+    plays longer -- multiples of the still chain's cost, converged and
+    unrefused.
 
-    What bounds it is not the wander but the structure: the walk takes at most
-    ``1 + ceil(1 / BITE_FRACTION) + MAX_MISSED_FULL_STEPS`` = 10 readings
-    whatever the span, and no reading outlives ``SETTLE_TIMEOUT_S``, so audible
-    time is at most about ten timeouts -- ~80 s shipped. That is duration, not
-    level: every sample is still checked against the commissioning stop, so the
-    thing that grew is how long a measurement takes, not how loud it gets.
+    What bounds it is not the wander but the structure: :func:`walk_reading_budget`
+    readings whatever the span, none outliving ``SETTLE_TIMEOUT_S``, so audible
+    time is at most that many timeouts -- about 88 s at the shipped values. The
+    budget is read from its owner rather than re-derived here: this test used to
+    hand-roll the pre-confirm formula and assert ``== 10``, which is exactly the
+    second-writer drift the owner exists to prevent, and it would have failed a
+    conforming pass once the bank confirm made the real budget 11.
+
+    That is duration, not level: every sample is still checked against the
+    commissioning stop, so the thing that grew is how long a measurement takes,
+    not how loud it gets.
     """
     clock = FakeClock()
     volume = Volume()
@@ -4009,9 +4050,10 @@ def test_a_wandering_room_buys_windows_and_audible_seconds(tmp_path):
     # Well past the still chain's ten seconds...
     assert tone.audible_s > 10.0
     # ...and inside the structural bound the prose states, which is what an
-    # operator is owed. Ten readings, none outliving the settle timeout.
-    max_readings = 1 + math.ceil(1 / slr.BITE_FRACTION) + slr.MAX_MISSED_FULL_STEPS
-    assert max_readings == 10
-    assert tone.audible_s < max_readings * slr.SETTLE_TIMEOUT_S
+    # operator is owed -- read from the budget's OWNER, never re-derived here.
+    budget = slr.walk_reading_budget(
+        start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+    )
+    assert tone.audible_s < budget * slr.SETTLE_TIMEOUT_S
     # Duration grew; LEVEL did not. Every reading stayed under the stop.
     assert max(step["observed_db_spl"] for step in result.ramp["steps"]) < SPL_CEILING

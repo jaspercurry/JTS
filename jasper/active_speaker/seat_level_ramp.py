@@ -633,6 +633,35 @@ class _Reading:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class _Unconfirmed:
+    """Two readings that each qualified to bank and did not agree with each other.
+
+    The walk RETAINS the last of these to its tail, because a chain creeping
+    under the band produces several and the refusal has to name one. That
+    retention is what makes carrying the volume load-bearing rather than tidy:
+    by the time the budget runs out the walk has stepped somewhere else, so a
+    sentence that formats this pair against the CURRENT commanded volume
+    attributes two real readings to a volume neither was taken at — which is a
+    refusal misquoting its own evidence, in a pass whose whole subject is not
+    banking numbers it cannot stand behind.
+
+    The ordinals are here for the same reason: "readings 8 and 9" locates the
+    pair in the receipt's ``steps`` array, where "the last two" does not once
+    the walk has carried on past them.
+    """
+
+    volume_db: float
+    earlier_db_spl: float
+    later_db_spl: float
+    earlier_reading: int
+    later_reading: int
+
+    @property
+    def moved_db(self) -> float:
+        return self.later_db_spl - self.earlier_db_spl
+
+
 async def _window_reading(
     next_samples: SampleSource,
     *,
@@ -796,15 +825,18 @@ async def _settle_reading(
         residual ~= (agree_db / MIC_WINDOW_S) x tau
 
     — about **1 dB per second of tau** at the shipped values, and **unbounded in
-    tau**. Measured end-to-end on the synthetic first-order rig in
-    ``tests/test_active_speaker_seat_level.py`` (2026-08-24, defaults): tau =
-    0.81 s banks 0.42 dB low, tau = 3 s banks 2.67 dB low, tau = 5 s banks
-    4.59 dB low. That last one is the size and the DIRECTION of the very defect
-    #2919 closes, and tau = 3 s is inside the range :data:`SETTLE_TIMEOUT_S`
-    says it covers — so this is a real operating region, not a corner. What the
-    fix buys is still large and still real: the jts3 chain this was built for
-    arrives in about 0.9 s, where the residual is a few tenths of a dB against
-    the ~5 dB the fixed settle banked.
+    tau**. Measured on ONE READING, on the synthetic first-order rig in
+    ``tests/test_active_speaker_seat_level.py`` (2026-08-24, defaults): a
+    tau = 0.81 s chain reads 0.28 dB under the level it is heading for,
+    tau = 3 s reads 2.11 under, tau = 5 s reads 4.16 under. That last one is the
+    size and the DIRECTION of the very defect #2919 closes, and tau = 3 s is
+    inside the range :data:`SETTLE_TIMEOUT_S` says it covers — so this is a real
+    operating region, not a corner. What the fix buys is still large and still
+    real: the jts3 chain this was built for arrives in about 0.9 s, where the
+    residual is a few tenths of a dB against the ~5 dB the fixed settle banked.
+
+    Those are per-READING figures. What the pass BANKS is bounded separately and
+    more tightly — see below — so none of them is a banked error.
 
     **A LOW window count is not evidence of stillness.** ``windows == 2`` has
     two causes and they are opposite: a level that was genuinely still, and a
@@ -869,7 +901,7 @@ async def _settle_reading(
                     detail=(
                         f"the level was still moving after {windows} windows of "
                         f"{MIC_WINDOW_S:g} s: the last two read "
-                        f"{was:.1f} then {now:.1f} dB SPL ({moved_db:+.1f} dB "
+                        f"{was:.1f} then {now:.1f} dB SPL ({moved_db:+.2f} dB "
                         f"apart, against a {float(agree_db):.1f} dB agreement "
                         f"bar), and the {float(timeout_s):.0f} s settle timeout "
                         "ran out; a level that has not settled is not banked"
@@ -1575,10 +1607,12 @@ async def _walk_to_the_band(
     # bank, held so the next one can be checked against it. `None` whenever the
     # last reading did not qualify, so "consecutive" means what it says.
     candidate_dbfs: float | None = None
-    # The most recent pair of qualifying readings that DISAGREED, in dB SPL, for
-    # the refusal that reports a level which reached the band and would not hold
-    # still there. Distinct from the tail's ordinary never-arrived refusal.
-    disagreed: tuple[float, float] | None = None
+    # The most recent pair of qualifying readings that DISAGREED, for the
+    # refusal that reports a level which reached the band and would not hold
+    # still there. Distinct from the tail's ordinary never-arrived refusal, and
+    # carried with its own volume and ordinals so the sentence that quotes it
+    # cannot attribute it to wherever the walk ended up instead.
+    disagreed: _Unconfirmed | None = None
     # The floor every rise is measured against. ALWAYS a window measured with
     # the speaker silent: the pre-tone ambient, or -- once, when a reading
     # contradicts it -- a second silent window measured mid-climb. Never a
@@ -1854,19 +1888,29 @@ async def _walk_to_the_band(
                         telemetry=telemetry(volume_db),
                     )
                 if candidate_dbfs is not None:
-                    disagreed = (
-                        sensitivity.db_spl_from_dbfs(candidate_dbfs),
-                        observed_db_spl,
+                    # Both readings were taken HERE -- the candidate path
+                    # continues without stepping -- so this volume, and these
+                    # two ordinals in `steps`, are the pair's own identity.
+                    disagreed = _Unconfirmed(
+                        volume_db=volume_db,
+                        earlier_db_spl=sensitivity.db_spl_from_dbfs(candidate_dbfs),
+                        later_db_spl=observed_db_spl,
+                        earlier_reading=len(steps) - 1,
+                        later_reading=len(steps),
                     )
                     log_event(
                         logger,
                         "active_speaker.seat_level_bank_unconfirmed",
                         level=logging.WARNING,
                         session=session_id,
-                        at_db=f"{volume_db:.2f}",
-                        was_db_spl=f"{disagreed[0]:.2f}",
-                        now_db_spl=f"{disagreed[1]:.2f}",
-                        moved_db=f"{disagreed[1] - disagreed[0]:+.2f}",
+                        at_db=f"{disagreed.volume_db:.2f}",
+                        readings=(
+                            f"{disagreed.earlier_reading}-"
+                            f"{disagreed.later_reading}"
+                        ),
+                        was_db_spl=f"{disagreed.earlier_db_spl:.2f}",
+                        now_db_spl=f"{disagreed.later_db_spl:.2f}",
+                        moved_db=f"{disagreed.moved_db:+.2f}",
                         agree_db=f"{agree_db:.2f}",
                     )
                 candidate_dbfs = reading.rms_dbfs
@@ -1968,17 +2012,27 @@ async def _walk_to_the_band(
             # It DID reach the band -- repeatedly -- and would not hold still
             # there, which is a different sentence from "never arrived" and
             # sends the operator somewhere else entirely.
-            was, now = disagreed
+            # Named by their own volume and ordinals, NOT as "the last two" at
+            # wherever the walk stopped: this pair may be several readings back,
+            # and a refusal that misattributes its own evidence is the same
+            # defect class as banking a number it cannot stand behind.
             return refuse(
                 REFUSE_LEVEL_UNSETTLED,
                 f"the level reached the band and would not hold still in it: "
-                f"the last two readings at {volume_db:.2f} dB read {was:.1f} "
-                f"then {now:.1f} dB SPL ({now - was:+.1f} dB apart, against a "
+                f"readings {disagreed.earlier_reading} and "
+                f"{disagreed.later_reading} at {disagreed.volume_db:.2f} dB "
+                f"read {disagreed.earlier_db_spl:.1f} then "
+                f"{disagreed.later_db_spl:.1f} dB SPL "
+                f"({disagreed.moved_db:+.2f} dB apart, against a "
                 f"{agree_db:.1f} dB agreement bar) and the "
                 f"{max_readings}-reading budget ran out; a reference is banked "
                 "only from two readings that agree",
-                was_db_spl=f"{was:.1f}",
-                now_db_spl=f"{now:.1f}",
+                pair_at_db=f"{disagreed.volume_db:.2f}",
+                pair_readings=(
+                    f"{disagreed.earlier_reading}-{disagreed.later_reading}"
+                ),
+                was_db_spl=f"{disagreed.earlier_db_spl:.1f}",
+                now_db_spl=f"{disagreed.later_db_spl:.1f}",
                 agree_db=f"{agree_db:.2f}",
             )
         slope = (
