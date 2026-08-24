@@ -112,10 +112,15 @@ Usage::
     # …read the printed candidate, decide, THEN apply it by name
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fp>
 
-    # the post-apply check (stage 2)
+    # the post-apply check (stage 2) — 0 is assertable here since the
+    # 2026-08-24 geometry ruling made the design axis a prompted pose of the
+    # walk rather than only the anchor in front of it. ``--expect-angles`` is a
+    # SUBSET check (every angle named must have been served; extra served
+    # angles are fine), so naming 0 buys a real assertion: the walk banked an
+    # on-axis position, not just a tracking sweep.
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
         --campaign captures/my-night --label r1-verify --stage verify \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22
+        --attest-rig-clear --expect-angles 0,7,-7,22,-22
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
 wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s
