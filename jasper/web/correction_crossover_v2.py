@@ -5868,11 +5868,9 @@ class V2ConductorContext:
     roles_bands: tuple
     fc_hz: float
     driver_caps_dbfs: dict[str, float]
-    # Per-role longest admissible ONE sweep, seconds -- the tighter of the
-    # operator's declared ``max_sweep_duration_s`` and the code-side protocol
-    # duration, read from the SAME owner the admission gate reads
-    # (``effective_sweep_duration_limit_s``). The MEASURE composer fits its
-    # sweeps to these, so a composed segment cannot overshoot the ceiling
+    # Per-role longest admissible ONE sweep, seconds, from the SAME owner the
+    # admission gate reads (``effective_sweep_duration_limit_s``). The MEASURE
+    # composer fits to these, so a segment cannot overshoot the ceiling
     # admission then judges it against (#2921).
     driver_sweep_duration_limits_s: dict[str, float]
     role_targets: dict[str, str]
@@ -6181,11 +6179,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
                 declared_sensitivities=declared_sensitivities,
             )
             # The DURATION half of the same confirmed limits, off the same
-            # confirmed target and under the same refusal copy. Resolved here
-            # rather than at the composer because the composer must be HANDED
-            # this number -- it is the one the admission gate will compare its
-            # sweeps against, and a second derivation could drift from it
-            # (#2921).
+            # target and under the same refusal copy. The composer must be
+            # HANDED this number, never derive a second one (#2921).
             sweep_duration_limits_s[role] = effective_sweep_duration_limit_s(
                 safety_profile, role_targets[role],
             )
@@ -7746,9 +7741,7 @@ def prepare_v2_session(
             roles_bands=context.roles_bands,
             fc_hz=session_fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
-            driver_sweep_duration_limits_s=(
-                context.driver_sweep_duration_limits_s
-            ),
+            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
                 opening,
@@ -8181,9 +8174,7 @@ def prepare_v2_verify(
             roles_bands=context.roles_bands,
             fc_hz=verify_fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
-            driver_sweep_duration_limits_s=(
-                context.driver_sweep_duration_limits_s
-            ),
+            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
                 opening,

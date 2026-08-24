@@ -5139,11 +5139,9 @@ class CrossoverV2Session:
             self._cloud_signal_band_hz, tweeter_measurement_band_hz,
         )
         self._caps = dict(driver_caps_dbfs)
-        # Per-role longest admissible ONE sweep. The MEASURE composer fits its
-        # sweeps to these so the request cannot overshoot the ceiling the
-        # admission gate compares it against (#2921); a role absent here
-        # composes at its nominal duration, which is what every pre-#2921
-        # caller got.
+        # Per-role longest admissible ONE sweep, so the MEASURE composer cannot
+        # overshoot the ceiling admission judges it against (#2921). A role
+        # absent here composes at its nominal duration.
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
@@ -5350,10 +5348,9 @@ class CrossoverV2Session:
         # re-closes the group, so the confirm always fits the newest evidence.
         self._group_combined: dict[str, Any] = {}
 
-        # What this session may play, how loud, and for how long — the
-        # declarations the composers read, frozen together so a subset cannot
-        # drift (#2291 Phase 5a-ii; ``crossover_v2.programs`` owns the level
-        # policy).
+        # What this session may play, how loud, and for how long — frozen
+        # together so a subset cannot drift (#2291 Phase 5a-ii;
+        # ``crossover_v2.programs`` owns the level policy).
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
             caps_dbfs=self._caps,

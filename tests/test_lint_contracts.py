@@ -568,6 +568,28 @@ MAX_LINES_BY_PATH = {
     #    handed no tier at all, which is why its groups prompted for a 75 cm
     #    rung even on the arm.
     #
+    # 2026-08-24 (#2921, the composer duration fit). Two files, +22 between
+    # them, and NO slack was spent: the entry above left both at exactly their
+    # ceilings, so both figures below are this diff's own lines.
+    #  * `crossover_v2_flow` ceiling 13,075 -> 13,081, +6. Two executable
+    #    lines — the ctor argument and the field it stores — plus the
+    #    `SessionExcitation` keyword that hands it on, and the three-line note
+    #    saying what a role ABSENT from the mapping gets. That last one is the
+    #    only part a reader cannot infer: the parameter defaults to None, and
+    #    without the sentence "absent composes at its nominal" a reader has to
+    #    open the composer to learn whether an unlisted role is unbounded or
+    #    refused.
+    #  * `correction_crossover_v2` ceiling 9,450 -> 9,466, +16. Five executable
+    #    lines: the context field, the dict it accumulates into, the resolver
+    #    call (three lines), the field on the return, and the keyword at each
+    #    of the two conductor ctors. The rest is the two notes this file owes
+    #    for reading a SECOND derivation off the same confirmed target as the
+    #    caps beside it — that both numbers come from one owner
+    #    (`effective_sweep_duration_limit_s`, which the admission gate also
+    #    reads) and that the composer must be HANDED the number rather than
+    #    derive it. Deriving a second copy is exactly the defect this fix
+    #    exists to close, so the sentence forbidding it is load-bearing.
+    #
     # 2026-08-22 (#2879, the human release source). Three files, and the third
     # is the big one — a provider gaining a verb it did not have.
     #
@@ -951,7 +973,7 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_075,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_081,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1369,7 +1391,7 @@ MAX_LINES_BY_PATH = {
     # walks this file still spelled by hand. The pair is asked together wherever
     # their disagreement is the finding, so writing one and transcribing the
     # other was the asymmetry the seam existed to remove.
-    "jasper/web/correction_crossover_v2.py": 9_450,
+    "jasper/web/correction_crossover_v2.py": 9_466,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-
