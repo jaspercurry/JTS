@@ -33,8 +33,11 @@ lease does not:
 * a PER-STIMULUS re-proof of the volume it opened
   (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
   whole session" is the intent; whether the fader actually stayed there is a
-  separate fact, and a CamillaDSP ``SetConfig`` replace silently answers no.
-  A per-step lease never needed this because it re-set the volume every step.
+  separate fact, and the graph swap around each stimulus used to answer no —
+  its duck released to the household level rather than the declared one
+  (#2929, fixed at the swap via :meth:`owned_measurement_volume_db`). A
+  per-step lease never needed this because it re-set the volume every step.
+  The re-proof stays as the tripwire that would catch the next such writer.
 
 The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
 DERIVES it as ``min`` of two halves — a REFERENCE level (measured by the
@@ -971,12 +974,20 @@ class SessionVolumePlan:
     ) -> float | None:
         """Re-prove this session's measurement volume for ONE stimulus (#2925).
 
-        Setting a volume once is not the same as it staying set: a CamillaDSP
-        ``SetConfig`` replace does not preserve runtime ``main_volume``, and
-        every crossover-v2 MEASURE-phase stimulus is bracketed in exactly that
-        load/restore pair — which is how a whole overnight campaign of sweeps
-        played 8.712 dB below the volume this plan had confirmed. So a capture
-        path asks HERE, per stimulus, rather than trusting :meth:`open`.
+        Setting a volume once is not the same as it staying set: every
+        crossover-v2 MEASURE-phase stimulus is bracketed in a graph
+        load/restore pair, and that pair's own duck used to release the fader
+        to the household level instead of the declared one — which is how a
+        whole overnight campaign of sweeps played 8.712 dB below the volume
+        this plan had confirmed. So a capture path asks HERE, per stimulus,
+        rather than trusting :meth:`open`.
+
+        #2929 removed that writer at its source: the swap now takes
+        :meth:`owned_measurement_volume_db` as its release reference, so a
+        healthy routed capture reads in tolerance and this method writes
+        nothing. It stays as the tripwire — the declared volume is still
+        re-proven per stimulus, and a repair now means something genuinely
+        moved the fader.
 
         Returns the proven fader reading, or ``None`` when this plan does not
         currently own a volume to hold — nothing open, latched ``unresolved``,
@@ -1008,17 +1019,52 @@ class SessionVolumePlan:
         see there for the measured +47.5 dB it prevents.
         """
         async with self._restore_lock:
-            try:
-                self.assert_ready()
-            except SessionVolumePlanError:
-                return None
-            state = self._state
-            volume = None if state is None else state.measurement_volume_db
-            if volume is None:  # unreachable via assert_ready; fail closed anyway
+            volume = self._owned_volume_db_locked()
+            if volume is None:
                 return None
             return await hold_fader_at(
                 volume, set_main_volume_db, get_main_volume_db, context=context,
             )
+
+    def _owned_volume_db_locked(self) -> float | None:
+        """The volume this plan currently OWNS, or ``None``. Lock held by caller.
+
+        The one guarded answer to "may this session command a volume right
+        now?", so :meth:`hold_measurement_volume` and
+        :meth:`owned_measurement_volume_db` cannot drift apart. Reading
+        ``measurement_volume_db`` directly instead is the +47.5 dB hazard
+        :meth:`_clear_resolved` documents: ``_mark_unresolved`` copies that
+        field forward, so a plan whose restore could not be confirmed still
+        REPORTS the declared volume while owning nothing.
+        """
+        try:
+            self.assert_ready()
+        except SessionVolumePlanError:
+            return None
+        state = self._state
+        # Unreachable via assert_ready; fail closed anyway.
+        return None if state is None else state.measurement_volume_db
+
+    async def owned_measurement_volume_db(self) -> float | None:
+        """The volume this plan owns, serialized against its own drains.
+
+        Same question :meth:`hold_measurement_volume` asks, without commanding
+        anything — for a caller that needs the declared level BEFORE the fader
+        can be proven. The crossover-v2 graph swaps use it as the duck's
+        release reference (issue #2929) so the fader lands on the declared
+        measurement volume by construction instead of on the household level,
+        which is what made the per-stimulus hold repair on every routed
+        capture rather than merely watch.
+
+        ``None`` whenever this plan owns no volume — nothing open, latched
+        ``unresolved``, crash-hydrated, or past its wall-clock ceiling. The
+        caller then supplies no reference and the swap releases to the
+        canonical household target exactly as it always did, which is the
+        fail-safe direction: a plan that has given up its volume can never
+        pull the fader back up to it.
+        """
+        async with self._restore_lock:
+            return self._owned_volume_db_locked()
 
     async def _drain_restore(
         self,

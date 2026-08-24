@@ -25,18 +25,38 @@ only the fader primitives are genuinely shared:
   repair cannot be proven (issue #2925).
 
 **Why "hold" exists (#2925).** Setting a volume once is not the same as it
-STAYING set. A CamillaDSP ``SetConfig`` replace does not preserve runtime
-``main_volume``: it re-applies the incoming config's STORED volume and leaves
-it there. Measured on jts3 on 2026-08-24 with a byte-identical live config —
-the fader was set to −13.596, confirmed, then snapped back to the config's
-−9.59596 across the ``set_active_config_raw`` call, with no volume command
-issued. Every crossover-v2 MEASURE-phase stimulus is bracketed in exactly that
-load/restore pair, so a whole overnight campaign of measuring sweeps played
-8.712 dB below the volume its session plan had confirmed — and, because the
-excitation-safety ledger admits a program against the DECLARED volume, that
-ledger was wrong for every one of them. It was wrong quiet that night; the same
-seam reversed is loud. So a declared measurement volume is re-proven per
-stimulus, not once per session.
+STAYING set. A crossover-v2 stimulus is bracketed in a graph load/restore pair,
+and the fader was landing somewhere other than the declared level across it: a
+whole overnight campaign of measuring sweeps played 8.712 dB below the volume
+its session plan had confirmed — and, because the excitation-safety ledger
+admits a program against the DECLARED volume, that ledger was wrong for every
+one of them. It was wrong quiet that night; the same seam reversed is loud. So
+a declared measurement volume is re-proven per stimulus, not once per session.
+
+**What actually moved the fader (#2929 — the mechanism #2925 named wrongly).**
+Not CamillaDSP. It does NOT reset ``main_volume`` on a config replace: the
+fader is process state that survives the reload (``jasper.camilla``'s
+``_graph_mutation``, whose whole fade-down/fade-back-up design depends on
+that), CamillaDSP's ``devices`` schema has no field that stores a volume at
+all, and it rejects unknown keys outright. Read at the pinned version, tag
+``v4.1.3`` (``05e9cfc``), 2026-08-24: ``src/config/mod.rs:806`` is
+``#[serde(deny_unknown_fields)]`` on ``struct Devices`` and none of its 18
+fields is a fader level; ``ProcessingParameters::new`` occurs once, at
+``src/bin.rs:1119``; ``src/pipeline.rs:270`` re-seeds a rebuilt pipeline from
+the LIVE volume. The mover was JTS's own
+swap duck: ``_duck_release_target_db`` released to ``min(canonical, released)``
+with no reference of its own, and ``canonical`` is the HOUSEHOLD target
+(``percent_to_db(listening_level)``). A measurement volume is louder than the
+household level, so the household value won that ``min`` on every routed
+capture. Both dB values #2925 recorded as "the config's" are exactly
+``percent_to_db`` outputs — −9.59596 is level 81, −18.181818 is level 64 —
+which is what identified the real writer. #2929 gives the swap an explicit
+release reference (the level the session plan owns), so the fader now lands on
+the declared volume by construction.
+
+That makes this hold a TRIPWIRE rather than a repair: in a healthy routed
+session it reads in tolerance and writes nothing. A ``repairing`` line is now
+an anomaly worth investigating, not the steady state.
 """
 
 from __future__ import annotations

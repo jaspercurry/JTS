@@ -6,11 +6,24 @@
 
 The subject is the 2026-08-23/24 overnight campaign. Every MEASURE-phase
 stimulus played at the household volume (−21.212124) while the session plan
-declared the measurement volume (−12.5), all night, every round. The mechanism
-was measured on jts3 on 2026-08-24: a CamillaDSP ``SetConfig`` replace does not
-preserve runtime ``main_volume``, it re-applies the incoming config's STORED
-value — and ``play_program`` brackets every measure-phase stimulus in exactly
-that load/restore pair.
+declared the measurement volume (−12.5), all night, every round.
+``play_program`` brackets every measure-phase stimulus in a graph load/restore
+pair, and the fader was not surviving it.
+
+**The mechanism, corrected (#2929).** #2925 recorded it as "a CamillaDSP
+``SetConfig`` replace re-applies the incoming config's STORED volume". It does
+not: CamillaDSP v4.1.3 has no config field that stores a volume, rejects
+unknown ``devices`` keys outright, and keeps the fader across a reload. The
+writer was JTS's own graph-swap duck — ``_duck_release_target_db`` releases to
+``min(canonical, released)``, where ``canonical`` is the household target
+``percent_to_db(listening_level)``, which is below any measurement volume and
+therefore won that ``min`` on every capture. This file's own ``HOUSEHOLD_DB``
+is the proof: −21.212124 is ``percent_to_db(58)`` to within 3 µdB of a float
+readback, and the other two dB values #2925 attributed to configs are
+``percent_to_db(81)`` and ``percent_to_db(64)``. The swap now takes the level
+the session plan owns as its release reference, so the fader lands on the
+declared volume by construction and the hold below is a TRIPWIRE — in a
+healthy routed session it reads in tolerance and writes nothing.
 
 Two halves ship together and are pinned together here:
 
@@ -847,12 +860,17 @@ def test_a_loud_household_is_pulled_down_before_any_audio(
     """THE LOUD DIRECTION, at the seam rather than at the primitive.
 
     #2925's own account: "It was wrong quiet that night; the identical seam
-    reversed is the LOUD direction." The routed path's `SetConfig` clobber
-    restores whatever the config stores, so on a household louder than the
-    measurement volume it hands the stimulus a HOTTER fader than the
-    excitation ledger admitted. Both branches must pull it down, and must do
-    so before the WAV handoff — the ordering is asserted, not inferred, by
-    recording the fader at the moment audio is emitted.
+    reversed is the LOUD direction." Whatever left the fader hot — a household
+    level above the measurement volume, an authoritative UI/remote write, a
+    racing writer — the stimulus must not be emitted at it, because the
+    excitation ledger admitted the program against the DECLARED volume. Both
+    branches must pull it down, and must do so before the WAV handoff — the
+    ordering is asserted, not inferred, by recording the fader at the moment
+    audio is emitted.
+
+    This is the arm #2929 does NOT remove: the release reference makes the
+    swap land on the declared level, and this hold still catches anything else
+    that moved it.
     """
     seen_at_emit: list[float] = []
     cam = _StubCam(volume_db=LOUD_HOUSEHOLD_DB)
@@ -924,3 +942,332 @@ def test_an_unready_plan_never_gets_its_fader_raised(monkeypatch, tmp_path, phas
             )
     assert cam.volume_writes == []
     assert cam.volume_db == HOUSEHOLD_DB
+
+
+# --------------------------------------------------------------------------- #
+# the fix: the swap releases to the declared level BY CONSTRUCTION (#2929)
+# --------------------------------------------------------------------------- #
+
+
+async def _noop_confirm(_cam, _yaml_text) -> None:
+    """The load seam's post-SetConfig readback proof, stubbed out.
+
+    These tests are about the release reference a swap carries, not about
+    graph confirmation — that is
+    ``test_bind_program_playback_seams_uses_inline_setconfig``'s subject.
+    """
+    return None
+
+
+def test_the_release_reference_is_the_plans_own_guarded_answer(tmp_path):
+    """THE SAFETY GUARD ON THIS FIX.
+
+    The reference the swap releases to is the same guarded question the hold
+    asks, not the raw ``measurement_volume_db`` field — because
+    ``_mark_unresolved`` copies that field forward, so a plan whose restore
+    could not be confirmed still REPORTS the declared volume while owning
+    nothing. Reading it unguarded would let a graph swap raise the fader back
+    up on a speaker its session had just left at the emergency floor. Every
+    state that makes the hold answer ``None`` must make this answer ``None``
+    too, or the two disagree about who owns the fader.
+    """
+    plan, _fader_io = _open_plan(tmp_path)
+    assert asyncio.run(plan.owned_measurement_volume_db()) == DECLARED_DB
+
+    stuck = _fader(value=-5.0, sticks=False)
+    asyncio.run(plan.close(stuck.set, stuck.get))
+    assert plan.needs_recovery
+    assert plan.measurement_volume_db == DECLARED_DB  # the field still says it
+    assert asyncio.run(plan.owned_measurement_volume_db()) is None
+
+
+def test_a_cleanly_closed_plan_offers_no_release_reference(tmp_path):
+    """After a clean close the household owns the fader again, so a later swap
+    must fall back to the canonical target rather than the measurement one."""
+    plan, fader = _open_plan(tmp_path)
+    asyncio.run(plan.close(fader.set, fader.get))
+    assert asyncio.run(plan.owned_measurement_volume_db()) is None
+
+
+def test_both_program_swaps_carry_the_declared_release_reference(monkeypatch, tmp_path):
+    """The load AND the restore, not just the load.
+
+    Releasing the RESTORE swap to the household level would simply move the
+    drift one capture later: the next load reads its own entry snapshot from
+    wherever the restore left the fader, so the hold would be repairing again
+    from the second capture onward. Both swaps are asserted here because
+    fixing only the obvious one looks green on a single-capture test.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    seen: list[tuple[str, float | None]] = []
+
+    class _SpyCam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(tmp_path / "entry.yml")
+
+        async def set_active_config_raw(
+            self, config, *, best_effort=False, held_target_db=None,
+        ):
+            seen.append(("load" if "program" in config else "restore", held_target_db))
+            return True
+
+    (tmp_path / "entry.yml").write_text("restore-me\n", encoding="utf-8")
+    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
+
+    async def _owned() -> float:
+        return DECLARED_DB
+
+    seams = flow_mod.bind_program_playback_seams(
+        _SpyCam(),
+        bundle_dir=str(tmp_path),
+        artifact=SimpleNamespace(fingerprint="f"),
+        config_dir=str(tmp_path),
+        program=_program(),
+        wav_path=str(tmp_path / "p.wav"),
+        topology=object(),
+        safety_profile={},
+        role_targets={},
+        session_volume_db=DECLARED_DB,
+        held_target_db=_owned,
+    )
+
+    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
+    assert asyncio.run(seams["restore_graph"](str(tmp_path / "entry.yml"))) is True
+
+    assert seen == [("load", DECLARED_DB), ("restore", DECLARED_DB)]
+
+
+def test_a_drained_plan_stops_supplying_a_reference_mid_session(monkeypatch, tmp_path):
+    """Read FRESH per swap, never captured once at bind time.
+
+    A plan can drain mid-session (close, ceiling, a failed restore). The swap
+    must notice on its very next load, because a plan that has given up its
+    volume must never pull the fader back up to it.
+    """
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    seen: list[float | None] = []
+    owned: list[float | None] = [DECLARED_DB]
+
+    class _SpyCam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(tmp_path / "entry.yml")
+
+        async def set_active_config_raw(
+            self, config, *, best_effort=False, held_target_db=None,
+        ):
+            seen.append(held_target_db)
+            return True
+
+    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
+
+    async def _owned() -> float | None:
+        return owned[0]
+
+    seams = flow_mod.bind_program_playback_seams(
+        _SpyCam(),
+        bundle_dir=str(tmp_path),
+        artifact=SimpleNamespace(fingerprint="f"),
+        config_dir=str(tmp_path),
+        program=_program(),
+        wav_path=str(tmp_path / "p.wav"),
+        topology=object(),
+        safety_profile={},
+        role_targets={},
+        session_volume_db=DECLARED_DB,
+        held_target_db=_owned,
+    )
+
+    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
+    owned[0] = None  # the plan drains
+    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
+
+    assert seen == [DECLARED_DB, None]
+
+
+def test_no_reference_reader_leaves_every_swap_exactly_as_it_was(monkeypatch, tmp_path):
+    """``held_target_db`` is optional, and omitting it must not start passing
+    ``None`` in some new shape — it is the same call the seam always made."""
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+
+    seen: list[float | None] = []
+
+    class _SpyCam:
+        async def get_config_file_path(self, *, best_effort=False):
+            return str(tmp_path / "entry.yml")
+
+        async def set_active_config_raw(
+            self, config, *, best_effort=False, held_target_db=None,
+        ):
+            seen.append(held_target_db)
+            return True
+
+    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
+
+    seams = flow_mod.bind_program_playback_seams(
+        _SpyCam(),
+        bundle_dir=str(tmp_path),
+        artifact=SimpleNamespace(fingerprint="f"),
+        config_dir=str(tmp_path),
+        program=_program(),
+        wav_path=str(tmp_path / "p.wav"),
+        topology=object(),
+        safety_profile={},
+        role_targets={},
+        session_volume_db=DECLARED_DB,
+    )
+
+    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
+    assert seen == [None]
+
+
+class _FakeCamillaClient:
+    """CamillaDSP as it actually behaves (#2929).
+
+    ``main_volume`` is PROCESS state and survives a config replace — the
+    property ``_graph_mutation``'s whole fade-down/fade-back-up design already
+    depended on, and the one #2925 mis-recorded as the opposite. v4.1.3's
+    ``devices`` schema has no field that could carry a volume, so
+    ``set_active_raw`` deliberately does not touch the fader here.
+    """
+
+    def __init__(self, volume_db: float) -> None:
+        self._volume = float(volume_db)
+        self.config = self
+        self.volume = self
+        self.general = self
+        self.loads: list[str] = []
+
+    def main_volume(self) -> float:
+        return self._volume
+
+    def set_main_volume(self, value: float) -> None:
+        self._volume = float(value)
+
+    def main_mute(self) -> bool:
+        return False
+
+    def set_active_raw(self, text: str) -> None:
+        self.loads.append(text)
+
+
+def _capture_sequence(monkeypatch, tmp_path, *, declare_reference: bool):
+    """Drive three captures through the REAL duck and the REAL hold.
+
+    Returns ``(writes_the_hold_made, fader_after_each_capture)``. Only the
+    pycamilladsp client is faked, so the duck depth, the dwell, the release
+    arithmetic and the hold are all production code.
+    """
+    from jasper import camilla as camilla_module
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+
+    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+
+    async def household() -> float:
+        return HOUSEHOLD_DB
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+
+    fake = _FakeCamillaClient(HOUSEHOLD_DB)
+    cam = camilla_module.CamillaController("127.0.0.1", 1234)
+    cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
+
+    async def _call(fn):
+        return fn(fake)
+
+    cam._call = _call  # type: ignore[method-assign]
+
+    hold_writes: list[float] = []
+
+    async def set_v(db: float) -> bool:
+        hold_writes.append(float(db))
+        return await cam.set_volume_db(db, best_effort=False)
+
+    async def get_v():
+        return await cam.get_volume_db(best_effort=False)
+
+    plan = SessionVolumePlan(state_path=tmp_path / "session_volume.json")
+
+    async def _run():
+        opened = await plan.open(DECLARED_DB, set_v, get_v)
+        assert opened is SessionVolumeOpenResult.OPENED
+        hold_writes.clear()  # the open's own write is not the hold's
+
+        levels: list[float] = []
+        for _ in range(3):
+            reference = (
+                await plan.owned_measurement_volume_db()
+                if declare_reference
+                else None
+            )
+            # 1. load the program graph, 2. prove the fader, 3. restore.
+            await cam.set_active_config_raw(
+                "program: graph\n", held_target_db=reference,
+            )
+            await plan.hold_measurement_volume(set_v, get_v, context="capture:check")
+            levels.append(await cam.get_volume_db())
+            await cam.set_active_config_raw(
+                "entry: graph\n", held_target_db=reference,
+            )
+        return levels
+
+    return hold_writes, asyncio.run(_run())
+
+
+def test_a_measurement_session_leaves_the_hold_nothing_to_repair(
+    monkeypatch, tmp_path,
+):
+    """THE POINT OF #2929, end to end: zero writes across a multi-capture run.
+
+    The hold is promoted from a repair to a tripwire. Every stimulus is still
+    emitted at the declared level — that part is unchanged and is what the
+    excitation ledger requires — but the level is now arrived at by
+    construction, so the hold reads it, agrees, and writes nothing.
+    """
+    hold_writes, levels = _capture_sequence(
+        monkeypatch, tmp_path, declare_reference=True,
+    )
+
+    assert hold_writes == []
+    assert levels == [DECLARED_DB, DECLARED_DB, DECLARED_DB]
+
+
+def test_without_the_reference_the_hold_repairs_every_capture(monkeypatch, tmp_path):
+    """THE CONTROL, and the mutation proof for the test above.
+
+    Drop the release reference and the overnight defect reappears exactly:
+    the swap releases to the household level, and the hold has to drag the
+    fader back before every single stimulus. This is what
+    ``repairing``/``repaired`` on every routed capture actually meant.
+    """
+    hold_writes, levels = _capture_sequence(
+        monkeypatch, tmp_path, declare_reference=False,
+    )
+
+    assert hold_writes == [DECLARED_DB, DECLARED_DB, DECLARED_DB]
+    assert levels == [DECLARED_DB, DECLARED_DB, DECLARED_DB]
+
+
+def test_a_fader_moved_by_something_else_still_refuses_fail_closed(
+    monkeypatch, tmp_path,
+):
+    """THE TRIPWIRE KEEPS ITS TEETH.
+
+    Correct-by-construction is not a reason to stop checking. A fader that
+    something else is holding — the setter reports success and nothing moves —
+    must still refuse the capture, because a stimulus at an unproven level was
+    never the one the ledger admitted.
+    """
+    plan, _ = _open_plan(tmp_path)
+    stuck = _fader(value=HOUSEHOLD_DB, sticks=False)
+
+    with pytest.raises(MeasurementFaderDrift):
+        asyncio.run(
+            plan.hold_measurement_volume(
+                stuck.set, stuck.get, context="capture:check",
+            )
+        )

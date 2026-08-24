@@ -6780,8 +6780,12 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
             calls.append(("get_path", best_effort))
             return str(tmp_path / "entry.yml")
 
-        async def set_active_config_raw(self, text, *, best_effort):
-            calls.append(("set_raw", text, best_effort))
+        async def set_active_config_raw(
+            self, text, *, best_effort, held_target_db=None,
+        ):
+            # ``held_target_db`` is the swap duck's release reference (#2929);
+            # this test binds no reader, so both swaps must pass None.
+            calls.append(("set_raw", text, best_effort, held_target_db))
             self.live = text
             return True
 
@@ -6826,9 +6830,9 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     assert asyncio.run(seams["restore_graph"](str(entry))) is True
     assert calls == [
         ("get_path", False),
-        ("set_raw", "program: graph\n", False),
+        ("set_raw", "program: graph\n", False, None),
         ("get_raw", False),
-        ("set_raw", "prior: graph\n", False),
+        ("set_raw", "prior: graph\n", False, None),
     ]
     from jasper.active_speaker.program_playback import ProgramPlaybackError
 
