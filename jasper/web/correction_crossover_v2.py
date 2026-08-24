@@ -330,6 +330,7 @@ def classify_program_failure(
     wizard's DOM while the phone was told something else entirely.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        REASON_MEASUREMENT_VOLUME_DRIFT,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
@@ -344,10 +345,19 @@ def classify_program_failure(
         ProgramPlaybackError,
         ProgramPlaybackRefused,
     )
+    from jasper.active_speaker.volume_latch import MeasurementFaderDrift
     from jasper.audio_measurement.program_analysis import (
         ConfiguredPathConditioningError,
     )
 
+    if isinstance(exc, MeasurementFaderDrift):
+        # #2925. Its own code because it says the OPPOSITE of
+        # ``program_unplayable``: the program was admissible and the SPEAKER's
+        # level was not the one it was admitted against. No refusal slugs — the
+        # observed/expected pair rides the
+        # ``active_speaker.measurement_fader_drift`` line that refused, not an
+        # admission's refusal set.
+        return REASON_MEASUREMENT_VOLUME_DRIFT, ()
     if isinstance(exc, ConfiguredPathConditioningError):
         return (
             REASON_PROTECTION_SWEEP_TOO_LOW if exc.protection_floor
@@ -5555,6 +5565,13 @@ def bind_production_play(
     the writer lock, after the load, immediately before the WAV handoff) and
     only while retention is on — :func:`capture_dump_enabled`.
 
+    **It is also the one owner of "at what level"** (#2925). Both branches call
+    ``_hold_fader`` at that same instant — one seam, because the defect it
+    closes lived in the gap between the two branches and a per-branch copy
+    would rebuild it. Unlike the provenance observation it is UNCONDITIONAL,
+    and a drift it cannot repair refuses the capture before any audio rather
+    than banking a measurement taken at an unknown level.
+
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2_flow import (
@@ -5633,6 +5650,32 @@ def bind_production_play(
                 artifact=artifact, read_volume_plan=session_volume_plan,
             )
 
+        async def _hold_fader(open_cam: Callable[[], Any]) -> None:
+            """Re-prove the session's measurement volume for THIS stimulus.
+
+            The ONE volume discipline both playback shapes use (#2925), owned
+            by the plan (``SessionVolumePlan.hold_measurement_volume``) because
+            only the plan can serialize it against its own drains. NOT gated on
+            ``observing`` the way provenance is: that record is forensics, this
+            is the safety ledger's own integrity — ``readmit_program_from_wav``
+            admitted this program against the DECLARED volume, so a stimulus
+            emitted at any other level was never the one that was admitted.
+
+            ``None`` means the plan holds no volume to prove; that is its
+            question to answer, so this discloses and plays on.
+            """
+            set_v, get_v = _session_volume_io(open_cam)
+            held = await session_volume_plan().hold_measurement_volume(
+                set_v, get_v, context=f"capture:{phase}",
+            )
+            if held is None:
+                log_event(
+                    logger,
+                    "correction.crossover_v2_capture_volume_unheld",
+                    level=logging.WARNING,
+                    phase=phase,
+                )
+
         async def _play_body() -> None:
             from jasper.active_speaker.capture_provenance import (
                 GRAPH_KIND_APPLIED,
@@ -5643,7 +5686,11 @@ def bind_production_play(
             )
 
             # Observing costs CamillaDSP round-trips, so it is bought only when
-            # retention is on; absent the marker this path is one Path.exists().
+            # retention is on; absent the marker it is one ``Path.exists()``.
+            # The FADER HOLD below is not covered by this gate and never was
+            # meant to be (#2925): it buys one more read on every capture,
+            # retained or not, because it answers for the safety ledger rather
+            # than for the forensic record.
             observing = provenance is not None and capture_dump_enabled()
 
             if phase in SUMMED_SWEEP_PHASES:
@@ -5658,6 +5705,10 @@ def bind_production_play(
                 #
                 # No load means the standing graph IS what this capture goes
                 # through — stated by the branch that skipped the load.
+                #
+                # The hold runs FIRST and unconditionally, so the provenance
+                # record below observes a fader that was just proven.
+                await _hold_fader(camilla_factory)
                 if observing:
                     await _observe(camilla_factory, GRAPH_KIND_APPLIED)
                 if on_playback_started is not None:
@@ -5746,6 +5797,20 @@ def bind_production_play(
                     return await pre_provenance_play_wav()
 
                 seams["play_wav"] = _play_wav_observed
+            # OUTERMOST, and unconditional (#2925 — ``hold_measurement_volume``
+            # states the mechanism). Wrapping ``play_wav`` is what puts the hold
+            # where the fix has to be: INSIDE the writer lock, AFTER
+            # ``load_program_graph``, BEFORE any audio. Outside the provenance
+            # wrapper so the recorded fader is one that was proven, and outside
+            # the signalling wrapper so the phone's phase-ladder anchor still
+            # fires adjacent to the WAV handoff and never for a refused capture.
+            pre_hold_play_wav = seams["play_wav"]
+
+            async def _play_wav_volume_held() -> Any:
+                await _hold_fader(lambda: cam)
+                return await pre_hold_play_wav()
+
+            seams["play_wav"] = _play_wav_volume_held
             await play_program(
                 program,
                 program_graph_yaml=program_yaml,

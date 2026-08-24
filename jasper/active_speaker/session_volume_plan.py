@@ -29,7 +29,12 @@ lease does not:
   process restart hydrating them as unresolved); this plan must NOT rely on a
   restart to flip states, so a hydrated ``active`` state past the ceiling
   force-drains restore here, and falls back to the emergency floor + latched
-  ``unresolved`` (the volume_recovery path) when readback cannot confirm.
+  ``unresolved`` (the volume_recovery path) when readback cannot confirm;
+* a PER-STIMULUS re-proof of the volume it opened
+  (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
+  whole session" is the intent; whether the fader actually stayed there is a
+  separate fact, and a CamillaDSP ``SetConfig`` replace silently answers no.
+  A per-step lease never needed this because it re-set the volume every step.
 
 The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
 DERIVES it as ``min`` of two halves — a REFERENCE level (measured by the
@@ -62,6 +67,7 @@ from .volume_latch import (
     EMERGENCY_MEASUREMENT_VOLUME_DB,
     GetMainVolumeDb,
     SetMainVolumeDb,
+    hold_fader_at,
     set_and_confirm_volume,
 )
 
@@ -846,9 +852,47 @@ class SessionVolumePlan:
             )
 
     def _clear_resolved(self) -> None:
-        self._persist({"status": "resolved"})
+        """Drop the in-memory intent FIRST, then record that on disk.
+
+        The order is load-bearing, and #2925's hearing-safety lens is what
+        found it. Persisting first left one uncovered shape: a drain that had
+        already CONFIRMED its volume on the hardware, then met an OSError
+        writing the marker (read-only or full ``/var/lib/jasper``), raised out
+        of here with the plan still ``active``, ``_opened_this_process`` still
+        true and ``measurement_volume_db`` intact — so :meth:`assert_ready`
+        passed and :meth:`hold_measurement_volume` would command the declared
+        volume onto a speaker sitting at the emergency floor. Measured at
+        −60.0 → −12.5: **+47.5 dB**. Clearing first means the very next reader,
+        including that hold, sees a plan that owns nothing.
+
+        The persist is then guarded exactly as :meth:`_mark_unresolved` guards
+        its own, and for the mirror-image reason. There the prior intent
+        SURVIVING on disk is what keeps a restart fail-closed; here it is what
+        makes a restart offer recovery for a volume already restored. That is
+        the safe direction — the re-drain re-asserts the household snapshot,
+        which is the right target whether or not the fader is already there
+        (in this very case it is not: the fader is at the emergency floor, and
+        the re-drain moves it UP to the household level, never to the
+        measurement one) — and it is loud rather than silent, which is the
+        whole point: the alternative is a process that can still put the
+        measurement volume back up, unasked, at the next capture. The re-drain
+        instead runs behind the recovery screen, or automatically once the
+        wall-clock ceiling has passed
+        (``correction_crossover_v2.enforce_session_volume_ceiling_if_stale``,
+        which needs no click) — both target the household snapshot, and
+        :meth:`assert_ready` refuses every hold either way.
+        """
         self._state = None
         self._opened_this_process = False
+        try:
+            self._persist({"status": "resolved"})
+        except OSError:
+            log_event(
+                logger,
+                "correction.session_volume_persist_failed",
+                level=logging.CRITICAL,
+                reason="session_volume_resolved_marker_unwritten",
+            )
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -917,6 +961,64 @@ class SessionVolumePlan:
         if drained is SessionVolumeRestoreResult.EMERGENCY_ATTENUATED:
             return SessionVolumeOpenResult.EMERGENCY_ATTENUATED
         return SessionVolumeOpenResult.FAILED
+
+    async def hold_measurement_volume(
+        self,
+        set_main_volume_db: SetMainVolumeDb,
+        get_main_volume_db: GetMainVolumeDb,
+        *,
+        context: str = "",
+    ) -> float | None:
+        """Re-prove this session's measurement volume for ONE stimulus (#2925).
+
+        Setting a volume once is not the same as it staying set: a CamillaDSP
+        ``SetConfig`` replace does not preserve runtime ``main_volume``, and
+        every crossover-v2 MEASURE-phase stimulus is bracketed in exactly that
+        load/restore pair — which is how a whole overnight campaign of sweeps
+        played 8.712 dB below the volume this plan had confirmed. So a capture
+        path asks HERE, per stimulus, rather than trusting :meth:`open`.
+
+        Returns the proven fader reading, or ``None`` when this plan does not
+        currently own a volume to hold — nothing open, latched ``unresolved``,
+        crash-hydrated, or past its wall-clock ceiling. The caller then leaves
+        the fader alone. That is deliberately not a refusal: it is
+        :meth:`assert_ready`'s question, already asked and answered by
+        ``play_program`` on the routed path, and a second gate would be a
+        second owner.
+
+        Raises :class:`~jasper.active_speaker.volume_latch.MeasurementFaderDrift`
+        when a drifted fader could not be repaired and re-proven — the caller
+        refuses the capture rather than banking a measurement taken at an
+        unknown level.
+
+        **Under the restore lock**, which is the whole reason this lives on the
+        plan rather than at the capture seam. ``_mark_unresolved`` copies
+        ``measurement_volume_db`` forward, so a plan whose restore could not be
+        confirmed still REPORTS the declared volume; a hold that read that
+        field without serializing against the drains could re-raise the fader
+        onto a speaker that had just been left at the emergency floor, and
+        leave it there with no owner. Serialized, the readiness check either
+        precedes the drain (the volume is genuinely still ours) or follows it
+        (state cleared, or unresolved → ``None``).
+
+        Serializing is necessary and was not sufficient: a drain can fail
+        PARTWAY, after confirming the fader and before recording it, and that
+        shape reached a passing :meth:`assert_ready`. :meth:`_clear_resolved`
+        now closes it by dropping the in-memory intent before it persists —
+        see there for the measured +47.5 dB it prevents.
+        """
+        async with self._restore_lock:
+            try:
+                self.assert_ready()
+            except SessionVolumePlanError:
+                return None
+            state = self._state
+            volume = None if state is None else state.measurement_volume_db
+            if volume is None:  # unreachable via assert_ready; fail closed anyway
+                return None
+            return await hold_fader_at(
+                volume, set_main_volume_db, get_main_volume_db, context=context,
+            )
 
     async def _drain_restore(
         self,

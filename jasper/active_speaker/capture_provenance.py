@@ -35,6 +35,24 @@ field                      live owner
 ``stimulus.*``             the :class:`~jasper.audio_measurement.program.ExcitationProgram` and its published WAV artifact
 =========================  ====================================================
 
+``main_volume_db`` and ``session_volume_db`` are recorded for the same reason
+``graph.config_path`` is, and on 2026-08-24 they proved it: across an entire
+overnight campaign every MEASURE-phase capture carried those two fields two
+lines apart disagreeing by 8.712 dB — the live fader sat at the household
+volume while the plan declared the measurement one — and no reader compared
+them, so the split was found five days later by fitting the banked curves.
+:func:`volume_fields_agree` is that comparison, run on every record this
+module OBSERVES — which is not every capture, because observation is bought
+only while capture retention is on; :func:`observe_capture_provenance` logs a
+WARN when a retained record self-contradicts. It is a disclosure and not a
+gate BY THIS MODULE'S CONTRACT — nothing here may break a capture. The
+fail-CLOSED half is the one that runs on every capture: the playback path's
+volume hold
+(:meth:`jasper.active_speaker.session_volume_plan.SessionVolumePlan.hold_measurement_volume`,
+over :func:`jasper.active_speaker.volume_latch.hold_fader_at`) proves the
+declared volume before the stimulus and refuses rather than records. The two
+share one tolerance so they cannot disagree about what "agree" means.
+
 ``graph.config_path`` is recorded precisely BECAUSE it is the misleading
 label: side by side with ``kind`` and ``fingerprint`` it shows what the
 statefile claimed versus what was running. ``kind`` is the only field that
@@ -61,6 +79,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from jasper.log_event import log_event
+
+from .volume_latch import fader_matches
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +164,26 @@ class CaptureProvenanceRecorder:
         with self._lock:
             pending, self._pending = self._pending, None
         return pending
+
+
+def volume_fields_agree(provenance: CaptureProvenance) -> bool:
+    """Do this record's two volume fields tell the same story? (#2925 T1-2)
+
+    ``True`` when the live fader read (``main_volume_db``) matches the volume
+    the session declared (``session_volume_db``) within the shared readback
+    tolerance — the same tolerance
+    :meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.open`
+    confirmed that volume under, so a wider disagreement means the capture is
+    at a level the session never confirmed.
+
+    ``True`` also when ``session_volume_db`` is ``None``: no measurement volume
+    was open, so the record makes no claim these fields could contradict. A
+    ``None`` ``main_volume_db`` against a declared volume IS a disagreement —
+    the record claims a level it could not read.
+    """
+    if provenance.session_volume_db is None:
+        return True
+    return fader_matches(provenance.main_volume_db, provenance.session_volume_db)
 
 
 #: What a guarded provenance read is allowed to swallow. Deliberately a named
@@ -324,7 +364,7 @@ async def observe_capture_provenance(
             graph_kind=graph_kind,
             unreadable=",".join(unreadable),
         )
-    return CaptureProvenance(
+    observed = CaptureProvenance(
         graph_kind=graph_kind,
         main_volume_db=main_volume_db,
         session_volume_db=session_volume_db,
@@ -335,3 +375,29 @@ async def observe_capture_provenance(
         stimulus_wav_sha256=wav_sha256,
         stimulus_peak_dbfs=peak_dbfs,
     )
+    if not volume_fields_agree(observed):
+        # The tripwire, on the two fields that printed the 2026-08-24 defect
+        # from its first capture (#2925 T1-2). TWO ways to reach it, and the
+        # second is the ordinary one: either the fader moved between the play
+        # path's hold proving it and this read, or the hold PROVED NOTHING
+        # because the plan owned no volume to hold (its own WARN,
+        # ``crossover_v2_capture_volume_unheld``, is the companion line). So
+        # this names both values rather than only the delta — a forensic reader
+        # months later needs to know WHICH of the two is the surprise.
+        log_event(
+            logger,
+            "active_speaker.capture_provenance",
+            level=logging.WARNING,
+            result="volume_disagreement",
+            graph_kind=graph_kind,
+            phase=phase or "",
+            # ``repr``, not a float format: this branch is reached precisely
+            # BECAUSE a value failed the numeric agreement test, so it may not
+            # be a number at all — and formatting it as one would raise inside
+            # the observation, where ``record_capture_provenance``'s blind belt
+            # would swallow the whole record and report a provenance failure
+            # instead of the disagreement this line exists to name.
+            main_volume_db=repr(main_volume_db),
+            session_volume_db=repr(session_volume_db),
+        )
+    return observed

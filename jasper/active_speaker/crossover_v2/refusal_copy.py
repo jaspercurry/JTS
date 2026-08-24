@@ -139,6 +139,20 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
 # infeasible profile), so it is terminal: hard-stop, budget 0.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# #2925: the main fader was not at the volume this session declared when a
+# stimulus was about to play, and re-asserting it could not be proven. Its own
+# code for the #1820 reason: ``program_unplayable`` claims JTS "could not play
+# the measurement signal within the speaker's safe limits", which is the
+# opposite of what happened — the program was admissible, the SPEAKER's level
+# was not the one it was admitted against. Terminal, budget 0, because a
+# safety refusal is not something to retry around: the same re-assert has
+# already been tried and could not be confirmed, so another attempt at the same
+# capture would only re-run it against whatever is holding the fader.
+#
+# NOT ``volume_unresolved``, whose subject is the RESTORE path (JTS could not
+# put the household's own volume back) and whose action — recover the safe
+# volume — is a different thing to do.
+REASON_MEASUREMENT_VOLUME_DRIFT = "measurement_volume_drift"
 # R15 (#2106): the program PLAYED — the offline evidence math refused. Design
 # §4.2 divides the emitted measurement protection back out of the capture, and
 # on a candidate-required bin that division is inadmissible when the protection
@@ -916,6 +930,23 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
+    ),
+    REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
+        REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
+        # NAMES THE OBSERVATION, NOT A CAUSE — ``locate_failed``'s #2085 lesson.
+        # Two conditions reach this code and they want different things said:
+        # the fader was read and would not hold (something else owns the
+        # volume), or it could not be read at all (the DSP is not answering).
+        # A sentence blaming "something changed the volume" is simply false for
+        # the second, and its action is useless there. So the copy states what
+        # JTS could not confirm and offers the escalation that helps either
+        # way. Which one fired is on the
+        # ``event=active_speaker.measurement_fader_drift result=refused`` line:
+        # an empty ``observed_db`` is the unreadable case.
+        "JTS could not confirm the speaker was at the level it set for "
+        "measuring, so it stopped rather than record a measurement it cannot "
+        "trust. Try measuring again; if it keeps happening, restart the "
+        "speaker from the system page.",
     ),
     REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
         REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",
