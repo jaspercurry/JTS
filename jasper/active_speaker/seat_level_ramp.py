@@ -108,7 +108,11 @@ owns, and nothing else can know:
    ≈79-80 dB SPL at the seat; issue #2919). No mechanism had to be named to fix
    it, because nothing here models one. A settled chain pays the same second it
    always did (two windows); only a moving one pays more, and every extra window
-   is more samples run past the commissioning stop, never fewer.
+   is more samples run past the commissioning stop, never fewer. Two costs it
+   does carry, both stated where they are set rather than left to be found: what
+   agreement still leaves on the table scales with the chain's own time constant
+   (:func:`_settle_reading`), and a converging pass can spend the whole timeout
+   on every reading (:data:`SETTLE_TIMEOUT_S`).
 
 **No sample is discarded for being quiet, so the climb can never stall.** A
 reading is the median of every finite sample in its window. A window with
