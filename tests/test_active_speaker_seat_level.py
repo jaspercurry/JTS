@@ -2740,8 +2740,11 @@ def test_a_room_lull_spanning_both_windows_still_banks_DOCUMENTED_LIMITATION(
 
     So the guard fails on P(first window low) + P(first window high AND the
     re-measure lands low inside the same lull), where before this PR it failed on
-    the first term alone. The second term is narrower; that is the whole of the
-    improvement and this test is what stops the next reader believing it is more.
+    the first term alone. The second term is added, not traded: the first term is
+    untouched, so the banking guard is marginally worse than it was. What the pass
+    buys is on the other error type -- a contaminated window no longer disqualifies
+    good readings -- and this test is what stops the next reader believing it is more
+    than that.
 
     **Why nothing here closes it.** Closing it needs a separator between "the
     level moved" and "the level moved BECAUSE of the speaker" -- a response test.
@@ -2776,12 +2779,12 @@ def test_a_room_lull_spanning_both_windows_still_banks_DOCUMENTED_LIMITATION(
     assert result.ramp["ambient_remeasured_db_spl"] - result.ramp[
         "ambient_db_spl"
     ] == pytest.approx(-6.0, abs=0.01)
-    # This path is INTRODUCED by the re-measure, not inherited from before it:
-    # the pre-#2918 rule REFUSES this same fixture. That is the second term the
-    # docstring above describes -- narrower than the first term it replaced, but
-    # new. Asserted for real in the provenance test below rather than claimed
-    # here, because the rise this run publishes is computed under the CURRENT
-    # rule and says nothing about what the old one would have done.
+    # This path is INTRODUCED by the re-measure, not inherited from before it: the
+    # pre-#2918 rule REFUSES this same fixture. That is the second term the docstring
+    # above describes -- added alongside the first term, which is untouched, but new.
+    # Asserted for real in the provenance test below rather than claimed here,
+    # because the rise this run publishes is computed under the CURRENT rule and says
+    # nothing about what the old one would have done.
     assert max(step["rise_db"] for step in result.ramp["steps"]) >= 6.0
 
 
@@ -2822,12 +2825,11 @@ def test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited(
     window, the 67.0 reading rises 1.0 and stays there, never clearing the 6 dB
     emergence bar, so the pass refuses `spl_level_unconverged` and banks nothing.
 
-    That makes the lull path **new**: it is the second term of the two-term
-    statement in `_remeasure_silence` (`P(first window high AND the re-measure
-    lands low inside the same lull)`), which the re-measure introduced in
-    exchange for shrinking the first term. Narrower than what it replaced, and
-    still a thing this PR added -- which is the sentence the limitation test
-    above used to get backwards.
+    That makes the lull path **new**: it is the second term of the two-term statement
+    in `_remeasure_silence` (`P(first window high AND the re-measure lands low inside
+    the same lull)`), which the re-measure introduced without touching the first term
+    -- still a thing this PR added, which is the sentence the limitation test above
+    used to get backwards.
     """
     _pre_2918_fixed_floor(monkeypatch, ambient_db_spl=66.0)
     result, banked = _wrong_card_run(
