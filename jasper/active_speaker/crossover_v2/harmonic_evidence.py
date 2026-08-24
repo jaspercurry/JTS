@@ -277,7 +277,9 @@ def _read_mono(path: Path) -> np.ndarray:
     return samples[::channels] if channels > 1 else samples
 
 
-def _banked_sweep_durations_s(state: Mapping[str, Any]) -> dict[str, float] | None:
+def _banked_sweep_durations_s(
+    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
+) -> dict[str, float] | None:
     """The round's OWN realized per-role MEASURE sweep length, if it banked one.
 
     #2923: a round composed since #2921 may have had either sweep FITTED to a
@@ -288,20 +290,44 @@ def _banked_sweep_durations_s(state: Mapping[str, Any]) -> dict[str, float] | No
     re-derived. ``None`` for every round banked before that field existed, and
     the caller's existing nominal-duration reproduction is unchanged for them.
 
-    Malformed or partial values are treated the same as absent: a hand-edited
-    or partially-written state file composes at nominal here rather than
-    raising, on the same fail-soft rule the rest of this module reads state
-    with.
+    **Every failure mode is fail-soft: this returns ``None``, never raises.**
+    Malformed or partial values (wrong type, non-finite, non-positive, a
+    missing role) are treated as absent — a hand-edited or partially-written
+    state file composes at nominal rather than raising, on the same fail-soft
+    rule the rest of this module reads state with. A value that IS a positive
+    finite float but is too short to close even one cycle at its role's f1
+    (the same guard :func:`~jasper.audio_measurement.sweep.
+    synchronized_sweep_metadata` enforces at compose time — woofer 150–4000 Hz
+    raises below ~10.9 ms, tweeter 1600–20000 Hz below ~0.8 ms) is caught the
+    same way: this asks that SAME kernel function whether the value is usable
+    rather than restating its ``round(...) < 1`` rule as a second copy that
+    could drift from it, and treats a "no" as absent rather than letting the
+    kernel's ``ValueError`` escape uncaught into a caller expecting only
+    :class:`HarmonicEvidenceRefused`. Gate finding, #2923 fix round: an
+    escaped ``ValueError`` here misclassified the round at the CLI as
+    ``EXIT_ROUND_UNREADABLE`` instead of the honest, named
+    ``EXIT_REFUSED``/``PROGRAM_NOT_REPRODUCIBLE``.
     """
     raw = state.get("measure_sweep_durations_s")
     if not isinstance(raw, Mapping):
         return None
+    from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
+    from jasper.audio_measurement.sweep import synchronized_sweep_metadata
+
     durations: dict[str, float] = {}
     for role in ("woofer", "tweeter"):
         value = raw.get(role)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
         if not math.isfinite(value) or value <= 0.0:
+            return None
+        f1, f2 = bands[role]
+        try:
+            synchronized_sweep_metadata(
+                f1=f1, f2=f2, duration_approx_s=float(value),
+                sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+            )
+        except ValueError:
             return None
         durations[role] = float(value)
     return durations
@@ -371,7 +397,7 @@ def rebuild_measure_program(
         RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
         RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
     )
-    banked_durations = _banked_sweep_durations_s(state)
+    banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:
@@ -397,8 +423,11 @@ def rebuild_measure_program(
         "and cannot match a fitted program"
         if banked_durations is None else
         "this round banked its realized sweep durations (#2923) and this "
-        "replay composed at them, so a duration fit is UNLIKELY to be the "
-        "cause here — suspect (1), (3), or (4) instead"
+        "replay composed at exactly them, so a duration fit is a LESS LIKELY "
+        "cause here than it is for an unbanked round — check (1), (3), and "
+        "(4) first — but it is not ruled out: a hand-edited banked value, or "
+        "a genuine duration-limit change replayed against a byte-identical "
+        "band, could still leave the banked figure wrong for this program"
     )
     raise HarmonicEvidenceRefused(
         PROGRAM_NOT_REPRODUCIBLE,
@@ -997,6 +1026,12 @@ def read_round_harmonics(
     failures published, because a round where three of four captures failed
     fidelity is a different round from one where all four passed, and a reader
     given only the survivors could not tell them apart.
+
+    That promise depends on :func:`rebuild_measure_program` (called below,
+    unguarded) never leaking a bare exception for a malformed or unusable
+    banked value — see its own docstring and :func:`_banked_sweep_durations_s`
+    for the fail-soft contract this relies on (#2923 fix round: a below-one-
+    cycle banked duration used to escape as a raw ``ValueError`` instead).
     """
     orders = tuple(int(order) for order in orders)
     fc_hz = _crossover_fc_hz(state)

@@ -734,7 +734,8 @@ def test_a_malformed_banked_duration_is_treated_as_absent(raw):
     malformed shape falls back to nominal composition, exactly like an absent
     key, rather than raising.
     """
-    assert he._banked_sweep_durations_s(_state(measure_sweep_durations_s=raw)) is None
+    state = _state(measure_sweep_durations_s=raw)
+    assert he._banked_sweep_durations_s(state, he_bands()) is None
 
 
 def test_an_old_shape_state_with_no_banked_duration_key_composes_at_nominal():
@@ -743,7 +744,7 @@ def test_an_old_shape_state_with_no_banked_duration_key_composes_at_nominal():
     """
     state = _state()
     assert "measure_sweep_durations_s" not in state
-    assert he._banked_sweep_durations_s(state) is None
+    assert he._banked_sweep_durations_s(state, he_bands()) is None
 
 
 def test_a_well_formed_banked_duration_is_read_back_exactly():
@@ -751,9 +752,61 @@ def test_a_well_formed_banked_duration_is_read_back_exactly():
         measure_sweep_durations_s={"woofer": 3.983876, "tweeter": 3.0}
     )
 
-    assert he._banked_sweep_durations_s(state) == {
+    assert he._banked_sweep_durations_s(state, he_bands()) == {
         "woofer": pytest.approx(3.983876), "tweeter": pytest.approx(3.0),
     }
+
+
+# --------------------------------------------------------------------------- #
+# gate fix round (#2923): a below-one-cycle banked value must not escape as
+# a bare ValueError — it is malformed the same way the shapes above are
+# --------------------------------------------------------------------------- #
+
+
+def _one_cycle_floor_s(band: tuple[float, float]) -> float:
+    """The exact boundary :func:`synchronized_sweep_metadata` raises below —
+    computed independently here (not imported from the composer) so this test
+    is a real cross-check of the fix rather than a restatement of it."""
+    f1, f2 = band
+    return 0.5 * math.log(f2 / f1) / f1
+
+
+@pytest.mark.parametrize("role", ["woofer", "tweeter"])
+def test_a_below_one_cycle_banked_duration_is_treated_as_absent(role):
+    """The should-fix. A positive, finite value that is too short to close
+    even one cycle at f1 passes every OTHER guard here, but must not reach
+    ``synchronized_sweep_metadata`` and raise out of this fail-soft function —
+    it is malformed on the SAME terms as the shapes above, not a new
+    vocabulary.
+    """
+    floor_s = _one_cycle_floor_s(he_bands()[role])
+    other = "tweeter" if role == "woofer" else "woofer"
+    for fraction in (0.5, 0.999):
+        durations = {role: floor_s * fraction, other: 3.0}
+        state = _state(measure_sweep_durations_s=durations)
+        assert he._banked_sweep_durations_s(state, he_bands()) is None, (
+            f"{role} at {fraction:.3f} of its one-cycle floor "
+            f"({floor_s * fraction:.6f}s) should be treated as absent"
+        )
+
+
+def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising():
+    """The CLI-visible half of the should-fix: ``rebuild_measure_program``
+    must reach the named ``program_not_reproducible`` refusal, never an
+    escaped ``ValueError`` — that escape used to mis-classify the round at
+    ``jasper-read-distortion`` as ``EXIT_ROUND_UNREADABLE`` instead of
+    ``EXIT_REFUSED``.
+    """
+    floor_s = _one_cycle_floor_s(he_bands()["woofer"])
+    state = _state(
+        measure_sweep_durations_s={"woofer": floor_s * 0.5, "tweeter": 3.0}
+    )
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, he_bands())
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
 
 
 def test_a_sidecar_carrying_no_gate_field_is_refused_rather_than_read_ungated():
