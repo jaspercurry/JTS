@@ -2750,6 +2750,7 @@ class SettlingRoomMic:
         hot_sample_db_spl: float | None = None,
         hot_below_volume_db: float | None = None,
         hot_after_silence: bool = False,
+        clip_below_volume_db: float | None = None,
     ) -> None:
         self._volume = volume
         self._tone = tone
@@ -2767,6 +2768,10 @@ class SettlingRoomMic:
         # isolates the fade-in leg: it is the one failure path that hands back a
         # playing stimulus, so it is the one worth its own test.
         self._hot_after_silence = hot_after_silence
+        # The OTHER sample-domain stop, on the same fade-only gate: a capture
+        # that clipped carries no level at all, so it is a different refusal
+        # from an over-ceiling one and needs its own evidence.
+        self._clip_below = clip_below_volume_db
         self._climbed = False
         self._seq = 0
         #: ``(commanded_db, observed_db_spl, tone_playing)`` per sample delivered.
@@ -2806,6 +2811,15 @@ class SettlingRoomMic:
         room = self.room_db_spl if self._climbed else self.transient_db_spl
         return _power_sum_db(room, commanded + self.spl_offset_db)
 
+    def _clipping(self, commanded: float) -> bool:
+        # Read AFTER `_db_spl`, which is what latches `_climbed`.
+        return (
+            self._clip_below is not None
+            and self._climbed
+            and self._playing()
+            and commanded <= self._clip_below
+        )
+
     async def next_samples(self) -> list[LevelSample]:
         commanded = round(self._volume.value, 2)
         playing = self._playing()
@@ -2819,7 +2833,7 @@ class SettlingRoomMic:
                 t_client_ms=self._seq * 10,
                 rms_dbfs=rms,
                 peak_dbfs=rms + 3.0,
-                clip=False,
+                clip=self._clipping(commanded),
                 agc_frozen=True,
             )
         ]
@@ -2968,6 +2982,29 @@ def test_the_re_measure_fades_the_stimulus_out_and_back_in(tmp_path):
     # written before the sample is drawn), and both legs bottom out well below.
     assert heard_down[0] < triggered_at
     assert max(heard_down[-1], heard_up[0]) < triggered_at - 1.0
+
+
+def test_a_clipped_capture_during_the_fade_stops_the_pass_too(tmp_path):
+    """BOTH sample-domain stops run on a leg, not just the commissioning one.
+
+    The docstring claims the legs run "the same two stops a window does", and a
+    claim about two is not asserted by testing one. A clipped capture is the
+    other: it carries no level at all, so it is a different refusal with a
+    different remedy, and a fade that watched only the ceiling would sail
+    through a mic that had gone full-scale.
+    """
+    result, _volume, tone, _mic = _settling_room_pass(
+        tmp_path, clip_below_volume_db=-46.0
+    )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_MIC_CLIPPING
+    assert result.detail is not None
+    assert slr.CLIPPED_CAPTURE_DETAIL in result.detail
+    # Same wording as a window's clip stop -- one sentence, one owner.
+    assert not tone.playing
+    assert result.restored is True
+    assert not (tmp_path / "seat_level_reference.json").exists()
 
 
 def test_a_stop_on_the_way_back_up_leaves_the_stimulus_off(tmp_path):
