@@ -3212,9 +3212,14 @@ def test_the_fade_writes_never_reach_the_climbs_own_accounting(tmp_path):
     # commanded float, which is the only reason these differ at all.
     assert banked["reference_volume_db"] == pytest.approx(volumes[-1], abs=0.01)
     assert banked["reference_volume_db"] not in faded
-    # The slope is measured across CLIMB readings, so it stays a chain slope: a
-    # fade pair would read far off 1.0 dB per commanded dB on this rig.
+    # The bank confirm re-read at the SAME volume, which is what makes the last
+    # two steps a confirm rather than a measurement of somewhere else -- and the
+    # fade sitting between two readings did not turn it into a step.
     assert ramp["steps"][-1]["volume_db"] == ramp["steps"][-2]["volume_db"]
+    # The slope is measured across CLIMB readings only. A fade pair would put a
+    # 2 dB command change beside a level change the room dominates, dragging the
+    # measured slope well under the ~1 dB/dB this rig's chain really has.
+    assert ramp["slope_db_per_db"] == pytest.approx(1.0, abs=0.1)
 
 
 def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(tmp_path):
