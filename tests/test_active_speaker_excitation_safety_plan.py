@@ -16,6 +16,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanRefusal,
     PreparedDriverExcitationPlan,
     RequestedDriverExcitationPlan,
+    effective_sweep_duration_limit_s,
     prepare_driver_excitation_plan,
     resolve_driver_excitation_ceilings,
     resolve_driver_measurement_band_hz,
@@ -163,6 +164,51 @@ def _tweeter_target(profile, targets) -> dict:
         target
         for target in profile["targets"]
         if target["target_fingerprint"] == fingerprint
+    )
+
+
+def test_the_gate_bounds_a_request_by_the_shared_duration_limit(monkeypatch):
+    """One owner for ``min(declared, code-side)`` (#2921).
+
+    The gate compares a request against this number and the MEASURE composer is
+    handed it to compose UNDER — so it has to be one function, not two that
+    happen to agree today. The fixture declares 4 s for both drivers while the
+    code-side table gives the woofer 12 s and the tweeter 4 s, so a restatement
+    that dropped either half would disagree with the reader on one role.
+    """
+    _topology, profile, targets = _profile_and_targets()
+    for role in ("woofer", "tweeter"):
+        fingerprint = targets[role]["target_fingerprint"]
+        shared = effective_sweep_duration_limit_s(profile, fingerprint)
+        assert shared == 4.0
+        prepared = prepare_driver_excitation_plan(
+            topology=_topology,
+            safety_profile=profile,
+            requested_plan=_requested(fingerprint, f1_hz=2000, f2_hz=4000),
+        )
+        assert prepared.limits.maximum_duration_s == shared
+
+
+def test_the_shared_duration_limit_refuses_an_unknown_target():
+    _topology, profile, _targets = _profile_and_targets()
+    with pytest.raises(ExcitationSafetyPlanError) as excinfo:
+        effective_sweep_duration_limit_s(profile, "f" * 64)
+    assert str(excinfo.value) == (
+        ExcitationSafetyPlanRefusal.TARGET_NOT_CURRENT.value
+    )
+
+
+def test_the_shared_duration_limit_refuses_an_undeclared_duration():
+    _topology, profile, targets = _profile_and_targets()
+    fingerprint = targets["woofer"]["target_fingerprint"]
+    broken = deepcopy(profile)
+    for target in broken["targets"]:
+        if target["target_fingerprint"] == fingerprint:
+            target["level_duration_limits"].pop("max_sweep_duration_s")
+    with pytest.raises(ExcitationSafetyPlanError) as excinfo:
+        effective_sweep_duration_limit_s(broken, fingerprint)
+    assert str(excinfo.value) == (
+        ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
     )
 
 

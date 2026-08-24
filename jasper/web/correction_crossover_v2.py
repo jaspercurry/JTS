@@ -5868,6 +5868,11 @@ class V2ConductorContext:
     roles_bands: tuple
     fc_hz: float
     driver_caps_dbfs: dict[str, float]
+    # Per-role longest admissible ONE sweep, seconds, from the SAME owner the
+    # admission gate reads (``effective_sweep_duration_limit_s``). The MEASURE
+    # composer fits to these, so a segment cannot overshoot the ceiling
+    # admission then judges it against (#2921).
+    driver_sweep_duration_limits_s: dict[str, float]
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
     session_volume_db: float
@@ -6081,6 +6086,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
+        effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
     )
@@ -6155,6 +6161,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)
     roles_bands = []
     caps: dict[str, float] = {}
+    sweep_duration_limits_s: dict[str, float] = {}
     for channel, role in enumerate(("woofer", "tweeter")):
         try:
             # program_admission=True: this context exists solely to serve the
@@ -6170,6 +6177,12 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
                 role_targets[role],
                 program_admission=True,
                 declared_sensitivities=declared_sensitivities,
+            )
+            # The DURATION half of the same confirmed limits, off the same
+            # target and under the same refusal copy. The composer must be
+            # HANDED this number, never derive a second one (#2921).
+            sweep_duration_limits_s[role] = effective_sweep_duration_limit_s(
+                safety_profile, role_targets[role],
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
             raise CrossoverV2Refused(
@@ -6212,6 +6225,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         roles_bands=tuple(roles_bands),
         fc_hz=fc_hz,
         driver_caps_dbfs=caps,
+        driver_sweep_duration_limits_s=sweep_duration_limits_s,
         role_targets=role_targets,
         safety_profile=safety_profile,
         session_volume_db=session_volume_db,
@@ -7727,6 +7741,7 @@ def prepare_v2_session(
             roles_bands=context.roles_bands,
             fc_hz=session_fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
+            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
                 opening,
@@ -8159,6 +8174,7 @@ def prepare_v2_verify(
             roles_bands=context.roles_bands,
             fc_hz=verify_fc_hz,
             driver_caps_dbfs=context.driver_caps_dbfs,
+            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             session_volume_db=context.session_volume_db,
             seams=bind_v2_stage_seams(
                 opening,

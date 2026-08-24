@@ -341,6 +341,31 @@ def _prompt_result_shape(prompt: str) -> str:
     return block
 
 
+def test_the_prompt_still_recommends_the_duration_the_composer_requests() -> None:
+    """#2921: the prompt's recommended sweep duration and the MEASURE
+    composer's own nominal are the SAME number, and that coincidence is what
+    made the admission collision fleet-wide rather than one box's bad luck.
+
+    A sweep realizes at the nearest phase-closing length, so a 4 s request over
+    a woofer band often lands just above 4 s -- above the very limit the prompt
+    told the operator's assistant to declare. ``build_measure_program`` now
+    fits its sweeps to that limit, which is why the prompt keeps its
+    recommendation. This pins the pair rather than the prose: if either number
+    moves, the paragraph in that composer's docstring explaining the collision
+    stops describing this build, and this test says so.
+    """
+    from jasper.audio_measurement.program import DEFAULT_WOOFER_SWEEP_S
+
+    request = build_driver_research_request(
+        mono_output_topology(card_id=None), _operator_inputs(), _manual_settings(),
+    )
+    prompt = build_driver_research_prompt(request)
+
+    assert "Send max_sweep_duration_s 4, max_repeat_count 3" in prompt
+    assert '"max_sweep_duration_s":4' in prompt
+    assert DEFAULT_WOOFER_SWEEP_S == 4.0
+
+
 def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
     topology = mono_output_topology(card_id=None)
     manual_settings = _manual_settings()

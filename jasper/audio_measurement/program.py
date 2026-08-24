@@ -106,9 +106,11 @@ from jasper.audio_measurement.excitation import (
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.sweep import (
     SweepMeta,
+    phase_closing_duration_s,
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
+from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -1089,6 +1091,7 @@ def build_measure_program(
     *,
     repeat_count: int = MEASURE_REPEAT_COUNT,
     sweep_durations: Mapping[str, float] | None = None,
+    sweep_duration_limits_s: Mapping[str, float] | None = None,
     guard_s: float = DEFAULT_MEASURE_GUARD_S,
     tail_s: float = DEFAULT_MEASURE_TAIL_S,
     ir_tail_s: float = DEFAULT_IR_TAIL_S,
@@ -1124,6 +1127,43 @@ def build_measure_program(
     ~3 s tweeter), applied to EVERY occurrence of that role. Gaps come from
     :func:`mesm_gap_samples` sized to the PRECEDING sweep — a gap follows
     every sweep except the very last (tail silence follows directly instead).
+
+    ``sweep_duration_limits_s`` maps role → the longest ONE sweep that role's
+    admitted safety limits allow (the caller reads it from
+    ``jasper.active_speaker.excitation_safety_plan.effective_sweep_duration_limit_s``,
+    the one owner of that ``min``). A requested duration realizes at the NEAREST
+    phase-closing length, which can land just ABOVE the number the admission
+    gate then compares it against — 150–4000 Hz asked for 4.0 s realizes
+    4.00577 s, 5.8 ms over a 4.0 s limit, and admission refuses the whole
+    program (``program_segment_outside_limits``). So when the realized nominal
+    would exceed a role's limit this composes the longest phase-closing sweep AT
+    OR BELOW it instead (:func:`~jasper.audio_measurement.sweep.phase_closing_duration_s`)
+    and logs ``event=measure_program.sweep_fitted``. A role absent from the
+    mapping, or one with room to spare, keeps its nominal sweep byte for byte,
+    so the fit is inert wherever it is not needed — including with the default
+    ``None``.
+
+    **Why this is not one box's problem.** The driver-research prompt
+    (``jasper.active_speaker.driver_safety``) instructs the LLM to "Send
+    max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a
+    datasheet says stricter", and its RESULT SHAPE exemplar hard-codes the same
+    triple — against a :data:`DEFAULT_WOOFER_SWEEP_S` of exactly 4.0. Over a
+    grid of 1044 plausible woofer bands, 535 realize above that request, so
+    roughly half of every box commissioned through the standard prompt was
+    exposed. Tweeters escaped only because :data:`DEFAULT_TWEETER_SWEEP_S` is
+    3 s under the same 4 s ceiling. That prompt guidance stays as it is: with
+    this fit, a declared 4 is harmless by construction.
+
+    **What the fit costs.** A fitted sweep is exactly one cycle at ``f1``
+    shorter than the overshooting one — ``ln(f2/f1)/f1``, 21.89 ms on that
+    150–4000 Hz woofer band, against a 4005.8 ms nominal — so it carries
+    ``-10·log10(3.983876/4.005766)`` = 0.0238 dB less excitation energy.
+    That is the whole SNR cost, and it is negligible
+    against the 12 dB SNR floor the capture is graded on. A limit tight enough
+    to cost real SNR is a tight DECLARATION, not this rounding, and it shows up
+    as the existing ``snr_floor`` verdict rather than being hidden here. A limit
+    too tight for even one cycle at ``f1`` raises: an unmeasurable band is a
+    refusal, not a shorter sweep.
 
     Segment IDs: each driver's first occurrence keeps exactly ``sweep_w`` /
     ``sweep_t`` (existing lookups depend on these); later occurrences follow
@@ -1181,10 +1221,55 @@ def build_measure_program(
             )
         return f1, f2
 
+    def _fitted_meta(rb: RoleBand, f1: float, f2: float) -> SweepMeta:
+        """This role's sweep, shortened to its duration limit when it overruns.
+
+        Writes the fitted length back into ``durations`` so the schedule below
+        composes EVERY occurrence of this role at it — the gap sized from the
+        returned metadata and the segments built from the dict are then the same
+        sweep. Feeding a phase-closing duration back as ``duration_approx_s``
+        recovers the same cycle count, so the round-trip is exact.
+
+        The fit lives here rather than in the caller because the ceiling has to
+        be applied to the band the sweep is ACTUALLY composed over — the one
+        ``_band`` intersected — and to the duration the kernel actually
+        realizes. A caller fitting against its own copy of either would be a
+        second owner of a number admission judges only one of.
+        """
+        gain_db = gain_plan[rb.role]
+        meta = _sweep_meta(f1, f2, durations[rb.role], gain_db)
+        limit = (
+            None if sweep_duration_limits_s is None
+            else sweep_duration_limits_s.get(rb.role)
+        )
+        if limit is None or meta.duration_s <= float(limit):
+            return meta
+        try:
+            fitted_s = phase_closing_duration_s(
+                f1, f2, at_or_below_s=float(limit),
+                sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{rb.role} MEASURE sweep over [{f1:g},{f2:g}] Hz cannot close "
+                f"its phase within its {float(limit):g} s duration limit"
+            ) from exc
+        fitted = _sweep_meta(f1, f2, fitted_s, gain_db)
+        durations[rb.role] = fitted.duration_s
+        log_event(
+            logger,
+            "measure_program.sweep_fitted",
+            role=rb.role,
+            sweep_fitted_s=round(fitted.duration_s, 6),
+            sweep_nominal_s=round(meta.duration_s, 6),
+            limit_s=round(float(limit), 6),
+        )
+        return fitted
+
     w_f1, w_f2 = _band(woofer)
     t_f1, t_f2 = _band(tweeter)
-    w_meta = _sweep_meta(w_f1, w_f2, durations[woofer.role], gain_plan[woofer.role])
-    t_meta = _sweep_meta(t_f1, t_f2, durations[tweeter.role], gain_plan[tweeter.role])
+    w_meta = _fitted_meta(woofer, w_f1, w_f2)
+    t_meta = _fitted_meta(tweeter, t_f1, t_f2)
     gap_w_n = mesm_gap_samples(w_meta, ir_tail_s=ir_tail_s)
     gap_t_n = mesm_gap_samples(t_meta, ir_tail_s=ir_tail_s)
 

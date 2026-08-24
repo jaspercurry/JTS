@@ -366,6 +366,45 @@ def _target_for_request(
     return matches[0]
 
 
+def effective_sweep_duration_limit_s(
+    safety_profile: Mapping[str, Any], target_fingerprint: str
+) -> float:
+    """How long ONE sweep of this target may run: the tighter of the operator's
+    declared ``level_duration_limits.max_sweep_duration_s`` and the code-side
+    per-role protocol duration (:func:`driver_sweep_duration_s`).
+
+    The single owner of that ``min``. :func:`prepare_driver_excitation_plan`
+    below compares a request's realized duration against it, so anything that
+    COMPOSES a sweep intended to pass that comparison must fit the SAME number
+    — a composer holding its own copy could drift from the gate by one edit and
+    then refuse programs it had just built. Both callers that had restated the
+    ``min`` read here now, and the composer's caller reads here too rather than
+    deriving a third one (#2921).
+
+    Takes the profile and a target fingerprint — the shape
+    :func:`resolve_driver_excitation_ceilings` takes — so the role and the
+    declared limits are read off ONE confirmed target rather than passed in
+    beside it. Refuses ``TARGET_NOT_CURRENT`` for a fingerprint this profile
+    does not carry exactly once, and ``PROFILE_NOT_CONFIRMED`` when that
+    target declares no usable ``level_duration_limits``.
+    """
+    target = _target_for_request(safety_profile, target_fingerprint)
+    profile_limits = target.get("level_duration_limits")
+    if not isinstance(profile_limits, Mapping):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    declared = profile_limits.get("max_sweep_duration_s")
+    if isinstance(declared, bool) or not isinstance(declared, (int, float)):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        )
+    return min(
+        float(declared),
+        driver_sweep_duration_s(str(target.get("role") or "")),
+    )
+
+
 def _declared_sensitivity(
     declared_sensitivities: Mapping[str, Any] | None,
     role: str,
@@ -903,9 +942,8 @@ def prepare_driver_excitation_plan(
         role,
         driver_style=target.get("driver_style"),
     )
-    maximum_duration = min(
-        float(profile_limits["max_sweep_duration_s"]),
-        driver_sweep_duration_s(role),
+    maximum_duration = effective_sweep_duration_limit_s(
+        safety_profile, requested_plan.target_fingerprint
     )
     maximum_repeats = min(
         int(profile_limits["max_repeat_count"]),

@@ -96,12 +96,16 @@ GOLDEN_UNANNOUNCED = {
 }
 
 
-def _excitation(caps: dict[str, float]) -> SessionExcitation:
+def _excitation(
+    caps: dict[str, float],
+    sweep_duration_limits_s: dict[str, float] | None = None,
+) -> SessionExcitation:
     return SessionExcitation(
         roles=tuple(_roles()),
         caps_dbfs=caps,
         session_volume_db=SESSION_VOLUME_DB,
         fc_hz=FC_HZ,
+        sweep_duration_limits_s=sweep_duration_limits_s or {},
     )
 
 

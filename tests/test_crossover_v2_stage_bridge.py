@@ -321,6 +321,17 @@ def _production_host_seams(monkeypatch, tmp_path):
         "resolve_driver_excitation_ceilings",
         lambda safety_profile, fingerprint, **kw: (FrequencyBand(20.0, 20000.0), 90.0),
     )
+    # The conductor context reads the per-role sweep-duration ceiling off the
+    # same confirmed target as the caps above (#2921). These suites carry a
+    # fixture profile with no ``level_duration_limits`` on it, so the real
+    # reader is faked alongside its sibling; the derivation itself is covered
+    # in tests/test_correction_crossover_v2_conductor_context.py against a real
+    # profile.
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "effective_sweep_duration_limit_s",
+        lambda safety_profile, fingerprint: 6.0,
+    )
     monkeypatch.setattr(
         crossover_v2_flow, "derive_session_volume_db",
         lambda safety_profile, fps, **kw: -20.0,
