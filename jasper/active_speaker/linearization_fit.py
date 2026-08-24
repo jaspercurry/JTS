@@ -1136,10 +1136,10 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     ``10*log10(mean(10**(dB/10)))``.
 
     PARITY DUPLICATE of ``jasper.audio_measurement.program_analysis.
-    _band_average_db``'s averaging semantics (module-private there — see this
-    module's top docstring for the no-cross-module-private-imports convention),
-    evaluated against a boolean mask on this module's own fit grid rather than
-    a (lo, hi) frequency pair. LOCKSTEP REQUIREMENT: this MUST stay the same
+    _band_average_db``'s averaging semantics (module-private there, so
+    reimplemented here rather than imported), evaluated against a boolean
+    mask on this module's own fit grid rather than a (lo, hi) frequency pair.
+    LOCKSTEP REQUIREMENT: this MUST stay the same
     power-domain mean the trim solver uses, so that
     :attr:`LinearizationFit.correction_giveback_db` and the trim frame remain
     directly comparable quantities (a linear-dB mean here would read ~0.3 dB

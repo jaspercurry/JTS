@@ -261,8 +261,7 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 MIN_TRIM_SANITY_MARGIN_RATIO = 2.0
 
 # Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
-# (module-private there — see that module's top docstring for the "no
-# cross-module private imports" convention this repo follows). LOCKSTEP
+# (module-private there, so copied here rather than imported). LOCKSTEP
 # REQUIREMENT: any change to that table must be mirrored here, or this
 # planner's sigma floor and the envelope module's own repeatability_limit()
 # disagree about what "tolerable" means per tier.
