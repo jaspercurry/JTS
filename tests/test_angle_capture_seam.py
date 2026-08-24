@@ -483,12 +483,21 @@ def test_index_phase_map_matches_the_resolved_walk() -> None:
 
 
 def test_the_arc_removes_the_inverse_square_confound() -> None:
-    """Every stop sits at the SAME radius -- the geometric reason for degrees.
+    """The ratified design's inverse-square argument, and its OPEN question.
 
-    The ratified design's own argument: a 40 cm lateral slide off a 1 m mark
-    puts the microphone 107.7 cm out, ~0.64 dB of pure inverse-square level
-    change with no acoustics in it. An angle-stated pose is a constant-radius
-    arc, so that confound is structural rather than addressed in prose.
+    The argument: a 40 cm lateral slide off a 1 m mark puts the microphone
+    107.7 cm out, ~0.64 dB of pure inverse-square level change with no
+    acoustics in it. Stating a pose as an ANGLE is meant to make that confound
+    structural rather than addressed in prose.
+
+    **This docstring used to open "Every stop sits at the SAME radius", and the
+    body below has always said otherwise** — it asserts
+    ``radius == mark / cos(theta)``, which is 1.078 m at 22°, not constant.
+    What the body pins is the TANGENT construction ``pose_at_angle`` actually
+    performs; whether the physical rig swings a constant-radius arc is a
+    hardware fact no test can settle, and the owner's tape measure decides it:
+    `#2932 <https://github.com/jaspercurry/JTS/issues/2932>`_. The assertions
+    are unchanged — only the sentence that contradicted them.
     """
     for degrees in (0, 7, -7, 22, -22, 45):
         pose = ac.pose_at_angle(degrees)

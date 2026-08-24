@@ -717,7 +717,7 @@ class PositionGeometry:
     ``degrees`` is ``None`` wherever no signed bearing was commanded — always on
     :data:`POSITION_AXIS_VERTICAL`, where the rig raises and lowers the
     microphone rather than swinging it, and on the horizontal axis for a pose
-    that states a distance but no side (the geometry-locked retake).  ``None``
+    whose RECORD declares no side (both geometry-locked retake rungs).  ``None``
     is the honest answer in both; 0 would be a lie that reads as "on the design
     axis".
 

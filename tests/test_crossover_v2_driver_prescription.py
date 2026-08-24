@@ -3065,15 +3065,23 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     now stamps its own ``position_deg`` — so the block became CONDITIONAL, and
     the whole entry changes shape on a round that banks bearings.
 
-    That is still not a misreading, for two reasons. The shape it changes INTO
-    is the one ``lateral_poses`` beside it has always had — ``available`` plus
-    the answer, or ``available`` plus ``status``/``reason`` — so a v1 reader of
-    this packet already meets it in the block next door. And the alternative is
-    the `harmonics` case verbatim: keeping the old spelling on a round that HAS
-    bearings would assert "no seat in this round states one", which a reader
-    would act on. A field whose claim became false does not get to keep its
-    spelling. The refusing form is byte-identical for every round banked before
-    the writer, which is every round that exists today.
+    That is still not a misreading, and the reason is the ``harmonics``
+    precedent one paragraph down — VERBATIM, not by analogy. Keeping the old
+    spelling on a round that HAS bearings would assert "no seat in this round
+    states one", which is exactly what a reader would act on; a field whose
+    claim became false is the one case where keeping the spelling is the
+    MISLEADING choice. The shape it changes into is also not new to this
+    document: ``lateral_poses`` beside it has always been ``available`` plus
+    the answer, or ``available`` plus ``status``/``reason``, so a v1 reader of
+    this packet already meets it in the block next door.
+
+    **What this does NOT rest on is byte-identity.** An earlier draft of this
+    paragraph claimed the refusing form was byte-identical for a pre-writer
+    round. It is not: v1 emitted ``{status, reason}`` and this emits
+    ``{available, status, reason}``, with a reason that names different causes
+    — the ``available`` assertion below would fail against v1. The no-bump
+    decision never needed that claim, and a justification resting on a false
+    one is worse than the change it justifies.
 
     ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
     additive case again — but it also RENAMED a ``not_evaluated`` entry, from

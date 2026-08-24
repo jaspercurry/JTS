@@ -171,7 +171,7 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "at the speaker, derived from the pose it was prompted at rather than "
         "parsed out of that prompt's English. Absent means no bearing was "
         "commanded, never 0: a vertical pose is raised or lowered rather than "
-        "swung, a geometry-locked retake states a distance but no side, and a "
+        "swung, a geometry-locked retake's record declares no side, and a "
         "round banked before this field existed recorded none at all — "
         "position_axis and role say which. A commanded pose recorded verbatim, "
         "not a measurement, so the walk's own pointing error is unmeasured "

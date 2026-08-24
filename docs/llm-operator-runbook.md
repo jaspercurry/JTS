@@ -499,7 +499,7 @@ cloud position — but it is conditional, not unconditional: it publishes
 `{"available": true, "angles_deg": [...]}` when the round's rows carry one,
 and falls back to `not_evaluated` only for a round banked before that writer,
 or for a seat that commanded no bearing at all (a vertical pose, or a
-geometry-locked retake that states a distance but no side). The two blocks
+geometry-locked retake, whose record declares no side). The two blocks
 are still different captures — do not join them by index.
 
 **Per-capture SNR arrives with the ring, not with the round.** `capture_snr`

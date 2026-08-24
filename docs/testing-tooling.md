@@ -2257,7 +2257,7 @@ which carries a coarse `role` (`onax`/`offax`) and, since the 2026-08-24
 geometry ruling, a signed `position_deg` bearing on every retained row —
 ABSENT, not null, where none was commanded, because the serializer drops a
 key whose value is `None` (a vertical `xovr` pose, or a geometry-locked
-retake that states a distance but no side; `position_axis` and `role` say
+retake whose record declares no side; `position_axis` and `role` say
 which). A LATERAL walk pose (`spatial.lateral_pose_record`)
 stamps its own signed `position_deg` too, and the evidence packet publishes
 those bearings separately in its `lateral_poses` block — but a walk pose is

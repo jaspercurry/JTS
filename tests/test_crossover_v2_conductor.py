@@ -5303,8 +5303,9 @@ def test_the_post_apply_pose_set_is_a_parameter_with_a_runbook_default():
     assert [
         e.screen["title"] for e in plan.entries if e.kind_label == "cloud_verify"
     ] == [p.headline for p in chosen]
-    # …and the shape and the set have to agree: a shape asking for more
-    # prompted poses than the set supplies is refused rather than walked short.
+    # …and the shape and the set have to agree in BOTH directions.
+    #
+    # Short table: the walk would prompt fewer spots than the session believes.
     with pytest.raises(CrossoverV2FlowError, match="pose set"):
         build_v2_verify_capture_plan(
             FC_HZ,
@@ -5313,6 +5314,29 @@ def test_the_post_apply_pose_set_is_a_parameter_with_a_runbook_default():
             ),
             verify_prompts=chosen,
         )
+    # LONG table: the quiet one. The poses past ``M - 1`` never reach an entry,
+    # so the walk is silently truncated to a prefix — while the orientation
+    # sentence is quoted off the WHOLE table and promises a reach the walk does
+    # not have. Pinned with a 60 cm sixth pose against the shipped 40 cm walk:
+    # unguarded, the plan builds and the consent screen says 70 cm.
+    long_table = flow.CLOUD_VERIFY_POSE_PROMPTS + (
+        next(p for p in CLOUD_POSITION_PROMPTS if p.offset_cm == 60.0),
+    )
+    assert flow.cloud_walk_reach_cm_of(long_table) > flow.cloud_walk_reach_cm_of(
+        flow.CLOUD_VERIFY_POSE_PROMPTS
+    ), "the extra pose must widen the quoted reach, or this pins nothing"
+    with pytest.raises(CrossoverV2FlowError, match="pose set"):
+        build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=resolve_plan_shape(), verify_prompts=long_table,
+        )
+    # EXPRESS is the shape a bare ``!=`` would break: M = 1 emits no
+    # cloud-verify entry at all, so its empty index list must not be measured
+    # against the 5-row default. It is correct by construction and builds.
+    express = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
+    )
+    assert express.capture_target == 1
+    assert [e.kind_label for e in express.entries] == ["verify"]
 
 
 def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():

@@ -170,7 +170,8 @@ named plan shape** with its own validation:
   table does not, by itself, move the other's floor. Extend
   `test_cloud_prompts_front_load_the_wide_offsets` to pin the express
   constant alongside the two existing floors. Full keeps the existing
-  (6 ≤ N ≤ 12, M ≥ 6) rules. An M = 1 plan emits no cloud-verify
+  (6 ≤ N ≤ 11, M ≥ 6) rules — N's ceiling was 12 when this was written and
+  came down to 11 with #2291's entry baseline. An M = 1 plan emits no cloud-verify
   entries and moves the `done_title`/`done_body` screen onto the
   VERIFY entry.
 - The tier rides the durable v2 state, the pipeline payload, and

@@ -417,9 +417,15 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` from 5 to 6. It used to be 31 at M=5 — one
 # index under — and this comment used to say raising N would spend that last
 # index. The ruling spent it on a capture instead. Nothing here needs to move
-# (32 is the ceiling, not one past it), but the headroom is now genuinely zero:
-# the next entry ANY of the three producers adds has to come out of something,
-# and the three ways to pay are unchanged — a step of configuration headroom
+# (32 is the ceiling, not one past it), but the headroom is now zero AT THIS
+# BOUND — and the bound is a deliberately conservative CROSS-STAGE sum, not a
+# session's real draw: stage 1 and stage 2 each mint their own relay session
+# with its own blob-index space, so the largest single session this flow can be
+# configured into is 26 of 32 and the shipped one draws 30 across both. Read
+# "zero" as "the guard has no slack left", never as "the next entry must be
+# bought with a household-visible retake" — a producer that genuinely needs one
+# should first check whether it lands inside a single stage's own draw. The
+# three ways to pay are unchanged — a step of configuration headroom
 # (this constant), a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``), or a
 # lockstep raise of the relay Worker's own ceiling, which is a deployed
 # cross-system contract and not something a flow change gets to assume.
@@ -949,6 +955,15 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     approximate — so it lands on the wide poses' intended arc rather than on the
     chord a hand-walked session settles for.
 
+    **OPEN QUESTION — do not read the paragraph above as settled**
+    (`#2932 <https://github.com/jaspercurry/JTS/issues/2932>`_). The conversion
+    here is a TANGENT construction: it places the pose ``offset_cm`` sideways at
+    the mark's axial distance, which puts the capsule at ``mark / cos(θ)`` —
+    1.078 m at 22°, not a constant radius. Whether the rig actually swings a
+    constant-radius arc is a physical fact about the hardware that no code read
+    can settle, and the owner's tape measure decides it. Until then, treat the
+    bearing as sound and the equidistance claim as unverified.
+
     Refuses a vertical row rather than returning ``0``: :data:`POSITION_ROLE_XOVR`
     has no horizontal bearing at all, and a silent zero would aim a positioner at
     the mark while the plan believed it had sampled the crossover axis.
@@ -999,11 +1014,16 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
     * a :data:`POSITION_ROLE_XOVR` row — a vertical prompt asks for a raise or
       a lower, and this rig does not swing in elevation, so no bearing was ever
       commanded;
-    * a pose that states a distance but declares no SIDE. Today that is exactly
-      :data:`CLOUD_GEOMETRY_RETRY_PROMPTS`, the geometry-locked retake, whose
-      second rung is a COMPOUND pose (sideways *and* above mark height). Signing
-      it would publish a bearing that describes only half the move, which is the
-      subtler of the two lies available here.
+    * a pose whose RECORD declares no side — ``lateral_sign == 0`` at a
+      non-zero offset. Today that is exactly
+      :data:`CLOUD_GEOMETRY_RETRY_PROMPTS`, BOTH rungs: they are built by
+      :meth:`CrossoverV2Session._prompt_shown_for` outside :func:`_pose`, and
+      ``_pose`` is the only thing that signs a row from its bearing word. Their
+      household COPY does name a side (rung 1 LEFT, rung 2 RIGHT) — the sign is
+      missing from the record, not from the instruction, which is why this
+      reads ``lateral_sign`` rather than the prose. Rung 2 could not be signed
+      honestly even so: it is a COMPOUND pose (sideways *and* above mark
+      height), and a bearing would describe only half the move.
     """
     if prompt.role == POSITION_ROLE_XOVR:
         return _spatial.PositionGeometry(
@@ -12626,10 +12646,22 @@ def build_v2_verify_capture_plan(
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
     ]
     table = verify_pose_table(verify_prompts)
-    if len(cloud_verify_indexes) > len(table):
-        # Loud rather than a short walk: the shape says M and the table says
-        # how many poses there are to walk, and a plan built from a prefix
-        # would prompt fewer spots than the session believes it is running.
+    # EQUALITY, not "the table is long enough". Both sides are real:
+    #
+    #   * a table SHORTER than the walk prompts fewer spots than the session
+    #     believes it is running, and
+    #   * a table LONGER is silently walked as a PREFIX — which is worse,
+    #     because it is quiet. The poses past ``M - 1`` never reach an entry,
+    #     while :func:`build_v2_verify_session_spec` quotes the orientation's
+    #     reach off the WHOLE resolved table: a 5-pose walk carrying a 60 cm
+    #     sixth pose reaches 50 cm and promises 70 cm on the wire. A household
+    #     told how much room to clear is owed the walk's own number.
+    #
+    # Gated on :attr:`V2PlanShape.has_cloud_verify_group` because express is
+    # ``M = 1``: it emits NO cloud-verify entry at all, so a bare ``!=`` would
+    # measure its empty index list against the 5-row default and refuse the one
+    # shipped shape that is correct by construction.
+    if plan_shape.has_cloud_verify_group and len(cloud_verify_indexes) != len(table):
         raise CrossoverV2FlowError(
             f"a post-apply group of {target} positions walks "
             f"{len(cloud_verify_indexes)} prompted poses but the pose set "

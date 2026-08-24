@@ -50,17 +50,25 @@ of it: no clock, no network, no CamillaDSP handle, no session.
 **The packet's first duty is to say what is NOT in it.**  Copying the honest
 fields verbatim is necessary and not sufficient — a reader also has to know
 which questions this round cannot answer at all.  Three examples this survey
-actually found on the shipped corpus, all carried as
-``not_evaluated`` entries rather than omitted:
+found on the shipped corpus, each carried as a ``not_evaluated`` entry rather
+than omitted.  TWO of the three have since gained the instrument they were
+waiting for, and both entries narrowed rather than disappearing — the survey
+is kept whole because the pattern is the lesson, and because each one records
+what its entry now means:
 
-* **the microphone's angle at a CLOUD position** is nowhere in the banked
-  tree; only a coarse ``role`` (``onax``/``offax``) is, because a cloud
-  position is a floor-plan seat and :func:`~.spatial.cloud_position_record`
-  stamps no bearing.  A packet that quietly emitted ``role`` alone would let a
-  reader assume the angle was simply not interesting.  The signed bearings
-  that ARE banked belong to a lateral walk's poses, and the ``lateral_poses``
-  block carries them — which is why that entry is now a narrow statement about
-  the cloud rows rather than the corpus-wide claim it used to be.
+* **the microphone's angle at a CLOUD position** used to be the first example,
+  on the grounds that a cloud position was a floor-plan seat carrying only a
+  coarse ``role`` (``onax``/``offax``) and no bearing anywhere in the banked
+  tree.  It is banked now — the 2026-08-24 geometry ruling made
+  :func:`~.spatial.cloud_position_record` stamp ``position_deg`` /
+  ``position_axis`` / ``mark_distance_m`` on every retained seat, and
+  :func:`_angle_deg_block` carries what it filed — so the entry survives only
+  for a round banked before that writer, or for seats that commanded no
+  bearing at all, and says so about THAT round rather than about the record
+  shape.  What has not changed is why the entry exists: a packet that quietly
+  emitted ``role`` alone would let a reader assume the angle was simply not
+  interesting.  The bearings a LATERAL walk banks stay a separate block, since
+  a walk pose and a graded seat are different captures.
 * **per-branch verify claims** come back ``not_evaluated`` with the reason
   ``no_per_branch_verify_capture``.  That string is copied through untouched.
   Flattening it to a ``null`` — or worse, to a zero — would turn "we did not
@@ -1020,7 +1028,7 @@ def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "design axis, read off each seat's own record rather than "
                 "parsed out of its prompt. A seat may carry none — a vertical "
                 "pose commands no bearing, and neither does a geometry-locked "
-                "retake, which states a distance but no side — so this set can "
+                "retake, whose record declares no side — so this set can "
                 "be shorter than n_positions, and positions[].position_axis "
                 "with positions[].role says which seats are missing from it. "
                 "These are cloud seats, not the lateral walk's poses in the "
@@ -1037,7 +1045,7 @@ def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "positions[].position_axis with positions[].role separates them: "
             "one banked before the capture-time writer gained the field, and "
             "one whose seats commanded no bearing at all — a vertical pose, or "
-            "a geometry-locked retake, which states a distance but no side"
+            "a geometry-locked retake, whose record declares no side"
         ),
     }
 

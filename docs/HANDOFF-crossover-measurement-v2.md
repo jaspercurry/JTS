@@ -254,7 +254,7 @@ word a lateral pose record uses), `position_axis` (`horizontal` / `vertical`),
 and `mark_distance_m`. Derived by `position_geometry()` off the pose the
 operator was actually given; nothing parses the `prompt` string. `position_deg`
 is `None`, never `0`, where no bearing was commanded — a vertical pose, or a
-geometry-locked retake, which states a distance but declares no side.
+geometry-locked retake, whose record declares no side.
 
 **The position gate replaces the tap.** Because entries auto-begin, something
 has to guarantee the tone never plays into an arm still moving. Every begin —
@@ -2203,7 +2203,8 @@ together. Design rationale:
 #### Position groups — the operational rules
 
 - **Constants** (`crossover_v2_flow.py`, each with its rationale in
-  place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
+  place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 11 — it came
+  down from 12 when #2291's entry baseline took a relay blob index),
   `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2 — the
   **Full tier's** rules; `MIN_CLOUD_MEASURE_POSITIONS` never moves for
   Express. The counts are wall-clock choices, not statistical optima —
