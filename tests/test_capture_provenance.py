@@ -104,23 +104,39 @@ class _FakeCam:
     ``active_raw`` is what makes this fixture worth having: a graph load
     changes it while ``config_file_path`` stays put, exactly as
     ``set_active_config_raw`` behaves on the real daemon.
+
+    ``volume_reads`` is the second: successive fader reads return successive
+    values, so a test can stage a fader that answers the play path's own hold
+    (#2925) and then goes unreadable before the provenance observation a
+    moment later — the one realistic way this record's ``main_volume_db``
+    still lands ``null``.
     """
 
     def __init__(
         self,
         *,
         volume_db: float | None = -27.5,
+        volume_reads: list[float | None] | None = None,
         config_path: str | None = ANCHOR_PATH,
         active_raw: str | None = APPLIED_GRAPH_YAML,
     ) -> None:
         self.volume_db = volume_db
+        self._volume_reads = list(volume_reads) if volume_reads is not None else None
         self.config_path = config_path
         self.active_raw = active_raw
         self.reads: list[str] = []
+        self.volume_writes: list[float] = []
 
     async def get_volume_db(self, *, best_effort: bool = False) -> float | None:
         self.reads.append("volume")
+        if self._volume_reads:
+            return self._volume_reads.pop(0)
         return self.volume_db
+
+    async def set_volume_db(self, db: float, *, best_effort: bool = False) -> bool:
+        self.volume_writes.append(float(db))
+        self.volume_db = float(db)
+        return True
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str | None:
         self.reads.append("config_path")
@@ -137,6 +153,27 @@ class _FakePlan:
 
     def assert_ready(self, now: Any = None) -> None:
         return None
+
+    async def hold_measurement_volume(
+        self, set_main_volume_db: Any, get_main_volume_db: Any, *, context: str = "",
+    ) -> float | None:
+        """The play path re-proves the declared volume per stimulus (#2925).
+
+        Delegating to the real primitive rather than stubbing it keeps these
+        provenance tests honest about what a capture's ``main_volume_db`` can
+        be: the fader has just been proven at the declared volume when this
+        record is observed.
+        """
+        from jasper.active_speaker.volume_latch import hold_fader_at
+
+        if self.measurement_volume_db is None:
+            return None
+        return await hold_fader_at(
+            self.measurement_volume_db,
+            set_main_volume_db,
+            get_main_volume_db,
+            context=context,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -497,13 +534,24 @@ def _reset_volume_plan():
 
 
 def test_retained_sidecar_carries_the_provenance_block(monkeypatch, tmp_path):
-    """The night's fader and session volume ride the clip, not the journal."""
+    """The night's fader and session volume ride the clip, not the journal.
+
+    The fader starts at the household −27.5 while the plan declares −20.0 —
+    the 2026-08-24 shape (#2925). The play path's hold repairs it BEFORE the
+    stimulus, so what the clip carries is the level the capture was actually
+    taken at, and the two fields agree because the hold made them agree.
+    """
+    cam = _FakeCam(volume_db=-27.5)
     sidecar = _drive_one_capture(
-        monkeypatch, tmp_path, phase=PHASE_CHECK, cam=_FakeCam(volume_db=-27.5),
+        monkeypatch, tmp_path, phase=PHASE_CHECK, cam=cam,
     )
     assert sidecar is not None
     provenance = sidecar["provenance"]
-    assert provenance["main_volume_db"] == -27.5
+    assert cam.volume_writes == [-20.0], (
+        "the drifted fader must be re-asserted to the declared measurement "
+        "volume before any audio, not recorded as-found"
+    )
+    assert provenance["main_volume_db"] == -20.0
     assert provenance["session_volume_db"] == -20.0
     assert provenance["stimulus"]["wav_sha256"] == "b" * 64
     # Additive only: nothing the sidecar already carried moved or changed.
@@ -545,27 +593,48 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
 
 
 def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, caplog
 ):
-    """Provenance is forensic metadata; it may never cost a household a take."""
-    sidecar = _drive_one_capture(
-        monkeypatch, tmp_path, phase=PHASE_CHECK, cam=_FakeCam(volume_db=None),
-    )
+    """Provenance is forensic metadata; it may never cost a household a take.
+
+    The fader answers the play path's own hold at the declared volume and then
+    goes unreadable a moment later, when this record is observed. The record
+    lands with a ``null`` fader rather than the capture dying — and, because a
+    record claiming a declared volume it could not read IS a contradiction, the
+    #2925 tripwire says so at WARN instead of leaving the null silent.
+    """
+    with caplog.at_level(logging.WARNING, logger=PROVENANCE_LOGGER):
+        sidecar = _drive_one_capture(
+            monkeypatch, tmp_path, phase=PHASE_CHECK,
+            cam=_FakeCam(volume_reads=[-20.0, None]),
+        )
     assert sidecar is not None
     assert sidecar["provenance"]["main_volume_db"] is None
     # The capture itself is intact — WAV retained, existing fields written.
     assert sidecar["wav_bytes"] == len(_mono_wav_bytes())
     assert sidecar["provenance"]["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    assert "result=volume_disagreement" in caplog.text
 
 
-def test_retention_off_means_the_play_path_reads_nothing(monkeypatch, tmp_path):
-    """No marker, no cost: the household path spends one ``Path.exists()``."""
-    cam = _FakeCam()
+def test_retention_off_still_buys_the_safety_read_and_no_forensic_ones(
+    monkeypatch, tmp_path
+):
+    """No marker, no FORENSIC cost — but the fader hold is not forensics.
+
+    Retention gates the provenance observation (its config-path and
+    active-config round-trips), because that record is diagnostics. It does not
+    gate the play path's fader hold: the excitation-safety ledger admitted this
+    program against the DECLARED volume, so proving the speaker is at that
+    volume is the ledger's own integrity and is bought on every capture
+    (#2925). An undrifted fader costs exactly one read and writes nothing.
+    """
+    cam = _FakeCam(volume_db=-20.0)
     sidecar = _drive_one_capture(
         monkeypatch, tmp_path, phase=PHASE_CHECK, cam=cam, enabled=False,
     )
     assert sidecar is None  # nothing retained, as before
-    assert cam.reads == []  # and not one CamillaDSP round-trip was spent
+    assert cam.reads == ["volume"]
+    assert cam.volume_writes == []
 
 
 def test_analyze_without_a_play_records_no_provenance(monkeypatch, tmp_path):

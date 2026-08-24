@@ -29,7 +29,12 @@ lease does not:
   process restart hydrating them as unresolved); this plan must NOT rely on a
   restart to flip states, so a hydrated ``active`` state past the ceiling
   force-drains restore here, and falls back to the emergency floor + latched
-  ``unresolved`` (the volume_recovery path) when readback cannot confirm.
+  ``unresolved`` (the volume_recovery path) when readback cannot confirm;
+* a PER-STIMULUS re-proof of the volume it opened
+  (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
+  whole session" is the intent; whether the fader actually stayed there is a
+  separate fact, and a CamillaDSP ``SetConfig`` replace silently answers no.
+  A per-step lease never needed this because it re-set the volume every step.
 
 The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
 DERIVES it as ``min`` of two halves — a REFERENCE level (measured by the
@@ -62,6 +67,7 @@ from .volume_latch import (
     EMERGENCY_MEASUREMENT_VOLUME_DB,
     GetMainVolumeDb,
     SetMainVolumeDb,
+    hold_fader_at,
     set_and_confirm_volume,
 )
 
@@ -917,6 +923,58 @@ class SessionVolumePlan:
         if drained is SessionVolumeRestoreResult.EMERGENCY_ATTENUATED:
             return SessionVolumeOpenResult.EMERGENCY_ATTENUATED
         return SessionVolumeOpenResult.FAILED
+
+    async def hold_measurement_volume(
+        self,
+        set_main_volume_db: SetMainVolumeDb,
+        get_main_volume_db: GetMainVolumeDb,
+        *,
+        context: str = "",
+    ) -> float | None:
+        """Re-prove this session's measurement volume for ONE stimulus (#2925).
+
+        Setting a volume once is not the same as it staying set: a CamillaDSP
+        ``SetConfig`` replace does not preserve runtime ``main_volume``, and
+        every crossover-v2 MEASURE-phase stimulus is bracketed in exactly that
+        load/restore pair — which is how a whole overnight campaign of sweeps
+        played 8.712 dB below the volume this plan had confirmed. So a capture
+        path asks HERE, per stimulus, rather than trusting :meth:`open`.
+
+        Returns the proven fader reading, or ``None`` when this plan does not
+        currently own a volume to hold — nothing open, latched ``unresolved``,
+        crash-hydrated, or past its wall-clock ceiling. The caller then leaves
+        the fader alone. That is deliberately not a refusal: it is
+        :meth:`assert_ready`'s question, already asked and answered by
+        ``play_program`` on the routed path, and a second gate would be a
+        second owner.
+
+        Raises :class:`~jasper.active_speaker.volume_latch.MeasurementFaderDrift`
+        when a drifted fader could not be repaired and re-proven — the caller
+        refuses the capture rather than banking a measurement taken at an
+        unknown level.
+
+        **Under the restore lock**, which is the whole reason this lives on the
+        plan rather than at the capture seam. ``_mark_unresolved`` copies
+        ``measurement_volume_db`` forward, so a drained plan still REPORTS the
+        declared volume; a hold that read that field without serializing
+        against the drains could re-raise the fader onto a speaker that had
+        just emergency-attenuated, or restored, and leave it there with no
+        owner. Serialized, the readiness check either precedes the drain (the
+        volume is genuinely still ours) or follows it (state cleared or
+        unresolved → ``None``).
+        """
+        async with self._restore_lock:
+            try:
+                self.assert_ready()
+            except SessionVolumePlanError:
+                return None
+            state = self._state
+            volume = None if state is None else state.measurement_volume_db
+            if volume is None:  # unreachable via assert_ready; fail closed anyway
+                return None
+            return await hold_fader_at(
+                volume, set_main_volume_db, get_main_volume_db, context=context,
+            )
 
     async def _drain_restore(
         self,

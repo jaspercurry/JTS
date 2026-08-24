@@ -534,6 +534,31 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-24 (#2925, the measurement-volume hold). Two files, +63 between
+    # them, and again no slack: the entry below left both at exactly their
+    # ceilings. Both numbers are small because the work landed OUTSIDE these
+    # files — the fader primitives are 85 executable lines in `volume_latch`
+    # (the leaf that already owned set-and-confirm) and the stateful half is a
+    # method on `SessionVolumePlan`, which is the only object that can
+    # serialize a hold against its own drains. Neither capped file grew a copy
+    # of either.
+    #  * `crossover_v2_flow` ceiling 13,081 -> 13,083, +2. ONE executable line
+    #    and one `__all__` entry: the new reason code's re-export, exactly the
+    #    two lines every other reason code costs this file.
+    #  * `correction_crossover_v2` ceiling 9,466 -> 9,527, +61, of which 19 are
+    #    executable: the classifier's arm for the drift refusal (2), the
+    #    `_hold_fader` closure that asks the plan and discloses a `None` (12),
+    #    and the two call sites — one per capture path — with the `play_wav`
+    #    wrapper the routed path needs to reach INSIDE the writer lock (5).
+    #    The prose is where the two decisions a reader cannot infer are
+    #    recorded: why the hold is NOT retention-gated the way the provenance
+    #    observation beside it is (that record is forensics; this is the
+    #    excitation-safety ledger's own integrity, since the program was
+    #    admitted against the DECLARED volume), and why a plan holding no
+    #    volume is disclosed rather than refused — that is the plan's question,
+    #    and a second gate would be a second owner. The mechanism itself is NOT
+    #    restated here; it lives once, in `volume_latch.hold_fader_at`.
+    #
     # 2026-08-24 (#2923, banking the composer's duration fit). Two files,
     # +33 between them, and NO slack was spent: the entry below (#2921) left
     # both at exactly their ceilings, so every line here is this diff's own.
@@ -998,7 +1023,7 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_100,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_083,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1416,6 +1441,8 @@ MAX_LINES_BY_PATH = {
     # walks this file still spelled by hand. The pair is asked together wherever
     # their disagreement is the finding, so writing one and transcribing the
     # other was the asymmetry the seam existed to remove.
+    "jasper/web/correction_crossover_v2.py": 9_527,
+    #
     "jasper/web/correction_crossover_v2.py": 9_480,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the

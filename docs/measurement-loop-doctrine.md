@@ -115,7 +115,18 @@ accepts from the bench, because each guards a real component against
 damage:
 
 - the excitation ledger and the excitation safety plan
-  (`jasper/active_speaker/excitation_safety_plan.py`)
+  (`jasper/active_speaker/excitation_safety_plan.py`). **The ledger admits a
+  program against the DECLARED session volume**, so a stimulus emitted at any
+  other fader position was never the one it admitted — which is why the
+  per-stimulus fader hold
+  (`jasper/active_speaker/volume_latch.py`, `hold_fader_at`) refuses
+  `measurement_volume_drift` rather than disclosing. Not a new gate but this
+  bullet's own mechanism restated at the moment of emission: a fader above the
+  declared volume drives every branch past the declared level-duration limits
+  this bullet exists to enforce. It passes the nanny test below by repairing
+  first and refusing only what it cannot prove, so no runnable experiment is
+  blocked (#2925; found the other way round — an overnight campaign measured
+  8.712 dB QUIET, with the ledger equally wrong in the direction that is loud)
 - the output limiters — `STARTUP_LIMITER_CLIP_LIMIT_DB` /
   `BASELINE_LIMITER_CLIP_LIMIT_DB` in
   `jasper/active_speaker/camilla_yaml.py` — and the volume /

@@ -139,6 +139,20 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # play-time refusal is unexpected (a bug, a tampered readback, or a genuinely
 # infeasible profile), so it is terminal: hard-stop, budget 0.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# #2925: the main fader was not at the volume this session declared when a
+# stimulus was about to play, and re-asserting it could not be proven. Its own
+# code for the #1820 reason: ``program_unplayable`` claims JTS "could not play
+# the measurement signal within the speaker's safe limits", which is the
+# opposite of what happened — the program was admissible, the SPEAKER's level
+# was not the one it was admitted against. Terminal, budget 0, because a
+# safety refusal is not something to retry around: the same re-assert has
+# already been tried and could not be confirmed, so another attempt at the same
+# capture would only re-run it against whatever is holding the fader.
+#
+# NOT ``volume_unresolved``, whose subject is the RESTORE path (JTS could not
+# put the household's own volume back) and whose action — recover the safe
+# volume — is a different thing to do.
+REASON_MEASUREMENT_VOLUME_DRIFT = "measurement_volume_drift"
 # R15 (#2106): the program PLAYED — the offline evidence math refused. Design
 # §4.2 divides the emitted measurement protection back out of the capture, and
 # on a candidate-required bin that division is inadmissible when the protection
@@ -916,6 +930,18 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
+    ),
+    REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
+        REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
+        # Says WHAT was found and WHY it stopped, and gives the one action a
+        # household can actually take: something else on the speaker is moving
+        # the volume, so stop that and measure again. Deliberately does not
+        # name a control — the mover is whatever else is playing or adjusting,
+        # not a setting on any one page.
+        "The listening volume moved while JTS was measuring, so the "
+        "measurement would not have been taken at the level JTS set. JTS "
+        "stopped instead of recording it. Stop anything else that changes the "
+        "volume, then measure again.",
     ),
     REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
         REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",
