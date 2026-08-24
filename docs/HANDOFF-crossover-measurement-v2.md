@@ -6563,7 +6563,19 @@ ORDER claim, the artifacts bullet, the `position_evidence_block` field list,
 and the courtesy-prelude saving. **The date below is deliberately NOT bumped**:
 nothing outside those was re-read.
 
-Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
+Last verified: 2026-08-24 (#2929 — the fader-hold block was re-read against the
+shipped code and CORRECTED, because #2925 had recorded the wrong mechanism for
+it: item 1's mechanism and its acceptance criterion (now two lines read
+together, `result=held` plus zero repair pairs), item 4's racing-writer bound
+(neither shape is bounded; the second `min` operand is `current + |depth|`),
+the `measurement_volume_drift` row's closing clause, and the
+capture-provenance section's retention note. Every claim in them was written
+against `volume_latch.hold_fader_at`,
+`camilla._duck_release_target_db`/`_graph_mutation`, and
+`SessionVolumePlan.owned_measurement_volume_db_nowait` in the same diff, and
+against CamillaDSP v4.1.3 at tag `05e9cfc`. **Scope: only those paragraphs**;
+nothing else in the live spine was re-verified this pass. The prior pass's
+reading, carried forward unchanged: 2026-08-18 — the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock
 ceiling, the fit-timing rule, and the "Recommending an Fc" section were
 re-verified against the shipped `STAGE1_INCLUDES_LATERAL = False` and the
