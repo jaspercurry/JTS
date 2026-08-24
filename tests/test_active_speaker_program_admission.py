@@ -521,13 +521,17 @@ def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
 
 
 def test_refused_program_log_names_the_refusing_segment(caplog):
-    """The refusal log says WHICH segment, at what level and band, and why.
+    """The refusal log names the failing comparison, both sides of it.
 
     Every field asserted here is computed by ``_evaluate_program`` regardless;
     before this it was discarded at the log line, leaving only the aggregate
     ``program_segment_outside_limits`` — which cannot distinguish a level
-    breach from a band escape, and which ``_map_safety_plan_error`` also
-    returns as its catch-all for a plan that raised for a third reason.
+    breach from a band escape from a duration overrun, and which
+    ``_map_safety_plan_error`` also returns as its catch-all for a plan that
+    raised for a third reason. The band and the duration each carry their own
+    limit inline (``band=…/permitted=…``, ``dur=…/max=…``) so the line says
+    which comparison failed rather than leaving it to be re-derived; the
+    effective peak's limit is the per-role cap in ``role_caps_dbfs``.
     """
     import logging
 
@@ -553,8 +557,11 @@ def test_refused_program_log_names_the_refusing_segment(caplog):
     assert "segments_refused=" in line
     assert "sweep_t:tweeter" in line
     assert "eff=-60.000" in line
-    assert "band=1600.0-10000.0" in line
-    assert "dur=" in line
+    # Each request value beside the limit it was judged against. The permitted
+    # band is the tweeter's resolved excitation band; the duration limit is
+    # `min(declared max_sweep_duration_s (6), driver_sweep_duration_s (4.0))`.
+    assert "band=1600.0-10000.0/permitted=1500.0-20000.0" in line
+    assert "dur=2.9997/max=4.0000" in line
     assert "active_excitation_request_outside_limits" in line
     # The cap it was judged against, and the term whose omission made the
     # 2026-08-23 triage compare a digital gain with an effective-peak ceiling.

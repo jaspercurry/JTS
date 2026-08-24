@@ -307,6 +307,12 @@ def _evaluate_program(
     refusals: list[ProgramAdmissionRefusal] = []
     segments: list[SegmentAdmission] = []
     channels: list[ChannelFacts] = []
+    # ``(permitted_lo_hz, permitted_hi_hz, maximum_duration_s)`` per segment:
+    # the LIMIT side of two of the comparisons below, which `SegmentAdmission`
+    # does not carry because it records what was REQUESTED. Read only by the
+    # refusal log. A segment whose plan raised never gets an entry, and the log
+    # then omits both limits for it rather than printing a placeholder.
+    segment_limits: dict[str, tuple[float, float, float]] = {}
 
     try:
         channel_roles = _channel_roles(program)
@@ -366,6 +372,11 @@ def _evaluate_program(
             )
             continue
         segments.append(_segment_admission(segment, prepared))
+        segment_limits[segment.segment_id] = (
+            prepared.limits.permitted_band.lower_hz,
+            prepared.limits.permitted_band.upper_hz,
+            prepared.limits.maximum_duration_s,
+        )
         if not prepared.execution_allowed:
             refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
 
@@ -455,19 +466,31 @@ def _evaluate_program(
         refusals=unique_refusals,
     )
     if not admission.allowed:
-        # WHICH segment, and every number `prepare_driver_excitation_plan`
-        # judged it on. All of it is computed above and, until this line grew
-        # these fields, was discarded here — the aggregate reason alone cannot
-        # tell apart the FOUR comparisons folded into
-        # ``REQUEST_OUTSIDE_LIMITS`` (band, effective peak, duration, repeats),
-        # and `program_segment_outside_limits` is also the catch-all
+        # WHICH segment, and — for the two comparisons whose limit is not
+        # already on this line — the REQUESTED value beside the LIMIT it was
+        # judged against. That is the honest floor of what follows, stated
+        # exactly: `band=…/permitted=…` and `dur=…/max=…` are paired here;
+        # the effective peak's limit is the per-role cap in `role_caps_dbfs`;
+        # the repeat count is not rendered because it cannot be the failing
+        # comparison — `_requested_segment_plan` fixes every segment at one
+        # repeat, and both bounds on the maximum are at least one
+        # (`driver_safety` validates `max_repeat_count` with `minimum=1`, and
+        # `ACTIVE_DRIVER_MAX_REPEAT_COUNT` is 3).
+        #
+        # All of it is computed above and, until this line grew these fields,
+        # was discarded here — the aggregate reason alone cannot tell apart the
+        # comparisons folded into ``REQUEST_OUTSIDE_LIMITS``, and
+        # `program_segment_outside_limits` is also the catch-all
         # `_map_safety_plan_error` returns for a plan that RAISED for some
-        # third reason. A 2026-08-23 jts3 bench triage read that one aggregate
-        # as a level breach on the woofer and re-derived a level fix for it;
-        # the real refusal was the woofer sweep's DURATION. The synchronized
-        # sweep rounds a requested length to the nearest phase-closing one,
-        # which for that driver's 150-4000 Hz band lands ABOVE the 4 s request
-        # at 4.0058 s (other band ratios round the other way), so it exceeded a
+        # third reason (such a segment has no limits, so both pairs above are
+        # omitted for it rather than printed as placeholders).
+        #
+        # A 2026-08-23 jts3 bench triage read that one aggregate as a level
+        # breach on the woofer and re-derived a level fix for it; the real
+        # refusal was the woofer sweep's DURATION. The synchronized sweep
+        # rounds a requested length to the nearest phase-closing one, which for
+        # that driver's 150-4000 Hz band lands ABOVE the 4 s request at
+        # 4.0058 s (other band ratios round the other way), so it exceeded a
         # declared ``max_sweep_duration_s`` of 4.0 by 5.8 ms — while that same
         # segment's effective peak sat 10.5 dB inside its cap.
         # `session_volume_db` is named for the same reason: a segment's
@@ -478,6 +501,20 @@ def _evaluate_program(
             segment.segment_id: segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
             for segment in program.stimulus_segments()
         }
+        refused_text: list[str] = []
+        for refused in segments:
+            if not refused.refusals:
+                continue
+            limits = segment_limits.get(refused.segment_id)
+            permitted = f"/permitted={limits[0]:.1f}-{limits[1]:.1f}" if limits else ""
+            max_duration = f"/max={limits[2]:.4f}" if limits else ""
+            refused_text.append(
+                f"{refused.segment_id}:{refused.role}"
+                f":eff={refused.effective_peak_dbfs:.3f}"
+                f":band={refused.band[0]:.1f}-{refused.band[1]:.1f}{permitted}"
+                f":dur={durations_s.get(refused.segment_id, 0.0):.4f}{max_duration}"
+                f":{'|'.join(refused.refusals)}"
+            )
         log_event(
             logger,
             "active_speaker.program_admission",
@@ -486,15 +523,7 @@ def _evaluate_program(
             program_id=program.program_id,
             phase=program.phase,
             refusals=",".join(reason.value for reason in unique_refusals),
-            segments_refused=";".join(
-                f"{s.segment_id}:{s.role}"
-                f":eff={s.effective_peak_dbfs:.3f}"
-                f":band={s.band[0]:.1f}-{s.band[1]:.1f}"
-                f":dur={durations_s.get(s.segment_id, 0.0):.4f}"
-                f":{'|'.join(s.refusals)}"
-                for s in segments
-                if s.refusals
-            ),
+            segments_refused=";".join(refused_text),
             role_caps_dbfs=",".join(
                 f"{facts.role}={facts.cap_dbfs:.3f}" for facts in channels
             ),
