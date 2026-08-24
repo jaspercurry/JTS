@@ -371,6 +371,53 @@ def test_a_tweeter_declaration_below_its_nominal_sweep_is_fitted_too():
     assert _admit(topology, profile, targets, fitted, sv).allowed
 
 
+def test_the_production_composer_admits_the_shape_it_actually_plays():
+    """End to end through ``SessionExcitation.measure_program`` -- pilots,
+    ambient window, courtesy prelude and all -- not the bare sweep pair the
+    tests above compose. The bench plays THIS object, so this is the shape the
+    fix has to make admissible.
+    """
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.active_speaker.excitation_safety_plan import (
+        resolve_driver_excitation_ceilings,
+    )
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_max_sweep_s=4, tweeter_max_sweep_s=4, minimum_cooldown_s=2,
+    )
+    limits = _limits_for(profile, targets)
+    sv = session_measurement_volume_db(profile, targets.values())
+    roles = []
+    caps = {}
+    for channel, role in enumerate(("woofer", "tweeter")):
+        band, cap = resolve_driver_excitation_ceilings(
+            profile, targets[role], program_admission=True,
+        )
+        roles.append(RoleBand(role, channel, band))
+        caps[role] = float(cap)
+
+    def _measure(sweep_duration_limits_s):
+        return SessionExcitation(
+            roles=tuple(roles),
+            caps_dbfs=caps,
+            session_volume_db=sv,
+            fc_hz=1600.0,
+            sweep_duration_limits_s=sweep_duration_limits_s,
+        ).measure_program({role: caps[role] for role in caps})
+
+    refused = _admit(topology, profile, targets, _measure({}), sv)
+    assert not refused.allowed
+    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in refused.refusals
+
+    admitted = _admit(topology, profile, targets, _measure(limits), sv)
+    assert admitted.allowed, admitted.refusals
+    assert all(seg.execution_allowed for seg in admitted.segments)
+    # The pilots ride the same program and are unaffected: they are 0.8 s
+    # stimuli, nowhere near a duration ceiling, and the fit must not touch them.
+    pilots = [seg for seg in admitted.segments if seg.segment_id.startswith("pilot_")]
+    assert pilots and all(seg.execution_allowed for seg in pilots)
+
+
 # --------------------------------------------------------------------------- #
 # 3. inert wherever there is room
 # --------------------------------------------------------------------------- #
