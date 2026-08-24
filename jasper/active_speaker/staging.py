@@ -1000,11 +1000,7 @@ def _preset_from_crossover_preview(
             local_subwoofer=local_subwoofer,
             safety=SafetyEnvelope(
                 initial_sweep_level_db_spl=55.0,
-                max_commissioning_level_db_spl=80.0,
                 escalation_step_db=1.0,
-                require_physical_tweeter_protection=True,
-                require_channel_identity_before_drivers=True,
-                emergency_stop_required=True,
             ),
             notes="Derived from jts_active_speaker_crossover_preview; review before load.",
         )
@@ -1175,11 +1171,7 @@ def build_passive_mains_with_sub_preset(
             local_subwoofer=local_subwoofer,
             safety=SafetyEnvelope(
                 initial_sweep_level_db_spl=55.0,
-                max_commissioning_level_db_spl=80.0,
                 escalation_step_db=1.0,
-                require_physical_tweeter_protection=True,
-                require_channel_identity_before_drivers=True,
-                emergency_stop_required=True,
             ),
             notes="Derived from a passive-mains + local-subwoofer topology; bass management only.",
         )

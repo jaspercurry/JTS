@@ -634,7 +634,13 @@ class StampingTone(BlockingTone):
 
 
 def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
-    """The jts3 rig: a 61 dB SPL room, the measured chain, the real ceiling."""
+    """The jts3 rig: a 61 dB SPL room, the measured chain, the resolved stop.
+
+    Synthetic like the rest of this file — a MODELLED mic, not a replayed
+    trace — so it characterizes today's ramp and takes today's commissioning
+    stop (``SPL_CEILING``, the ruled 85). The frozen pre-ruling evidence is the
+    ``NEW_HORN_*`` replay below, which is a different thing and says so.
+    """
     clock = FakeClock()
     volume = Volume()
     tone = StampingTone(clock)
@@ -649,7 +655,7 @@ def _jts3_pass(tmp_path, *, gain_db: float = JTS3_GAIN_DB):
             target=JTS3_TARGET,
             sensitivity=UMIK2,
             max_main_volume_db=JTS3_CEILING_DB,
-            spl_ceiling_db_spl=80.0,
+            spl_ceiling_db_spl=SPL_CEILING,
             get_main_volume_db=volume.get,
             set_main_volume_db=volume.set,
             play_continuous_tone=tone.play,
@@ -693,7 +699,7 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
     assert -14.0 < result.reference_volume_db < -12.0
     # Under the ceiling and under the commissioning stop, throughout.
     assert max(step["volume_db"] for step in steps) < JTS3_CEILING_DB
-    assert max(step["observed_db_spl"] for step in steps) < 80.0
+    assert max(step["observed_db_spl"] for step in steps) < SPL_CEILING
 
 
 def test_the_noisy_room_pass_is_audible_for_under_ten_seconds(tmp_path):
@@ -742,6 +748,11 @@ def test_no_sample_is_discarded_for_being_quieter_than_the_room(tmp_path):
 # single sample that tripped the commissioning stop and abandoned its window
 # before any median was taken.
 NEW_HORN_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
+# Frozen at the stop those runs actually met. The owner raised the stop to 85
+# on 2026-08-23 and no shipped preset declares 80 any more, but this replay
+# reproduces the RECORDED runs, not today's profile -- so it passes its own
+# ceiling explicitly rather than resolving one. The live value has its own
+# owner and its own test (tests/test_active_speaker_safety_envelope_ssot.py).
 NEW_HORN_STOP_DB_SPL = 80.0
 NEW_HORN_CEILING_DB = 0.0
 NEW_HORN_BITE_DB = slr.bite_db(
@@ -856,10 +867,11 @@ def _new_horn_pass(tmp_path, run: dict):
 def test_the_new_horn_refusal_replays_from_its_own_trace(tmp_path, name):
     """jts3's two 2026-08-23 refusals, reproduced from the recorded levels.
 
-    Characterization, not approval: this is the behaviour a fix has to change.
-    Both runs climbed in full bites from -50.00 dB, banked five readings, and
-    the sixth window was abandoned by a sample above the profile's 80.0 dB SPL
-    commissioning stop. Nothing was banked and the household volume came back.
+    Characterization, not approval: this is the behaviour the owner's
+    2026-08-23 ruling changed. Both runs climbed in full bites from -50.00 dB,
+    banked five readings, and the sixth window was abandoned by a sample above
+    the 80.0 dB SPL commissioning stop the profile declared THEN. Nothing was
+    banked and the household volume came back.
     """
     run = NEW_HORN_RUNS[name]
     result, volume = _new_horn_pass(tmp_path, run)
