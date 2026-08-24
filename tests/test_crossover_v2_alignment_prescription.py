@@ -1300,6 +1300,42 @@ def test_an_unpinned_round_is_not_labelled_an_instruction():
     assert analysis_json(analysis)["polarity_pinned"] is False
 
 
+def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeypatch):
+    """The disclosure's second hop, on the REAL analysis.
+
+    A rejected polish commits the band-average seed, so ``trim_db`` and
+    ``trim_band_average_db`` come out equal — byte-identical to an admitted
+    no-op polish and to the one-sided skip. ``ripple_polish_rejected_delta_db``
+    is the only field that separates the three, and it is only worth carrying
+    if it survives the freeze into ``analysis_json``, which is what the receipt
+    binds by fingerprint. Pinned here rather than in the unit test for the
+    guard because the unit test stops at the candidate.
+
+    **Mutation guard.** Dropping the key from ``analysis_json`` fails the last
+    assertion while the candidate one still passes — which is exactly the
+    silent half-wiring this pins against.
+    """
+    from jasper.active_speaker.crossover_v2.planning import analysis_json
+    from jasper.audio_measurement import program_analysis as _pa
+
+    # A polish beyond the coupled bound, so the guard rejects it.
+    excursion_db = _pa.REALIZED_LEVEL_MATCH_TOLERANCE_DB + 1.0
+    monkeypatch.setattr(
+        _pa, "solve_ripple_optimal_trim",
+        lambda *a, **kw: (kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"]),
+    )
+    analysis = _analyzed(-450.0)
+    rejected = analysis.candidate.ripple_polish_rejected_delta_db
+    # Asserted, never skipped-if-absent: this fixture's ripple band straddles Fc
+    # so the polish genuinely runs, and a conditional skip here would turn a
+    # future fixture change into silent lost coverage.
+    assert rejected is not None, "the polish did not run — fixture no longer straddles Fc"
+    assert rejected == pytest.approx(excursion_db)
+    assert analysis_json(analysis)["ripple_polish_rejected_delta_db"] == pytest.approx(
+        excursion_db
+    )
+
+
 def test_an_unpinned_analysis_still_solves_its_own_basin():
     """The control for the pair above, and the regression pin for today.
 
