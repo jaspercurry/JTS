@@ -1987,9 +1987,18 @@ async def _walk_to_the_band(
         )
         return refuse(
             REFUSE_LEVEL_UNCONVERGED,
-            f"the ramp took its whole {max_readings}-reading budget without "
-            f"landing in the band; the chain measured {slope} across the last "
-            "two readings",
+            (
+                # It DID land, on the very last reading it had, and a bank needs
+                # one more to confirm with. Saying "without landing in the band"
+                # there would send the operator after a level that was reached.
+                f"the ramp reached the band on the last of its "
+                f"{max_readings} readings, with none left to confirm it; a "
+                "reference is banked only from two readings that agree"
+                if candidate_dbfs is not None
+                else f"the ramp took its whole {max_readings}-reading budget "
+                f"without landing in the band; the chain measured {slope} "
+                "across the last two readings"
+            ),
             slope_db_per_db=(
                 "" if slope_db_per_db is None else f"{slope_db_per_db:.3f}"
             ),

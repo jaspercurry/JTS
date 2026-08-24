@@ -3513,6 +3513,53 @@ def test_a_step_that_reached_the_band_is_not_charged_a_miss(tmp_path):
     assert result.measured_db_spl == pytest.approx(in_band, abs=0.01)
 
 
+def test_reaching_the_band_with_no_reading_left_says_so(tmp_path):
+    """The budget can run out ON the landing, and the refusal must not lie.
+
+    "Took its whole budget without landing in the band" sends an operator after
+    a level that was in fact reached. A chain that arrives on its very last
+    reading has nothing left to confirm with, which is a different sentence.
+    """
+    in_band = JTS3_TARGET.target_db_spl
+    tone = ReplayableTone()
+    volume = Volume()
+    budget = slr.walk_reading_budget(
+        start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+    )
+    # Reaching the band consumes a reading WITHOUT stepping (the confirm
+    # re-reads the same volume), so alternating in and out of the band burns
+    # budget while the volume climbs in capped bites that never reach the
+    # ceiling -- and the final budgeted reading is a fresh landing with nothing
+    # left to confirm it.
+    below = 66.0
+    mic = SequenceMic(
+        tone,
+        ambient_db_spl=45.0,
+        levels=[
+            below, in_band, below, in_band, below,
+            in_band, below, in_band, below, below, in_band,
+        ],
+    )
+    assert budget == 11
+    result = asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=JTS3_TARGET,
+            max_main_volume_db=JTS3_CEILING_DB,
+        )
+    )
+
+    assert result.status == "refused"
+    detail = result.detail or ""
+    assert "reached the band on the last of its" in detail
+    assert "none left to confirm it" in detail
+    assert "without landing in the band" not in detail
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
 def test_readings_that_never_agree_refuse_with_the_band_they_would_not_hold(tmp_path):
     """The refusal says it REACHED the band, which is a different diagnosis.
 
