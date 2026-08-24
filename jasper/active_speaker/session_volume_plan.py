@@ -869,9 +869,15 @@ class SessionVolumePlan:
         its own, and for the mirror-image reason. There the prior intent
         SURVIVING on disk is what keeps a restart fail-closed; here it is what
         makes a restart offer recovery for a volume already restored. That is
-        the safe direction — the re-drain re-asserts a fader that is already
-        correct — and it is loud rather than silent, which is the whole point:
-        the alternative is a process that can still put the volume back up.
+        the safe direction — the re-drain re-asserts the household snapshot,
+        which is the right target whether or not the fader is already there
+        (in this very case it is not: the fader is at the emergency floor, and
+        the re-drain moves it UP to the household level, never to the
+        measurement one) — and it is loud rather than silent, which is the
+        whole point: the alternative is a process that can still put the
+        measurement volume back up, unasked, at the next capture. The re-drain
+        instead runs only behind the household's own click on the recovery
+        screen, and :meth:`assert_ready` refuses every hold until it does.
         """
         self._state = None
         self._opened_this_process = False

@@ -170,8 +170,8 @@ def test_a_drifted_fader_is_repaired_disclosed_and_re_proven(caplog):
 def test_an_unrepairable_fader_refuses_rather_than_returning(kwargs, why, observed):
     """...and reports the observation it ACTUALLY made in each case.
 
-    ``observed_db`` is the documented discriminator — refusal_copy, the
-    HANDOFF row and the doctrine all say an empty one means "could not read".
+    ``observed_db`` is the documented discriminator — refusal_copy and the
+    HANDOFF row both say an empty one means "could not read".
     It only discriminates if the proving re-read is unconditional: while it
     short-circuited on a failed set-and-confirm, two of these three cases
     reported "unreadable" for a fader that had read fine at −21.212124 and

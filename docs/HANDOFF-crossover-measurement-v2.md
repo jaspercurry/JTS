@@ -3827,11 +3827,21 @@ ordinary ones.
 4. **The summed path's hold runs OUTSIDE the DSP writer lock.** The routed one
    is inside it (it rides the `play_wav` seam), so nothing else can load a
    config between proving the fader and emitting. The summed branch takes no
-   lock, so a cross-process `SetConfig` landing in that window could still duck
-   the level under the stimulus. The bound: any such duck re-applies a STORED
-   config volume — the household level — so the exposure is quieter than
-   declared, never louder, and the provenance tripwire catches it whenever
-   retention is on. Closing it properly means giving the summed branch the same
+   lock, so a cross-process `SetConfig` landing in that window can still move
+   the level under the stimulus. **The bound is not "quieter than declared".**
+   The race re-applies whatever volume the RACING config stores, which nothing
+   ties to the declared measurement volume in either direction; the only hard
+   ceilings are `MAX_MAIN_VOLUME_DB` (0.0 dB) and that config's own
+   `volume_limit`, which `ensure_volume_limit_db` refuses above 0 dB — so the
+   worst case is up to (0 − declared) dB ABOVE the admitted level, 12.5 dB on
+   the campaign's numbers. The ordinary racer is the baseline config carrying
+   the household's own listening level, and that has no fixed sign either: it
+   was quieter than declared in the night's configuration (−21.2 against
+   −12.5) and LOUDER in the pre-2026-08-22 one, where household and
+   measurement coincided at −8.0. This branch's own
+   `test_a_loud_household_is_pulled_down_before_any_audio` fixture is the
+   loud case. The provenance tripwire catches the move whenever retention is
+   on. Closing the window properly means giving the summed branch the same
    lock; not done in #2925, which deliberately did not alter verify-phase
    behaviour beyond routing it through the shared seam.
 
