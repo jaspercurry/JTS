@@ -2975,7 +2975,9 @@ volume-independent readings of 60 then 67 converges and banks a reference for a
 level nothing produced, and a wandering one refuses `spl_target_unreachable`
 ("raise the amplifier") where it should refuse `mic_not_observing` ("check the
 mic"). Against a silent-measured floor the same mic hears the same room both
-times, so its rise is ~0 and both guards hold. Both shapes are pinned in
+times, so its rise is ~0 and both guards hold — *provided the room itself did
+not change between the two windows*, which is the residual the next paragraph
+documents. Both shapes are pinned in
 [`tests/test_active_speaker_seat_level.py`](../tests/test_active_speaker_seat_level.py).
 
 **What silence does not buy, because the difference is the residual.** The
