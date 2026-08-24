@@ -96,6 +96,7 @@ from ..branch_chain import (
 from ..branch_target import branch_target
 from ..linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
+    _SIGMA_TOLERABLE_DB as SIGMA_TOLERABLE_DB,
     compose_envelope,
     compute_sigma_curve,
 )
@@ -260,16 +261,9 @@ LINEARIZATION_TRIM_SANITY_MARGIN_DB = 6.0
 #: +4.05 dB hotter than legacy would have shipped, *through* a matched gate.
 MIN_TRIM_SANITY_MARGIN_RATIO = 2.0
 
-# Mirrors jasper.active_speaker.linearization_envelope._SIGMA_TOLERABLE_DB
-# (module-private there, so copied here rather than imported). LOCKSTEP
-# REQUIREMENT: any change to that table must be mirrored here, or this
-# planner's sigma floor and the envelope module's own repeatability_limit()
-# disagree about what "tolerable" means per tier.
-SIGMA_TOLERABLE_DB: Mapping[str, float] = {
-    "reference": 0.5,
-    "consumer": 1.0,
-    "phone": 1.5,
-}
+# SIGMA_TOLERABLE_DB (per-tier sigma-tolerance table) is imported above from
+# linearization_envelope, which owns it -- see the import block near the top
+# of this file.
 
 
 # --------------------------------------------------------------------------- #

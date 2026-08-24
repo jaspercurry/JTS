@@ -8241,23 +8241,6 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
     np.testing.assert_allclose(limit_floored, limit_raw)  # ...but not the envelope term they feed
 
 
-def test_sigma_tolerable_db_matches_linearization_envelopes_own_table():
-    """SF1 (adversarial review, 2026-07-24): lockstep requirement. The
-    planner's own comment on ``SIGMA_TOLERABLE_DB`` explains why it is a local
-    mirror rather than an import: ``_SIGMA_TOLERABLE_DB`` is module-private to
-    ``linearization_envelope``, so ``intervention.py`` copies its value rather
-    than importing it. This test imports the private name anyway, specifically
-    to pin the two tables in lockstep, so a future edit to one can never
-    silently drift from the other.
-
-    Read from ``crossover_v2.intervention``, which has owned the table since
-    #2291 Phase 2 moved the σ-composition policy there with its only reader."""
-    from jasper.active_speaker import linearization_envelope
-    from jasper.active_speaker.crossover_v2.intervention import SIGMA_TOLERABLE_DB
-
-    assert SIGMA_TOLERABLE_DB == linearization_envelope._SIGMA_TOLERABLE_DB
-
-
 # --- conductor integration reorder ------------------------------------------
 
 

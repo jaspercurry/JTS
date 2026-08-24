@@ -12,11 +12,12 @@ produces a cut-preferred PEQ/shelf fit that flattens the driver toward a
 per-session target level, honoring the envelope's per-bin correction-depth
 ceiling everywhere. Cut-PREFERRED, not cut-only: see "Boost is allowed" below
 for the vocabulary that admits a lift and what bounds it. Pure computation: numpy plus
-:func:`jasper.audio_measurement.analysis.smooth_fractional_octave` and
-:func:`jasper.correction.peq.design_peq` (the existing greedy cuts-only PEQ
-designer, extended here — backward-compatibly — to accept a per-bin cut
-ceiling). No I/O, no CamillaDSP emission — this module answers "what filters
-would flatten this driver," nothing more. Wiring the result into the v2
+:func:`jasper.active_speaker.linearization_envelope._ladder_smooth` (the
+shared smoothing ladder) and :func:`jasper.correction.peq.design_peq` (the
+existing greedy cuts-only PEQ designer, extended here — backward-compatibly
+— to accept a per-bin cut ceiling). No I/O, no CamillaDSP emission — this
+module answers "what filters would flatten this driver," nothing more.
+Wiring the result into the v2
 session's candidate and emitting it at APPLY are separate concerns, owned
 elsewhere.
 
@@ -123,8 +124,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
 from jasper.correction.peq import design_peq, predicted_response
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
@@ -139,6 +140,7 @@ from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
     EnvelopeCurve,
     ReasonCode,
+    _ladder_smooth,
 )
 
 # --------------------------------------------------------------------------- #
@@ -265,10 +267,10 @@ _PEAKING_Q_MAX: float = 8.0
 _PEAKING_Q_MIN: float = 1.0
 _PEAKING_FLATNESS_TARGET_DB: float = 1.0
 
-# The RBJ Highshelf's fixed Butterworth Q — mirrors
-# jasper.camilla_config_contract.SHELF_Q and jasper.sound.profile._SHELF_Q
-# (see this module's top docstring for why it is duplicated rather than
-# imported). The APPLY stage spells this SAME number into the emitted shelf's
+# The RBJ Highshelf's fixed Butterworth Q, imported above as _HIGHSHELF_Q
+# from jasper.camilla_config_contract.SHELF_Q (jasper.sound.profile._SHELF_Q
+# is the same value under its own private alias -- SHELF_Q is the one
+# source). The APPLY stage spells this SAME number into the emitted shelf's
 # CamillaDSP ``q`` field (``camilla_stereo_prefix.emit_filter_spec``), so the
 # modeled response this module subtracts during fitting — and the realization
 # gate, residual, and VERIFY prediction built on it — is the response the
@@ -282,7 +284,6 @@ _PEAKING_FLATNESS_TARGET_DB: float = 1.0
 # fit could not see its own realization error. Keep the emitted parameter and
 # this constant in lockstep; ``tests/test_sound_peq_response.py`` pins them to
 # CamillaDSP's own slope↔Q formula.
-_HIGHSHELF_Q: float = 1.0 / math.sqrt(2.0)
 
 # Octave-band centers for the candidate artifact's compact reason summary
 # (design doc "UX reason codes" — an octave-band summary, not a per-bin
@@ -598,23 +599,10 @@ class BlindZonePlacement:
         }
 
 
-def _ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
-    """The design doc's smoothing ladder: 1/6 oct below 4 kHz, 1/3 oct
-    4-10 kHz, 1/2 oct at/above 10 kHz.
-
-    PARITY DUPLICATE of
-    ``jasper.active_speaker.linearization_envelope._ladder_smooth``
-    (module-private there, so not imported — see this module's top
-    docstring). LOCKSTEP REQUIREMENT: any change to that helper's
-    breakpoints/fractions must be mirrored here, or this fit engine and the
-    envelope it fits against disagree about what "smoothed" means.
-    ``tests/test_active_speaker_linearization_fit.py`` pins the two
-    functions numerically identical.
-    """
-    fine = smooth_fractional_octave(grid_hz, magnitude_db, fraction=6)
-    mid = smooth_fractional_octave(grid_hz, magnitude_db, fraction=3)
-    coarse = smooth_fractional_octave(grid_hz, magnitude_db, fraction=2)
-    return np.where(grid_hz < 4_000.0, fine, np.where(grid_hz < 10_000.0, mid, coarse))
+# _ladder_smooth (the design doc's smoothing ladder: 1/6 oct below 4 kHz,
+# 1/3 oct 4-10 kHz, 1/2 oct at/above 10 kHz) is imported above from
+# jasper.active_speaker.linearization_envelope, which owns it and uses it
+# for the same smoothing pass this fit engine needs.
 
 
 def _highshelf_response_db(
@@ -624,14 +612,21 @@ def _highshelf_response_db(
     at ``freqs_hz`` for a filter designed at ``corner_hz``/``gain_db``/``q``.
 
     Mirrors ``jasper.sound.profile``'s ``_biquad_coeffs``/``_filter_response_db``
-    Highshelf math (module-private there — see this module's top docstring
-    for why it is duplicated rather than imported) — the same digital
-    biquad family CamillaDSP realizes, at
-    :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`. At ``gain_db=0``
-    this is identically 0 dB everywhere (unity); at ``freq==corner_hz`` the
-    response is ``gain_db/2`` (the RBJ shelf's well-known half-gain-at-corner
-    property — pinned by a test against ``jasper.sound.profile``'s own
-    fixture-anchored behavior in ``test_sound_peq_response.py``).
+    Highshelf math — the same digital biquad family CamillaDSP realizes, at
+    :data:`jasper.sound.profile.RESPONSE_SAMPLE_RATE_HZ`. Kept as a separate
+    implementation, not a call into that one, because the interfaces differ:
+    ``sound.profile._filter_response_db`` takes a ``FilterSpec`` and
+    dispatches across every biquad type it supports (Peaking, Highpass,
+    Lowpass, Notch, shelves, …) for the preference-EQ model's occasional
+    single-filter lookups, returning ``list[float]``; this function is
+    Highshelf-only, takes plain scalar args, is vectorized over
+    ``freqs_hz: np.ndarray``, and returns ``np.ndarray`` — the shape this
+    fit engine needs to re-evaluate the response on every iteration of its
+    fit loop. At ``gain_db=0`` this is identically 0 dB everywhere (unity);
+    at ``freq==corner_hz`` the response is ``gain_db/2`` (the RBJ shelf's
+    well-known half-gain-at-corner property — pinned by a test against
+    ``jasper.sound.profile``'s own fixture-anchored behavior in
+    ``test_sound_peq_response.py``).
     """
     fs = float(RESPONSE_SAMPLE_RATE_HZ)
     w0 = 2.0 * math.pi * max(float(corner_hz), 1e-6) / fs
@@ -1135,29 +1130,28 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     """Power-domain band average of ``magnitude_db`` over ``mask``:
     ``10*log10(mean(10**(dB/10)))``.
 
-    PARITY DUPLICATE of ``jasper.audio_measurement.program_analysis.
-    _band_average_db``'s averaging semantics (module-private there, so
-    reimplemented here rather than imported), evaluated against a boolean
-    mask on this module's own fit grid rather than a (lo, hi) frequency pair.
-    LOCKSTEP REQUIREMENT: this MUST stay the same
-    power-domain mean the trim solver uses, so that
-    :attr:`LinearizationFit.correction_giveback_db` and the trim frame remain
-    directly comparable quantities (a linear-dB mean here would read ~0.3 dB
-    different on a non-flat correction).
+    Same averaging semantics as ``jasper.audio_measurement.program_analysis.
+    _band_average_db``, kept as a separate implementation because the two
+    genuinely differ in interface and contract: this one takes a boolean
+    ``mask`` on this module's own fit grid rather than a ``(lo, hi)``
+    frequency pair, and returns 0.0 on an empty mask (an honest no-op)
+    rather than raising ``ValueError`` on an empty band.
 
-    **The reason this requirement exists is now enforced one layer up, and
-    completely.** Its original wording said the domains must match or "the
-    anchored trim would systematically mis-level the branch" — correct, and it
-    guarded ~0.3 dB of averaging-domain error while leaving the BAND unmatched,
-    which cost 3.67 dB on a horn tweeter (jts3, 2026-08-19). The anchor no
-    longer consumes this number: it measures its own give-back over
+    Also kept as the same power-domain mean the trim solver uses, so that
+    :attr:`LinearizationFit.correction_giveback_db` and the trim frame read
+    as directly comparable quantities (a linear-dB mean here would read
+    ~0.3 dB different on a non-flat correction). That matching is not pinned
+    by a test, and does not need to be: the property it once guarded — a
+    mismatched give-back silently mis-leveling a branch — is now enforced
+    one layer up and completely. The anchor measures its own give-back over
     ``branch_level_bands_hz`` with the trim solver's own estimator, so the
-    domain, the band, and the estimator all match by construction rather than
-    by a comment asking them to. This requirement is kept anyway — the two
-    give-backs are published side by side and a reader compares them, which is
-    only meaningful while they share an averaging domain.
-
-    Returns 0.0 for an empty mask (no band to average — an honest no-op).
+    domain, the band, and the estimator all match by construction (jts3,
+    2026-08-19; the BAND mismatch this closed cost 3.67 dB on a horn
+    tweeter, an order of magnitude more than the averaging-domain error this
+    function's own matching guards). Keeping the domain matched here is now
+    purely for readability: the two give-backs are published side by side,
+    and that comparison is only meaningful while they share an averaging
+    domain.
     """
     if not mask.any():
         return 0.0
