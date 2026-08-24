@@ -53,7 +53,12 @@ Usage::
         --mic-serial 810-8494
 
 Exit 0 only on a converged, banked reference; 1 on any refusal, with the
-``REFUSE_*`` reason on stdout and in the ``event=`` line.
+``REFUSE_*`` reason on stderr and in the ``event=`` line. A refusal's line also
+carries the window the stop abandoned — how many samples it saw, their
+min/median/max dB SPL, and the sample that tripped with its offset from the
+volume step — so a stop can be told apart from a level that rose and stayed
+without reading the journal. ``--verbose`` adds the whole per-sample series,
+one DEBUG line per window.
 """
 
 from __future__ import annotations
@@ -115,6 +120,28 @@ def _refused(
     return (
         SeatLevelResult(status="refused", reason=reason, restored=restored),
         detail,
+    )
+
+
+def _ambient_phrase(ramp: dict[str, Any]) -> str:
+    """Disclose a room floor the pass had to measure twice.
+
+    The rise gate reads ``observed - floor``, so which window supplied the floor
+    changes which readings the pass trusted. An operator reading a terminal is
+    not reading ``--json``, and a silently replaced floor is exactly the kind of
+    correction that must be stated rather than applied invisibly.
+    """
+    if not ramp.get("ambient_remeasured"):
+        return ""
+    # Leading ". " and not " ": this is APPENDED to a detail that does not end
+    # in a period (the converged line is "reference X dB measured Y dB SPL"), so
+    # the phrase has to supply its own sentence break or the two run together.
+    return (
+        f". A climb reading landed below the {ramp['ambient_db_spl']:.1f} dB SPL "
+        "ambient window, which cannot happen while the speaker is playing, so "
+        "the tone was stopped and the room re-measured in silence: "
+        f"{ramp['ambient_remeasured_db_spl']:.1f} dB SPL, which is the floor "
+        "every rise above was measured against."
     )
 
 
@@ -410,7 +437,13 @@ async def _run(args: argparse.Namespace) -> tuple[SeatLevelResult, str]:
         if result.converged
         else (result.detail or "nothing was banked")
     )
-    return result, detail
+    # The refusal's own window summary already rides ``result.detail`` (the ramp
+    # writes it there so one sentence serves every reader). The re-measured
+    # floor is a ramp fact rather than a refusal fact, so it is appended here
+    # and reaches a converged run's line too -- which is the run that most needs
+    # it, since the second silent window is what its readings were judged
+    # against.
+    return result, detail + _ambient_phrase(result.ramp)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -461,10 +494,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--topology", default=None)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="also log every settle window's per-sample dB SPL series (one "
+        "DEBUG line per window) — the evidence that separates a one-sample "
+        "excursion from a level that rose and stayed",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     # Without this the whole disclosure receipt is computed and discarded: the
     # root logger sits at WARNING, so ``event=active_speaker.unsegmented_ceiling_bound``
     # -- the ONE production reader of the declared caps this ceiling drives past
@@ -474,8 +515,14 @@ def main(argv: list[str] | None = None) -> int:
     # that shape is written down stays the only one. In ``main`` rather than at
     # import, because a module that configures the root logger on import
     # imposes its choice on every importer, the test suite included.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
-    args = build_parser().parse_args(argv)
+    #
+    # ``--verbose`` raises that floor to DEBUG rather than reaching for
+    # ``_logging.configure_verbose_logging``, whose no-flag floor is WARNING --
+    # the level that would discard the receipt above.
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format=CLI_LOG_FORMAT,
+    )
     if not args.calibration_file and not args.mic_serial:
         build_parser().error("pass --calibration-file or --mic-serial")
     try:

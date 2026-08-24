@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 
@@ -227,10 +228,13 @@ class Mic:
     than the room pins the reading at ambient for the first several steps, so
     the level does NOT track the commanded volume 1:1 down there.
 
-    ``deaf=True`` is the failure the guard exists for: the device is open and
-    delivering samples, but they never respond to the speaker — the wrong card,
-    a mic in a bag, muted at the OS. It pins at ``stuck_dbfs`` forever, and
-    because its ambient reading IS its signal reading, its rise is zero.
+    ``deaf=True`` models ONE shape of the failure the guard exists for: the
+    device is open and delivering samples, but they never respond to the
+    speaker. It pins at ``stuck_dbfs`` forever, so its ambient reading IS its
+    signal reading and its rise is zero. That is the CONSTANT sub-case only —
+    a mic on the wrong card hears a room that wanders and is not modelled here;
+    ``WrongCardMic`` below is that one, and it is the shape a premise about
+    constants got wrong.
     """
 
     def __init__(
@@ -590,9 +594,14 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     bites = math.ceil(1 / slr.BITE_FRACTION)
     assert seconds == pytest.approx(
         slr.MIC_SETTLE_S
-        + (1 + bites + slr.MAX_MISSED_FULL_STEPS) * per_reading
+        + (1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.REMEASURE_WINDOWS)
+        * per_reading
         + slr.WATCHDOG_SLACK_S
     )
+    # The silent re-measure is PRICED, not absorbed by the slack: a budget that
+    # leaned on slack for a window the pass can deliberately spend would be the
+    # retired kernel's mistake in miniature.
+    assert slr.REMEASURE_WINDOWS == 1
     # ...and because the bite scales with the span, the budget is the SAME for a
     # wider one: the bite count is what the watchdog prices, and it is fixed.
     assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) == pytest.approx(
@@ -772,6 +781,12 @@ NEW_HORN_RUNS = {
         ),
         "stop_sample_db_spl": 80.50,
         "slope_estimate": 0.895,
+        # Every consecutive pair with the room's power taken back out, and the
+        # stop sample measured against the previous window's median. Both are
+        # quoted in prose below, so both are pinned here rather than left to
+        # rot away from the readings above.
+        "room_subtracted_slopes": (0.897, -0.286, 1.098, 0.970),
+        "stop_sample_slope": 2.119,
     },
     "run2": {
         "ambient_db_spl": 47.82,
@@ -784,6 +799,8 @@ NEW_HORN_RUNS = {
         ),
         "stop_sample_db_spl": 80.90,
         "slope_estimate": 0.725,
+        "room_subtracted_slopes": (0.605, 0.866, 0.619, 0.758),
+        "stop_sample_slope": 2.217,
     },
 }
 
@@ -938,17 +955,26 @@ def test_the_new_horn_climb_was_bite_limited_at_every_reading(name):
 
 @pytest.mark.parametrize("name", sorted(NEW_HORN_RUNS))
 def test_the_new_horn_slope_estimate_never_reached_unity(name):
-    """No reading pair in either run showed an expansive chain to act on.
+    """The pair the estimator held never reached unity in either run.
 
     A chain that answered a commanded dB with more than a dB would be visible
-    here, and it is not: every consecutive pair of banked readings measured
-    under 1.0 dB SPL per commanded dB. Subtracting the room does not lift the
-    pair the estimator actually used either, so "the readings were still
-    emerging from the room" does not account for the estimate being low.
+    in the readings, and the ones this estimate rests on are not: every RAW
+    consecutive pair of banked readings measured under 1.0 dB SPL per commanded
+    dB, and the pair the estimator actually used — the last two — stays under
+    1.0 with the room's power taken back out too (0.970 for run 1, 0.758 for
+    run 2). So "the readings were still emerging from the room" does not
+    account for the estimate being low.
 
-    The 2.21 dB SPL per dB figure quoted for these runs is not in this set: it
-    is the abandoned window's single sample measured against the previous
-    window's twelve-sample median, which is a different statistic.
+    Room-subtracting DOES lift other pairs past 1.0 — run 1's -35.00 → -27.50
+    is 1.098 — which is why the claim above is scoped to the estimator's own
+    pair and to the raw statistic the assertion checks, rather than to every
+    pair in the run.
+
+    The ~2.2 dB SPL per dB figure quoted for these runs is not in this set at
+    all: it is the abandoned window's single sample measured against the
+    previous window's twelve-sample median, which is a different statistic
+    (2.217 for run 2, which is where the quoted figure comes from; run 1's
+    equivalent is 2.119).
     """
     run = NEW_HORN_RUNS[name]
     slopes = _consecutive_slopes(run["readings"])
@@ -958,13 +984,26 @@ def test_the_new_horn_slope_estimate_never_reached_unity(name):
     assert slopes[-1] == pytest.approx(run["slope_estimate"], abs=0.002)
 
     room = run["ambient_db_spl"]
-    (a_db, a_spl), (b_db, b_spl) = run["readings"][-2:]
-    room_subtracted = (
-        _room_subtracted_db(b_spl, room) - _room_subtracted_db(a_spl, room)
-    ) / (b_db - a_db)
-    assert room_subtracted < 1.0
-    # ...and both readings were already well clear of the room by the pass's own
-    # emergence bar, so neither was room-pinned.
+    subtracted = _consecutive_slopes(
+        [
+            (volume_db, _room_subtracted_db(spl, room))
+            for volume_db, spl in run["readings"]
+        ]
+    )
+    assert subtracted == pytest.approx(run["room_subtracted_slopes"], abs=0.001)
+    # The estimator's own pair stays under unity room-subtracted too...
+    assert subtracted[-1] < 1.0
+    # ...while OTHER pairs can cross it once the room is out, which is exactly
+    # why the claim above is scoped to this pair rather than to the run.
+    assert (max(subtracted) > 1.0) == (name == "run1")
+    # The statistic the quoted ~2.2 figure comes from, which is none of these.
+    (_last_db, last_spl) = run["readings"][-1]
+    assert (run["stop_sample_db_spl"] - last_spl) / NEW_HORN_BITE_DB == pytest.approx(
+        run["stop_sample_slope"], abs=0.001
+    )
+    # ...and both readings the estimator used were already well clear of the
+    # room by the pass's own emergence bar, so neither was room-pinned.
+    (_a_db, a_spl), (_b_db, b_spl) = run["readings"][-2:]
     assert a_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
     assert b_spl - room > slr.MIC_RESPONSE_MIN_RISE_DB
 
@@ -1957,3 +1996,931 @@ def test_a_converged_pass_survives_a_failed_isolation_teardown(
     assert result.status == "converged", result.reason
     assert log == ["window_enter", "window_exit"]
     assert (tmp_path / "seat_level_reference.json").exists()
+
+
+# --- the jts3 new-horn bench night, replayed --------------------------------
+#
+# Two independent instrument defects surfaced on jts3 on 2026-08-23 while
+# leveling a new horn, and neither could be diagnosed from anything the build
+# emitted. Every number in this section is read off the receipts in
+# ``captures/new-horn-2026-08/bringup/``, and the fixtures replay those receipts
+# rather than modelling a chain -- so the published rises, medians and volumes
+# ARE the bench's, and a regression shows up as a number that stopped matching.
+
+# 83-seatlevel-run1-refused.json: --target 75, refused `spl_ceiling_exceeded`
+# on a sample measuring 80.5 dB SPL against the 80.0 stop, 0.955 s after the
+# step to -12.50 dB. Its five settled medians, and the ambient it measured.
+RUN83_AMBIENT_DB_SPL = 49.65
+RUN83_LEVELS = {
+    -50.00: 50.78,
+    -42.50: 53.45,
+    -35.00: 52.33,
+    -27.50: 57.90,
+    -20.00: 64.61,
+    # NOT a receipt number: -12.50 never produced a settled median, because the
+    # window was abandoned. This is the run-log's own extrapolation -- run 87's
+    # measured 1.100 dB/dB slope applied to BOTH converged runs' settled levels,
+    # giving 73.94 (from 72.63 @ -13.69) and 74.55 (from 69.63 @ -16.97). It
+    # sits INSIDE the [72.5, 77.5] band, which is the sharp end of the incident.
+    -12.50: 74.0,
+}
+RUN83_TRIP_DB_SPL = 80.5
+RUN83_TARGET = SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5)
+
+# 86-seatlevel-68-converged.json: --target 68, converged, honest ambient.
+RUN86_AMBIENT_DB_SPL = 49.73
+RUN86_LEVELS = {
+    -50.00: 50.59,
+    -42.50: 50.67,
+    -35.00: 51.63,
+    -27.50: 57.36,
+    -20.00: 64.97,
+    -16.97: 69.63,
+}
+RUN86_RISES = [0.86, 0.94, 1.89, 7.63, 15.24, 19.90]
+RUN86_TARGET = SeatLevelTarget(target_db_spl=68.0, tolerance_db=2.5)
+
+# 87-seatlevel-72-converged.json: --target 72, converged, but with an ambient
+# 7.45 dB above what the same mic read one second later -- so it published three
+# NEGATIVE rises: tone readings quieter than the room they were taken in.
+RUN87_AMBIENT_DB_SPL = 57.18
+RUN87_LEVELS = {
+    -50.00: 50.21,
+    -42.50: 50.86,
+    -35.00: 53.48,
+    -27.50: 58.24,
+    -20.00: 65.69,
+    -13.69: 72.63,
+}
+RUN87_PUBLISHED_RISES = [-6.97, -6.32, -3.70, 1.06, 8.50, 15.45]
+RUN87_TARGET = SeatLevelTarget(target_db_spl=72.0, tolerance_db=2.5)
+
+# The bench ran against the headroom ceiling and the profile's stop, not this
+# file's shared rig, and its 7.5 dB bite follows from that span.
+BENCH_CEILING_DB = 0.0
+BENCH_SPL_CEILING = 80.0
+
+
+class ReplayableTone(BlockingTone):
+    """A tone the pass can STOP and START again, which the re-measure needs.
+
+    ``BlockingTone`` models a tone that plays once and is cancelled once, so its
+    ``started`` latch never falls back. The silent re-measure genuinely stops the
+    stimulus and starts it again, and a fixture whose mic cannot tell those apart
+    would let a floor "measured in silence" be measured against a playing
+    speaker -- the exact property under test.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.playing = False
+        self.plays = 0
+        self.stops = 0
+
+    async def play(self) -> None:
+        self.started = True
+        self.playing = True
+        self.plays += 1
+        self._event = asyncio.Event()
+        await self._event.wait()
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        if self.playing:
+            self.stops += 1
+        self.playing = False
+        self._event.set()
+
+
+class ScriptedMic:
+    """A mic that replays one bench run's own medians, keyed by commanded volume.
+
+    Deliberately not a model of a chain. The receipts' levels ARE the fixture,
+    so the ramp steps through exactly the volumes the bench stepped through and
+    publishes exactly the rises the bench published -- which is what lets a test
+    assert against a receipt instead of against a simulation.
+
+    ``excursion`` is ``(volume_db, sample_index, db_spl)``: from that sample of
+    that volume's window on, the level is the excursion rather than the settled
+    one. One sample of it is the incident's shape; a whole window of it is the
+    shape the incident has to be told apart from, and one rig produces both.
+    """
+
+    def __init__(
+        self,
+        volume: Volume,
+        tone: BlockingTone,
+        *,
+        ambient_db_spl: float,
+        levels: dict[float, float],
+        room_db_spl: float | None = None,
+        excursion: tuple[float, int, float] | None = None,
+        sensitivity: MicSensitivity = UMIK2,
+    ) -> None:
+        self._volume = volume
+        self._tone = tone
+        self._ambient_db_spl = ambient_db_spl
+        # What a LATER silent window reads. ``None`` means the room really was
+        # what the first window said, so a re-measure finds the same number --
+        # the honest case. A different value models the run-87 defect: the first
+        # window caught something the room no longer has.
+        self._room_db_spl = (
+            ambient_db_spl if room_db_spl is None else room_db_spl
+        )
+        self._levels = levels
+        self._excursion = excursion
+        self._sensitivity = sensitivity
+        self._seq = 0
+        self._at_volume = -1
+        self._last_volume: float | None = None
+
+    def _playing(self) -> bool:
+        return getattr(self._tone, "playing", self._tone.started)
+
+    def _db_spl(self, commanded: float) -> float:
+        if not self._playing():
+            # Before the tone has ever run this is the pre-tone ambient window;
+            # after it has, the speaker is silent again and this is a re-measure
+            # of the same room.
+            return (
+                self._room_db_spl
+                if getattr(self._tone, "plays", 0)
+                else self._ambient_db_spl
+            )
+        settled = self._levels[commanded]
+        if self._excursion is None:
+            return settled
+        volume_db, index, level = self._excursion
+        if commanded == volume_db and self._at_volume >= index:
+            return level
+        return settled
+
+    async def next_samples(self) -> list[LevelSample]:
+        commanded = round(self._volume.value, 2)
+        if self._playing():
+            self._at_volume = (
+                self._at_volume + 1 if self._last_volume == commanded else 0
+            )
+            self._last_volume = commanded
+        self._seq += 1
+        rms = self._sensitivity.dbfs_from_db_spl(self._db_spl(commanded))
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+
+def _bench_run(
+    tmp_path,
+    *,
+    ambient_db_spl: float,
+    levels: dict[float, float],
+    target: SeatLevelTarget,
+    room_db_spl: float | None = None,
+    excursion: tuple[float, int, float] | None = None,
+    mic_class: type[ScriptedMic] = ScriptedMic,
+    tone: BlockingTone | None = None,
+):
+    """One replayed bench pass, against the bench's own ceiling and SPL stop."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    volume = Volume()
+    tone = ReplayableTone() if tone is None else tone
+    mic = mic_class(
+        volume,
+        tone,
+        ambient_db_spl=ambient_db_spl,
+        levels=levels,
+        room_db_spl=room_db_spl,
+        excursion=excursion,
+    )
+    return asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=target,
+            max_main_volume_db=BENCH_CEILING_DB,
+            spl_ceiling_db_spl=BENCH_SPL_CEILING,
+        )
+    )
+
+
+def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
+    """The fixtures are the receipts, not an approximation of them.
+
+    If this drifts, every assertion below is asserting against a simulation.
+    """
+    converged = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+        levels=RUN86_LEVELS,
+        target=RUN86_TARGET,
+    )
+    assert converged.status == "converged", converged.reason
+    assert [step["volume_db"] for step in converged.ramp["steps"]] == list(RUN86_LEVELS)
+    assert [step["observed_db_spl"] for step in converged.ramp["steps"]] == list(
+        RUN86_LEVELS.values()
+    )
+    # The bite the bench ran with follows from the bench's own span.
+    assert converged.ramp["bite_db"] == 7.5
+
+
+# --- defect 1: the refusal published nothing about the window it stopped in --
+
+
+def test_a_sample_domain_stop_publishes_the_window_it_abandoned(tmp_path):
+    """The receipt, the event line and the prose all carry the aborted window.
+
+    Before this, ``_settle_reading`` computed the aborted window's sample count
+    and DROPPED it on the way out, and no per-sample SPL existed anywhere. The
+    refusal's top-level keys were exactly ``detail, measured_db_spl, ramp,
+    reason, reference_volume_db, restored, status`` -- nothing in them could
+    separate one tail sample from a level that rose and stayed.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    window = result.ramp["stopped_window"]
+    # Every field is present and typed -- a None here is a dropped measurement.
+    assert isinstance(window["samples"], int) and window["samples"] > 0
+    assert isinstance(window["retained"], int)
+    for key in ("min_db_spl", "median_db_spl", "max_db_spl", "trip_db_spl"):
+        assert isinstance(window[key], float), key
+    assert isinstance(window["trip_offset_s"], float)
+    # The trip is the loudest thing the window saw AND the sample that ended it,
+    # so a reader can check those two against each other.
+    assert window["trip_db_spl"] == pytest.approx(RUN83_TRIP_DB_SPL, abs=0.01)
+    assert window["max_db_spl"] == window["trip_db_spl"]
+    # ...about a second after the step that opened the window, as on the bench.
+    assert window["trip_offset_s"] == pytest.approx(0.95, abs=0.06)
+    # The settled median of the PRIOR window is already on the receipt, so the
+    # window object does not restate it -- one writer per fact.
+    assert "prior_db_spl" not in window
+    assert result.ramp["steps"][-1]["observed_db_spl"] == RUN83_LEVELS[-20.00]
+
+
+def test_the_refusal_prose_carries_the_window_and_names_the_prior_volume(tmp_path):
+    """What an operator reading a terminal gets, without opening ``--json``.
+
+    The prior reading was already in this sentence, but with no volume beside
+    it -- which reads as if the ramp had SETTLED at the volume it stopped on,
+    the one thing a sample-domain stop means it did not do.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+    detail = result.detail or ""
+
+    assert "stopped at -12.50 dB" in detail
+    assert f"reading {RUN83_LEVELS[-20.00]:.1f} dB SPL at -20.00 dB" in detail
+    assert "the window it stopped in saw" in detail
+    assert f"{RUN83_TRIP_DB_SPL:.1f} dB SPL sample" in detail
+    # The window's median is in the sentence too: it is the whole discriminator.
+    assert f"median {RUN83_LEVELS[-12.50]:.1f}" in detail
+
+
+def test_the_window_separates_a_tail_excursion_from_a_level_that_rose_and_stayed(
+    tmp_path,
+):
+    """The discriminator the mechanism hunt needed and did not have.
+
+    Two passes that refuse identically -- same reason, same measured value in
+    the same sentence, same five settled readings behind them. One stopped on a
+    single sample 6.5 dB above a settled level that was INSIDE the band; the
+    other was over the stop from its first sample after the step. Only the
+    window tells them apart.
+    """
+    tail = _bench_run(
+        tmp_path / "tail",
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, 19, RUN83_TRIP_DB_SPL),
+    )
+    stayed = _bench_run(
+        tmp_path / "stayed",
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels={**RUN83_LEVELS, -12.50: RUN83_TRIP_DB_SPL},
+        target=RUN83_TARGET,
+    )
+
+    # Indistinguishable on everything that existed before the window did.
+    assert tail.reason == stayed.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert tail.ramp["steps"] == stayed.ramp["steps"]
+    assert (tail.detail or "").split("(")[0] == (stayed.detail or "").split("(")[0]
+
+    # And separated by the window, in the direction the bench needs.
+    tail_window, stayed_window = tail.ramp["stopped_window"], stayed.ramp["stopped_window"]
+    assert tail_window["median_db_spl"] == pytest.approx(RUN83_LEVELS[-12.50], abs=0.1)
+    assert tail_window["max_db_spl"] - tail_window["median_db_spl"] > 6.0
+    assert stayed_window["median_db_spl"] == stayed_window["max_db_spl"]
+    assert stayed_window["trip_offset_s"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_the_per_sample_series_is_one_debug_line_per_window(tmp_path, caplog):
+    """The rising edge, reconstructable without new tooling -- and bounded.
+
+    One line per WINDOW, values joined. One line per SAMPLE would be journal
+    spam at ~24 samples a window and eight windows a pass.
+    """
+    with caplog.at_level(logging.DEBUG, logger=slr.logger.name):
+        result = _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+            levels=RUN86_LEVELS,
+            target=RUN86_TARGET,
+        )
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker.seat_level_window_samples" in record.getMessage()
+    ]
+
+    # The ambient window plus one per reading, and not one more.
+    assert len(lines) == 1 + len(result.ramp["steps"])
+    assert sum("window=ambient" in line for line in lines) == 1
+    assert sum("window=-50.00" in line for line in lines) == 1
+    assert all("\n" not in line for line in lines)
+    # Each line carries its own samples as offset:level pairs, and the count it
+    # claims is the count it printed.
+    for line in lines:
+        claimed = int(line.split(" samples=")[1].split(" ")[0])
+        series = line.split('db_spl="')[1].rstrip('"')
+        assert len(series.split(" ")) == claimed
+        assert all(":" in pair for pair in series.split(" "))
+
+
+def test_the_series_costs_nothing_when_debug_is_off(tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+            levels=RUN86_LEVELS,
+            target=RUN86_TARGET,
+        )
+    assert not [
+        record
+        for record in caplog.records
+        if "seat_level_window_samples" in record.getMessage()
+    ]
+
+
+class FloodMic(ScriptedMic):
+    """A source that delivers far faster than a sound card can.
+
+    The cap's reason for existing: a production window holds ~24 samples, so
+    nothing here can happen on the wired meter -- but the retained list and the
+    single line built from it must be bounded by construction, not by trust.
+    """
+
+    async def next_samples(self):
+        batch = []
+        for _ in range(slr.WINDOW_TRACE_MAX_SAMPLES + 40):
+            batch.extend(await super().next_samples())
+        return batch
+
+
+def test_the_window_trace_is_bounded_and_says_so(tmp_path):
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN83_AMBIENT_DB_SPL,
+        levels=RUN83_LEVELS,
+        target=RUN83_TARGET,
+        excursion=(-12.50, slr.WINDOW_TRACE_MAX_SAMPLES + 10, RUN83_TRIP_DB_SPL),
+        mic_class=FloodMic,
+    )
+
+    window = result.ramp["stopped_window"]
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert window["retained"] == slr.WINDOW_TRACE_MAX_SAMPLES
+    assert window["samples"] > window["retained"]
+    # The sample that STOPPED the window is recorded outside the cap, so
+    # truncation can never be the reason a stop has no value attached.
+    assert window["trip_db_spl"] == pytest.approx(RUN83_TRIP_DB_SPL, abs=0.01)
+    assert window["max_db_spl"] < window["trip_db_spl"]
+
+
+# --- defect 2: one half-second of room became every rise's denominator ------
+#
+# The floor that feeds the OBSERVING and BANKING guards is only ever a window
+# measured with the speaker SILENT. Measured silence is the anti-coincidence
+# property that makes "rise" mean "responded to the speaker": a mic that is not
+# observing hears the same room either way, so its rise is ~0 however far the
+# volume climbs. Deriving that floor from a climb reading destroys the property,
+# which is what the first version of this fix did and what the demos below pin
+# shut.
+
+# jts3's true room on the night of runs 86/87, from the three passes' own
+# -50.00 dB readings (50.78, 50.59, 50.21). Run 87's ambient window read 57.18.
+RUN87_TRUE_ROOM_DB_SPL = 49.7
+
+
+def test_a_reading_below_the_floor_re_measures_the_room_in_silence(tmp_path):
+    """Run 87's exact numbers: an ambient window 7.45 dB above the real room.
+
+    The tone is PLAYING, so a climb reading is the room plus the speaker and
+    cannot be quieter than the room. One of the two windows is wrong, and the
+    honest instrument answer is to measure the silence again -- not to believe
+    the reading, which is a level the speaker was contributing to.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=RUN87_LEVELS,
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+        target=RUN87_TARGET,
+    )
+    ramp = result.ramp
+
+    assert result.status == "converged", result.reason
+    # Both windows are published; neither overwrites the other.
+    assert ramp["ambient_db_spl"] == pytest.approx(RUN87_AMBIENT_DB_SPL, abs=0.01)
+    assert ramp["ambient_remeasured"] is True
+    assert ramp["ambient_remeasured_db_spl"] == pytest.approx(
+        RUN87_TRUE_ROOM_DB_SPL, abs=0.01
+    )
+    # Every rise is now against the SECOND silent window, and none is negative:
+    # a reading cannot be quieter than the room it was taken in.
+    rises = [step["rise_db"] for step in ramp["steps"]]
+    assert min(rises) >= 0.0
+    assert rises[0] == pytest.approx(
+        RUN87_LEVELS[-50.00] - RUN87_TRUE_ROOM_DB_SPL, abs=0.02
+    )
+
+    # Control, from the same fixture: the un-remeasured floor is what published
+    # the bench's three negative rises, so this is the instrument and not the
+    # room. (The receipt rounds its medians to 2 decimals before this file reads
+    # them, which is the only reason any cell moves by 0.01.)
+    floor = UMIK2.dbfs_from_db_spl(RUN87_AMBIENT_DB_SPL)
+    assert [
+        UMIK2.dbfs_from_db_spl(level) - floor for level in RUN87_LEVELS.values()
+    ] == pytest.approx(RUN87_PUBLISHED_RISES, abs=0.02)
+
+
+def test_the_re_measure_stops_the_tone_and_starts_it_again(tmp_path):
+    """The floor is measured in SILENCE, and the pass keeps playing afterwards.
+
+    A "re-measure" that left the stimulus running would measure the speaker
+    again under a new name, which is the whole property this fix restores.
+    """
+    tone = ReplayableTone()
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=RUN87_LEVELS,
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+        target=RUN87_TARGET,
+        tone=tone,
+    )
+
+    assert result.ramp["ambient_remeasured"] is True
+    # Played, stopped for the silent window, played again -- and the final
+    # teardown stops it once more.
+    assert tone.plays == 2
+    assert tone.stops >= 2
+    assert not tone.playing
+
+
+def test_the_room_is_re_measured_at_most_once(tmp_path):
+    """Bounded by construction, so a contradicting room cannot loop the pass.
+
+    A pass whose floor is contradicted twice is telling the operator about the
+    room, not about the ambient window -- and the rise gate already reports
+    that, as ``mic_not_observing``.
+    """
+    tone = ReplayableTone()
+    # A mic reading far below every floor it is given, so every reading
+    # contradicts. Only one re-measure may be spent.
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels={
+            volume: 40.0
+            for volume in (-50.0, -42.5, -35.0, -27.5, -20.0, -12.5, -5.0, 0.0)
+        },
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+        target=RUN87_TARGET,
+        tone=tone,
+    )
+
+    assert result.status == "refused"
+    assert result.ramp["ambient_remeasured"] is True
+    assert tone.plays == 2, "one re-measure, so exactly one replay"
+    assert slr.REMEASURE_WINDOWS == 1
+
+
+def test_an_honest_ambient_is_never_re_measured(tmp_path):
+    """Run 86, two minutes earlier: the same room, an honest window.
+
+    The re-measure must be invisible on a pass that did not need it, or it is a
+    second source of truth for the room rather than a repair of a broken one --
+    and it costs an audible pause nobody asked for.
+    """
+    tone = ReplayableTone()
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN86_AMBIENT_DB_SPL,
+        levels=RUN86_LEVELS,
+        target=RUN86_TARGET,
+        tone=tone,
+    )
+    ramp = result.ramp
+
+    assert result.status == "converged", result.reason
+    assert ramp["ambient_remeasured"] is False
+    assert ramp["ambient_remeasured_db_spl"] is None
+    assert tone.plays == 1, "no silent window, so no replay"
+    # The rises are the receipt's, unchanged.
+    assert [step["rise_db"] for step in ramp["steps"]] == pytest.approx(
+        RUN86_RISES, abs=0.02
+    )
+
+
+def test_a_failed_silent_window_refuses_without_restarting_the_stimulus(tmp_path):
+    """The re-measure's own failure path, and what it must not do to the room.
+
+    The pass is about to refuse, so putting the stimulus back means an audible
+    blip that lasts exactly as long as the fade takes to kill it. The refusal
+    carries the silent window's own trace, because that is the window that
+    failed -- not the climb reading that sent us there.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    volume = Volume()
+    tone = ReplayableTone()
+
+    class DeafOnceSilent(ScriptedMic):
+        """Delivers nothing finite the moment the tone stops for the re-measure."""
+
+        async def next_samples(self):
+            if getattr(self._tone, "plays", 0) and not self._tone.playing:
+                self._seq += 1
+                return [
+                    LevelSample(
+                        seq=self._seq,
+                        t_client_ms=self._seq * 10,
+                        rms_dbfs=float("nan"),
+                        peak_dbfs=float("nan"),
+                        clip=False,
+                        agc_frozen=True,
+                    )
+                ]
+            return await super().next_samples()
+
+    mic = DeafOnceSilent(
+        volume,
+        tone,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=RUN87_LEVELS,
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+    )
+    result = asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=RUN87_TARGET,
+            max_main_volume_db=BENCH_CEILING_DB,
+            spl_ceiling_db_spl=BENCH_SPL_CEILING,
+        )
+    )
+
+    assert result.reason == slr.REFUSE_MIC_FEED_LOST
+    assert tone.plays == 1, "the stimulus was restarted only to be torn down"
+    assert not tone.playing
+    # The silent window is the one that failed, so it is the one published.
+    assert result.ramp["stopped_window"]["samples"] == 0
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+# --- the gate's demos: an unresponsive mic is not always a CONSTANT ---------
+
+
+class WrongCardMic:
+    """A mic on the WRONG CARD -- it hears a room, and the room wanders.
+
+    The failure ``mic_not_observing`` exists for, in the shape the module's own
+    docstring enumerates first ("capturing the wrong card"). Volume-independent
+    by construction, but NOT constant: what it reports has nothing to do with the
+    commanded volume, and it moves. The first version of this fix assumed such a
+    mic reports a constant, re-based the floor onto its own quietest wander, and
+    let a later louder wander clear the rise bar and BANK a reference.
+    """
+
+    def __init__(self, tone, *, ambient_db_spl, wander, sensitivity=UMIK2) -> None:
+        self._tone = tone
+        self._ambient_db_spl = ambient_db_spl
+        self._wander = list(wander)
+        self._sensitivity = sensitivity
+        self._seq = 0
+        self._window = 0
+        self._in_window = 0
+
+    def _level(self) -> float:
+        # Window 0 is the pre-tone ambient; every window after it is the next
+        # step of the wander -- INCLUDING a silent re-measure window, because a
+        # mic on the wrong card hears a room that keeps moving whether or not
+        # our speaker is playing. A model that froze the room while the tone was
+        # off would hand the re-measure the very reading that triggered it, and
+        # quietly re-create the defect this class exists to catch.
+        if self._window == 0:
+            return self._ambient_db_spl
+        return self._wander[min(self._window - 1, len(self._wander) - 1)]
+
+    async def next_samples(self) -> list[LevelSample]:
+        self._in_window += 1
+        if self._in_window >= 21:
+            self._window += 1
+            self._in_window = 0
+        self._seq += 1
+        rms = self._sensitivity.dbfs_from_db_spl(self._level())
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+
+def _wrong_card_run(tmp_path, *, wander, target, ambient_db_spl=66.0):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    volume = Volume()
+    tone = ReplayableTone()
+    mic = WrongCardMic(tone, ambient_db_spl=ambient_db_spl, wander=wander)
+    result = asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=target,
+            max_main_volume_db=BENCH_CEILING_DB,
+            spl_ceiling_db_spl=BENCH_SPL_CEILING,
+        )
+    )
+    return result, tmp_path / "seat_level_reference.json"
+
+
+def test_a_wrong_card_mic_banks_nothing_however_its_room_wanders(tmp_path):
+    """The gate's demo 1, through the production entry point.
+
+    Ambient window 66 dB SPL; volume-independent readings of 60 then 67, with 67
+    inside the band. Re-basing the floor onto the 60 gives the 67 a rise of 7 dB
+    -- clear of the 6 dB bar -- and banks a reference for a level nothing
+    produced. Against a floor measured in SILENCE the same wander cannot: the
+    silent window hears the same room, so the rise is what it should be, ~0.
+    """
+    result, banked = _wrong_card_run(
+        tmp_path,
+        wander=[60.0, 67.0],
+        target=SeatLevelTarget(target_db_spl=67.0, tolerance_db=2.5),
+    )
+
+    assert result.status == "refused", result.detail
+    assert result.reference_volume_db is None
+    assert result.measured_db_spl is None
+    assert not banked.exists(), "a mic that never heard the speaker banked a reference"
+    # Whatever it published as a rise, nothing cleared the emergence bar.
+    assert max(step["rise_db"] for step in result.ramp["steps"]) < 6.0
+
+
+def test_a_wandering_wrong_card_mic_refuses_with_the_MIC_remedy(tmp_path):
+    """The gate's demo 2: the right refusal carries the right remedy.
+
+    ``spl_target_unreachable`` sends the operator to the amplifier;
+    ``mic_not_observing`` sends them to the microphone. A mic on the wrong card
+    needs the second one, and a floor re-based onto its own quietest wander
+    turned it into the first.
+    """
+    result, banked = _wrong_card_run(
+        tmp_path,
+        wander=[60.0, 67.0, 61.0, 66.0, 62.0, 65.0, 63.0, 64.0, 60.5, 66.5, 61.5],
+        target=SeatLevelTarget(target_db_spl=75.0, tolerance_db=2.5),
+    )
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert "check that the mic is capturing the right card" in (result.detail or "")
+    assert "raise the external amplifier" not in (result.detail or "")
+    assert not banked.exists()
+
+
+def test_a_room_lull_spanning_both_windows_still_banks_DOCUMENTED_LIMITATION(
+    tmp_path,
+):
+    """The accepted residual, asserted as it behaves TODAY rather than wished away.
+
+    The silent re-measure is anti-coincident with the SPEAKER, which is the real
+    fix -- but it is NOT independent of its own trigger. It runs BECAUSE a
+    reading landed low, about a second later, and room lulls autocorrelate over
+    seconds. A lull still present when the silent window runs hands back the same
+    low level, and a mic that never responded to the speaker banks a reference:
+
+      ambient window 66.0 dB SPL -> reading 60.0 (lull) -> silent re-measure
+      60.0 (same lull) -> reading 67.0 clears the 6 dB bar -> CONVERGED.
+
+    So the guard fails on P(first window low) + P(first window high AND the
+    re-measure lands low inside the same lull), where before this PR it failed on
+    the first term alone. The second term is added, not traded: the first term is
+    untouched, so the banking guard is marginally worse than it was. What the pass
+    buys is on the other error type -- a contaminated window no longer disqualifies
+    good readings -- and this test is what stops the next reader believing it is more
+    than that.
+
+    **Why nothing here closes it.** Closing it needs a separator between "the
+    level moved" and "the level moved BECAUSE of the speaker" -- a response test.
+    Deliberately not built: at these reading counts it is spoofable by the same
+    wandering room, and `docs/measurement-loop-doctrine.md` section 5 says a
+    refusal earns its place by naming a component-damage mechanism. This is
+    measurement integrity, not safety: the harm is bounded because the banked
+    reference only ever reaches the speaker through a `min()` with the
+    per-driver admission caps. The disclosure is the mitigation --
+    `ambient_remeasured` on the receipt, and a large NEGATIVE
+    `remeasured_delta_db` on the event line, which is exactly this shape.
+
+    If a future change closes this, invert the assertions rather than deleting
+    the test: the case is the specification of what was accepted and when.
+    """
+    result, banked = _wrong_card_run(
+        tmp_path,
+        # The lull holds 60.0 across BOTH the triggering reading and the silent
+        # window taken ~1 s later; only then does the room come back up.
+        wander=[60.0, 60.0, 67.0],
+        target=SeatLevelTarget(target_db_spl=67.0, tolerance_db=2.5),
+        ambient_db_spl=66.0,
+    )
+
+    # TODAY'S BEHAVIOUR, not the desired one: a mic that never responded banks.
+    assert result.status == "converged", result.detail
+    assert banked.exists(), "the documented limitation stopped reproducing"
+    assert result.ramp["ambient_remeasured"] is True
+    assert result.ramp["ambient_remeasured_db_spl"] == pytest.approx(60.0, abs=0.01)
+    # The tell an operator greps for: the silent window agreed with the low
+    # reading that triggered it, 6 dB below the window before it.
+    assert result.ramp["ambient_remeasured_db_spl"] - result.ramp[
+        "ambient_db_spl"
+    ] == pytest.approx(-6.0, abs=0.01)
+    # This path is INTRODUCED by the re-measure, not inherited from before it: the
+    # pre-#2918 rule REFUSES this same fixture. That is the second term the docstring
+    # above describes -- added alongside the first term, which is untouched, but new.
+    # Asserted for real in the provenance test below rather than claimed here,
+    # because the rise this run publishes is computed under the CURRENT rule and says
+    # nothing about what the old one would have done.
+    assert max(step["rise_db"] for step in result.ramp["steps"]) >= 6.0
+
+
+def _pre_2918_fixed_floor(monkeypatch, *, ambient_db_spl: float) -> None:
+    """Put the pre-#2918 rule back: the floor is the first window and never moves.
+
+    Modelled rather than reverted, and here is exactly how, so the next reader
+    can judge it: ``_remeasure_silence`` is replaced by one that returns the
+    FIRST window's level, consumes no samples, and does not touch the tone. The
+    floor arithmetic is then identical to the old rule (one fixed number for the
+    whole pass) and the mic sees the same window sequence a run with no silent
+    window would have seen. The one difference is cosmetic and not asserted on:
+    the receipt still reports ``ambient_remeasured`` true, where the old build
+    had no such field at all.
+    """
+
+    async def _never_moves(*, tone, sensitivity, **_kwargs):
+        return (
+            slr._Reading(
+                rms_dbfs=sensitivity.dbfs_from_db_spl(ambient_db_spl),
+                samples=1,
+                trace=slr._WindowTrace(samples=(), seen=0),
+            ),
+            tone,
+        )
+
+    monkeypatch.setattr(slr, "_remeasure_silence", _never_moves)
+
+
+def test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited(
+    tmp_path, monkeypatch
+):
+    """Provenance of the limitation above, asserted instead of asserted-about.
+
+    The same fixture -- ambient window 66.0, a mic that never responds, a lull
+    holding 60.0 across both windows, a later 67.0 -- under the rule that shipped
+    BEFORE the silent re-measure existed. With a floor fixed at the first
+    window, the 67.0 reading rises 1.0 and stays there, never clearing the 6 dB
+    emergence bar, so the pass refuses `spl_level_unconverged` and banks nothing.
+
+    That makes the lull path **new**: it is the second term of the two-term statement
+    in `_remeasure_silence` (`P(first window high AND the re-measure lands low inside
+    the same lull)`), which the re-measure introduced without touching the first term
+    -- still a thing this PR added, which is the sentence the limitation test above
+    used to get backwards.
+    """
+    _pre_2918_fixed_floor(monkeypatch, ambient_db_spl=66.0)
+    result, banked = _wrong_card_run(
+        tmp_path,
+        wander=[60.0, 60.0, 67.0],
+        target=SeatLevelTarget(target_db_spl=67.0, tolerance_db=2.5),
+        ambient_db_spl=66.0,
+    )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_LEVEL_UNCONVERGED
+    assert not banked.exists(), "the pre-#2918 rule banked this fixture"
+    # The 67.0 reading is INSIDE the band, and still refuses: what stops it is
+    # the emergence bar, measured against a floor that never moved.
+    rises = [step["rise_db"] for step in result.ramp["steps"]]
+    assert rises[:3] == pytest.approx([-6.0, -6.0, 1.0], abs=0.01)
+    assert max(rises) == pytest.approx(1.0, abs=0.01)
+    assert max(rises) < slr.MIC_RESPONSE_MIN_RISE_DB
+
+def test_the_re_measure_event_carries_the_delta_and_the_rise_it_produced(
+    tmp_path, caplog
+):
+    """One grep answers both questions the re-measure raises.
+
+    A large NEGATIVE delta is the lull-matched residual above. A POSITIVE delta
+    means the floor went UP, so the triggering reading -- and everything under
+    the new floor -- publishes a NEGATIVE rise. That direction is conservative
+    for banking (it makes readings harder to trust, never easier), so it is an
+    observability matter rather than a guard, and it gets said on the line
+    instead of left to be derived from two other fields.
+    """
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        higher = _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+            levels=RUN87_LEVELS,
+            # A silent window that reads HIGHER than the first one did.
+            room_db_spl=60.0,
+            target=RUN87_TARGET,
+        )
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if "seat_level_ambient_remeasured" in record.getMessage()
+    )
+
+    assert "remeasured_delta_db=+2.82" in line
+    # The triggering reading's rise against the new floor is negative, and the
+    # line says so rather than making a reader subtract two other fields.
+    assert "rise_after_remeasure_db=-9.79" in line
+    assert [step["rise_db"] for step in higher.ramp["steps"]][0] == pytest.approx(
+        -9.79, abs=0.02
+    )
+
+def test_a_stuck_constant_mic_still_refuses(tmp_path):
+    """The sub-case the falsified premise was true for, kept green.
+
+    A mic pinned at one level reads the same in silence and under the tone, so
+    its rise stays zero and the runaway guard fires. That was always the easy
+    half; the wrong-card cases above are the half the premise missed.
+    """
+    volume, tone, mic = _rig(deaf=True)
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert result.ramp["ambient_remeasured"] is False
+    assert {step["rise_db"] for step in result.ramp["steps"]} == {0.0}
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def test_a_runaway_refusal_names_the_floor_its_rise_was_measured_against(tmp_path):
+    """One room per sentence: the rise, and the floor it is a rise above.
+
+    Reachable whenever the ambient window is contradicted AND the mic then never
+    rises. The rise is computed against the re-measured floor, so naming the
+    first window beside it would put two different rooms in one sentence.
+    """
+    result = _bench_run(
+        tmp_path,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        # A mic pinned at the true room level: it contradicts the inflated
+        # ambient window, and then never rises above the re-measured floor.
+        levels={
+            volume: RUN87_TRUE_ROOM_DB_SPL
+            for volume in (-50.0, -42.5, -35.0, -27.5, -20.0, -12.5, -5.0, 0.0)
+        },
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+        target=RUN87_TARGET,
+    )
+
+    assert result.reason == slr.REFUSE_MIC_NOT_OBSERVING
+    assert result.ramp["ambient_remeasured"] is True
+    assert f"above the {RUN87_TRUE_ROOM_DB_SPL:.1f} dB SPL room" in (result.detail or "")
+    assert f"{RUN87_AMBIENT_DB_SPL:.1f} dB SPL room" not in (result.detail or "")
