@@ -878,6 +878,9 @@ def test_a_re_measured_room_floor_is_disclosed_on_the_line(
 
     assert code == 0
     assert "converged: reference -13.69 dB measured 72.6 dB SPL" in out
+    # The sentence break, pinned because the nit survived two review rounds:
+    # the phrase is appended to a detail that does not end in a period.
+    assert "measured 72.6 dB SPL. A climb reading landed below" in out
     assert "landed below the 57.2 dB SPL ambient window" in out
     assert "re-measured in silence: 49.7 dB SPL" in out
     assert "which is the floor every rise above was measured against" in out

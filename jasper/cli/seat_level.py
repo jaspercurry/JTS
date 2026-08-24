@@ -133,8 +133,11 @@ def _ambient_phrase(ramp: dict[str, Any]) -> str:
     """
     if not ramp.get("ambient_remeasured"):
         return ""
+    # Leading ". " and not " ": this is APPENDED to a detail that does not end
+    # in a period (the converged line is "reference X dB measured Y dB SPL"), so
+    # the phrase has to supply its own sentence break or the two run together.
     return (
-        f" A climb reading landed below the {ramp['ambient_db_spl']:.1f} dB SPL "
+        f". A climb reading landed below the {ramp['ambient_db_spl']:.1f} dB SPL "
         "ambient window, which cannot happen while the speaker is playing, so "
         "the tone was stopped and the room re-measured in silence: "
         f"{ramp['ambient_remeasured_db_spl']:.1f} dB SPL, which is the floor "

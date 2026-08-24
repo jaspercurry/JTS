@@ -2925,15 +2925,27 @@ active driver. Which bound was used is in the journal —
 render was not possible at all. Read those before concluding a speaker's graph is
 simply tight.
 
-**The room is measured once, before the tone, and two rules read it.** That one
-ambient number is the runaway guard's "did anything actually rise" and
-convergence's "did the reading rise at all". (It was three: the kernel's trust
-threshold was the third, and it is gone with the kernel's noise gate — which is
-the same deletion that stopped the climb starving in a loud room.) Measuring
-rise against ambient rather than against the first reading is what stops a
-speaker quieter than the room from being falsely aborted while it climbs through
-the floor — and a mic that is not listening never emerges at all, because its
-ambient reading IS its signal reading.
+**The room is measured before the tone, and two rules read it.** That ambient
+number is the runaway guard's "did anything actually rise" and convergence's
+"did the reading rise at all". (It was three: the kernel's trust threshold was
+the third, and it is gone with the kernel's noise gate — which is the same
+deletion that stopped the climb starving in a loud room.) Measuring rise against
+ambient rather than against the first reading is what stops a speaker quieter
+than the room from being falsely aborted while it climbs through the floor.
+
+**One window normally, two when the first is contradicted** — the re-measure
+below. And the rules read whichever window was measured last in silence, never a
+level captured while the tone played.
+
+**What "not listening" actually looks like, since the easy version is wrong.** A
+mic pinned at one constant — a dead feed, a muted OS input — reads the same in
+silence and under the tone, so its rise is zero and the guard fires. That is the
+easy half. A mic on the WRONG CARD is not constant: it hears a room, and a room
+wanders, so its ambient reading is **not** its signal reading and a loud enough
+wander can clear the emergence bar on its own. What separates the two cases is
+that the floor is measured in silence, so a wander is being compared against the
+same room rather than against its own quietest moment — which holds except in
+the lull case the re-measure paragraph documents.
 
 **A contradicted floor is re-measured in silence, once, and disclosed.** The
 ambient window is one median of one half-second, so a transient inside it would
@@ -2965,6 +2977,25 @@ level nothing produced, and a wandering one refuses `spl_target_unreachable`
 mic"). Against a silent-measured floor the same mic hears the same room both
 times, so its rise is ~0 and both guards hold. Both shapes are pinned in
 [`tests/test_active_speaker_seat_level.py`](../tests/test_active_speaker_seat_level.py).
+
+**What silence does not buy, because the difference is the residual.** The
+second window is anti-coincident with the SPEAKER — that is the real fix — but
+it is **not independent of its own trigger**: it runs *because* a reading landed
+low, about a second later, and room lulls autocorrelate over seconds. A lull
+still present when the silent window runs hands back the same low level, and a
+mic that never responded banks anyway (ambient window 66.0, a lull holding 60.0
+across both windows, a later 67.0 clearing the 6 dB bar). So the guard now fails
+on `P(first window low)` **plus** `P(first window high AND the re-measure lands
+low inside the same lull)`, where before it failed on the first term alone. The
+second term is narrower — that is the improvement, and all of it. Closing it
+needs a separator between "the level moved" and "the level moved *because of the
+speaker*", which is deliberately not built: at these reading counts it is
+spoofable, and [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)
+section 5 asks a refusal to name a damage mechanism, which measurement integrity
+is not. The harm is bounded by the `min()` with per-driver admission caps, and
+the disclosure is the mitigation — a large NEGATIVE `remeasured_delta_db` on
+`event=…seat_level_ambient_remeasured` is exactly this shape in one grep. The
+case is pinned as a documented limitation, asserting today's behaviour.
 
 **Absolute SPL comes from the mic's own calibration file** — the `Sens Factor`
 header line that the curve parser has always skipped
@@ -3021,7 +3052,7 @@ Read the journal, not the code, to find out what happened:
 | `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
 | `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
 | `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, when a sample-domain stop abandoned a window, that window's `stopped_window_*` facts and the `prior_*` settled reading they must be read against |
-| `_ambient_remeasured` | a climb reading landed below the ambient window, so the tone was stopped and the room measured again in silence: both figures, the reading that contradicted, and the volume it happened at |
+| `_ambient_remeasured` | a climb reading landed below the ambient window, so the tone was stopped and the room measured again in silence: both figures, the reading that contradicted, the volume it happened at, `remeasured_delta_db` (how far the second window moved — a large NEGATIVE value is the lull-matched residual above), and `rise_after_remeasure_db` (the triggering reading's rise against the new floor; negative when the floor went UP) |
 | `_window_samples` | DEBUG only, behind `--verbose`: ONE line per settle window (`window=ambient` or the commanded volume) carrying every sample as `offset:dB SPL`. This is how a rising edge is reconstructed — the per-sample record exists nowhere else |
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 | `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |

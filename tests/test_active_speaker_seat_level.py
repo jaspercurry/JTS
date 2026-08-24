@@ -228,10 +228,13 @@ class Mic:
     than the room pins the reading at ambient for the first several steps, so
     the level does NOT track the commanded volume 1:1 down there.
 
-    ``deaf=True`` is the failure the guard exists for: the device is open and
-    delivering samples, but they never respond to the speaker — the wrong card,
-    a mic in a bag, muted at the OS. It pins at ``stuck_dbfs`` forever, and
-    because its ambient reading IS its signal reading, its rise is zero.
+    ``deaf=True`` models ONE shape of the failure the guard exists for: the
+    device is open and delivering samples, but they never respond to the
+    speaker. It pins at ``stuck_dbfs`` forever, so its ambient reading IS its
+    signal reading and its rise is zero. That is the CONSTANT sub-case only —
+    a mic on the wrong card hears a room that wanders and is not modelled here;
+    ``WrongCardMic`` below is that one, and it is the shape a premise about
+    constants got wrong.
     """
 
     def __init__(
@@ -2720,6 +2723,98 @@ def test_a_wandering_wrong_card_mic_refuses_with_the_MIC_remedy(tmp_path):
     assert "raise the external amplifier" not in (result.detail or "")
     assert not banked.exists()
 
+
+def test_a_room_lull_spanning_both_windows_still_banks_DOCUMENTED_LIMITATION(
+    tmp_path,
+):
+    """The accepted residual, asserted as it behaves TODAY rather than wished away.
+
+    The silent re-measure is anti-coincident with the SPEAKER, which is the real
+    fix -- but it is NOT independent of its own trigger. It runs BECAUSE a
+    reading landed low, about a second later, and room lulls autocorrelate over
+    seconds. A lull still present when the silent window runs hands back the same
+    low level, and a mic that never responded to the speaker banks a reference:
+
+      ambient window 66.0 dB SPL -> reading 60.0 (lull) -> silent re-measure
+      60.0 (same lull) -> reading 67.0 clears the 6 dB bar -> CONVERGED.
+
+    So the guard fails on P(first window low) + P(first window high AND the
+    re-measure lands low inside the same lull), where before this PR it failed on
+    the first term alone. The second term is narrower; that is the whole of the
+    improvement and this test is what stops the next reader believing it is more.
+
+    **Why nothing here closes it.** Closing it needs a separator between "the
+    level moved" and "the level moved BECAUSE of the speaker" -- a response test.
+    Deliberately not built: at these reading counts it is spoofable by the same
+    wandering room, and `docs/measurement-loop-doctrine.md` section 5 says a
+    refusal earns its place by naming a component-damage mechanism. This is
+    measurement integrity, not safety: the harm is bounded because the banked
+    reference only ever reaches the speaker through a `min()` with the
+    per-driver admission caps. The disclosure is the mitigation --
+    `ambient_remeasured` on the receipt, and a large NEGATIVE
+    `remeasured_delta_db` on the event line, which is exactly this shape.
+
+    If a future change closes this, invert the assertions rather than deleting
+    the test: the case is the specification of what was accepted and when.
+    """
+    result, banked = _wrong_card_run(
+        tmp_path,
+        # The lull holds 60.0 across BOTH the triggering reading and the silent
+        # window taken ~1 s later; only then does the room come back up.
+        wander=[60.0, 60.0, 67.0],
+        target=SeatLevelTarget(target_db_spl=67.0, tolerance_db=2.5),
+        ambient_db_spl=66.0,
+    )
+
+    # TODAY'S BEHAVIOUR, not the desired one: a mic that never responded banks.
+    assert result.status == "converged", result.detail
+    assert banked.exists(), "the documented limitation stopped reproducing"
+    assert result.ramp["ambient_remeasured"] is True
+    assert result.ramp["ambient_remeasured_db_spl"] == pytest.approx(60.0, abs=0.01)
+    # The tell an operator greps for: the silent window agreed with the low
+    # reading that triggered it, 6 dB below the window before it.
+    assert result.ramp["ambient_remeasured_db_spl"] - result.ramp[
+        "ambient_db_spl"
+    ] == pytest.approx(-6.0, abs=0.01)
+    # And the pre-#2918 rule is no better here -- it banks too, which is why
+    # this is a residual of the design and not a regression the fix introduced.
+    assert max(step["rise_db"] for step in result.ramp["steps"]) >= 6.0
+
+
+def test_the_re_measure_event_carries_the_delta_and_the_rise_it_produced(
+    tmp_path, caplog
+):
+    """One grep answers both questions the re-measure raises.
+
+    A large NEGATIVE delta is the lull-matched residual above. A POSITIVE delta
+    means the floor went UP, so the triggering reading -- and everything under
+    the new floor -- publishes a NEGATIVE rise. That direction is conservative
+    for banking (it makes readings harder to trust, never easier), so it is an
+    observability matter rather than a guard, and it gets said on the line
+    instead of left to be derived from two other fields.
+    """
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        higher = _bench_run(
+            tmp_path,
+            ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+            levels=RUN87_LEVELS,
+            # A silent window that reads HIGHER than the first one did.
+            room_db_spl=60.0,
+            target=RUN87_TARGET,
+        )
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if "seat_level_ambient_remeasured" in record.getMessage()
+    )
+
+    assert "remeasured_delta_db=+2.82" in line
+    # The triggering reading's rise against the new floor is negative, and the
+    # line says so rather than making a reader subtract two other fields.
+    assert "rise_after_remeasure_db=-9.79" in line
+    assert [step["rise_db"] for step in higher.ramp["steps"]][0] == pytest.approx(
+        -9.79, abs=0.02
+    )
 
 def test_a_stuck_constant_mic_still_refuses(tmp_path):
     """The sub-case the falsified premise was true for, kept green.
