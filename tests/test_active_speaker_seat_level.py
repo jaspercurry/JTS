@@ -2749,6 +2749,7 @@ class SettlingRoomMic:
         room_db_spl: float = SETTLING_ROOM_DB_SPL,
         hot_sample_db_spl: float | None = None,
         hot_below_volume_db: float | None = None,
+        hot_after_silence: bool = False,
     ) -> None:
         self._volume = volume
         self._tone = tone
@@ -2762,6 +2763,10 @@ class SettlingRoomMic:
         # stop from here unambiguously the fade's.
         self._hot_db_spl = hot_sample_db_spl
         self._hot_below = hot_below_volume_db
+        # Arm the excursion only once the stimulus has been RESTARTED, which
+        # isolates the fade-in leg: it is the one failure path that hands back a
+        # playing stimulus, so it is the one worth its own test.
+        self._hot_after_silence = hot_after_silence
         self._climbed = False
         self._seq = 0
         #: ``(commanded_db, observed_db_spl, tone_playing)`` per sample delivered.
@@ -2789,11 +2794,13 @@ class SettlingRoomMic:
         # first climb reading and put the contradiction back at the start.
         if commanded > slr.SEAT_LEVEL_START_DB + slr.STEP_EPSILON_DB:
             self._climbed = True
+        restarted = getattr(self._tone, "plays", 0) >= 2
         if (
             self._hot_db_spl is not None
             and self._hot_below is not None
             and self._climbed
             and commanded <= self._hot_below
+            and (restarted if self._hot_after_silence else not restarted)
         ):
             return self._hot_db_spl
         room = self.room_db_spl if self._climbed else self.transient_db_spl
@@ -2818,11 +2825,31 @@ class SettlingRoomMic:
         ]
 
 
+class WitnessedVolume(Volume):
+    """A fader that records which of its writes the room could actually hear.
+
+    End state is not enough to pin an ORDERING: the teardown cancels the tone
+    anyway, so "the tone is off when the pass returns" is true whether or not a
+    refusal stopped it at the right moment. What matters is whether a write
+    landed while the stimulus was still playing.
+    """
+
+    def __init__(self, tone: BlockingTone) -> None:
+        super().__init__()
+        self._tone = tone
+        self.audible: list[float] = []
+
+    async def set(self, db: float) -> bool:
+        if getattr(self._tone, "playing", False):
+            self.audible.append(float(db))
+        return await super().set(db)
+
+
 def _settling_room_pass(tmp_path, **mic_kwargs):
     """One pass on a room that settles mid-climb, so the re-measure fades."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    volume = Volume()
     tone = ReplayableTone()
+    volume = WitnessedVolume(tone)
     mic = SettlingRoomMic(volume, tone, **mic_kwargs)
     result = asyncio.run(
         _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
@@ -2941,6 +2968,56 @@ def test_the_re_measure_fades_the_stimulus_out_and_back_in(tmp_path):
     # written before the sample is drawn), and both legs bottom out well below.
     assert heard_down[0] < triggered_at
     assert max(heard_down[-1], heard_up[0]) < triggered_at - 1.0
+
+
+def test_a_stop_on_the_way_back_up_leaves_the_stimulus_off(tmp_path):
+    """The fade-IN leg is the one failure path that could hand back a live tone.
+
+    The pass is about to refuse, and its teardown fades from the volume the CLIMB
+    believes it is at -- which is ABOVE where this leg stopped. If the stimulus
+    were still playing, that teardown would command the level UP with a sample
+    that just tripped the commissioning stop still audible. So the stop takes the
+    stimulus with it, and every failure path out of the re-measure leaves it off.
+    """
+    hot = SPL_CEILING + 5.0
+    result, volume, tone, _mic = _settling_room_pass(
+        tmp_path,
+        hot_sample_db_spl=hot,
+        hot_below_volume_db=-46.0,
+        hot_after_silence=True,
+    )
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    # It really was the way back UP: the silent window ran, so the stimulus was
+    # stopped and started again before the stop fired.
+    assert tone.plays == 2
+    assert not tone.playing, "the refusal left the stimulus running"
+
+    # THE ORDERING, which is the actual claim. The teardown fade starts from the
+    # volume the climb believes it is at -- ABOVE where this leg stopped -- so if
+    # the stimulus were still playing it would command the level UP right after a
+    # sample tripped the stop. The trip must therefore be the LAST thing the room
+    # heard: every teardown write after it is into silence.
+    # Every write the room could HEAR only ever went down. The teardown's own
+    # fade starts from the volume the climb believes it is at, which is above
+    # where this leg stopped, so leaving the stimulus running would put that
+    # upward move into the room right after a sample tripped the stop -- and it
+    # would show up here as an ascent.
+    assert volume.audible == sorted(volume.audible, reverse=True), volume.audible
+    # ...and the teardown really does command upward from the stop, which is what
+    # makes the line above a claim rather than a coincidence: its fade starts at
+    # the climb's volume, so its first write is above the last level the room
+    # heard, and it is in the history.
+    teardown_first = slr._fade_levels(
+        from_db=max(volume.commanded), to_db=slr.FADE_FLOOR_DB
+    )[0]
+    assert teardown_first in volume.commanded
+    assert teardown_first > volume.audible[-1]
+
+    assert result.restored is True
+    assert result.restored is True
+    assert volume.commanded[-1] == pytest.approx(HOUSEHOLD_VOLUME_DB)
+    assert not (tmp_path / "seat_level_reference.json").exists()
 
 
 def test_each_fade_leg_announces_itself_on_one_journal_line(tmp_path, caplog):

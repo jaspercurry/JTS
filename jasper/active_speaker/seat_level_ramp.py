@@ -1850,6 +1850,16 @@ async def _remeasure_silence(
         session_id=session_id,
     )
     if faded_in is not None:
+        # A stop on the way back UP is the one failure path here that would
+        # otherwise hand the caller a PLAYING stimulus at a partly-restored
+        # fader. The pass is about to refuse and tear down, and the teardown
+        # fades from the volume the CLIMB believes it is at -- which is above
+        # where this leg actually stopped, so it would command the level UP
+        # while a sample that just tripped the commissioning stop was still
+        # audible. Stopping the stimulus here is what keeps that fade silent,
+        # and makes the invariant uniform: on every failure path out of this
+        # function the stimulus is already off.
+        cancel_tone()
         return faded_in, restarted
     return reading, restarted
 
