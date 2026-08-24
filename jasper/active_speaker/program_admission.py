@@ -463,6 +463,32 @@ def _evaluate_program(
             program_id=program.program_id,
             phase=program.phase,
             refusals=",".join(reason.value for reason in unique_refusals),
+            # WHICH segment, and the numbers it was judged on. All three fields
+            # below are computed above and, until this line grew them, were
+            # discarded here — the aggregate reason alone cannot tell a level
+            # breach from a band escape, and `program_segment_outside_limits`
+            # is the catch-all `_map_safety_plan_error` also returns for a
+            # plan that RAISED for some third reason. A 2026-08-23 jts3 bench
+            # triage read that aggregate as a level breach on the woofer;
+            # re-running the same declaration, caps, session volume and solved
+            # gains through this function admits the program, so the reason was
+            # something the log never said. `session_volume_db` is named
+            # because it is the term that triage omitted: a segment's effective
+            # peak is its digital gain PLUS this value (see
+            # `_requested_segment_plan`), and comparing the bare gain against
+            # an effective-peak cap is off by exactly this much.
+            segments_refused=";".join(
+                f"{s.segment_id}:{s.role}"
+                f":eff={s.effective_peak_dbfs:.3f}"
+                f":band={s.band[0]:.1f}-{s.band[1]:.1f}"
+                f":{'|'.join(s.refusals)}"
+                for s in segments
+                if s.refusals
+            ),
+            role_caps_dbfs=",".join(
+                f"{facts.role}={facts.cap_dbfs:.3f}" for facts in channels
+            ),
+            session_volume_db=f"{float(session_volume_db):.3f}",
         )
     return admission
 

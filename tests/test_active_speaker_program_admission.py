@@ -461,3 +461,96 @@ def test_readmit_wrong_shape_wav_is_refused(tmp_path):
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH in adm.refusals
+
+
+def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
+    """A solved MEASURE gain NUMERICALLY above a driver's cap is admissible.
+
+    The 2026-08-23 jts3 b0 walk refused with
+    ``program_segment_outside_limits`` and was triaged as "the woofer's solved
+    ``-6.0`` sits 2.0 dB over its declared ``max_effective_peak_dbfs`` of
+    ``-8.0``, so the level solver must learn about the cap". Those two numbers
+    are not comparable: a solved gain is a per-segment DIGITAL gain, and the
+    cap bounds the EFFECTIVE peak, which ``_requested_segment_plan`` builds as
+    ``segment.gain_db + session_volume_db``. At that session's ``-12.5`` dB
+    volume the woofer segment lands at ``-18.5`` dBFS effective — 10.5 dB
+    UNDER its cap — and the program is ADMITTED.
+
+    Pinned so the comparison cannot be "fixed" into existence later: clamping a
+    solved gain directly to ``max_effective_peak_dbfs`` would drive MEASURE
+    quieter by exactly the session volume, which is the SNR collapse the level
+    solve exists to prevent.
+    """
+    from jasper.active_speaker.crossover_v2_flow import back_off_gain
+
+    topology, profile, targets = _profile_and_targets(woofer_peak=-8.0)
+    session_volume_db = -12.5
+    # The solve tonight produced these; the composer clamps each against that
+    # role's cap in the effective frame, exactly as
+    # `SessionExcitation.measure_program` does.
+    solved = {"woofer": -6.0, "tweeter": -24.656}
+    caps = {"woofer": -8.0, "tweeter": -65.0}
+    gains = {
+        role: back_off_gain(solved[role], session_volume_db, caps[role])
+        for role in solved
+    }
+    # The woofer's cap does NOT bind here: its ceiling in the digital frame is
+    # -8.0 + 12.5 - 0.01, well above the solved -6.0, so the solve rides
+    # through untouched. The tweeter's -65 cap DOES bind, and the composer —
+    # not the solver — is what lowers it.
+    assert gains["woofer"] == pytest.approx(-6.0)
+    assert gains["tweeter"] < solved["tweeter"]
+
+    prog = _measure_program(session_volume_db, gains=gains)
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=session_volume_db,
+    )
+    assert adm.allowed
+    assert adm.refusals == ()
+    by_id = {s.segment_id: s for s in adm.segments}
+    assert by_id["sweep_w"].effective_peak_dbfs == pytest.approx(-18.5)
+    facts = {c.role: c for c in adm.channels}
+    assert facts["woofer"].cap_dbfs == pytest.approx(-8.0)
+    assert facts["woofer"].peak_within_cap
+
+
+def test_refused_program_log_names_the_refusing_segment(caplog):
+    """The refusal log says WHICH segment, at what level and band, and why.
+
+    Every field asserted here is computed by ``_evaluate_program`` regardless;
+    before this it was discarded at the log line, leaving only the aggregate
+    ``program_segment_outside_limits`` — which cannot distinguish a level
+    breach from a band escape, and which ``_map_safety_plan_error`` also
+    returns as its catch-all for a plan that raised for a third reason.
+    """
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="jasper.active_speaker.program_admission")
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    # A tweeter segment driven past its own -65 cap in the EFFECTIVE frame:
+    # -40.0 + sv (-20.0) = -60.0 dBFS, 5 dB over.
+    prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -40.0})
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
+
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker.program_admission" in record.getMessage()
+        and "result=refused" in record.getMessage()
+    )
+    assert "segments_refused=" in line
+    assert "sweep_t:tweeter" in line
+    assert "eff=-60.000" in line
+    assert "band=1600.0-10000.0" in line
+    assert "active_excitation_request_outside_limits" in line
+    # The cap it was judged against, and the term whose omission made the
+    # 2026-08-23 triage compare a digital gain with an effective-peak ceiling.
+    assert "tweeter=-65.000" in line
+    assert f"session_volume_db={sv:.3f}" in line
