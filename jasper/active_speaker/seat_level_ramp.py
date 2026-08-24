@@ -78,10 +78,13 @@ owns, and nothing else can know:
    played — measured silence is the anti-coincidence property that makes "rise"
    mean "responded to the speaker" rather than "happened to be louder". A
    transient inside that half-second would otherwise become "the room" for the
-   whole run, so when a climb reading CONTRADICTS the floor the pass stops the
-   tone and re-measures the silence ONCE
-   (:data:`REFUSE_MIC_FEED_LOST` if that window is unreadable), discloses both
-   windows, and continues against the second one. That second window is
+   whole run, so when a climb reading CONTRADICTS the floor the pass fades the
+   stimulus out, stops it, re-measures the silence ONCE
+   (:data:`REFUSE_MIC_FEED_LOST` if that window is unreadable), starts the
+   stimulus again and fades it back in, discloses both
+   windows, and continues against the second one. Both edges are faded because
+   the module's :data:`FADE_STEP_DB` rule is about edges, not about one call
+   site (#2929). That second window is
    anti-coincident with the SPEAKER but NOT independent of the trigger — it is
    taken because a reading was low, a second later, and a room lull can span
    both, which ADDS one way for the banking guard to fail rather than removing
@@ -248,8 +251,11 @@ SETTLED_AGREE_DB = 0.5
 # bar spends the whole timeout on a reading that CONVERGES — pinned by
 # ``test_a_converging_pass_can_spend_the_whole_settle_timeout_per_reading``.
 # Audible time is therefore bounded by ``walk_reading_budget`` readings at this
-# timeout each — about 88 s at the shipped values and about 330 s at the knob's
-# maximum — and the silent re-measure adds none of it. The bound is stated as a
+# timeout each, plus the pass's fade legs (:data:`FADE_LEGS_PER_PASS` at
+# :func:`fade_seconds` apiece, about 2 s all told and independent of this
+# knob) — about 88 s at the shipped values and about 330 s at the knob's
+# maximum. The silent re-measure's SILENCE adds none of it; its two fade legs
+# are two of those three. The bound is stated as a
 # relation rather than a stopwatch reading on purpose: the seconds move whenever
 # the reading count or the window length does, and a decimal nothing re-derives
 # is how prose starts lying. Not a hearing hazard — every sample is still under
@@ -333,7 +339,9 @@ WINDOW_TRACE_MAX_SAMPLES = 256
 # already reports that as `mic_not_observing`.
 #
 # Readings, not windows: a silent re-measure settles the same way every other
-# reading does, so what it costs the watchdog is one settle, not one window.
+# reading does, so what it costs the watchdog is one settle, not one window —
+# plus the two fade legs that bracket its silence, which are priced separately
+# because they are not readings (:data:`FADE_LEGS_PER_PASS`).
 REMEASURE_READINGS = 1
 
 # How many extra readings the BANK CONFIRM adds to the walk's budget. One: on a
@@ -359,9 +367,25 @@ WATCHDOG_SLACK_S = 15.0
 # Fade the commanded volume down before the tone is killed, so a broadband
 # stimulus never stops at full level into the DAC. Preserved verbatim from the
 # retired kernel's fade-before-tone-kill.
+#
+# The rule is about EDGES, not about one call site, so every place this pass
+# starts or stops the stimulus at a measurement level walks the fader through
+# these steps: the end-of-run :func:`_fade_and_stop`, and both edges of the
+# silent re-measure (:func:`_remeasure_silence`, issue #2929). A fade's shape —
+# how many writes and therefore how many seconds — has one owner,
+# :func:`fade_steps`, so :func:`_watchdog_seconds` prices exactly the fades the
+# pass can actually spend.
 FADE_STEP_DB = 2.0
 FADE_STEP_S = 0.03
 FADE_FLOOR_DB = -50.0
+
+# How many fade legs one pass can walk INSIDE the watchdog scope, and so how
+# many :func:`_watchdog_seconds` prices: the silent re-measure's down and up
+# edges, and the end-of-run fade. Three, and not a knob — it is a count of code
+# paths, not a tunable. The pre-tone ambient read is outside the scope and moves
+# no fader; a pass that never re-measures simply walks fewer than it was priced
+# for, which is the safe direction for a backstop.
+FADE_LEGS_PER_PASS = 3
 
 # How many times a teardown step may be re-awaited after the pass is cancelled.
 #
@@ -415,6 +439,21 @@ REFUSE_WATCHDOG_EXPIRED = "seat_level_watchdog_expired"
 # Ctrl-C, SIGINT, or any other cancellation of the pass. Recorded, never
 # swallowed: the cancellation still propagates once the teardown has run.
 REFUSE_INTERRUPTED = "seat_level_interrupted"
+# The two sample-domain stops' operator-facing wording, named once because two
+# places now run those stops on every sample: a measurement window
+# (:func:`_window_reading`) and a fade leg (:func:`_watched_fade`). The CEILING
+# itself already had one owner — the ``spl_ceiling_db_spl`` parameter threaded
+# from the profile — and these keep the sentence that reports it from becoming a
+# second one.
+CLIPPED_CAPTURE_DETAIL = "the capture clipped; no level can be read from it"
+
+
+def over_ceiling_detail(*, observed_db_spl: float, spl_ceiling_db_spl: float) -> str:
+    """What a sample above the profile's commissioning SPL stop reports."""
+    return (
+        f"measured {observed_db_spl:.1f} dB SPL, above the profile's "
+        f"commissioning stop {spl_ceiling_db_spl:.1f} dB SPL"
+    )
 # Reuses jasper-angle-capture's slug verbatim: same door, same durable fact.
 REFUSE_SESSION_ALREADY_LIVE = "measurement_session_already_live"
 # The shared measurement window would not open — another measurement holds the
@@ -717,7 +756,7 @@ async def _window_reading(
                         samples=len(readings),
                         trace=_trace(),
                         refusal=REFUSE_MIC_CLIPPING,
-                        detail="the capture clipped; no level can be read from it",
+                        detail=CLIPPED_CAPTURE_DETAIL,
                     )
                 if not math.isfinite(sample.rms_dbfs):
                     continue
@@ -733,10 +772,9 @@ async def _window_reading(
                         samples=len(readings),
                         trace=_trace(),
                         refusal=REFUSE_SPL_CEILING_EXCEEDED,
-                        detail=(
-                            f"measured {observed_db_spl:.1f} dB SPL, above the "
-                            f"profile's commissioning stop "
-                            f"{spl_ceiling_db_spl:.1f} dB SPL"
+                        detail=over_ceiling_detail(
+                            observed_db_spl=observed_db_spl,
+                            spl_ceiling_db_spl=spl_ceiling_db_spl,
                         ),
                     )
                 readings.append(sample.rms_dbfs)
@@ -968,6 +1006,24 @@ def mic_is_not_observing(
     return max_rise_db < min_rise_db and at_ceiling
 
 
+def fade_steps(*, from_db: float, to_db: float) -> int:
+    """How many :data:`FADE_STEP_DB` writes a fade between two volumes makes.
+
+    **The single owner of a fade's shape**, for the same reason
+    :func:`walk_reading_budget` below owns the reading count: the fade legs are
+    walked from this number (:func:`_fade_levels`) and PRICED from it
+    (:func:`_watchdog_seconds`), and two writers of one number is how a backstop
+    starts firing before the honest refusal does. Direction is not part of the
+    answer — a fade up and the mirror fade down cost the same.
+    """
+    return math.ceil(abs(float(to_db) - float(from_db)) / FADE_STEP_DB)
+
+
+def fade_seconds(*, from_db: float, to_db: float) -> float:
+    """The wall-clock one fade leg spends sleeping between its writes."""
+    return fade_steps(from_db=from_db, to_db=to_db) * FADE_STEP_S
+
+
 def walk_reading_budget(*, start_db: float, ceiling_db: float) -> int:
     """How many settled readings one climb may spend, at most.
 
@@ -992,12 +1048,26 @@ def walk_reading_budget(*, start_db: float, ceiling_db: float) -> int:
 def _watchdog_seconds(
     *, start_db: float, ceiling_db: float, settle_timeout_s: float = SETTLE_TIMEOUT_S
 ) -> float:
-    """This pass's own worst case, priced as the readings it actually takes.
+    """This pass's own worst case, priced as the readings and fades it takes.
 
     :func:`walk_reading_budget` — every reading the climb may spend — plus the
     ONE silent re-measure a contradicted floor can cost
     (:func:`_remeasure_silence`), each priced at ``settle_timeout_s``, the most
-    one reading can spend, plus :data:`WATCHDOG_SLACK_S`.
+    one reading can spend; plus the THREE fade legs the pass can walk inside
+    this scope — the re-measure's down and up edges and the end-of-run
+    :func:`_fade_and_stop` — each priced at its own worst case, a fade from the
+    ceiling to :data:`FADE_FLOOR_DB`; plus :data:`WATCHDOG_SLACK_S`.
+
+    **Why the fades are a term and not a rounding error.** They are the only
+    seconds inside this scope that are not a reading, so leaving them out would
+    make the margin below silently smaller than the constant that names it —
+    the same "two writers of one number" failure the reading count is guarded
+    against. They are small (about 0.75 s a leg at the shipped step size, worst
+    case, against a reading's 8 s) and they are BOUNDED by the same ceiling the
+    climb is, so pricing them costs the backstop almost nothing and buys the
+    sentence below the right to be exact. The end-of-run fade is priced here for
+    the first time; it always ran inside this scope (``_walk_to_the_band``'s own
+    ``finally``) and was simply never counted.
 
     **The budget is substantially reachable, and that is why it is priced this
     way.** A settled reading normally costs two windows, about a second — but
@@ -1016,8 +1086,9 @@ def _watchdog_seconds(
     what the guards read), so this budget covers the tone-playing walk only. The
     reading count here is exactly what the walk can spend inside that scope —
     :func:`walk_reading_budget`, the one owner of that number, plus the one
-    silent re-measure — so the margin is :data:`WATCHDOG_SLACK_S` and nothing
-    else. A feed that never returns during the ambient read is not bounded here
+    silent re-measure — and the fade count is exactly what it can walk there, so
+    the margin is :data:`WATCHDOG_SLACK_S` and nothing else. A feed that never
+    returns during the ambient read is not bounded here
     — nothing has been mutated at that point (no tone, no latch, fader unmoved)
     and the operator's interrupt is the stop. Priced against the ACTUAL start
     and the ACTUAL bite, so it cannot repeat the retired kernel's mistake of
@@ -1027,7 +1098,13 @@ def _watchdog_seconds(
         walk_reading_budget(start_db=start_db, ceiling_db=ceiling_db)
         + REMEASURE_READINGS
     )
-    return readings * float(settle_timeout_s) + WATCHDOG_SLACK_S
+    # The loudest a fade leg can start (or end) is the ceiling: every leg this
+    # pass walks runs between a commanded volume the climb reached and the
+    # floor, and the climb never commands above the ceiling.
+    fades = FADE_LEGS_PER_PASS * fade_seconds(
+        from_db=max(float(ceiling_db), FADE_FLOOR_DB), to_db=FADE_FLOOR_DB
+    )
+    return readings * float(settle_timeout_s) + fades + WATCHDOG_SLACK_S
 
 
 def seat_level_ceiling_db(max_main_volume_db: float) -> float:
@@ -1092,6 +1169,27 @@ async def run_teardown(what: str, coro: Awaitable[Any]) -> bool:
     return False
 
 
+def _fade_levels(*, from_db: float, to_db: float) -> tuple[float, ...]:
+    """Every commanded volume one fade leg writes, in order, ending exactly at
+    ``to_db``.
+
+    Terminating by construction: the count comes from :func:`fade_steps` and each
+    step is clamped at the destination, so the last write IS ``to_db`` and no
+    float comparison decides when to stop.
+    """
+    level = float(from_db)
+    to = float(to_db)
+    levels: list[float] = []
+    for _ in range(fade_steps(from_db=level, to_db=to)):
+        level = (
+            min(to, level + FADE_STEP_DB)
+            if to > level
+            else max(to, level - FADE_STEP_DB)
+        )
+        levels.append(level)
+    return tuple(levels)
+
+
 async def _fade_and_stop(
     *,
     from_db: float,
@@ -1103,17 +1201,121 @@ async def _fade_and_stop(
 
     ``cancel_tone`` is synchronous and sits in this function's own ``finally``,
     so the stimulus stops even when the fade itself cannot run.
+
+    The pass's TEARDOWN edge, and the only fade that is not sample-watched: by
+    the time it runs the outcome is already decided, so a stop it could see would
+    have nowhere to be reported. Its sibling
+    :func:`_watched_fade` is the mid-pass one, where a stop still has a refusal
+    to become.
+
+    A fade-to-stop only ever walks DOWN. ``from_db`` at or under the floor has
+    nothing to fade, exactly as this function's ``while level > FADE_FLOOR_DB``
+    predecessor did — which is why the destination is clamped rather than handed
+    straight to :func:`_fade_levels`, whose walk is direction-agnostic.
     """
-    level = float(from_db)
     try:
-        while level > FADE_FLOOR_DB:
-            level = max(FADE_FLOOR_DB, level - FADE_STEP_DB)
+        for level in _fade_levels(
+            from_db=from_db, to_db=min(float(from_db), FADE_FLOOR_DB)
+        ):
             await set_main_volume_db(level)
             await sleep(FADE_STEP_S)
     except RECOVERABLE_ERRORS:
         logger.exception("seat-level fade-before-tone-kill failed")
     finally:
         cancel_tone()
+
+
+async def _watched_fade(
+    *,
+    from_db: float,
+    to_db: float,
+    direction: str,
+    sensitivity: MicSensitivity,
+    spl_ceiling_db_spl: float,
+    set_main_volume_db: SetMainVolumeDb,
+    next_samples: SampleSource,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+    session_id: str,
+) -> _Reading | None:
+    """Walk the fader between two levels with the sample-domain stops running.
+
+    Returns the refusal a sample forced, or ``None`` when the leg completed and
+    the fader is sitting exactly at ``to_db``.
+
+    **Why a fade is watched at all.** A fade is AUDIBLE seconds — the stimulus is
+    playing throughout — and un-watched audible seconds are a hole in the
+    per-sample commissioning stop that guards every other second of the pass.
+    The two legs of the silent re-measure are the only audible time this pass
+    spends outside a measurement window, so they run the same two stops a window
+    does, from the same wording (:data:`CLIPPED_CAPTURE_DETAIL`,
+    :func:`over_ceiling_detail`) against the same ``spl_ceiling_db_spl``. What
+    they do NOT do is bank a median: nothing here is a reading, and the levels a
+    fade sweeps through are on their way somewhere by definition.
+
+    The trace it carries is the leg's own samples, so a refusal from here
+    publishes the fade it stopped in exactly as a refusal from a window
+    publishes the window — the pass has one answer to "what did the thing that
+    stopped me actually see".
+
+    One ``event=active_speaker.seat_level_fade`` line per leg, not per write: the
+    edges are what an operator (or a hardware run confirming this fix) greps for,
+    and a per-write line would be 25 of them at the ceiling. ``direction`` names
+    the way the FADER walks — ``down`` for the fade out, ``up`` for the fade in —
+    because that is the vocabulary the rest of this module's fade machinery uses
+    and one leg should not have two names.
+    """
+    levels = _fade_levels(from_db=from_db, to_db=to_db)
+    log_event(
+        logger,
+        "active_speaker.seat_level_fade",
+        session=session_id,
+        direction=direction,
+        from_db=f"{float(from_db):.2f}",
+        to_db=f"{float(to_db):.2f}",
+        steps=str(len(levels)),
+        seconds=f"{fade_seconds(from_db=from_db, to_db=to_db):.2f}",
+    )
+    trace: list[tuple[float, float]] = []
+    trip: tuple[float, float] | None = None
+    seen = 0
+    started = clock()
+
+    def _stopped(refusal: str, detail: str) -> _Reading:
+        return _Reading(
+            rms_dbfs=None,
+            samples=0,
+            trace=_WindowTrace(samples=tuple(trace), seen=seen, trip=trip),
+            refusal=refusal,
+            detail=detail,
+        )
+
+    for level in levels:
+        await set_main_volume_db(level)
+        await sleep(FADE_STEP_S)
+        for sample in await next_samples():
+            if sample.clip:
+                return _stopped(REFUSE_MIC_CLIPPING, CLIPPED_CAPTURE_DETAIL)
+            if not math.isfinite(sample.rms_dbfs):
+                # A fade is not a reading, so a feed that goes quiet across one
+                # is not `mic_feed_lost` -- there is no median here to be
+                # missing. The next window answers that question.
+                continue
+            observed_db_spl = sensitivity.db_spl_from_dbfs(sample.rms_dbfs)
+            at = clock() - started
+            seen += 1
+            if len(trace) < WINDOW_TRACE_MAX_SAMPLES:
+                trace.append((at, observed_db_spl))
+            if observed_db_spl > spl_ceiling_db_spl:
+                trip = (at, observed_db_spl)
+                return _stopped(
+                    REFUSE_SPL_CEILING_EXCEEDED,
+                    over_ceiling_detail(
+                        observed_db_spl=observed_db_spl,
+                        spl_ceiling_db_spl=spl_ceiling_db_spl,
+                    ),
+                )
+    return None
 
 
 async def run_seat_level_ramp(
@@ -1475,8 +1677,10 @@ async def run_seat_level_ramp(
 async def _remeasure_silence(
     *,
     tone: "asyncio.Future[Any]",
+    volume_db: float,
     sensitivity: MicSensitivity,
     spl_ceiling_db_spl: float,
+    set_main_volume_db: SetMainVolumeDb,
     play_continuous_tone: Callable[[], Awaitable[Any]],
     cancel_tone: Callable[[], None],
     next_samples: SampleSource,
@@ -1486,7 +1690,7 @@ async def _remeasure_silence(
     agree_db: float,
     settle_timeout_s: float,
 ) -> tuple[_Reading, "asyncio.Future[Any]"]:
-    """Stop the tone, measure the room again, start the tone again.
+    """Fade out, stop the tone, measure the room again, start it and fade in.
 
     **Why the tone has to actually stop.** The floor this returns feeds the
     guards that decide whether the mic is observing the speaker and whether a
@@ -1529,34 +1733,94 @@ async def _remeasure_silence(
     ``remeasured_delta_db`` are the operator's tell instead.
 
     Bounded and unconditional-once: exactly one extra
-    :func:`_settle_reading` — normally two windows, about a second — priced into
-    :func:`_watchdog_seconds`, with no retry and no lag to tune. The stimulus's
+    :func:`_settle_reading` — normally two windows, about a second — plus the two
+    fade legs below, all three priced into :func:`_watchdog_seconds`, with no
+    retry and no lag to tune. The stimulus's
     own decay tail after ``cancel_tone`` needs no drained delay to absorb it:
     the tail IS a moving level, so the window that catches it disagrees with the
     one after it and the reading simply keeps going until the room is still. A
     room that never goes still refuses (:data:`REFUSE_LEVEL_UNSETTLED`) rather
     than handing the guards a floor measured off a decaying speaker.
 
-    The fader is left exactly where the climb had it: the tone is off, so the
-    speaker is silent whatever the volume says, and moving it would mean two
-    more writes to reconcile on a path whose whole job is to observe. The cost
-    of that choice is that both edges here are ABRUPT — the stimulus stops and
-    restarts at a measurement level with no fade, unlike the pass's own
-    end-of-run :func:`_fade_and_stop` — and #2919's settle lengthens the silence
-    they bracket from a fixed second to as much as ``settle_timeout_s``. That is
-    pre-existing behaviour and not a hearing-safety question (every sample is
-    still under the commissioning stop), but it is a real one:
-    https://github.com/jaspercurry/JTS/issues/2929.
+    **Both edges are faded, because the fade rule is about EDGES.** The module's
+    own :data:`FADE_STEP_DB` rule — a broadband stimulus never stops at full
+    level into the DAC — was written for the end-of-run
+    :func:`_fade_and_stop` and then not applied here, so one pass could put two
+    un-faded edges into the room at a measurement level (issue #2929). It now
+    walks the fader down to :data:`FADE_FLOOR_DB` before ``cancel_tone``, and
+    back up to ``volume_db`` after the stimulus is running again. The restart
+    edge gets the same treatment as the stop edge because it IS the same edge
+    with the sign reversed: a broadband stimulus appearing instantly at a
+    measurement level is the step the rule exists to prevent, whichever
+    direction the step goes.
+
+    **Why moving the fader here is safe, against the objection this docstring
+    used to raise.** It said the fader was left alone because moving it "would
+    mean two more writes to reconcile on a path whose whole job is to observe".
+    There is nothing to reconcile, and each of the three things a mid-climb
+    fader move could corrupt is answered by construction:
+
+    * **The durable latch.** :class:`SessionVolumePlan` is opened ONCE against
+      the start volume and closed ONCE against the HOUSEHOLD volume it recorded
+      before the first mutation. It is not a per-write latch — the climb already
+      writes the fader at every step — so a fade's writes are the same class of
+      write the walk makes anyway, and the restore is unchanged by how many
+      there were.
+    * **The gap/step arithmetic.** ``volume_db`` is the walk's own local and
+      nothing here touches it; the up leg's last write lands exactly on it
+      (:func:`_fade_levels` clamps at its destination), so the fader is back
+      where the climb had it before the walk reads anything again.
+    * **``slope_db_per_db``.** It reads consecutive ``(volume, level)`` pairs
+      from readings, and no reading is taken during either leg — a fade's
+      samples are checked against the stops and then discarded, never banked.
+      The pair before the re-measure and the pair after it are the same two the
+      walk would have had.
+
+    What the legs DO cost is audible seconds — bounded by :func:`fade_seconds`,
+    about 0.75 s a leg at the shipped step size with the fader at the ceiling —
+    and one narrower thing worth stating: a tone player slow to produce sound
+    lands its first sound part-way up the ramp rather than at the top, so what
+    the up leg bounds is the COMMANDED level, which is all this seam can promise.
+    Strictly better than restarting at full level, and not a claim to have
+    bounded the player.
+
+    The silent window itself is unaffected by either leg. It opens after
+    ``cancel_tone`` and closes before the tone restarts, so no fade sample is in
+    it; and the settle discipline makes the fade an improvement rather than a
+    contamination risk, because the tone now stops from
+    :data:`FADE_FLOOR_DB` instead of from a measurement level and the decay tail
+    the first window has to out-wait is smaller.
 
     Returns the reading and the tone future the caller must now hold, because the
     old one is finished once its player has been cancelled and the caller's own
     teardown has to cancel the tone that is actually playing. When the silent
     window itself failed the stimulus is NOT restarted: the pass is about to
-    refuse, and starting it again would put an audible blip in the room for
-    exactly as long as the fade takes to kill it.
+    refuse, and starting it again would put an audible blip in the room for as
+    long as the teardown's own fade takes to remove it. In that case the fader is
+    left at the floor and the pass's ``finally`` restores the household volume
+    through the latch, exactly as on every other refusal.
+
+    A sample-domain stop can fire on either leg (:func:`_watched_fade`), and
+    when it does it comes back as this function's reading — a refusal with the
+    fade's own trace attached — so the audible seconds a fade adds are watched
+    by the same commissioning stop as every other audible second of the pass.
     """
+    faded = await _watched_fade(
+        from_db=volume_db,
+        to_db=FADE_FLOOR_DB,
+        direction="down",
+        sensitivity=sensitivity,
+        spl_ceiling_db_spl=spl_ceiling_db_spl,
+        set_main_volume_db=set_main_volume_db,
+        next_samples=next_samples,
+        clock=clock,
+        sleep=sleep,
+        session_id=session_id,
+    )
     cancel_tone()
     tone.cancel()
+    if faded is not None:
+        return faded, tone
     reading = await _settle_reading(
         next_samples,
         sensitivity=sensitivity,
@@ -1570,7 +1834,24 @@ async def _remeasure_silence(
     )
     if reading.rms_dbfs is None:
         return reading, tone
-    return reading, asyncio.ensure_future(play_continuous_tone())
+    # The fader is already at the floor, so the stimulus starts quiet and the up
+    # leg is the only write needed to put it back where the climb had it.
+    restarted: asyncio.Future[Any] = asyncio.ensure_future(play_continuous_tone())
+    faded_in = await _watched_fade(
+        from_db=FADE_FLOOR_DB,
+        to_db=volume_db,
+        direction="up",
+        sensitivity=sensitivity,
+        spl_ceiling_db_spl=spl_ceiling_db_spl,
+        set_main_volume_db=set_main_volume_db,
+        next_samples=next_samples,
+        clock=clock,
+        sleep=sleep,
+        session_id=session_id,
+    )
+    if faded_in is not None:
+        return faded_in, restarted
+    return reading, restarted
 
 
 async def _walk_to_the_band(
@@ -1754,8 +2035,10 @@ async def _walk_to_the_band(
             if remeasured_dbfs is None and reading.rms_dbfs < floor_dbfs:
                 silent, tone = await _remeasure_silence(
                     tone=tone,
+                    volume_db=volume_db,
                     sensitivity=sensitivity,
                     spl_ceiling_db_spl=spl_ceiling_db_spl,
+                    set_main_volume_db=set_main_volume_db,
                     play_continuous_tone=play_continuous_tone,
                     cancel_tone=cancel_tone,
                     next_samples=next_samples,
