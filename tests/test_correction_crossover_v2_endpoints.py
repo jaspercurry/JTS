@@ -1635,10 +1635,11 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
     # RE-DERIVED (work order D1): stage 1 is 10 captures, not the 16 of the
     # single session it replaced; ``cloud_capture_target()`` still names the
-    # whole journey, now 15 (2026-08-18: the post-apply walk came down to its
-    # floor of 5).
+    # whole journey, now 16 (2026-08-18 brought the post-apply walk down to its
+    # floor of 5; the 2026-08-24 geometry ruling put the design axis into its
+    # pose set and took it back to 6).
     assert spec.capture_plan.capture_target == 10
-    assert cloud_capture_target() == 15
+    assert cloud_capture_target() == 16
     assert spec.capture_plan.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
     requests: list = []
@@ -3724,8 +3725,10 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     just-closed relay spends winding down, exactly as T2 predicted.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        DEFAULT_CLOUD_VERIFY_POSITIONS,
         MAX_CLOUD_MEASURE_POSITIONS,
         MIN_CLOUD_MEASURE_POSITIONS,
+        MIN_CLOUD_VERIFY_POSITIONS,
         TIER_EXPRESS,
         TIER_FULL,
         build_v2_cloud_index_phase_map,
@@ -3747,9 +3750,17 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     # one moved (12 -> 11) when #2291's entry baseline took a relay blob index,
     # and a literal here would have made this test fail for the wrong reason
     # instead of following the constant it is exercising the extremes of.
+    #
+    # M's LOW corner follows the same rule and for the same reason: it moved
+    # (5 -> 6) when the 2026-08-24 geometry ruling gave the post-apply group its
+    # own pose set, and a literal would have failed this test on the floor
+    # rather than on the invariant it is about. The high corner stays a literal
+    # — M has no derived ceiling, and 12 is simply well past any shipped shape.
     _n_lo, _n_hi = MIN_CLOUD_MEASURE_POSITIONS, MAX_CLOUD_MEASURE_POSITIONS
+    _m_lo = MIN_CLOUD_VERIFY_POSITIONS
     for n, m in (
-        (_n_lo, 5), (_n_hi, 5), (_n_lo, 12), (_n_hi, 12), (9, 6),
+        (_n_lo, _m_lo), (_n_hi, _m_lo), (_n_lo, 12), (_n_hi, 12),
+        (9, DEFAULT_CLOUD_VERIFY_POSITIONS),
     ):
         shape = resolve_plan_shape(
             cloud_measure_positions=n, cloud_verify_positions=m,
@@ -4001,13 +4012,20 @@ def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
     household's choice at the tier chooser governs both stages.
     """
     from jasper.active_speaker.crossover_v2_flow import (
+        DEFAULT_CLOUD_VERIFY_POSITIONS,
         TIER_EXPRESS,
         TIER_FULL,
         build_v2_verify_capture_plan,
         resolve_plan_shape,
     )
 
-    for tier, expected in ((TIER_FULL, 5), (TIER_EXPRESS, 1)):
+    # Full's count is DERIVED, not the literal 6: it moved twice in a week
+    # (6 -> 5 on the 2026-08-18 trim, 5 -> 6 when the 2026-08-24 geometry ruling
+    # put the design axis into the pose set), and this test is about the tier
+    # MATCH rather than about either number.
+    for tier, expected in (
+        (TIER_FULL, DEFAULT_CLOUD_VERIFY_POSITIONS), (TIER_EXPRESS, 1),
+    ):
         shape = v2host._verify_plan_shape({"stage": "post_apply"}, {"tier": tier})
         assert shape == resolve_plan_shape(tier)
         assert build_v2_verify_capture_plan(

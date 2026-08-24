@@ -359,6 +359,10 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
     record = spatial.cloud_position_record(
         position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
         attempt=7, prompt="stand here", wide=False, role="onax",
+        geometry=spatial.PositionGeometry(
+            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
+            mark_distance_m=1.0,
+        ),
         captured_at=1.0, session_id="sess", gate_window_ms=12.0,
         gate_floor_source="reflection", gate_disclosure="a wall",
         gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
