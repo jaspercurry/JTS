@@ -242,6 +242,57 @@ def synchronized_sweep_metadata(
     )
 
 
+def phase_closing_duration_s(
+    f1: float,
+    f2: float,
+    *,
+    at_or_below_s: float,
+    sample_rate: int = 48000,
+) -> float:
+    """The LONGEST synchronized-sweep duration over ``[f1, f2]`` that closes
+    its phase and is at or below ``at_or_below_s``.
+
+    :func:`synchronized_sweep_metadata` rounds a requested duration to the
+    NEAREST phase-closing length (``round(L_initial * f1)``), so a request that
+    equals a ceiling can realize just above it — 150–4000 Hz asked for 4.0 s
+    realizes 4.00577 s. A caller that must stay under a hard ceiling asks here
+    instead, and gets a length the round-trip reproduces exactly: feeding the
+    returned value back as ``duration_approx_s`` recovers the same cycle count.
+
+    The realized duration is quantized to whole cycles at ``f1``
+    (``duration = n * ln(f2/f1) / f1``), so the step down from a length that
+    overshoots is exactly one cycle — expressed here from the returned
+    metadata's own ``L`` rather than by restating that identity, which is why
+    this and the kernel above cannot drift apart. One step is normally enough:
+    ``round`` can only overshoot by half a cycle.
+
+    Raises :class:`ValueError` when no phase-closing sweep of this band fits —
+    a band whose first cycle already outlasts the ceiling is unmeasurable at
+    that ceiling, which is a refusal and not a shorter sweep.
+    """
+    if not math.isfinite(at_or_below_s) or at_or_below_s <= 0.0:
+        raise ValueError(
+            f"at_or_below_s must be a positive finite number, got {at_or_below_s}"
+        )
+    meta = synchronized_sweep_metadata(
+        f1=f1, f2=f2, duration_approx_s=at_or_below_s, sample_rate=sample_rate,
+    )
+    while meta.duration_s > at_or_below_s:
+        n_cycles = round(meta.L * f1)
+        if n_cycles <= 1:
+            raise ValueError(
+                f"no synchronized sweep of [{f1:g},{f2:g}] Hz closes its phase "
+                f"within {at_or_below_s:g} s: one cycle at f1 already spans "
+                f"{meta.duration_s:g} s"
+            )
+        meta = synchronized_sweep_metadata(
+            f1=f1, f2=f2,
+            duration_approx_s=meta.duration_s * (n_cycles - 1) / n_cycles,
+            sample_rate=sample_rate,
+        )
+    return meta.duration_s
+
+
 def write_sweep_wav(
     path: str | Path,
     sweep: np.ndarray,

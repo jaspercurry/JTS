@@ -357,16 +357,21 @@ def rebuild_measure_program(
             "downstream_grid_step_db": 0.5,
             "note": (
                 "no session volume in the grid reproduces the banked program id "
-                "with the courtesy prelude either on or off. Three causes, and "
+                "with the courtesy prelude either on or off. Four causes, and "
                 "the FIRST is the one an operator will hit on a real box: (1) "
                 "the session volume is not on the solve grid — this round's "
                 "volume is unbanked and brute-forced over half-dB steps from "
                 "-40 dB, while the composer derives it as an unquantized float "
                 "anywhere above the -60 dB floor, so a seat-level reference of "
-                "e.g. -24.7 dB is simply unreachable here; (2) the driver bands "
-                "supplied are wrong for this round; (3) this state does not "
-                "describe a MEASURE round. Only (2) and (3) are fixable by "
-                "re-invoking — (1) needs the round to bank its volume"
+                "e.g. -24.7 dB is simply unreachable here; (2) this round's "
+                "sweeps were FITTED to a declared duration limit (#2921) — the "
+                "composer shortens a sweep whose nominal length would overshoot "
+                "that limit, and the limit is unbanked, so this replay composes "
+                "at the nominal length and cannot match; (3) the driver bands "
+                "supplied are wrong for this round; (4) this state does not "
+                "describe a MEASURE round. Only (3) and (4) are fixable by "
+                "re-invoking — (1) and (2) need the round to bank the "
+                "parameter"
             ),
         },
     )

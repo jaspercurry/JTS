@@ -312,6 +312,7 @@ def test_the_sweep_bounds_come_off_the_composed_program():
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
+        sweep_duration_limits_s={},
     ).measure_program({"woofer": -32.0, "tweeter": -38.0})
 
     lo, hi = priors.measure_sweep_bounds(program)

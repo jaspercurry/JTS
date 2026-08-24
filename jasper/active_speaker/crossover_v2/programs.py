@@ -234,12 +234,14 @@ class NoProgramForPhaseError(RuntimeError):
 
 @dataclass(frozen=True)
 class SessionExcitation:
-    """What one session may play, and how loud — its declarations, bundled.
+    """What one session may play, how loud, and for how long — its
+    declarations, bundled.
 
-    Four values that were four conductor fields, frozen together because every
+    Five values that were conductor fields, frozen together because every
     composer below reads a subset of them and a subset that could drift is how a
     program gets composed at one level and budgeted at another. Construction
-    copies ``caps_dbfs`` behind a read-only view for the same reason.
+    copies ``caps_dbfs`` and ``sweep_duration_limits_s`` behind read-only views
+    for the same reason.
     """
 
     #: The two driver role/band declarations, woofer first.
@@ -251,11 +253,21 @@ class SessionExcitation:
     session_volume_db: float
     #: The declared crossover corner, for the summed sweep's shape.
     fc_hz: float
+    #: Per-role longest admissible ONE sweep, seconds — the resolver's
+    #: ``effective_sweep_duration_limit_s``, which is also what the admission
+    #: gate compares each composed segment against. MEASURE composes to it (see
+    #: :meth:`measure_program`); a role absent here composes at its nominal.
+    sweep_duration_limits_s: Mapping[str, float]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(self.roles))
         object.__setattr__(
             self, "caps_dbfs", MappingProxyType(dict(self.caps_dbfs)),
+        )
+        object.__setattr__(
+            self,
+            "sweep_duration_limits_s",
+            MappingProxyType(dict(self.sweep_duration_limits_s)),
         )
 
     @property
@@ -303,11 +315,22 @@ class SessionExcitation:
     def measure_program(
         self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
-        """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE.
+        """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE
+        and fitted to each role's duration limit.
 
         Also what every lateral pose plays, verbatim
         (:func:`program_for_phase`) — so the prelude question is asked of
         MEASURE, the object's own phase, and a pose inherits the answer.
+
+        Duration-aware (#2921): a sweep realizes at the nearest phase-closing
+        length, so the composer's nominal 4 s woofer realizes 4.00577 s over
+        150–4000 Hz and admission refused the whole program against a declared
+        4 s limit (``program_segment_outside_limits``, deterministic — it killed
+        the arm walk 2-for-2 on jts3). Handing the composer
+        :attr:`sweep_duration_limits_s` makes it compose the longest
+        phase-closing sweep AT OR BELOW that limit instead. The admission
+        comparison is unchanged and stays the independent tripwire; what changed
+        is that the request now fits the limit it will be judged against.
         """
         gains = {}
         for rb in self.roles:
@@ -319,6 +342,7 @@ class SessionExcitation:
             )
         return build_measure_program(
             gains, self.roles,
+            sweep_duration_limits_s=self.sweep_duration_limits_s,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gains[self.leading_pilot_role]),
             leading_pilot_role=self.leading_pilot_role,

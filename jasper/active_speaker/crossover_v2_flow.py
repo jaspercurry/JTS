@@ -5024,6 +5024,7 @@ class CrossoverV2Session:
         driver_caps_dbfs: Mapping[str, float],
         session_volume_db: float,
         seams: V2FlowSeams,
+        driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
         tier: str = "",
         positions_gated: bool = False,
         driver_spacing_m: float = 0.0,
@@ -5138,6 +5139,12 @@ class CrossoverV2Session:
             self._cloud_signal_band_hz, tweeter_measurement_band_hz,
         )
         self._caps = dict(driver_caps_dbfs)
+        # Per-role longest admissible ONE sweep. The MEASURE composer fits its
+        # sweeps to these so the request cannot overshoot the ceiling the
+        # admission gate compares it against (#2921); a role absent here
+        # composes at its nominal duration, which is what every pre-#2921
+        # caller got.
+        self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
         # True once ``authorize_begin`` has refused: the relay posts its OWN
@@ -5343,14 +5350,16 @@ class CrossoverV2Session:
         # re-closes the group, so the confirm always fits the newest evidence.
         self._group_combined: dict[str, Any] = {}
 
-        # What this session may play, and how loud — the four declarations the
-        # composers read, frozen together so a subset cannot drift (#2291 Phase
-        # 5a-ii; ``crossover_v2.programs`` owns the level policy).
+        # What this session may play, how loud, and for how long — the
+        # declarations the composers read, frozen together so a subset cannot
+        # drift (#2291 Phase 5a-ii; ``crossover_v2.programs`` owns the level
+        # policy).
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
             caps_dbfs=self._caps,
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
+            sweep_duration_limits_s=self._sweep_duration_limits_s,
         )
         # Programs — CHECK is composable now; MEASURE waits on the gain solve,
         # VERIFY on Fc (composable now, played only after apply). Composed ONCE

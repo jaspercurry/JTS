@@ -101,6 +101,7 @@ def _status() -> dict[str, Any]:
 # stub below replaces the module attributes — the W6.5 context-caps test
 # restores them so the true resolver runs against a real profile.
 _REAL_RESOLVE_CEILINGS = excitation_safety_plan_mod.resolve_driver_excitation_ceilings
+_REAL_SWEEP_DURATION_LIMIT = excitation_safety_plan_mod.effective_sweep_duration_limit_s
 _REAL_DERIVE_SESSION_VOLUME = crossover_v2_flow.derive_session_volume_db
 
 
@@ -166,6 +167,15 @@ def _stub_non_topology_inputs(monkeypatch):
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",
         lambda safety_profile, fingerprint, **kw: (FrequencyBand(20.0, 20000.0), 90.0),
+    )
+    # Same rule, duration half: this module tests the topology/playback-device
+    # seam, and the stub profile above carries no ``level_duration_limits`` for
+    # the real reader to answer from. The REAL reader runs in the two probes
+    # below that restore it, both of which supply a real confirmed profile.
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "effective_sweep_duration_limit_s",
+        lambda safety_profile, fingerprint: 6.0,
     )
     monkeypatch.setattr(
         crossover_v2_flow,
@@ -365,6 +375,11 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         _REAL_RESOLVE_CEILINGS,
     )
     monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "effective_sweep_duration_limit_s",
+        _REAL_SWEEP_DURATION_LIMIT,
+    )
+    monkeypatch.setattr(
         crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME
     )
 
@@ -397,6 +412,25 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     # honestly extend below the frequency the driver may not be excited under.
     # The upper edge is untouched — that half is still a declared fact.
     assert context.tweeter_measurement_band_hz == (1500.0, 10_000.0)
+    # The DURATION half of the same one-derivation-two-consumers probe
+    # (#2921): the MEASURE composer must be HANDED the very number the
+    # admission gate will compare its sweeps against, never re-derive one.
+    # This fixture declares 6 s for both drivers while the code-side table
+    # gives the woofer 12 s and the tweeter 4 s, so the two roles resolve from
+    # OPPOSITE halves of the min -- a restatement that dropped either half
+    # would show up on one of them.
+    from jasper.active_speaker.excitation_safety_plan import (
+        effective_sweep_duration_limit_s,
+    )
+
+    assert context.driver_sweep_duration_limits_s == {
+        "woofer": 6.0,
+        "tweeter": 4.0,
+    }
+    for role, fingerprint in targets.items():
+        assert context.driver_sweep_duration_limits_s[role] == (
+            effective_sweep_duration_limit_s(profile, fingerprint)
+        )
 
 
 def test_tweeter_measurement_band_hz_is_none_when_unresolvable(monkeypatch):
@@ -512,6 +546,11 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",
         _REAL_RESOLVE_CEILINGS,
+    )
+    monkeypatch.setattr(
+        excitation_safety_plan_mod,
+        "effective_sweep_duration_limit_s",
+        _REAL_SWEEP_DURATION_LIMIT,
     )
     monkeypatch.setattr(
         crossover_v2_flow, "derive_session_volume_db", _REAL_DERIVE_SESSION_VOLUME

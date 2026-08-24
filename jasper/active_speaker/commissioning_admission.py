@@ -51,6 +51,7 @@ from jasper.audio_measurement.excitation_artifacts import (
 )
 from jasper.audio_measurement.sweep import (
     SweepMeta,
+    phase_closing_duration_s,
     synchronized_sweep_metadata,
     synchronized_swept_sine,
     write_sweep_wav,
@@ -74,6 +75,7 @@ from .excitation_safety_plan import (
     DriverSweepGeneratorPlan,
     PreparedDriverExcitationPlan,
     RequestedDriverExcitationPlan,
+    effective_sweep_duration_limit_s,
     prepare_driver_excitation_plan,
 )
 from .graph_evidence import driver_limiter_name
@@ -85,7 +87,6 @@ from .test_signal_plan import (
     DRIVER_SWEEP_DURATIONS_S,
     MAX_DRIVER_TEST_FREQUENCY_HZ,
     MIN_DRIVER_TEST_FREQUENCY_HZ,
-    driver_sweep_duration_s,
 )
 
 ADMISSION_HANDOFF_SCHEMA_VERSION = 2
@@ -529,26 +530,24 @@ def prepare_capture_plan(
         float(measurement_band[1]),
         DEFAULT_SAMPLE_RATE / 2.0 - 1.0,
     )
-    duration_limit = min(
-        float(level_limits["max_sweep_duration_s"]),
-        driver_sweep_duration_s(role),
+    duration_limit = effective_sweep_duration_limit_s(
+        safety_profile, str(target["target_fingerprint"])
     )
-    duration_approx = duration_limit
-    while True:
-        meta = synchronized_sweep_metadata(
-            f1=f1,
-            f2=f2,
-            duration_approx_s=duration_approx,
-            sample_rate=DEFAULT_SAMPLE_RATE,
-            amplitude_dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+    try:
+        fitted_duration = phase_closing_duration_s(
+            f1, f2, at_or_below_s=duration_limit, sample_rate=DEFAULT_SAMPLE_RATE,
         )
-        if meta.duration_s <= duration_limit + 1e-9:
-            break
-        duration_approx -= 1.0 / f1
-        if duration_approx <= 0.0:
-            raise ActiveCommissioningAdmissionError(
-                "driver sweep cannot fit the confirmed duration limit"
-            )
+    except ValueError as exc:
+        raise ActiveCommissioningAdmissionError(
+            "driver sweep cannot fit the confirmed duration limit"
+        ) from exc
+    meta = synchronized_sweep_metadata(
+        f1=f1,
+        f2=f2,
+        duration_approx_s=fitted_duration,
+        sample_rate=DEFAULT_SAMPLE_RATE,
+        amplitude_dbfs=ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS,
+    )
     requested = RequestedDriverExcitationPlan(
         target_fingerprint=str(target["target_fingerprint"]),
         commissioning_context_fingerprint=_context_fingerprint(
