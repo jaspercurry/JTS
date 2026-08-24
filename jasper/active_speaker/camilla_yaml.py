@@ -1302,13 +1302,11 @@ def _validated_driver_corrections(
 
 # Hard cap on filters per driver (shelf + peaking combined). LOCKSTEP
 # DUPLICATE of jasper.active_speaker.linearization_fit.MAX_FILTERS_PER_DRIVER
-# -- not imported, mirroring this module's existing PARITY DUPLICATE pattern
-# (see e.g. linearization_fit.py's own top docstring on why it duplicates
-# camilla_yaml/sound.profile math rather than importing it): the emitter is
-# an independent re-validation of whatever a persisted candidate claims, not
-# a trust-the-caller pass-through, so it must not import the fit engine's
-# own policy constant and inherit a future change to it silently. A pinning
-# test asserts the two constants stay numerically equal.
+# -- not imported, because the emitter is an independent re-validation of
+# whatever a persisted candidate claims, not a trust-the-caller pass-through,
+# so it must not import the fit engine's own policy constant and inherit a
+# future change to it silently. A pinning test asserts the two constants
+# stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
 # Per-filter linearization BOOST ceiling (PR-L5) — the lockstep duplicate of

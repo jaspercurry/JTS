@@ -164,9 +164,10 @@ what the model predicted," not "is the speaker flat," and collapsing
 the two conflates different questions. The MEASURE-vs-VERIFY
 frame-discrepancy class is killed by the spec-facing SSOT; the
 tracking comparator is documented as intentionally separate (PR-5).
-The `_ladder_smooth` parity duplicate between `linearization_fit` and
-`linearization_envelope` is internal fit machinery on the envelope
-grid — out of scope, already pinned by a lockstep test.
+The `_ladder_smooth` helper `linearization_fit` uses is internal fit
+machinery on the envelope grid — out of scope. It is imported directly
+from `linearization_envelope` rather than duplicated (#2933), so there
+is one function, not two kept in lockstep.
 
 ## Execution protocol (for the executing session)
 

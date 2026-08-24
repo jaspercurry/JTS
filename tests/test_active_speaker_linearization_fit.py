@@ -575,13 +575,10 @@ def test_highshelf_half_gain_at_corner():
 
 
 def test_highshelf_matches_sound_profile_reference_implementation():
-    """Cross-checks THIS module's duplicated RBJ math against
-    jasper.sound.profile's own (the module this one deliberately mirrors
-    rather than imports — see linearization_fit.py's top docstring). A
-    test file reaching into another module's private helper for a parity
-    check is a different, established pattern from production code doing
-    it (see test_active_speaker_linearization_envelope.py's own
-    _hand_ladder_smooth for the same convention)."""
+    """Cross-checks THIS module's Highshelf-only, numpy-vectorized RBJ math
+    against jasper.sound.profile's own general, FilterSpec-dispatched
+    implementation (the two are kept separate because their interfaces
+    differ -- see this function's own docstring for why)."""
     from jasper.sound.profile import FilterSpec, _filter_response_db
 
     freqs = [200.0, 1000.0, 4000.0, 12000.0, 19000.0]
@@ -593,26 +590,16 @@ def test_highshelf_matches_sound_profile_reference_implementation():
 
 
 # --------------------------------------------------------------------------- #
-# _ladder_smooth parity with linearization_envelope's own (duplicated, not
-# imported -- see this module's top docstring)
+# _ladder_smooth -- imported from linearization_envelope (single shared
+# implementation); parity with a hand-rolled reference
 # --------------------------------------------------------------------------- #
 
 
-def test_ladder_smooth_matches_envelope_module_bit_for_bit():
-    from jasper.active_speaker import linearization_envelope as env_mod
-
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    rng = np.random.default_rng(1668)
-    magnitude = rng.normal(0.0, 4.0, size=grid.shape)
-    expected = env_mod._ladder_smooth(grid, magnitude)
-    actual = _ladder_smooth(grid, magnitude)
-    np.testing.assert_array_equal(actual, expected)
-
-
 def test_ladder_smooth_matches_hand_rolled_reference():
-    """Independent of BOTH module copies -- a third, freshly-written
-    implementation, matching this test file's own house convention (see
-    test_active_speaker_linearization_envelope.py's _hand_ladder_smooth)."""
+    """A third, freshly-written implementation, independent of the shared
+    ``_ladder_smooth`` this test file imports -- matching this test file's
+    own house convention (see test_active_speaker_linearization_envelope.py's
+    _hand_ladder_smooth)."""
     grid = DEFAULT_ENVELOPE_GRID_HZ
     magnitude = np.linspace(-3.0, 3.0, grid.size)
     fine = smooth_fractional_octave(grid, magnitude, fraction=6)

@@ -66,6 +66,12 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # screen envelopes that render its verdicts).
     "jasper/active_speaker/crossover_v2_flow.py",
     "jasper/active_speaker/crossover_v2/intervention.py",
+    # Not verdict copy -- swept because it is the closed-vocabulary SOURCE of
+    # the mic-trust tier keys (MIC_TIERS, _SIGMA_TOLERABLE_DB,
+    # _MIC_TRUST_TABLE_HZ) that make "phone" a legitimate literal here; see
+    # ALLOWED_PHONE_LITERALS["phone"]. intervention.py above imports these
+    # directly rather than holding its own copy, so this is their only home.
+    "jasper/active_speaker/linearization_envelope.py",
     "jasper/active_speaker/crossover_envelope_v2.py",
     "jasper/active_speaker/crossover_envelope.py",
     "jasper/active_speaker/baseline_profile.py",
@@ -169,9 +175,10 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
 # exempt every sentence that contains the word, which is the whole point of the
 # guard. A literal whose entire value is one token is a key or an id, never copy.
 ALLOWED_PHONE_LITERALS: dict[str, str] = {
-    "phone": "mic-trust TIER key, mirrored from "
-    "jasper.active_speaker.linearization_envelope.MIC_TIERS — a closed set of "
-    "keys (reference / consumer / phone), never rendered as a sentence",
+    "phone": "mic-trust TIER key -- MIC_TIERS / _SIGMA_TOLERABLE_DB / "
+    "_MIC_TRUST_TABLE_HZ in jasper.active_speaker.linearization_envelope "
+    "(also swept, above) are a closed set of keys (reference / consumer / "
+    "phone), never rendered as a sentence",
 }
 
 
