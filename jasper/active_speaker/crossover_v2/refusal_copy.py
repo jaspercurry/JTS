@@ -933,15 +933,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
         REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
-        # Says WHAT was found and WHY it stopped, and gives the one action a
-        # household can actually take: something else on the speaker is moving
-        # the volume, so stop that and measure again. Deliberately does not
-        # name a control — the mover is whatever else is playing or adjusting,
-        # not a setting on any one page.
-        "The listening volume moved while JTS was measuring, so the "
-        "measurement would not have been taken at the level JTS set. JTS "
-        "stopped instead of recording it. Stop anything else that changes the "
-        "volume, then measure again.",
+        # NAMES THE OBSERVATION, NOT A CAUSE — ``locate_failed``'s #2085 lesson.
+        # Two conditions reach this code and they want different things said:
+        # the fader was read and would not hold (something else owns the
+        # volume), or it could not be read at all (the DSP is not answering).
+        # A sentence blaming "something changed the volume" is simply false for
+        # the second, and its action is useless there. So the copy states what
+        # JTS could not confirm and offers the escalation that helps either
+        # way. Which one fired is on the
+        # ``event=active_speaker.measurement_fader_drift result=refused`` line:
+        # an empty ``observed_db`` is the unreadable case.
+        "JTS could not confirm the speaker was at the level it set for "
+        "measuring, so it stopped rather than record a measurement it cannot "
+        "trust. Try measuring again; if it keeps happening, restart the "
+        "speaker from the system page.",
     ),
     REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
         REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",

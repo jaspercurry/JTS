@@ -243,6 +243,18 @@ def test_the_drift_reason_is_terminal_and_not_retried_around():
     assert REASON_MEASUREMENT_VOLUME_DRIFT not in spec.message
 
 
+def test_the_drift_copy_names_the_observation_and_never_a_cause():
+    """Two conditions reach this code — a fader that will not hold, and one
+    that cannot be read at all — so copy asserting that something CHANGED the
+    volume would be false for the second and would send that household after a
+    cause nobody measured. `locate_failed`'s #2085 lesson, applied before it
+    could bite: the sentence says what JTS could not confirm."""
+    message = REASON_REGISTRY[REASON_MEASUREMENT_VOLUME_DRIFT].message
+    assert "could not confirm" in message
+    for cause in ("changed the volume", "moved while", "something else"):
+        assert cause not in message, cause
+
+
 # --------------------------------------------------------------------------- #
 # T1-2: the record was printing the defect from round one
 # --------------------------------------------------------------------------- #
