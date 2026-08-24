@@ -567,6 +567,9 @@ def test_refused_program_log_names_the_refusing_segment(caplog):
     # 2026-08-23 triage compare a digital gain with an effective-peak ceiling.
     assert "tweeter=-65.000" in line
     assert f"session_volume_db={sv:.3f}" in line
+    # The field is what was REFUSED: the woofer's segments passed, so naming
+    # them here would be noise a triage has to filter back out by hand.
+    assert "sweep_w" not in line
 
 
 def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_measure():
