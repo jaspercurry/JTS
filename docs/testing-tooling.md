@@ -2270,7 +2270,26 @@ does, a second hand-maintained copy of the same fact would only be a place
 for the two to drift apart — it is not ported, but for that different reason.
 Every view here keys a position by its own stable `position_id`
 (`f"{phase}_{index:02d}"`, assigned once by the walk driver and stable across
-rounds that walk the same shape) instead.
+rounds that walk the same shape) — which is what lines the same prompted spot
+up across rounds.
+
+**But a `position_id` stopped naming a FIXED bearing across the geometry
+ruling, so `repeat` discloses the bearings beside the numbers.** The ruling put
+the design axis at the front of the post-apply pose set, so `cloud_verify_02`
+names −7° in a pre-ruling round and 0° in a post-ruling one, and
+`cloud_verify_04` moved −22° → +7°: a "spread" taken across that boundary is
+the difference between two different seats. Every per-position row in
+`repeatability.json` therefore carries `degrees` (`{round label: bearing}`,
+holding only the rounds that recorded one) beside its `values`/`spread`, plus
+`bearings_agree`. Read `bearings_agree` as THREE-VALUED: `true` every round
+that recorded a bearing recorded the same one, `false` they differ — read the
+spread as instrument noise at your peril — and **`null` means nothing was
+COMPARABLE** (fewer than two rounds recorded a bearing at all), which is not
+the same fact as "nothing disagreed" and must never be read as one. It
+discloses rather than refusing: the spread is still published, because
+comparing across the ruling to see what the ruling itself did is a legitimate
+question, and the doctrine's hard stops are component damage and hearing
+safety.
 
 **Agreement's sign-agreement rule is the campaign's own literal threshold**
 (`testify >= 3` and `dissent <= 1`), not scaled to the seat count — below 3

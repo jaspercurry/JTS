@@ -537,25 +537,27 @@ MAX_LINES_BY_PATH = {
     # 2026-08-24 (the geometry ruling: pose geometry as fields, pose sets as
     # parameters). ONE file, and NO slack was spent — the entry below (#2925)
     # left it at exactly its ceiling, and this branch was rebased onto #2925
-    # after it merged, so both figures below are RECOUNTED against that base
-    # rather than carried over.
-    #  * `crossover_v2_flow` ceiling 13,102 -> 13,418, +316.
+    # (and later #2928) after they merged, so the figure below is RECOUNTED
+    # against the current base rather than carried over.
+    #  * `crossover_v2_flow` ceiling 13,102 -> 13,418, +316 physical lines.
     #
-    #    **The code-line figure, with its RULE stated, because two independent
-    #    counts disagreed by two.** Counted with tokenize, dropping COMMENT,
-    #    NL/NEWLINE, INDENT/DEDENT and every STRING token — which means an
-    #    `__all__` entry is NOT counted as a code line, since it is a bare
-    #    string. On that rule: 100 code lines added, 22 removed, **net +78**. A
-    #    count that treats the 4 `__all__` entries as code lands 4 higher; that
-    #    is a different rule, not a different tree. Stating the rule and all
-    #    three numbers is the durable fix — the earlier note gave one number
-    #    and no rule, which is exactly how the disagreement happened.
+    #    **No code/prose split is stated here, deliberately — it was WITHDRAWN
+    #    after being wrong twice.** Two rounds of counting produced +78 net
+    #    executable against three independent derivations' +80, and the
+    #    explanation offered for the gap (that `__all__` entries fall outside a
+    #    tokenize rule dropping STRING tokens) is itself false: such a line
+    #    keeps its trailing comma, which is an OP token, so it stays counted.
+    #    Rather than guess a third time at a number nothing enforces, this note
+    #    states only what the ratchet actually checks — the physical count above
+    #    — and what earned it, below. A figure no test re-derives is narrative,
+    #    and a narrative figure that has been wrong twice is worse than none.
     #
-    #    The 78 net: one derived table (`_SIDE_POSE_PROMPTS`) and the post-apply
-    #    pose set it feeds (`VERIFY_MARK_PROMPT` + `CLOUD_VERIFY_POSE_PROMPTS`),
-    #    the two import-time guards that pin `DEFAULT_CLOUD_VERIFY_POSITIONS`
-    #    and `MIN_CLOUD_VERIFY_POSITIONS` to that table, `position_geometry` and
-    #    its at-mark constant, the pose-set parameter threaded through
+    #    What earned the room, in mechanism: one derived table
+    #    (`_SIDE_POSE_PROMPTS`) and the post-apply pose set it feeds
+    #    (`VERIFY_MARK_PROMPT` + `CLOUD_VERIFY_POSE_PROMPTS`), the two
+    #    import-time guards that pin `DEFAULT_CLOUD_VERIFY_POSITIONS` and
+    #    `MIN_CLOUD_VERIFY_POSITIONS` to that table, `position_geometry` and its
+    #    at-mark constant, the pose-set parameter threaded through
     #    `verify_pose_table` / the two stage-2 builders / the session ctor /
     #    `_cloud_prompt`, a table argument on
     #    `_min_positions_for_two_wide_offsets` and `cloud_walk_shape`, the
@@ -565,11 +567,11 @@ MAX_LINES_BY_PATH = {
     #    `_validated_cloud_counts` stopped bounding M by a table it can no
     #    longer see.
     #
-    #    The remaining 238 are prose, and the ratio is the point rather than an
-    #    excuse: the change is small in mechanism and large in RULING. Four of
-    #    those blocks are the only place a fact now lives — why the design axis
-    #    is a MEMBER of the post-apply walk rather than only the anchor in front
-    #    of it (and what the 2026-08-18 trim gave up to pay for it), what
+    #    Most of the diff is PROSE, and that ratio is the point rather than an
+    #    excuse: the change is small in mechanism and large in RULING. Four
+    #    blocks are the only place a fact now lives — why the design axis is a
+    #    MEMBER of the post-apply walk rather than only the anchor in front of
+    #    it (and what the 2026-08-18 trim gave up to pay for it), what
     #    `offset_cm` actually measures (the misreading that produced this whole
     #    fixlist item), why `position_geometry` records `None` instead of
     #    raising or guessing a zero on the poses that command no bearing, and
