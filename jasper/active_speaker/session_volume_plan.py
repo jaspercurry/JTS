@@ -852,9 +852,38 @@ class SessionVolumePlan:
             )
 
     def _clear_resolved(self) -> None:
-        self._persist({"status": "resolved"})
+        """Drop the in-memory intent FIRST, then record that on disk.
+
+        The order is load-bearing, and #2925's hearing-safety lens is what
+        found it. Persisting first left one uncovered shape: a drain that had
+        already CONFIRMED its volume on the hardware, then met an OSError
+        writing the marker (read-only or full ``/var/lib/jasper``), raised out
+        of here with the plan still ``active``, ``_opened_this_process`` still
+        true and ``measurement_volume_db`` intact — so :meth:`assert_ready`
+        passed and :meth:`hold_measurement_volume` would command the declared
+        volume onto a speaker sitting at the emergency floor. Measured at
+        −60.0 → −12.5: **+47.5 dB**. Clearing first means the very next reader,
+        including that hold, sees a plan that owns nothing.
+
+        The persist is then guarded exactly as :meth:`_mark_unresolved` guards
+        its own, and for the mirror-image reason. There the prior intent
+        SURVIVING on disk is what keeps a restart fail-closed; here it is what
+        makes a restart offer recovery for a volume already restored. That is
+        the safe direction — the re-drain re-asserts a fader that is already
+        correct — and it is loud rather than silent, which is the whole point:
+        the alternative is a process that can still put the volume back up.
+        """
         self._state = None
         self._opened_this_process = False
+        try:
+            self._persist({"status": "resolved"})
+        except OSError:
+            log_event(
+                logger,
+                "correction.session_volume_persist_failed",
+                level=logging.CRITICAL,
+                reason="session_volume_resolved_marker_unwritten",
+            )
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -955,13 +984,19 @@ class SessionVolumePlan:
 
         **Under the restore lock**, which is the whole reason this lives on the
         plan rather than at the capture seam. ``_mark_unresolved`` copies
-        ``measurement_volume_db`` forward, so a drained plan still REPORTS the
-        declared volume; a hold that read that field without serializing
-        against the drains could re-raise the fader onto a speaker that had
-        just emergency-attenuated, or restored, and leave it there with no
-        owner. Serialized, the readiness check either precedes the drain (the
-        volume is genuinely still ours) or follows it (state cleared or
-        unresolved → ``None``).
+        ``measurement_volume_db`` forward, so a plan whose restore could not be
+        confirmed still REPORTS the declared volume; a hold that read that
+        field without serializing against the drains could re-raise the fader
+        onto a speaker that had just been left at the emergency floor, and
+        leave it there with no owner. Serialized, the readiness check either
+        precedes the drain (the volume is genuinely still ours) or follows it
+        (state cleared, or unresolved → ``None``).
+
+        Serializing is necessary and was not sufficient: a drain can fail
+        PARTWAY, after confirming the fader and before recording it, and that
+        shape reached a passing :meth:`assert_ready`. :meth:`_clear_resolved`
+        now closes it by dropping the in-memory intent before it persists —
+        see there for the measured +47.5 dB it prevents.
         """
         async with self._restore_lock:
             try:

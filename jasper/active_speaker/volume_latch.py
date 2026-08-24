@@ -182,6 +182,18 @@ async def hold_fader_at(
        disclose, never force; the refusal is for a level that cannot be
        established, not for one round-trip that missed.
 
+    **What the refusal line does and does not tell a support read.**
+    ``observed_db`` is empty ONLY when the fader could not be read — that is
+    the one clean discriminator, and it is a real reading rather than an
+    inference because the proving re-read above is unconditional.
+    ``set_confirmed`` is the SET-AND-CONFIRM's verdict, not the setter's, so on
+    a refusal it is normally ``false`` and does NOT separate "the setter
+    refused" from "the setter reported success and the fader did not move";
+    those two share a line. It earns its place for the opposite case:
+    ``set_confirmed=true`` on a refusal means the repair WAS confirmed at the
+    target and the fader moved again before the proving read — something is
+    contending for it in real time, which is a different problem from either.
+
     Returns the proven fader reading.
 
     ``expected_db`` is not range-checked here. It is a *target* this function
@@ -224,7 +236,16 @@ async def hold_fader_at(
     repaired = await set_and_confirm_volume(
         target, set_main_volume_db, get_main_volume_db, tolerance_db=tolerance_db,
     )
-    proven = await _read() if repaired else None
+    # UNCONDITIONAL, even when set-and-confirm reported failure. Two reasons,
+    # and the first is the one that matters: the refusal's ``observed_db`` is
+    # the only thing distinguishing "the fader read fine and would not move"
+    # from "the fader could not be read", and short-circuiting here reported
+    # the second for both — stating an observation JTS never made, which is
+    # the ``locate_failed`` #2085 class this whole change exists to close.
+    # Second, the PROOF is where the fader actually sits, not what the setter
+    # returned: if it is at the target anyway, the level is established. Costs
+    # one extra read only on the already-failing path.
+    proven = await _read()
     if proven is None or not fader_matches(
         proven, target, tolerance_db=tolerance_db
     ):

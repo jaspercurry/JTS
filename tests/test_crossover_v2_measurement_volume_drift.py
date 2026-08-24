@@ -155,19 +155,30 @@ def test_a_drifted_fader_is_repaired_disclosed_and_re_proven(caplog):
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "why"),
+    ("kwargs", "why", "observed"),
     [
         # The setter reports success and the fader still is not there —
         # something else is holding it.
-        ({"value": HOUSEHOLD_DB, "sticks": False}, "held elsewhere"),
-        ({"value": HOUSEHOLD_DB, "set_ok": False}, "the setter refused"),
+        ({"value": HOUSEHOLD_DB, "sticks": False}, "held elsewhere", HOUSEHOLD_DB),
+        ({"value": HOUSEHOLD_DB, "set_ok": False}, "the setter refused", HOUSEHOLD_DB),
         # Unreadable is equally unprovable, and an unprovable level is not a
         # measurement. (A fader that reads again AFTER the set is a different
         # case and is deliberately allowed through — see the test below.)
-        ({"value": None, "sticks": False}, "unreadable"),
+        ({"value": None, "sticks": False}, "unreadable", None),
     ],
 )
-def test_an_unrepairable_fader_refuses_rather_than_returning(kwargs, why):
+def test_an_unrepairable_fader_refuses_rather_than_returning(kwargs, why, observed):
+    """...and reports the observation it ACTUALLY made in each case.
+
+    ``observed_db`` is the documented discriminator — refusal_copy, the
+    HANDOFF row and the doctrine all say an empty one means "could not read".
+    It only discriminates if the proving re-read is unconditional: while it
+    short-circuited on a failed set-and-confirm, two of these three cases
+    reported "unreadable" for a fader that had read fine at −21.212124 and
+    simply would not move. That is the ``locate_failed`` #2085 class — copy
+    stating an observation JTS never made — inside the change that exists to
+    close it.
+    """
     fader = _fader(**kwargs)
     with pytest.raises(MeasurementFaderDrift) as raised:
         asyncio.run(
@@ -177,8 +188,79 @@ def test_an_unrepairable_fader_refuses_rather_than_returning(kwargs, why):
         )
     assert raised.value.expected_db == DECLARED_DB
     assert raised.value.context == "capture:check"
+    assert raised.value.observed_db == observed, why
     # The message names both sides, never a bare slug.
     assert f"{DECLARED_DB:.6f}" in str(raised.value)
+    if observed is None:
+        assert "unreadable" in str(raised.value)
+    else:
+        assert f"{observed:.6f}" in str(raised.value)
+        assert "unreadable" not in str(raised.value)
+
+
+def _refusal_fields(caplog, fader) -> dict[str, str]:
+    """Drive one refusal and parse the journal line a support read would have."""
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger=LATCH_LOGGER):
+        with pytest.raises(MeasurementFaderDrift):
+            asyncio.run(hold_fader_at(DECLARED_DB, fader.set, fader.get))
+    line = next(
+        rec.getMessage()
+        for rec in caplog.records
+        if "result=refused" in rec.getMessage()
+    )
+    return dict(token.split("=", 1) for token in line.split() if "=" in token)
+
+
+def test_an_empty_observed_db_means_unreadable_and_nothing_else(caplog):
+    """The one clean discriminator on the refusal line, asserted as a
+    biconditional rather than in one direction: a fader that could not be read
+    reports empty, and a fader that read and would not move reports the value
+    it read. Before the proving re-read became unconditional, two of these
+    three said "unreadable" about a fader they had read at −21.212124."""
+    held = _refusal_fields(caplog, _fader(value=HOUSEHOLD_DB, sticks=False))
+    refused = _refusal_fields(caplog, _fader(value=HOUSEHOLD_DB, set_ok=False))
+    unreadable = _refusal_fields(caplog, _fader(value=None, sticks=False))
+
+    assert unreadable["observed_db"] == '""'
+    assert held["observed_db"] == f"{HOUSEHOLD_DB:.6f}"
+    assert refused["observed_db"] == f"{HOUSEHOLD_DB:.6f}"
+
+
+def test_set_confirmed_does_not_claim_to_separate_the_two_stuck_cases(caplog):
+    """A guard on the PROSE, because the first draft of it was wrong.
+
+    ``set_confirmed`` is the set-AND-confirm's verdict, not the setter's, so a
+    setter that refused and a setter that reported success onto a fader that
+    did not move both land ``false``. The docstring said it told them apart;
+    this is what proved otherwise, and it stays so the claim cannot come back.
+    """
+    held = _refusal_fields(caplog, _fader(value=HOUSEHOLD_DB, sticks=False))
+    refused = _refusal_fields(caplog, _fader(value=HOUSEHOLD_DB, set_ok=False))
+    assert held["set_confirmed"] == refused["set_confirmed"] == "false"
+
+
+def test_set_confirmed_true_on_a_refusal_means_the_fader_moved_again(caplog):
+    """What the field IS for: the repair was confirmed at the target and the
+    fader moved again before the proving read — something is contending for it
+    in real time, which is neither of the two cases above."""
+    state = {"value": HOUSEHOLD_DB, "reads": 0}
+
+    async def get_db() -> float:
+        state["reads"] += 1
+        # Reads 1 (initial) and 2 (set-and-confirm's own readback) behave
+        # normally; the third — the independent proving read — finds it moved.
+        if state["reads"] == 3:
+            return HOUSEHOLD_DB
+        return state["value"]
+
+    async def set_db(db: float) -> bool:
+        state["value"] = float(db)
+        return True
+
+    fields = _refusal_fields(caplog, SimpleNamespace(set=set_db, get=get_db))
+    assert fields["set_confirmed"] == "true"
+    assert fields["observed_db"] == f"{HOUSEHOLD_DB:.6f}"
 
 
 def test_a_transiently_unreadable_fader_is_proven_by_the_repair_not_refused():
@@ -399,6 +481,62 @@ def test_a_stale_session_past_its_ceiling_holds_nothing(tmp_path):
     assert fader.state["writes"] == []
 
 
+def test_a_drain_that_confirmed_but_could_not_persist_still_holds_nothing(
+    tmp_path, caplog
+):
+    """The third case in "either precedes the drain or sees the drained state".
+
+    Serializing against the drains is necessary and was not sufficient: a drain
+    can fail PARTWAY — the fader confirmed on the hardware, then an OSError
+    writing the resolved marker (read-only or full ``/var/lib/jasper``). While
+    ``_clear_resolved`` persisted BEFORE clearing, that raised out with the
+    plan still ``active`` and ``measurement_volume_db`` intact, so
+    ``assert_ready`` passed and the next hold commanded −12.5 onto a speaker
+    sitting at the emergency floor: **+47.5 dB**. Clearing in-memory first is
+    what closes it, and the CRITICAL line is what keeps the lost marker loud.
+    """
+    from jasper.active_speaker import session_volume_plan as plan_mod
+
+    plan, fader = _open_plan(tmp_path)
+
+    # A restore that confirms the EMERGENCY floor: the exact original is
+    # unreachable (the fader sits somewhere else and will not take it), the
+    # floor is not.
+    floor = plan_mod.EMERGENCY_MEASUREMENT_VOLUME_DB
+    drain = _fader(value=-5.0)
+
+    async def set_only_the_floor(db: float) -> bool:
+        drain.state["writes"].append(float(db))
+        if float(db) == float(floor):
+            drain.state["value"] = float(db)
+        return True
+
+    def boom(payload):
+        raise OSError("read-only file system")
+
+    with caplog.at_level(logging.CRITICAL, logger="jasper.active_speaker"
+                         ".session_volume_plan"):
+        monkey = plan._persist
+        plan._persist = boom  # the marker write fails AFTER the fader is set
+        try:
+            result = asyncio.run(plan.close(set_only_the_floor, drain.get))
+        finally:
+            plan._persist = monkey
+
+    assert result is plan_mod.SessionVolumeRestoreResult.EMERGENCY_ATTENUATED
+    assert drain.state["value"] == float(floor)  # speaker IS at the floor
+    assert "session_volume_persist_failed" in caplog.text
+
+    # ...and the plan must now own nothing, so the next capture's hold cannot
+    # command the declared volume back onto it.
+    after = _fader(value=float(floor))
+    assert asyncio.run(plan.hold_measurement_volume(after.set, after.get)) is None
+    assert after.state["writes"] == []
+    assert after.state["value"] == float(floor)
+    with pytest.raises(plan_mod.SessionVolumePlanError):
+        plan.assert_ready()
+
+
 def test_the_hold_serializes_against_a_concurrent_drain(tmp_path):
     """The reason this lives on the plan and not at the capture seam.
 
@@ -531,19 +669,27 @@ def _reset_volume_plan():
     v2host.set_volume_plan_for_tests(None)
 
 
-def _drive(monkeypatch, tmp_path, *, phase: str, cam: _StubCam, plan: Any) -> list[str]:
+def _drive(
+    monkeypatch, tmp_path, *, phase: str, cam: _StubCam, plan: Any,
+    played: list[str] | None = None,
+) -> list[str]:
     """Play one phase through the real seam; return the audio that reached ALSA.
 
     Only the transport below the seams is faked, so the ordering under test —
     writer lock, graph load, fader hold, WAV handoff — is the production one.
+
+    ``played`` may be supplied by the caller so the record SURVIVES a raise.
+    That is the whole point on the refusal tests: "refuses before any audio" is
+    an ORDERING claim, and a test that only catches the exception passes just
+    as happily with the hold moved AFTER the stimulus.
     """
+    if played is None:
+        played = []
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.active_speaker import program_playback as playback_mod
     from jasper.audio_measurement import program as program_mod
     from jasper.correction import coordinator
-
-    played: list[str] = []
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _Window())
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
@@ -630,12 +776,21 @@ def test_a_drifted_fader_refuses_the_capture_before_any_audio(
     """A fader that will not hold refuses the capture rather than banking it.
 
     ``accepts_writes=False`` is the shape that matters: the setter reports
-    success and the fader stays put — something else owns it. Nothing is
-    emitted, so no capture is taken at a level the session never confirmed.
+    success and the fader stays put — something else owns it.
+
+    **"Nothing is emitted" is asserted, not merely implied by the raise.** The
+    caller owns ``played`` so the record survives the exception: catching the
+    refusal alone passes just as happily with the hold moved AFTER the
+    stimulus, which is the mutation this whole file exists to fail.
     """
+    played: list[str] = []
     cam = _StubCam(volume_db=HOUSEHOLD_DB, accepts_writes=False)
     with pytest.raises(MeasurementFaderDrift):
-        _drive(monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan())
+        _drive(
+            monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(),
+            played=played,
+        )
+    assert played == [], "the refusal must land BEFORE any audio, not after it"
     assert cam.volume_writes == [DECLARED_DB]  # it tried the repair first
 
 
