@@ -533,6 +533,11 @@ def prepare_capture_plan(
     duration_limit = effective_sweep_duration_limit_s(
         safety_profile, str(target["target_fingerprint"])
     )
+    # This was a hand-rolled search here -- step ``1/f1`` off the request and
+    # re-ask the kernel until it fit -- which is the same question the MEASURE
+    # composer asks, so both now ask one function. It also accepted a duration
+    # up to 1e-9 OVER the limit, which ``prepare_driver_excitation_plan``'s
+    # strict ``>`` would then have refused; the shared helper is exact.
     try:
         fitted_duration = phase_closing_duration_s(
             f1, f2, at_or_below_s=duration_limit, sample_rate=DEFAULT_SAMPLE_RATE,

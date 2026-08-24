@@ -237,11 +237,12 @@ class SessionExcitation:
     """What one session may play, how loud, and for how long — its
     declarations, bundled.
 
-    Five values that were conductor fields, frozen together because every
-    composer below reads a subset of them and a subset that could drift is how a
-    program gets composed at one level and budgeted at another. Construction
-    copies ``caps_dbfs`` and ``sweep_duration_limits_s`` behind read-only views
-    for the same reason.
+    Five values the composers below read, frozen together because each reads a
+    subset and a subset that could drift is how a program gets composed at one
+    level and budgeted at another. The first four were conductor fields;
+    ``sweep_duration_limits_s`` arrived with the fit (#2921) and is bundled here
+    for the same reason. Construction copies both mappings behind read-only
+    views.
     """
 
     #: The two driver role/band declarations, woofer first.
