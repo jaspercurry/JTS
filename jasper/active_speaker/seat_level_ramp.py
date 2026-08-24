@@ -1126,10 +1126,13 @@ def _watchdog_seconds(
         + REMEASURE_READINGS
     )
     # The loudest a fade leg can start (or end) is the ceiling: every leg this
-    # pass walks runs between a commanded volume the climb reached and the
-    # floor, and the climb never commands above the ceiling.
+    # pass walks runs between a commanded volume the climb reached and the quiet
+    # level, and the climb never commands above the ceiling. Priced through
+    # `fade_quiet_db` rather than against FADE_FLOOR_DB directly, so a ceiling
+    # already under the floor prices ZERO here for the same reason it walks zero
+    # steps there -- one rule, stated once.
     fades = FADE_LEGS_PER_PASS * fade_seconds(
-        from_db=max(float(ceiling_db), FADE_FLOOR_DB), to_db=FADE_FLOOR_DB
+        from_db=ceiling_db, to_db=fade_quiet_db(ceiling_db)
     )
     return readings * float(settle_timeout_s) + fades + WATCHDOG_SLACK_S
 
