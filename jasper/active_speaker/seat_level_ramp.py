@@ -662,6 +662,15 @@ class _Reading:
     still, more when it was moving — and is the pass's own measurement of how
     long this chain takes to answer a step. ``trace`` is the last window, and
     on a sample-domain stop it is the window that was abandoned.
+
+    **One shape here is not a reading at all**: a sample-domain stop fired on a
+    FADE leg (:func:`_watched_fade`) comes back as one of these so the walk has a
+    single refusal vocabulary to refuse from. It always carries ``rms_dbfs=None``
+    — a fade sweeps levels on their way somewhere and no median of it would mean
+    anything — with ``samples`` and ``windows`` at zero, and its ``trace`` is the
+    leg it stopped in rather than a window. The receipt reads it exactly as it
+    reads an abandoned window, which is what the operator needs: what did the
+    thing that stopped me actually see.
     """
 
     rms_dbfs: float | None
@@ -1285,6 +1294,10 @@ async def _watched_fade(
         return _Reading(
             rms_dbfs=None,
             samples=0,
+            # Zero WINDOWS, explicitly and not by default: no window was opened
+            # here, and a fade leg reporting the one-window default would be
+            # claiming a measurement it never took.
+            windows=0,
             trace=_WindowTrace(samples=tuple(trace), seen=seen, trip=trip),
             refusal=refusal,
             detail=detail,
