@@ -34,6 +34,8 @@ from jasper.active_speaker.session_volume_plan import session_measurement_volume
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    DEFAULT_TWEETER_SWEEP_S,
+    DEFAULT_WOOFER_SWEEP_S,
     PROGRAM_SAMPLE_RATE_HZ,
     RoleBand,
     build_measure_program,
@@ -51,7 +53,10 @@ TWEETER_BAND_HZ = (1600.0, 20_000.0)
 
 
 def _profile_and_targets(
-    *, woofer_max_sweep_s: float = 4, tweeter_max_sweep_s: float = 6,
+    *,
+    woofer_max_sweep_s: float = 4,
+    tweeter_max_sweep_s: float = 6,
+    minimum_cooldown_s: float = 0,
 ):
     """A confirmed profile over the two bands above.
 
@@ -67,7 +72,7 @@ def _profile_and_targets(
             "max_effective_peak_dbfs": peak,
             "max_sweep_duration_s": max_sweep_s,
             "max_repeat_count": 3,
-            "minimum_cooldown_s": 0,
+            "minimum_cooldown_s": minimum_cooldown_s,
         }
 
     settings = {
@@ -246,6 +251,83 @@ def test_the_fit_gives_up_less_than_a_hundredth_of_a_decibel_of_energy():
     )
     cost_db = -10.0 * math.log10(fitted / nominal)
     assert 0.0 < cost_db < 0.03
+
+
+def test_the_declaration_the_research_prompt_asks_for_composes_admissibly():
+    """The fleet case, not one box's declaration.
+
+    ``driver_safety``'s research prompt instructs the LLM verbatim: "Send
+    max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a
+    datasheet says stricter", and its RESULT SHAPE exemplar hard-codes the same
+    triple. Composed against ``DEFAULT_WOOFER_SWEEP_S``, which is exactly 4.0,
+    that declaration collides on any woofer band whose 4 s request rounds up --
+    so every box commissioned through the standard prompt was exposed, not just
+    jts3. After the fit the prompt's recommended 4 is harmless by construction,
+    which is why no prompt change rides along with it.
+    """
+    topology, profile, targets = _profile_and_targets(
+        woofer_max_sweep_s=4, tweeter_max_sweep_s=4, minimum_cooldown_s=2,
+    )
+    limits = _limits_for(profile, targets)
+    assert limits == {"woofer": 4.0, "tweeter": 4.0}
+    assert DEFAULT_WOOFER_SWEEP_S == 4.0
+
+    sv = session_measurement_volume_db(profile, targets.values())
+    gains = {"woofer": -6.0, "tweeter": -46.0}
+    assert not _admit(
+        topology, profile, targets, _compose(gains, sv), sv,
+    ).allowed
+    assert _admit(
+        topology, profile, targets, _compose(gains, sv, limits), sv,
+    ).allowed
+
+
+def test_about_half_of_plausible_woofer_bands_round_the_nominal_request_up():
+    """Why the collision is systemic rather than one unlucky band.
+
+    Over the stated grid below -- f1 150-500 Hz in 10 Hz steps against f2
+    1-8 kHz in 250 Hz steps, 1044 pairs -- 535 realize ABOVE a
+    ``DEFAULT_WOOFER_SWEEP_S`` request. The kernel rounds to the NEAREST
+    phase-closing length, so roughly half of any such grid lands on the high
+    side; this pins the shape, not a lucky sample. The tweeter's own grid
+    escapes only because its 3 s nominal leaves a second of headroom under the
+    4 s code-side ceiling -- take that headroom away and it collides too, which
+    is what ``test_a_tweeter_declaration_below_its_nominal_sweep_is_fitted_too``
+    covers.
+    """
+    def _realizes_above(f1: float, f2: float, request_s: float) -> bool:
+        return synchronized_sweep_metadata(
+            f1=f1, f2=f2, duration_approx_s=request_s,
+            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        ).duration_s > request_s
+
+    woofer = [
+        (f1, f2)
+        for f1 in range(150, 501, 10)
+        for f2 in range(1000, 8001, 250)
+    ]
+    assert len(woofer) == 1044
+    over = sum(_realizes_above(f1, f2, DEFAULT_WOOFER_SWEEP_S) for f1, f2 in woofer)
+    assert over == 535
+
+    tweeter = [
+        (f1, f2)
+        for f1 in range(1000, 3001, 100)
+        for f2 in range(12_000, 20_001, 500)
+    ]
+    # The tweeter's grid rounds up just as often -- above its OWN 3 s request.
+    assert any(
+        _realizes_above(f1, f2, DEFAULT_TWEETER_SWEEP_S) for f1, f2 in tweeter
+    )
+    # It escapes anyway, and only because that 3 s nominal sits a second under
+    # the 4 s code-side ceiling: not one pair realizes past it.
+    assert not any(
+        synchronized_sweep_metadata(
+            f1=f1, f2=f2, duration_approx_s=DEFAULT_TWEETER_SWEEP_S,
+            sample_rate=PROGRAM_SAMPLE_RATE_HZ,
+        ).duration_s > driver_sweep_duration_s("tweeter")
+        for f1, f2 in tweeter
+    )
 
 
 # --------------------------------------------------------------------------- #

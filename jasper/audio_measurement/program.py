@@ -1143,6 +1143,17 @@ def build_measure_program(
     so the fit is inert wherever it is not needed — including with the default
     ``None``.
 
+    **Why this is not one box's problem.** The driver-research prompt
+    (``jasper.active_speaker.driver_safety``) instructs the LLM to "Send
+    max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a
+    datasheet says stricter", and its RESULT SHAPE exemplar hard-codes the same
+    triple — against a :data:`DEFAULT_WOOFER_SWEEP_S` of exactly 4.0. Over a
+    grid of 1044 plausible woofer bands, 535 realize above that request, so
+    roughly half of every box commissioned through the standard prompt was
+    exposed. Tweeters escaped only because :data:`DEFAULT_TWEETER_SWEEP_S` is
+    3 s under the same 4 s ceiling. That prompt guidance stays as it is: with
+    this fit, a declared 4 is harmless by construction.
+
     **What the fit costs.** A fitted sweep is exactly one cycle at ``f1``
     shorter than the overshooting one — ``ln(f2/f1)/f1``, 21.9 ms on that
     150–4000 Hz woofer band — so it carries 10·log10(1 - 21.9/4006) ≈ 0.024 dB
