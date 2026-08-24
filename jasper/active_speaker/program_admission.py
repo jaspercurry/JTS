@@ -455,6 +455,27 @@ def _evaluate_program(
         refusals=unique_refusals,
     )
     if not admission.allowed:
+        # WHICH segment, and every number `prepare_driver_excitation_plan`
+        # judged it on. All of it is computed above and, until this line grew
+        # these fields, was discarded here — the aggregate reason alone cannot
+        # tell apart the FOUR comparisons folded into
+        # ``REQUEST_OUTSIDE_LIMITS`` (band, effective peak, duration, repeats),
+        # and `program_segment_outside_limits` is also the catch-all
+        # `_map_safety_plan_error` returns for a plan that RAISED for some
+        # third reason. A 2026-08-23 jts3 bench triage read that one aggregate
+        # as a level breach on the woofer and re-derived a level fix for it;
+        # the real refusal was the woofer sweep's DURATION, whose realized
+        # 4.0058 s (the synchronized sweep rounds a 4 s request up so its phase
+        # closes) exceeded a declared ``max_sweep_duration_s`` of 4.0 by 5.8 ms
+        # — while that segment's effective peak sat 10.5 dB inside its cap.
+        # `session_volume_db` is named for the same reason: a segment's
+        # effective peak is its digital gain PLUS this value (see
+        # `_requested_segment_plan`), so comparing a bare per-segment gain
+        # against an effective-peak cap is off by exactly this much.
+        durations_s = {
+            segment.segment_id: segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
+            for segment in program.stimulus_segments()
+        }
         log_event(
             logger,
             "active_speaker.program_admission",
@@ -463,24 +484,11 @@ def _evaluate_program(
             program_id=program.program_id,
             phase=program.phase,
             refusals=",".join(reason.value for reason in unique_refusals),
-            # WHICH segment, and the numbers it was judged on. All three fields
-            # below are computed above and, until this line grew them, were
-            # discarded here — the aggregate reason alone cannot tell a level
-            # breach from a band escape, and `program_segment_outside_limits`
-            # is the catch-all `_map_safety_plan_error` also returns for a
-            # plan that RAISED for some third reason. A 2026-08-23 jts3 bench
-            # triage read that aggregate as a level breach on the woofer;
-            # re-running the same declaration, caps, session volume and solved
-            # gains through this function admits the program, so the reason was
-            # something the log never said. `session_volume_db` is named
-            # because it is the term that triage omitted: a segment's effective
-            # peak is its digital gain PLUS this value (see
-            # `_requested_segment_plan`), and comparing the bare gain against
-            # an effective-peak cap is off by exactly this much.
             segments_refused=";".join(
                 f"{s.segment_id}:{s.role}"
                 f":eff={s.effective_peak_dbfs:.3f}"
                 f":band={s.band[0]:.1f}-{s.band[1]:.1f}"
+                f":dur={durations_s.get(s.segment_id, 0.0):.4f}"
                 f":{'|'.join(s.refusals)}"
                 for s in segments
                 if s.refusals
