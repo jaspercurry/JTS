@@ -592,9 +592,15 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     # the MOST one reading can spend, which since #2919 is the settle timeout
     # rather than a fixed drain-plus-window.
     bites = math.ceil(1 / slr.BITE_FRACTION)
-    readings = 1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.REMEASURE_READINGS
+    budget = slr.walk_reading_budget(start_db=-50.0, ceiling_db=-6.8)
+    # One owner of the reading count: the walk spends exactly what the watchdog
+    # prices, so a backstop can never fire before the honest refusal does.
+    assert budget == (
+        1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.BANK_CONFIRM_READINGS
+    )
     assert seconds == pytest.approx(
-        readings * slr.SETTLE_TIMEOUT_S + slr.WATCHDOG_SLACK_S
+        (budget + slr.REMEASURE_READINGS) * slr.SETTLE_TIMEOUT_S
+        + slr.WATCHDOG_SLACK_S
     )
     # The silent re-measure is PRICED, not absorbed by the slack: a budget that
     # leaned on slack for a reading the pass can deliberately spend would be the
@@ -610,7 +616,9 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     # which is the failure the retired kernel had in the other direction.
     assert slr._watchdog_seconds(
         start_db=-50.0, ceiling_db=-6.8, settle_timeout_s=2 * slr.SETTLE_TIMEOUT_S
-    ) == pytest.approx(seconds + readings * slr.SETTLE_TIMEOUT_S)
+    ) == pytest.approx(
+        seconds + (budget + slr.REMEASURE_READINGS) * slr.SETTLE_TIMEOUT_S
+    )
 
 
 # --- the incident: a 61 dB SPL room, a 75 dB SPL target ---------------------
@@ -691,18 +699,24 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
     25 dB under its own ceiling, because the ladder started at -50 dB (~26 dB
     UNDER the room) and its noise gate discarded 1138 of 1194 samples while the
     clock ran. The gap-stepped ramp starts under anything that could hurt and
-    bites its way up, landing in the band in seven readings.
+    bites its way up, landing in the band in seven readings -- plus the eighth
+    that CONFIRMS it, since #2919's bank confirm re-reads at the same volume
+    before a reference is written.
     """
     result, _volume, tone, _clock = _jts3_pass(tmp_path)
 
     assert result.status == "converged", (result.reason, result.detail)
     steps = result.ramp["steps"]
-    assert len(steps) == 7, steps
+    assert len(steps) == 8, steps
+    # Seven volumes; the eighth reading is the confirm, taken at the seventh's
+    # volume without stepping.
+    assert steps[-1]["volume_db"] == steps[-2]["volume_db"]
+    assert len({step["volume_db"] for step in steps}) == 7
     assert result.ramp["start_db"] == pytest.approx(slr.SEAT_LEVEL_START_DB)
     assert result.ramp["bite_db"] == pytest.approx(_JTS3_BITE_DB, abs=0.01)
     # Full bites while buried in the room, then steps aimed at the measured gap
     # once the speaker emerges from it.
-    volumes = [step["volume_db"] for step in steps]
+    volumes = [step["volume_db"] for step in steps[:-1]]
     rises = [b - a for a, b in zip(volumes, volumes[1:])]
     assert volumes[0] == pytest.approx(slr.SEAT_LEVEL_START_DB)
     assert rises[:4] == [pytest.approx(_JTS3_BITE_DB)] * 4
@@ -718,8 +732,11 @@ def test_the_noisy_room_that_timed_out_now_converges_in_seven_readings(tmp_path)
 def test_a_STILL_chain_is_audible_for_under_ten_seconds(tmp_path):
     """The owner's ten-second requirement, measured -- for a chain that is STILL.
 
-    Seven readings, each two windows on a modelled chain that answers a step at
-    once and a room with ZERO wander. That is the property this test has always
+    Eight readings -- seven volumes plus the bank confirm -- each two windows on
+    a modelled chain that answers a step at once and a room with ZERO wander.
+    The confirm is what the honest-artifact rule costs a good chain: one
+    reading, about a second, and the budget still holds. That is the property
+    this test has always
     measured, and since #2919 the name has to say so: the ten seconds is a
     property of a still chain, not of the pass. A room that will not hold still
     buys windows, and the honest bound for that is in
@@ -736,11 +753,11 @@ def test_a_STILL_chain_is_audible_for_under_ten_seconds(tmp_path):
     assert audible_s < 10.0
     # This modelled chain answers a step instantly, so every reading settles in
     # the minimum TWO windows -- asserted off the receipt rather than assumed.
-    assert [step["windows"] for step in result.ramp["steps"]] == [2] * 7
-    # Seven readings account for it, plus the fade-before-tone-kill that follows
+    assert [step["windows"] for step in result.ramp["steps"]] == [2] * 8
+    # Eight readings account for it, plus the fade-before-tone-kill that follows
     # the last one -- which is audible time as well, and is bounded by the fade's
     # own step size.
-    readings_s = 7 * (2 * slr.MIC_WINDOW_S)
+    readings_s = 8 * (2 * slr.MIC_WINDOW_S)
     fade_s = (abs(-12.0 - slr.FADE_FLOOR_DB) / slr.FADE_STEP_DB) * slr.FADE_STEP_S
     assert readings_s <= audible_s <= readings_s + fade_s + slr.MIC_WINDOW_S
 
@@ -2258,10 +2275,17 @@ def test_the_replayed_bench_runs_reproduce_the_receipts_own_volumes(tmp_path):
         target=RUN86_TARGET,
     )
     assert converged.status == "converged", converged.reason
-    assert [step["volume_db"] for step in converged.ramp["steps"]] == list(RUN86_LEVELS)
-    assert [step["observed_db_spl"] for step in converged.ramp["steps"]] == list(
-        RUN86_LEVELS.values()
-    )
+    # The receipts' own volumes and medians, plus the bank confirm's re-read at
+    # the last of them -- the same volume, and on this fixture the same level,
+    # which is why it agrees and banks.
+    volumes = list(RUN86_LEVELS)
+    levels = list(RUN86_LEVELS.values())
+    assert [step["volume_db"] for step in converged.ramp["steps"]] == volumes + [
+        volumes[-1]
+    ]
+    assert [step["observed_db_spl"] for step in converged.ramp["steps"]] == levels + [
+        levels[-1]
+    ]
     # The bite the bench ran with follows from the bench's own span.
     assert converged.ramp["bite_db"] == 7.5
 
@@ -2593,9 +2617,10 @@ def test_an_honest_ambient_is_never_re_measured(tmp_path):
     assert ramp["ambient_remeasured"] is False
     assert ramp["ambient_remeasured_db_spl"] is None
     assert tone.plays == 1, "no silent window, so no replay"
-    # The rises are the receipt's, unchanged.
+    # The rises are the receipt's, unchanged -- plus the bank confirm's re-read
+    # of the last one, which is the same volume and so the same rise.
     assert [step["rise_db"] for step in ramp["steps"]] == pytest.approx(
-        RUN86_RISES, abs=0.02
+        RUN86_RISES + RUN86_RISES[-1:], abs=0.02
     )
 
 
@@ -3106,30 +3131,46 @@ def test_a_level_still_climbing_is_not_banked_until_it_stops_moving(tmp_path):
     assert TARGET.low_db_spl <= result.measured_db_spl <= TARGET.high_db_spl
 
 
-def test_the_retired_fixed_settle_banks_a_level_that_never_arrived(tmp_path):
+def test_the_retired_fixed_settle_reads_a_level_that_never_arrived(tmp_path):
     """The no-op control: put the guessed settle back and the defect returns.
 
-    Same rig, same chain, one difference -- the reading is a fixed drain plus a
-    fixed median instead of a wait for agreement. It banks a level several dB
-    under the one the seat reaches, which is the 2026-08-24 incident: at
-    -12.50 dB commanded the frame was labelled 75 while the seat arrived at
-    about 79-80 dB SPL.
-    """
-    volume, tone, mic = _rising_rig(
-        gain_db=gain_for_seat_spl(80.0, at_volume_db=CEILING_DB),
-        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
-    )
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(slr, "_settle_reading", _retired_fixed_settle)
-        result = asyncio.run(
-            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
-        )
+    Same feed, one difference -- a fixed drain plus a fixed median instead of a
+    wait for agreement -- and the two are read side by side, so the comparison
+    is the measurement rather than an argument about it. The retired shape stops
+    listening on a schedule and reports a level the chain is nowhere near, which
+    is the 2026-08-24 incident: at -12.50 dB commanded the frame was labelled 75
+    while the seat arrived at about 79-80 dB SPL.
 
-    banked = result.measured_db_spl
-    assert banked is not None, (result.reason, result.detail)
-    arrived = mic.arrived_db_spl(result.reference_volume_db)
-    # Under-read, in the direction and the order of magnitude the bench measured.
-    assert arrived - banked > 2.0, (banked, arrived)
+    Asserted on ONE READING rather than end-to-end, because since the bank
+    confirm landed the walk catches this too -- the retired settle's readings
+    disagree with each other, so the pass refuses instead of banking (measured:
+    `spl_level_unconverged` on the chain that used to bank 13 dB hot). Two
+    independent mechanisms now stop it, and this pins the one this test is
+    about.
+    """
+    tau_s = 3.0
+    samples, asymptote = _slow_feed(tau_s=tau_s)
+    retired = asyncio.run(
+        _retired_fixed_settle(
+            samples,
+            sensitivity=UMIK2,
+            spl_ceiling_db_spl=SPL_CEILING,
+            clock=(clock := FakeClock()).now,
+            sleep=clock.sleep,
+            session_id="control",
+            window="probe",
+        )
+    )
+    samples, _asymptote = _slow_feed(tau_s=tau_s)
+    settled = _settle(samples, clock=FakeClock())
+
+    retired_under = asymptote - UMIK2.db_spl_from_dbfs(retired.rms_dbfs)
+    settled_under = asymptote - UMIK2.db_spl_from_dbfs(settled.rms_dbfs)
+    # The retired shape reads far under the level the chain is heading for...
+    assert retired_under > 10.0, retired_under
+    # ...and waiting for agreement cuts that by most of an order of magnitude,
+    # which is the whole of #2919 in two numbers.
+    assert settled_under < retired_under / 4.0, (settled_under, retired_under)
 
 
 def _slow_feed(tau_s: float, *, step_db: float = 20.0, from_db_spl: float = 45.0):
@@ -3196,22 +3237,21 @@ def test_the_residual_scales_with_the_chains_own_time_constant(tmp_path):
     overshoot into a slower one. It is ~2x conservative at the fast end and
     tightens as tau grows -- asserted both ways below, so neither "the bound
     holds" nor "the bound is not vacuous" can rot.
+
+    Asserted on ONE READING, which is where this residual lives. What the PASS
+    banks is a different and stronger guarantee since the bank confirm landed
+    (``test_a_slow_chain_can_no_longer_bank_a_level_it_will_climb_past``): a
+    reference is written only when a second reading, at least a reading later,
+    still agrees -- so this residual is what the confirm exists to catch, not
+    what ends up in the artifact.
     """
     measured: list[tuple[float, float, float]] = []
-    for index, tau_s in enumerate((0.81, 3.0, 5.0)):
-        volume, tone, mic = _rising_rig(
-            gain_db=gain_for_seat_spl(80.0, at_volume_db=CEILING_DB),
-            ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
-            tau_s=tau_s,
-        )
-        result = asyncio.run(
-            _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path / str(index))
-        )
-        assert result.status == "converged", (tau_s, result.reason, result.detail)
-        under_read = (
-            mic.arrived_db_spl(result.reference_volume_db) - result.measured_db_spl
-        )
-        measured.append((tau_s, under_read, mic.residual_db()))
+    for tau_s in (0.81, 3.0, 5.0):
+        samples, asymptote = _slow_feed(tau_s=tau_s)
+        reading = _settle(samples, clock=FakeClock())
+        assert reading.refusal is None, (tau_s, reading.refusal)
+        under_read = asymptote - UMIK2.db_spl_from_dbfs(reading.rms_dbfs)
+        measured.append((tau_s, under_read, (slr.SETTLED_AGREE_DB / slr.MIC_WINDOW_S) * tau_s))
 
     for tau_s, under_read, bound in measured:
         # Always an UNDER-read -- the level is still climbing when the windows
@@ -3269,6 +3309,227 @@ def test_raising_the_settle_timeout_can_convert_a_refusal_into_an_under_read(tmp
     assert banked.refusal is None
     under_read = asymptote - UMIK2.db_spl_from_dbfs(banked.rms_dbfs)
     assert under_read > 5.0, under_read
+
+
+def _hot_chain_pass(tmp_path, *, tau_s: float, headroom_db_spl: float = 100.0):
+    """A climb on a chain with real room ABOVE the band, at a given tau.
+
+    The headroom is what makes the hot-bank failure reachable: a chain that runs
+    out of ceiling refuses `spl_target_unreachable` long before it can bank
+    something dangerous, which is why the pre-confirm defect only showed up on a
+    chain that had somewhere hotter to go.
+    """
+    volume, tone, mic = _rising_rig(
+        gain_db=gain_for_seat_spl(headroom_db_spl, at_volume_db=CEILING_DB),
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+        tau_s=tau_s,
+    )
+    result = asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+    arrives = (
+        None
+        if result.reference_volume_db is None
+        else mic.arrived_db_spl(result.reference_volume_db)
+    )
+    return result, arrives
+
+
+def test_a_slow_chain_can_no_longer_bank_a_level_it_will_climb_past(tmp_path):
+    """The banked artifact escapes the per-sample stop, so the confirm guards it.
+
+    The residual a single reading leaves is not only a label error -- it is a
+    BANKED one. `write_seat_level_reference` validates the volume range and
+    nothing about where the chain ends up, the per-sample commissioning stop
+    guards the PASS and not the number that outlives it, and every later session
+    consumes that volume with no equivalent stop. Before the bank confirm, on a
+    chain with headroom above the band, this rig converged and banked references
+    whose chains ARRIVE at 82.2 dB SPL (tau 5), 85.2 (tau 8), 89.0 (tau 12) and
+    95.6 (tau 20) -- the last three at or above the 85 dB SPL commissioning stop
+    the pass exists to respect.
+
+    Those arrival figures are measurements of the pre-confirm build and are
+    quoted as history, not re-derived here. What IS re-derived is the property
+    that makes this test mean anything: the rig can genuinely go there. Without
+    that, "it refused" would be indistinguishable from a chain that never had
+    anywhere dangerous to climb.
+
+    Two consecutive READINGS have to agree now, and a chain still climbing
+    between them cannot produce that, so every one of those refuses instead.
+    """
+    # The fixture is hot: at the ceiling this chain ends up far above the band
+    # AND above the commissioning stop, so a banked reference really could name
+    # a volume no later session would be protected from.
+    _result, _arrives = _hot_chain_pass(tmp_path / "hotness", tau_s=0.81)
+    _volume, _tone, hot = _rising_rig(
+        gain_db=gain_for_seat_spl(100.0, at_volume_db=CEILING_DB),
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(45.0),
+        tau_s=0.81,
+    )
+    assert hot.arrived_db_spl(CEILING_DB) > SPL_CEILING + 10.0
+
+    for tau_s in (5.0, 8.0, 12.0, 20.0):
+        result, arrives = _hot_chain_pass(tmp_path / f"tau{tau_s}", tau_s=tau_s)
+        assert result.status == "refused", (tau_s, result.status, arrives)
+        assert result.reference_volume_db is None
+        assert not (tmp_path / f"tau{tau_s}" / "seat_level_reference.json").exists()
+        # And it is stopped for a MEASURED reason, not a speculative one.
+        assert result.reason in {
+            slr.REFUSE_LEVEL_UNSETTLED,
+            slr.REFUSE_LEVEL_UNCONVERGED,
+        }, (tau_s, result.reason)
+        assert result.restored is True
+
+
+def test_the_confirm_makes_a_fast_chains_banked_level_closer_not_further(tmp_path):
+    """The confirm is not only a refusal: it improves what a good chain banks.
+
+    A second reading is taken later, so it sits closer to where the chain is
+    going. On the same rig the banked error falls from 0.41 to 0.12 dB at
+    tau 0.81 s and from 2.62 to 0.96 dB at tau 3 s. The guarantee is no longer a
+    tau-dependent formula either -- it is that the banked level agreed with a
+    level re-measured a whole reading later, which is a fact about THIS chain
+    rather than a model of it.
+    """
+    for tau_s, ceiling in ((0.81, 0.5), (3.0, 1.5)):
+        result, arrives = _hot_chain_pass(tmp_path / f"ok{tau_s}", tau_s=tau_s)
+        assert result.status == "converged", (tau_s, result.reason, result.detail)
+        assert arrives - result.measured_db_spl < ceiling, (tau_s, arrives)
+        # The banked reading agreed with the one before it, within the bar.
+        steps = result.ramp["steps"]
+        assert steps[-1]["volume_db"] == steps[-2]["volume_db"]
+        assert (
+            abs(steps[-1]["observed_db_spl"] - steps[-2]["observed_db_spl"])
+            <= slr.SETTLED_AGREE_DB
+        )
+
+
+def test_the_bank_confirm_costs_a_still_chain_exactly_one_reading(tmp_path):
+    """What the honest-artifact rule charges the good case, in one number.
+
+    A chain that has already settled agrees the first time it is asked, so the
+    confirm is one extra reading -- about a second -- and it is ADDED to the
+    walk's budget rather than taken out of the miss allowance, so a chain that
+    needed its whole climb to reach the band still has a reading left to confirm
+    with.
+    """
+    result, _volume, _tone, _clock = _jts3_pass(tmp_path)
+    steps = result.ramp["steps"]
+
+    assert result.status == "converged", result.reason
+    # Seven volumes, eight readings: the last is a re-read at the seventh.
+    assert len({step["volume_db"] for step in steps}) == len(steps) - 1
+    assert steps[-1]["volume_db"] == steps[-2]["volume_db"]
+    assert slr.BANK_CONFIRM_READINGS == 1
+    # The budget grew by exactly that, so the miss allowance is untouched.
+    assert slr.walk_reading_budget(
+        start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+    ) == 1 + math.ceil(1 / slr.BITE_FRACTION) + slr.MAX_MISSED_FULL_STEPS + 1
+
+
+class SequenceMic:
+    """Replays one scripted dB SPL level per READING, ignoring the volume.
+
+    Volume-independent on purpose: it lets a test state the exact in-band /
+    out-of-band pattern the miss accounting has to survive, without also having
+    to solve for a chain that produces it. Each settle window sees a constant,
+    so every reading settles in the minimum two and consumes exactly one entry.
+    """
+
+    def __init__(self, tone, *, ambient_db_spl: float, levels: list[float]) -> None:
+        self._tone = tone
+        self._ambient_db_spl = ambient_db_spl
+        self._levels = list(levels)
+        self._seq = 0
+        self._polls = 0
+
+    async def next_samples(self) -> list[LevelSample]:
+        self._seq += 1
+        if not self._tone.started:
+            db_spl = self._ambient_db_spl
+        else:
+            # Two windows to a reading, ~11 polls each: advance the script once
+            # per settled reading.
+            index = min(self._polls // 22, len(self._levels) - 1)
+            self._polls += 1
+            db_spl = self._levels[index]
+        rms = UMIK2.dbfs_from_db_spl(db_spl)
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=False,
+                agc_frozen=True,
+            )
+        ]
+
+
+def test_a_step_that_reached_the_band_is_not_charged_a_miss(tmp_path):
+    """The miss budget counts steps that MISSED the band, and still does.
+
+    Before the bank confirm, an in-band reading returned immediately, so the
+    full-gap flag was never read again. Now the walk goes round once more, and
+    without clearing that flag a step that hit the band would spend a miss meant
+    for a step that did not -- burning the allowance twice as fast and turning
+    an honest `spl_level_unsettled` into a premature `spl_level_unconverged`.
+
+    Scripted so the pattern is exact: reach the band, wobble out of it, come
+    back, wobble out again, then hold and agree. That is TWO in-band landings
+    whose steps must not be charged -- exactly ``MAX_MISSED_FULL_STEPS`` -- so
+    with them charged the pass refuses before it can ever confirm, and with the
+    accounting right it banks.
+    """
+    in_band = JTS3_TARGET.target_db_spl
+    above = JTS3_TARGET.high_db_spl + 3.0
+    tone = ReplayableTone()
+    volume = Volume()
+    mic = SequenceMic(
+        tone,
+        ambient_db_spl=45.0,
+        # Climb to within one bite of the band -- so the step that ENTERS it
+        # commands the whole measured gap and is the kind that can be charged a
+        # miss -- then wobble out of the band twice before holding and agreeing.
+        levels=[
+            50.0, 58.0, 70.0,
+            in_band, above,
+            in_band, above,
+            in_band, in_band,
+        ],
+    )
+    result = asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=JTS3_TARGET,
+            max_main_volume_db=JTS3_CEILING_DB,
+        )
+    )
+
+    # It banks: two consecutive in-band readings agreed, and the miss budget was
+    # never spent on the steps that put it there.
+    assert result.status == "converged", (result.reason, result.detail)
+    assert result.measured_db_spl == pytest.approx(in_band, abs=0.01)
+
+
+def test_readings_that_never_agree_refuse_with_the_band_they_would_not_hold(tmp_path):
+    """The refusal says it REACHED the band, which is a different diagnosis.
+
+    "Never arrived" sends an operator to the amplifier; "arrived and would not
+    hold still" sends them to the chain. Same slug as the window-level wait --
+    one question, asked at two scales -- and the detail is what tells them
+    apart, so it names both readings and the bar they missed.
+    """
+    result, _arrives = _hot_chain_pass(tmp_path, tau_s=12.0)
+
+    assert result.reason == slr.REFUSE_LEVEL_UNSETTLED
+    detail = result.detail or ""
+    assert "reached the band and would not hold still" in detail
+    assert "agreement bar" in detail
+    assert "would not hold still" in detail
+    # The disagreement is greppable in the journal on its own event, too.
+    assert not (tmp_path / "seat_level_reference.json").exists()
 
 
 def test_a_still_level_settles_in_the_minimum_two_windows(tmp_path):
@@ -3551,6 +3812,102 @@ def test_the_dead_mic_walks_audible_seconds_are_what_the_docstring_says(tmp_path
     assert max(step["volume_db"] for step in steps) == pytest.approx(JTS3_CEILING_DB)
     assert tone.cancelled_at is not None and tone.started_at is not None
     assert tone.cancelled_at - tone.started_at == pytest.approx(9.16, abs=0.1)
+
+
+class ChurningMic(Mic):
+    """Converges, but only after burning most of the settle timeout per reading.
+
+    At every commanded volume the level alternates window to window until the
+    reading has spent ``churn_polls`` polls, then holds -- so the window that
+    lands near the timeout bound AGREES with the one before it and the reading
+    settles rather than refusing. That is the shape that makes the audible worst
+    case reachable by a HEALTHY pass, which is the thing the watchdog pricing
+    and the exposure prose both rest on.
+    """
+
+    def __init__(self, *args, churn_polls: int = 138, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.churn_polls = churn_polls
+        self._at = 0
+        self._last: float | None = None
+
+    def _rms_dbfs(self) -> float:
+        settled = super()._rms_dbfs()
+        if not self._tone.started:
+            return settled
+        commanded = round(self._volume.value, 2)
+        if self._last != commanded:
+            self._at = 0
+            self._last = commanded
+        self._at += 1
+        if self._at < self.churn_polls:
+            # One window is ~11 polls; flip every window so no two agree.
+            return settled + 3.0 * ((self._at // 11) % 2)
+        return settled
+
+
+def test_a_converging_pass_can_spend_the_whole_settle_timeout_per_reading(tmp_path):
+    """The claim the watchdog pricing and the exposure prose both rest on.
+
+    Agreement is tested BEFORE the timeout, so a window landing on the bound
+    settles rather than refusing -- which means a chain that keeps disagreeing
+    and then agrees just under the bar spends the entire timeout on a reading
+    that CONVERGES. Stated in three places (`SETTLE_TIMEOUT_S`,
+    `_watchdog_seconds`, `.env.example`) and, until this test, produced by a
+    throwaway script: the exact rot class this file's own docstrings name.
+
+    Pinned as a RELATION rather than a decimal, deliberately. The seconds move
+    whenever the reading count or the window length does -- they already moved
+    once when the bank confirm added a reading -- so what is asserted is the
+    structural bound the prose actually promises, plus the fact that a healthy
+    pass can climb a long way into it.
+    """
+    clock = FakeClock()
+    volume = Volume()
+    tone = AccountingTone(clock)
+    mic = ChurningMic(
+        volume,
+        tone,
+        gain_db=JTS3_GAIN_DB,
+        ambient_dbfs=UMIK2.dbfs_from_db_spl(JTS3_AMBIENT_DB_SPL),
+    )
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=JTS3_TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=JTS3_CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+
+    # CONVERGED, not refused -- the whole point. A healthy pass pays this.
+    assert result.status == "converged", (result.reason, result.detail)
+    windows = [step["windows"] for step in result.ramp["steps"]]
+    # Every CLIMB reading really did spend most of its timeout: at MIC_WINDOW_S
+    # a window, the timeout buys about 16, and these are well past the minimum 2.
+    assert min(windows[:-1]) > 8, windows
+    # ...and the bank confirm costs the minimum, because by the time it is taken
+    # this chain has genuinely stopped moving. The confirm charges a still chain
+    # a reading, not a timeout -- which is why it is affordable at all.
+    assert windows[-1] == 2, windows
+    # An order of magnitude past the still chain's ~8 s...
+    assert tone.audible_s > 40.0
+    # ...and inside the bound the prose promises, which is the durable claim.
+    budget = slr.walk_reading_budget(
+        start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=JTS3_CEILING_DB
+    )
+    assert tone.audible_s < budget * slr.SETTLE_TIMEOUT_S
+    # Duration grew; the level bound did not.
+    assert max(step["observed_db_spl"] for step in result.ramp["steps"]) < SPL_CEILING
 
 
 def test_a_wandering_room_buys_windows_and_audible_seconds(tmp_path):
