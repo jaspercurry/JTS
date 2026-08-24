@@ -89,13 +89,45 @@ owns, and nothing else can know:
    longer disqualifies good readings. :func:`_remeasure_silence` states both
    sides exactly and names the tests that pin them.
 4. **What the refusal path saw.** Every settle window leaves a
-   :class:`_WindowTrace`, so a sample-domain stop publishes the window it
-   abandoned (``ramp.stopped_window`` / ``stopped_window_*``) — sample count,
+   :class:`_WindowTrace`, so a refusal publishes the window it stopped in
+   (``ramp.stopped_window`` / ``stopped_window_*``) — abandoned part-way by a
+   sample-domain stop, or run to its own deadline by
+   :data:`REFUSE_LEVEL_UNSETTLED`, which has no trip to name — sample count,
    min/median/max dB SPL, and the sample that tripped with its offset from the
    volume step — on the receipt, the event line, and
    the operator's own terminal, with the whole per-sample series one DEBUG line
    behind ``--verbose``. Without it, a stop reports a slug and a number that
    cannot be told apart from a level that rose and stayed.
+5. **What "settled" means: the instrument's own stability, never a guessed
+   lag.** A reading is settled when two consecutive :data:`MIC_WINDOW_S`
+   windows agree within :data:`SETTLED_AGREE_DB`; until they do the pass keeps
+   reading, and a reading that never agrees inside :data:`SETTLE_TIMEOUT_S`
+   REFUSES (:data:`REFUSE_LEVEL_UNSETTLED`) instead of banking the last number
+   it happened to see. What this replaced was a fixed drain-then-median — a lag
+   model, and a wrong one: on jts3 (2026-08-24) the level was still climbing
+   +6.03 dB WITHIN the final window at the top step, so the pass banked a frame
+   about 5 dB under the level that actually arrived (−12.50 dB commanded,
+   ≈79-80 dB SPL at the seat; issue #2919). No mechanism had to be named to fix
+   it, because nothing here models one. A settled chain pays the same second it
+   always did (two windows); only a moving one pays more, and every extra window
+   is more samples run past the commissioning stop, never fewer. Two costs it
+   does carry, both stated where they are set rather than left to be found: what
+   agreement still leaves on the table scales with the chain's own time constant
+   (:func:`_settle_reading`), and a converging pass can spend the whole timeout
+   on every reading (:data:`SETTLE_TIMEOUT_S`).
+6. **The same rule guards the ARTIFACT, one level up.** A reference is banked
+   only when two consecutive settled READINGS agree
+   (:data:`BANK_CONFIRM_READINGS`), because what a single reading leaves on the
+   table is not just a wrong label — it is a wrong NUMBER ON DISK. The
+   per-sample commissioning stop guards the pass; the banked volume outlives it,
+   ``write_seat_level_reference`` validates the volume range and nothing about
+   where the chain ends up, and every later session consumes that volume with no
+   equivalent stop. Before this, a chain with headroom above the band could
+   converge and bank a reference whose level ARRIVES at 89 dB SPL against an
+   85 dB SPL stop. Two readings are a whole reading apart, so the same agreement
+   bar over that longer baseline catches creep the window test cannot — and what
+   is banked is no longer a model of a chain but a level that two separate
+   measurements agreed on.
 
 **No sample is discarded for being quiet, so the climb can never stall.** A
 reading is the median of every finite sample in its window. A window with
@@ -162,13 +194,74 @@ logger = logging.getLogger(__name__)
 # ``event=measurement.hold_*`` line say while a leveling pass is running.
 SEAT_LEVEL_GATE_OWNER = "seat-level"
 
-# The ONE timescale in this pass: how long until the mic reflects a step
-# (owner's number, 2026-08-23). It is drained and discarded after each volume
-# change so a median never mixes the level before a step with the level after
-# it, and the median window that follows is the same length — a wired mic read
-# in-process is chunk-bounded, an order of magnitude tighter than the phone
-# relay's 2 s, and nothing else in the pass runs on a different clock.
-MIC_SETTLE_S = 0.5
+# One WINDOW: the span whose median is one observation of the level. Half a
+# second is about 12 samples from the wired meter's 2048-frame ALSA period
+# (~42.7 ms at 48 kHz) — enough that the median is a level rather than a
+# sample, and short enough that the two windows a settled reading normally
+# costs take the same second the retired fixed settle took.
+#
+# NOT a lag model. Nothing here claims to know how long this chain needs after
+# a volume step; that is what :data:`SETTLED_AGREE_DB` measures instead.
+MIC_WINDOW_S = 0.5
+
+# When two consecutive windows are the SAME LEVEL, and so the whole definition
+# of settled: the pass keeps reading until it sees that agreement, and banks
+# the later of the two. The instrument's own stability says when a reading may
+# be believed — no guessed delay, nothing to re-tune when a chain changes.
+#
+# The number is sized against the room's own wander at a settled step: on jts3
+# (2026-08-24) a converged window varied 0.42 dB across its thirds while a
+# window that was still climbing moved 6.03 dB, so 0.5 dB separates the two by
+# an order of magnitude.
+#
+# **It bounds a RATE, not a distance, and that is the residual.** A reading is
+# banked once consecutive medians move less than this per :data:`MIC_WINDOW_S`
+# — at the shipped values, once the level is moving slower than 1 dB/s (the
+# knob below reaches 6 dB/s at its maximum). What the level has LEFT to travel
+# at that moment is that rate times the chain's own time constant, so the
+# banked level can sit ``(agree_db / MIC_WINDOW_S) x tau`` under the level that
+# eventually arrives — about 1 dB per second of tau at the shipped values, and
+# unbounded in tau. :func:`_settle_reading` states the consequence and the
+# measurements; this is the number that sets its scale.
+#
+# A deploy-time knob for the same reason :data:`MIC_RESPONSE_MIN_RISE_DB` is
+# one: how still a room actually sits is a property only hardware knows, and a
+# room that cannot hold 0.5 dB would otherwise have no way to be measured at
+# all. Widening it lowers the bar for "settled", so it is disclosed on the
+# receipt (``ramp.settle_agree_db``) and on the start event.
+SETTLED_AGREE_DB = 0.5
+
+# How long ONE reading may spend proving it settled before the pass refuses it
+# (:data:`REFUSE_LEVEL_UNSETTLED`). The honest bound on a wait with no lag
+# model behind it: a chain that is genuinely still moving gets the time it
+# needs, and one that never stops moving is reported rather than banked.
+#
+# Generous on purpose — the default covers a chain settling with a time
+# constant of about three seconds, which is well past anything jts3's climb
+# showed — because the cost of being too tight is refusing a healthy chain.
+# A dead feed does NOT wait this out: a window with no finite sample in it is
+# :data:`REFUSE_MIC_FEED_LOST` after one window.
+#
+# **This number sets the pass's audible worst case, and a HEALTHY pass can pay
+# it.** Agreement is tested before the timeout, so a window landing at the bound
+# still settles: a chain that keeps disagreeing and then agrees just under the
+# bar spends the whole timeout on a reading that CONVERGES — pinned by
+# ``test_a_converging_pass_can_spend_the_whole_settle_timeout_per_reading``.
+# Audible time is therefore bounded by ``walk_reading_budget`` readings at this
+# timeout each — about 88 s at the shipped values and about 330 s at the knob's
+# maximum — and the silent re-measure adds none of it. The bound is stated as a
+# relation rather than a stopwatch reading on purpose: the seconds move whenever
+# the reading count or the window length does, and a decimal nothing re-derives
+# is how prose starts lying. Not a hearing hazard — every sample is still under
+# the commissioning stop, and the doctrine's nanny test says a bound that names
+# no damage mechanism does not earn a gate — but it is not "only a broken pass
+# pays this" either, which is why it is stated rather than left to be found.
+#
+# Env-overridable so an operator whose chain settles slower than this has a way
+# forward that is not a redeploy; bounded so the knob cannot turn a leveling
+# pass into an unbounded tone. Raising it is not free in the other direction
+# either — see :func:`_settle_reading` on what a longer wait banks.
+SETTLE_TIMEOUT_S = 8.0
 
 # The quiet floor the climb starts from. Deliberately low and deliberately
 # uninformed — we do not know what a stranger's amplifier does, so we start
@@ -221,22 +314,39 @@ MAX_MISSED_FULL_STEPS = 2
 # arithmetic is dB and the fader is not infinitely resolved.
 STEP_EPSILON_DB = 0.05
 
-# How many samples of ONE settle window are retained for its trace. A window is
-# MIC_SETTLE_S of drain plus MIC_SETTLE_S of median, and the wired meter
-# delivers one sample per 2048-frame ALSA period (~42.7 ms at 48 kHz), so a
-# production window holds about 24. This bounds a sample source that delivers
-# faster than a sound card can, so neither the retained list nor the single
-# DEBUG line built from it can grow without limit. The sample that STOPPED a
-# window is recorded outside the cap, so truncation can never lose it.
+# How many samples of ONE window are retained for its trace. A window is
+# MIC_WINDOW_S long and the wired meter delivers one sample per 2048-frame ALSA
+# period (~42.7 ms at 48 kHz), so a production window holds about 12. This
+# bounds a sample source that delivers faster than a sound card can, so neither
+# the retained list nor the single DEBUG line built from it can grow without
+# limit. The cap is PER WINDOW and a reading keeps only its last window's
+# trace, so a reading that takes many windows to settle costs one bounded line
+# each and carries one bounded trace out. The sample that STOPPED a window is
+# recorded outside the cap, so truncation can never lose it.
 WINDOW_TRACE_MAX_SAMPLES = 256
 
-# How many extra silent windows one pass can spend re-measuring a contradicted
-# floor. ONE, and not a knob: a second window answers "was the first one
+# How many extra silent READINGS one pass can spend re-measuring a contradicted
+# floor. ONE, and not a knob: a second reading answers "was the first one
 # contaminated?", and a third would only be answering the same question again
 # with the same instrument. A pass whose floor is contradicted twice is telling
 # the operator about the room, not about the ambient window, and the rise gate
 # already reports that as `mic_not_observing`.
-REMEASURE_WINDOWS = 1
+#
+# Readings, not windows: a silent re-measure settles the same way every other
+# reading does, so what it costs the watchdog is one settle, not one window.
+REMEASURE_READINGS = 1
+
+# How many extra readings the BANK CONFIRM adds to the walk's budget. One: on a
+# chain that has actually settled the confirm agrees the first time it is asked,
+# so one reading (about a second) is what a converging pass really costs.
+#
+# It is ADDED rather than taken out of the miss budget on purpose. Folding it in
+# would silently cost a chain one of its allowed misses, so a chain that needed
+# its whole budget to reach the band would arrive there and then have nothing
+# left to confirm with — a refusal manufactured by accounting rather than by
+# anything measured. A chain whose readings keep disagreeing still spends only
+# the walk's own budget and then refuses; the wait is never unbounded.
+BANK_CONFIRM_READINGS = 1
 
 # Whole-operation watchdog slack, on top of the pass's own honestly-priced
 # worst case (see :func:`_watchdog_seconds`). A backstop against a wedged
@@ -287,6 +397,19 @@ REFUSE_VOLUME_LATCH_UNCONFIRMED = "volume_latch_unconfirmed"
 # Two steps commanded the full measured gap and neither landed in the band.
 # The refusal carries the measured dB-per-dB slope so the operator sees WHY.
 REFUSE_LEVEL_UNCONVERGED = "spl_level_unconverged"
+# The level never stopped moving, so no number from it may be believed. ONE slug
+# for one question asked at two scales, because it IS one question: consecutive
+# WINDOWS that keep disagreeing until SETTLE_TIMEOUT_S (a reading that cannot be
+# believed at all), and consecutive READINGS that keep disagreeing until the
+# walk's budget runs out (a level that reaches the band and then creeps out from
+# under it). The refusal's detail names which scale and quotes the two figures
+# that disagreed; the operator's action — the level is still moving, wait for
+# the chain or look at why — is the same either way.
+#
+# Still a different question from `spl_level_unconverged` above, which is the
+# ramp failing to REACH the band at all. That one is about where the level is;
+# this one is about whether it is holding still.
+REFUSE_LEVEL_UNSETTLED = "spl_level_unsettled"
 # The whole-operation watchdog fired: something the pass awaits never returned.
 REFUSE_WATCHDOG_EXPIRED = "seat_level_watchdog_expired"
 # Ctrl-C, SIGINT, or any other cancellation of the pass. Recorded, never
@@ -380,18 +503,28 @@ class _WindowTrace:
     artifact the build produced.
 
     ``samples`` is ``(offset_s, db_spl)`` per finite sample, offset from the
-    moment the settle began — which, for a climb window, is the moment the
-    volume step was commanded. That offset is read from the pass's OWN injected
-    clock when the sample is processed, so it lags capture by at most one drain
-    interval plus one chunk; this pass runs on one clock (see
-    :data:`MIC_SETTLE_S`) and a second time base carried on the sample would not
-    survive the fake clock the tests inject.
+    moment the READING began — which, for a climb reading, is the moment the
+    volume step was commanded. Every window of one settling reading shares that
+    origin, so a reading that took five windows to settle reads as one timeline
+    rather than five that each restart at zero. That offset is read from the
+    pass's OWN injected clock when the sample is processed, so it lags capture
+    by at most one poll interval plus one chunk; this pass runs on one clock and
+    a second time base carried on the sample would not survive the fake clock
+    the tests inject.
 
     ``seen`` is the true finite-sample count and exceeds ``len(samples)`` only
     when :data:`WINDOW_TRACE_MAX_SAMPLES` truncated the retained series.
     ``trip`` is the sample that STOPPED the window, recorded outside that cap;
     it is ``None`` for a window that ended on its own deadline and for a clipped
     capture, whose level is meaningless by definition.
+
+    **Not only a sample-domain stop publishes one of these.** Every refusal
+    carrying a reading attaches its last window as ``ramp.stopped_window`` /
+    ``stopped_window_*``, and since #2919 that includes
+    :data:`REFUSE_LEVEL_UNSETTLED` — a reading whose windows never agreed. Its
+    window has ``trip`` ``None`` and ended on its own deadline, so the thing to
+    read there is the median against the medians the refusal's own prose names,
+    not a trip that does not exist.
     """
 
     samples: tuple[tuple[float, float], ...]
@@ -429,7 +562,11 @@ class _WindowTrace:
 
 
 def _window_event_fields(summary: dict[str, Any]) -> dict[str, Any]:
-    """An aborted window's facts as ``stopped_window_*`` fields on a refusal event.
+    """A refusal's last window as ``stopped_window_*`` fields on its event line.
+
+    "The window it stopped in", which is an abandoned one for a sample-domain
+    stop and a completed-but-disagreeing one for
+    :data:`REFUSE_LEVEL_UNSETTLED` — the latter has no ``trip``.
 
     ``stopped_window_``, not ``window_``: ``seat_level_start`` already emits
     ``window_dbfs`` for the TARGET BAND converted to mic dBFS, which is a
@@ -442,7 +579,14 @@ def _window_event_fields(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _window_phrase(summary: dict[str, Any]) -> str:
-    """One sentence of an aborted window, for the operator's own terminal.
+    """One sentence of a refusal's last window, for the operator's own terminal.
+
+    Every refusal that got as far as a reading has one, so the ``trip`` clause
+    is conditional rather than assumed: a sample-domain stop abandoned its
+    window and names the sample that ended it, while
+    :data:`REFUSE_LEVEL_UNSETTLED`'s window ran to its own deadline and has no
+    trip to name — there the median is the whole content, read against the two
+    medians the refusal's own detail already quotes.
 
     Empty for a window that saw no finite sample: the refusal that produces one
     (:data:`REFUSE_MIC_FEED_LOST`) already says exactly that in words, and
@@ -467,25 +611,58 @@ def _window_phrase(summary: dict[str, Any]) -> str:
 class _Reading:
     """One settled level reading, or the guard that stopped it mid-window.
 
-    ``rms_dbfs`` is the median of EVERY finite sample in the window — no sample
-    is dropped for being quiet, because "the speaker is still under the room" is
-    evidence the step arithmetic uses. ``None`` means the mic delivered nothing
-    finite at all, which is a lost feed rather than a quiet room.
+    ``rms_dbfs`` is the median of EVERY finite sample in the window that settled
+    it — no sample is dropped for being quiet, because "the speaker is still
+    under the room" is evidence the step arithmetic uses. ``None`` means the
+    reading produced no believable level: the mic delivered nothing finite, a
+    sample-domain stop abandoned the window, or the level never settled.
 
-    ``samples`` counts the finite samples that reached the MEDIAN — the drain's
-    are excluded, which is what the converged receipt's ``steps[].samples`` has
-    always meant. ``trace`` is the whole window, drain included, and is the only
-    place the drain's samples survive.
+    ``samples`` counts the finite samples behind that median, which is what the
+    converged receipt's ``steps[].samples`` has always meant. ``windows`` is how
+    many windows the reading took to settle — two when the level was already
+    still, more when it was moving — and is the pass's own measurement of how
+    long this chain takes to answer a step. ``trace`` is the last window, and
+    on a sample-domain stop it is the window that was abandoned.
     """
 
     rms_dbfs: float | None
     samples: int
     trace: _WindowTrace
+    windows: int = 1
     refusal: str | None = None
     detail: str | None = None
 
 
-async def _settle_reading(
+@dataclass(frozen=True)
+class _Unconfirmed:
+    """Two readings that each qualified to bank and did not agree with each other.
+
+    The walk RETAINS the last of these to its tail, because a chain creeping
+    under the band produces several and the refusal has to name one. That
+    retention is what makes carrying the volume load-bearing rather than tidy:
+    by the time the budget runs out the walk has stepped somewhere else, so a
+    sentence that formats this pair against the CURRENT commanded volume
+    attributes two real readings to a volume neither was taken at — which is a
+    refusal misquoting its own evidence, in a pass whose whole subject is not
+    banking numbers it cannot stand behind.
+
+    The ordinals are here for the same reason: "readings 8 and 9" locates the
+    pair in the receipt's ``steps`` array, where "the last two" does not once
+    the walk has carried on past them.
+    """
+
+    volume_db: float
+    earlier_db_spl: float
+    later_db_spl: float
+    earlier_reading: int
+    later_reading: int
+
+    @property
+    def moved_db(self) -> float:
+        return self.later_db_spl - self.earlier_db_spl
+
+
+async def _window_reading(
     next_samples: SampleSource,
     *,
     sensitivity: MicSensitivity,
@@ -494,31 +671,39 @@ async def _settle_reading(
     sleep: Callable[[float], Awaitable[None]],
     session_id: str,
     window: str,
-    window_s: float = MIC_SETTLE_S,
-    latency_s: float = MIC_SETTLE_S,
+    attempt: int,
+    started: float,
+    window_s: float,
 ) -> _Reading:
-    """Drain the transport delay, then take the median of one window.
+    """The median of ONE window, and the sample-domain stops that can end it.
 
-    The two sample-domain stops run on EVERY sample seen, drain included, and
-    abandon the window the moment one fires: a clipped capture (the level is
-    meaningless) and a reading above the profile's commissioning SPL stop (the
-    hard-stop list's measured ceiling). Both are checked before the median so
-    the pass cannot sit at an over-ceiling level for the rest of a window.
+    Both stops run on EVERY sample seen and abandon the window the moment one
+    fires: a clipped capture (the level is meaningless) and a sample above the
+    profile's commissioning SPL stop (the hard-stop list's measured ceiling).
+    Both are checked before the median, so the pass cannot sit at an
+    over-ceiling level for the rest of a window — and because a reading that is
+    still moving now takes MORE windows rather than one fixed one, a rising
+    level is checked against that stop on more samples than it ever was, never
+    fewer.
+
+    ``started`` is the moment the READING began (the volume step, for a climb
+    reading), and every offset on the trace is measured from it, so the windows
+    of one settling reading form a single timeline. ``attempt`` is this window's
+    1-based place in that reading.
 
     Every window — the ambient one and every climb one, stopped or not — leaves
     a :class:`_WindowTrace` on the reading and emits its per-sample series as
     ONE DEBUG line (``event=active_speaker.seat_level_window_samples``, one line
-    per window rather than one per sample). ``window`` names which window that
-    line describes: ``"ambient"``, or the commanded volume the climb was sitting
-    at. The line is built only when DEBUG is actually enabled, so an ordinary
-    run pays nothing for it.
+    per window rather than one per sample). ``window`` names which reading that
+    line belongs to: ``"ambient"``, ``"silence"``, or the commanded volume the
+    climb was sitting at. The line is built only when DEBUG is actually enabled,
+    so an ordinary run pays nothing for it.
     """
     readings: list[float] = []
     trace: list[tuple[float, float]] = []
     trip: tuple[float, float] | None = None
     seen = 0
-    started = clock()
-    deadline = started + float(latency_s) + float(window_s)
+    deadline = clock() + float(window_s)
 
     def _trace() -> _WindowTrace:
         return _WindowTrace(samples=tuple(trace), seen=seen, trip=trip)
@@ -554,8 +739,7 @@ async def _settle_reading(
                             f"{spl_ceiling_db_spl:.1f} dB SPL"
                         ),
                     )
-                if at >= float(latency_s):
-                    readings.append(sample.rms_dbfs)
+                readings.append(sample.rms_dbfs)
             await sleep(0.05)
         if not readings:
             return _Reading(
@@ -578,10 +762,152 @@ async def _settle_reading(
                 level=logging.DEBUG,
                 session=session_id,
                 window=window,
+                attempt=str(attempt),
                 samples=str(recorded.seen),
                 retained=str(len(recorded.samples)),
                 db_spl=recorded.series(),
             )
+
+
+async def _settle_reading(
+    next_samples: SampleSource,
+    *,
+    sensitivity: MicSensitivity,
+    spl_ceiling_db_spl: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+    session_id: str,
+    window: str,
+    agree_db: float = SETTLED_AGREE_DB,
+    timeout_s: float = SETTLE_TIMEOUT_S,
+) -> _Reading:
+    """Read windows until two consecutive ones agree, and return the later one.
+
+    Two of the three numbers behind "settled" reach here as parameters and the
+    third does not, and the asymmetry is the domain's: ``agree_db`` and
+    ``timeout_s`` are run-scoped and operator-overridable, resolved once in
+    :func:`run_seat_level_ramp` so one pass has one answer, while
+    :data:`MIC_WINDOW_S` is a fixed property of the meter with no override path.
+    This function is where that constant is APPLIED — it is read here and handed
+    to :func:`_window_reading`, which stays a pure function of the length it is
+    given — so the receipt's ``settle_window_s`` has exactly one value to
+    publish and no second writer to drift against.
+
+    **The instrument's own stability is what "settled" means here.** There is no
+    lag model and no drained transport delay: a window taken while the level is
+    still moving disagrees with the one after it, so the pass simply keeps
+    reading. That is what the retired fixed settle could not do — it waited a
+    guessed half-second, took a median, and banked it however hard the level was
+    still climbing (jts3 2026-08-24: +6.03 dB WITHIN the final window, so the
+    banked frame read about 5 dB under the level that arrived — issue #2919).
+
+    The LATER of the two agreeing windows is the reading. They are the same
+    level by construction; the later one is the most recent evidence, and on a
+    level with any residual climb left in it, it is the louder of the two.
+
+    Three ways out other than agreement, and none of them banks a number:
+
+    * a sample-domain stop or a clipped capture — returned straight from the
+      window that fired it, with the window it abandoned attached;
+    * a window with no finite sample in it — :data:`REFUSE_MIC_FEED_LOST`, after
+      ONE window, so a dead feed never waits out the timeout;
+    * ``timeout_s`` elapsed with the windows still disagreeing —
+      :data:`REFUSE_LEVEL_UNSETTLED`, naming the last two and their distance.
+      A reading always gets at least two windows before this can fire, because
+      "two consecutive windows agree" cannot be answered with fewer.
+
+    **What agreement does not buy, because the difference is the residual.**
+    What is bounded is the RATE, never the remaining distance: banking happens
+    once consecutive medians move less than ``agree_db`` per window, and what
+    the level has LEFT to travel at that moment is that rate times the chain's
+    own time constant. So::
+
+        residual ~= (agree_db / MIC_WINDOW_S) x tau
+
+    — about **1 dB per second of tau** at the shipped values, and **unbounded in
+    tau**. Measured on ONE READING, on the synthetic first-order rig in
+    ``tests/test_active_speaker_seat_level.py`` (2026-08-24, defaults): a
+    tau = 0.81 s chain reads 0.28 dB under the level it is heading for,
+    tau = 3 s reads 2.11 under, tau = 5 s reads 4.16 under. That last one is the
+    size and the DIRECTION of the very defect #2919 closes, and tau = 3 s is
+    inside the range :data:`SETTLE_TIMEOUT_S` says it covers — so this is a real
+    operating region, not a corner. What the fix buys is still large and still
+    real: the jts3 chain this was built for arrives in about 0.9 s, where the
+    residual is a few tenths of a dB against the ~5 dB the fixed settle banked.
+
+    Those are per-READING figures. What the pass BANKS is bounded separately and
+    more tightly — see below — so none of them is a banked error.
+
+    **A LOW window count is not evidence of stillness.** ``windows == 2`` has
+    two causes and they are opposite: a level that was genuinely still, and a
+    level moving so slowly that consecutive medians never differ by
+    ``agree_db`` at all. The second reads most reassuring exactly where the
+    error is largest — measured on the same rig, a tau = 30 s approach settles
+    in the minimum two windows while banking **19.46 dB** low. Read ``windows``
+    as this chain's answer time, never as a confidence score, and read it
+    against its neighbours: a climb whose readings take 2, 5, 8, 8 windows is
+    describing a chain, while a slow chain that reports 2 everywhere is
+    describing the bar.
+
+    **What this residual is NOT allowed to reach: the artifact.** Everything
+    above is about one reading. A reading's residual is a label error while the
+    pass is running, and the per-sample commissioning stop is watching — but the
+    BANKED volume outlives the pass, and nothing downstream re-checks it, so a
+    residual that survived into ``seat_level_reference.json`` would be a level
+    no stop ever sees again. That is why banking takes two consecutive READINGS
+    that agree (:data:`BANK_CONFIRM_READINGS` and the confirm in
+    :func:`_walk_to_the_band`): the second reading is a whole reading later, so
+    the same bar over that longer baseline catches the creep this residual
+    describes. Measured on the rig above, the bank confirm turns every
+    hot-banking case into a refusal and tightens the ones that still bank.
+
+    Narrowing the reading's own residual further would need a model of what is
+    moving — the thing this pass deliberately does not have, and (per #2919)
+    does not need in order to delete a wrong one. What it owes instead is
+    disclosure, which is ``windows`` on every step of the receipt plus this
+    paragraph.
+    """
+    started = clock()
+    previous: float | None = None
+    windows = 0
+    while True:
+        windows += 1
+        reading = await _window_reading(
+            next_samples,
+            sensitivity=sensitivity,
+            spl_ceiling_db_spl=spl_ceiling_db_spl,
+            clock=clock,
+            sleep=sleep,
+            session_id=session_id,
+            window=window,
+            attempt=windows,
+            started=started,
+            window_s=MIC_WINDOW_S,
+        )
+        if reading.rms_dbfs is None:
+            return replace(reading, windows=windows)
+        if previous is not None:
+            moved_db = reading.rms_dbfs - previous
+            if abs(moved_db) <= float(agree_db):
+                return replace(reading, windows=windows)
+            if clock() - started >= float(timeout_s):
+                was = sensitivity.db_spl_from_dbfs(previous)
+                now = sensitivity.db_spl_from_dbfs(reading.rms_dbfs)
+                return replace(
+                    reading,
+                    rms_dbfs=None,
+                    windows=windows,
+                    refusal=REFUSE_LEVEL_UNSETTLED,
+                    detail=(
+                        f"the level was still moving after {windows} windows of "
+                        f"{MIC_WINDOW_S:g} s: the last two read "
+                        f"{was:.1f} then {now:.1f} dB SPL ({moved_db:+.2f} dB "
+                        f"apart, against a {float(agree_db):.1f} dB agreement "
+                        f"bar), and the {float(timeout_s):.0f} s settle timeout "
+                        "ran out; a level that has not settled is not banked"
+                    ),
+                )
+        previous = reading.rms_dbfs
 
 
 def bite_db(*, start_db: float, ceiling_db: float) -> float:
@@ -626,41 +952,82 @@ def mic_is_not_observing(
     exact failure mode this predicate is about.
 
     Model-derived cost of the wait (synthetic mic, jts3 rig): the walk tops out
-    AT the ceiling and never above it, 8.86 audible seconds of which 1.0 s sits
-    at the ceiling, refusal ``mic_not_observing``, household volume restored —
-    23.2 dB louder than the retired 20 dB span reached before refusing. An
-    on-metal dead-mic run is on the bench checklist; these numbers are a model.
+    AT the ceiling and never above it, 9.16 audible seconds of which one
+    reading sits at the ceiling, refusal ``mic_not_observing``, household volume
+    restored — 23.2 dB louder than the retired 20 dB span reached before
+    refusing. An on-metal dead-mic run is on the bench checklist; these numbers
+    are a model.
+
+    Re-derived on the same model under #2919's stability wait: eight readings,
+    every one settling in the minimum two windows, because a mic pinned at a
+    constant is the most settled thing there is. The 0.30 s against the 8.86 s
+    this said before is the fake clock's polling granularity landing differently
+    across two ``MIC_WINDOW_S`` deadlines than across one of twice the length;
+    the real per-reading cost of a still level — one second — did not move.
     """
     return max_rise_db < min_rise_db and at_ceiling
 
 
-def _watchdog_seconds(*, start_db: float, ceiling_db: float) -> float:
-    """This pass's own worst case, priced as the readings it actually takes.
+def walk_reading_budget(*, start_db: float, ceiling_db: float) -> int:
+    """How many settled readings one climb may spend, at most.
 
-    One ambient reading, one reading per bite from the start to the ceiling, one
-    per allowed miss, and the ONE silent re-measure a contradicted floor can cost
-    (:func:`_remeasure_silence`) — each a settle drain plus a median window —
-    plus :data:`WATCHDOG_SLACK_S`.
+    One at the start volume, one per bite from there to the ceiling, the misses
+    the chain is allowed (:data:`MAX_MISSED_FULL_STEPS`), and the bank confirm
+    (:data:`BANK_CONFIRM_READINGS`). Because the bite is a fixed fraction of the
+    span, the bite count is ``ceil(1 / BITE_FRACTION)`` for every chain, so this
+    number is the same whatever the hardware.
 
-    Scope, because the budget is wider than the thing it guards: the ambient read
-    happens BEFORE the timeout scope opens (its result is what the pass logs and
-    what the guards read), so this budget covers the tone-playing walk only. The
-    ambient window is priced in anyway, which makes the budget generous by one
-    reading rather than tight by one — the safe direction for a backstop. A feed
-    that never returns during the ambient read is not bounded here — nothing has
-    been mutated at that point (no tone, no latch, fader unmoved) and the
-    operator's interrupt is the stop. Priced against the ACTUAL start and the
-    ACTUAL bite, so it cannot repeat the retired kernel's mistake of budgeting a
-    continuous climb for a walk that does not climb continuously. Because the
-    bite is a fixed fraction of the span, the bite count is the same
-    ``ceil(1 / BITE_FRACTION)`` for every chain.
+    **The single owner of that count.** :func:`_walk_to_the_band` spends it and
+    :func:`_watchdog_seconds` prices it, and two writers of one number is
+    exactly how a backstop starts firing before the honest refusal does — the
+    failure the whole watchdog derivation exists to avoid. Adding a reading to
+    the walk therefore changes the budget here, once, and the price follows.
     """
     bite = bite_db(start_db=start_db, ceiling_db=ceiling_db)
     span_db = max(0.0, float(ceiling_db) - float(start_db))
     bites = math.ceil(span_db / bite) if bite > 0.0 else 0
-    readings = 1 + bites + MAX_MISSED_FULL_STEPS + REMEASURE_WINDOWS
-    per_reading = MIC_SETTLE_S + MIC_SETTLE_S
-    return MIC_SETTLE_S + readings * per_reading + WATCHDOG_SLACK_S
+    return 1 + bites + MAX_MISSED_FULL_STEPS + BANK_CONFIRM_READINGS
+
+
+def _watchdog_seconds(
+    *, start_db: float, ceiling_db: float, settle_timeout_s: float = SETTLE_TIMEOUT_S
+) -> float:
+    """This pass's own worst case, priced as the readings it actually takes.
+
+    :func:`walk_reading_budget` — every reading the climb may spend — plus the
+    ONE silent re-measure a contradicted floor can cost
+    (:func:`_remeasure_silence`), each priced at ``settle_timeout_s``, the most
+    one reading can spend, plus :data:`WATCHDOG_SLACK_S`.
+
+    **The budget is substantially reachable, and that is why it is priced this
+    way.** A settled reading normally costs two windows, about a second — but
+    agreement is tested BEFORE the timeout, so a window landing at the bound
+    settles rather than refusing, and a chain that keeps disagreeing until just
+    under the bar spends the whole timeout on a reading that CONVERGES, and a
+    synthetic chain doing exactly that is pinned in
+    ``tests/test_active_speaker_seat_level.py``. A budget priced at "a second a
+    reading" would have fired the backstop on that healthy pass and reported
+    ``seat_level_watchdog_expired`` — a slug that names nothing — instead of
+    letting it finish. Pricing the ceiling is what keeps this a backstop against
+    a wedged awaitable rather than a governor on the walk's shape.
+
+    Scope, because the budget is wider than the thing it guards: the ambient read
+    happens BEFORE the timeout scope opens (its result is what the pass logs and
+    what the guards read), so this budget covers the tone-playing walk only. The
+    reading count here is exactly what the walk can spend inside that scope —
+    :func:`walk_reading_budget`, the one owner of that number, plus the one
+    silent re-measure — so the margin is :data:`WATCHDOG_SLACK_S` and nothing
+    else. A feed that never returns during the ambient read is not bounded here
+    — nothing has been mutated at that point (no tone, no latch, fader unmoved)
+    and the operator's interrupt is the stop. Priced against the ACTUAL start
+    and the ACTUAL bite, so it cannot repeat the retired kernel's mistake of
+    budgeting a continuous climb for a walk that does not climb continuously.
+    """
+    readings = (
+        walk_reading_budget(start_db=start_db, ceiling_db=ceiling_db)
+        + REMEASURE_READINGS
+    )
+    return readings * float(settle_timeout_s) + WATCHDOG_SLACK_S
 
 
 def seat_level_ceiling_db(max_main_volume_db: float) -> float:
@@ -813,6 +1180,16 @@ async def run_seat_level_ramp(
     min_rise_db = bounded_env_float(
         "JASPER_SEAT_LEVEL_MIN_RISE_DB", MIC_RESPONSE_MIN_RISE_DB, lo=1.0, hi=20.0
     )
+    # The two halves of "settled", read once here so one pass has one answer:
+    # how close two consecutive windows must be, and how long a reading may
+    # spend proving it. Bounded, and disclosed on the receipt and the start
+    # event, because widening the first one lowers the bar for banking.
+    agree_db = bounded_env_float(
+        "JASPER_SEAT_LEVEL_SETTLED_AGREE_DB", SETTLED_AGREE_DB, lo=0.1, hi=3.0
+    )
+    settle_timeout_s = bounded_env_float(
+        "JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S", SETTLE_TIMEOUT_S, lo=2.0, hi=30.0
+    )
     busy = live_measurement_session(
         state_path=None if volume_state_path is None else Path(volume_state_path),
         action="leveling the seat SPL",
@@ -847,6 +1224,8 @@ async def run_seat_level_ramp(
             sleep=sleep,
             session_id=session_id,
             window="ambient",
+            agree_db=agree_db,
+            timeout_s=settle_timeout_s,
         )
         if ambient.rms_dbfs is None:
             reason = ambient.refusal or REFUSE_MIC_FEED_LOST
@@ -880,7 +1259,11 @@ async def run_seat_level_ramp(
                 f"{ceiling_db:.1f} dB is at or below the {start_db:g} dB "
                 "start; there is no room to climb"
             )
-        watchdog_s = _watchdog_seconds(start_db=start_db, ceiling_db=ceiling_db)
+        watchdog_s = _watchdog_seconds(
+            start_db=start_db,
+            ceiling_db=ceiling_db,
+            settle_timeout_s=settle_timeout_s,
+        )
 
         plan = SessionVolumePlan(
             state_path=(
@@ -936,6 +1319,9 @@ async def run_seat_level_ramp(
             bite_db=f"{bite_db(start_db=start_db, ceiling_db=ceiling_db):.2f}",
             bite_fraction=f"{BITE_FRACTION:g}",
             required_rise_db=f"{min_rise_db:.1f}",
+            settle_window_s=f"{MIC_WINDOW_S:g}",
+            settle_agree_db=f"{agree_db:.2f}",
+            settle_timeout_s=f"{settle_timeout_s:.0f}",
             watchdog_s=f"{watchdog_s:.0f}",
             # The absolute SPL is only as true as the capture gain the vendor's
             # sens factor assumes. An operator reads journal lines, not docstrings.
@@ -953,6 +1339,8 @@ async def run_seat_level_ramp(
                     start_db=start_db,
                     ceiling_db=ceiling_db,
                     min_rise_db=min_rise_db,
+                    agree_db=agree_db,
+                    settle_timeout_s=settle_timeout_s,
                     watchdog_s=watchdog_s,
                     set_main_volume_db=set_main_volume_db,
                     play_continuous_tone=play_continuous_tone,
@@ -1095,6 +1483,8 @@ async def _remeasure_silence(
     clock: Callable[[], float],
     sleep: Callable[[float], Awaitable[None]],
     session_id: str,
+    agree_db: float,
+    settle_timeout_s: float,
 ) -> tuple[_Reading, "asyncio.Future[Any]"]:
     """Stop the tone, measure the room again, start the tone again.
 
@@ -1139,16 +1529,24 @@ async def _remeasure_silence(
     ``remeasured_delta_db`` are the operator's tell instead.
 
     Bounded and unconditional-once: exactly one extra
-    :func:`_settle_reading` (``MIC_SETTLE_S`` of drain plus ``MIC_SETTLE_S`` of
-    median, about a second), priced into :func:`_watchdog_seconds`, with no
-    retry and no threshold to tune. The drain is what absorbs the stimulus's own
-    decay tail after ``cancel_tone`` — the same drain that absorbs the transport
-    delay after a volume step — so the median window sees the room and not the
-    speaker running down.
+    :func:`_settle_reading` — normally two windows, about a second — priced into
+    :func:`_watchdog_seconds`, with no retry and no lag to tune. The stimulus's
+    own decay tail after ``cancel_tone`` needs no drained delay to absorb it:
+    the tail IS a moving level, so the window that catches it disagrees with the
+    one after it and the reading simply keeps going until the room is still. A
+    room that never goes still refuses (:data:`REFUSE_LEVEL_UNSETTLED`) rather
+    than handing the guards a floor measured off a decaying speaker.
 
     The fader is left exactly where the climb had it: the tone is off, so the
     speaker is silent whatever the volume says, and moving it would mean two
-    more writes to reconcile on a path whose whole job is to observe.
+    more writes to reconcile on a path whose whole job is to observe. The cost
+    of that choice is that both edges here are ABRUPT — the stimulus stops and
+    restarts at a measurement level with no fade, unlike the pass's own
+    end-of-run :func:`_fade_and_stop` — and #2919's settle lengthens the silence
+    they bracket from a fixed second to as much as ``settle_timeout_s``. That is
+    pre-existing behaviour and not a hearing-safety question (every sample is
+    still under the commissioning stop), but it is a real one:
+    https://github.com/jaspercurry/JTS/issues/2929.
 
     Returns the reading and the tone future the caller must now hold, because the
     old one is finished once its player has been cancelled and the caller's own
@@ -1167,6 +1565,8 @@ async def _remeasure_silence(
         sleep=sleep,
         session_id=session_id,
         window="silence",
+        agree_db=agree_db,
+        timeout_s=settle_timeout_s,
     )
     if reading.rms_dbfs is None:
         return reading, tone
@@ -1183,6 +1583,8 @@ async def _walk_to_the_band(
     start_db: float,
     ceiling_db: float,
     min_rise_db: float,
+    agree_db: float,
+    settle_timeout_s: float,
     watchdog_s: float,
     set_main_volume_db: SetMainVolumeDb,
     play_continuous_tone: Callable[[], Awaitable[Any]],
@@ -1201,6 +1603,16 @@ async def _walk_to_the_band(
     last_step_was_full = False
     previous: tuple[float, float] | None = None
     slope_db_per_db: float | None = None
+    # The BANK CONFIRM: the level of the previous reading that qualified to
+    # bank, held so the next one can be checked against it. `None` whenever the
+    # last reading did not qualify, so "consecutive" means what it says.
+    candidate_dbfs: float | None = None
+    # The most recent pair of qualifying readings that DISAGREED, for the
+    # refusal that reports a level which reached the band and would not hold
+    # still there. Distinct from the tail's ordinary never-arrived refusal, and
+    # carried with its own volume and ordinals so the sentence that quotes it
+    # cannot attribute it to wherever the walk ended up instead.
+    disagreed: _Unconfirmed | None = None
     # The floor every rise is measured against. ALWAYS a window measured with
     # the speaker silent: the pre-tone ambient, or -- once, when a reading
     # contradicts it -- a second silent window measured mid-climb. Never a
@@ -1211,9 +1623,7 @@ async def _walk_to_the_band(
     # ceiling at or below the start, which REFUSE_VOLUME_CEILING_TOO_LOW already
     # refused before the tone started.
     bite = bite_db(start_db=start_db, ceiling_db=ceiling_db)
-    max_readings = 1 + math.ceil(
-        max(0.0, ceiling_db - start_db) / bite
-    ) + MAX_MISSED_FULL_STEPS
+    max_readings = walk_reading_budget(start_db=start_db, ceiling_db=ceiling_db)
 
     def telemetry(
         final_volume_db: float, *, window: dict[str, Any] | None = None
@@ -1235,6 +1645,11 @@ async def _walk_to_the_band(
                 else round(sensitivity.db_spl_from_dbfs(remeasured_dbfs), 2)
             ),
             "required_rise_db": round(min_rise_db, 2),
+            # What "settled" meant for THIS run. `steps[].windows` cannot be
+            # read without them, and two of the three are operator-overridable.
+            "settle_window_s": MIC_WINDOW_S,
+            "settle_agree_db": round(agree_db, 2),
+            "settle_timeout_s": round(settle_timeout_s, 1),
             "watchdog_s": round(watchdog_s, 1),
             "final_volume_db": round(final_volume_db, 2),
             "slope_db_per_db": (
@@ -1320,6 +1735,8 @@ async def _walk_to_the_band(
                 sleep=sleep,
                 session_id=session_id,
                 window=f"{volume_db:.2f}",
+                agree_db=agree_db,
+                timeout_s=settle_timeout_s,
             )
             if reading.rms_dbfs is None:
                 return refuse(
@@ -1345,6 +1762,8 @@ async def _walk_to_the_band(
                     clock=clock,
                     sleep=sleep,
                     session_id=session_id,
+                    agree_db=agree_db,
+                    settle_timeout_s=settle_timeout_s,
                 )
                 if silent.rms_dbfs is None:
                     return refuse(
@@ -1402,6 +1821,15 @@ async def _walk_to_the_band(
                 "rise_db": round(rise_db, 2),
                 "gap_db": round(gap_db, 2),
                 "samples": reading.samples,
+                # How many windows this reading needed before two of them
+                # agreed — this chain's own answer time, measured every run
+                # instead of guessed once (#2919). NOT a confidence score:
+                # `windows == 2` means EITHER the level was already still OR it
+                # was moving too slowly to be caught at the agreement bar, and
+                # the second case is where the banked level is furthest out
+                # (see `_settle_reading` on the residual). Read it against its
+                # neighbours, not on its own.
+                "windows": reading.windows,
             })
             log_event(
                 logger,
@@ -1412,6 +1840,7 @@ async def _walk_to_the_band(
                 rise_db=f"{rise_db:.1f}",
                 gap_db=f"{gap_db:.1f}",
                 samples=str(reading.samples),
+                windows=str(reading.windows),
             )
 
             # Convergence needs BOTH: inside the band, and clear of the room --
@@ -1425,16 +1854,78 @@ async def _walk_to_the_band(
             # own quietest wander becomes the bar its loudest wander clears.
             in_band = target.low_db_spl <= observed_db_spl <= target.high_db_spl
             if in_band and rise_db >= min_rise_db:
-                return _bank(
-                    reference_volume_db=volume_db,
-                    measured_db_spl=observed_db_spl,
-                    target=target,
-                    sensitivity=sensitivity,
-                    ceiling_db=ceiling_db,
-                    session_id=session_id,
-                    reference_state_path=reference_state_path,
-                    telemetry=telemetry(volume_db),
-                )
+                # THE BANK CONFIRM: a reference is banked only when two
+                # consecutive READINGS agree, which is the same rule a reading
+                # itself is settled by, applied one level up.
+                #
+                # Why it has to exist at this level too: a reading settles when
+                # two windows agree, which bounds the RATE, not the distance —
+                # so a slowly-creeping chain settles honestly and still banks a
+                # level it is going to leave behind (`_settle_reading` states
+                # the residual and its measurements). The per-sample
+                # commissioning stop cannot catch that: it guards the pass,
+                # while the number outlives it, and every later session consumes
+                # the banked volume with no equivalent stop. Two readings are
+                # separated by at least two windows, so the same bar over that
+                # longer baseline is a strictly stricter test of creep — which
+                # is exactly the failure it is here for.
+                #
+                # Nothing speculative is refused. A confirm that agrees banks
+                # immediately; only a MEASURED disagreement costs anything, and
+                # what it costs is another reading inside the same budget.
+                if (
+                    candidate_dbfs is not None
+                    and abs(reading.rms_dbfs - candidate_dbfs) <= agree_db
+                ):
+                    return _bank(
+                        reference_volume_db=volume_db,
+                        measured_db_spl=observed_db_spl,
+                        target=target,
+                        sensitivity=sensitivity,
+                        ceiling_db=ceiling_db,
+                        session_id=session_id,
+                        reference_state_path=reference_state_path,
+                        telemetry=telemetry(volume_db),
+                    )
+                if candidate_dbfs is not None:
+                    # Both readings were taken HERE -- the candidate path
+                    # continues without stepping -- so this volume, and these
+                    # two ordinals in `steps`, are the pair's own identity.
+                    disagreed = _Unconfirmed(
+                        volume_db=volume_db,
+                        earlier_db_spl=sensitivity.db_spl_from_dbfs(candidate_dbfs),
+                        later_db_spl=observed_db_spl,
+                        earlier_reading=len(steps) - 1,
+                        later_reading=len(steps),
+                    )
+                    log_event(
+                        logger,
+                        "active_speaker.seat_level_bank_unconfirmed",
+                        level=logging.WARNING,
+                        session=session_id,
+                        at_db=f"{disagreed.volume_db:.2f}",
+                        readings=(
+                            f"{disagreed.earlier_reading}-"
+                            f"{disagreed.later_reading}"
+                        ),
+                        was_db_spl=f"{disagreed.earlier_db_spl:.2f}",
+                        now_db_spl=f"{disagreed.later_db_spl:.2f}",
+                        moved_db=f"{disagreed.moved_db:+.2f}",
+                        agree_db=f"{agree_db:.2f}",
+                    )
+                candidate_dbfs = reading.rms_dbfs
+                # The step that landed here made its prediction and was right —
+                # it reached the band — so it must not also be charged a miss on
+                # the way back round when the confirm disagrees. Before the
+                # confirm this branch always returned, so the flag was never
+                # read again; now it is, and a step that hit the band would
+                # otherwise spend the budget meant for steps that MISSED it.
+                last_step_was_full = False
+                # Re-read at the SAME commanded volume: no step, which is what
+                # makes the next reading a confirm of this one rather than a
+                # measurement of somewhere else.
+                continue
+            candidate_dbfs = None
 
             if last_step_was_full:
                 missed_full_steps += 1
@@ -1517,15 +2008,51 @@ async def _walk_to_the_band(
             volume_db = next_db
             await set_main_volume_db(volume_db)
 
+        if disagreed is not None:
+            # It DID reach the band -- repeatedly -- and would not hold still
+            # there, which is a different sentence from "never arrived" and
+            # sends the operator somewhere else entirely.
+            # Named by their own volume and ordinals, NOT as "the last two" at
+            # wherever the walk stopped: this pair may be several readings back,
+            # and a refusal that misattributes its own evidence is the same
+            # defect class as banking a number it cannot stand behind.
+            return refuse(
+                REFUSE_LEVEL_UNSETTLED,
+                f"the level reached the band and would not hold still in it: "
+                f"readings {disagreed.earlier_reading} and "
+                f"{disagreed.later_reading} at {disagreed.volume_db:.2f} dB "
+                f"read {disagreed.earlier_db_spl:.1f} then "
+                f"{disagreed.later_db_spl:.1f} dB SPL "
+                f"({disagreed.moved_db:+.2f} dB apart, against a "
+                f"{agree_db:.1f} dB agreement bar) and the "
+                f"{max_readings}-reading budget ran out; a reference is banked "
+                "only from two readings that agree",
+                pair_at_db=f"{disagreed.volume_db:.2f}",
+                pair_readings=(
+                    f"{disagreed.earlier_reading}-{disagreed.later_reading}"
+                ),
+                was_db_spl=f"{disagreed.earlier_db_spl:.1f}",
+                now_db_spl=f"{disagreed.later_db_spl:.1f}",
+                agree_db=f"{agree_db:.2f}",
+            )
         slope = (
             "unmeasured" if slope_db_per_db is None
             else f"{slope_db_per_db:.2f} dB per commanded dB"
         )
         return refuse(
             REFUSE_LEVEL_UNCONVERGED,
-            f"the ramp took its whole {max_readings}-reading budget without "
-            f"landing in the band; the chain measured {slope} across the last "
-            "two readings",
+            (
+                # It DID land, on the very last reading it had, and a bank needs
+                # one more to confirm with. Saying "without landing in the band"
+                # there would send the operator after a level that was reached.
+                f"the ramp reached the band on the last of its "
+                f"{max_readings} readings, with none left to confirm it; a "
+                "reference is banked only from two readings that agree"
+                if candidate_dbfs is not None
+                else f"the ramp took its whole {max_readings}-reading budget "
+                f"without landing in the band; the chain measured {slope} "
+                "across the last two readings"
+            ),
             slope_db_per_db=(
                 "" if slope_db_per_db is None else f"{slope_db_per_db:.3f}"
             ),

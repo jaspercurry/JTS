@@ -2842,13 +2842,13 @@ jasper-seat-level --stimulus-wav /var/lib/jasper/.../check.wav --mic-serial 810-
 jasper-seat-level --stimulus-wav check.wav --calibration-file umik2.txt \
     --target-db-spl 72 --tolerance-db 2 --json
 
-# instrumented: every settle window's per-sample dB SPL series, one DEBUG line
-# per window, for when a stop needs explaining rather than just reporting
+# instrumented: every window's per-sample dB SPL series, one DEBUG line per
+# window, for when a stop needs explaining rather than just reporting
 jasper-seat-level --stimulus-wav check.wav --mic-serial 810-8494 --verbose
 ```
 
 **It owns its climb and reuses everything else.** The pass runs its own
-settle-per-bite loop — a quiet start, one median reading per bite, the gap
+settle-per-bite loop — a quiet start, one settled reading per bite, the gap
 arithmetic below, a clip abort, a feed-liveness abort, a whole-operation
 watchdog, and a fade before the tone is killed. It shares ONE thing with
 [`jasper.audio_measurement.ramp`](../jasper/audio_measurement/ramp.py)'s
@@ -2925,6 +2925,88 @@ active driver. Which bound was used is in the journal —
 render was not possible at all. Read those before concluding a speaker's graph is
 simply tight.
 
+**A reading is settled when the instrument says so, not when a timer says so.**
+Each reading takes half-second windows and keeps taking them until two
+consecutive medians agree within `JASPER_SEAT_LEVEL_SETTLED_AGREE_DB` (0.5 dB by
+default); the later of the two agreeing windows is the reading. There is no
+drained transport delay and no lag model — a window taken while the level is
+still moving simply disagrees with the one after it. A level that never agrees
+inside `JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S` (8 s) refuses `spl_level_unsettled`
+rather than banking the last number seen, and a window with no finite sample in
+it is `mic_feed_lost` after ONE window, so a dead feed never waits that out.
+What this replaced was a fixed half-second drain plus a half-second median,
+which banked whatever the level happened to be at the one-second mark: on jts3
+(2026-08-24) the level was still climbing +6.03 dB WITHIN that window at the top
+step, so the pass banked a frame about 5 dB under the level that arrived
+(−12.50 dB commanded, ≈79–80 dB SPL at the seat — issue #2919; the mechanism was
+never named, and settling on stability means none has to be). Every extra window
+is more samples run past the commissioning stop, never fewer. The receipt
+publishes `ramp.settle_window_s` / `settle_agree_db` / `settle_timeout_s` and a
+per-step `windows` count — which is also the pass's own measurement of how long
+this chain takes to answer a step.
+
+**What it costs, honestly, because "unchanged" is only true for a STILL chain.**
+A chain that answers a step at once still pays two windows a reading, so the
+jts3 climb is about 8 audible seconds — seven volumes plus the bank confirm
+below. A room that will not hold still buys windows: on the same rig, ±2 dB of
+wander more than doubles that, converged and unrefused. And a CONVERGING reading
+may spend the whole timeout, because agreement is tested before the bound, so a
+window landing on it settles rather than refusing. What bounds it is structural,
+not the wander: `walk_reading_budget` is
+`1 + ceil(1 / BITE_FRACTION) + MAX_MISSED_FULL_STEPS + BANK_CONFIRM_READINGS`
+= 11 readings whatever the span, so audible time is at most about
+**11 × `settle_timeout_s`** — roughly 88 s shipped, 330 s at the knob's maximum.
+Those relations are pinned by tests rather than quoted as stopwatch readings,
+because the seconds move whenever the reading count or the window length does —
+they already moved once when the bank confirm added a reading.
+
+That is DURATION, not level: during the pass every sample is checked against
+`max_commissioning_level_db_spl`. **The banked artifact is a separate question**,
+and the next paragraph is about how it is answered.
+
+**What agreement does not buy — the residual, stated because it is not small.**
+What is bounded is a RATE, never the remaining distance: banking happens once
+consecutive medians move less than the bar per window, and what the level has
+LEFT to travel then is that rate times the chain's own time constant, so
+`residual ≈ (agree_db / MIC_WINDOW_S) × τ` — about **1 dB per second of τ** at
+the shipped values, and **unbounded in τ**. Measured on ONE READING on the
+synthetic first-order rig: a τ = 0.81 s chain reads 0.28 dB under the level it
+is heading for, τ = 3 s reads 2.11 under, τ = 5 s reads 4.16 under. τ = 3 s is
+inside the range the shipped timeout says it covers, so that is an operating
+region, and its 2.11 dB is the size and direction of the very defect #2919
+closes. Those are per-reading figures — what the pass *banks* is bounded
+separately by the confirm below, and none of them is a banked error. The fix is still large and still real
+— the jts3 chain arrives in about 0.9 s, the fast end of that table, against the
+~5 dB the fixed settle banked — but a low `windows` count is **not** evidence of
+stillness: `windows == 2` means either the level was already still OR it was
+moving too slowly to be caught at the bar, and the second reads most reassuring
+where the error is largest (a τ = 30 s approach settles in two windows banking
+19.5 dB low). Read `windows` as this chain's answer time and against its
+neighbours, never as a confidence score. Raising the timeout does not help
+either: for one reading it converts an honest `spl_level_unsettled` refusal into
+a silent under-read at that same residual (a τ = 10 s reading refuses at the
+shipped 8 s and, at 12 s or more, settles and banks 8.66 dB low).
+
+**So the reference is banked only when two consecutive READINGS agree** — the
+same rule a reading itself is settled by, applied one level up. It exists
+because the residual above is not only a label error: the banked volume outlives
+the pass, `write_seat_level_reference` validates the volume range and nothing
+about where the chain ends up, and every later session consumes that number with
+**no equivalent per-sample stop**. Before the confirm, a chain with headroom
+above the band converged and banked references whose levels ARRIVE at 82.2 dB
+SPL (τ = 5 s), 85.2 (τ = 8), 89.0 (τ = 12) and 95.6 (τ = 20) — the last three at
+or above the 85 dB SPL commissioning stop the pass exists to respect. Two
+readings sit at least a whole reading apart, so the same agreement bar over that
+longer baseline catches creep the window test structurally cannot: every one of
+those cases now refuses, and the chains that still bank bank *closer* (τ = 0.81 s
+improves from 0.41 to 0.12 dB, τ = 3 s from 2.62 to 0.96), because the confirming
+reading is taken later and therefore nearer the level the chain is heading for.
+The cost on a still chain is one extra reading, about a second, ADDED to the
+walk's budget rather than taken out of the miss allowance. When readings never
+agree the pass refuses `spl_level_unsettled` with a detail that says it *reached
+the band and would not hold still in it* — a different diagnosis from never
+arriving, and one that sends the operator to the chain rather than the amplifier.
+
 **The room is measured before the tone, and two rules read it.** That ambient
 number is the runaway guard's "did anything actually rise" and convergence's
 "did the reading rise at all". (It was three: the kernel's trust threshold was
@@ -2933,9 +3015,9 @@ deletion that stopped the climb starving in a loud room.) Measuring rise against
 ambient rather than against the first reading is what stops a speaker quieter
 than the room from being falsely aborted while it climbs through the floor.
 
-**One window normally, two when the first is contradicted** — the re-measure
-below. And the rules read whichever window was measured last in silence, never a
-level captured while the tone played.
+**One silent reading normally, two when the first is contradicted** — the
+re-measure below. And the rules read whichever reading was measured last in
+silence, never a level captured while the tone played.
 
 **What "not listening" actually looks like, since the easy version is wrong.** A
 mic pinned at one constant — a dead feed, a muted OS input — reads the same in
@@ -2948,8 +3030,8 @@ same room rather than against its own quietest moment — which holds except in
 the lull case the re-measure paragraph documents.
 
 **A contradicted floor is re-measured in silence, once, and disclosed.** The
-ambient window is one median of one half-second, so a transient inside it would
-otherwise be "the room" for the whole run: on jts3 (2026-08-23) a pass measured
+ambient reading is a median of half-second windows, so a transient spanning them
+would otherwise be "the room" for the whole run: on jts3 (2026-08-23) a pass measured
 57.18 dB SPL of ambient while its own −50.00 dB reading was 50.21 and the
 previous pass's was 50.59, and it published three NEGATIVE rises — tone readings
 quieter than the room they were taken in — which put its first four readings
@@ -2957,8 +3039,11 @@ below `required_rise_db` on a baseline nothing measured. The tone is *playing*,
 so a climb reading is the room plus the speaker and cannot be quieter than the
 room: a reading below the floor proves one of the two windows wrong. The pass
 then **stops the tone, measures the room again in silence, and starts the tone
-again** — one extra ~1 s window, priced into the watchdog, at most once per pass,
-with no threshold to tune and no retry. The receipt publishes both windows
+again** — one extra settled reading (normally two windows, about a second),
+priced into the watchdog, at most once per pass, with no threshold to tune and
+no retry. The stimulus's own decay tail needs no drained delay to absorb it: the
+tail is a moving level, so the window that catches it disagrees with the next
+one and the reading keeps going until the room is still. The receipt publishes both windows
 (`ramp.ambient_db_spl` and `ramp.ambient_remeasured_db_spl`, with
 `ramp.ambient_remeasured` saying whether the second one exists; the floor used is
 the second when it does, else the first), the journal carries
@@ -3029,17 +3114,22 @@ refusal restores the household volume and banks nothing.
 | `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window it stopped in is published beside it (below) |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
+| `spl_level_unsettled` | the level never stopped moving, at either of two scales — consecutive WINDOWS disagreeing until `JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S` ran out (one reading that could not be believed at all), or consecutive READINGS disagreeing until the walk's budget ran out (a level that reached the band and crept out from under it). One slug because it is one question; the detail says which scale and quotes the two figures that disagreed. Distinct from the row above, which is the ramp failing to REACH the band at all — that one is about where the level is, this one about whether it is holding still |
 | `seat_level_watchdog_expired` | the whole-operation watchdog fired — something the pass awaited never returned |
 | `seat_level_interrupted` | the operator stopped the pass (SIGINT); the stimulus was cut and the household volume restored |
 | `mic_feed_lost` / `mic_clipping` | no finite sample in a reading window, and a clipped capture |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 
-**A sample-domain stop publishes the window it abandoned.** The two stops that
+**A refusal publishes the window it stopped in.** The two stops that
 run on every sample — `spl_ceiling_exceeded` and `mic_clipping` — end a window
 part-way through, so there is no settled median for the volume they stopped at.
 The refusal carries that window instead, on the receipt as `ramp.stopped_window` and in
 the same sentence the CLI prints: how many samples it saw, their min/median/max
-dB SPL, and the sample that tripped with its offset from the volume step. Read
+dB SPL, and the sample that tripped with its offset from the volume step.
+`spl_level_unsettled` publishes one too, and it is a different shape: its window
+ran to its own deadline rather than being abandoned, so `trip_db_spl` /
+`trip_offset_s` are null and the median is the whole content — read it against
+the two medians the refusal's own detail quotes. Read
 the median against the max. A median far below the max is ONE excursion on top
 of a settled level; a median at the max is a level that rose and stayed — and
 before 2026-08-23 nothing this verb emitted could tell those apart, which is
@@ -3054,12 +3144,13 @@ Read the journal, not the code, to find out what happened:
 
 | `event=active_speaker.seat_level_…` | says |
 |---|---|
-| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the bite (and its fraction), and the amixer precondition |
-| `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, and the sample count |
-| `_converged` | the banked volume, the measured dB SPL, and how many readings it took |
-| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, when a sample-domain stop abandoned a window, that window's `stopped_window_*` facts and the `prior_*` settled reading they must be read against |
+| `_start` | band, converted dBFS window, sens factor, AGain, both ceilings, the measured ambient, the start, the bite (and its fraction), the settle contract (`settle_window_s` / `settle_agree_db` / `settle_timeout_s`), and the amixer precondition |
+| `_reading` | one per bite: the commanded volume, the measured dB SPL, the rise over the room, the remaining gap, the sample count, and `windows` — how many windows the reading needed before two of them agreed (2 is a level that was already still; more is this chain's settling time, measured every run) |
+| `_bank_unconfirmed` | WARNING: a reading qualified to bank and the one after it disagreed, so nothing was written — the two levels, how far apart, and the bar they missed. One line per disagreement, so a chain that is creeping under the band leaves a trail rather than one terminal refusal |
+| `_converged` | the banked volume, the measured dB SPL, and how many readings it took (including the confirm) |
+| `_refused` | the refusal slug, the volume it stopped at, the ceiling, and the readings taken — plus, whenever the refusal got as far as a window (a sample-domain stop's abandoned one, or `spl_level_unsettled`'s completed-but-disagreeing one), that window's `stopped_window_*` facts and the `prior_*` settled reading they must be read against |
 | `_ambient_remeasured` | a climb reading landed below the ambient window, so the tone was stopped and the room measured again in silence: both figures, the reading that contradicted, the volume it happened at, `remeasured_delta_db` (how far the second window moved — a large NEGATIVE value is the lull-matched residual above), and `rise_after_remeasure_db` (the triggering reading's rise against the new floor; negative when the floor went UP) |
-| `_window_samples` | DEBUG only, behind `--verbose`: ONE line per settle window (`window=ambient` or the commanded volume) carrying every sample as `offset:dB SPL`. This is how a rising edge is reconstructed — the per-sample record exists nowhere else |
+| `_window_samples` | DEBUG only, behind `--verbose`: ONE line per window, several per reading — `window=` names the reading (`ambient`, `silence`, or the commanded volume) and `attempt=` orders the windows inside it. Every sample rides as `offset:dB SPL`, offset from the moment the READING began, so a multi-window settle reads as one timeline rather than several restarting at zero. This is how a rising edge is reconstructed — the per-sample record exists nowhere else |
 | `_restore_failed` | the household volume did NOT come back; the speaker is parked at a measurement level |
 | `_teardown_abandoned` | a teardown step was given up on after `TEARDOWN_SHIELD_ATTEMPTS` cancellations — the stimulus was cut abruptly and the fader left where the ramp had it; the durable latch is still on disk for the volume-recovery screen to drain |
 
@@ -3084,8 +3175,8 @@ and the graph's limiters. The measured `max_commissioning_level_db_spl` stop is
 deliberately NOT on that list: a mic that is not observing reports a level that
 does not move with the volume, so its reading never approaches the stop — a −90
 dBFS feed reads about 16 dB SPL the whole way up. Model-derived cost of the wait
-on the jts3 rig: the walk tops out AT the ceiling and never above it, 8.86
-audible seconds of which 1.0 s is at the ceiling, refusal `mic_not_observing`,
+on the jts3 rig: the walk tops out AT the ceiling and never above it, 9.16
+audible seconds of which one reading is at the ceiling, refusal `mic_not_observing`,
 household volume restored — 23.2 dB louder than the retired span reached before
 refusing. An on-metal dead-mic run is on the bench checklist beside the real 75
 dB run.
