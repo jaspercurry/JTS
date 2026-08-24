@@ -111,8 +111,16 @@ HAND_WALKED = (TIER_FULL, TIER_EXPRESS)
 #: The bearings the target run is specified in — the whole point of the tier, so
 #: they are written down here ONCE as the acceptance criterion and everything
 #: else in this file derives from the product code.
+#:
+#: These are the SEQUENCE of stops in walk order, not the SET of angles served —
+#: an angle can appear twice because two adjacent stops share a pose. Stage 2
+#: opens on two of them since the 2026-08-24 geometry ruling: VERIFY's anchor at
+#: the mark, whose sweep the tracking verdict consumes, and then the first pose
+#: of ``CLOUD_VERIFY_POSE_PROMPTS``, whose sweep joins the post-apply GROUP. The
+#: microphone does not move between them, and ``jasper-arm-walk``'s
+#: ``--expect-angles`` compares SETS, so a repeat adds nothing to state there.
 STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
-STAGE2_ANGLES = (0, -7, 7, -22, 22)
+STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 
 
 def _stage1_of(shape):
@@ -166,17 +174,19 @@ def test_remote_is_a_fixed_shape_that_takes_fulls_stage_1():
     # Never LONGER than Full's — ``remote_cloud_verify_positions`` clamps to
     # Full's default, and a remote walk that asked for more than the tier it
     # borrows stage 1 from would be a shape nobody chose. Equal is the shipped
-    # state since 2026-08-18: Full's default came down to the floor, which is
-    # the same vertical-free prefix remote derives, so the two coincide until
-    # one of them moves again.
+    # state since 2026-08-18, and permanently so since the 2026-08-24 geometry
+    # ruling gave the post-apply group its own vertical-free pose table: there
+    # is no vertical row left for remote to stop before.
     assert remote.cloud_verify_positions <= full.cloud_verify_positions
     # A named shape, not a configurable range: a caller stating a different
-    # count is a bug, not a preference.
+    # count is a bug, not a preference. The count asked for here is deliberately
+    # NOT the tier's own — it has to disagree for the refusal to be under test.
+    other = flow.DEFAULT_CLOUD_VERIFY_POSITIONS + 1
     with pytest.raises(CrossoverV2FlowError, match="the remote tier is a fixed shape"):
-        resolve_plan_shape(TIER_REMOTE, cloud_verify_positions=6)
+        resolve_plan_shape(TIER_REMOTE, cloud_verify_positions=other)
     # …and express's identical refusal still names EXPRESS, not a shared word.
     with pytest.raises(CrossoverV2FlowError, match="the express tier is a fixed shape"):
-        resolve_plan_shape(TIER_EXPRESS, cloud_verify_positions=6)
+        resolve_plan_shape(TIER_EXPRESS, cloud_verify_positions=other)
 
 
 def test_an_unknown_tier_is_still_refused_and_remote_is_admitted():
@@ -191,16 +201,28 @@ def test_an_unknown_tier_is_still_refused_and_remote_is_admitted():
 
 
 def test_remotes_verify_walk_is_derived_as_fulls_minus_the_vertical():
-    """``remote_cloud_verify_positions`` is DERIVED off the prompt table: it is
-    the longest prefix with no vertical pose, so reordering that table moves the
-    number instead of stranding it."""
+    """``remote_cloud_verify_positions`` is DERIVED off the POST-APPLY pose
+    table: it is the longest prefix with no vertical pose, so editing that table
+    moves the number instead of stranding it.
+
+    RE-DERIVED 2026-08-24: the derivation used to run over
+    ``CLOUD_POSITION_PROMPTS``, the pre-apply table, because both groups walked
+    it. The geometry ruling gave the post-apply group its own table, which is
+    vertical-free BY CONSTRUCTION — so the subtraction is a no-op today and
+    remote's walk IS Full's. That is the property under test: the derivation
+    still reads the table the walk actually takes, so the day a vertical row is
+    added to it remote shortens rather than aiming a positioner at a pose it
+    cannot reach.
+    """
     positions = remote_cloud_verify_positions()
-    walked = flow.CLOUD_POSITION_PROMPTS[: positions - 1]
+    walked = flow.CLOUD_VERIFY_POSE_PROMPTS[: positions - 1]
     assert all(p.role != POSITION_ROLE_XOVR for p in walked)
-    # …and it stops exactly THERE — the very next prompt is the vertical one.
-    assert flow.CLOUD_POSITION_PROMPTS[positions - 1].role == POSITION_ROLE_XOVR
-    # The wide-offset guarantee still holds on the shortened walk (this is why
-    # the floor exists, and why the derivation refuses below it).
+    # Nothing is left over: there is no vertical row for the prefix to stop
+    # before, so remote walks the whole post-apply table.
+    assert walked == flow.CLOUD_VERIFY_POSE_PROMPTS
+    assert positions == flow.DEFAULT_CLOUD_VERIFY_POSITIONS
+    # The wide-offset guarantee still holds on the walk (this is why the floor
+    # exists, and why the derivation refuses below it).
     assert sum(1 for p in walked if p.wide) >= 2
     assert positions >= flow.MIN_CLOUD_VERIFY_POSITIONS
 
@@ -961,6 +983,43 @@ def test_a_hand_released_stage_2_states_its_SPOTS_as_bearings():
     )
 
 
+def test_the_post_apply_walk_serves_the_design_axis_as_a_prompted_pose():
+    """(T1-5) 0° is servable end to end, and the group gets a curve at it.
+
+    Before the 2026-08-24 geometry ruling the post-apply pose plan structurally
+    excluded the design axis: VERIFY's anchor stood at the mark, but its sweep
+    goes to the TRACKING verdict, so the group combined four off-axis curves and
+    banked no on-axis position record. The campaign paid for that by running an
+    extra minimal MEASURE round just to get one on-axis summed response of the
+    graph it had applied.
+
+    Three things have to hold together for "servable", and one alone is not
+    enough — the anchor already published a 0° target and it is not what was
+    missing:
+
+    * the SESSION issues a 0° prompt of its own — a ``cloud_verify`` entry, not
+      just the anchor;
+    * the GATE is given a target for it, so a driver waiting on
+      ``position_pending`` is released rather than left holding;
+    * the set of bearings this plan publishes CONTAINS 0, which is what
+      ``jasper-arm-walk --expect-angles`` compares against (it matches a set, so
+      the anchor's repeat neither helps nor hurts).
+    """
+    plan = _stage2(TIER_REMOTE)
+    prompted = [e for e in plan.entries if e.kind_label == "cloud_verify"]
+
+    on_axis = [e for e in prompted if int(e.screen[POSITION_DEG_KEY]) == 0]
+    assert len(on_axis) == 1, "the walk prompts the design axis exactly once"
+    assert "design axis (0°)" in on_axis[0].screen["title"]
+    assert on_axis[0].screen[POSITION_ROLE_KEY] == POSITION_ROLE_ONAX
+    # Every entry states a target, so nothing in this walk can strand the gate
+    # on a hold it has no bearing for (``POSITION_TARGET_MISSING_CODE``).
+    assert all(POSITION_DEG_KEY in e.screen for e in plan.entries)
+    assert {int(e.screen[POSITION_DEG_KEY]) for e in plan.entries} == {
+        0, 7, -7, 22, -22
+    }
+
+
 def test_a_hand_released_stage_2_anchor_reads_in_degrees_and_keeps_its_confirm():
     """The second unpinned read: stage 2's ANCHOR copy (#2879 gate S2).
 
@@ -1016,9 +1075,15 @@ _GOLDEN_REMOTE_PLAN_BYTES = {
         1322,
         "fc27865bbd695be7a4fe08611efe2c825f88820666c82fc59e1eb93176dd3b5e",
     ),
+    # RE-DERIVED 2026-08-24 — the geometry ruling's post-apply pose set. Stage 2
+    # gained one prompted entry (the design axis, now a member of the walk
+    # rather than only the anchor in front of it), so its bytes moved and
+    # stage 1's did not: 1797 B → 2103 B. The UNCHANGED stage-1 digest is the
+    # load-bearing half — the ruling reached the post-apply walk and nothing
+    # else.
     "stage2-remote": (
-        1797,
-        "b2a38c46887329266142d66a18622ad581efe0edf5922e7ec04e6ba7bdccdfdc",
+        2103,
+        "0205565e6ecd1a2f4b2a3421c50e21e1ca8f9159bac7b045b968c27bbccaeb67",
     ),
 }
 

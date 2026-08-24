@@ -1244,8 +1244,10 @@ on-axis reference and emits a JSON table a prescriber can consume. The
 session's one verdict stays the report's `overall_passed` — a test fails the
 build if any view grows a `passed` field.
 
-`--walk-logs` is optional and best-effort. The cloud does not bank a numeric
-microphone angle, only a role, so angles are recovered by joining
+`--walk-logs` is optional and best-effort. Since the 2026-08-24 geometry
+ruling, `spatial.cloud_position_record` stamps a signed `position_deg` on
+every retained cloud position; a round banked before that writer carries
+only a role, and for those, angles are recovered by joining
 `(index, attempt, role)` against the walk driver's `released …` lines.
 `(index, attempt)` alone is **not** unique — on the arm-run every arm carries
 the same four pairs and eleven of thirteen logs contain all four, at two
@@ -2074,9 +2076,11 @@ means fix the prescription, `3` means fix the speaker's filesystem.
 What the packet is for beyond the model loop: it is the single document the
 deterministic trend engine and any by-hand round review both want, and its
 `not_evaluated` block is the fastest way to see what a round **cannot** answer
-(a cloud position banks no bearing at all, so `positions.angle_deg` refuses —
-the signed bearings that ARE banked belong to a lateral walk's poses and ride
-in `lateral_poses`; the reflection time and the gate's own movement are banked
+(a cloud position now banks its own signed bearing, so `positions.angle_deg`
+returns it directly and refuses only for a round whose records predate that
+writer — the signed bearings a LATERAL walk banks are a different capture
+regardless, and still ride in `lateral_poses`; the reflection time and the
+gate's own movement are banked
 as numbers beside the gate-disclosure sentence, so the entry that used to say
 they lived only inside prose now fires only for a round whose records predate
 those writers; a round carries a distortion reading only once somebody ran
@@ -2247,17 +2251,45 @@ jasper-round-views repeat <round-dir> [<round-dir> ...]
 jasper-round-views agreement <round-dir>
 ```
 
-**No numeric microphone angle for a CLOUD position.** Every view here reads
-the cloud positions block (`spatial.cloud_position_record` rows), which
-carries a coarse `role` (`onax`/`offax`) and no angle at all. A LATERAL walk
-pose (`spatial.lateral_pose_record`) does stamp a signed `position_deg`, and
-the evidence packet publishes those bearings in its `lateral_poses` block —
-but a walk pose is a *different capture* from a graded seat, not the same one
-with more detail, so a bearing is not something these views are missing. The
-campaign's `frozen_reference.py` carried a hardcoded `index -> degrees` table
-for exactly this reason; it is not ported. Every view here keys a position by
-its own stable `position_id` (`f"{phase}_{index:02d}"`, assigned once by the
-walk driver and stable across rounds that walk the same shape) instead.
+**A CLOUD position's own record carries a numeric bearing.** Every view here
+reads the cloud positions block (`spatial.cloud_position_record` rows),
+which carries a coarse `role` (`onax`/`offax`) and, since the 2026-08-24
+geometry ruling, a signed `position_deg` bearing on every retained row —
+ABSENT, not null, where none was commanded, because the serializer drops a
+key whose value is `None` (a vertical `xovr` pose, or a geometry-locked
+retake whose record declares no side; `position_axis` and `role` say
+which). A LATERAL walk pose (`spatial.lateral_pose_record`)
+stamps its own signed `position_deg` too, and the evidence packet publishes
+those bearings separately in its `lateral_poses` block — but a walk pose is
+still a *different capture* from a graded cloud seat, and the two must never
+be joined by index: both count positions from the front of their own table,
+so a matching number between them is a coincidence, not a correspondence.
+The campaign's `frozen_reference.py` carried a hardcoded `index -> degrees`
+table because the cloud record had no bearing of its own to read; now that it
+does, a second hand-maintained copy of the same fact would only be a place
+for the two to drift apart — it is not ported, but for that different reason.
+Every view here keys a position by its own stable `position_id`
+(`f"{phase}_{index:02d}"`, assigned once by the walk driver and stable across
+rounds that walk the same shape) — which is what lines the same prompted spot
+up across rounds.
+
+**But a `position_id` stopped naming a FIXED bearing across the geometry
+ruling, so `repeat` discloses the bearings beside the numbers.** The ruling put
+the design axis at the front of the post-apply pose set, so `cloud_verify_02`
+names −7° in a pre-ruling round and 0° in a post-ruling one, and
+`cloud_verify_04` moved −22° → +7°: a "spread" taken across that boundary is
+the difference between two different seats. Every per-position row in
+`repeatability.json` therefore carries `degrees` (`{round label: bearing}`,
+holding only the rounds that recorded one) beside its `values`/`spread`, plus
+`bearings_agree`. Read `bearings_agree` as THREE-VALUED: `true` every round
+that recorded a bearing recorded the same one, `false` they differ — read the
+spread as instrument noise at your peril — and **`null` means nothing was
+COMPARABLE** (fewer than two rounds recorded a bearing at all), which is not
+the same fact as "nothing disagreed" and must never be read as one. It
+discloses rather than refusing: the spread is still published, because
+comparing across the ruling to see what the ruling itself did is a legitimate
+question, and the doctrine's hard stops are component damage and hearing
+safety.
 
 **Agreement's sign-agreement rule is the campaign's own literal threshold**
 (`testify >= 3` and `dissent <= 1`), not scaled to the seat count — below 3

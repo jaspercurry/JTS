@@ -1469,7 +1469,10 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     assert info["full"]["stage1_captures"] == expected_stage1
     assert info["express"]["stage1_captures"] == expected_stage1
     # Stage 2 is where they still differ, and the chooser copy says so.
-    assert info["full"]["stage2_captures"] == 5
+    # 6 since the 2026-08-24 geometry ruling put the design axis into the
+    # post-apply pose set (``CLOUD_VERIFY_POSE_PROMPTS``): VERIFY's anchor plus
+    # five prompted poses.
+    assert info["full"]["stage2_captures"] == 6
     assert info["express"]["stage2_captures"] == 1
     for tier, detail in info.items():
         assert detail["capture_target"] == (
@@ -4824,6 +4827,73 @@ def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
         assert meta["captured_at"] > 0
 
 
+def test_a_verify_pose_banks_its_angle_axis_and_distance_as_fields():
+    """(T1-6) WHERE the microphone was, as numbers rather than as English.
+
+    The defect this closes, measured against the banked artifacts of the
+    2026-08 new-horn campaign: a ``cloud_verify`` position record carried no
+    geometry field at all. Its only statement of place was the household
+    ``prompt`` sentence — un-checkable, un-diffable, and the thing a reader
+    interpreted as a mic being carried sideways when the rig had rotated.
+
+    The owner's ruling names the three: angle, axis, distance. ``position_deg``
+    deliberately spells the word ``lateral_pose_record`` already uses, so there
+    is ONE vocabulary for "what bearing was this taken at" rather than two.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    fakes.apply_done = True
+    c = _conductor(
+        fakes,
+        # The SAME ``fakes`` the conductor runs on, with one seam wrapped —
+        # a second FakeSeams() here would silently drop ``apply_done``.
+        seams=replace(
+            fakes.seams(),
+            retain_position=lambda pid, result, meta: retained.append(dict(meta)),
+        ),
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    _walk(c, (VERIFY_INDEX, *CLOUD_VERIFY_INDEXES), 1)
+
+    assert [m["position_id"] for m in retained] == [
+        f"{PHASE_CLOUD_VERIFY}_{i:02d}" for i in CLOUD_VERIFY_INDEXES
+    ]
+    # The shipped pose set, read back off the records rather than off the
+    # table: the design axis first, then the four sides.
+    assert [m["position_deg"] for m in retained] == [
+        flow.position_angle_deg(p) for p in flow.CLOUD_VERIFY_POSE_PROMPTS
+    ] == [0, -7, 7, -22, 22]
+    assert {m["position_axis"] for m in retained} == {"horizontal"}
+    assert {m["mark_distance_m"] for m in retained} == {flow.MARK_DISTANCE_M}
+    # The prompt stays — it is the human instruction — but it is no longer the
+    # only place the geometry lives.
+    assert [m["prompt"] for m in retained] == [
+        p.text for p in flow.CLOUD_VERIFY_POSE_PROMPTS
+    ]
+    assert all(m["prompt"] for m in retained)
+
+
+def test_a_vertical_seat_banks_no_bearing_rather_than_a_zero():
+    """A vertical pose commands NO bearing, and 0 would read as the design axis.
+
+    ``position_angle_deg`` refuses a vertical row outright, and this derivation
+    runs on the retention path, where a raise would fail a capture the
+    household already gave. So the axis is stated and the angle is ``None``.
+    """
+    vertical = next(
+        p for p in CLOUD_POSITION_PROMPTS if p.role == flow.POSITION_ROLE_XOVR
+    )
+    geometry = flow.position_geometry(vertical)
+
+    assert geometry.axis == "vertical"
+    assert geometry.degrees is None
+    assert geometry.mark_distance_m == flow.MARK_DISTANCE_M
+    with pytest.raises(CrossoverV2FlowError):
+        flow.position_angle_deg(vertical)
+
+
 def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
     """B3: the sidecar's prompt is the only durable statement of WHERE a curve
     was measured. A geometry retake follows a wider-spot rung, not the position
@@ -5054,10 +5124,11 @@ def test_capture_plan_entries_carry_auto_advance_policy():
     # 1 + 1 + 8 = 10 at the Full tier's DEFAULT_CLOUD_MEASURE_POSITIONS = 9.
     # It carries no VERIFY and no post-apply group — those are stage 2's plan,
     # pinned in test_the_stage_2_plan_walks_the_tiers_own_verify_shape.
-    # ``cloud_capture_target()`` still names the WHOLE journey (10 + 5),
-    # which is what the tier chooser promises.
+    # ``cloud_capture_target()`` still names the WHOLE journey (10 + 6),
+    # which is what the tier chooser promises. Stage 2's 6 is VERIFY's anchor
+    # plus the five poses of ``CLOUD_VERIFY_POSE_PROMPTS`` (2026-08-24 ruling).
     assert plan.capture_target == 10
-    assert cloud_capture_target() == 15
+    assert cloud_capture_target() == 16
     kinds = [entry.kind_label for entry in plan.entries]
     assert kinds == (
         ["check", "measure"]
@@ -5156,7 +5227,7 @@ def test_express_is_a_derived_shape_not_a_loosened_floor():
     # The full tier is unchanged, and would REFUSE express's own counts.
     full = resolve_plan_shape()
     assert full.tier == TIER_FULL
-    assert (full.capture_target, full.max_attempts) == (15, 22)
+    assert (full.capture_target, full.max_attempts) == (16, 23)
     assert full.has_cloud_verify_group is True
     with pytest.raises(CrossoverV2FlowError):
         resolve_plan_shape(
@@ -5201,6 +5272,73 @@ def test_one_resolved_shape_feeds_both_the_spec_and_the_index_phase_map():
         build_v2_cloud_index_phase_map(plan_shape=shape, cloud_measure_positions=9)
 
 
+def test_the_post_apply_pose_set_is_a_parameter_with_a_runbook_default():
+    """(T1-5) The runbook is a SUGGESTION: the walk takes the set it is given.
+
+    Two halves, and either alone would be a half-fix. The DEFAULT is the
+    owner's ratified set — the design axis and the four sides — so a household
+    that states nothing gets it. And a caller that states a set gets THAT one,
+    down to the prompt copy, because "measure the result at these angles" was
+    not a question anyone could ask while the walk re-sliced a fixed table.
+
+    One resolver behind both, so the plan the phone is handed and the session
+    that walks it cannot read different tables.
+    """
+    assert [
+        flow.position_angle_deg(p) for p in flow.CLOUD_VERIFY_POSE_PROMPTS
+    ] == [0, -7, 7, -22, 22]
+    assert flow.verify_pose_table() is flow.CLOUD_VERIFY_POSE_PROMPTS
+    assert flow.verify_pose_table(None) is flow.CLOUD_VERIFY_POSE_PROMPTS
+
+    # A caller-supplied set: the same two at-mark-and-one-side poses, and
+    # nothing else. Chosen from the shipped table so the assertion is about the
+    # SEAM rather than about a hand-built prompt's copy.
+    chosen = flow.CLOUD_VERIFY_POSE_PROMPTS[:2]
+    assert flow.verify_pose_table(chosen) == chosen
+
+    shape = replace(resolve_plan_shape(), cloud_verify_positions=len(chosen) + 1)
+    plan = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=shape, verify_prompts=chosen,
+    )
+    assert [
+        e.screen["title"] for e in plan.entries if e.kind_label == "cloud_verify"
+    ] == [p.headline for p in chosen]
+    # …and the shape and the set have to agree in BOTH directions.
+    #
+    # Short table: the walk would prompt fewer spots than the session believes.
+    with pytest.raises(CrossoverV2FlowError, match="pose set"):
+        build_v2_verify_capture_plan(
+            FC_HZ,
+            plan_shape=replace(
+                resolve_plan_shape(), cloud_verify_positions=len(chosen) + 2,
+            ),
+            verify_prompts=chosen,
+        )
+    # LONG table: the quiet one. The poses past ``M - 1`` never reach an entry,
+    # so the walk is silently truncated to a prefix — while the orientation
+    # sentence is quoted off the WHOLE table and promises a reach the walk does
+    # not have. Pinned with a 60 cm sixth pose against the shipped 40 cm walk:
+    # unguarded, the plan builds and the consent screen says 70 cm.
+    long_table = flow.CLOUD_VERIFY_POSE_PROMPTS + (
+        next(p for p in CLOUD_POSITION_PROMPTS if p.offset_cm == 60.0),
+    )
+    assert flow.cloud_walk_reach_cm_of(long_table) > flow.cloud_walk_reach_cm_of(
+        flow.CLOUD_VERIFY_POSE_PROMPTS
+    ), "the extra pose must widen the quoted reach, or this pins nothing"
+    with pytest.raises(CrossoverV2FlowError, match="pose set"):
+        build_v2_verify_capture_plan(
+            FC_HZ, plan_shape=resolve_plan_shape(), verify_prompts=long_table,
+        )
+    # EXPRESS is the shape a bare ``!=`` would break: M = 1 emits no
+    # cloud-verify entry at all, so its empty index list must not be measured
+    # against the 5-row default. It is correct by construction and builds.
+    express = build_v2_verify_capture_plan(
+        FC_HZ, plan_shape=resolve_plan_shape(TIER_EXPRESS),
+    )
+    assert express.capture_target == 1
+    assert [e.kind_label for e in express.entries] == ["verify"]
+
+
 def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     """Work order D2, owner-confirmed 2026-07-29 — and the re-derivation of
     ``test_an_express_plan_emits_no_cloud_verify_and_ends_on_verify``, whose
@@ -5215,11 +5353,16 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
 
     full = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 5
+    assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 6
     assert [e.kind_label for e in full.entries] == (
         ["verify"] + ["cloud_verify"] * (DEFAULT_CLOUD_VERIFY_POSITIONS - 1)
     )
-    assert [e.index for e in full.entries] == list(range(5))
+    assert [e.index for e in full.entries] == list(range(6))
+    # The walk's prompted poses ARE the resolved pose set, in its own order —
+    # the 2026-08-24 ruling's design-axis member first, then the four sides.
+    assert [
+        e.screen["title"] for e in full.entries if e.kind_label == "cloud_verify"
+    ] == [p.headline for p in flow.CLOUD_VERIFY_POSE_PROMPTS]
     assert full.entries[-1].screen["done_title"] == "Your speaker is tuned"
     assert "Run a Full measurement" not in full.entries[-1].screen["done_body"]
     # Stage 1's own plan claims nothing about the result any more.
@@ -5248,15 +5391,15 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     assert "verified-everywhere" not in last.screen["done_body"]
 
     # RE-DERIVED budgets. Stage 2 draws its own, from its own target:
-    # Full 5 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
+    # Full 6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE, Express 1 + …
     assert full.max_attempts == (
-        5 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
+        6 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
     assert express.max_attempts == (
         1 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # …and its own walked-away ceiling: 1800 + (5-3)*120 / the plain baseline.
-    assert session_wall_clock_ceiling_s(full) == 2040.0
+    # …and its own walked-away ceiling: 1800 + (6-3)*120 / the plain baseline.
+    assert session_wall_clock_ceiling_s(full) == 2160.0
     assert session_wall_clock_ceiling_s(express) == 1800.0
 
     # An express STAGE 1 is a strictly smaller draw than Full's.
@@ -5304,8 +5447,13 @@ def test_the_stage_2_done_screen_never_pre_commits_a_verdict_it_cannot_know():
     )
     from jasper.web.correction_crossover_v2 import _post_apply_grade
 
+    # The whole input, enumerated: a crossover frequency, a plan SHAPE, and
+    # (since the 2026-08-24 geometry ruling) the POSE SET the walk takes. Not
+    # one of the three is a measured outcome, which is the structural half of
+    # the claim above — a pose set says where the microphone goes, never how
+    # the result came out.
     assert set(inspect.signature(build_v2_verify_capture_plan).parameters) == {
-        "fc_hz", "plan_shape",
+        "fc_hz", "plan_shape", "verify_prompts",
     }
 
     done = build_v2_verify_capture_plan(
@@ -5994,7 +6142,7 @@ def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
         assert len(step_lists[0]) <= 6
 
         walked = CLOUD_POSITION_PROMPTS[: positions - 1]
-        shape = cloud_walk_shape(positions)
+        shape = cloud_walk_shape(walked)
         notes = [c["text"] for c in spec.screen if c["type"] == "note"]
         assert shape in notes
 
@@ -6061,16 +6209,21 @@ def test_the_orientation_states_the_walks_shape_instead_of_enumerating_it():
 def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
     """Stage 2's walk gets the same one-line shape as stage 1's, with its own
     tail: the journey ends there rather than pausing for a decision. Express's
-    1-entry stage 2 is not a walk and gets no shape line at all."""
+    1-entry stage 2 is not a walk and gets no shape line at all.
+
+    RE-DERIVED for the 2026-08-24 geometry ruling: the post-apply group walks
+    its OWN pose set now, so the sentence is quoted off that table rather than
+    off a prefix of the pre-apply one.
+    """
     full = build_v2_verify_session_spec(
         FC_HZ, acknowledgement_binding="b" * 24, plan_shape=resolve_plan_shape(),
     )
-    shape = cloud_walk_shape(DEFAULT_CLOUD_VERIFY_POSITIONS, post_apply=True)
+    shape = cloud_walk_shape(flow.CLOUD_VERIFY_POSE_PROMPTS, post_apply=True)
     assert len([c for c in full.screen if c["type"] == "steps"]) == 1
     assert shape in [c["text"] for c in full.screen if c["type"] == "note"]
     # Same derived ceiling and the same retake honesty as stage 1 — the
     # geometry-locked retake is armed on this group too.
-    reach = cloud_walk_reach_cm(DEFAULT_CLOUD_VERIFY_POSITIONS)
+    reach = flow.cloud_walk_reach_cm_of(flow.CLOUD_VERIFY_POSE_PROMPTS)
     assert format_position_distance(reach) in shape
     assert cloud_geometry_retry_reach_cm() > reach
     assert "a redo can ask for one step further out" in shape
@@ -6084,8 +6237,8 @@ def test_the_post_apply_walk_states_its_shape_with_its_own_tail():
         plan_shape=resolve_plan_shape(TIER_EXPRESS),
     )
     assert len([c for c in express.screen if c["type"] == "steps"]) == 1
-    assert cloud_walk_shape(1) == ""
-    assert cloud_walk_shape(1, post_apply=True) == ""
+    assert cloud_walk_shape(()) == ""
+    assert cloud_walk_shape((), post_apply=True) == ""
     # …and an empty shape renders NO note rather than an empty one, so the
     # one-sweep screen never grows a blank section.
     assert all(
@@ -6127,12 +6280,17 @@ def test_check_stops_hushing_the_room_before_it_measures_it():
 
 def test_cloud_prompts_front_load_the_wide_offsets():
     """Fundamental 1's physics, pinned: >=10 cm spread decorrelates HF nulls and
-    ~30 cm+ offsets are what support the LF edge. Both groups walk the SAME
-    ordered table from the front, so the shortest group either can be
+    ~30 cm+ offsets are what support the LF edge. Each group walks its own
+    ordered table from the front, so the shortest walk either can be
     CONFIGURED to run — its declared MIN, not its default — must still contain
-    at least two wide moves. Reordering the table for readability would
+    at least two wide moves. Reordering a table for readability would
     silently delete the LF half of the measurement — hence this test rather
     than a comment.
+
+    RE-DERIVED 2026-08-24: the two groups walked ONE table until the geometry
+    ruling gave the post-apply group its own pose set, so the floors are now
+    derived per table rather than one standing in for both. The guarantee is
+    unchanged; what moved is which table each floor is checked against.
 
     Round-2 review NEW-9: this used to compare against
     ``DEFAULT_CLOUD_VERIFY_POSITIONS``, so ``M = 2`` was accepted and voided
@@ -6145,15 +6303,20 @@ def test_cloud_prompts_front_load_the_wide_offsets():
     pushed the second wide move later must move express with it rather than
     ship a silently one-wide "quick tune".
     """
-    shortest_group = min(
-        MIN_CLOUD_MEASURE_POSITIONS, MIN_CLOUD_VERIFY_POSITIONS
-    )
-    walked = CLOUD_POSITION_PROMPTS[: shortest_group - 1]
+    walked = CLOUD_POSITION_PROMPTS[: MIN_CLOUD_MEASURE_POSITIONS - 1]
     assert sum(1 for prompt in walked if prompt.wide) >= 2
-    # The floors are DERIVED from the table, so a reorder moves them rather
-    # than leaving a stale literal behind.
+    # …and the same property on the POST-apply group, which walks its own pose
+    # set since the 2026-08-24 geometry ruling rather than a prefix of the one
+    # above. Two tables, so two derivations — a single ``min()`` over the two
+    # floors would now be checking one table against the other's number.
+    post_walked = flow.CLOUD_VERIFY_POSE_PROMPTS[: MIN_CLOUD_VERIFY_POSITIONS - 1]
+    assert sum(1 for prompt in post_walked if prompt.wide) >= 2
+    # The floors are DERIVED from the table each group walks, so a reorder moves
+    # them rather than leaving a stale literal behind.
     derived = _min_positions_for_two_wide_offsets()
-    assert MIN_CLOUD_VERIFY_POSITIONS == derived
+    assert MIN_CLOUD_VERIFY_POSITIONS == _min_positions_for_two_wide_offsets(
+        flow.CLOUD_VERIFY_POSE_PROMPTS
+    )
     assert MIN_CLOUD_MEASURE_POSITIONS >= derived
     assert express_cloud_measure_positions() == derived
     # …and the express plan really does walk two wide moves at that size.
@@ -6730,12 +6893,13 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     # journey any more. Stage 1 is 1 + N = 10 captures with
     # 10 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE = 17 attempts;
     # ``cloud_capture_target()``/``cloud_plan_max_attempts()`` keep their
-    # whole-journey meaning (15 / 22), which is what the relay-capacity guard
-    # and jasper-doctor read as the conservative bound.
+    # whole-journey meaning (16 / 23 since stage 2's pose set gained the design
+    # axis on 2026-08-24), which is what the relay-capacity guard and
+    # jasper-doctor read as the conservative bound.
     assert cloud.capture_target == 10
     assert cloud.max_attempts == 17
-    assert cloud_capture_target() == 15
-    assert cloud_plan_max_attempts() == 22
+    assert cloud_capture_target() == 16
+    assert cloud_plan_max_attempts() == 23
     assert cloud.max_attempts < cloud_plan_max_attempts()
     assert one_entry.capture_target == 1
     assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
@@ -6776,13 +6940,13 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
         + DEFAULT_CLOUD_VERIFY_POSITIONS
         + GEOMETRY_RETRY_POSITIONS
     ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert worst_entries == 17
+    assert worst_entries == 18
     assert (
         cloud_plan_max_attempts(
             cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
             cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
         )
-        == 24
+        == 25
         <= MAX_CAPTURE_PLAN_ATTEMPTS
     )
     # …and the two stage-1 groups the cloud arithmetic above does not count.
@@ -6798,13 +6962,15 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     )
     #
     # Both numbers came down by one on 2026-08-18 when
-    # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` moved to its floor. Stated as a bound
-    # PLUS the number rather than as an equality with the ceiling: this case
-    # used to saturate it exactly, and an assertion that reads "the guard is
-    # designed to sit at 32" invites spending the difference.
+    # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` moved to its floor, and BACK UP on
+    # 2026-08-24 when the geometry ruling put the design axis into the
+    # post-apply pose set. So the worst case saturates the ceiling exactly
+    # again: 32 of 32, zero headroom. Stated as the number PLUS the bound so
+    # the next producer that wants an entry has to change this line and decide
+    # what it is spending, rather than pass a test that quietly still holds.
     assert flow.relay_plan_attempts_required(
         **worst
-    ) == 31 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
+    ) == 32 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
@@ -6841,7 +7007,7 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
-    ) == 2040.0
+    ) == 2160.0
     biggest = build_v2_capture_plan(
         _roles(), FC_HZ,
         cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,

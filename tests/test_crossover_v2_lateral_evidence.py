@@ -484,7 +484,7 @@ def test_a_lateral_only_stage_1_still_consents_to_a_walk():
         cloud_positions=0, lateral=True)
     for lateral in (False, True):
         assert flow.walk_shape_for(cloud_positions=9, lateral=lateral) == (
-            flow.cloud_walk_shape(9))
+            flow.cloud_walk_shape(flow.CLOUD_POSITION_PROMPTS[:8]))
     assert flow.walk_shape_for(cloud_positions=0, lateral=False) == ""
 
 

@@ -24,7 +24,7 @@ changed — repeating that apply-and-re-measure round, up to three times, while
 the result is still getting flatter (#2602).
 
 - **Two tiers, chosen every session** on the `/correction/` wizard. At the
-  shipped defaults `TIER_FULL` is **8 captures — 3 then 5**, and
+  shipped defaults `TIER_FULL` is **9 captures — 3 then 6**, and
   `TIER_EXPRESS` is **4 — the same 3, then 1**. The tiers differ in
   **stage 2 only**: stage 1 is 3 captures for both. Do not restate those
   numbers anywhere a plan change cannot reach them —
@@ -34,10 +34,12 @@ the result is still getting flatter (#2602).
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
 - **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is
-  **8 — the same 3, then 5**: Full's walk driven by an external mic
-  positioner instead of by hand, so it drops exactly the one pose a
-  positioner cannot reach (the vertical) and states every other pose as an
-  ANGLE. The chooser never offers it — consenting to it means owning a
+  **9 — the same 3, then 6**: Full's walk driven by an external mic
+  positioner instead of by hand, stating every pose as an ANGLE. It drops
+  nothing: the post-apply pose set has been vertical-free by construction
+  since the 2026-08-24 geometry ruling, so there is no pose a positioner
+  cannot reach left in it. The chooser never offers it — consenting to it
+  means owning a
   positioner the wizard cannot see — so it is reached only by
   `POST /correction/crossover/v2/session {"tier": "remote"}`. See
   "The remote tier" below.
@@ -190,13 +192,13 @@ group and publishes the candidate; until it arrives the final position is
 still retakeable. **Nothing is applied inside this session.**
 
 **Stage 2 — `POST /correction/crossover/v2/verify` with
-`{"stage": "post_apply"}`, 5 captures at Full (1 on Express, 5 on Remote —
+`{"stage": "post_apply"}`, 6 captures at Full (1 on Express, 6 on Remote —
 this stage is the whole difference between the tiers).**
 
 | index | phase | what it is |
 |---|---|---|
 | 1 | `verify` | design-axis anchor, summed |
-| 2–5 | `cloud_verify` | 4 prompted post-apply positions |
+| 2–6 | `cloud_verify` | 5 prompted post-apply positions — `CLOUD_VERIFY_POSE_PROMPTS` |
 
 The same endpoint with no `stage` is the 1-entry recovery re-verify.
 
@@ -214,27 +216,45 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 | | Full | Remote |
 |---|---|---|
 | stage 1 | 3 captures | the same 3 |
-| stage 2 | 5 captures | the same 5 |
+| stage 2 | 6 captures | the same 6 |
 | per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
 | pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
 | stage-2 anchor | carries `confirm_title` (a tap) | omits it — the gate makes that promise |
 
-`remote_cloud_verify_positions()` **derives** the 5 rather than stating it: it
-is the longest prefix of `CLOUD_POSITION_PROMPTS` containing no
-`POSITION_ROLE_XOVR` pose, so reordering that table moves the walk instead of
-stranding it. Since 2026-08-18 `DEFAULT_CLOUD_VERIFY_POSITIONS` sits at that
-same 5 (it is `MIN_CLOUD_VERIFY_POSITIONS`, the validated floor), so the two
-walks coincide today and stage 2 no longer differs between Full and Remote. The
-derivation stays because it is what keeps them from diverging silently if
-either the table or the default moves; `REMOTE_VERTICAL_DISCLOSURE` stays for
-the same reason it always existed — a consumer reading this group's roles finds
-no `xovr` member and must read that as *unsampled*, not *flat*. `position_angle_deg()` likewise derives each bearing from the
-pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the row's LEFT/RIGHT
-word — there is no second table of angles to drift. At the shipped offsets the
-walk is **0°, −7°, +7°, −22°, +22°** (stage 1's paused lateral walk opened and
-closed on 0°). Roles
-still come from the existing `WIDE_OFFSET_MIN_CM` rule, so a remote group's
-durable evidence stays comparable with a hand-walked one's.
+`remote_cloud_verify_positions()` **derives** the 6 rather than stating it: it
+is the longest prefix of `CLOUD_VERIFY_POSE_PROMPTS` containing no
+`POSITION_ROLE_XOVR` pose, so editing that table moves the walk instead of
+stranding it. Since the 2026-08-24 geometry ruling that table is vertical-free
+by construction, so the subtraction is a no-op and stage 2 does not differ
+between Full and Remote. The derivation stays because it is what keeps them
+from diverging silently if a vertical pose is ever added;
+`REMOTE_VERTICAL_DISCLOSURE` stays for the same reason it always existed — a
+consumer reading this group's roles finds no `xovr` member and must read that
+as *unsampled*, not *flat*. `position_angle_deg()` likewise derives each
+bearing from the pose's own `offset_cm` at `MARK_DISTANCE_M`, signed by the
+row's LEFT/RIGHT word — there is no second table of angles to drift. The walk
+is **0°, −7°, +7°, −22°, +22°**, and since that ruling the 0° is a prompted
+`cloud_verify` POSE rather than only the anchor in front of the group: the
+anchor's summed sweep is consumed by the tracking verdict and never joins the
+group, so without it the post-apply combine carried no design-axis curve at
+all. Roles still come from the existing `WIDE_OFFSET_MIN_CM` rule, so a remote
+group's durable evidence stays comparable with a hand-walked one's.
+
+**The pose set is a PARAMETER, not a fixed table.**
+`build_v2_verify_capture_plan` / `build_v2_verify_session_spec` /
+`CrossoverV2Session` all take `verify_prompts`, resolved once through
+`verify_pose_table()`; `None` is `CLOUD_VERIFY_POSE_PROMPTS`, the ratified
+default above. The shape's `M` and the table's length must agree — a shape
+asking for more prompted poses than the set supplies is refused rather than
+walked short.
+
+**Every retained cloud position records WHERE it was taken**, as fields rather
+than as prose: `position_deg` (signed whole degrees, negative LEFT — the same
+word a lateral pose record uses), `position_axis` (`horizontal` / `vertical`),
+and `mark_distance_m`. Derived by `position_geometry()` off the pose the
+operator was actually given; nothing parses the `prompt` string. `position_deg`
+is `None`, never `0`, where no bearing was commanded — a vertical pose, or a
+geometry-locked retake, whose record declares no side.
 
 **The position gate replaces the tap.** Because entries auto-begin, something
 has to guarantee the tone never plays into an arm still moving. Every begin —
@@ -523,7 +543,7 @@ does not wait forever: `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) refuses it as
 person who walked away — would otherwise pin the measurement volume, the paused
 voice, and the relay slot indefinitely. That is
 a **per-hold** bound and not the operative total — the session's own wall-clock
-ceiling (`session_wall_clock_ceiling_s`, 1800 s for stage 1 and 2040 s for
+ceiling (`session_wall_clock_ceiling_s`, 1800 s for stage 1 and 2160 s for
 stage 2 at the shipped shape) covers the whole walk, so a mover that answers
 every position but answers slowly ends on that ceiling with no single hold ever
 expiring. That death has its own name too, since
@@ -1838,12 +1858,12 @@ rule that nothing applies inside this session.
 jts.local and lands on the `review` screen.
 
 **Stage 2 — verify (`POST /crossover/v2/verify` with
-`{"stage": "post_apply"}`), 5 captures at Full:**
+`{"stage": "post_apply"}`), 6 captures at Full:**
 
 | index | phase | gate | what it is |
 |---|---|---|---|
 | 1 | `verify` | tap (confirm-then-tone) | design-axis anchor, summed |
-| 2–5 | `cloud_verify` | tap each | 4 prompted post-apply positions |
+| 2–6 | `cloud_verify` | tap each | 5 prompted post-apply positions |
 
 The same endpoint with no `stage` (every shipped caller, including
 `verify_retry` on a failed screen) is the **1-entry recovery re-verify**,
@@ -2176,13 +2196,16 @@ together. Design rationale:
    for which instrument owns which question.
 
 6. **CLOUD-VERIFY** (5 × ~16 s, one tap each). The post-apply cloud,
-   walking the same prompted positions.
+   walking its OWN pose set (`CLOUD_VERIFY_POSE_PROMPTS` — the design axis
+   plus the four side poses) since the 2026-08-24 geometry ruling; before
+   that it walked a prefix of the pre-apply table.
 
 #### Position groups — the operational rules
 
 - **Constants** (`crossover_v2_flow.py`, each with its rationale in
-  place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 12),
-  `DEFAULT_CLOUD_VERIFY_POSITIONS` 5, `GEOMETRY_RETRY_POSITIONS` 2 — the
+  place): `DEFAULT_CLOUD_MEASURE_POSITIONS` 9 (min 6, max 11 — it came
+  down from 12 when #2291's entry baseline took a relay blob index),
+  `DEFAULT_CLOUD_VERIFY_POSITIONS` 6, `GEOMETRY_RETRY_POSITIONS` 2 — the
   **Full tier's** rules; `MIN_CLOUD_MEASURE_POSITIONS` never moves for
   Express. The counts are wall-clock choices, not statistical optima —
   S0's stability data says more positions is strictly better. **Express**
@@ -2226,10 +2249,13 @@ together. Design rationale:
   move move the group floors instead of quietly voiding the LF guarantee.
   Each row also carries a `role` (`onax` / `offax` / `xovr`), persisted with
   the position for the attribution stage. The
-  ORDER is load-bearing: both groups walk the same table from the front,
-  so two wide (~forearm) offsets must sit inside the first
+  ORDER is load-bearing: the PRE-apply group walks this table from the
+  front, so two wide (~forearm) offsets must sit inside the first
   `MIN_CLOUD_MEASURE_POSITIONS − 1` entries or the LF half of the
-  measurement quietly disappears. Express walks the SAME table from the
+  measurement quietly disappears. (The post-apply group walked it too until
+  the 2026-08-24 geometry ruling gave it `CLOUD_VERIFY_POSE_PROMPTS`, whose
+  own two-wide guarantee is checked by its own import-time guard.) Express
+  walks the SAME table from the
   front at its own, shorter length (`express_cloud_measure_positions()`),
   derived from exactly where the table's second wide offset falls — a
   reordered table moves Express's floor with it rather than shipping a
@@ -2285,8 +2311,9 @@ together. Design rationale:
   verify-only re-arm (still 1 entry, still byte-identical on the wire)
   reaches DONE instead of waiting on a group it never had.
 - **Artifacts.** Every accepted cloud position writes its WAV plus a
-  metadata sidecar (prompt text, index, timestamps, QC verdict) into the
-  session bundle via `bind_position_retention`; the closing geometry
+  metadata sidecar (prompt text, index, timestamps, QC verdict, and — since
+  the 2026-08-24 geometry ruling — `position_deg` / `position_axis` /
+  `mark_distance_m`) into the session bundle via `bind_position_retention`; the closing geometry
   verdict lands in the durable state's `cloud` block. Retention rose
   256 MiB → 1 GiB for this; the publish-time free-space floor
   (`MIN_FREE_SPACE_AFTER_PUBLISH_BYTES`) was deliberately *decoupled*
@@ -3134,7 +3161,9 @@ serializes the members alongside the aggregate: per position, its curve on a
 shared **1/12-octave log grid from the group's validity floor up**, its echo
 scalars (τ, confidence, concentration, refusal), and — joined from the
 conductor's own retained metadata — the gate actually applied, the summed
-ripple, which attempt survived (`take_id`), and the capture's SHA-256. Cost
+ripple, which attempt survived (`take_id`), the capture's SHA-256, and (since
+the 2026-08-24 geometry ruling) the pose it was taken at, as `position_deg` /
+`position_axis` / `mark_distance_m`. Cost
 measured on the S0 ten-position cloud, **per closed group, and it depends on
 which serialization you mean** — the two stores write the same block
 differently, so quoting one figure alone understates the other by ~13 KiB:
@@ -3318,8 +3347,11 @@ collide with — the incident's own hazard is closed at the session boundary) an
 every later capture is begun deliberately: by the household's tap, by the
 remote tier's position gate, or — on a hand-walked round running on the WIRED
 source (#2879) — by both, the tap behind a gate the person releases. Five of a
-Full journey's eight captures no longer
-pay it: 18.0 s, on top of the 37.2 s the shorter verify walk saves.
+Full journey's captures no longer
+pay it: 18.0 s. The 37.2 s this paragraph also credited to a shorter verify
+walk was the 2026-08-18 trim's, and the 2026-08-24 geometry ruling spent that
+capture again on the design axis — so the prelude saving stands and the walk
+saving does not.
 
 One consequence to know when reading `program_for_phase`: the summed sweep is
 now TWO held objects, not one. The compared pair (`verify` / `entry_baseline`)
@@ -6487,6 +6519,18 @@ margin-does-not-separate-populations paragraph described the retired quantity),
 the `event=program_analysis.anchor` field list, and both the `anchor_ambiguous`
 and `channel_map_mismatch` rows of the refusal table. **The date below
 is deliberately NOT bumped**: nothing outside those sections was re-verified.
+
+2026-08-24 — the geometry ruling (fixlist T1-5/T1-6). What was re-verified
+against the code in the same diff and edited, and nothing else: in the LIVE
+spine, the two tier-count bullets, the stage-2 heading and index table, the
+Full-vs-Remote table's stage-2 row, the `remote_cloud_verify_positions()`
+paragraph (which gained the pose-set-is-a-parameter and
+pose-geometry-as-fields notes), and the stage-2 wall-clock ceiling; in the
+APPENDIX, only the sections the 2026-08-18 pass already states it maintains —
+the stage-2 table, the walk enumeration, the constants list, the prompt-table
+ORDER claim, the artifacts bullet, the `position_evidence_block` field list,
+and the courtesy-prelude saving. **The date below is deliberately NOT bumped**:
+nothing outside those was re-read.
 
 Last verified: 2026-08-18 (the lateral pause — the stage-1 capture flow, both
 capture tables, the tier capture/duration totals, the remote wall-clock

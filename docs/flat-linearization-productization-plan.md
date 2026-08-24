@@ -519,7 +519,8 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   decorrelation, at least two wide ≥30 cm offsets for the LF edge — the
   plan's "≥30 cm LF spread is load-bearing" side-finding).
 - **Defaults:** N = 9 cloud-measure positions (min 6 to proceed,
-  max 12), M = 6 cloud-verify (`DEFAULT_CLOUD_MEASURE_POSITIONS` /
+  max 11 — 12 when this was written, down one with #2291's entry
+  baseline), M = 6 cloud-verify (`DEFAULT_CLOUD_MEASURE_POSITIONS` /
   `DEFAULT_CLOUD_VERIFY_POSITIONS`, `crossover_v2_flow.py` — N counts the
   MEASURE anchor plus 8 prompted positions, which is why the default is 9
   and not 8). The "Position groups" section that used to be cited here now
@@ -1148,6 +1149,20 @@ anchor stays tracking-only. A future SYMMETRIC design — adding an anchor
 summed sweep to MEASURE too, so both clouds carry the on-axis point at the
 same weight — is a legitimate follow-up if ever wanted, but asymmetric
 inclusion (post-apply only) is not.
+
+> **The closing sentence was OVERRULED on 2026-08-24 (owner ruling, fixlist
+> T1-5).** Asymmetric, post-apply-only inclusion of the design axis is what
+> ships. The MECHANISM this paragraph rejected is still rejected and the rest
+> of it still holds — the VERIFY anchor is not joined into the combine, and
+> stays tracking-only. What overruled the conclusion is the cost the 2026-08
+> new-horn campaign measured: with no on-axis member, a post-apply round banks
+> no summed response at the one place the household sits, and the campaign had
+> to run a separate MEASURE round to get one. The asymmetry is also disclosed
+> now rather than undisclosed — every seat records its own bearing. The pose
+> set, the weight it carries, and the full argument are recorded once, at
+> `CLOUD_VERIFY_POSE_PROMPTS` in
+> [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py);
+> read them there rather than here.
 
 Persisted to
 `crossover_v2/<session>/cloud_measure.json` / `cloud_verify.json` (**a

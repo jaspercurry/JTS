@@ -534,6 +534,57 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-24 (the geometry ruling: pose geometry as fields, pose sets as
+    # parameters). ONE file, and NO slack was spent — the entry below (#2925)
+    # left it at exactly its ceiling, and this branch was rebased onto #2925
+    # (and later #2928) after they merged, so the figure below is RECOUNTED
+    # against the current base rather than carried over.
+    #  * `crossover_v2_flow` ceiling 13,102 -> 13,418, +316 physical lines.
+    #
+    #    **No code/prose split is stated here, deliberately — it was WITHDRAWN
+    #    after being wrong twice.** Two rounds of counting produced +78 net
+    #    executable against three independent derivations' +80, and the
+    #    explanation offered for the gap (that `__all__` entries fall outside a
+    #    tokenize rule dropping STRING tokens) is itself false: such a line
+    #    keeps its trailing comma, which is an OP token, so it stays counted.
+    #    Rather than guess a third time at a number nothing enforces, this note
+    #    states only what the ratchet actually checks — the physical count above
+    #    — and what earned it, below. A figure no test re-derives is narrative,
+    #    and a narrative figure that has been wrong twice is worse than none.
+    #
+    #    What earned the room, in mechanism: one derived table
+    #    (`_SIDE_POSE_PROMPTS`) and the post-apply pose set it feeds
+    #    (`VERIFY_MARK_PROMPT` + `CLOUD_VERIFY_POSE_PROMPTS`), the two
+    #    import-time guards that pin `DEFAULT_CLOUD_VERIFY_POSITIONS` and
+    #    `MIN_CLOUD_VERIFY_POSITIONS` to that table, `position_geometry` and its
+    #    at-mark constant, the pose-set parameter threaded through
+    #    `verify_pose_table` / the two stage-2 builders / the session ctor /
+    #    `_cloud_prompt`, a table argument on
+    #    `_min_positions_for_two_wide_offsets` and `cloud_walk_shape`, the
+    #    equality guard that refuses a shape and a pose set that disagree in
+    #    EITHER direction, and the two call sites that hand a position's
+    #    geometry to the record writer. One check got SHORTER:
+    #    `_validated_cloud_counts` stopped bounding M by a table it can no
+    #    longer see.
+    #
+    #    Most of the diff is PROSE, and that ratio is the point rather than an
+    #    excuse: the change is small in mechanism and large in RULING. Four
+    #    blocks are the only place a fact now lives — why the design axis is a
+    #    MEMBER of the post-apply walk rather than only the anchor in front of
+    #    it (and what the 2026-08-18 trim gave up to pay for it), what
+    #    `offset_cm` actually measures (the misreading that produced this whole
+    #    fixlist item), why `position_geometry` records `None` instead of
+    #    raising or guessing a zero on the poses that command no bearing, and
+    #    why the relay ceiling's "zero headroom" is a conservative CROSS-STAGE
+    #    sum rather than a per-session one (26 of 32 is the largest single
+    #    session; the shipped journey draws 30). Two more are RE-DERIVATIONS of
+    #    numbers this file already published and that moved: the relay-index
+    #    arithmetic and the post-apply floor, now derived over a second table.
+    #    One is an OPEN QUESTION flag (issue #2932, the tangent-vs-arc
+    #    geometry) placed where a reader would otherwise meet a confident
+    #    falsehood. Deleting any of them would leave the number without the
+    #    reason.
+    #
     # 2026-08-24 (#2925, the measurement-volume hold). Two files, +67 between
     # them, and again no slack: the #2923 entry below left both at exactly its
     # ceilings, and these figures are recounted against THOSE — this branch was
@@ -1025,7 +1076,7 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_102,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_418,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic

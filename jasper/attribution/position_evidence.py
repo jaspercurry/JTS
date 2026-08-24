@@ -92,6 +92,17 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "attempt",
     "take_id",
     "role",
+    # WHERE the microphone was, as numbers (owner ruling, 2026-08-24). Until
+    # the writer stamped these a position's only statement of place was the
+    # household prompt sentence, which this block does not carry at all — so a
+    # reader of a round's members could not tell an on-axis capture from a
+    # 22°-off one except by the coarse ``role`` below. ``position_deg`` is
+    # absent whenever no bearing was commanded and on any round banked before
+    # the writer gained the fields; ``FIELD_DESCRIPTIONS`` below enumerates the
+    # cases and names the fields that separate them.
+    "position_deg",
+    "position_axis",
+    "mark_distance_m",
     "gate_window_ms",
     "gate_floor_source",
     "gate_disclosure",
@@ -153,6 +164,32 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "shorter walk stops before the first vertical move and carries "
         "{onax, offax} only, so an absent role is UNSAMPLED, not null "
         "evidence."
+    ),
+    "position_deg": (
+        "This position's SIGNED whole-degree bearing from the speaker, "
+        "negative LEFT of the design axis as seen from the microphone looking "
+        "at the speaker, derived from the pose it was prompted at rather than "
+        "parsed out of that prompt's English. Absent means no bearing was "
+        "commanded, never 0: a vertical pose is raised or lowered rather than "
+        "swung, a geometry-locked retake's record declares no side, and a "
+        "round banked before this field existed recorded none at all — "
+        "position_axis and role say which. A commanded pose recorded verbatim, "
+        "not a measurement, so the walk's own pointing error is unmeasured "
+        "rather than quantified here."
+    ),
+    "position_axis": (
+        "Which axis this pose was stated on — horizontal (a bearing in the "
+        "plane the microphone swings through) or vertical (a move above or "
+        "below mark height, which carries no bearing at all). Read it before "
+        "reading position_deg: it is what separates 'no bearing exists for "
+        "this pose' from 'this round banks none'."
+    ),
+    "mark_distance_m": (
+        "The speaker-to-MARK distance position_deg was derived against, in "
+        "metres. A reference length, never a surveyed capsule distance — "
+        "nothing in a round measures where the microphone actually ended up, "
+        "so this says what the bearing was taken against and makes no claim "
+        "about the other."
     ),
     "gate_window_ms": "The reflection gate actually applied to this capture.",
     "gate_floor_source": (

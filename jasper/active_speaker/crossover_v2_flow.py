@@ -29,7 +29,7 @@ per-driver distributed transaction with this shape: the Pi compiles one
 excitation program per phase, plays it as one continuous stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session. At the shipped defaults a
-FULL-tier commission is 8 captures (3 in stage 1, then 5) and an express one
+FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
 is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
 only. :func:`tier_display_info` derives both from the plans themselves and is
 what the household-facing chooser reads; do not restate the numbers where a
@@ -410,24 +410,37 @@ MIN_CLOUD_MEASURE_POSITIONS = 6
 # walk any more, but ``relay_plan_attempts_required`` counts its six poses
 # unconditionally — an operator's staged angle walk adds them to any session,
 # through this same index space — so the walk-armed row IS the binding one: at
-# N=11, M=6 it lands on 32, which is ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly. At
-# the shipped M=5 it is 31, one index under. Raising N by a single step spends
-# that last index and puts a staged walk at the ceiling.
+# N=11, M=6 it lands on 32, which is ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly.
+#
+# **That row is the shipped one since the 2026-08-24 geometry ruling**, which
+# put the design axis into the post-apply pose set and took
+# ``DEFAULT_CLOUD_VERIFY_POSITIONS`` from 5 to 6. It used to be 31 at M=5 — one
+# index under — and this comment used to say raising N would spend that last
+# index. The ruling spent it on a capture instead. Nothing here needs to move
+# (32 is the ceiling, not one past it), but the headroom is now zero AT THIS
+# BOUND — and the bound is a deliberately conservative CROSS-STAGE sum, not a
+# session's real draw: stage 1 and stage 2 each mint their own relay session
+# with its own blob-index space, so the largest single session this flow can be
+# configured into is 26 of 32 and the shipped one draws 30 across both. Read
+# "zero" as "the guard has no slack left", never as "the next entry must be
+# bought with a household-visible retake" — a producer that genuinely needs one
+# should first check whether it lands inside a single stage's own draw. The
+# three ways to pay are unchanged — a step of configuration headroom
+# (this constant), a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``), or a
+# lockstep raise of the relay Worker's own ceiling, which is a deployed
+# cross-system contract and not something a flow change gets to assume.
 #
 # Two different numbers get quoted at this ceiling and they answer different
 # questions; do not read one as the other. ``assert_cloud_plan_fits_relay_capacity``
 # sums ``cloud_capture_target`` (positions, not attempts) plus the poses, the
-# entry baseline and the geometry retries — 26 at N=11 — while the doctor asks
-# ``relay_plan_attempts_required`` for worst-case ATTEMPTS, which is the 31
+# entry baseline and the geometry retries — 27 at N=11 — while the doctor asks
+# ``relay_plan_attempts_required`` for worst-case ATTEMPTS, which is the 32
 # above and the figure the relay Worker's own ceiling has to carry.
 #
-# Nothing shipped changes: ``DEFAULT_CLOUD_MEASURE_POSITIONS`` is 9 and stage 1
-# does not run the pre-apply cloud at all (``STAGE1_INCLUDES_CLOUD_MEASURE``).
-# What is spent is one step of configuration headroom — the cheapest of the
-# three ways to pay, the other two being a household-visible retake
-# (``CLOUD_RETAKE_ALLOWANCE``) and a lockstep raise of the relay Worker's own
-# ceiling, which is a deployed cross-system contract and not something a flow
-# change gets to assume.
+# Nothing shipped changed when this came down: ``DEFAULT_CLOUD_MEASURE_POSITIONS``
+# is 9 and stage 1 does not run the pre-apply cloud at all
+# (``STAGE1_INCLUDES_CLOUD_MEASURE``). What was spent then was one step of
+# configuration headroom, the cheapest of the three ways to pay named above.
 MAX_CLOUD_MEASURE_POSITIONS = 11
 # Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included — so
 # the plan emits ``M − 1`` additional prompted positions after VERIFY, and the
@@ -438,30 +451,35 @@ MAX_CLOUD_MEASURE_POSITIONS = 11
 # pre-apply cloud already constrained, and it is paid at the END of a long
 # session where operator patience is the binding resource.
 #
-# It sits AT :data:`MIN_CLOUD_VERIFY_POSITIONS` (owner ruling, 2026-08-18), so
-# the shipped walk is exactly the shape the floor already validates — the anchor
-# plus four prompted lateral moves, both wide offsets included — and it is the
-# walk the remote tier has always taken
-# (:func:`remote_cloud_verify_positions` derives the same 5). What it gives up
-# is the fifth pose, ``12 cm ABOVE``: the journey's only above/below-mark-height
-# sample, since the lateral walk excludes ``POSITION_ROLE_XOVR`` by
-# construction. No claim reads that axis on its own — the group is combined into
-# ONE curve and graded as a spatial average, and the tier's promise ("re-check
-# the result at several spots around the mark") is about spread, not height.
-DEFAULT_CLOUD_VERIFY_POSITIONS = 5
+# It sits AT :data:`MIN_CLOUD_VERIFY_POSITIONS`, so the shipped walk is exactly
+# the shape the floor already validates — the anchor plus every pose in
+# :data:`CLOUD_VERIFY_POSE_PROMPTS`, both wide offsets included.
+#
+# **6 since the 2026-08-24 geometry ruling** (5 between the 2026-08-18 trim and
+# it), because the extra capture is the DESIGN AXIS —
+# :data:`CLOUD_VERIFY_POSE_PROMPTS` is where that ruling is recorded and is the
+# only place to read it.
+#
+# Pinned equal to ``1 + len(CLOUD_VERIFY_POSE_PROMPTS)`` by an import-time guard
+# beside that table: the number is declared here, where every reader of the
+# other choreography constants looks, and CHECKED where the table it counts is
+# defined.
+DEFAULT_CLOUD_VERIFY_POSITIONS = 6
 # The floor a caller may configure for the POST-apply group. It exists for the
 # same reason ``MIN_CLOUD_MEASURE_POSITIONS`` does and is enforced the same way:
-# both groups walk ``CLOUD_POSITION_PROMPTS`` from the front, so a group that
-# stops before the second wide offset carries no ~30 cm-class spread at all and
-# silently voids fundamental 1's LF-edge guarantee — which
+# a group that stops before the second wide offset carries no ~30 cm-class
+# spread at all and silently voids fundamental 1's LF-edge guarantee — which
 # ``test_cloud_prompts_front_load_the_wide_offsets`` states as a property of the
 # TABLE, not of the default. Until this floor existed, ``M = 2`` was accepted
 # and quietly broke that claim.
 #
-# DERIVED from the table (``_min_positions_for_two_wide_offsets``), never a
-# literal: reordering the prompts must move the floor with them, not leave a
-# stale number behind.
-MIN_CLOUD_VERIFY_POSITIONS = 5
+# DERIVED from the POST-APPLY table (``_min_positions_for_two_wide_offsets``
+# over :data:`CLOUD_VERIFY_POSE_PROMPTS`), never a literal: reordering the
+# prompts must move the floor with them, not leave a stale number behind. It is
+# a different table from the pre-apply group's since the 2026-08-24 ruling gave
+# the verify its own pose set, so the two floors are derived separately rather
+# than one standing in for both.
+MIN_CLOUD_VERIFY_POSITIONS = 6
 
 # Retake headroom a cloud plan carries ABOVE its entry count and its geometry
 # retries. Deliberately the same ABSOLUTE spare the shipped 3-entry flow has
@@ -588,6 +606,21 @@ class CloudPositionPrompt:
     it (see :data:`WIDE_OFFSET_MIN_CM`), so the ~30 cm-class guarantee cannot
     be voided by editing copy alone. ``role`` names the question the position
     answers (:data:`POSITION_ROLES`).
+
+    **Exactly which distance, because a campaign got this wrong.** It is the
+    pose's SIDEWAYS displacement measured in the mark's own plane — the
+    perpendicular leg of a right triangle whose other leg is
+    :data:`MARK_DISTANCE_M`, which is why :func:`position_angle_deg` converts
+    it with ``atan(offset / mark distance)`` and
+    :func:`~jasper.active_speaker.angle_capture.pose_at_angle` inverts it with
+    ``tan``. It says WHERE a pose is relative to the design axis; it says
+    NOTHING about how the microphone got there. A rig with a measurement arm
+    ROTATES to the bearing rather than carrying the capsule sideways, and the
+    2026-08 new-horn campaign read this field's centimetres as a carry — which
+    is the misreading the pose record's own ``position_deg`` /
+    ``position_axis`` fields
+    (:class:`~jasper.active_speaker.crossover_v2.spatial.PositionGeometry`)
+    now close.
 
     ``CLOUD_POSITION_PROMPTS`` is ORDERED to put two wide moves inside the
     first ``MIN_CLOUD_MEASURE_POSITIONS - 1`` offsets — pinned by test, because
@@ -803,13 +836,20 @@ LATERAL_MARK_RETURN_PROMPT = CloudPositionPrompt(
     role=POSITION_ROLE_ONAX,
 )
 
+# The four SIDE poses both angle walks are made of, derived from the cloud
+# table by PREDICATE (see ``_LATERAL_POSE_OFFSETS_CM``). Named once because two
+# walks now spend it — the R16 lateral walk below and the post-apply verify
+# walk further down — and two independent comprehensions over the same
+# predicate would be two places to edit and one place to forget.
+_SIDE_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = tuple(
+    prompt for prompt in CLOUD_POSITION_PROMPTS
+    if prompt.role != POSITION_ROLE_XOVR
+    and float(prompt.offset_cm) in _LATERAL_POSE_OFFSETS_CM
+)
+
 LATERAL_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
     (LATERAL_MARK_PROMPT,)
-    + tuple(
-        prompt for prompt in CLOUD_POSITION_PROMPTS
-        if prompt.role != POSITION_ROLE_XOVR
-        and float(prompt.offset_cm) in _LATERAL_POSE_OFFSETS_CM
-    )
+    + _SIDE_POSE_PROMPTS
     + (LATERAL_MARK_RETURN_PROMPT,)
 )
 
@@ -823,6 +863,65 @@ if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
         "the lateral walk must derive exactly one LEFT and one RIGHT pose at "
         f"each of {_LATERAL_POSE_OFFSETS_CM} cm, bracketed by the two at-mark "
         f"poses, got {len(LATERAL_POSE_PROMPTS)} poses"
+    )
+
+# --- the POST-APPLY walk's own pose set -------------------------------------- #
+#
+# **The design axis is a MEMBER of this walk, not just the anchor in front of
+# it** (owner ruling, 2026-08-24). VERIFY's anchor is measured at the mark, but
+# its summed capture is consumed by the TRACKING verdict and never joins the
+# group (see ``DEFAULT_CLOUD_VERIFY_POSITIONS``' own note) — so before this
+# table the post-apply group combined four off-axis curves and banked no
+# on-axis position record at all. The 2026-08 new-horn campaign paid for that
+# directly: it had to improvise an extra minimal MEASURE round just to get one
+# on-axis summed response of the graph it had applied.
+#
+# The at-mark pose earns its sweep for the same reason ``LATERAL_MARK_PROMPT``
+# does one group earlier: an anchor's evidence answers a different question, so
+# a design-axis sample in the SIDES' own fidelity class is a curve the group can
+# actually put beside them.
+#
+# What it costs is the fifth pose the 2026-08-18 trim gave up — ``12 cm ABOVE``,
+# the journey's only above/below-mark-height sample. That ruling spent this
+# capture on shortening the session; this one spends the same capture on the one
+# place the household sits. No claim reads the vertical axis on its own (the
+# group is combined into ONE curve and graded as a spatial average), and the
+# design axis is where every chart's reference is drawn.
+#
+# DERIVED from the same ``_SIDE_POSE_PROMPTS`` the lateral walk uses, so an edit
+# to the shared offsets moves both walks together, and vertical-free BY
+# CONSTRUCTION — which is what lets ``remote_cloud_verify_positions`` stop
+# clamping and lets an external positioner walk the whole thing.
+#
+# The at-mark row bypasses ``_pose`` for the same mechanical reason
+# ``LATERAL_MARK_PROMPT`` does — a 0 cm move cannot clear
+# :data:`MIN_CLOUD_OFFSET_CM` — but NOT for the same purpose, so the exemption
+# is argued rather than inherited. That floor guarantees a prompted move
+# DECORRELATES HF nulls, and it is a property of the GROUP, not of each row:
+# the four sides beside this one carry the whole ±7/±22 spread the combine
+# needs, and a fifth member on the design axis samples an arrival geometry
+# none of them has rather than repeating one of them.
+VERIFY_MARK_PROMPT = CloudPositionPrompt(
+    headline="Stay on the mark — one sweep from here first.",
+    detail="Same spot, same height, pointed at the speaker.",
+    offset_cm=0.0,
+    role=POSITION_ROLE_ONAX,
+)
+
+CLOUD_VERIFY_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
+    (VERIFY_MARK_PROMPT,) + _SIDE_POSE_PROMPTS
+)
+
+# Import-time guard, same register as the lateral walk's above: the shipped
+# post-apply group is the anchor plus this table, so a table edit that did not
+# move ``DEFAULT_CLOUD_VERIFY_POSITIONS`` with it would silently walk a prefix
+# and drop the poses past it.
+if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
+    raise ValueError(
+        "the post-apply group is VERIFY's anchor plus every pose in "
+        f"CLOUD_VERIFY_POSE_PROMPTS, so DEFAULT_CLOUD_VERIFY_POSITIONS must be "
+        f"{1 + len(CLOUD_VERIFY_POSE_PROMPTS)}, not "
+        f"{DEFAULT_CLOUD_VERIFY_POSITIONS}"
     )
 
 # --- remote tier: the same walk, stated as ANGLES (external positioner) ------ #
@@ -856,6 +955,15 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     approximate — so it lands on the wide poses' intended arc rather than on the
     chord a hand-walked session settles for.
 
+    **OPEN QUESTION — do not read the paragraph above as settled**
+    (`#2932 <https://github.com/jaspercurry/JTS/issues/2932>`_). The conversion
+    here is a TANGENT construction: it places the pose ``offset_cm`` sideways at
+    the mark's axial distance, which puts the capsule at ``mark / cos(θ)`` —
+    1.078 m at 22°, not a constant radius. Whether the rig actually swings a
+    constant-radius arc is a physical fact about the hardware that no code read
+    can settle, and the owner's tape measure decides it. Until then, treat the
+    bearing as sound and the equidistance claim as unverified.
+
     Refuses a vertical row rather than returning ``0``: :data:`POSITION_ROLE_XOVR`
     has no horizontal bearing at all, and a silent zero would aim a positioner at
     the mark while the plan believed it had sampled the crossover axis.
@@ -882,6 +990,64 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
         )
     radians = math.atan2(float(prompt.offset_cm) / 100.0, MARK_DISTANCE_M)
     return int(round(prompt.lateral_sign * math.degrees(radians)))
+
+
+def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
+    """One pose's WHERE, as the three fields its retained record carries.
+
+    The single derivation behind
+    :class:`~jasper.active_speaker.crossover_v2.spatial.PositionGeometry`, so
+    the bearing a positioner is aimed at and the bearing a record states come
+    from one place. Composes what already existed rather than adding a second
+    opinion: the angle is :func:`position_angle_deg`'s, the reference length is
+    :data:`MARK_DISTANCE_M`.
+
+    **Total, and that is load-bearing.** :func:`position_angle_deg` REFUSES two
+    shapes, and this runs on the retention path, where "a full disk must not
+    turn a good capture into a retake" — a derivation that raised would fail a
+    capture the household already gave. So each refusal becomes a recorded
+    ``degrees=None`` instead. ``None`` is the honest answer for both; a 0 would
+    read as "on the design axis", which is precisely what neither pose is.
+
+    The two, and they are the two the angle helper names:
+
+    * a :data:`POSITION_ROLE_XOVR` row — a vertical prompt asks for a raise or
+      a lower, and this rig does not swing in elevation, so no bearing was ever
+      commanded;
+    * a pose whose RECORD declares no side — ``lateral_sign == 0`` at a
+      non-zero offset. Today that is exactly
+      :data:`CLOUD_GEOMETRY_RETRY_PROMPTS`, BOTH rungs: they are built by
+      :meth:`CrossoverV2Session._prompt_shown_for` outside :func:`_pose`, and
+      ``_pose`` is the only thing that signs a row from its bearing word. Their
+      household COPY does name a side (rung 1 LEFT, rung 2 RIGHT) — the sign is
+      missing from the record, not from the instruction, which is why this
+      reads ``lateral_sign`` rather than the prose. Rung 2 could not be signed
+      honestly even so: it is a COMPOUND pose (sideways *and* above mark
+      height), and a bearing would describe only half the move.
+    """
+    if prompt.role == POSITION_ROLE_XOVR:
+        return _spatial.PositionGeometry(
+            axis=_spatial.POSITION_AXIS_VERTICAL,
+            degrees=None,
+            mark_distance_m=MARK_DISTANCE_M,
+        )
+    unsigned = float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0
+    return _spatial.PositionGeometry(
+        axis=_spatial.POSITION_AXIS_HORIZONTAL,
+        degrees=None if unsigned else position_angle_deg(prompt),
+        mark_distance_m=MARK_DISTANCE_M,
+    )
+
+
+#: The pose a capture with no prompted move of its own was taken at — every
+#: one of them (CHECK, MEASURE, the entry baseline, stage 2's anchor) is a
+#: design-axis capture, which is the same fact :func:`_entry_policy` states to
+#: the position gate when it is handed no prompt.
+_DESIGN_AXIS_GEOMETRY = _spatial.PositionGeometry(
+    axis=_spatial.POSITION_AXIS_HORIZONTAL,
+    degrees=0,
+    mark_distance_m=MARK_DISTANCE_M,
+)
 
 
 def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
@@ -947,22 +1113,48 @@ CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
 )
 
 
-def _min_positions_for_two_wide_offsets() -> int:
+def _min_positions_for_two_wide_offsets(
+    prompts: Sequence[CloudPositionPrompt] | None = None,
+) -> int:
     """Smallest group size whose walked offsets include two WIDE moves.
 
-    DERIVED from :data:`CLOUD_POSITION_PROMPTS`, never hardcoded: the whole
-    point of the wide-offset guarantee is that it survives someone reordering
-    that table, and a literal here would be the first thing to go stale if they
-    did. A group of size ``g`` walks offsets ``[:g - 1]``, so the answer is one
-    past the index of the second wide prompt.
+    DERIVED from the walked table, never hardcoded: the whole point of the
+    wide-offset guarantee is that it survives someone reordering that table,
+    and a literal here would be the first thing to go stale if they did. A
+    group of size ``g`` walks offsets ``[:g - 1]``, so the answer is one past
+    the index of the second wide prompt.
+
+    ``prompts`` defaults to :data:`CLOUD_POSITION_PROMPTS` — the PRE-apply
+    group's table, and the one the express size is derived from. The post-apply
+    group has walked its own table since the 2026-08-24 geometry ruling
+    (:data:`CLOUD_VERIFY_POSE_PROMPTS`), so its floor passes that table rather
+    than inheriting a number derived from a walk it no longer takes.
     """
-    wide = [i for i, prompt in enumerate(CLOUD_POSITION_PROMPTS) if prompt.wide]
+    table = CLOUD_POSITION_PROMPTS if prompts is None else tuple(prompts)
+    wide = [i for i, prompt in enumerate(table) if prompt.wide]
     if len(wide) < 2:
         raise CrossoverV2FlowError(
-            "CLOUD_POSITION_PROMPTS must supply at least two wide offsets — "
+            "a cloud walk's table must supply at least two wide offsets — "
             "fundamental 1's LF edge needs ~30 cm-class spread"
         )
     return wide[1] + 2
+
+
+# The post-apply floor's own guard, here rather than beside
+# :data:`CLOUD_VERIFY_POSE_PROMPTS` only because the derivation it checks is
+# defined immediately above. Same register as that table's other guard: a
+# reordered pose set that left MIN_CLOUD_VERIFY_POSITIONS behind would accept a
+# post-apply group with no ~30 cm-class spread in it.
+if MIN_CLOUD_VERIFY_POSITIONS != _min_positions_for_two_wide_offsets(
+    CLOUD_VERIFY_POSE_PROMPTS
+):
+    raise ValueError(
+        "MIN_CLOUD_VERIFY_POSITIONS must be the smallest post-apply group "
+        "whose walked poses include two wide offsets, which "
+        f"CLOUD_VERIFY_POSE_PROMPTS makes "
+        f"{_min_positions_for_two_wide_offsets(CLOUD_VERIFY_POSE_PROMPTS)}, "
+        f"not {MIN_CLOUD_VERIFY_POSITIONS}"
+    )
 
 
 # What happens AFTER the walk, in one clause. The pre-apply group hands the
@@ -1031,7 +1223,9 @@ def cloud_geometry_retry_reach_cm() -> float:
     )
 
 
-def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
+def cloud_walk_shape(
+    prompts: Sequence[CloudPositionPrompt], *, post_apply: bool = False,
+) -> str:
     """The walk's SHAPE in one sentence, for the pre-session orientation screen.
 
     **This replaces the enumerated preview** (issue #1941 R1). Work order D7
@@ -1050,16 +1244,22 @@ def cloud_walk_shape(positions: int, *, post_apply: bool = False) -> str:
     move in my head) — and then the walk spoon-feeds itself, one position per
     screen, which is what the per-entry screens already do.
 
-    The distance is DERIVED from the same ``[:positions - 1]`` slice of the
-    same table :func:`build_v2_capture_plan` and
-    :func:`build_v2_verify_capture_plan` prompt from, and formatted by the same
-    :func:`format_position_distance` the prompts themselves use — so the
-    orientation cannot describe a reach the walk does not have, and a reordered
-    or narrowed table moves this sentence with it. ``post_apply`` selects
-    stage 2's tail; the prompted moves are the same table either way, because
-    both groups walk it from the front.
+    The distance is DERIVED from the very poses the per-entry screens are built
+    from — ``prompts`` is the resolved table the caller handed its plan builder,
+    not a count it might slice differently — and formatted by the same
+    :func:`format_position_distance` the prompts themselves use, so the
+    orientation cannot describe a reach the walk does not have. ``post_apply``
+    selects stage 2's tail.
+
+    **It took a POSITION COUNT until the 2026-08-24 geometry ruling**, and
+    re-sliced ``CLOUD_POSITION_PROMPTS[:positions - 1]`` to find the moves. That
+    was sound while both groups walked one table from the front; the post-apply
+    group now has its own pose set (:data:`CLOUD_VERIFY_POSE_PROMPTS`) and a
+    caller may hand it another, so a count is no longer enough to say where a
+    walk goes. Stage 1 asks through :func:`walk_shape_for`, which owns its own
+    slice.
     """
-    return _walk_shape(cloud_walk_reach_cm(positions), post_apply=post_apply)
+    return _walk_shape(cloud_walk_reach_cm_of(prompts), post_apply=post_apply)
 
 
 def walk_shape_for(
@@ -1209,17 +1409,27 @@ def remote_cloud_verify_positions() -> int:
 
     An external positioner swings the microphone around the speaker on ONE
     axis; it cannot raise or lower the capsule. So remote walks the longest
-    prefix of :data:`CLOUD_POSITION_PROMPTS` that asks for no
-    :data:`POSITION_ROLE_XOVR` move — one past the last purely-lateral prompt —
-    and the group it cannot sample is disclosed rather than silently missing
+    prefix of :data:`CLOUD_VERIFY_POSE_PROMPTS` that asks for no
+    :data:`POSITION_ROLE_XOVR` move, and any group it cannot sample is
+    disclosed rather than silently missing
     (:data:`REMOTE_VERTICAL_DISCLOSURE`).
 
     Derived rather than written down for the same reason
     :func:`express_cloud_measure_positions` is: reordering the table must move
     this number with it instead of silently shipping a walk whose prefix now
     contains a vertical move the positioner cannot make.
+
+    Since the 2026-08-24 geometry ruling the post-apply table is vertical-free
+    BY CONSTRUCTION, so this resolves to Full's own walk and the subtraction is
+    a no-op — kept, and kept derived, because "the post-apply table has no
+    vertical row in it" is a property of that table rather than a promise, and
+    the day someone adds one this must shorten remote's walk rather than aim a
+    positioner at a pose it cannot reach.
     """
-    verticals = _vertical_prompt_indexes()
+    verticals = [
+        i for i, prompt in enumerate(CLOUD_VERIFY_POSE_PROMPTS)
+        if prompt.role == POSITION_ROLE_XOVR
+    ]
     # A group of size ``g`` walks prompts ``[:g - 1]``, so the largest
     # vertical-free group is one past the first vertical's index.
     positions = (verticals[0] + 1) if verticals else DEFAULT_CLOUD_VERIFY_POSITIONS
@@ -1227,8 +1437,8 @@ def remote_cloud_verify_positions() -> int:
         raise CrossoverV2FlowError(
             "the remote tier's vertical-free verify walk is "
             f"{positions} positions, below the validated floor of "
-            f"{MIN_CLOUD_VERIFY_POSITIONS} — CLOUD_POSITION_PROMPTS must keep "
-            "both wide lateral moves ahead of its first vertical one"
+            f"{MIN_CLOUD_VERIFY_POSITIONS} — CLOUD_VERIFY_POSE_PROMPTS must "
+            "keep both wide lateral moves ahead of any vertical one"
         )
     return min(positions, DEFAULT_CLOUD_VERIFY_POSITIONS)
 
@@ -1241,7 +1451,9 @@ def remote_cloud_verify_positions() -> int:
 # It used to add "the vertical spot Full measures was not sampled this time";
 # that clause went on 2026-08-18 when :data:`DEFAULT_CLOUD_VERIFY_POSITIONS`
 # came down to the floor and Full's walk became the same vertical-free prefix.
-# The rest is unchanged and still owed: it states a fact about THIS walk.
+# The 2026-08-24 geometry ruling made that permanent rather than incidental —
+# :data:`CLOUD_VERIFY_POSE_PROMPTS` has no vertical row to give up. The rest is
+# unchanged and still owed: it states a fact about THIS walk.
 REMOTE_VERTICAL_DISCLOSURE = (
     "Measured on the horizontal axis only — a remote positioner cannot raise "
     "or lower the microphone, so no vertical spot was sampled."
@@ -1702,7 +1914,8 @@ def _validated_cloud_counts(
     (that is the point: express is a distinct named plan, not a loosened
     floor), and :func:`resolve_plan_shape` has already pinned N and M to the
     derived constants before calling here. What both tiers share is the
-    prompt-table length check below, which is a property of the TABLE.
+    pre-apply prompt-table length check below, which is a property of the
+    TABLE — see it for why the post-apply group's fit is checked elsewhere.
     """
     n = int(cloud_measure_positions)
     m = int(cloud_verify_positions)
@@ -1717,12 +1930,22 @@ def _validated_cloud_counts(
                 f"cloud_verify_positions must be at least "
                 f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
             )
-    # Both groups index the SAME prompt table, so the longer of the two bounds
-    # how many offsets it must supply.
-    offsets_needed = max(n, m) - 1
-    if offsets_needed > len(CLOUD_POSITION_PROMPTS):
+    # The PRE-apply group indexes :data:`CLOUD_POSITION_PROMPTS`, so that table
+    # bounds N here.
+    #
+    # M is NOT bounded here, and the omission is deliberate. Both groups walked
+    # this one table until the 2026-08-24 geometry ruling, and ``max(n, m) - 1``
+    # was the honest bound then. The post-apply group now walks a table this
+    # function cannot see: ``verify_prompts`` is resolved at plan-build time,
+    # and a shape is resolved before it. Bounding M against the DEFAULT set
+    # would refuse a caller who supplied a longer one — the very parameter the
+    # ruling added — while still not checking the set that caller actually
+    # walks. So the fit is checked where the table is known, in
+    # :func:`build_v2_verify_capture_plan`, which refuses a shape and a pose set
+    # that disagree.
+    if n - 1 > len(CLOUD_POSITION_PROMPTS):
         raise CrossoverV2FlowError(
-            f"cloud group needs {offsets_needed} position prompts but "
+            f"the pre-apply cloud group needs {n - 1} position prompts but "
             f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
         )
     return n, m
@@ -3432,6 +3655,17 @@ class _CloudPosition:
     # item 1). Defaulted so every construction site that predates roles — the
     # corpus and unit fixtures — stays valid unchanged.
     role: str = POSITION_ROLE_ONAX
+    # WHERE the microphone was, carried off the SAME prompt ``role`` and
+    # ``wide`` come from (owner ruling, 2026-08-24). Held on the position
+    # rather than re-derived at retention: a geometry retake shows a different
+    # prompt than the table's, and a second derivation from the index would
+    # state the spot the operator was told to abandon.
+    #
+    # Defaulted to the design axis so every construction site that predates it
+    # — the corpus and unit fixtures — stays valid unchanged, exactly as
+    # ``role`` above is. That default is the honest one for a fixture: a
+    # position built without a pose is one nobody moved.
+    geometry: _spatial.PositionGeometry = _DESIGN_AXIS_GEOMETRY
     # PR-4: the contract-derived analysis bands this position's GROUP should be
     # combined/searched with — spatial_combine.combine_positions's own
     # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
@@ -5079,6 +5313,7 @@ class CrossoverV2Session:
         driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+        verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if len(roles) != 2:
@@ -5288,6 +5523,13 @@ class CrossoverV2Session:
         self._lateral_prompts: tuple[CloudPositionPrompt, ...] = (
             tuple(lateral_prompts) if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
+        )
+        # The POST-APPLY walk's pose set, resolved through the same one resolver
+        # the plan builder uses so the session and the plan cannot read
+        # different tables — the desync ``V2PlanShape`` exists to close, applied
+        # to the poses rather than to their count.
+        self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
+            verify_prompts
         )
         # WO-1: the per-position evidence metadata handed to the retention
         # seam, kept by position id so the group close can serialize the
@@ -6627,22 +6869,27 @@ class CrossoverV2Session:
         """The prompt for one group index — the SAME table the plan emitted.
 
         A group's first PROMPTED index is its anchor's first move, so the
-        group's indexes map onto :data:`CLOUD_POSITION_PROMPTS` from the front:
-        the group's ``i``-th index (0-based) takes ``CLOUD_POSITION_PROMPTS[i]``,
-        exactly as ``build_v2_capture_plan`` enumerates them. Running off the
-        end cannot happen (``_validated_cloud_counts`` refuses a group longer
-        than the table), but a defensive fallback keeps a prompt-less capture
-        from being a crash rather than a retake.
+        group's indexes map onto its own table from the front: the group's
+        ``i``-th index (0-based) takes ``table[i]``, exactly as the matching
+        plan builder enumerates them. Running off the end is refused UPSTREAM
+        for each group — the pre-apply cloud by ``_validated_cloud_counts``, the
+        post-apply walk by :func:`build_v2_verify_capture_plan`, which refuses a
+        shape and a pose set that disagree — but a defensive fallback keeps a
+        prompt-less capture from being a crash rather than a retake, for a
+        session constructed with an index map no plan builder produced.
         """
         offsets = self._journey.plan.group_offsets(phase)
         try:
             position = offsets.index(index)
         except ValueError:
             position = 0
-        # R16: the lateral walk has its own table and its own length. Same
-        # front-loading rule, same builder enumeration order.
+        # Three groups, three tables, one front-loading rule and one builder
+        # enumeration order. R16's lateral walk and (since the 2026-08-24
+        # geometry ruling) the post-apply walk each have their own; the
+        # pre-apply cloud is the shared table's own walker.
         table = (
             self._lateral_prompts if phase == PHASE_LATERAL
+            else self._verify_prompts if phase == PHASE_CLOUD_VERIFY
             else CLOUD_POSITION_PROMPTS
         )
         if position < len(table):
@@ -7941,6 +8188,7 @@ class CrossoverV2Session:
             prompt=prompt.text,
             wide=prompt.wide,
             role=prompt.role,
+            geometry=position_geometry(prompt),
             captured_at=time.time(),
             response=response,
             sample_rate_hz=self._verify_program.sample_rate_hz,
@@ -8007,6 +8255,7 @@ class CrossoverV2Session:
             prompt=position.prompt,
             wide=position.wide,
             role=position.role,
+            geometry=position.geometry,
             captured_at=position.captured_at,
             session_id=self.session_id,
             gate_window_ms=_gate_window_ms(position.response),
@@ -12177,8 +12426,36 @@ def build_v2_capture_plan(
     )
 
 
+def verify_pose_table(
+    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
+) -> tuple[CloudPositionPrompt, ...]:
+    """The post-apply walk's pose set — the caller's, or the runbook default.
+
+    ONE resolver, so the plan the phone is handed, the index→phase map it walks,
+    and the session's own :meth:`CrossoverV2Session._cloud_prompt` cannot end up
+    reading three different tables. The same shape ``lateral_prompts`` already
+    has for the R16 walk, and the same rule: ``None`` is
+    :data:`CLOUD_VERIFY_POSE_PROMPTS`, the ratified set, and anything else is a
+    caller who has decided to walk somewhere else and owns that choice.
+
+    **The set is a parameter because the runbook is a suggestion.** The
+    post-apply pose set used to be a fixed prefix of the pre-apply table, so
+    "measure the result at these angles" was not a question anyone could ask —
+    the 2026-08 new-horn campaign wanted the design axis in it and had to run a
+    separate MEASURE round to get one. A caller states the set it wants; the
+    default states what a household gets when it states nothing.
+    """
+    return (
+        CLOUD_VERIFY_POSE_PROMPTS if verify_prompts is None
+        else tuple(verify_prompts)
+    )
+
+
 def build_v2_verify_capture_plan(
-    fc_hz: float, *, plan_shape: V2PlanShape | None = None,
+    fc_hz: float,
+    *,
+    plan_shape: V2PlanShape | None = None,
+    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
 ) -> Any:
     """The post-apply (STAGE 2) plan — the tier's own verify walk, or the
     1-entry recovery re-arm.
@@ -12207,6 +12484,11 @@ def build_v2_verify_capture_plan(
     ``confirm_body`` verbatim, so the tone still waits for the household to
     say they are standing on the mark — what changed is only the ordering
     premise (there is no in-session apply to confirm *after* any more).
+
+    ``verify_prompts`` is the pose set this walk takes; ``None`` is the
+    ratified one (:func:`verify_pose_table`). The shape's ``M`` and the table's
+    length must agree — a shape asking for more prompted poses than the table
+    supplies is refused here rather than walked short.
     """
     from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 
@@ -12363,8 +12645,31 @@ def build_v2_verify_capture_plan(
     cloud_verify_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_VERIFY
     ]
+    table = verify_pose_table(verify_prompts)
+    # EQUALITY, not "the table is long enough". Both sides are real:
+    #
+    #   * a table SHORTER than the walk prompts fewer spots than the session
+    #     believes it is running, and
+    #   * a table LONGER is silently walked as a PREFIX — which is worse,
+    #     because it is quiet. The poses past ``M - 1`` never reach an entry,
+    #     while :func:`build_v2_verify_session_spec` quotes the orientation's
+    #     reach off the WHOLE resolved table: a 5-pose walk carrying a 60 cm
+    #     sixth pose reaches 50 cm and promises 70 cm on the wire. A household
+    #     told how much room to clear is owed the walk's own number.
+    #
+    # Gated on :attr:`V2PlanShape.has_cloud_verify_group` because express is
+    # ``M = 1``: it emits NO cloud-verify entry at all, so a bare ``!=`` would
+    # measure its empty index list against the 5-row default and refuse the one
+    # shipped shape that is correct by construction.
+    if plan_shape.has_cloud_verify_group and len(cloud_verify_indexes) != len(table):
+        raise CrossoverV2FlowError(
+            f"a post-apply group of {target} positions walks "
+            f"{len(cloud_verify_indexes)} prompted poses but the pose set "
+            f"supplies {len(table)} — give the shape the M its table earns "
+            "(1 + len(poses))"
+        )
     for offset, capture_index in enumerate(cloud_verify_indexes):
-        prompt = _positioned_prompt(CLOUD_POSITION_PROMPTS[offset], plan_shape)
+        prompt = _positioned_prompt(table[offset], plan_shape)
         screen = _cloud_entry_screen(
             progress=capture_progress_label(capture_index, target),
             title=prompt.headline,
@@ -12394,6 +12699,7 @@ def build_v2_verify_session_spec(
     *,
     acknowledgement_binding: str,
     plan_shape: V2PlanShape | None = None,
+    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
     """The relay v3 spec for a post-apply session (stage 2, or §5.2 recovery).
@@ -12411,7 +12717,13 @@ def build_v2_verify_session_spec(
     """
     from jasper.capture_relay.spec import build_crossover_sweep_spec
 
-    plan = build_v2_verify_capture_plan(fc_hz, plan_shape=plan_shape)
+    # Resolved ONCE here and handed to both readers below, so the sentence the
+    # orientation quotes and the entries the walk prompts are literally the same
+    # object rather than two calls that happen to agree.
+    verify_table = verify_pose_table(verify_prompts)
+    plan = build_v2_verify_capture_plan(
+        fc_hz, plan_shape=plan_shape, verify_prompts=verify_table,
+    )
     walked = plan.capture_target > 1
     extra: dict[str, Any] = (
         {
@@ -12419,10 +12731,10 @@ def build_v2_verify_session_spec(
             "guided_tier": plan_shape.tier if plan_shape is not None else "",
             # Stage 2's walk is oriented on the same terms as stage 1's (work
             # order D7): a post-apply cloud discovered one prompt at a time is
-            # the same defect, and the group walks the same table.
-            "walk_shape": cloud_walk_shape(
-                plan.capture_target, post_apply=True
-            ),
+            # the same defect. Quoted off the SAME resolved pose set the entries
+            # above were built from, so the sentence cannot describe a reach the
+            # walk does not have.
+            "walk_shape": cloud_walk_shape(verify_table, post_apply=True),
             # Stage 2 announces its anchor and nothing behind it — same
             # derivation as stage 1's, off the same index -> phase map.
             "announced_captures": announced_capture_indexes(
@@ -13024,6 +13336,10 @@ __all__ = [
     "LATERAL_CONSUMER_FC_SELECTOR",
     "LATERAL_CONSUMER_FORWARD_MODEL",
     "LATERAL_POSE_PROMPTS",
+    "CLOUD_VERIFY_POSE_PROMPTS",
+    "VERIFY_MARK_PROMPT",
+    "verify_pose_table",
+    "position_geometry",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "LateralPose",

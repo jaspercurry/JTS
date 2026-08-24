@@ -3059,11 +3059,29 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     ``packet_positional_evidence`` reads exactly the three it always read.
 
     ``positions.angle_deg`` is the OTHER case worth naming, and it is the
-    closest call here: its ``reason`` prose changed, from a false corpus-wide
-    claim to a true statement about the cloud record's own shape. The FIELD
-    still says what it said — ``not_evaluated`` for a cloud row's angle — so a
-    v1 reader reaches the same conclusion from it; only the sentence explaining
-    why got accurate.
+    closest call here. Its ``reason`` prose changed once already, from a false
+    corpus-wide claim to a true statement about the cloud record's own shape.
+    The 2026-08-24 geometry ruling then falsified THAT too — a cloud position
+    now stamps its own ``position_deg`` — so the block became CONDITIONAL, and
+    the whole entry changes shape on a round that banks bearings.
+
+    That is still not a misreading, and the reason is the ``harmonics``
+    precedent one paragraph down — VERBATIM, not by analogy. Keeping the old
+    spelling on a round that HAS bearings would assert "no seat in this round
+    states one", which is exactly what a reader would act on; a field whose
+    claim became false is the one case where keeping the spelling is the
+    MISLEADING choice. The shape it changes into is also not new to this
+    document: ``lateral_poses`` beside it has always been ``available`` plus
+    the answer, or ``available`` plus ``status``/``reason``, so a v1 reader of
+    this packet already meets it in the block next door.
+
+    **What this does NOT rest on is byte-identity.** An earlier draft of this
+    paragraph claimed the refusing form was byte-identical for a pre-writer
+    round. It is not: v1 emitted ``{status, reason}`` and this emits
+    ``{available, status, reason}``, with a reason that names different causes
+    — the ``available`` assertion below would fail against v1. The no-bump
+    decision never needed that claim, and a justification resting on a false
+    one is worse than the change it justifies.
 
     ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
     additive case again — but it also RENAMED a ``not_evaluated`` entry, from
@@ -3086,7 +3104,10 @@ def test_added_packet_blocks_do_not_bump_the_packet_schema_version(packet):
     assert len(packet["feature_classification"]["verdicts"][0]) == 7
     assert packet["lateral_poses"]["available"] is False
     assert packet["capture_snr"]["available"] is False
+    # This fixture's rows predate the geometry writer, so the block takes its
+    # refusing form — and the refusing form is unchanged from v1.
     assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
+    assert packet["positions"]["angle_deg"]["available"] is False
     assert packet["positions"]["cross_seat_sigma"]["available"] is True
     assert packet["harmonics"]["available"] is False
 

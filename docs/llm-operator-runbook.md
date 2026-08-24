@@ -490,13 +490,17 @@ yourself re-creates exactly the pooling the σ section below warns about.
 `null`, never a number: a value there would read as a preternaturally clean
 driver exactly where nothing was measured.
 
-**Angle is now surfaced, and it is not the field you might reach for.** The
-packet's `lateral_poses` block carries the signed whole-degree `position_deg`
-each accepted walk pose was measured at, read from the round's own
-`positions/*.json` sidecars. `positions[].angle_deg` stays `not_evaluated`, and
-that is correct rather than stale: a cloud position is a floor-plan seat whose
-record stamps no bearing at all. The two are different captures — do not join
-them by index.
+**Angle is now surfaced on both blocks.** The packet's `lateral_poses` block
+carries the signed whole-degree `position_deg` each accepted walk pose was
+measured at, read from the round's own `positions/*.json` sidecars.
+`positions[].angle_deg` carries the cloud's own bearings too, since the
+2026-08-24 geometry ruling stamps a signed `position_deg` on every retained
+cloud position — but it is conditional, not unconditional: it publishes
+`{"available": true, "angles_deg": [...]}` when the round's rows carry one,
+and falls back to `not_evaluated` only for a round banked before that writer,
+or for a seat that commanded no bearing at all (a vertical pose, or a
+geometry-locked retake, whose record declares no side). The two blocks
+are still different captures — do not join them by index.
 
 **Per-capture SNR arrives with the ring, not with the round.** `capture_snr`
 carries each retained capture's magnitude and alignment signal-to-noise, keyed

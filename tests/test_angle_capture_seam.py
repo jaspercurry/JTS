@@ -423,6 +423,7 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     record = cloud_position_record(
         position_id="angle_01", phase="measure", index=stop.index, attempt=1,
         prompt=stop.prompt.text, wide=stop.prompt.wide, role=stop.prompt.role,
+        geometry=flow.position_geometry(stop.prompt),
         captured_at=0.0, session_id="s", gate_window_ms=None,
         gate_floor_source=None, gate_disclosure=None, gate_moved_rms_db=None,
         gate_reflection_delay_ms=None, validity_floor_hz=None,
@@ -433,6 +434,12 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     assert record["wide"] is True
     assert record["role"] == flow.POSITION_ROLE_OFFAX
     assert record["prompt"] == stop.prompt.text and record["prompt"]
+    # The bearing the stop was RESOLVED at is the bearing the record banks —
+    # ONE derivation off the pose, so a staged angle walk cannot bank a spot
+    # that disagrees with the one it asked for.
+    assert record["position_deg"] == flow.position_angle_deg(stop.prompt) == 22
+    assert record["position_axis"] == "horizontal"
+    assert record["mark_distance_m"] == flow.MARK_DISTANCE_M
 
 
 def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
@@ -476,12 +483,21 @@ def test_index_phase_map_matches_the_resolved_walk() -> None:
 
 
 def test_the_arc_removes_the_inverse_square_confound() -> None:
-    """Every stop sits at the SAME radius -- the geometric reason for degrees.
+    """The ratified design's inverse-square argument, and its OPEN question.
 
-    The ratified design's own argument: a 40 cm lateral slide off a 1 m mark
-    puts the microphone 107.7 cm out, ~0.64 dB of pure inverse-square level
-    change with no acoustics in it. An angle-stated pose is a constant-radius
-    arc, so that confound is structural rather than addressed in prose.
+    The argument: a 40 cm lateral slide off a 1 m mark puts the microphone
+    107.7 cm out, ~0.64 dB of pure inverse-square level change with no
+    acoustics in it. Stating a pose as an ANGLE is meant to make that confound
+    structural rather than addressed in prose.
+
+    **This docstring used to open "Every stop sits at the SAME radius", and the
+    body below has always said otherwise** — it asserts
+    ``radius == mark / cos(theta)``, which is 1.078 m at 22°, not constant.
+    What the body pins is the TANGENT construction ``pose_at_angle`` actually
+    performs; whether the physical rig swings a constant-radius arc is a
+    hardware fact no test can settle, and the owner's tape measure decides it:
+    `#2932 <https://github.com/jaspercurry/JTS/issues/2932>`_. The assertions
+    are unchanged — only the sentence that contradicted them.
     """
     for degrees in (0, 7, -7, 22, -22, 45):
         pose = ac.pose_at_angle(degrees)

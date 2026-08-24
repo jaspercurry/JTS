@@ -51,21 +51,38 @@ from the seam that already owns it:
       dumps/wav/*.wav                dump-ring captures (optional)
       dumps/sidecar/*.json           dump-ring sidecars, one per wav (optional)
 
-**What this module deliberately does NOT do.** No numeric microphone angle
-is recovered for any position this module reads. That is narrower than "a
-round's bundle never carries one" — :func:`~.spatial.lateral_pose_record`
-DOES stamp a signed whole-degree ``position_deg`` for a per-driver LATERAL
-walk pose, and :mod:`.evidence_packet` now publishes those bearings in its
-``lateral_poses`` block — but every view below reads the CLOUD positions
-block, built from :func:`~.spatial.cloud_position_record`, which carries a
-coarse ``role`` (``onax``/``offax``) and no angle at all. A lateral pose is
-a DIFFERENT capture from a cloud seat, not the same one with more detail,
-so a bearing is not something these views are missing: it is not a property
-a graded seat has. The campaign's ``frozen_reference.py`` carried a
-hardcoded ``index -> degrees`` table for exactly this reason; it is not
-ported. Every view here keys a position by its own stable ``position_id``
-instead (``f"{phase}_{index:02d}"``, assigned once by the walk driver and
-stable across rounds that walk the same shape).
+**A seat's BEARING is read, and the position id alone is no longer enough.**
+Every view here keys a position by its stable ``position_id``
+(``f"{phase}_{index:02d}"``, assigned once by the walk driver), because that is
+what lines the SAME prompted spot up across rounds — but the 2026-08-24
+geometry ruling put the design axis at the front of the post-apply pose set,
+so an id stopped naming a fixed bearing across that boundary:
+``cloud_verify_02`` was −7° before it and 0° after; ``cloud_verify_04`` was
+−22° and is now +7°. A spread taken across the ruling is the difference between
+two different seats.
+
+So :func:`load_banked_round` reads each row's own ``position_deg`` into
+``PositionCurve.degrees`` (``None`` for a round banked before that writer, for
+a vertical seat, and for a retake that declares no side — "not recorded", never
+zero), and :func:`repeatability_spread` carries the bearings beside the numbers
+so a mixed comparison is VISIBLE
+(:meth:`RepeatabilityMetric.bearings_agree`). It discloses rather than refuses:
+the doctrine's hard stops are component damage and hearing safety, and
+comparing a pre-ruling round to a post-ruling one is a legitimate question a
+guard would have blocked. The synthesized VERIFY pose keeps ``0.0``, which is
+not a recovered angle but what that phase MEANS.
+
+The campaign's ``frozen_reference.py`` carried a hardcoded
+``index -> degrees`` table because the cloud record had no bearing of its own
+to read. It is not ported, and now for a better reason: a second
+hand-maintained copy of a fact the record already carries is only a place for
+the two to drift.
+
+**What this module still deliberately does NOT do.** It never joins a lateral
+walk pose to a cloud seat. They are DIFFERENT captures — a per-driver
+measurement and a summed sweep — not the same one with more detail, and both
+count positions from the front of their own table, so a matching index between
+them is a coincidence rather than a correspondence.
 """
 
 from __future__ import annotations
@@ -178,6 +195,24 @@ def _bundle_session_dir(round_dir: Path) -> Path:
     return children[0]
 
 
+def _row_degrees(row: Mapping[str, Any]) -> float | None:
+    """One packet position row's banked bearing, or ``None`` for "not recorded".
+
+    ``None`` covers every way a row can lack one and they are deliberately not
+    told apart HERE — a round banked before the 2026-08-24 geometry writer, a
+    vertical seat that commanded no bearing, a geometry-locked retake that
+    declares no side. The packet's own ``angle_deg`` block is where that
+    distinction is published; a view only needs to know it has no number.
+
+    ``bool`` is rejected before ``int`` because it subclasses it, so a
+    hand-edited ``true`` would otherwise be published as a 1° bearing.
+    """
+    value = row.get("position_deg")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def load_banked_round(round_dir: Path) -> BankedRound:
     """Read one ``bank-crossover-round.sh`` output directory into a
     :class:`BankedRound`.
@@ -219,7 +254,15 @@ def load_banked_round(round_dir: Path) -> BankedRound:
             freqs_hz=grid,
             magnitude_db=np.asarray(row.get("magnitude_db") or [], dtype=float),
             smoothing_fraction=smoothing,
-            degrees=None,
+            # The seat's OWN banked bearing, read rather than defaulted, since
+            # the 2026-08-24 geometry ruling made the packet carry it. Absent
+            # stays ``None`` — "not recorded", never zero, which is
+            # ``PositionFlatness.degrees``' own documented contract — and that
+            # is what a round banked before the writer reads as. ``bool`` is
+            # excluded because it subclasses ``int`` and a stray ``true`` would
+            # otherwise publish 1 as a bearing, the same guard the packet's own
+            # angle block applies.
+            degrees=_row_degrees(row),
             take_id=str(row.get("take_id") or ""),
         )
         for row in positions_block.get("positions") or []
@@ -637,10 +680,48 @@ def per_seat_curves(
 @dataclass(frozen=True)
 class RepeatabilityMetric:
     """One metric's spread across the compared rounds, plus each round's own
-    value keyed by the round label the caller supplied."""
+    value keyed by the round label the caller supplied.
+
+    ``degrees`` is the BEARING each round banked for this row, where the row is
+    a seat and the round records one — empty on a pooled role metric, which has
+    no single bearing. It exists because a per-seat metric is keyed by
+    ``position_id``, and a position id stopped naming the same bearing across
+    the 2026-08-24 geometry ruling: the ruling put the design axis at the front
+    of the post-apply pose set, so ``cloud_verify_02`` was −7° before it and 0°
+    after, ``cloud_verify_04`` was −22° and is now +7°. A "spread" taken across
+    that boundary is the difference between two different seats, and nothing in
+    the comparison could see it.
+
+    **It DISCLOSES rather than refuses**, deliberately. The
+    measurement-loop doctrine's hard stops are for component damage and
+    hearing safety; this is an interpretation question, and an operator who
+    knowingly compares a pre-ruling round to a post-ruling one — to see what
+    the ruling itself did — is asking a legitimate question a guard would
+    have blocked. So the bearings ride beside the number and
+    :meth:`bearings_agree` names the answer; what to do about a ``False`` is
+    the reader's call.
+    """
 
     name: str
     values: dict[str, float]
+    #: ``{round label: bearing}``, only for rows that HAVE one. A label absent
+    #: from this map recorded no bearing for the row (a pre-ruling round, a
+    #: vertical seat, a retake that declares no side) — which is why
+    #: :meth:`bearings_agree` answers ``None`` rather than ``True`` when fewer
+    #: than two are known: "nothing disagreed" and "nothing was comparable" are
+    #: different facts.
+    degrees: dict[str, float] = field(default_factory=dict)
+
+    def bearings_agree(self) -> bool | None:
+        """Whether every round that recorded a bearing recorded the SAME one.
+
+        ``None`` means unknowable here — fewer than two rounds recorded one, so
+        there is no comparison to make. Never ``True`` by default.
+        """
+        known = list(self.degrees.values())
+        if len(known) < 2:
+            return None
+        return len(set(known)) == 1
 
     def spread(self) -> dict[str, float] | None:
         vs = list(self.values.values())
@@ -658,7 +739,13 @@ class RepeatabilityMetric:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "values": self.values, "spread": self.spread()}
+        return {
+            "name": self.name,
+            "values": self.values,
+            "spread": self.spread(),
+            "degrees": self.degrees,
+            "bearings_agree": self.bearings_agree(),
+        }
 
 
 @dataclass(frozen=True)
@@ -711,6 +798,7 @@ def repeatability_spread(
     log_role_pooled: dict[str, dict[str, float]] = {}
     linear_pooled: dict[str, float] = {}
     position_values: dict[str, dict[str, float]] = {}
+    position_degrees: dict[str, dict[str, float]] = {}
     for label, banked in rounds:
         split = role_split_flatness(banked.report, banked.positions, primary_role=primary_role)
         roles = ([split.primary] if split.primary is not None else []) + list(split.others)
@@ -724,6 +812,16 @@ def repeatability_spread(
                     position_values.setdefault(position_flatness.position_id, {})[
                         label
                     ] = position_flatness.rms_db
+                    # The seat's banked bearing rides beside its number, so a
+                    # comparison spanning the geometry ruling is VISIBLE rather
+                    # than silently pairing two different seats under one id.
+                    # Only recorded bearings are stored — an absent label is
+                    # what makes ``bearings_agree()`` answer None instead of
+                    # inventing agreement out of a missing number.
+                    if position_flatness.degrees is not None:
+                        position_degrees.setdefault(position_flatness.position_id, {})[
+                            label
+                        ] = float(position_flatness.degrees)
         # The SHIPPED linear-pooled figure — spec_convergence_residual's own
         # number, lifted from the report rather than recomputed — carried
         # beside the per-octave/per-role re-poolings above so a caller can
@@ -739,7 +837,8 @@ def repeatability_spread(
     for role in sorted(log_role_pooled):
         metrics.append(RepeatabilityMetric(f"{role}_log_pooled_db", dict(log_role_pooled[role])))
     per_position_metrics = [
-        RepeatabilityMetric(seat, dict(values)) for seat, values in sorted(position_values.items())
+        RepeatabilityMetric(seat, dict(values), dict(position_degrees.get(seat, {})))
+        for seat, values in sorted(position_values.items())
     ]
     return RepeatabilityResult(
         round_labels=labels, metrics=tuple(metrics), per_position=tuple(per_position_metrics)

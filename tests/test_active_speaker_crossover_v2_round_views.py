@@ -77,6 +77,7 @@ def _make_round_dir(
     spec_smoothing_fraction: int = 12,
     positions_smoothing_fraction: int | None = None,
     trusted_floor_hz: float | None = None,
+    position_degrees: dict[str, float] | None = None,
 ) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
     produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/``.
@@ -114,10 +115,17 @@ def _make_round_dir(
         # Power-mean the supplied positions when the caller doesn't care.
         stack = np.vstack([curve for _role, curve in position_curves.values()])
         combined_db = 10.0 * np.log10(np.mean(10.0 ** (stack / 10.0), axis=0))
+    # ``position_deg`` is present only for the seats the caller named, exactly
+    # as the real writer behaves: the packet's row filter drops a key whose
+    # value is None, so a seat with no commanded bearing — and every seat of a
+    # round banked before the 2026-08-24 geometry writer — carries no key at
+    # all rather than a null.
+    degrees = position_degrees or {}
     positions = [
         {
             "position_id": position_id, "index": index, "attempt": 1,
             "role": role, "take_id": "", "magnitude_db": curve.tolist(),
+            **({"position_deg": degrees[position_id]} if position_id in degrees else {}),
         }
         for index, (position_id, (role, curve)) in enumerate(position_curves.items(), start=2)
     ]
@@ -693,6 +701,104 @@ def test_repeatability_spread_single_round_has_no_spread(tmp_path):
     result = repeatability_spread([("only", r1)])
     shipped = next(m for m in result.metrics if m.name == "shipped_linear_pool_db")
     assert shipped.spread() is None
+
+
+def test_a_seat_carries_the_bearing_its_own_record_banked(tmp_path):
+    """(S4) The views read ``position_deg`` instead of defaulting it to None.
+
+    Before the 2026-08-24 geometry ruling a cloud seat had no bearing to read,
+    so ``load_banked_round`` hardcoded ``degrees=None`` — which then made
+    ``flat_spec_views``' ``angles_recorded`` false and printed "angles: NOT
+    RECORDED" on rounds that DO record angles. Absence still reads as None:
+    "not recorded", never zero.
+    """
+    banked = load_banked_round(_make_round_dir(
+        tmp_path, "r1",
+        position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_03": ("onax", _flat_curve()),
+        },
+        position_degrees={"cloud_verify_02": 0.0},
+    ))
+
+    by_id = {p.position_id: p for p in banked.positions}
+    # A banked 0 is a REAL commanded pose — the design axis — and must survive
+    # as 0.0 rather than being read back as "no bearing".
+    assert by_id["cloud_verify_02"].degrees == 0.0
+    # …and a seat whose record carries no key is not recorded, not zero.
+    assert by_id["cloud_verify_03"].degrees is None
+
+
+def test_a_repeat_across_the_geometry_ruling_discloses_its_mixed_bearings(tmp_path):
+    """(S4) One ``position_id``, two different seats — made VISIBLE, not refused.
+
+    The ruling put the design axis at the front of the post-apply pose set, so
+    ``cloud_verify_02`` names −7° in a pre-ruling round and 0° in a post-ruling
+    one. ``repeatability_spread`` keys per-seat metrics by id, so without this
+    the "spread" of two different seats reads as instrument noise.
+
+    **Disclosed rather than blocked** — the doctrine's hard stops are component
+    damage and hearing safety, and comparing across the ruling to see what the
+    ruling DID is a legitimate question. So the spread is still published; the
+    bearings ride beside it and ``bearings_agree()`` names the answer.
+    """
+    pre = load_banked_round(_make_round_dir(
+        tmp_path, "pre", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        position_degrees={"cloud_verify_02": -7.0},
+    ))
+    post = load_banked_round(_make_round_dir(
+        tmp_path, "post", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        position_degrees={"cloud_verify_02": 0.0},
+    ))
+
+    seat = next(
+        m for m in repeatability_spread([("pre", pre), ("post", post)]).per_position
+        if m.name == "cloud_verify_02"
+    )
+
+    assert seat.bearings_agree() is False
+    assert seat.degrees == {"pre": -7.0, "post": 0.0}
+    # Disclosure, not refusal: the number is still there to read.
+    assert seat.spread() is not None
+    assert seat.to_dict()["bearings_agree"] is False
+
+
+def test_matching_bearings_agree_and_unrecorded_ones_answer_unknown(tmp_path):
+    """(S4) The two answers that are NOT "they disagree", kept apart.
+
+    ``True`` is only for rounds that each recorded a bearing and recorded the
+    same one. A pre-ruling pair recorded none, and that is ``None`` — "nothing
+    was comparable" is a different fact from "nothing disagreed", and reporting
+    the second for the first is how a mixed comparison would slip through.
+    """
+    same_a = load_banked_round(_make_round_dir(
+        tmp_path, "a", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        position_degrees={"cloud_verify_02": 7.0},
+    ))
+    same_b = load_banked_round(_make_round_dir(
+        tmp_path, "b", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        position_degrees={"cloud_verify_02": 7.0},
+    ))
+    seat = next(
+        m for m in repeatability_spread([("a", same_a), ("b", same_b)]).per_position
+        if m.name == "cloud_verify_02"
+    )
+    assert seat.bearings_agree() is True
+
+    # Both rounds pre-ruling: no bearing anywhere, so no comparison exists.
+    old_a = load_banked_round(_make_round_dir(
+        tmp_path, "old_a", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    ))
+    old_b = load_banked_round(_make_round_dir(
+        tmp_path, "old_b", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    ))
+    old_seat = next(
+        m for m in repeatability_spread([("a", old_a), ("b", old_b)]).per_position
+        if m.name == "cloud_verify_02"
+    )
+    assert old_seat.bearings_agree() is None
+    assert old_seat.degrees == {}
+    assert old_seat.spread() is not None
 
 
 def test_repeatability_metric_spread_uses_sample_variance_ddof1_not_population():

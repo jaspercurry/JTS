@@ -194,11 +194,23 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     deliberately indistinguishable to the caller: unreadable, not a JSON
     object, not a position-evidence record at all, or a CLOUD position. The
     last is the ordinary case rather than an error — the web host's
-    ``retain_position`` serves both groups into the same directory, and only a
-    :data:`~.journey.PHASE_LATERAL` pose carries a bearing
-    (:func:`~.spatial.cloud_position_record` stamps none). One corrupt sidecar
-    must not cost a reader the takes that are fine, so nothing here raises;
-    what is MISSING is decided by the caller, from what came back.
+    ``retain_position`` serves both groups into the same directory, and this
+    reader wants one of them.
+
+    **The rule is phase, and the reason is NOT "only a pose has a bearing".**
+    It was, until the 2026-08-24 geometry ruling made
+    :func:`~.spatial.cloud_position_record` stamp its own ``position_deg`` —
+    so a cloud seat would now pass a bearing-shaped filter and land in a
+    per-driver walk's take list. What separates them is what they ARE: a
+    lateral pose is a per-driver measurement, a cloud seat is a summed sweep
+    judged by gating and ripple, and they carry different columns
+    (:data:`_TAKE_FIELDS` names a ``regime`` no cloud record has). Filtering on
+    :data:`~.journey.PHASE_LATERAL` says that directly instead of resting on a
+    field-presence coincidence that has already stopped being one.
+
+    One corrupt sidecar must not cost a reader the takes that are fine, so
+    nothing here raises; what is MISSING is decided by the caller, from what
+    came back.
 
     Public because it is the accept rule two readers share:
     :func:`position_cycle_document` below, and

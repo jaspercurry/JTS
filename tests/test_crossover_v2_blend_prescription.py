@@ -869,13 +869,19 @@ def test_the_packet_carries_the_signed_bearings_a_lateral_walk_banked(tmp_path):
     }
 
 
-def test_a_cloud_position_never_gains_a_bearing_it_does_not_have(tmp_path):
-    """Two record shapes in one directory, and only one of them has an angle.
+def test_a_cloud_sidecar_is_never_read_as_a_lateral_pose(tmp_path):
+    """Two record shapes in one directory, and the lateral reader takes one.
 
-    A cloud position is a floor-plan seat; ``cloud_position_record`` stamps no
-    bearing at all. Reading its sidecar as a pose would publish a ``null``
-    angle for a capture that HAS no angle — the exact flattening of "we did not
-    look" into "we looked and found nothing" the packet exists to prevent.
+    The web host's ``retain_position`` serves both groups into one directory.
+    Reading a cloud seat's sidecar as a pose would put a summed sweep in a
+    per-driver walk's take list — different captures, no shared row.
+
+    RE-DERIVED 2026-08-24, and the old NAME is the point. This was
+    ``test_a_cloud_position_never_gains_a_bearing_it_does_not_have``, and its
+    reason quoted the packet's claim that a cloud position "carries no bearing
+    at all". The geometry ruling falsified that: a retained cloud position now
+    stamps ``position_deg`` / ``position_axis`` / ``mark_distance_m``. What
+    survives is the SEPARATION, which never depended on the bearing.
     """
     session, _ = _bundle(tmp_path)
     _bank_lateral_walk(session, [0, 22])
@@ -887,12 +893,31 @@ def test_a_cloud_position_never_gains_a_bearing_it_does_not_have(tmp_path):
     assert "cloud_verify_01_a01" not in {
         take["take_id"] for take in packet["lateral_poses"]["takes"]
     }
-    # …and the cloud block still says so, in a reason that is TRUE of the
-    # record shape rather than of the corpus.
-    angle = packet["positions"]["angle_deg"]
+
+
+def test_a_pre_geometry_cloud_record_still_loads_and_says_it_banks_no_bearing(
+    tmp_path,
+):
+    """(d) A round banked before the geometry fields existed still reads.
+
+    ``_bank_cloud_sidecar`` writes the OLD shape deliberately — no
+    ``position_deg``, no ``position_axis``, no ``mark_distance_m`` — which is
+    every cloud sidecar in every round banked before 2026-08-24. The packet must
+    build, and its ``angle_deg`` block must fall back to the narrow disclosure
+    rather than publishing a ``null`` bearing or dying on a missing key.
+    """
+    session, _ = _bundle(tmp_path)
+    old = json.loads(_bank_cloud_sidecar(session).read_text())
+    assert not {"position_deg", "position_axis", "mark_distance_m"} & set(old)
+
+    angle = build_crossover_evidence_packet(session)["positions"]["angle_deg"]
+
+    assert angle["available"] is False
     assert angle["status"] == "not_evaluated"
-    assert "floor-plan seat" in angle["reason"]
-    assert "lateral_poses" in angle["reason"]
+    # The reason states what is CHECKABLE — this round's rows carry none — and
+    # names the fields that separate "banked too early" from "commanded none".
+    assert "no position row in this round carries position_deg" in angle["reason"]
+    assert "position_axis" in angle["reason"]
 
 
 def test_the_corpus_wide_angle_claim_closes_when_a_walk_was_banked(tmp_path):

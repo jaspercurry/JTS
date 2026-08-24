@@ -112,10 +112,19 @@ Usage::
     # …read the printed candidate, decide, THEN apply it by name
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py --apply <fp>
 
-    # the post-apply check (stage 2)
+    # the post-apply check (stage 2). ``--expect-angles`` is a SUBSET check
+    # over the GATE TARGETS of released entries — every angle named must appear
+    # in what the walk was aimed at; extra served angles are fine. Naming 0
+    # asserts the walk was aimed at the design axis and released there, which
+    # has been true on BOTH sides of the 2026-08-24 geometry ruling: stage 2's
+    # anchor has always published a 0° target (every begin is gated, including
+    # the 0° ones), so this flag cannot tell you whether a 0° POSITION was
+    # banked. What the ruling changed is upstream of the flag — the walk now
+    # prompts a 0° ``cloud_verify`` pose whose sweep joins the group. Read the
+    # round's own ``positions/*.json`` for the bearing that was banked.
     PI_HOST=jts3.local .venv/bin/python scripts/run-crossover-round.py \\
         --campaign captures/my-night --label r1-verify --stage verify \\
-        --attest-rig-clear --expect-angles 7,-7,22,-22
+        --attest-rig-clear --expect-angles 0,7,-7,22,-22
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
 wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s
