@@ -464,10 +464,12 @@ def _evaluate_program(
         # `_map_safety_plan_error` returns for a plan that RAISED for some
         # third reason. A 2026-08-23 jts3 bench triage read that one aggregate
         # as a level breach on the woofer and re-derived a level fix for it;
-        # the real refusal was the woofer sweep's DURATION, whose realized
-        # 4.0058 s (the synchronized sweep rounds a 4 s request up so its phase
-        # closes) exceeded a declared ``max_sweep_duration_s`` of 4.0 by 5.8 ms
-        # — while that segment's effective peak sat 10.5 dB inside its cap.
+        # the real refusal was the woofer sweep's DURATION. The synchronized
+        # sweep rounds a requested length to the nearest phase-closing one,
+        # which for that driver's 150-4000 Hz band lands ABOVE the 4 s request
+        # at 4.0058 s (other band ratios round the other way), so it exceeded a
+        # declared ``max_sweep_duration_s`` of 4.0 by 5.8 ms — while that same
+        # segment's effective peak sat 10.5 dB inside its cap.
         # `session_volume_db` is named for the same reason: a segment's
         # effective peak is its digital gain PLUS this value (see
         # `_requested_segment_plan`), so comparing a bare per-segment gain
