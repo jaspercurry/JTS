@@ -36,7 +36,12 @@ from jasper.audio_measurement.program import (
 from tests.active_speaker_fixtures import mono_output_topology
 
 
-def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.0):
+def _profile_and_targets(
+    *,
+    woofer_peak: float = 0.0,
+    tweeter_peak: float = -65.0,
+    max_sweep_duration_s: float = 6,
+):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
     derivation must handle — symmetric fixtures masked the min/max inversion."""
@@ -45,7 +50,7 @@ def _profile_and_targets(*, woofer_peak: float = 0.0, tweeter_peak: float = -65.
     def _limits(peak):
         return {
             "max_effective_peak_dbfs": peak,
-            "max_sweep_duration_s": 6,
+            "max_sweep_duration_s": max_sweep_duration_s,
             "max_repeat_count": 3,
             "minimum_cooldown_s": 0,
         }
@@ -461,3 +466,147 @@ def test_readmit_wrong_shape_wav_is_refused(tmp_path):
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH in adm.refusals
+
+
+def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
+    """A solved MEASURE gain NUMERICALLY above a driver's cap is admissible.
+
+    The 2026-08-23 jts3 b0 walk refused with
+    ``program_segment_outside_limits`` and was triaged as "the woofer's solved
+    ``-6.0`` sits 2.0 dB over its declared ``max_effective_peak_dbfs`` of
+    ``-8.0``, so the level solver must learn about the cap". Those two numbers
+    are not comparable: a solved gain is a per-segment DIGITAL gain, and the
+    cap bounds the EFFECTIVE peak, which ``_requested_segment_plan`` builds as
+    ``segment.gain_db + session_volume_db``. At that session's ``-12.5`` dB
+    volume the woofer segment lands at ``-18.5`` dBFS effective — 10.5 dB
+    UNDER its cap — and the program is ADMITTED.
+
+    Pinned so the comparison cannot be "fixed" into existence later: clamping a
+    solved gain directly to ``max_effective_peak_dbfs`` would drive MEASURE
+    quieter by exactly the session volume, which is the SNR collapse the level
+    solve exists to prevent.
+    """
+    from jasper.active_speaker.crossover_v2_flow import back_off_gain
+
+    topology, profile, targets = _profile_and_targets(woofer_peak=-8.0)
+    session_volume_db = -12.5
+    # The solve tonight produced these; the composer clamps each against that
+    # role's cap in the effective frame, exactly as
+    # `SessionExcitation.measure_program` does.
+    solved = {"woofer": -6.0, "tweeter": -24.656}
+    caps = {"woofer": -8.0, "tweeter": -65.0}
+    gains = {
+        role: back_off_gain(solved[role], session_volume_db, caps[role])
+        for role in solved
+    }
+    # The woofer's cap does NOT bind here: its ceiling in the digital frame is
+    # -8.0 + 12.5 - 0.01, well above the solved -6.0, so the solve rides
+    # through untouched. The tweeter's -65 cap DOES bind, and the composer —
+    # not the solver — is what lowers it.
+    assert gains["woofer"] == pytest.approx(-6.0)
+    assert gains["tweeter"] < solved["tweeter"]
+
+    prog = _measure_program(session_volume_db, gains=gains)
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=session_volume_db,
+    )
+    assert adm.allowed
+    assert adm.refusals == ()
+    by_id = {s.segment_id: s for s in adm.segments}
+    assert by_id["sweep_w"].effective_peak_dbfs == pytest.approx(-18.5)
+    facts = {c.role: c for c in adm.channels}
+    assert facts["woofer"].cap_dbfs == pytest.approx(-8.0)
+    assert facts["woofer"].peak_within_cap
+
+
+def test_refused_program_log_names_the_refusing_segment(caplog):
+    """The refusal log names the failing comparison, both sides of it.
+
+    Every field asserted here is computed by ``_evaluate_program`` regardless;
+    before this it was discarded at the log line, leaving only the aggregate
+    ``program_segment_outside_limits`` — which cannot distinguish a level
+    breach from a band escape from a duration overrun, and which
+    ``_map_safety_plan_error`` also returns as its catch-all for a plan that
+    raised for a third reason. The band and the duration each carry their own
+    limit inline (``band=…/permitted=…``, ``dur=…/max=…``) so the line says
+    which comparison failed rather than leaving it to be re-derived; the
+    effective peak's limit is the per-role cap in ``role_caps_dbfs``.
+    """
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="jasper.active_speaker.program_admission")
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    # A tweeter segment driven past its own -65 cap in the EFFECTIVE frame:
+    # -40.0 + sv (-20.0) = -60.0 dBFS, 5 dB over.
+    prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -40.0})
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
+
+    line = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=active_speaker.program_admission" in record.getMessage()
+        and "result=refused" in record.getMessage()
+    )
+    assert "segments_refused=" in line
+    assert "sweep_t:tweeter" in line
+    assert "eff=-60.000" in line
+    # Each request value beside the limit it was judged against. The permitted
+    # band is the tweeter's resolved excitation band; the duration limit is
+    # `min(declared max_sweep_duration_s (6), driver_sweep_duration_s (4.0))`.
+    assert "band=1600.0-10000.0/permitted=1500.0-20000.0" in line
+    assert "dur=2.9997/max=4.0000" in line
+    assert "active_excitation_request_outside_limits" in line
+    # The cap it was judged against, and the term whose omission made the
+    # 2026-08-23 triage compare a digital gain with an effective-peak ceiling.
+    assert "tweeter=-65.000" in line
+    assert f"session_volume_db={sv:.3f}" in line
+    # The field is what was REFUSED: the woofer's segments passed, so naming
+    # them here would be noise a triage has to filter back out by hand.
+    assert "sweep_w" not in line
+
+
+def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_measure():
+    """A ``max_sweep_duration_s`` equal to the composer's nominal sweep refuses.
+
+    The 2026-08-23 jts3 b0 walk's refusal, reproduced — and it is a
+    level-independent, structural one. ``build_measure_program`` asks for
+    ``DEFAULT_WOOFER_SWEEP_S`` (4.0 s), and the synchronized sweep rounds that
+    request to the nearest phase-closing length, which for many bands is
+    LONGER. Admission then compares the realized length against
+    ``min(declared max_sweep_duration_s, driver_sweep_duration_s(role))``, so a
+    declaration whose limit IS 4.0 refuses by a few milliseconds — every time,
+    forever, at any level and any session volume — while that same segment's
+    effective peak sits well inside its cap. On jts3 the woofer's 150-4000 Hz
+    band realized 4.0058 s against a declared 4.0.
+    """
+    topology, profile, targets = _profile_and_targets(max_sweep_duration_s=4)
+    sv = session_measurement_volume_db(profile, targets.values())
+    # A woofer band whose phase-closing round lands ABOVE the 4 s request. The
+    # rounding is a property of the band ratio, so which side of the limit a
+    # given band falls on is incidental — the module default (500-1600) happens
+    # to round DOWN to 3.9989 s and would pass. On jts3 the woofer's real
+    # 150-4000 Hz band rounds UP to 4.0058 s.
+    prog = _measure_program(sv, roles=_roles(woofer_band=(500.0, 2000.0)))
+    adm = admit_excitation_program(
+        prog, topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert not adm.allowed
+    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
+    refused = {s.segment_id for s in adm.segments if s.refusals}
+    # The woofer's 4.0 s sweep overshoots; the tweeter's 3.0 s one does not.
+    assert "sweep_w" in refused
+    assert "sweep_t" not in refused
+    woofer = next(s for s in adm.segments if s.segment_id == "sweep_w")
+    # Not a level breach: the refused segment is inside its cap.
+    facts = {c.role: c for c in adm.channels}
+    assert woofer.effective_peak_dbfs < facts["woofer"].cap_dbfs
+    assert facts["woofer"].peak_within_cap
+    assert prog.segment("sweep_w").n_samples / prog.sample_rate_hz > 4.0
