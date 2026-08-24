@@ -3020,6 +3020,76 @@ def test_a_stop_on_the_way_back_up_leaves_the_stimulus_off(tmp_path):
     assert not (tmp_path / "seat_level_reference.json").exists()
 
 
+@pytest.mark.parametrize(
+    "from_db, expected",
+    [(-12.0, slr.FADE_FLOOR_DB), (slr.FADE_FLOOR_DB, slr.FADE_FLOOR_DB), (-57.5, -57.5)],
+)
+def test_a_fade_never_walks_up_out_of_a_volume_under_the_floor(from_db, expected):
+    """A fade only ever goes DOWN, and below the floor it goes nowhere.
+
+    Looks redundant until you notice the climb's downward steps are UNCAPPED --
+    `capped_gap_step_db` saturates upward only, on purpose, because a downward
+    step reduces risk. So a hot chain that reads over the target at the start
+    volume steps to a commanded volume BELOW `FADE_FLOOR_DB`, and a fade-out
+    that walked from there to the floor would RAISE the level with the stimulus
+    playing: a fade doing the one thing a fade exists to prevent.
+    """
+    assert slr.fade_quiet_db(from_db) == pytest.approx(expected)
+    out = slr._fade_levels(from_db=from_db, to_db=slr.fade_quiet_db(from_db))
+    assert all(level <= from_db for level in out), out
+    # ...and the leg back in is its mirror, so it cannot overshoot either.
+    back = slr._fade_levels(from_db=slr.fade_quiet_db(from_db), to_db=from_db)
+    assert all(level <= from_db for level in back), back
+    assert len(out) == len(back)
+
+
+def test_the_re_measure_under_the_floor_leaves_the_fader_alone(tmp_path):
+    """The same rule at the seam that consumes it, not just in the helper.
+
+    Driven directly, because a whole pass cannot easily be steered to contradict
+    its floor from below it: that needs a chain hot enough to step DOWN and then
+    quiet enough to read under the ambient window, in one run.
+    """
+    tone = ReplayableTone()
+    volume = WitnessedVolume(tone)
+    volume.value = -57.5
+    volume.commanded.clear()
+    mic = SettlingRoomMic(volume, tone, room_db_spl=ROOM_DB_SPL)
+    clock = FakeClock()
+
+    async def _drive():
+        playing = asyncio.ensure_future(tone.play())
+        await asyncio.sleep(0)
+        return await slr._remeasure_silence(
+            tone=playing,
+            volume_db=-57.5,
+            sensitivity=UMIK2,
+            spl_ceiling_db_spl=SPL_CEILING,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            session_id="under-floor",
+            agree_db=slr.SETTLED_AGREE_DB,
+            settle_timeout_s=slr.SETTLE_TIMEOUT_S,
+        )
+
+    reading, restarted = asyncio.run(_drive())
+    restarted.cancel()
+
+    # The room was still measured in silence -- the re-measure did its job.
+    assert reading.rms_dbfs is not None
+    assert UMIK2.db_spl_from_dbfs(reading.rms_dbfs) == pytest.approx(
+        ROOM_DB_SPL, abs=0.05
+    )
+    # And the fader never moved, because there was nothing to fade: every write
+    # would have been UPWARD, into a room the stimulus was still playing in.
+    assert volume.commanded == []
+    assert volume.value == pytest.approx(-57.5)
+
+
 def test_each_fade_leg_announces_itself_on_one_journal_line(tmp_path, caplog):
     """The edges are greppable, because that is how a hardware run confirms them.
 

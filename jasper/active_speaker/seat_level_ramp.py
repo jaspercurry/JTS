@@ -1033,6 +1033,24 @@ def fade_seconds(*, from_db: float, to_db: float) -> float:
     return fade_steps(from_db=from_db, to_db=to_db) * FADE_STEP_S
 
 
+def fade_quiet_db(from_db: float) -> float:
+    """Where a fade-out walks TO: the floor, or ``from_db`` if already quieter.
+
+    **A fade only ever walks DOWN, and this is the one place that is decided.**
+    The rule looks redundant until you notice the climb's downward steps are
+    UNCAPPED — ``capped_gap_step_db`` saturates upward only, deliberately,
+    because a downward step reduces risk — so a hot chain that reads over the
+    target at :data:`SEAT_LEVEL_START_DB` steps to a commanded volume BELOW
+    :data:`FADE_FLOOR_DB`. A fade-out that walked from there to the floor would
+    RAISE the level, with the stimulus playing, which is the exact opposite of
+    what a fade is for.
+
+    Below the floor there is nothing to fade and the answer is zero steps: the
+    level is already quieter than the one this module calls quiet.
+    """
+    return min(float(from_db), FADE_FLOOR_DB)
+
+
 def walk_reading_budget(*, start_db: float, ceiling_db: float) -> int:
     """How many settled readings one climb may spend, at most.
 
@@ -1217,15 +1235,13 @@ async def _fade_and_stop(
     :func:`_watched_fade` is the mid-pass one, where a stop still has a refusal
     to become.
 
-    A fade-to-stop only ever walks DOWN. ``from_db`` at or under the floor has
-    nothing to fade, exactly as this function's ``while level > FADE_FLOOR_DB``
-    predecessor did — which is why the destination is clamped rather than handed
-    straight to :func:`_fade_levels`, whose walk is direction-agnostic.
+    The destination is :func:`fade_quiet_db` rather than :data:`FADE_FLOOR_DB`
+    itself, because :func:`_fade_levels` walks in whichever direction it is
+    pointed and a fade-to-stop only ever goes down — exactly as this function's
+    ``while level > FADE_FLOOR_DB`` predecessor did.
     """
     try:
-        for level in _fade_levels(
-            from_db=from_db, to_db=min(float(from_db), FADE_FLOOR_DB)
-        ):
+        for level in _fade_levels(from_db=from_db, to_db=fade_quiet_db(from_db)):
             await set_main_volume_db(level)
             await sleep(FADE_STEP_S)
     except RECOVERABLE_ERRORS:
@@ -1760,12 +1776,20 @@ async def _remeasure_silence(
     level into the DAC — was written for the end-of-run
     :func:`_fade_and_stop` and then not applied here, so one pass could put two
     un-faded edges into the room at a measurement level (issue #2929). It now
-    walks the fader down to :data:`FADE_FLOOR_DB` before ``cancel_tone``, and
+    walks the fader down to :func:`fade_quiet_db` before ``cancel_tone``, and
     back up to ``volume_db`` after the stimulus is running again. The restart
     edge gets the same treatment as the stop edge because it IS the same edge
     with the sign reversed: a broadband stimulus appearing instantly at a
     measurement level is the step the rule exists to prevent, whichever
     direction the step goes.
+
+    Both legs turn at :func:`fade_quiet_db` and NOT at :data:`FADE_FLOOR_DB`
+    itself. The climb's downward steps are uncapped, so a hot chain can already
+    be sitting below the floor when a reading contradicts — and fading "out" to
+    the floor from there would walk the level UP with the stimulus playing,
+    which is the very thing the fade exists to prevent. Below the floor both
+    legs are zero steps and the fader never moves: the level is already quieter
+    than the one this module calls quiet.
 
     **Why moving the fader here is safe, against the objection this docstring
     used to raise.** It said the fader was left alone because moving it "would
@@ -1818,9 +1842,10 @@ async def _remeasure_silence(
     fade's own trace attached — so the audible seconds a fade adds are watched
     by the same commissioning stop as every other audible second of the pass.
     """
+    quiet_db = fade_quiet_db(volume_db)
     faded = await _watched_fade(
         from_db=volume_db,
-        to_db=FADE_FLOOR_DB,
+        to_db=quiet_db,
         direction="down",
         sensitivity=sensitivity,
         spl_ceiling_db_spl=spl_ceiling_db_spl,
@@ -1851,7 +1876,7 @@ async def _remeasure_silence(
     # leg is the only write needed to put it back where the climb had it.
     restarted: asyncio.Future[Any] = asyncio.ensure_future(play_continuous_tone())
     faded_in = await _watched_fade(
-        from_db=FADE_FLOOR_DB,
+        from_db=quiet_db,
         to_db=volume_db,
         direction="up",
         sensitivity=sensitivity,
