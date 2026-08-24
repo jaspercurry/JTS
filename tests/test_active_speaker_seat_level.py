@@ -2550,6 +2550,62 @@ def test_an_honest_ambient_is_never_re_measured(tmp_path):
     )
 
 
+def test_a_failed_silent_window_refuses_without_restarting_the_stimulus(tmp_path):
+    """The re-measure's own failure path, and what it must not do to the room.
+
+    The pass is about to refuse, so putting the stimulus back means an audible
+    blip that lasts exactly as long as the fade takes to kill it. The refusal
+    carries the silent window's own trace, because that is the window that
+    failed -- not the climb reading that sent us there.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    volume = Volume()
+    tone = ReplayableTone()
+
+    class DeafOnceSilent(ScriptedMic):
+        """Delivers nothing finite the moment the tone stops for the re-measure."""
+
+        async def next_samples(self):
+            if getattr(self._tone, "plays", 0) and not self._tone.playing:
+                self._seq += 1
+                return [
+                    LevelSample(
+                        seq=self._seq,
+                        t_client_ms=self._seq * 10,
+                        rms_dbfs=float("nan"),
+                        peak_dbfs=float("nan"),
+                        clip=False,
+                        agc_frozen=True,
+                    )
+                ]
+            return await super().next_samples()
+
+    mic = DeafOnceSilent(
+        volume,
+        tone,
+        ambient_db_spl=RUN87_AMBIENT_DB_SPL,
+        levels=RUN87_LEVELS,
+        room_db_spl=RUN87_TRUE_ROOM_DB_SPL,
+    )
+    result = asyncio.run(
+        _level(
+            mic=mic,
+            volume=volume,
+            tone=tone,
+            tmp_path=tmp_path,
+            target=RUN87_TARGET,
+            max_main_volume_db=BENCH_CEILING_DB,
+            spl_ceiling_db_spl=BENCH_SPL_CEILING,
+        )
+    )
+
+    assert result.reason == slr.REFUSE_MIC_FEED_LOST
+    assert tone.plays == 1, "the stimulus was restarted only to be torn down"
+    assert not tone.playing
+    # The silent window is the one that failed, so it is the one published.
+    assert result.ramp["stopped_window"]["samples"] == 0
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
 # --- the gate's demos: an unresponsive mic is not always a CONSTANT ---------
 
 

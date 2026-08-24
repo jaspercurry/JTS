@@ -1110,9 +1110,12 @@ async def _remeasure_silence(
     speaker is silent whatever the volume says, and moving it would mean two
     more writes to reconcile on a path whose whole job is to observe.
 
-    Returns the reading and the NEW tone future, because the old one is finished
-    once its player has been cancelled; the caller must hold the returned one so
-    its own teardown cancels the tone that is actually playing.
+    Returns the reading and the tone future the caller must now hold, because the
+    old one is finished once its player has been cancelled and the caller's own
+    teardown has to cancel the tone that is actually playing. When the silent
+    window itself failed the stimulus is NOT restarted: the pass is about to
+    refuse, and starting it again would put an audible blip in the room for
+    exactly as long as the fade takes to kill it.
     """
     cancel_tone()
     tone.cancel()
@@ -1125,6 +1128,8 @@ async def _remeasure_silence(
         session_id=session_id,
         window="silence",
     )
+    if reading.rms_dbfs is None:
+        return reading, tone
     return reading, asyncio.ensure_future(play_continuous_tone())
 
 
