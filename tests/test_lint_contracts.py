@@ -534,6 +534,31 @@ def test_noqa_debt_does_not_grow() -> None:
 #    is now asked at the tap instead of ten minutes later at a screen that
 #    blames the microphone.
 MAX_LINES_BY_PATH = {
+    # 2026-08-24 (#2923, banking the composer's duration fit). Two files,
+    # +33 between them, and NO slack was spent: the entry below (#2921) left
+    # both at exactly their ceilings, so every line here is this diff's own.
+    #  * `crossover_v2_flow` ceiling 13,081 -> 13,100, +19. Eight executable
+    #    lines: the snapshot field, its `to_dict()` projection (a four-line
+    #    ternary mirroring `gain_plan_db` beside it), and the `.snapshot()`
+    #    call that reads the field off the composed program (three lines).
+    #    The remaining eleven are the field's own paragraph — WHY it is never
+    #    restored by `hydrate()` is the one fact a reader cannot infer from
+    #    the field alone: the live conductor recomposes `_measure_program`
+    #    fresh from `gain_plan_db` on every construction, which already
+    #    reproduces the identical fit, so a second writer here would have
+    #    nothing to do but drift from the first.
+    #  * `correction_crossover_v2` ceiling 9,466 -> 9,480, +14. Four
+    #    executable lines: the durable-state key and the same
+    #    `gain_plan_db`-shaped ternary beside it, PLUS one more — the
+    #    duck-typed local this function's own convention demands
+    #    (``ripple_reservation``'s neighbour), because a stand-in conductor's
+    #    ``snapshot()`` built before this field existed does not carry it and
+    #    an unguarded read would crash fifteen unrelated tests that persist
+    #    one. The remaining ten lines are two notes: why the key exists — the
+    #    offline `read_distortion` CLI refused `PROGRAM_NOT_REPRODUCIBLE` for
+    #    every round fitted since #2921 — and why the read is guarded rather
+    #    than direct like `gain_plan_db` beside it.
+    #
     # 2026-08-23 (#2879, gate rounds 2 and 3). Two files, and for once the two
     # numbers the entry below insists on reporting separately are the SAME
     # number: that entry left both at EXACTLY their ceilings, so there is no
@@ -973,7 +998,7 @@ MAX_LINES_BY_PATH = {
     # #2693, and the true statement is one line shorter than the false one —
     # but this file has sat ON its ceiling by design, and banking an unearned
     # line for the next author is how zero slack stops meaning anything.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_081,
+    "jasper/active_speaker/crossover_v2_flow.py": 13_100,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1391,7 +1416,7 @@ MAX_LINES_BY_PATH = {
     # walks this file still spelled by hand. The pair is asked together wherever
     # their disagreement is the finding, so writing one and transcribing the
     # other was the asymmetry the seam existed to remove.
-    "jasper/web/correction_crossover_v2.py": 9_466,
+    "jasper/web/correction_crossover_v2.py": 9_480,
     # Born 2026-08-19 (Fc/slope apply path) at exactly this size: what `/sound`
     # DECLARES a crossover to be, what a measured candidate's preset says the
     # same crossover is, and the difference between them — plus the declared-

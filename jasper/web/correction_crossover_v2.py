@@ -3594,6 +3594,11 @@ def persist_conductor_state(
     # nothing else. An absent property is "nothing reserved", which is what the
     # key's own absence already means downstream.
     ripple_reservation = getattr(conductor, "measure_ripple_reservation", None)
+    # #2923: same duck-typed read, on ``snap`` rather than ``conductor`` since
+    # this one lives on ``V2ConductorSnapshot`` itself — a snapshot stand-in
+    # built before this field existed means "not banked", which is what the
+    # key's own absence already means downstream.
+    measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
     # Same duck-typed read, same reason: a stand-in conductor that predates
     # this field is "no pilot evidence", which is what the key's own absence
     # means downstream. See the ``failure`` block below for what it renders.
@@ -3692,6 +3697,15 @@ def persist_conductor_state(
         "cloud_close": snap.cloud_close,
         "applied": snap.applied,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
+        # #2923: MEASURE's realized per-role sweep duration, possibly fitted
+        # to a declared limit (#2921) — banked so an offline rebuild
+        # (``harmonic_evidence.rebuild_measure_program``) can replay a fitted
+        # round's sweep instead of refusing PROGRAM_NOT_REPRODUCIBLE. ``None``
+        # carries forward exactly like an absent ``gain_plan_db`` above: a
+        # round banked before this field existed, or before MEASURE composed.
+        "measure_sweep_durations_s": (
+            dict(measure_sweep_durations_s) if measure_sweep_durations_s else None
+        ),
         # S3 journey state. The conductor is the sole lifecycle owner and the
         # web host serializes its snapshot verbatim; `/state` below projects
         # only the last decision, never the full history. The store count is

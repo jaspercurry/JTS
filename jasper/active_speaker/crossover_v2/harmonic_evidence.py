@@ -277,6 +277,36 @@ def _read_mono(path: Path) -> np.ndarray:
     return samples[::channels] if channels > 1 else samples
 
 
+def _banked_sweep_durations_s(state: Mapping[str, Any]) -> dict[str, float] | None:
+    """The round's OWN realized per-role MEASURE sweep length, if it banked one.
+
+    #2923: a round composed since #2921 may have had either sweep FITTED to a
+    declared duration limit — a continuous float no search grid can reach — so
+    a round that banked the realized length (``V2ConductorSnapshot.
+    measure_sweep_durations_s``, written by :func:`~.crossover_v2_flow.
+    CrossoverV2Session.snapshot`) is read back EXACTLY here instead of
+    re-derived. ``None`` for every round banked before that field existed, and
+    the caller's existing nominal-duration reproduction is unchanged for them.
+
+    Malformed or partial values are treated the same as absent: a hand-edited
+    or partially-written state file composes at nominal here rather than
+    raising, on the same fail-soft rule the rest of this module reads state
+    with.
+    """
+    raw = state.get("measure_sweep_durations_s")
+    if not isinstance(raw, Mapping):
+        return None
+    durations: dict[str, float] = {}
+    for role in ("woofer", "tweeter"):
+        value = raw.get(role)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value <= 0.0:
+            return None
+        durations[role] = float(value)
+    return durations
+
+
 def rebuild_measure_program(
     state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
 ):
@@ -299,6 +329,15 @@ def rebuild_measure_program(
     answered by the product's own answer, and the search is safe in both
     directions because the ``program_id`` hash is what accepts it: a wrong
     prelude cannot match, it can only fail to.
+
+    **A third parameter — the duration fit (#2921) — is READ, never solved.**
+    Unlike the session volume and the prelude, a fitted sweep's realized length
+    is a continuous float, so no grid could reach it. A round that banked it
+    (:func:`_banked_sweep_durations_s`) is composed at EXACTLY that length on
+    every attempt below, which is what lets a fitted round reproduce at all. A
+    round that did not bank it composes at nominal, exactly as before this
+    field existed — a fitted-but-unbanked round still, honestly, cannot
+    reproduce.
     """
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -332,12 +371,14 @@ def rebuild_measure_program(
         RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
         RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
     )
+    banked_durations = _banked_sweep_durations_s(state)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:
             program = build_measure_program(
                 {role: float(gains[role]) for role in ("woofer", "tweeter")},
                 roles,
+                sweep_durations=banked_durations,
                 downstream_gain_db=float(downstream),
                 leading_pilot_gains_db=(
                     float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB,
@@ -348,6 +389,17 @@ def rebuild_measure_program(
             )
             if program.program_id == want:
                 return program, float(downstream), bool(prelude)
+    duration_cause = (
+        "this round's sweeps were FITTED to a declared duration limit "
+        "(#2921) — the composer shortens a sweep whose nominal length "
+        "would overshoot that limit. This round did not bank the realized "
+        "durations (#2923), so this replay composes at the nominal length "
+        "and cannot match a fitted program"
+        if banked_durations is None else
+        "this round banked its realized sweep durations (#2923) and this "
+        "replay composed at them, so a duration fit is UNLIKELY to be the "
+        "cause here — suspect (1), (3), or (4) instead"
+    )
     raise HarmonicEvidenceRefused(
         PROGRAM_NOT_REPRODUCIBLE,
         {
@@ -355,6 +407,7 @@ def rebuild_measure_program(
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
             "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
             "downstream_grid_step_db": 0.5,
+            "measure_sweep_durations_banked": banked_durations is not None,
             "note": (
                 "no session volume in the grid reproduces the banked program id "
                 "with the courtesy prelude either on or off. Four causes, and "
@@ -363,15 +416,12 @@ def rebuild_measure_program(
                 "volume is unbanked and brute-forced over half-dB steps from "
                 "-40 dB, while the composer derives it as an unquantized float "
                 "anywhere above the -60 dB floor, so a seat-level reference of "
-                "e.g. -24.7 dB is simply unreachable here; (2) this round's "
-                "sweeps were FITTED to a declared duration limit (#2921) — the "
-                "composer shortens a sweep whose nominal length would overshoot "
-                "that limit, and the limit is unbanked, so this replay composes "
-                "at the nominal length and cannot match; (3) the driver bands "
-                "supplied are wrong for this round; (4) this state does not "
-                "describe a MEASURE round. Only (3) and (4) are fixable by "
-                "re-invoking — (1) and (2) need the round to bank the "
-                "parameter"
+                f"e.g. -24.7 dB is simply unreachable here; (2) {duration_cause}; "
+                "(3) the driver bands supplied are wrong for this round; (4) "
+                "this state does not describe a MEASURE round. Only (3) and "
+                "(4) are fixable by re-invoking — (1) needs the round to bank "
+                "its session volume, and (2) needs the round to bank its sweep "
+                "durations (#2923) when it has not already"
             ),
         },
     )

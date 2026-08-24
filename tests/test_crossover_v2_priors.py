@@ -328,6 +328,44 @@ def test_no_composed_program_means_no_bounds_rather_than_a_guess():
     assert priors.measure_sweep_bounds(None) == (None, None)
 
 
+def test_the_sweep_durations_come_off_the_composed_program_and_reflect_a_fit():
+    """#2923: the banked figure is what actually played, fit included.
+
+    A woofer limit BELOW the 4.0 s nominal default forces #2921's fit on every
+    band (the nominal always realizes at or above its own request), so this is
+    a deterministic way to exercise the fit without depending on which band a
+    fixture happens to use.
+    """
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from tests.crossover_v2_fixtures import CAPS, SESSION_VOLUME_DB, _roles
+
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs=CAPS,
+        session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
+        sweep_duration_limits_s={"woofer": 3.5},
+    ).measure_program({"woofer": -32.0, "tweeter": -38.0})
+
+    durations = priors.measure_sweep_durations_s(program)
+
+    assert durations is not None
+    rate = program.sample_rate_hz
+    assert durations["woofer"] == pytest.approx(
+        program.segment("sweep_w").n_samples / rate
+    )
+    assert durations["tweeter"] == pytest.approx(
+        program.segment("sweep_t").n_samples / rate
+    )
+    # The fit actually bit: realized at or below the limit, not the nominal
+    # ~4.0 s default a naive read would otherwise report.
+    assert durations["woofer"] <= 3.5
+    # The tweeter carried no limit, so its nominal ~3.0 s default stands.
+    assert durations["tweeter"] == pytest.approx(3.0, abs=0.05)
+
+
+def test_no_composed_program_means_no_durations_rather_than_a_guess():
+    assert priors.measure_sweep_durations_s(None) is None
+
+
 # --------------------------------------------------------------------------- #
 # 4. the kernel boundary
 # --------------------------------------------------------------------------- #
