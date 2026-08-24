@@ -2776,10 +2776,76 @@ def test_a_room_lull_spanning_both_windows_still_banks_DOCUMENTED_LIMITATION(
     assert result.ramp["ambient_remeasured_db_spl"] - result.ramp[
         "ambient_db_spl"
     ] == pytest.approx(-6.0, abs=0.01)
-    # And the pre-#2918 rule is no better here -- it banks too, which is why
-    # this is a residual of the design and not a regression the fix introduced.
+    # This path is INTRODUCED by the re-measure, not inherited from before it:
+    # the pre-#2918 rule REFUSES this same fixture. That is the second term the
+    # docstring above describes -- narrower than the first term it replaced, but
+    # new. Asserted for real in the provenance test below rather than claimed
+    # here, because the rise this run publishes is computed under the CURRENT
+    # rule and says nothing about what the old one would have done.
     assert max(step["rise_db"] for step in result.ramp["steps"]) >= 6.0
 
+
+def _pre_2918_fixed_floor(monkeypatch, *, ambient_db_spl: float) -> None:
+    """Put the pre-#2918 rule back: the floor is the first window and never moves.
+
+    Modelled rather than reverted, and here is exactly how, so the next reader
+    can judge it: ``_remeasure_silence`` is replaced by one that returns the
+    FIRST window's level, consumes no samples, and does not touch the tone. The
+    floor arithmetic is then identical to the old rule (one fixed number for the
+    whole pass) and the mic sees the same window sequence a run with no silent
+    window would have seen. The one difference is cosmetic and not asserted on:
+    the receipt still reports ``ambient_remeasured`` true, where the old build
+    had no such field at all.
+    """
+
+    async def _never_moves(*, tone, sensitivity, **_kwargs):
+        return (
+            slr._Reading(
+                rms_dbfs=sensitivity.dbfs_from_db_spl(ambient_db_spl),
+                samples=1,
+                trace=slr._WindowTrace(samples=(), seen=0),
+            ),
+            tone,
+        )
+
+    monkeypatch.setattr(slr, "_remeasure_silence", _never_moves)
+
+
+def test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited(
+    tmp_path, monkeypatch
+):
+    """Provenance of the limitation above, asserted instead of asserted-about.
+
+    The same fixture -- ambient window 66.0, a mic that never responds, a lull
+    holding 60.0 across both windows, a later 67.0 -- under the rule that shipped
+    BEFORE the silent re-measure existed. With a floor fixed at the first
+    window, the 67.0 reading rises 1.0 and stays there, never clearing the 6 dB
+    emergence bar, so the pass refuses `spl_level_unconverged` and banks nothing.
+
+    That makes the lull path **new**: it is the second term of the two-term
+    statement in `_remeasure_silence` (`P(first window high AND the re-measure
+    lands low inside the same lull)`), which the re-measure introduced in
+    exchange for shrinking the first term. Narrower than what it replaced, and
+    still a thing this PR added -- which is the sentence the limitation test
+    above used to get backwards.
+    """
+    _pre_2918_fixed_floor(monkeypatch, ambient_db_spl=66.0)
+    result, banked = _wrong_card_run(
+        tmp_path,
+        wander=[60.0, 60.0, 67.0],
+        target=SeatLevelTarget(target_db_spl=67.0, tolerance_db=2.5),
+        ambient_db_spl=66.0,
+    )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_LEVEL_UNCONVERGED
+    assert not banked.exists(), "the pre-#2918 rule banked this fixture"
+    # The 67.0 reading is INSIDE the band, and still refuses: what stops it is
+    # the emergence bar, measured against a floor that never moved.
+    rises = [step["rise_db"] for step in result.ramp["steps"]]
+    assert rises[:3] == pytest.approx([-6.0, -6.0, 1.0], abs=0.01)
+    assert max(rises) == pytest.approx(1.0, abs=0.01)
+    assert max(rises) < slr.MIC_RESPONSE_MIN_RISE_DB
 
 def test_the_re_measure_event_carries_the_delta_and_the_rise_it_produced(
     tmp_path, caplog

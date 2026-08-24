@@ -2989,7 +2989,11 @@ mic that never responded banks anyway (ambient window 66.0, a lull holding 60.0
 across both windows, a later 67.0 clearing the 6 dB bar). So the guard now fails
 on `P(first window low)` **plus** `P(first window high AND the re-measure lands
 low inside the same lull)`, where before it failed on the first term alone. The
-second term is narrower — that is the improvement, and all of it. Closing it
+second term is **added, not traded** — the first is untouched — so the banking
+guard is marginally worse than it was. What the re-measure buys is on the other
+error type: a contaminated ambient window no longer disqualifies GOOD readings
+for the rest of a run, which is the defect it exists for (run 87). Narrow cost,
+real benefit, different failure modes. Closing it
 needs a separator between "the level moved" and "the level moved *because of the
 speaker*", which is deliberately not built: at these reading counts it is
 spoofable, and [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)

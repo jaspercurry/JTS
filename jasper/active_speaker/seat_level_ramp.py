@@ -84,9 +84,10 @@ owns, and nothing else can know:
    windows, and continues against the second one. That second window is
    anti-coincident with the SPEAKER but NOT independent of the trigger — it is
    taken because a reading was low, a second later, and a room lull can span
-   both — so it narrows the guard's failure probability rather than closing it.
-   :func:`_remeasure_silence` states the residual exactly and names the test
-   that pins it.
+   both, which ADDS one way for the banking guard to fail rather than removing
+   one. What the pass buys is on the other error type: a contaminated window no
+   longer disqualifies good readings. :func:`_remeasure_silence` states both
+   sides exactly and names the tests that pin them.
 4. **What the refusal path saw.** Every settle window leaves a
    :class:`_WindowTrace`, so a sample-domain stop publishes the window it
    abandoned (``ramp.stopped_window`` / ``stopped_window_*``) — sample count,
@@ -1115,8 +1116,16 @@ async def _remeasure_silence(
     hands back the same low level. So the observing/banking guard fails on
     ``P(the first ambient window was low)`` **plus** ``P(the first window was
     high AND the re-measure lands low inside the same lull)``, where before this
-    pass existed it failed on the first term alone. The second term is narrower
-    than the first — that is the improvement, and it is all of it. A worked
+    pass existed it failed on the first term alone. **The second term is added, not
+    traded**: the first is untouched by this pass, so the BANKING guard is
+    marginally worse than it was and the honest ledger is two-sided. What this
+    pass buys is on the other error type — a contaminated ambient window used to
+    disqualify GOOD readings for the rest of a run (jts3 run 87, the defect this
+    exists for), and no longer does. Narrow cost, real benefit, different
+    failure modes; the pre-#2918 rule refuses the worked case below, which is
+    asserted rather than asserted-about in
+    ``test_the_lull_residual_is_INTRODUCED_by_the_re_measure_not_inherited``. A
+    worked
     known-bad case (ambient window 66, a mic that never responds, a lull holding
     60 across both windows, a later 67 clearing the 6 dB bar and BANKING) is
     pinned as a documented limitation in
