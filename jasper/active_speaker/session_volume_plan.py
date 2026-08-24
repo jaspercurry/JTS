@@ -876,8 +876,11 @@ class SessionVolumePlan:
         measurement one) — and it is loud rather than silent, which is the
         whole point: the alternative is a process that can still put the
         measurement volume back up, unasked, at the next capture. The re-drain
-        instead runs only behind the household's own click on the recovery
-        screen, and :meth:`assert_ready` refuses every hold until it does.
+        instead runs behind the recovery screen, or automatically once the
+        wall-clock ceiling has passed
+        (``correction_crossover_v2.enforce_session_volume_ceiling_if_stale``,
+        which needs no click) — both target the household snapshot, and
+        :meth:`assert_ready` refuses every hold either way.
         """
         self._state = None
         self._opened_this_process = False

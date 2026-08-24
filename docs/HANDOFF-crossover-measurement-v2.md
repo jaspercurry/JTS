@@ -3837,10 +3837,11 @@ ordinary ones.
    the campaign's numbers. The ordinary racer is the baseline config carrying
    the household's own listening level, and that has no fixed sign either: it
    was quieter than declared in the night's configuration (−21.2 against
-   −12.5) and LOUDER in the pre-2026-08-22 one, where household and
-   measurement coincided at −8.0. This branch's own
-   `test_a_loud_household_is_pulled_down_before_any_audio` fixture is the
-   loud case. The provenance tripwire catches the move whenever retention is
+   −12.5), and it can be LOUDER — this branch's own
+   `test_a_loud_household_is_pulled_down_before_any_audio` fixture is that
+   case. (The pre-2026-08-22 era is neither: household and measurement
+   COINCIDED at −8.0, which is exactly why the bug stayed masked then.) The
+   provenance tripwire catches the move whenever retention is
    on. Closing the window properly means giving the summed branch the same
    lock; not done in #2925, which deliberately did not alter verify-phase
    behaviour beyond routing it through the shared seam.
