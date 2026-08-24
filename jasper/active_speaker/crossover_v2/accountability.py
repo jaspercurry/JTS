@@ -340,10 +340,15 @@ def level_frame_record(
     # diagnosis of the same disease. Nothing is lost to the precedence, because
     # BOTH sub-verdicts' numbers ride this record unconditionally; the field
     # says which one is why the record exists.
-    record["reason"] = (
-        consistency.reason if estimators_suspect
-        else REALIZED_LEVEL_SUSPECT_REASON
-    )
+    #
+    # Spelled as the full condition rather than reusing ``estimators_suspect``
+    # so the ``consistency is not None`` narrowing is expressed where the
+    # attribute is read; a bare boolean carries the fact but not the type, and
+    # this attribute access is the one place it matters.
+    if consistency is not None and consistency.suspect:
+        record["reason"] = consistency.reason
+    else:
+        record["reason"] = REALIZED_LEVEL_SUSPECT_REASON
     if consistency is not None:
         record["worst_delta_db"] = round(float(consistency.worst_delta_db), 3)
         record["tolerance_db"] = float(consistency.tolerance_db)
