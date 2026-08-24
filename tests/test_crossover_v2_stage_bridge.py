@@ -1520,6 +1520,12 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "gain_plan_db",
     "kind",
     "measure",
+    # Deliberate widening (#2923). Banked in the SAME state write as
+    # `gain_plan_db` beside it, on the same terms: the round's realized
+    # per-role MEASURE sweep length, possibly shortened by #2921's duration
+    # fit, so an offline rebuild can replay a fitted round instead of
+    # refusing PROGRAM_NOT_REPRODUCIBLE.
+    "measure_sweep_durations_s",
     "pre_apply_profile",
     # Deliberate widening (#2537). What one apply DISPLACED (the running
     # config immediately before the load) and what it PUT LIVE, from that

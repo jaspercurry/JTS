@@ -3176,6 +3176,18 @@ class V2ConductorSnapshot:
     accepted_phases: tuple[str, ...] = ()
     applied: bool = False
     gain_plan_db: Mapping[str, float] | None = None
+    # #2923: MEASURE's ACTUAL per-role sweep duration, read off the composed
+    # program (``_priors.measure_sweep_durations_s``) — possibly shortened by
+    # #2921's duration fit, a continuous float no offline search grid can
+    # reach. Banked beside ``gain_plan_db`` so
+    # ``harmonic_evidence.rebuild_measure_program`` can REPLAY a fitted
+    # round's sweep instead of re-deriving it. Purely derived, never restored
+    # by :meth:`CrossoverV2Session.hydrate` — the live conductor recomposes
+    # ``_measure_program`` fresh from ``gain_plan_db`` on every construction,
+    # which already reproduces the identical fit, so there is no second
+    # writer to keep in sync. ``None`` before MEASURE is composed, and for
+    # every round banked before this field existed.
+    measure_sweep_durations_s: Mapping[str, float] | None = None
     candidate_fingerprint: str | None = None
     # The ordered phases THIS session actually runs — the subset of
     # ``CAPTURE_PHASES`` its ``index_phase_map`` addresses. Persisted so a
@@ -3224,6 +3236,10 @@ class V2ConductorSnapshot:
             "accepted_phases": list(self.accepted_phases),
             "applied": self.applied,
             "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
+            "measure_sweep_durations_s": (
+                dict(self.measure_sweep_durations_s)
+                if self.measure_sweep_durations_s else None
+            ),
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "tier": self.tier,
@@ -6712,6 +6728,9 @@ class CrossoverV2Session:
             session_phases=self._journey.plan.phases,
             applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
+            measure_sweep_durations_s=_priors.measure_sweep_durations_s(
+                self._measure_program
+            ),
             candidate_fingerprint=(
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None

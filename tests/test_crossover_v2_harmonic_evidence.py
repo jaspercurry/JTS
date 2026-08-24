@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -631,6 +631,277 @@ def test_the_solve_recovers_the_session_volume_the_round_never_banked():
     assert downstream == pytest.approx(-20.0)
     assert prelude is False
     assert program.program_id == _real_state()["candidate"]["program_id"]
+
+
+# --------------------------------------------------------------------------- #
+# #2923 — a fitted round banks its realized durations; rebuild reads them
+# --------------------------------------------------------------------------- #
+
+
+def _fitted_program_at(
+    downstream_db: float,
+    *,
+    woofer_limit_s: float = 3.5,
+    bands: Mapping[str, tuple[float, float]] | None = None,
+):
+    """A real MEASURE program whose woofer sweep is FITTED (#2921) below the
+    4.0 s nominal default.
+
+    Deterministic regardless of the band: the nominal always realizes AT OR
+    ABOVE its own request (``phase_closing_duration_s``'s own guarantee), so
+    any limit below the 4.0 s default forces the fit. ``bands`` defaults to
+    ``he_bands()``'s own pair — pass a wider one (e.g. a tweeter upper edge
+    at or above 24 kHz) to exercise the composer's own MEASURE-window clamp.
+    """
+    from jasper.active_speaker.crossover_v2.programs import (
+        PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase,
+    )
+    from jasper.audio_measurement.program import (
+        FrequencyBand, RoleBand, build_measure_program,
+    )
+
+    resolved = bands if bands is not None else he_bands()
+    return build_measure_program(
+        {"woofer": -6.0, "tweeter": -31.2},
+        (
+            RoleBand("woofer", 0, FrequencyBand(*resolved["woofer"])),
+            RoleBand("tweeter", 1, FrequencyBand(*resolved["tweeter"])),
+        ),
+        sweep_duration_limits_s={"woofer": woofer_limit_s},
+        downstream_gain_db=downstream_db,
+        leading_pilot_gains_db=(-6.0 - PILOT_LEVEL_DELTA_DB, -6.0),
+        leading_pilot_role="woofer",
+        courtesy_prelude=courtesy_prelude_for_phase("measure"),
+    )
+
+
+def test_a_banked_duration_fit_reproduces_without_a_search():
+    """The durable fix, end to end. A fitted sweep's realized length is a
+    continuous float no search grid could ever land on — banking it is what
+    makes a fitted round reproducible AT ALL, not merely faster to reproduce.
+    Before this field existed, this exact state was
+    ``test_a_duration_fitted_round_that_predates_banking_still_names_its_cause``
+    below: an honest refusal, unconditionally.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+
+    program = _fitted_program_at(-20.0)
+    durations = priors.measure_sweep_durations_s(program)
+    assert durations is not None
+    assert durations["woofer"] <= 3.5  # confidence check: the fit actually bit
+
+    state = _state(
+        candidate={"program_id": program.program_id},
+        measure_sweep_durations_s=durations,
+    )
+
+    rebuilt, downstream, prelude = he.rebuild_measure_program(state, he_bands())
+
+    assert rebuilt.program_id == program.program_id
+    assert downstream == pytest.approx(-20.0)
+    assert prelude is False
+
+
+def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
+    """No replay capability is lost: the honest refusal from before this fix
+    stands, unchanged, for a round that never banked its realized durations —
+    #2921 fitted the sweep, and this round predates #2923's bank, so this
+    replay composes at the nominal length and cannot match.
+    """
+    program = _fitted_program_at(-20.0)
+    state = _state(candidate={"program_id": program.program_id})
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, he_bands())
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
+    note = excinfo.value.evidence["note"]
+    assert "FITTED" in note
+    assert "#2921" in note
+    assert "did not bank the realized durations (#2923)" in note
+    # The fix narrows cause (2); it does not remove the other three.
+    assert "not on the solve grid" in note
+    assert "driver bands supplied are wrong" in note
+    assert "does not describe a MEASURE round" in note
+
+
+@pytest.mark.parametrize("raw", [
+    {},
+    {"woofer": 3.9},                        # tweeter missing
+    {"woofer": 3.9, "tweeter": "3.0"},      # non-numeric
+    {"woofer": 3.9, "tweeter": True},       # bool is not a real duration
+    {"woofer": 3.9, "tweeter": float("nan")},
+    {"woofer": 3.9, "tweeter": float("inf")},
+    {"woofer": 3.9, "tweeter": 0.0},        # non-positive
+    {"woofer": 3.9, "tweeter": -1.0},
+    "not-a-mapping",
+])
+def test_a_malformed_banked_duration_is_treated_as_absent(raw):
+    """Hydrate must tolerate a hand-edited or partially-written state: a
+    malformed shape falls back to nominal composition, exactly like an absent
+    key, rather than raising.
+    """
+    state = _state(measure_sweep_durations_s=raw)
+    assert he._banked_sweep_durations_s(state, he_bands()) is None
+
+
+def test_an_old_shape_state_with_no_banked_duration_key_composes_at_nominal():
+    """The field's outright absence — every round banked before it existed —
+    is the same "compose at nominal" path a malformed value falls back to.
+    """
+    state = _state()
+    assert "measure_sweep_durations_s" not in state
+    assert he._banked_sweep_durations_s(state, he_bands()) is None
+
+
+def test_a_well_formed_banked_duration_is_read_back_exactly():
+    state = _state(
+        measure_sweep_durations_s={"woofer": 3.983876, "tweeter": 3.0}
+    )
+
+    assert he._banked_sweep_durations_s(state, he_bands()) == {
+        "woofer": pytest.approx(3.983876), "tweeter": pytest.approx(3.0),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# gate fix round (#2923): a below-one-cycle banked value must not escape as
+# a bare ValueError — it is malformed the same way the shapes above are
+# --------------------------------------------------------------------------- #
+
+
+def _one_cycle_floor_s(band: tuple[float, float]) -> float:
+    """The exact boundary :func:`synchronized_sweep_metadata` raises below —
+    computed independently here (not imported from the composer) so this test
+    is a real cross-check of the fix rather than a restatement of it."""
+    f1, f2 = band
+    return 0.5 * math.log(f2 / f1) / f1
+
+
+@pytest.mark.parametrize("role", ["woofer", "tweeter"])
+def test_a_below_one_cycle_banked_duration_is_treated_as_absent(role):
+    """The should-fix. A positive, finite value that is too short to close
+    even one cycle at f1 passes every OTHER guard here, but must not reach
+    ``synchronized_sweep_metadata`` and raise out of this fail-soft function —
+    it is malformed on the SAME terms as the shapes above, not a new
+    vocabulary.
+    """
+    floor_s = _one_cycle_floor_s(he_bands()[role])
+    other = "tweeter" if role == "woofer" else "woofer"
+    for fraction in (0.5, 0.999):
+        durations = {role: floor_s * fraction, other: 3.0}
+        state = _state(measure_sweep_durations_s=durations)
+        assert he._banked_sweep_durations_s(state, he_bands()) is None, (
+            f"{role} at {fraction:.3f} of its one-cycle floor "
+            f"({floor_s * fraction:.6f}s) should be treated as absent"
+        )
+
+
+def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising():
+    """The CLI-visible half of the should-fix: ``rebuild_measure_program``
+    must reach the named ``program_not_reproducible`` refusal, never an
+    escaped ``ValueError`` — that escape used to mis-classify the round at
+    ``jasper-read-distortion`` as ``EXIT_ROUND_UNREADABLE`` instead of
+    ``EXIT_REFUSED``.
+
+    The state file DOES carry a ``measure_sweep_durations_s`` entry here —
+    this is the fix round 2 honesty requirement: the round banked SOMETHING,
+    it just was not usable, and the refusal must say that rather than "did
+    not bank" (which is the true story for a genuinely-absent key, pinned by
+    ``test_a_duration_fitted_round_that_predates_banking_still_names_its_cause``
+    above).
+    """
+    floor_s = _one_cycle_floor_s(he_bands()["woofer"])
+    state = _state(
+        measure_sweep_durations_s={"woofer": floor_s * 0.5, "tweeter": 3.0}
+    )
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, he_bands())
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
+    note = excinfo.value.evidence["note"]
+    assert "did not bank" not in note
+    assert "carries a measure_sweep_durations_s entry" in note
+    assert "TREATED THE SAME AS ABSENT" in note
+
+
+# --------------------------------------------------------------------------- #
+# gate fix round 2 (#2923): the guard must validate the band the COMPOSER
+# actually sweeps (post-intersection), not the raw declared one
+# --------------------------------------------------------------------------- #
+
+
+#: An ordinary compression-driver/horn datasheet upper edge — comfortably
+#: past the 24 kHz Nyquist boundary at this module's 48 kHz sample rate, and
+#: past ``he_bands()``'s own 20 kHz, which is exactly why the round-1 tests
+#: never exercised the composer's [150, 23000] Hz clamp: 20 kHz is already
+#: inside it, so intersecting changes nothing.
+_DATASHEET_WIDE_BANDS = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 30_000.0)}
+
+
+def test_a_datasheet_wide_declared_band_reproduces_a_fitted_round():
+    """The round-2 regression, reproduced then proved fixed.
+
+    A tweeter declared to 30 kHz used to fail the kernel's Nyquist check
+    here (raw ``f2=30000 >= 24000``) even though the composer clamps to
+    23,000 Hz before that check is ever reached — a perfectly reproducible
+    round lost its bank and fell back to nominal-only search. The direct
+    ``_banked_sweep_durations_s`` call below is the "evidence" half: it
+    proves the value was ACCEPTED as usable, not merely that some other path
+    happened to also reproduce.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+
+    program = _fitted_program_at(-20.0, bands=_DATASHEET_WIDE_BANDS)
+    durations = priors.measure_sweep_durations_s(program)
+    assert durations is not None
+
+    state = _state(
+        candidate={"program_id": program.program_id},
+        measure_sweep_durations_s=durations,
+    )
+    accepted = he._banked_sweep_durations_s(state, _DATASHEET_WIDE_BANDS)
+    assert accepted is not None
+    assert accepted == pytest.approx(durations)
+
+    rebuilt, downstream, prelude = he.rebuild_measure_program(
+        state, _DATASHEET_WIDE_BANDS
+    )
+
+    assert rebuilt.program_id == program.program_id
+    assert downstream == pytest.approx(-20.0)
+    assert prelude is False
+
+
+def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
+    """Even when the round refuses for an UNRELATED reason (here: a
+    ``program_id`` that simply does not match anything, standing in for a
+    wrong gain plan or wrong bands), a usable ≥24 kHz bank must still read
+    as banked AND usable in the evidence — not as "did not bank" merely
+    because its band happens to need the composer's clamp.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+
+    program = _fitted_program_at(-20.0, bands=_DATASHEET_WIDE_BANDS)
+    durations = priors.measure_sweep_durations_s(program)
+    assert durations is not None
+    state = _state(
+        candidate={"program_id": "not-a-real-id"},
+        measure_sweep_durations_s=durations,
+    )
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS)
+
+    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
+    assert excinfo.value.evidence["measure_sweep_durations_usable"] is True
+    assert "did not bank" not in excinfo.value.evidence["note"]
 
 
 def test_a_sidecar_carrying_no_gate_field_is_refused_rather_than_read_ungated():

@@ -54,6 +54,7 @@ __all__ = [
     "configured_crossover_transfers",
     "candidate_required_band_hz",
     "measure_sweep_bounds",
+    "measure_sweep_durations_s",
     "check_priors",
     "measure_priors",
     "candidate_priors",
@@ -146,6 +147,36 @@ def measure_sweep_bounds(
         )
     except KeyError:
         return None, None
+
+
+def measure_sweep_durations_s(
+    measure_program: "ExcitationProgram | None",
+) -> dict[str, float] | None:
+    """MEASURE's ACTUAL per-role sweep length, realized — possibly fitted.
+
+    Read off the SAME first-occurrence segments :func:`measure_sweep_bounds`
+    reads its band edges from (``sweep_w`` / ``sweep_t``), so the two stay one
+    source of what the session actually played. #2921's duration fit can
+    shorten either role's sweep to the longest phase-closing length at or
+    below its admitted limit; this is the length that was REALIZED, not the
+    nominal request, which is what a caller banking it (round state, #2923)
+    needs — the fit is a continuous float no search grid can reach, so an
+    offline rebuild can only reproduce a fitted program by reading this back.
+    ``None`` when there is no MEASURE program yet, mirroring
+    :func:`measure_sweep_bounds`.
+    """
+    if measure_program is None:
+        return None
+    try:
+        woofer = measure_program.segment("sweep_w")
+        tweeter = measure_program.segment("sweep_t")
+    except KeyError:
+        return None
+    rate = measure_program.sample_rate_hz
+    return {
+        str(woofer.role): woofer.n_samples / rate,
+        str(tweeter.role): tweeter.n_samples / rate,
+    }
 
 
 def check_priors(*, fc_hz: float) -> MeasurementPriors:

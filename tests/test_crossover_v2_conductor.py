@@ -5749,6 +5749,105 @@ def test_the_tier_rides_the_snapshot_and_the_pipeline_payload():
         _cloud_conductor(FakeSeams(), tier="turbo")
 
 
+def test_the_measure_sweep_fit_rides_the_snapshot():
+    """#2923: a duration-fitted MEASURE program's realized length is banked on
+    the snapshot, not held only in the live conductor's memory — the durable
+    half of #2921's fit, so an offline reader can replay it later.
+
+    A woofer limit below the nominal 4.0 s default forces #2921's fit
+    deterministically (the nominal always realizes AT OR ABOVE its own
+    request — see ``phase_closing_duration_s``), independent of which band a
+    fixture's roles happen to declare.
+    """
+    import json
+
+    from jasper.active_speaker.crossover_v2 import priors as _priors_mod
+
+    fakes = FakeSeams()
+    c = _conductor(fakes, driver_sweep_duration_limits_s={"woofer": 3.5})
+    _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed at the fitted length
+
+    expected = _priors_mod.measure_sweep_durations_s(
+        c.program_for_phase(PHASE_MEASURE)
+    )
+    assert expected is not None
+    # The fit actually bit: realized at or below the limit, not the nominal.
+    assert expected["woofer"] <= 3.5
+
+    snap = c.snapshot()
+    assert snap.measure_sweep_durations_s == pytest.approx(expected)
+    assert snap.to_dict()["measure_sweep_durations_s"] == pytest.approx(expected)
+
+    # Round-trips through the exact JSON encoding ``save_v2_state`` uses, so
+    # no float precision is lost across the real persistence path — the same
+    # encoding ``jasper-read-distortion --state`` later reads back.
+    roundtripped = json.loads(json.dumps(snap.to_dict()))["measure_sweep_durations_s"]
+    assert roundtripped == pytest.approx(expected)
+
+    # Before MEASURE is composed (no CHECK accept yet), the field is honestly
+    # absent rather than a guessed nominal — mirrors ``gain_plan_db`` beside it.
+    undeclared = _conductor(FakeSeams())
+    assert undeclared.snapshot().measure_sweep_durations_s is None
+
+
+def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
+    """#2923 gate fix round, nit 2: nothing previously joined this seam
+    end to end.
+
+    ``priors.measure_sweep_durations_s`` keys its returned dict by
+    ``str(segment.role)`` — whatever the composed program's own roles are
+    called. ``harmonic_evidence._banked_sweep_durations_s`` reads it back
+    through a hardcoded ``("woofer", "tweeter")``. In this session's own
+    2-way convention the two always agree, but nothing walked the WHOLE
+    chain — conductor compose -> ``.snapshot()`` -> a durable-state-shaped
+    dict -> the offline rebuild — to prove it; a future key-shape change on
+    either half should fail here, not on a campaign.
+
+    Caps are widened past the fixture default so the solved gain plan
+    clears both ceilings with margin (``back_off_gain`` is then the
+    identity for both roles, byte for byte) — the ordinary, non-clipped
+    case this reproduction path is meant to serve. This is deliberately
+    narrower than a full production-shaped ``candidate`` block:
+    ``rebuild_measure_program`` reads only ``candidate.program_id``, so
+    that is the only key supplied for it.
+    """
+    import json
+
+    from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
+
+    fakes = FakeSeams()
+    # Constructed directly rather than through ``_conductor()``: that helper
+    # hardcodes ``driver_caps_dbfs=CAPS``, which collides with overriding it
+    # here. Skipping ``_conductor()``'s entry-baseline stash is safe: that
+    # stash is for stage-1 cloud grading this test never reaches, and CHECK's
+    # own accept ladder (``check_screens``) does not read it.
+    c = CrossoverV2Session(
+        session_id=SESSION,
+        source_preset=_preset(),
+        roles_bands=_roles(),
+        fc_hz=FC_HZ,
+        driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0},
+        session_volume_db=SESSION_VOLUME_DB,
+        seams=fakes.seams(),
+        driver_spacing_m=0.15,
+        driver_sweep_duration_limits_s={"woofer": 3.5},
+    )
+    _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed, woofer sweep fitted
+
+    program = c.program_for_phase(PHASE_MEASURE)
+    durable = json.loads(json.dumps(c.snapshot().to_dict()))
+    state = {
+        "gain_plan_db": durable["gain_plan_db"],
+        "measure_sweep_durations_s": durable["measure_sweep_durations_s"],
+        "candidate": {"program_id": program.program_id},
+    }
+    bands = {"woofer": (150.0, 6000.0), "tweeter": (300.0, 20000.0)}
+
+    rebuilt, _downstream_db, _prelude = he.rebuild_measure_program(state, bands)
+
+    assert rebuilt.program_id == program.program_id
+
+
 def test_the_reverify_plan_leads_with_the_no_re_walk_sentence():
     """§2.4: the 2026-07-27 session ABANDONED this recovery because no screen
     said it is one sweep rather than another walk. Both of its surfaces — the
