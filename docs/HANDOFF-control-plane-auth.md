@@ -392,7 +392,7 @@ the VK-01 accessory maps only to ungated routes (volume/transport).
 ## 8. Phased execution plan (for multiple agents)
 
 Each phase is independently shippable, branch + PR per
-[AGENTS.md](../AGENTS.md#pr-workflow-on-a-fast-moving-main--read-before-you-push).
+[AGENTS.md](../AGENTS.md).
 HW-free unless noted; multiroom phases gate on the two-Pi smoke test
 ([HANDOFF-peering.md](HANDOFF-peering.md) §8).
 

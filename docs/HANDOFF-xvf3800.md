@@ -1068,7 +1068,7 @@ fault), PortAudio's `sd.InputStream` enters an unrecoverable state
 and silently stops invoking the callback. The bridge stops getting
 mic frames. This is why `jasper-aec-bridge` has stall detection
 (`BridgeStalled`) and systemd `Restart=on-failure`. Documented in
-[AGENTS.md "AEC bridge — input profile and reconciler"](../AGENTS.md#aec-bridge--input-profile-and-reconciler) and at
+[HANDOFF-aec.md](HANDOFF-aec.md) and at
 the top of `jasper/cli/aec_bridge.py`.
 
 This would manifest as **all six channels going silent

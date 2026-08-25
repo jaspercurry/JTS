@@ -503,7 +503,7 @@ script does the actual work.
 `/etc/jasper/jasper.env` (operator-set), `/var/lib/jasper/*.env`
 (wizard-owned). The Pi-side single source of truth for "what
 hostname am I" is `JASPER_HOSTNAME`. See
-[AGENTS.md](AGENTS.md#speaker-hostname--single-source-of-truth).
+[docs/HANDOFF-identity.md](docs/HANDOFF-identity.md).
 
 **Where does laptop-side state live?**
 
@@ -511,7 +511,7 @@ hostname am I" is `JASPER_HOSTNAME`. See
 gitignored, both written by `scripts/onboard.sh`. `.env.local` records
 `PI_HOST` as the SSH target and `JASPER_HOSTNAME` as the speaker's
 hostname/cert identity, which may differ when you connect by IP. See
-[AGENTS.md](AGENTS.md#laptop-side-state--envlocal-and-claudelocalmd).
+[AGENTS.md](AGENTS.md).
 
 ---
 

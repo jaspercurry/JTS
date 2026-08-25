@@ -105,11 +105,12 @@ rule is enforced for admins too — so nobody, including the maintainer, can
 merge into a red `main`. Strict/up-to-date branches are off. There is no
 required reviewer at the GitHub level: green `ci` plus resolved
 conversations is what branch protection enforces mechanically.
-[AGENTS.md's standing multi-agent
-method](AGENTS.md#the-standing-multi-agent-method) layers a process
-obligation on top that GitHub does not check: every PR also gets an
-independent adversarial review to 0 blockers/0 should-fixes before it
-merges.
+[AGENTS.md's review policy](AGENTS.md) adds a tiered check on top that
+GitHub does not enforce: most changes get one `/code-review` pass with
+owner triage; a diff touching the non-negotiables also gets
+[/adversarial-review](.claude/commands/adversarial-review.md) and its
+blockers fixed before merge
+([ADR-0001](docs/adr/0001-operating-model-reset.md)).
 
 Two operational notes:
 
@@ -222,15 +223,14 @@ Two operational notes:
 - Static browser modules should pass `scripts/check-js-syntax.sh`.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
-- For larger or riskier changes, use the COAH quality bar in
-  [AGENTS.md](AGENTS.md#coah-quality-bar): Clean, Observable,
-  Available/resilient, Hardware-safe.
+- For larger or riskier changes, follow the review tiering in
+  [AGENTS.md](AGENTS.md): correctness, hearing/hardware safety, secrets,
+  and single-source-of-truth are what the heavy tier defends.
 - Web setup pages follow AGENTS.md "Web wizard conventions" — shared
   CSRF helpers, checkbox-based toggles, and no generated inline JS for
   untrusted device/network metadata.
-- See the [Agent behavior baseline](AGENTS.md#agent-behavior-baseline)
-  in AGENTS.md — that's the authoritative style guide for both humans
-  and AI agents.
+- See [AGENTS.md](AGENTS.md) — the authoritative working agreement for
+  both humans and AI agents.
 
 ## Documentation
 
@@ -262,8 +262,7 @@ already been made and what's NOT a reviewable trade-off.
   AEC retry, custom XVF firmware) are not. Mic capture is
   consumed by ML (openWakeWord + speech LLMs), never humans —
   optimize for ASR accuracy, not naturalness. See
-  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) and
-  [AGENTS.md "AEC bridge — input profile and reconciler"](AGENTS.md#aec-bridge--input-profile-and-reconciler).
+  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md).
 - **Voice provider abstraction.** New providers go through the
   `LiveConnection` / `LiveTurn` protocol; don't add
   provider-specific branches outside `jasper/voice/`. See
