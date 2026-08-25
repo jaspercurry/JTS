@@ -315,7 +315,6 @@ async def _load_startup_config(
     camilla_factory: CamillaFactory,
     *,
     path_safety_evidence_path: str | Path | None = None,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     topology = load_output_topology()
     cam = camilla_factory()
@@ -325,7 +324,6 @@ async def _load_startup_config(
         get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
         path_safety_evidence_path=path_safety_evidence_path
         or _path_safety_evidence_path(),
-        acquire_lock=acquire_lock,
     )
 
 
@@ -457,7 +455,6 @@ async def _ensure_commission_startup_anchor(
     camilla_factory: CamillaFactory,
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Ensure commissioning has the silent startup graph as rollback anchor."""
 
@@ -538,7 +535,6 @@ async def _ensure_commission_startup_anchor(
     startup_load = await _load_startup_config(
         camilla_factory,
         path_safety_evidence_path=evidence_path,
-        acquire_lock=acquire_lock,
     )
     load_state = _dict_value(startup_load.get("load"))
     if load_state.get("status") != "loaded" or not load_state.get(
@@ -1099,12 +1095,10 @@ async def _load_summed_commissioning_config(
 async def _rollback_summed_commissioning_config(
     *,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     cam = camilla_factory()
     return await rollback_driver_commissioning_config(
         load_config=commission_load_config(cam),
-        acquire_lock=acquire_lock,
     )
 
 
@@ -1689,7 +1683,6 @@ async def _load_driver_commissioning_config_for_level(
     preset: Any,
     crossover_preview: dict[str, Any] | None,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     cam = camilla_factory()
     entry_config_path, entry_config_error = await read_current_config_path(cam)
@@ -1735,7 +1728,6 @@ async def _load_driver_commissioning_config_for_level(
             camilla_factory=camilla_factory,
             preset=preset,
             crossover_preview=crossover_preview,
-            acquire_lock=acquire_lock,
         )
         if startup_setup.get("status") == "blocked":
             startup_setup["measurement_transaction"] = transaction
@@ -1784,7 +1776,6 @@ async def _load_driver_commissioning_config_for_level(
             volume_limit_db=volume_limit_db,
             filter_mode=APPLIED_RESPONSE_FILTER_MODE,
             path_safety_evidence_path=evidence_path,
-            acquire_lock=acquire_lock,
             reconcile_output_hardware=not just_reconciled_hardware,
         )
         payload["startup_setup"] = startup_setup
@@ -1799,7 +1790,6 @@ async def _load_driver_commissioning_config_for_level(
             await _restore_automatic_driver_entry_config_resilient(
                 transaction_payload,
                 camilla_factory=camilla_factory,
-                acquire_lock=acquire_lock,
             )
         except AutomaticDriverConfigRestoreError as restore_error:
             raise restore_error from operation_error
@@ -1821,7 +1811,6 @@ async def _restore_automatic_driver_entry_config(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Idempotently restore automatic capture's entry production config path.
 
@@ -1848,7 +1837,6 @@ async def _restore_automatic_driver_entry_config(
     try:
         inner_rollback = await _rollback_summed_commissioning_config(
             camilla_factory=camilla_factory,
-            acquire_lock=acquire_lock,
         )
     except _COMMISSION_OPERATION_ERRORS as exc:
         inner_rollback = {"status": "failed", "error": str(exc)}
@@ -1889,14 +1877,12 @@ async def _restore_automatic_driver_entry_config_resilient(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Finish production restoration even while the caller is being cancelled."""
     restore_task = asyncio.create_task(
         _restore_automatic_driver_entry_config(
             load_payload,
             camilla_factory=camilla_factory,
-            acquire_lock=acquire_lock,
         )
     )
     return await _await_restore_task_resilient(restore_task)
@@ -1906,7 +1892,6 @@ async def _rollback_capture_attempt_to_anchor(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Re-mute one automatic capture attempt WITHOUT restoring production.
 
@@ -1928,7 +1913,6 @@ async def _rollback_capture_attempt_to_anchor(
         return {"status": "already_restored", "config_path": entry_path}
     inner_rollback = await _rollback_summed_commissioning_config(
         camilla_factory=camilla_factory,
-        acquire_lock=acquire_lock,
     )
     rollback_state = _dict_value(inner_rollback.get("rollback"))
     status = str(rollback_state.get("status") or inner_rollback.get("status") or "")
@@ -1960,14 +1944,12 @@ async def _rollback_capture_attempt_to_anchor_resilient(
     load_payload: dict[str, Any],
     *,
     camilla_factory: CamillaFactory,
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Finish the anchor re-mute even while the caller is being cancelled."""
     restore_task = asyncio.create_task(
         _rollback_capture_attempt_to_anchor(
             load_payload,
             camilla_factory=camilla_factory,
-            acquire_lock=acquire_lock,
         )
     )
     return await _await_restore_task_resilient(restore_task)
@@ -2447,7 +2429,6 @@ async def play_driver_capture_sweep(
                     preset=preset,
                     crossover_preview=None,
                     camilla_factory=camilla_factory,
-                    acquire_lock=False,
                 )
                 load_state = _dict_value(load_payload.get("load"))
                 if load_state.get("status") != "loaded":
@@ -2632,7 +2613,6 @@ async def play_driver_capture_sweep(
                             await _rollback_capture_attempt_to_anchor_resilient(
                                 load_payload,
                                 camilla_factory=camilla_factory,
-                                acquire_lock=False,
                             )
                         )
                     except AutomaticDriverConfigRestoreError:

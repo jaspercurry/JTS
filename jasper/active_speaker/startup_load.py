@@ -816,7 +816,6 @@ async def load_protected_startup_config(
     path_safety_evidence_path: str | Path | None = None,
     state_path: str | Path | None = None,
     require_physical_identity: bool = True,
-    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -984,7 +983,6 @@ async def load_protected_startup_config(
             load_config=load_config,
             get_current_config_path=get_current_config_path,
             persist=_persist_loaded_anchor,
-            acquire_lock=acquire_lock,
             validate=validate,
         )
         apply_succeeded = True
@@ -1809,7 +1807,6 @@ async def load_driver_commissioning_config(
     state_path: str | Path | None = None,
     reconcile_output_hardware: bool = True,
     require_physical_identity: bool = True,
-    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2126,7 +2123,6 @@ async def load_driver_commissioning_config(
             get_current_config_path=None,
             prepare=_emit_in_lock,
             persist=_live_confirm,
-            acquire_lock=acquire_lock,
             validate=validate,
         )
     except DspApplyError as exc:
@@ -2320,7 +2316,6 @@ async def rollback_driver_commissioning_config(
     *,
     load_config: PathLoader,
     state_path: str | Path | None = None,
-    acquire_lock: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -2376,7 +2371,6 @@ async def rollback_driver_commissioning_config(
             prior_config_path=None,
             get_current_config_path=None,
             load_config=load_config,
-            acquire_lock=acquire_lock,
             validate=validate,
         )
     except Exception as exc:  # noqa: BLE001

@@ -657,27 +657,6 @@ async def _dsp_apply_lock(
         lock.release()
 
 
-@contextlib.asynccontextmanager
-async def _maybe_dsp_apply_lock(
-    path: Path,
-    *,
-    acquire: bool = True,
-    timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
-    source: str = "unspecified",
-):
-    # ``acquire`` is the historical nested-call hint.  The private admission
-    # boundary is now authoritative: it reuses same-task ownership and acquires
-    # otherwise, so a stale/incorrect ``False`` can never bypass the lock or
-    # pending-intent check. The pending-intent guard uses ``_dsp_apply_lock``'s
-    # own defaults (recovery off, canonical intent path).
-    async with _dsp_apply_lock(
-        path,
-        timeout_s=timeout_s,
-        source=source,
-    ):
-        yield
-
-
 def dsp_apply_lock_path(config_dir: str | Path) -> Path:
     """Return the shared local lock path for generated CamillaDSP configs."""
 
@@ -797,7 +776,6 @@ async def apply_dsp_config(
     sound_filter_count: int | None = None,
     state_path: str | Path | None = None,
     lock_path: str | Path | None = None,
-    acquire_lock: bool = True,
     lock_timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
     expected_candidate_sha256: str | None = None,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
@@ -809,11 +787,6 @@ async def apply_dsp_config(
     The lock is local-process/file-system coordination for JTS writers
     (`/sound/`, `/correction/`, and future DSP surfaces). CamillaDSP is
     still the authority for whether the candidate can actually run.
-
-    ``acquire_lock=False`` remains a compatibility hint for callers that expect
-    to be inside :func:`dsp_writer_lock`.  The private boundary verifies that
-    task-local ownership and acquires the same lock when it is absent; the flag
-    cannot bypass admission or pending-intent refusal.
 
     ``lock_timeout_s`` bounds only admission to the shared writer boundary.
     Once admitted, this function runs validation, mutation, confirmation, and
@@ -847,9 +820,8 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    async with _maybe_dsp_apply_lock(
+    async with _dsp_apply_lock(
         lock,
-        acquire=acquire_lock,
         timeout_s=lock_timeout_s,
         source=source,
     ):

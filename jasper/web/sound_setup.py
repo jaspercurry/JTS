@@ -4471,7 +4471,6 @@ async def _active_speaker_commission_ramp_ack_payload(
 async def _active_speaker_commission_ramp_abort_payload(
     *,
     camilla_factory: Callable[[], Any],
-    acquire_lock: bool = True,
 ) -> dict[str, Any]:
     """Hard Stop: roll back to the all-muted staged config and reset the ramp."""
 
@@ -4480,7 +4479,7 @@ async def _active_speaker_commission_ramp_abort_payload(
     tone_stop = _active_speaker_stop_commission_tone(reason="commission_abort")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
-    payload = await abort_ramp(load_config=load_config, acquire_lock=acquire_lock)
+    payload = await abort_ramp(load_config=load_config)
     payload["tone_stop"] = tone_stop
     log_event(
         logger,
@@ -5177,7 +5176,6 @@ async def _active_speaker_finish_commissioning_payload(
             if cleanup_needed:
                 ramp_cleanup = await _active_speaker_commission_ramp_abort_payload(
                     camilla_factory=camilla_factory,
-                    acquire_lock=False,
                 )
             else:
                 ramp_cleanup = {

@@ -1214,7 +1214,6 @@ async def _apply_measured_candidate_owned(
                         load_config=load_config_path,
                         prior_config_path=str(predecessor.state["config_path"]),
                         get_current_config_path=runtime_port.read_config_path,
-                        acquire_lock=False,
                         expected_candidate_sha256=_candidate_sha(baseline),
                         validate=validate,
                     )

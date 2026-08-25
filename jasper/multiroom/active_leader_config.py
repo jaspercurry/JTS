@@ -417,7 +417,6 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
             get_current_config_path=lambda: cam.get_config_file_path(
                 best_effort=True,
             ),
-            acquire_lock=False,
         )
         try:
             await follower_config._prove_live_bass_extension_graph(
@@ -436,7 +435,6 @@ async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
                     get_current_config_path=lambda: cam.get_config_file_path(
                         best_effort=True
                     ),
-                    acquire_lock=False,
                 )
             raise ActiveLeaderError(
                 "bake_graph_unprovable",

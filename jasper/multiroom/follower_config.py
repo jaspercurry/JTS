@@ -284,7 +284,6 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
             get_current_config_path=lambda: cam.get_config_file_path(
                 best_effort=True,
             ),
-            acquire_lock=False,
         )
         try:
             await _prove_live_bass_extension_graph(
@@ -303,7 +302,6 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
                     get_current_config_path=lambda: cam.get_config_file_path(
                         best_effort=True
                     ),
-                    acquire_lock=False,
                 )
             raise ActiveFollowerError(
                 "graph_unprovable",
@@ -482,7 +480,6 @@ async def restore_active_camilla_solo(
             get_current_config_path=lambda: cam.get_config_file_path(
                 best_effort=True,
             ),
-            acquire_lock=False,
         )
         try:
             await _prove_live_bass_extension_graph(
@@ -501,7 +498,6 @@ async def restore_active_camilla_solo(
                     get_current_config_path=lambda: cam.get_config_file_path(
                         best_effort=True
                     ),
-                    acquire_lock=False,
                 )
             raise ActiveFollowerError(
                 "restore_graph_unprovable",
