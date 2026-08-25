@@ -249,7 +249,7 @@ def _changes(*paths: str, status: str = "M"):
         (
             "docs-companion-test-only",
             "pull_request",
-            _changes("tests/test_agents_md_toc.py"),
+            _changes("tests/test_docs_handoff_freshness.py"),
             "full",
         ),
         (
@@ -1068,20 +1068,3 @@ def test_classifier_summary_does_not_render_changed_path_markdown() -> None:
     assert "<code>docs/[forged](https://example.invalid)</code>" in summary
 
 
-def test_policy_docs_and_pr_template_name_the_actual_review_contract() -> None:
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-    template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(
-        encoding="utf-8"
-    )
-
-    for policy in (agents, contributing):
-        normalized = " ".join(policy.lower().split())
-        assert "`ci`" in policy
-        assert "fast-landing" in policy
-        assert "every `main` push" in policy
-        assert "no required reviewer" in normalized
-        assert "conversation" in normalized
-        assert "resolved" in normalized
-    assert "otherwise `N/A` is sufficient" in template
-    assert "Hardware/Pi evidence:" in template

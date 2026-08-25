@@ -52,7 +52,6 @@ from jasper.usb_network import ALLOCATION_SUPERNET, LEGACY_MANAGEMENT_CIDR
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
 DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"
-AGENTS_MD = ROOT / "AGENTS.md"
 
 
 # ── usb_gadget_management_cidrs ───────────────────────────────────────────
@@ -245,15 +244,12 @@ def test_advisory_does_not_abort_when_python3_itself_fails(tmp_path):
     assert "REACHED_END" in proc.stdout
 
 
-# ── SSH_BATCH_OPTS keepalive bound vs. its AGENTS.md documentation ────────
+# ── SSH_BATCH_OPTS keepalive bound ───────────────────────────────────────
 #
-# Gate fix (adversarial review, delta round): deleting ServerAliveInterval/
-# ServerAliveCountMax from SSH_BATCH_OPTS left every test above green,
-# while AGENTS.md's "USB-gadget-network deploy advisory" paragraph asserts
-# both literals as fact. Mirrors test_wifi_profile_hardening_contract.py's
-# shape: grep the literal values out of both real files (never a third,
-# independently-driftable literal hardcoded in the test) so a change to
-# one without the other fails here.
+# Deleting ServerAliveInterval/ServerAliveCountMax from SSH_BATCH_OPTS leaves
+# every test above green: nothing else asserts a severed transport surfaces
+# as an ssh error rather than an unbounded hang. Read the values out of the
+# real file rather than restating them here.
 
 
 def _ssh_batch_opts_line() -> str:
@@ -263,29 +259,12 @@ def _ssh_batch_opts_line() -> str:
     return m.group(1)
 
 
-def _advisory_paragraph_in_agents_md() -> str:
-    text = AGENTS_MD.read_text(encoding="utf-8")
-    m = re.search(
-        r"\*\*USB-gadget-network deploy advisory:\*\*.*?(?=\n\*\*|\Z)",
-        text,
-        flags=re.S,
-    )
-    assert m is not None, (
-        "could not find the 'USB-gadget-network deploy advisory' paragraph in AGENTS.md"
-    )
-    return m.group(0)
-
-
-def test_ssh_keepalive_options_pinned_and_match_agents_md():
+def test_ssh_keepalive_options_pinned():
     opts = _ssh_batch_opts_line()
-    doc = _advisory_paragraph_in_agents_md()
 
     for opt_name in ("ServerAliveInterval", "ServerAliveCountMax"):
         code_match = re.search(rf"\b{opt_name}=(\d+)\b", opts)
-        doc_match = re.search(rf"\b{opt_name}=(\d+)\b", doc)
         assert code_match, f"SSH_BATCH_OPTS is missing {opt_name}=<N>: {opts!r}"
-        assert doc_match, f"AGENTS.md advisory paragraph is missing {opt_name}=<N>"
-        assert code_match.group(1) == doc_match.group(1), (
-            f"{opt_name} drift: SSH_BATCH_OPTS={code_match.group(1)!r} "
-            f"AGENTS.md={doc_match.group(1)!r}"
+        assert int(code_match.group(1)) > 0, (
+            f"{opt_name} must be a positive count/interval: {code_match.group(1)!r}"
         )

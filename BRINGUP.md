@@ -744,9 +744,8 @@ triggers it). Try the shorter form first:
 You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/wake/` from any LAN device, or run
-`bash scripts/switch-wake-word.sh <key>` from your laptop. See
-[AGENTS.md "Wake-word switching"](AGENTS.md#wake-word-switching--read-first)
-for the registry and how to add a new model.
+`bash scripts/switch-wake-word.sh <key>` from your laptop. The model registry (and how to add one) lives in
+[`jasper/wake_models.py`](jasper/wake_models.py).
 
 If wake isn't firing:
 

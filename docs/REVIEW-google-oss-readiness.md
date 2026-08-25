@@ -7,7 +7,7 @@
 > provenance rework, the `http_security` guard, and the canonical-UI
 > migration). Preserved as a point-in-time OSS-readiness assessment, not
 > current operational truth. Current documentation rules live in
-> [AGENTS.md#documentation-paradigm](../AGENTS.md#documentation-paradigm);
+> [AGENTS.md](../AGENTS.md) and [docs/adr/](adr/);
 > the repo doc atlas lives in
 > [README.md#documentation-map](../README.md#documentation-map).
 >

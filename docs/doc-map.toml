@@ -116,7 +116,6 @@ code = [
   "docs/doc-map.toml",
   "docs/testing-tooling.md",
   ".claude/commands/deep-audit.md",
-  ".claude/agents/adversarial-gate.md",
 ]
 docs = [
   "AGENTS.md",
@@ -1143,6 +1142,8 @@ code = [
   "docs/REVIEW-2026-06-04-small-wins.md",
   "docs/REVIEW-2026-06-12-oss-due-diligence.md",
   "docs/REVIEW-deep-audit-2026-07-11.md",
+  "docs/DEEP-AUDIT-2026-08-25.md",
+  "docs/REFACTOR-2026-08.md",
   "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
   "jasper/http_security.py",
@@ -1167,6 +1168,8 @@ docs = [
   "docs/REVIEW-2026-06-04-small-wins.md",
   "docs/REVIEW-2026-06-12-oss-due-diligence.md",
   "docs/REVIEW-deep-audit-2026-07-11.md",
+  "docs/DEEP-AUDIT-2026-08-25.md",
+  "docs/REFACTOR-2026-08.md",
   "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
   "docs/HANDOFF-supply-chain.md",

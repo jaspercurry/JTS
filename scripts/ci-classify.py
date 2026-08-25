@@ -186,7 +186,6 @@ DOCS_TEST_FILES = (
     # and hiding the literal would blind the guard if this test ever did grow
     # a real doc read.
     "tests/test_active_speaker_attempts_replay.py",
-    "tests/test_agents_md_toc.py",
     "tests/test_audio_slice_membership_docs.py",
     "tests/test_bass_extension_limiter_protocol.py",
     "tests/test_bass_extension_plan_status.py",
@@ -201,7 +200,6 @@ DOCS_TEST_FILES = (
     "tests/test_ci_classifier.py",
     "tests/test_crossover_v2_measurement_doc_pins.py",
     "tests/test_deep_audit_ledger.py",
-    "tests/test_doc_staleness_sweep_20260604.py",
     "tests/test_docs_assistant_width_phrasing.py",
     "tests/test_docs_handoff_freshness.py",
     "tests/test_docs_impact.py",
@@ -212,7 +210,6 @@ DOCS_TEST_FILES = (
     "tests/test_env_vars_codified.py",
     "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",
-    "tests/test_lib_usb_gadget_advisory.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",

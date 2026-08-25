@@ -15,8 +15,8 @@ are the *same shape* underneath. This doc names that shape so every future
 addition is reasoned about the same way, and so a future contributor can
 follow the lead with a clear, understood contract.
 
-It was distilled from JTS's own in-repo prior art (the `Config ownership`
-decision tree in [`AGENTS.md`](../AGENTS.md#config-ownership--which-pattern-for-a-new-dac--mic--provider--city),
+It was distilled from JTS's own in-repo prior art (the config-ownership
+decision tree — now the pattern-selector table in Step 2 below,
 the transit registry, the reconcilers, the tool platform) plus an external
 deep-research pass over how the best extension ecosystems draw these lines
 (Home Assistant, VS Code, Figma, Django/Backstage, CLAP/LV2, Kubernetes, and
@@ -107,7 +107,7 @@ keeps its own detailed contract doc; this table is the map.
 | **Tools** | a tool (grouped into a pack) | an LLM-callable action; declared to the provider at connect time; spends the model's token budget; dispatched uniformly | [`tool-platform-plan.md`](tool-platform-plan.md) |
 | **Sources** | a music/audio source | enters the real-time fan-in topology; touches the hot Rust path, mux arbitration, and the loud-output safety chain | [`HANDOFF-source-capabilities.md`](HANDOFF-source-capabilities.md), [`audio-paths.md`](audio-paths.md) |
 | **Model providers** | a swappable LLM backend | interchangeable implementation behind one narrow interface (realtime `LiveConnection` for voice; a simpler request→text layer for background work) | [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md), [`research-tool-plan.md`](research-tool-plan.md) |
-| **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | [`HANDOFF-audio-capability-platform.md`](HANDOFF-audio-capability-platform.md), [`AGENTS.md` Config ownership](../AGENTS.md#config-ownership--which-pattern-for-a-new-dac--mic--provider--city) |
+| **Hardware profiles** | a pure-data profile | a hardware variant whose *presence is dynamic*; resolved by a single-writer reconciler on boot/hotplug | [`HANDOFF-audio-capability-platform.md`](HANDOFF-audio-capability-platform.md), the pattern-selector table (Step 2, below) |
 | **Features** *(new — §4)* | a cross-layer vertical | composes several of the above *and* owns its own user surface (a web page, a store, background work, proactive speech) | [`conversation-history-plan.md`](conversation-history-plan.md), [`research-tool-plan.md`](research-tool-plan.md), [`HANDOFF-calibration-agent.md`](HANDOFF-calibration-agent.md) *(its instances)* |
 
 The first four are mature and shipped to varying degrees. The fifth — the
@@ -189,11 +189,14 @@ One front door, then the existing pattern selector. Default conservative.
    unpublished until a reviewed contributor actually needs it.
 
 **Step 2 — once you know it's a config-bearing subsystem, which ownership
-pattern?** → the three-pattern table in
-[`AGENTS.md` "Config ownership"](../AGENTS.md#config-ownership--which-pattern-for-a-new-dac--mic--provider--city)
-(central typed `Config` / self-contained module + registry / pure-data
-registry + reconciler). That table is the single source of truth for the
-selector; this doctrine does not duplicate it.
+pattern?** Pick by the *shape* of the thing. This table is the single
+source of truth for the selector (moved here from AGENTS.md):
+
+| If the new thing is… | Pattern | Owns + parses config |
+|---|---|---|
+| read widely by the core / hot path, stable, small | **Central typed `Config`** | [`jasper/config.py`](../jasper/config.py) — one `from_env` parse point. Never per-plugin config here: N plugins would mean N core edits. |
+| one more of an open-ended set of self-similar plugins | **Self-contained module + registry** (the transit pattern) | the plugin declares its own `env_keys` and parses them itself in `build_client(env)`; the registry iterates with zero per-plugin knowledge in the daemon. |
+| a hardware variant selected at runtime (presence is dynamic) | **Pure-data registry + reconciler** (the wake-model / AEC / DAC pattern) | a pure-data registry *describes* variants; a reconciler is the *single writer* of the resolved env, re-running on boot/hotplug; daemons read, never choose. |
 
 ---
 
