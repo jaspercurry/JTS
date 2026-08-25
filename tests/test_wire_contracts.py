@@ -9,44 +9,23 @@ boundary — Rust daemon → Python consumer, bash writer → Rust reader,
 Python HTTP payload → dashboard ES module. Every consumer on these seams
 is fail-soft by design (a missing key degrades to null / a blank card /
 a silently-ignored env var), so drift never throws at runtime; it just
-quietly blanks a surface. The guards make that drift a loud test
-failure that names both sides of the seam.
+quietly blanks a surface.
 
-Style: static greps of source text (the established `test_outputd_wiring.py`
-technique) — no cargo, no daemons. Each contract entry is pinned twice:
-the producing side must emit the name, and the consuming side must still
-reference it (so a stale pin in this file is itself caught).
+Producers are executed wherever they can be. outputd's STATUS key set is
+pinned by `snapshot_json_emits_every_key_the_python_status_consumers_read`
+in `rust/jasper-outputd/src/state.rs`.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+from jasper.cli.aec_init import RECENT_WRITES_KEY, _reference_writes
 
+REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 FANIN_CONFIG_RS = REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
 OUTPUTD_STATE_RS = REPO / "rust" / "jasper-outputd" / "src" / "state.rs"
-CONTROL_SERVER_PY = REPO / "jasper" / "control" / "server.py"
-SYSTEM_ROUTES_PY = REPO / "jasper" / "control" / "handlers" / "system.py"
-CONTROL_SPLIT_MODULES = (
-    CONTROL_SERVER_PY,
-    REPO / "jasper" / "control" / "aec_endpoints.py",
-    REPO / "jasper" / "control" / "state_aggregate.py",
-    REPO / "jasper" / "control" / "uds.py",
-    REPO / "jasper" / "control" / "volume_ops.py",
-)
-
-
-def _control_split_text() -> str:
-    return "\n".join(path.read_text() for path in CONTROL_SPLIT_MODULES)
-
-
-def _assert_state_route_delegates_to_aggregate() -> None:
-    server_src = CONTROL_SERVER_PY.read_text()
-    assert 'from . import state_aggregate as _state_aggregate' in server_src
-    assert '"/state": "_get_state"' in server_src
-    assert "return await _state_aggregate._get_state(" in server_src
 
 
 def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
@@ -59,19 +38,15 @@ def _strip_comment_lines(text: str, *, markers: tuple[str, ...]) -> str:
 def _rust_emitted_json_keys(path: Path) -> set[str]:
     """Key names a hand-rolled Rust JSON emitter produces.
 
-    Matches both helper calls (``push_kv_*(&mut buf, "key", ...)``,
-    including the ``_opt`` variants) and inline object/array openers
-    (``buf.push_str(r#""key":...``). Flat set — nesting is not modeled;
-    the contract below pins "this name exists somewhere in the
-    snapshot", which is what a fail-soft ``.get()`` consumer needs.
+    Matches helper calls (``push_kv_*(&mut buf, "key", ...)``, ``_opt``
+    variants included) and inline object/array openers
+    (``buf.push_str(r#""key":...``). Flat — nesting is not modeled, which is
+    all a fail-soft ``.get()`` consumer needs. Test-only assertions are cut at
+    ``#[cfg(test)]`` so they cannot satisfy the production contract.
     """
-    # Test-only snapshot assertions must not be able to satisfy the production
-    # wire contract. Both state modules keep their unit tests after this marker.
     src = path.read_text().split("#[cfg(test)]", 1)[0]
     src = _strip_comment_lines(src, markers=("//",))
     keys: set[str] = set()
-    # Snapshot helpers receive the buffer either as ``&mut buf`` at the top
-    # level or as an already-borrowed ``buf`` in extracted rendering methods.
     keys.update(re.findall(
         r'push_kv_\w+\(\s*(?:&mut\s+)?\w+,\s*"(\w+)"',
         src,
@@ -81,14 +56,14 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# 1. fan-in / outputd STATUS JSON — Rust emitter vs Python consumers
+# 1. fan-in STATUS JSON — Rust emitter vs Python consumers
 #
-# jasper-fanin and jasper-outputd answer `STATUS\n` on their control UDS
-# with hand-rolled JSON (rust/*/src/state.rs). Python consumers read it
-# with fail-soft .get() chains, so a renamed Rust key silently turns
-# into None on /state, in the doctor, and in correction integrity
-# snapshots. Pin: every key a Python consumer reads must be emitted by
-# the Rust snapshot, and must still appear in the consumer source.
+# jasper-fanin answers `STATUS\n` on its control UDS with hand-rolled JSON.
+# Python consumers read it with fail-soft .get() chains, so a renamed Rust key
+# silently turns into None on /state, in the doctor, and in correction
+# integrity snapshots. outputd's half of this contract executes in its own
+# crate; fan-in's emitter is still scanned because rust/jasper-fanin is frozen
+# and cannot take the matching `#[test]` yet.
 # ---------------------------------------------------------------------------
 
 FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
@@ -113,45 +88,18 @@ FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
     },
 }
 
-OUTPUTD_STATUS_CONSUMERS: dict[str, set[str]] = {
-    # _outputd_dac_status_check / _dac_reference_check / counter deltas
-    "jasper/audio_validation.py": {
-        "dac", "pcm", "sample_rate", "period_frames", "buffer_frames",
-        "frames_written", "xrun_count",
-        "reference_outputs", "speaker_reference_source",
-        "speaker_reference_active", "speaker_reference_channels",
-        "chip_ref_pcm", "chip_ref_sample_rate", "chip_ref_period_frames",
-        "chip_ref_buffer_frames", "udp_target",
-    },
-    # check_outputd_service + check_aec_clock_drift
-    "jasper/cli/doctor/audio_runtime.py": {
-        "backend", "sink_mode", "content", "dac", "pcm",
-        "reference_outputs", "speaker_reference_source",
-        "speaker_reference_active", "speaker_reference_channels",
-        "udp_target", "chip_ref_pcm", "chip_ref_writer",
-        "enabled", "active", "status", "open_error_count", "retry_count",
-        # check_aec_clock_drift (Layer 0 observe-only SRO drift)
-        "aec_clock", "chip_ref_sro_ppm", "sro_estimator_status",
-        "verdict", "verdict_reason", "observe", "latency",
-        "dac_presentation_ms", "playback_queue_ms", "chip_ref_queue_ms",
-    },
-}
 
-
-def _assert_status_contract(
-    emitter: Path, consumers: dict[str, set[str]],
-) -> None:
-    emitted = _rust_emitted_json_keys(emitter)
-    assert emitted, f"no JSON keys extracted from {emitter} — extractor broke?"
+def test_fanin_status_keys_match_python_consumers():
+    emitted = _rust_emitted_json_keys(FANIN_STATE_RS)
+    assert emitted, f"no JSON keys extracted from {FANIN_STATE_RS} — extractor broke?"
     problems: list[str] = []
-    for consumer_rel, keys in consumers.items():
-        consumer = REPO / consumer_rel
-        src = consumer.read_text()
+    for consumer_rel, keys in FANIN_STATUS_CONSUMERS.items():
+        src = (REPO / consumer_rel).read_text()
         for key in sorted(keys):
             if key not in emitted:
                 problems.append(
                     f"{consumer_rel} reads STATUS key {key!r} that "
-                    f"{emitter.relative_to(REPO)} no longer emits"
+                    "rust/jasper-fanin/src/state.rs no longer emits"
                 )
             if f'"{key}"' not in src and f"'{key}'" not in src:
                 problems.append(
@@ -161,82 +109,44 @@ def _assert_status_contract(
     assert not problems, "\n".join(problems)
 
 
-def test_fanin_status_keys_match_python_consumers():
-    _assert_status_contract(FANIN_STATE_RS, FANIN_STATUS_CONSUMERS)
-
-
-def test_outputd_status_keys_match_python_consumers():
-    _assert_status_contract(OUTPUTD_STATE_RS, OUTPUTD_STATUS_CONSUMERS)
-
-
-def test_outputd_status_exposes_aec_timing_observability_keys():
-    emitted = _rust_emitted_json_keys(OUTPUTD_STATE_RS)
-    for key in {
-        "snd_pcm_delay_frames",
-        "snd_pcm_delay_ms",
-        "snd_pcm_delay_sample_age_ms",
-        "chip_ref_writer",
-        "desired",
-        "active",
-        "status",
-        "open_error_count",
-        "retry_count",
-        "queue_depth_periods",
-        "queued_frames",
-        "frames_written",
-        "write_underrun_count",
-        "write_xrun_count",
-        "write_recovery_count",
-        "write_error_count",
-        "dropped_periods_due_to_full_queue",
-        "dropped_periods_due_to_disconnected_writer",
-        "dropped_periods_while_unavailable",
-        "last_write_age_ms",
-        "last_enqueued_reference_sequence",
-        "last_written_reference_sequence",
-        "reference_sequence_lag",
-        "diagnostic_tee_path",
-        "diagnostic_tee_active",
-        "diagnostic_tee_open_error_count",
-        "diagnostic_tee_write_error_count",
-    }:
-        assert key in emitted, f"outputd STATUS no longer emits {key!r}"
-
-
-def test_outputd_publishes_the_chip_ref_sample_ring_aec_init_needs():
+def test_aec_init_reads_the_chip_ref_sample_ring_outputd_publishes():
     """The chip-ref writer's per-write observation ring (#2253).
 
-    This is the one STATUS surface whose ABSENCE is a hard refusal rather than
-    a blank card: `jasper-aec-init` cannot assemble a K window from the single
-    latest reading at outputd's ~2 reads/s, so a missing ring parks the box
-    with "deploy an outputd that reports it". That makes the seam load-bearing
-    in both directions — the key names, and the ring capacity the Python-side
-    test fixtures model outputd with.
+    The one STATUS surface whose ABSENCE is a hard refusal rather than a blank
+    card: `jasper-aec-init` cannot assemble a K window from the single latest
+    reading at outputd's ~2 reads/s, so a missing ring parks the box. Read the
+    shape outputd's `snapshot_json_reports_the_chip_ref_writers_recent_
+    observations` builds; the ring depth its Python stand-in models must match
+    the daemon's declared capacity, a constant no Python path can reach.
     """
-
-    state_rs = OUTPUTD_STATE_RS.read_text()
-    aec_init = (REPO / "jasper" / "cli" / "aec_init.py").read_text()
-    emitted = _rust_emitted_json_keys(OUTPUTD_STATE_RS)
-    for key in ("recent_writes", "recent_writes_capacity", "age_ms"):
-        assert key in emitted, f"outputd STATUS no longer emits {key!r}"
-    for key in ("age_ms", "frames_written", "snd_pcm_delay_frames"):
-        assert f'"{key}"' in aec_init, f"aec_init no longer reads {key!r}"
-    assert 'RECENT_WRITES_KEY = "recent_writes"' in aec_init
+    writes = _reference_writes({
+        RECENT_WRITES_KEY: [
+            {
+                "frames_written": 128, "snd_pcm_delay_frames": 400,
+                "reference_sequence": None, "age_ms": 12,
+            },
+            {
+                "frames_written": 256, "snd_pcm_delay_frames": 401,
+                "reference_sequence": 1, "age_ms": 4,
+            },
+        ],
+    })
+    assert [write.frames for write in writes] == [128, 256]
+    assert [write.delay for write in writes] == [400, 401]
+    assert [write.sequence for write in writes] == [None, 1]
+    assert [write.age_ms for write in writes] == [12, 4]
 
     capacity = re.search(
-        r"pub const CHIP_REF_RECENT_WRITES: usize = (\d+);", state_rs
+        r"pub const CHIP_REF_RECENT_WRITES: usize = (\d+);",
+        OUTPUTD_STATE_RS.read_text(),
     )
-    assert capacity, "outputd no longer declares its chip-ref ring capacity"
     fixture = re.search(
         r"^RING_CAPACITY = (\d+)$",
         (REPO / "tests" / "test_aec_init.py").read_text(),
         re.MULTILINE,
     )
-    assert fixture, "tests/test_aec_init.py no longer models the ring capacity"
-    assert capacity.group(1) == fixture.group(1), (
-        "tests/test_aec_init.py stands in for outputd; its ring capacity must "
-        "match rust/jasper-outputd/src/state.rs CHIP_REF_RECENT_WRITES"
-    )
+    assert capacity and fixture
+    assert capacity.group(1) == fixture.group(1)
 
 
 def test_fanin_control_command_vocabulary_matches_mux():
@@ -257,20 +167,24 @@ def test_fanin_control_command_vocabulary_matches_mux():
     assert '"error" in payload' in control_py
 
 
-def test_control_socket_paths_agree_across_processes():
-    """The fan-in control socket path is a hardcoded Rust constant (no
-    env override is read by fanin's config.rs); every Python consumer
-    hardcodes the same literal. Same for outputd, where the unit pins
-    the env explicitly. If either daemon moves its socket, every
-    consumer here must move with it in the same PR.
+def test_control_socket_paths_agree_across_processes(monkeypatch):
+    """fan-in's control socket path is a hardcoded Rust constant (its
+    config.rs reads no env override) and every Python consumer hardcodes the
+    same literal; outputd's unit pins the env explicitly. If either daemon
+    moves its socket, every consumer here moves with it in the same PR.
     """
+    from jasper.correction.runtime_integrity import FANIN_CONTROL_SOCKET
+    from jasper.fanin.status import FANIN_STATUS_SOCKET
+    from jasper.peering.config import PEERING_UDS_PATH
+
+    from .doctor_test_support import _fresh_cfg
+
     fanin_sock = "/run/jasper-fanin/control.sock"
     outputd_sock = "/run/jasper-outputd/control.sock"
 
     assert f'"{fanin_sock}"' in FANIN_CONFIG_RS.read_text()
-    assert f'FANIN_STATUS_SOCKET = "{fanin_sock}"' in (
-        REPO / "jasper/fanin/status.py"
-    ).read_text()
+    assert FANIN_STATUS_SOCKET == fanin_sock
+    assert FANIN_CONTROL_SOCKET == FANIN_STATUS_SOCKET
     for rel in (
         "jasper/mux.py",
         "jasper/control/airplay_health.py",
@@ -280,19 +194,6 @@ def test_control_socket_paths_agree_across_processes():
         assert fanin_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the fan-in control socket {fanin_sock}"
         )
-    correction_integrity = (
-        REPO / "jasper/correction/runtime_integrity.py"
-    ).read_text()
-    assert "from jasper.fanin.status import FANIN_STATUS_SOCKET" in (
-        correction_integrity
-    )
-    assert "FANIN_CONTROL_SOCKET = FANIN_STATUS_SOCKET" in correction_integrity
-    control_src = _control_split_text()
-    _assert_state_route_delegates_to_aggregate()
-    assert f'local_status_json("{fanin_sock}")' in control_src, (
-        "jasper/control's /state aggregate no longer probes the fan-in "
-        f"control socket {fanin_sock}"
-    )
 
     unit = (REPO / "deploy" / "systemd" / "jasper-outputd.service").read_text()
     assert f'Environment="JASPER_OUTPUTD_CONTROL_SOCKET={outputd_sock}"' in unit
@@ -304,21 +205,12 @@ def test_control_socket_paths_agree_across_processes():
         assert outputd_sock in (REPO / rel).read_text(), (
             f"{rel} no longer pins the outputd control socket {outputd_sock}"
         )
-    assert f'local_status_json("{outputd_sock}")' in control_src, (
-        "jasper/control's /state aggregate no longer probes the outputd "
-        f"control socket {outputd_sock}"
-    )
 
-    peering_sock = "/run/jasper-control/peering.sock"
-    assert f'PEERING_UDS_PATH = "{peering_sock}"' in (
-        REPO / "jasper/peering/config.py"
-    ).read_text()
-    assert f'"JASPER_PEERING_UDS", "{peering_sock}"' in (
-        REPO / "jasper/config.py"
-    ).read_text(), (
-        "voice config must default to the same peering UDS path that "
-        "jasper-control's peering daemon binds"
-    )
+    # voice connects where jasper-control's peering daemon binds.
+    monkeypatch.delenv("JASPER_PEERING_UDS", raising=False)
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest")
+    assert cfg.peering_uds_socket == PEERING_UDS_PATH
+
     control_unit = (REPO / "deploy/systemd/jasper-control.service").read_text()
     voice_unit = (REPO / "deploy/systemd/jasper-voice.service").read_text()
     assert "User=jasper-control" in control_unit
@@ -326,6 +218,45 @@ def test_control_socket_paths_agree_across_processes():
     assert "RuntimeDirectory=jasper-control" in control_unit
     assert "RuntimeDirectoryMode=0750" in control_unit
     assert "Group=jasper" in voice_unit
+
+
+async def test_state_aggregate_probes_both_daemon_control_sockets(
+    monkeypatch, tmp_path,
+):
+    """`/state` reaches both daemons over the paths their units bind.
+
+    Run the real aggregate with a recording status probe: a probe that moved
+    to a different socket, or stopped being called at all, is the drift this
+    exists to catch.
+    """
+    from jasper.control import state_aggregate
+
+    probed: list[str] = []
+
+    async def record_status(path, *_args, **_kwargs):
+        probed.append(path)
+        return None
+
+    async def no_status(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.json"))
+    await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path=str(tmp_path / "voice.sock"),
+        voice_socket_command=no_status,
+        mux_socket_command=no_status,
+        local_status_json=record_status,
+        aec_full_status=lambda: {},
+        read_transit_state_func=lambda: {"packs": []},
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+
+    assert "/run/jasper-fanin/control.sock" in probed
+    assert "/run/jasper-outputd/control.sock" in probed
 
 
 # ---------------------------------------------------------------------------
@@ -487,11 +418,8 @@ def test_env_contract_exceptions_stay_accurate():
 #
 # The /system/ dashboard polls data.json (proxied to jasper-control's
 # /system/snapshot). renderSection() is fail-soft: a renamed payload key
-# silently blanks a section. Pin: every `snap.<key>` the ES modules read
-# must be a key `_get_system_snapshot` builds, and the metric names the
-# vitals/network cards read from `metrics.current` must exist in the
-# system_metrics sampler. The Audio view's nested reads are pinned against
-# the normalized AudioHealthSampler contract.
+# silently blanks a section. Every name the ES modules read is checked against
+# the payload the real builder/sampler/composer returns.
 # ---------------------------------------------------------------------------
 
 _SYSTEM_STATUS_JS_DIR = REPO / "deploy" / "assets" / "system-status" / "js"
@@ -503,24 +431,55 @@ def _system_status_js_text() -> str:
     )
 
 
-def _server_snapshot_region() -> str:
-    src = SYSTEM_ROUTES_PY.read_text()
-    start = src.index("def _get_system_snapshot")
-    end = src.index("def _get_system_diagnostics")
-    return src[start:end]
+def _payload_key_names(payload: object) -> set[str]:
+    """Every key name a JSON-shaped payload carries, at any nesting depth."""
+    names: set[str] = set()
+    if isinstance(payload, dict):
+        for name, child in payload.items():
+            names.add(name)
+            names |= _payload_key_names(child)
+    elif isinstance(payload, list):
+        for item in payload:
+            names |= _payload_key_names(item)
+    return names
+
+
+def _system_snapshot_payload() -> dict:
+    """Run the real /system/snapshot builder with its samplers absent.
+
+    Every sampler slot is optional by design (the route answers a direct CLI
+    invocation too), so a bare handler exercises the payload assembly itself.
+    """
+    from jasper.control.handlers.system import SystemRoutes
+
+    class _Probe(SystemRoutes):
+        def __init__(self) -> None:
+            self._sampler = None
+            self._audio_health_sampler = None
+            self._airplay_health_sampler = None
+            self._ha_status_cache = type(
+                "_HaCache", (), {"snapshot": staticmethod(dict)},
+            )
+            self.payload: dict = {}
+
+        def _send_json(self, payload, **_status) -> None:
+            self.payload = payload
+
+    probe = _Probe()
+    probe._get_system_snapshot()
+    return probe.payload
 
 
 def test_dashboard_snapshot_top_level_keys_exist_in_server_payload():
     js = _system_status_js_text()
     snap_keys = set(re.findall(r"\bsnap\.([a-z_0-9]+)\b", js))
     assert snap_keys, "no snap.* reads found in system-status JS — extractor broke?"
-    region = _server_snapshot_region()
+    payload = _system_snapshot_payload()
     problems = [
-        f"dashboard JS reads snap.{key} but _get_system_snapshot in "
-        f"jasper/control/handlers/system.py builds no {key!r} key — that card "
-        f"goes silently blank"
+        f"dashboard JS reads snap.{key} but /system/snapshot builds no {key!r} "
+        f"key — that card goes silently blank"
         for key in sorted(snap_keys)
-        if f'"{key}"' not in region
+        if key not in payload
     ]
     assert not problems, "\n".join(problems)
 
@@ -536,14 +495,16 @@ DASHBOARD_METRICS_CURRENT_KEYS = {
 
 
 def test_dashboard_metrics_current_keys_exist_in_sampler():
+    from jasper.control.system_metrics import SystemSampler
+
     js = _system_status_js_text()
-    sampler = (REPO / "jasper" / "control" / "system_metrics.py").read_text()
+    current = SystemSampler().snapshot()["current"]
     problems: list[str] = []
     for key in sorted(DASHBOARD_METRICS_CURRENT_KEYS):
-        if f'"{key}":' not in sampler:
+        if key not in current:
             problems.append(
-                f"dashboard reads metrics.current.{key} but "
-                f"jasper/control/system_metrics.py produces no {key!r}"
+                f"dashboard reads metrics.current.{key} but the system sampler "
+                f"snapshot produces no {key!r}"
             )
         if f"cur.{key}" not in js:
             problems.append(
@@ -554,7 +515,7 @@ def test_dashboard_metrics_current_keys_exist_in_sampler():
 
 
 # audio-view.js / audio-sections.js render only this normalized presentation
-# model. Raw AirPlay counters remain a compatibility/technical surface.
+# model; raw AirPlay counters stay a compatibility/technical surface.
 DASHBOARD_AUDIO_HEALTH_KEYS = {
     "schema_version", "sampled_at", "overall", "signal_path", "latency",
     "sources", "issues", "technical", "status", "headline", "detail",
@@ -568,20 +529,56 @@ DASHBOARD_AUDIO_HEALTH_KEYS = {
     "interruptions", "latency_events", "sync_events", "degraded_seconds",
     "last_incident_at",
 }
+_HEALTH_SAMPLED_AT = 1000.0
 
 
 def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
-    sampler = "\n".join(
-        (REPO / "jasper" / "control" / name).read_text()
-        for name in ("audio_health.py", "audio_incidents.py")
+    """Every name the Audio view reads must survive producer → payload.
+
+    The incident and session halves are driven through `IssueTracker` /
+    `SessionRollup` rather than hand-built: the session dict reaches the
+    payload verbatim, so a rename there would otherwise stay green while the
+    card blanks, and the incident lifecycle (recovered records, coalesced
+    counts) is what puts `recurrence` and the duration fields on it at all.
+    """
+    from jasper.control.audio_health import _issue, compose_audio_health
+    from jasper.control.audio_incidents import IssueTracker, SessionRollup
+
+    # An active USB source with one recurring, recovered incident — the one box
+    # shape that reaches every optional block of the composed contract.
+    candidate = _issue(
+        "audio.dropout", scope="source", source_id="usbsink",
+        impact="continuity", severity="warn", title="Playback interrupted",
+        detail="The stream stopped briefly.",
     )
-    missing = [
-        key for key in sorted(DASHBOARD_AUDIO_HEALTH_KEYS)
-        if f'"{key}"' not in sampler
-    ]
+    tracker = IssueTracker()
+    tracker.update([candidate], _HEALTH_SAMPLED_AT - 300.0)
+    tracker.update([candidate], _HEALTH_SAMPLED_AT - 295.0)
+    tracker.update([], _HEALTH_SAMPLED_AT - 290.0)
+    tracker.update([candidate], _HEALTH_SAMPLED_AT - 10.0)
+    rollup = SessionRollup()
+    rollup.reset("usbsink", _HEALTH_SAMPLED_AT - 300.0)
+    rollup.observe_state([candidate], _HEALTH_SAMPLED_AT - 300.0)
+
+    health = compose_audio_health(
+        airplay={
+            "current": {
+                "fanin": {
+                    "selected_input": "usbsink",
+                    "inputs": {"usbsink": {"rms_dbfs": -20.0}},
+                },
+                "camilla": {"capture_rate": 48000},
+            },
+            "mux_status": {"sources": {"usbsink": {"playing": True}}},
+        },
+        outputd={"backend": "alsa", "dac": {"sample_rate": 48000}},
+        route={"fixed_sample_rate": 48000},
+        issues=tracker.snapshot(),
+        sampled_at=_HEALTH_SAMPLED_AT,
+        session=rollup.snapshot(_HEALTH_SAMPLED_AT),
+    )
+    missing = sorted(DASHBOARD_AUDIO_HEALTH_KEYS - _payload_key_names(health))
     assert not missing, (
-        "dashboard Audio view reads keys the AudioHealthSampler "
-        f"snapshot does not build: {missing} "
-        "(jasper/control/audio_health.py vs "
-        "deploy/assets/system-status/js/audio-*.js)"
+        "dashboard Audio view reads keys the composed audio-health snapshot "
+        f"does not build: {missing}"
     )
