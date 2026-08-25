@@ -599,14 +599,28 @@ def test_the_watchdog_prices_this_pass_not_a_continuous_climb():
     assert budget == (
         1 + bites + slr.MAX_MISSED_FULL_STEPS + slr.BANK_CONFIRM_READINGS
     )
+    # Readings AND fade legs: the legs are audible seconds inside this scope that
+    # are not readings, so a price that omitted them would quietly shrink the
+    # margin below the constant that names it.
+    fades = slr.FADE_LEGS_PER_PASS * slr.fade_seconds(
+        from_db=-6.8, to_db=slr.FADE_FLOOR_DB
+    )
     assert seconds == pytest.approx(
         (budget + slr.REMEASURE_READINGS) * slr.SETTLE_TIMEOUT_S
+        + fades
         + slr.WATCHDOG_SLACK_S
     )
     # The silent re-measure is PRICED, not absorbed by the slack: a budget that
     # leaned on slack for a reading the pass can deliberately spend would be the
-    # retired kernel's mistake in miniature.
+    # retired kernel's mistake in miniature. Its two fade legs are priced for the
+    # same reason and on the same terms -- the pass spends them deliberately.
     assert slr.REMEASURE_READINGS == 1
+    assert fades > 0.0, "a priced term that is always zero prices nothing"
+    # The margin really is WATCHDOG_SLACK_S: every second the pass can spend
+    # inside the scope is named above, so what is left over is the constant.
+    assert seconds - (
+        (budget + slr.REMEASURE_READINGS) * slr.SETTLE_TIMEOUT_S + fades
+    ) == pytest.approx(slr.WATCHDOG_SLACK_S)
     # ...and because the bite scales with the span, the budget is the SAME for a
     # wider one: the bite count is what the watchdog prices, and it is fixed.
     assert slr._watchdog_seconds(start_db=-70.0, ceiling_db=-6.8) == pytest.approx(
@@ -2680,6 +2694,994 @@ def test_a_failed_silent_window_refuses_without_restarting_the_stimulus(tmp_path
     # The silent window is the one that failed, so it is the one published.
     assert result.ramp["stopped_window"]["samples"] == 0
     assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+# --- #2929: both edges of the silent re-measure are faded -------------------
+#
+# The shipped bench replays (runs 86/87) all contradict their floor on the FIRST
+# reading, which the walk takes at SEAT_LEVEL_START_DB -- the same value as
+# FADE_FLOOR_DB, so their fade legs are zero steps long and exercise nothing.
+# A fade only has a shape when the re-measure happens with the fader UP, which
+# needs a room that settles DURING the climb rather than before it. That is the
+# run-87 defect one beat later: the ambient window catches a transient, the
+# first climb reading still catches its tail, and by the next reading the room
+# is its true quiet self -- so that reading lands below the floor with the climb
+# already several dB up.
+
+# The transient the ambient window catches, and the room underneath it.
+SETTLING_TRANSIENT_DB_SPL = 62.0
+SETTLING_ROOM_DB_SPL = 45.0
+# A chain that reads the target at -12 dB, so the climb has real distance to
+# cover and the contradiction lands at the first bite rather than at the start.
+# Stated as a dB SPL offset on the commanded volume rather than as ``Mic``'s
+# dBFS gain, because everything this fixture reasons about -- the room, the
+# transient, the commissioning stop -- is dB SPL, and a power sum that mixes the
+# two domains is a fixture that lies quietly.
+SETTLING_SPL_OFFSET_DB = TARGET.target_db_spl - (-12.0)
+
+
+class SettlingRoomMic:
+    """A chain whose level follows the FADER, in a room that settles mid-climb.
+
+    Three states, and the fade needs all three: the pre-tone ambient window (the
+    transient, at its peak), the speaker playing (the power sum of whatever the
+    room is NOW and ``commanded + gain_db``, so a fade leg is a moving level this
+    mic can actually see), and silent again after the tone has run (the true
+    room, which is what the re-measure has to come back with).
+
+    The transient decays while the climb takes its FIRST BITE -- latched on the
+    fader leaving the start volume, so it is a property of where the pass is and
+    not of how many samples a window happened to draw. That is what puts the
+    contradicted floor at a bite's height instead of at the start volume, and the
+    latch is what keeps the fade's walk back DOWN to the start from resurrecting
+    the transient underneath it. Every sample is recorded with the volume it was
+    taken at, so a test can ask what the fade legs actually put into the room
+    rather than inferring it from the commanded fader alone.
+    """
+
+    def __init__(
+        self,
+        volume: Volume,
+        tone: BlockingTone,
+        *,
+        spl_offset_db: float = SETTLING_SPL_OFFSET_DB,
+        transient_db_spl: float = SETTLING_TRANSIENT_DB_SPL,
+        room_db_spl: float = SETTLING_ROOM_DB_SPL,
+        hot_sample_db_spl: float | None = None,
+        hot_below_volume_db: float | None = None,
+        hot_after_silence: bool = False,
+        clip_below_volume_db: float | None = None,
+    ) -> None:
+        self._volume = volume
+        self._tone = tone
+        self.spl_offset_db = spl_offset_db
+        self.transient_db_spl = transient_db_spl
+        self.room_db_spl = room_db_spl
+        # An excursion reachable only on the fade's DOWN leg: `hot_sample_db_spl`
+        # once the climb has left the start volume AND the fader has walked back
+        # below `hot_below_volume_db`. The start volume is below that threshold
+        # too, so the latch is what keeps the first reading out of it and makes a
+        # stop from here unambiguously the fade's.
+        self._hot_db_spl = hot_sample_db_spl
+        self._hot_below = hot_below_volume_db
+        # Arm the excursion only once the stimulus has been RESTARTED, which
+        # isolates the fade-in leg: it is the one failure path that hands back a
+        # playing stimulus, so it is the one worth its own test.
+        self._hot_after_silence = hot_after_silence
+        # The OTHER sample-domain stop, on the same fade-only gate: a capture
+        # that clipped carries no level at all, so it is a different refusal
+        # from an over-ceiling one and needs its own evidence.
+        self._clip_below = clip_below_volume_db
+        self._climbed = False
+        self._seq = 0
+        #: ``(commanded_db, observed_db_spl, tone_playing)`` per sample delivered.
+        #: The playing flag is what lets a test tell the pre-tone ambient window
+        #: apart from a fade leg: both are taken at a volume the climb is not
+        #: sitting at, and only one of them is audible.
+        self.emitted: list[tuple[float, float, bool]] = []
+
+    def _playing(self) -> bool:
+        return getattr(self._tone, "playing", self._tone.started)
+
+    def _db_spl(self, commanded: float) -> float:
+        if not self._playing():
+            # Before the tone has ever run this is the ambient window, which
+            # catches the transient. After it has, the speaker is silent and
+            # this is the re-measure, which must find the true room.
+            return (
+                self.room_db_spl
+                if getattr(self._tone, "plays", 0)
+                else self.transient_db_spl
+            )
+        # Latched on a PLAYING sample above the start volume -- the pre-tone
+        # ambient window is taken at the household volume, which is above the
+        # start, so a latch that counted it would settle the room before the
+        # first climb reading and put the contradiction back at the start.
+        if commanded > slr.SEAT_LEVEL_START_DB + slr.STEP_EPSILON_DB:
+            self._climbed = True
+        restarted = getattr(self._tone, "plays", 0) >= 2
+        if (
+            self._hot_db_spl is not None
+            and self._hot_below is not None
+            and self._climbed
+            and commanded <= self._hot_below
+            and (restarted if self._hot_after_silence else not restarted)
+        ):
+            return self._hot_db_spl
+        room = self.room_db_spl if self._climbed else self.transient_db_spl
+        return _power_sum_db(room, commanded + self.spl_offset_db)
+
+    def _clipping(self, commanded: float) -> bool:
+        # Read AFTER `_db_spl`, which is what latches `_climbed`.
+        return (
+            self._clip_below is not None
+            and self._climbed
+            and self._playing()
+            and commanded <= self._clip_below
+        )
+
+    async def next_samples(self) -> list[LevelSample]:
+        commanded = round(self._volume.value, 2)
+        playing = self._playing()
+        db_spl = self._db_spl(commanded)
+        self.emitted.append((commanded, db_spl, playing))
+        self._seq += 1
+        rms = UMIK2.dbfs_from_db_spl(db_spl)
+        return [
+            LevelSample(
+                seq=self._seq,
+                t_client_ms=self._seq * 10,
+                rms_dbfs=rms,
+                peak_dbfs=rms + 3.0,
+                clip=self._clipping(commanded),
+                agc_frozen=True,
+            )
+        ]
+
+
+class WitnessedVolume(Volume):
+    """A fader that records which of its writes the room could actually hear.
+
+    End state is not enough to pin an ORDERING: the teardown cancels the tone
+    anyway, so "the tone is off when the pass returns" is true whether or not a
+    refusal stopped it at the right moment. What matters is whether a write
+    landed while the stimulus was still playing.
+
+    ``audible_at`` is the same fact as POSITIONS in ``commanded``, which is what
+    a fade needs: both legs walk the same 2 dB grid, so a level alone cannot say
+    WHICH write it was, and "the room heard nothing after the stop" is a claim
+    about position and not about value.
+    """
+
+    def __init__(self, tone: BlockingTone) -> None:
+        super().__init__()
+        self._tone = tone
+        self.audible: list[float] = []
+        self.audible_at: list[int] = []
+
+    async def set(self, db: float) -> bool:
+        if getattr(self._tone, "playing", False):
+            self.audible.append(float(db))
+            # Recorded BEFORE the write lands, so this is the index it takes.
+            self.audible_at.append(len(self.commanded))
+        return await super().set(db)
+
+
+def _teardown_fade_from(stopped_at: float) -> list[float]:
+    """The writes the pass's own teardown fade makes, leaving ``stopped_at``."""
+    return list(
+        slr._fade_levels(from_db=stopped_at, to_db=slr.fade_quiet_db(stopped_at))
+    )
+
+
+def _assert_teardown_left_from(volume: WitnessedVolume, stopped_at: float) -> None:
+    """The pass's teardown fade leaves ``stopped_at``, and does it in silence.
+
+    Two separable protections, so two assertions in two different currencies --
+    a single "no audible upward write" line looks like it covers both and covers
+    neither on its own:
+
+    * fade the teardown from the CLIMB's ``volume_db`` instead of the fader's own
+      level and the WRITES change: it starts above where the leg stopped and
+      takes more steps to reach the floor. Caught on ``commanded``, which is
+      unaffected by whether anything was playing;
+    * leave the stimulus running out of a stopped leg and the writes are byte
+      for byte identical but AUDIBLE, so the room hears the whole teardown
+      descend after the sample that was supposed to silence it. Caught on
+      ``audible_at``, which is unaffected by what the writes were.
+
+    The fader's history ends with the teardown's fade and then the household
+    restore, and the write immediately before them is the leg's last one --
+    which is what makes "the teardown left from `stopped_at`" a statement about
+    a position rather than about a value the 2 dB grid repeats.
+    """
+    teardown = _teardown_fade_from(stopped_at)
+    assert volume.commanded[-(len(teardown) + 1) :] == [
+        *teardown,
+        pytest.approx(HOUSEHOLD_VOLUME_DB),
+    ], volume.commanded
+    assert volume.commanded[-(len(teardown) + 2)] == pytest.approx(stopped_at), (
+        volume.commanded
+    )
+    first_teardown_write = len(volume.commanded) - len(teardown) - 1
+    assert volume.audible_at, "nothing was ever written while the tone played"
+    assert volume.audible_at[-1] < first_teardown_write, volume.audible_at
+
+
+def _settling_room_pass(tmp_path, **mic_kwargs):
+    """One pass on a room that settles mid-climb, so the re-measure fades."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    tone = ReplayableTone()
+    volume = WitnessedVolume(tone)
+    mic = SettlingRoomMic(volume, tone, **mic_kwargs)
+    result = asyncio.run(
+        _level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path)
+    )
+    return result, volume, tone, mic
+
+
+def _fade_legs(commanded: list[float]) -> tuple[list[float], list[float]]:
+    """The re-measure's two legs, out of the fader's whole command history.
+
+    Located by SHAPE, never by step size -- the step size is what the tests are
+    here to assert, so a helper that assumed it would be marking its own
+    homework. The climb only ever moves UP, so the first descent in the history
+    is the re-measure fading out (the end-of-run fade is the last descent, and is
+    followed by the household restore rather than by a climb). The up leg is the
+    walk from that descent's bottom back to the very level it left, which is the
+    invariant that lets the climb carry on as if nothing moved.
+    """
+    down_from = next(
+        i - 1 for i in range(1, len(commanded)) if commanded[i] < commanded[i - 1]
+    )
+    left_at = commanded[down_from]
+    floor_at = down_from + 1
+    while (
+        floor_at + 1 < len(commanded)
+        and commanded[floor_at + 1] < commanded[floor_at]
+    ):
+        floor_at += 1
+    up_end = commanded.index(left_at, floor_at)
+    return commanded[down_from : floor_at + 1], commanded[floor_at : up_end + 1]
+
+
+def _fade_samples(
+    emitted: list[tuple[float, float, bool]],
+) -> tuple[list[float], list[float]]:
+    """The dB SPL the mic heard on each fade leg, located POSITIONALLY.
+
+    By position and not by commanded value, because the fade's bottom is the
+    start volume and its top is a climb volume -- the pass sits at both of those
+    at other times, so a filter on the value alone sweeps up the first reading
+    and the teardown fade as well. The scan starts at the first PLAYING sample
+    for the same reason: the pre-tone ambient window is taken at the household
+    volume and the latch to the start volume that follows it is a descent, but
+    it is a silent one and not a fade.
+    """
+    commanded = [cmd for cmd, _db, _playing in emitted]
+    played = next(i for i, (_c, _db, playing) in enumerate(emitted) if playing)
+    first = next(
+        i for i in range(played + 1, len(commanded)) if commanded[i] < commanded[i - 1]
+    )
+    left_at = commanded[first - 1]
+    bottom = min(range(first, len(commanded)), key=lambda i: commanded[i])
+    span = emitted[first : commanded.index(left_at, bottom) + 1]
+    # The silent window sits between the legs, so the legs are what brackets it:
+    # everything audible before the stimulus stopped, and everything audible
+    # after it started again.
+    silent = [i for i, (_c, _db, playing) in enumerate(span) if not playing]
+    return (
+        [db for _cmd, db, _playing in span[: silent[0]]],
+        [db for _cmd, db, _playing in span[silent[-1] + 1 :]],
+    )
+
+
+def test_the_re_measure_fades_the_stimulus_out_and_back_in(tmp_path):
+    """#2929: neither edge of the silent window is a jump to a measurement level.
+
+    The module's own FADE_STEP_DB rule -- "a broadband stimulus never stops at
+    full level into the DAC" -- was written for the end-of-run fade and then not
+    applied here, so one pass put two un-faded edges into the room at a
+    measurement volume. Both edges now walk, and this asserts the walk on the
+    COMMANDED fader and on what the mic actually heard, because a rule about
+    what reaches the DAC is not satisfied by a variable that merely changed
+    smoothly.
+    """
+    result, volume, tone, mic = _settling_room_pass(tmp_path)
+
+    assert result.status == "converged", (result.reason, result.detail)
+    assert result.ramp["ambient_remeasured"] is True
+    assert tone.plays == 2, "stopped for the silent window and started again"
+
+    down, up = _fade_legs(volume.commanded)
+    # The fade happened with the fader UP, which is the whole point: at the start
+    # volume it would be zero steps long and would prove nothing.
+    assert down[0] > slr.FADE_FLOOR_DB
+    assert down[-1] == slr.FADE_FLOOR_DB == up[0]
+    # ...and it ends exactly where the climb had it, so the walk's next step is
+    # measured from the volume it thinks it is at.
+    assert up[-1] == pytest.approx(down[0])
+
+    # NO SINGLE-STEP JUMP AT EITHER EDGE. This is the assertion the issue asks
+    # for: every move is at most one fade step, in both directions.
+    for leg in (down, up):
+        deltas = [abs(b - a) for a, b in zip(leg, leg[1:])]
+        assert deltas, "a fade with no intermediate write is not a fade"
+        assert max(deltas) <= slr.FADE_STEP_DB + 1e-9, leg
+    assert len(down) - 1 == slr.fade_steps(from_db=down[0], to_db=slr.FADE_FLOOR_DB)
+
+    # And the LEVEL followed. A rule about what reaches the DAC is not satisfied
+    # by a commanded variable that merely changed smoothly, so this asserts on
+    # what the mic actually heard: monotonically DOWN across the out leg and
+    # monotonically UP across the in leg, never cut at the top.
+    heard_down, heard_up = _fade_samples(mic.emitted)
+    assert heard_down == sorted(heard_down, reverse=True), heard_down
+    assert heard_up == sorted(heard_up), heard_up
+    assert heard_down[0] > heard_down[-1] + 1.0, "the fade must actually be audible"
+    assert heard_up[-1] > heard_up[0] + 1.0
+    # The legs bracket the silence symmetrically, which is the whole claim: the
+    # stimulus is stopped from the bottom of the walk and started again from the
+    # bottom, and only then brought back to the level the climb was measuring at.
+    # The up leg's last sample is the triggering reading's own level again --
+    # asserted against the receipt, so it is the climb's number and not the
+    # fixture's.
+    triggered_at = result.ramp["steps"][1]["observed_db_spl"]
+    assert heard_up[-1] == pytest.approx(triggered_at, abs=0.05)
+    # The down leg's first sample is already one step under it (the fader is
+    # written before the sample is drawn), and both legs bottom out well below.
+    assert heard_down[0] < triggered_at
+    assert max(heard_down[-1], heard_up[0]) < triggered_at - 1.0
+
+
+def test_a_clipped_capture_during_the_fade_stops_the_pass_too(tmp_path):
+    """BOTH sample-domain stops run on a leg, not just the commissioning one.
+
+    The docstring claims the legs run "the same two stops a window does", and a
+    claim about two is not asserted by testing one. A clipped capture is the
+    other: it carries no level at all, so it is a different refusal with a
+    different remedy, and a fade that watched only the ceiling would sail
+    through a mic that had gone full-scale.
+    """
+    result, _volume, tone, _mic = _settling_room_pass(
+        tmp_path, clip_below_volume_db=-46.0
+    )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_MIC_CLIPPING
+    assert result.detail is not None
+    assert slr.CLIPPED_CAPTURE_DETAIL in result.detail
+    # Same wording as a window's clip stop -- one sentence, one owner.
+    assert not tone.playing
+    assert result.restored is True
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+def _trip_commanded(mic: SettlingRoomMic, hot: float) -> float:
+    """The fader level the mic's excursion was actually delivered at.
+
+    The fixture's OWN record of where the fader was standing, so a test can check
+    the refusal's quoted level against a measurement rather than against the same
+    variable the refusal read.
+    """
+    return next(cmd for cmd, db_spl, _playing in mic.emitted if db_spl == hot)
+
+
+def test_a_stop_on_the_way_back_up_leaves_the_stimulus_off(tmp_path):
+    """The fade-IN leg is the one failure path that could hand back a live tone.
+
+    Two things keep the room safe here and they are separable, so both are
+    asserted. The teardown now fades from where the FADER is (`min(volume_db,
+    fader_db)`), so it can no longer command the level up out of a stopped leg
+    even if the stimulus were live; and the stop cuts the stimulus at once, so
+    the room hears nothing at all after the sample that tripped it rather than
+    another three quarters of a second of descending tone.
+    """
+    hot = SPL_CEILING + 5.0
+    result, volume, tone, mic = _settling_room_pass(
+        tmp_path,
+        hot_sample_db_spl=hot,
+        hot_below_volume_db=-46.0,
+        hot_after_silence=True,
+    )
+
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    # It really was the way back UP: the silent window ran, so the stimulus was
+    # stopped and started again before the stop fired.
+    assert tone.plays == 2
+    assert not tone.playing, "the refusal left the stimulus running"
+
+    # WHERE THE FADER WAS, from the fixture rather than from the pass. The leg
+    # stopped part-way back up, so this is BELOW the volume the climb believes it
+    # is at -- and it is the number the refusal has to quote and the teardown has
+    # to fade from.
+    stopped_at = _trip_commanded(mic, hot)
+    assert stopped_at < max(volume.commanded), "the leg did not stop part-way up"
+    assert result.detail is not None
+    assert f"stopped at {stopped_at:.2f} dB" in result.detail
+    assert result.ramp["final_volume_db"] == pytest.approx(stopped_at, abs=0.01)
+
+    # THE ORDERING, which is the actual claim -- the teardown leaves from where
+    # the fader is, and the room hears none of it. See the helper for which
+    # mutation each of its assertions is holding down.
+    _assert_teardown_left_from(volume, stopped_at)
+    # Every write the room could hear only ever went down, which is the property
+    # all of the above exists to protect.
+    assert volume.audible == sorted(volume.audible, reverse=True), volume.audible
+
+    assert result.restored is True
+    assert volume.commanded[-1] == pytest.approx(HOUSEHOLD_VOLUME_DB)
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+
+# --- the leg exits nobody had covered: cancellation and a failing seam --------
+
+
+def _descents(history: list[float]) -> int:
+    """How many times the fader has been written LOWER than its last level."""
+    return sum(1 for i in range(1, len(history)) if history[i] < history[i - 1])
+
+
+class ArmedVolume(WitnessedVolume):
+    """A witnessed fader that trips an event on a write of the test's choosing.
+
+    A cancellation has to land while a leg is WALKING, and the leg's own writes
+    are the only signal a test has for that: the climb only ever moves up, so the
+    first descent is the fade-out leg, and the first ascent after it is the fade
+    back in.
+    """
+
+    def __init__(self, tone: BlockingTone, *, arm_on) -> None:
+        super().__init__(tone)
+        self._arm_on = arm_on
+        self.armed = asyncio.Event()
+
+    async def set(self, db: float) -> bool:
+        ok = await super().set(db)
+        if not self.armed.is_set() and self._arm_on(self.commanded):
+            self.armed.set()
+        return ok
+
+
+class FlakySeamVolume(WitnessedVolume):
+    """A fader whose seam fails exactly ONCE, on a write of the test's choosing.
+
+    Raising BEFORE the write lands is the point: ``commanded`` and ``value`` are
+    untouched, which is what "the write did not happen" means, and it is the case
+    ``write_fader``'s asymmetric record point exists for. One-shot rather than
+    permanent so the teardown and the household restore can still run -- a seam
+    that is down forever is a different test, and it would hide whether a refusal
+    still hands the household its volume back.
+    """
+
+    def __init__(self, tone: BlockingTone, *, fail_on, error: Exception) -> None:
+        super().__init__(tone)
+        self._fail_on = fail_on
+        self._error = error
+        #: The level the failed write ASKED for, and the level the fader was
+        #: actually left standing at. They differ by one fade step, which is the
+        #: whole subject of the two tests below.
+        self.asked_for: float | None = None
+        self.left_at: float | None = None
+
+    async def set(self, db: float) -> bool:
+        if self.asked_for is None and self._fail_on(self.commanded, float(db)):
+            self.asked_for = float(db)
+            self.left_at = self.commanded[-1]
+            raise self._error
+        return await super().set(db)
+
+
+async def _cancel_during(volume: ArmedVolume, tone, mic, tmp_path) -> tuple:
+    """Run a pass and cancel it the moment ``volume`` arms. Returns the outcome.
+
+    A single cancel, not the double the mid-climb test uses: one Ctrl-C is the
+    ordinary operator stop, and it is the shape the fade legs had never seen.
+    """
+    clock = FakeClock()
+    task = asyncio.ensure_future(
+        slr.run_seat_level_ramp(
+            target=TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+    await volume.armed.wait()
+    task.cancel()
+    # Snapshotted the instant the cancel is delivered, while the task is still
+    # suspended and cannot write. Everything the room hears from here on is
+    # something an exit path did AFTER being told to stop.
+    #
+    # Two snapshots, because they are two different facts and the fade-in leg
+    # separates them: its first write lands BEFORE the restarted tone player is
+    # scheduled, so it is a real fader move that the room did not hear. The
+    # fader's position is `commanded`; what the room heard is `audible`. Reading
+    # the position off `audible` reads the fade-in leg one step low -- and low
+    # enough, on this rig, that the teardown's expected shape collapses to zero
+    # steps and the assertion passes without testing anything.
+    heard_at_cancel = list(volume.audible)
+    written_at_cancel = list(volume.commanded)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    return caught.value, heard_at_cancel, written_at_cancel
+
+
+def _cancel_mid_fade(tmp_path, *, arm_on):
+    """One settling-room pass, cancelled while a fade leg is walking."""
+    tone = ReplayableTone()
+    volume = ArmedVolume(tone, arm_on=arm_on)
+    mic = SettlingRoomMic(volume, tone)
+    exc, heard, written = asyncio.run(_cancel_during(volume, tone, mic, tmp_path))
+    return exc, heard, written, volume, tone
+
+
+def test_cancelling_on_the_fade_out_leg_cuts_the_room_and_still_restores(tmp_path):
+    """The operator's own stop, delivered while the fade-out leg is walking.
+
+    The gap this closes: the legs had no exit wrapping at all, so a cancellation
+    mid-leg skipped `cancel_tone()` entirely and left the stimulus commanded ON
+    while the pass tore down -- the operator's stop path violating the exact
+    invariant this whole change enforces. The existing cancellation test cancels
+    mid-CLIMB, which never touches a leg.
+    """
+    exc, heard, written, volume, tone = _cancel_mid_fade(
+        tmp_path,
+        # The second descending write: the leg is walking, with steps left.
+        arm_on=lambda h: _descents(h) >= 2,
+    )
+
+    assert slr.interrupted_restore_outcome(exc) is True
+    assert not tone.playing, "the cancelled leg left the stimulus running"
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+    # It really was mid-LEG: the leg had further to walk when the cancel landed.
+    assert written[-1] > slr.fade_quiet_db(max(written)), written
+
+    # THE ROOM HEARD NOTHING AFTER THE STOP. Not "no upward write" -- the
+    # teardown's own fade descends either way, so that would pass with the
+    # wrapping removed. What changes is whether those descending writes are
+    # AUDIBLE, and they are exactly what an operator who pressed Ctrl-C is
+    # waiting to stop hearing.
+    assert heard, "the cancel landed before the leg was audible"
+    assert volume.audible == heard
+
+    # ...and the teardown left from where the fader actually was, not from the
+    # volume the climb believes it is at.
+    _assert_teardown_left_from(volume, written[-1])
+
+
+def test_cancelling_on_the_fade_in_leg_cuts_the_room_and_still_restores(tmp_path):
+    """The same stop on the OTHER leg, which needs a different guard.
+
+    The fade-in leg cannot use the down leg's PLAIN `finally`: its success path
+    deliberately hands the caller a playing stimulus to carry on climbing with,
+    so cancelling unconditionally would end every pass at the re-measure. It
+    guards with a `returning` flag instead -- `finally: if not returning:` --
+    which fires on every exit that is not a normal return, `CancelledError`
+    included. That is the exit this test drives, and it is what proves the guard
+    runs on it.
+    """
+    exc, heard, written, volume, tone = _cancel_mid_fade(
+        tmp_path,
+        # An ascent AFTER the fade-out leg has walked: the way back up.
+        arm_on=lambda h: (
+            _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2]
+        ),
+    )
+
+    assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
+    assert slr.interrupted_restore_outcome(exc) is True
+    assert not tone.playing, "the cancelled leg left the stimulus running"
+    assert volume.value == pytest.approx(HOUSEHOLD_VOLUME_DB)
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+    # It really was mid-LEG: the way back up had not reached the climb's volume.
+    assert written[-1] < max(written), written
+
+    assert heard, "the cancel landed before the leg was audible"
+    assert volume.audible == heard
+    # `written[-1]` and NOT `heard[-1]`: this leg's first write beats the
+    # restarted tone player to the loop, so the room did not hear the very move
+    # whose level the teardown has to leave from.
+    _assert_teardown_left_from(volume, written[-1])
+
+
+def _seam_failure_pass(tmp_path, *, volume, tone, mic):
+    """One settling-room pass driven with a fixture that fails a seam once."""
+    return asyncio.run(_level(mic=mic, volume=volume, tone=tone, tmp_path=tmp_path))
+
+
+def test_a_failed_write_on_the_fade_out_leg_refuses_and_never_reads_high(tmp_path):
+    """A seam failure mid-leg is an honest refusal, and its number errs LOW.
+
+    Two claims in one pass, because they are one mechanism. A volume write that
+    raises used to escape `_watched_fade` as a traceback at the operator's
+    terminal, with the correctly-stamped restore never read; it is now
+    `ramp_error`. And the level the refusal publishes is the one the failed write
+    ASKED for, which is BELOW where the fader was really left -- `write_fader`
+    records a downward write BEFORE attempting it, precisely so the tracked value
+    can never sit above the true fader.
+
+    That is the documented residual of the asymmetry, asserted rather than
+    described: the teardown then fades from too low and `cancel_tone` cuts a
+    stimulus that is still a step higher than it thinks. Degraded, never upward,
+    which is the direction that matters.
+    """
+    tone = ReplayableTone()
+    volume = FlakySeamVolume(
+        tone,
+        # The second descending write of the fade-out leg.
+        fail_on=lambda h, db: _descents(h) >= 1 and bool(h) and db < h[-1],
+        error=OSError("the volume seam went away"),
+    )
+    mic = SettlingRoomMic(volume, tone)
+    result = _seam_failure_pass(tmp_path, volume=volume, tone=tone, mic=mic)
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_RAMP_ERROR
+    assert result.detail is not None
+    assert "the volume seam went away" in result.detail
+    assert not tone.playing
+    assert result.restored is True
+    assert not (tmp_path / "seat_level_reference.json").exists()
+
+    # The write really did fail on the way DOWN, and really did not land.
+    assert volume.asked_for is not None and volume.left_at is not None
+    assert volume.asked_for < volume.left_at
+    assert volume.asked_for not in volume.commanded
+
+    # THE BOUND IS LOW, NEVER HIGH. Record the downward write AFTER the seam call
+    # instead and this reads `left_at` -- a level ABOVE the fader, which is what
+    # would let a teardown computed from it command the room up.
+    assert result.ramp["final_volume_db"] == pytest.approx(volume.asked_for)
+    assert f"stopped at {volume.asked_for:.2f} dB" in result.detail
+    # ...and the teardown fades from that same low bound, downward.
+    teardown = _teardown_fade_from(volume.asked_for)
+    assert volume.commanded[-(len(teardown) + 1) :] == [
+        *teardown,
+        pytest.approx(HOUSEHOLD_VOLUME_DB),
+    ], volume.commanded
+
+
+def test_a_failed_write_on_the_fade_in_leg_never_raises_the_tracked_level(tmp_path):
+    """The mirror case, which is why the record point cannot simply be "before".
+
+    An UPWARD write that raises leaves the fader where it was, so the tracked
+    level has to stay there too. Recording before the call -- the rule the
+    downward branch uses -- would publish a level ABOVE the fader here, and a
+    teardown fading from it would command the room UP as its first act, with a
+    stimulus that a failing seam may well have left playing.
+    """
+    tone = ReplayableTone()
+    volume = FlakySeamVolume(
+        tone,
+        # The second write of the way back UP.
+        fail_on=lambda h, db: (
+            _descents(h) >= 1 and len(h) >= 2 and h[-1] > h[-2] and db > h[-1]
+        ),
+        error=OSError("the volume seam went away"),
+    )
+    mic = SettlingRoomMic(volume, tone)
+    result = _seam_failure_pass(tmp_path, volume=volume, tone=tone, mic=mic)
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_RAMP_ERROR
+    assert tone.plays == 2, "the stimulus never restarted, so this is not the up leg"
+    assert not tone.playing
+    assert result.restored is True
+
+    # The write really did fail on the way UP, and really did not land.
+    assert volume.asked_for is not None and volume.left_at is not None
+    assert volume.asked_for > volume.left_at
+    assert volume.asked_for not in volume.commanded
+
+    # THE BOUND DID NOT FOLLOW THE WRITE UP.
+    assert result.ramp["final_volume_db"] == pytest.approx(volume.left_at)
+    assert result.detail is not None
+    assert f"stopped at {volume.left_at:.2f} dB" in result.detail
+    _assert_teardown_left_from(volume, volume.left_at)
+
+
+def test_a_failing_sample_source_on_a_leg_refuses_instead_of_raising(tmp_path):
+    """The OTHER injected seam a leg awaits, held to the same contract.
+
+    `_watched_fade` drains the sample source between writes, so a feed that
+    raises mid-leg is the second way one can end without a sample-domain stop.
+    It becomes the same `ramp_error` refusal, and the household still gets its
+    volume back -- which is the fact a traceback at the CLI throws away.
+    """
+    tone = ReplayableTone()
+    volume = WitnessedVolume(tone)
+    mic = SettlingRoomMic(volume, tone)
+    raised: list[float] = []
+
+    async def _flaky_samples():
+        if not raised and _descents(volume.commanded) >= 2:
+            # The fader's own level, recorded here rather than inferred later:
+            # a fade revisits levels, so "where it was when the feed died" is a
+            # fact only this moment has.
+            raised.append(volume.commanded[-1])
+            raise RuntimeError("the capture relay dropped the feed")
+        return await mic.next_samples()
+
+    clock = FakeClock()
+    result = asyncio.run(
+        slr.run_seat_level_ramp(
+            target=TARGET,
+            sensitivity=UMIK2,
+            max_main_volume_db=CEILING_DB,
+            spl_ceiling_db_spl=SPL_CEILING,
+            get_main_volume_db=volume.get,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=_flaky_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            volume_state_path=tmp_path / "seat_level_volume.json",
+            reference_state_path=tmp_path / "seat_level_reference.json",
+        )
+    )
+
+    assert raised, "the feed never failed, so this proves nothing"
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_RAMP_ERROR
+    assert result.detail is not None
+    assert "the capture relay dropped the feed" in result.detail
+    assert not tone.playing
+    assert result.restored is True
+    assert not (tmp_path / "seat_level_reference.json").exists()
+    # Every write before the failure landed, so the tracked level IS the fader
+    # here -- and the refusal quotes it and the teardown leaves from it.
+    assert f"stopped at {raised[0]:.2f} dB" in result.detail
+    assert result.ramp["final_volume_db"] == pytest.approx(raised[0])
+    _assert_teardown_left_from(volume, raised[0])
+
+
+@pytest.mark.parametrize(
+    "from_db, expected",
+    [(-12.0, slr.FADE_FLOOR_DB), (slr.FADE_FLOOR_DB, slr.FADE_FLOOR_DB), (-57.5, -57.5)],
+)
+def test_a_fade_never_walks_up_out_of_a_volume_under_the_floor(from_db, expected):
+    """A fade only ever goes DOWN, and below the floor it goes nowhere.
+
+    Looks redundant until you notice the climb's downward steps are UNCAPPED --
+    `capped_gap_step_db` saturates upward only, on purpose, because a downward
+    step reduces risk. So a hot chain that reads over the target at the start
+    volume steps to a commanded volume BELOW `FADE_FLOOR_DB`, and a fade-out
+    that walked from there to the floor would RAISE the level with the stimulus
+    playing: a fade doing the one thing a fade exists to prevent.
+    """
+    assert slr.fade_quiet_db(from_db) == pytest.approx(expected)
+    out = slr._fade_levels(from_db=from_db, to_db=slr.fade_quiet_db(from_db))
+    assert all(level <= from_db for level in out), out
+    # ...and the leg back in is its mirror, so it cannot overshoot either.
+    back = slr._fade_levels(from_db=slr.fade_quiet_db(from_db), to_db=from_db)
+    assert all(level <= from_db for level in back), back
+    assert len(out) == len(back)
+
+
+def test_the_re_measure_under_the_floor_leaves_the_fader_alone(tmp_path):
+    """The same rule at the seam that consumes it, not just in the helper.
+
+    Driven directly, because a whole pass cannot easily be steered to contradict
+    its floor from below it: that needs a chain hot enough to step DOWN and then
+    quiet enough to read under the ambient window, in one run.
+    """
+    tone = ReplayableTone()
+    volume = WitnessedVolume(tone)
+    volume.value = -57.5
+    volume.commanded.clear()
+    mic = SettlingRoomMic(volume, tone, room_db_spl=ROOM_DB_SPL)
+    clock = FakeClock()
+
+    async def _drive():
+        playing = asyncio.ensure_future(tone.play())
+        await asyncio.sleep(0)
+        return await slr._remeasure_silence(
+            tone=playing,
+            volume_db=-57.5,
+            sensitivity=UMIK2,
+            spl_ceiling_db_spl=SPL_CEILING,
+            set_main_volume_db=volume.set,
+            play_continuous_tone=tone.play,
+            cancel_tone=tone.cancel,
+            next_samples=mic.next_samples,
+            clock=clock.now,
+            sleep=clock.sleep,
+            session_id="under-floor",
+            agree_db=slr.SETTLED_AGREE_DB,
+            settle_timeout_s=slr.SETTLE_TIMEOUT_S,
+        )
+
+    reading, restarted = asyncio.run(_drive())
+    restarted.cancel()
+
+    # The room was still measured in silence -- the re-measure did its job.
+    assert reading.rms_dbfs is not None
+    assert UMIK2.db_spl_from_dbfs(reading.rms_dbfs) == pytest.approx(
+        ROOM_DB_SPL, abs=0.05
+    )
+    # And the fader never moved, because there was nothing to fade: every write
+    # would have been UPWARD, into a room the stimulus was still playing in.
+    assert volume.commanded == []
+    assert volume.value == pytest.approx(-57.5)
+
+
+def test_each_fade_leg_announces_itself_on_one_journal_line(tmp_path, caplog):
+    """The edges are greppable, because that is how a hardware run confirms them.
+
+    One line per LEG and not per write -- 25 writes a leg at the ceiling would be
+    journal spam -- carrying the direction the fader walked, the two ends, and
+    what it cost. ``jasper-seat-level`` on metal has no other way to show that
+    the stimulus was faded rather than cut.
+    """
+    with caplog.at_level(logging.INFO, logger=slr.logger.name):
+        result, _volume, _tone, _mic = _settling_room_pass(tmp_path)
+
+    assert result.ramp["ambient_remeasured"] is True
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "event=active_speaker.seat_level_fade " in r.getMessage()
+    ]
+    assert len(lines) == 2, lines
+    down, up = lines
+    assert "direction=down" in down and "direction=up" in up
+    assert f"to_db={slr.FADE_FLOOR_DB:.2f}" in down
+    assert f"from_db={slr.FADE_FLOOR_DB:.2f}" in up
+    # The cost is on the line, so an operator never has to re-derive it, and both
+    # legs are the same size -- they are each other's mirror.
+    steps = slr.fade_steps(
+        from_db=result.ramp["steps"][1]["volume_db"], to_db=slr.FADE_FLOOR_DB
+    )
+    assert f"steps={steps}" in down and f"steps={steps}" in up
+    assert f"seconds={steps * slr.FADE_STEP_S:.2f}" in down
+
+
+def test_the_faded_re_measure_still_returns_the_room_and_not_the_fade(tmp_path):
+    """The floor is the ROOM, with no fade sample in the window that measured it.
+
+    The fade legs are audible and they are louder than the room, so a floor that
+    picked them up would be biased HIGH -- and a floor biased high is the exact
+    defect (#2918) the re-measure exists to repair, re-introduced by its own
+    repair. The silent window opens after ``cancel_tone`` and closes before the
+    stimulus restarts, so no fade sample is in it.
+    """
+    result, _volume, _tone, mic = _settling_room_pass(tmp_path)
+
+    remeasured = result.ramp["ambient_remeasured_db_spl"]
+    assert remeasured == pytest.approx(SETTLING_ROOM_DB_SPL, abs=0.05)
+    # The fade really did put louder-than-the-room samples into the fixture, so
+    # "unchanged" above is a measurement and not a vacuous pass.
+    heard_down, heard_up = _fade_samples(mic.emitted)
+    fade_levels = heard_down + heard_up
+    assert fade_levels, "the fade legs delivered no samples to be polluted by"
+    assert max(fade_levels) > SETTLING_ROOM_DB_SPL + 1.0
+    # ...and the floor the guards actually used is the re-measured one.
+    assert result.ramp["ambient_db_spl"] == pytest.approx(
+        SETTLING_TRANSIENT_DB_SPL, abs=0.05
+    )
+    assert min(step["rise_db"] for step in result.ramp["steps"]) >= 0.0
+
+
+def test_the_fade_writes_never_reach_the_climbs_own_accounting(tmp_path):
+    """The banked result is the climb's, and the fade is invisible to it.
+
+    A mid-climb fader move is only safe if the walk's arithmetic cannot see it:
+    the receipt's steps, the banked volume, and the measured slope must all be
+    what they would be if the re-measure had moved nothing. The fade writes eight
+    fader levels here and not one of them appears as a reading.
+    """
+    result, volume, _tone, _mic = _settling_room_pass(tmp_path)
+    ramp = result.ramp
+
+    assert result.status == "converged", (result.reason, result.detail)
+    # The climb stepped in bites from the start, and the re-measure's own volume
+    # appears exactly once -- as the reading that triggered it, not twice.
+    bite = slr.bite_db(start_db=slr.SEAT_LEVEL_START_DB, ceiling_db=CEILING_DB)
+    volumes = [step["volume_db"] for step in ramp["steps"]]
+    assert volumes[0] == pytest.approx(slr.SEAT_LEVEL_START_DB)
+    assert volumes[1] == pytest.approx(round(slr.SEAT_LEVEL_START_DB + bite, 2))
+    # Every fade level the fader visited is absent from the receipt.
+    faded = set(volume.commanded) - set(volumes) - {HOUSEHOLD_VOLUME_DB}
+    assert faded, "no fade happened, so this proves nothing"
+    assert not faded & set(volumes)
+    # The banked volume is a climb volume, and the artifact agrees with it.
+    banked = json.loads((tmp_path / "seat_level_reference.json").read_text())
+    # The receipt rounds its volumes to 2 decimals; the artifact keeps the
+    # commanded float, which is the only reason these differ at all.
+    assert banked["reference_volume_db"] == pytest.approx(volumes[-1], abs=0.01)
+    assert banked["reference_volume_db"] not in faded
+    # The bank confirm re-read at the SAME volume, which is what makes the last
+    # two steps a confirm rather than a measurement of somewhere else -- and the
+    # fade sitting between two readings did not turn it into a step.
+    assert ramp["steps"][-1]["volume_db"] == ramp["steps"][-2]["volume_db"]
+    # The slope is measured across CLIMB readings only. A fade pair would put a
+    # 2 dB command change beside a level change the room dominates, dragging the
+    # measured slope well under the ~1 dB/dB this rig's chain really has.
+    assert ramp["slope_db_per_db"] == pytest.approx(1.0, abs=0.1)
+
+
+def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(
+    tmp_path, caplog
+):
+    """The 85 dB stop covers the mid-pass fade legs, not just the windows.
+
+    A fade is audible seconds, and un-watched audible seconds would be a hole in
+    the per-sample stop that guards the rest of the pass -- one this fix would
+    have OPENED, since before it the pass spent no audible time outside a window
+    WHILE ITS OUTCOME WAS STILL UNDECIDED. (The end-of-run `_fade_and_stop` was
+    always audible and always outside a window; it is deliberately unwatched,
+    because by then a stop it saw would have nowhere to be reported.) The
+    excursion here is reachable only while the fader is walking down, so the stop
+    it trips is unambiguously the fade's.
+    """
+    hot = SPL_CEILING + 5.0
+    with caplog.at_level(logging.WARNING, logger=slr.logger.name):
+        result, volume, _tone, mic = _settling_room_pass(
+            tmp_path,
+            hot_sample_db_spl=hot,
+            # Below the first bite's volume: only the down leg goes there.
+            hot_below_volume_db=-46.0,
+        )
+
+    assert result.status == "refused"
+    assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
+    assert f"{hot:.1f} dB SPL" in result.detail
+    assert f"{SPL_CEILING:.1f} dB SPL" in result.detail
+    # The fade publishes the leg it stopped in, exactly as a window does -- and
+    # calls it a LEG, because it opened no window and saying otherwise would send
+    # an operator looking for a settle window at a volume the pass swept through.
+    window = result.ramp["stopped_window"]
+    assert window["trip_db_spl"] == pytest.approx(hot, abs=0.05)
+    assert "the fade leg it stopped in saw" in result.detail
+    assert "the window it stopped in" not in result.detail
+
+    # THE QUOTED LEVEL IS THE ONE THE FADER WAS ACTUALLY AT -- asserted as an
+    # EQUALITY against the fixture's own record, not as a substring that happens
+    # to appear. A leg stops part-way down, so the climb's `volume_db` is up to a
+    # whole fade above this, and a refusal quoting it would name a level the pass
+    # was not at. (Substring-only was how the misquote survived review at all.)
+    stopped_at = _trip_commanded(mic, hot)
+    assert stopped_at < max(volume.commanded), "the leg did not stop part-way down"
+    assert f"stopped at {stopped_at:.2f} dB" in result.detail
+    assert result.ramp["final_volume_db"] == pytest.approx(stopped_at, abs=0.01)
+
+    # ...AND SO DOES THE JOURNAL. `at_db=` is the third reader of that one fact,
+    # beside the operator's prose and the receipt, and it was the one with no
+    # pin -- a delta review reverted it to the climb's `volume_db` and the whole
+    # suite stayed green. An operator greps the journal precisely when the
+    # terminal output is gone, so a line that quotes a level the pass was never
+    # at sends them to the wrong volume with nothing to contradict it.
+    refusals = [
+        r.getMessage()
+        for r in caplog.records
+        if "event=active_speaker.seat_level_refused " in r.getMessage()
+    ]
+    assert len(refusals) == 1, refusals
+    assert f"at_db={stopped_at:.2f}" in refusals[0], refusals[0]
+
+    # ...and the teardown leaves from there too, so its first act is not to
+    # command the room back up toward the climb's number.
+    _assert_teardown_left_from(volume, stopped_at)
+
+    # It really was the fade: no measurement window was ever taken down there.
+    assert all(step["volume_db"] > -46.0 for step in result.ramp["steps"][1:])
+    assert not (tmp_path / "seat_level_reference.json").exists()
+    # ...and the household volume still came back.
+    assert result.restored is True
+
 
 # --- the gate's demos: an unresponsive mic is not always a CONSTANT ---------
 

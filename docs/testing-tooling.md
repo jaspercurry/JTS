@@ -2882,7 +2882,9 @@ jasper-seat-level --stimulus-wav check.wav --mic-serial 810-8494 --verbose
 **It owns its climb and reuses everything else.** The pass runs its own
 settle-per-bite loop — a quiet start, one settled reading per bite, the gap
 arithmetic below, a clip abort, a feed-liveness abort, a whole-operation
-watchdog, and a fade before the tone is killed. It shares ONE thing with
+watchdog, and a fade at every edge where the stimulus starts or stops at a
+measurement level (the end of the run, and both sides of the silent
+re-measure — #2929). It shares ONE thing with
 [`jasper.audio_measurement.ramp`](../jasper/audio_measurement/ramp.py)'s
 `RampController`: `capped_gap_step_db`, the climb policy both step through (that
 kernel's own coarse staircase, stop-ahead pre-window, confirm streak and derived
@@ -2987,10 +2989,13 @@ window landing on it settles rather than refusing. What bounds it is structural,
 not the wander: `walk_reading_budget` is
 `1 + ceil(1 / BITE_FRACTION) + MAX_MISSED_FULL_STEPS + BANK_CONFIRM_READINGS`
 = 11 readings whatever the span, so audible time is at most about
-**11 × `settle_timeout_s`** — roughly 88 s shipped, 330 s at the knob's maximum.
+**11 × `settle_timeout_s`** plus the pass's fade legs (`FADE_LEGS_PER_PASS` at
+`fade_seconds` apiece — about 2 s all told, and independent of the knob) —
+roughly 88 s shipped, 330 s at the knob's maximum.
 Those relations are pinned by tests rather than quoted as stopwatch readings,
 because the seconds move whenever the reading count or the window length does —
-they already moved once when the bank confirm added a reading.
+they already moved once when the bank confirm added a reading, and again when
+#2929 gave the silent re-measure its two fade legs.
 
 That is DURATION, not level: during the pass every sample is checked against
 `max_commissioning_level_db_spl`. **The banked artifact is a separate question**,
@@ -3070,10 +3075,18 @@ quieter than the room they were taken in — which put its first four readings
 below `required_rise_db` on a baseline nothing measured. The tone is *playing*,
 so a climb reading is the room plus the speaker and cannot be quieter than the
 room: a reading below the floor proves one of the two windows wrong. The pass
-then **stops the tone, measures the room again in silence, and starts the tone
-again** — one extra settled reading (normally two windows, about a second),
+then **fades the stimulus out, stops it, measures the room again in silence,
+starts it again and fades it back in** — one extra settled reading (normally two
+windows, about a second) plus two fade legs, all three
 priced into the watchdog, at most once per pass, with no threshold to tune and
-no retry. The stimulus's own decay tail needs no drained delay to absorb it: the
+no retry. Both edges are faded because the module's `FADE_STEP_DB` rule is about
+edges, not about one call site: until #2929 the re-measure stopped and restarted
+a broadband stimulus at a measurement level with no fade, which is the thing that
+rule exists to prevent (fidelity and DAC manners — every sample was, and is,
+under the commissioning SPL stop, including on the fade legs, which are watched
+by it exactly as a measurement window is). The fade legs sit outside the silent
+window on both sides, so the floor is still the room and nothing the fade emits
+reaches it. The stimulus's own decay tail needs no drained delay to absorb it: the
 tail is a moving level, so the window that catches it disagrees with the next
 one and the reading keeps going until the room is still. The receipt publishes both windows
 (`ramp.ambient_db_spl` and `ramp.ambient_remeasured_db_spl`, with
@@ -3143,7 +3156,7 @@ refusal restores the household volume and banks nothing.
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
 | `mic_not_observing` | the volume reached the headroom ceiling and the mic never rose above the room; the detail names the ceiling and the rise it required |
-| `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window it stopped in is published beside it (below) |
+| `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window (or fade leg) it stopped in is published beside it (below) |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
 | `spl_level_unsettled` | the level never stopped moving, at either of two scales — consecutive WINDOWS disagreeing until `JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S` ran out (one reading that could not be believed at all), or consecutive READINGS disagreeing until the walk's budget ran out (a level that reached the band and crept out from under it). One slug because it is one question; the detail says which scale and quotes the two figures that disagreed. Distinct from the row above, which is the ramp failing to REACH the band at all — that one is about where the level is, this one about whether it is holding still |
@@ -3152,12 +3165,20 @@ refusal restores the household volume and banks nothing.
 | `mic_feed_lost` / `mic_clipping` | no finite sample in a reading window, and a clipped capture |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 
-**A refusal publishes the window it stopped in.** The two stops that
+**A refusal publishes the window it stopped in** — or the **fade leg**, when
+that is what it stopped in. The two stops that
 run on every sample — `spl_ceiling_exceeded` and `mic_clipping` — end a window
 part-way through, so there is no settled median for the volume they stopped at.
 The refusal carries that window instead, on the receipt as `ramp.stopped_window` and in
 the same sentence the CLI prints: how many samples it saw, their min/median/max
-dB SPL, and the sample that tripped with its offset from the volume step.
+dB SPL, and the sample that tripped with its offset from the volume step. Those
+same two stops run on the re-measure's fade legs, which open no window at all, so
+a refusal from a leg reads *"the **fade leg** it stopped in saw N samples
+spanning …"* where a window's reads "the window it stopped in". That noun is the
+whole tell, and it is the only surface the difference reaches: `ramp.stopped_window`
+carries the same sample / min / median / max / trip keys either way, and `steps[]`
+gets no entry at all for a leg. The volume such a refusal quotes is one the pass
+swept through on its way somewhere, not one it settled at.
 `spl_level_unsettled` publishes one too, and it is a different shape: its window
 ran to its own deadline rather than being abandoned, so `trip_db_spl` /
 `trip_offset_s` are null and the median is the whole content — read it against
