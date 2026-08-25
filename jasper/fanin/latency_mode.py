@@ -61,10 +61,7 @@ class LatencyApplyError(RuntimeError):
 
 
 def _state_path(path: str | os.PathLike[str] | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_USB_LATENCY_FILE", DEFAULT_STATE_PATH)
-    )
+    return Path(path or DEFAULT_STATE_PATH)
 
 
 def normalize_mode(raw: str | None) -> str:
