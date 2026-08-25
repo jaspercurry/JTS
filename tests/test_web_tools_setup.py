@@ -958,5 +958,4 @@ def test_catalog_overlays_fresh_disabled_set(tmp_path):
 
 def test_public_surface_is_stable():
     assert callable(tools_setup.make_server)
-    assert callable(tools_setup.main)
     assert callable(tools_setup._make_handler)

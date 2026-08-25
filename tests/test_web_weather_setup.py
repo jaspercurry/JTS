@@ -181,7 +181,6 @@ def test_render_banner_mirrors_flash_severity():
 def test_public_surface_is_stable():
     assert callable(weather_setup._index_html)
     assert callable(weather_setup.make_server)
-    assert callable(weather_setup.main)
     assert callable(weather_setup._make_handler)
 
 

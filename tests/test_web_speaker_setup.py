@@ -127,7 +127,6 @@ def _handler_cls():
 
 def test_public_surface_is_stable():
     assert callable(speaker_setup.make_server)
-    assert callable(speaker_setup.main)
     assert callable(speaker_setup._index_html)
 
 

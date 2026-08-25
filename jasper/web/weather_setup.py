@@ -22,7 +22,6 @@ request/response form, so it ships no ES module.
 """
 from __future__ import annotations
 
-import argparse
 import html
 import logging
 import os
@@ -496,28 +495,3 @@ def make_server(
     from . import _systemd
     cfg = {"state_path": state_path, "transit_path": transit_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the JTS weather wizard")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8779)
-    parser.add_argument("--state-path", default=WEATHER_FILE)
-    parser.add_argument("--transit-path", default=TRANSIT_FILE)
-    args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO)
-    server = make_server(
-        (args.host, args.port),
-        state_path=args.state_path,
-        transit_path=args.transit_path,
-    )
-    logger.info("weather wizard listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

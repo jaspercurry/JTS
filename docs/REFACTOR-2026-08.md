@@ -103,7 +103,7 @@ ack, never silence.
 - [ ] orbs.js bundle (+tests +CI step +css tokens)
 - [ ] multiroom/channel_split.py + always-None param chain
 - [ ] TtsPlayout PortAudio body collapse
-- [ ] five dead wizard main()s + 2 orphan console_scripts
+- [x] five dead wizard main()s + 2 orphan console_scripts
 - [ ] wake_setup.py dead layer branches; bass_alignment.py; aec3-spike code
       files; control/__main__.py; chip_aec dead fields; CaptureActivityProbe;
       dead voice-protocol members
