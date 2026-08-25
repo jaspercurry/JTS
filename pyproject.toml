@@ -19,7 +19,7 @@ streambox = [
     # deliberately narrower than [full] so Zero-class installs do not
     # pull assistant-only SDKs or wake-word runtimes just to play music.
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
-    "sounddevice==0.5.5",
+    "sounddevice==0.5.6",
     "numpy>=1.26,<3",
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
@@ -34,7 +34,7 @@ streambox = [
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.19.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -60,7 +60,7 @@ full = [
     # because its transitive tflite-runtime dep has no Python 3.13 wheel
     # (PiOS Trixie's default python). We use ONNX models exclusively, so
     # tflite-runtime is never imported at runtime. See install.sh.
-    "sounddevice==0.5.5",
+    "sounddevice==0.5.6",
     "numpy>=1.26,<3",
     # SciPy is needed for room-correction v2 (jasper.correction.*):
     # synchronized swept-sine generation, FFT-based deconvolution,
@@ -79,8 +79,8 @@ full = [
     # use the maintained schema bindings and keep the shared protobuf
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
-    "gtfs-realtime-bindings==2.1.0",
-    "protobuf==7.35.1",
+    "gtfs-realtime-bindings==2.2.0",
+    "protobuf==7.36.0",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
