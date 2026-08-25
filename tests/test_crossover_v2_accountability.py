@@ -18,13 +18,11 @@ by the shape of a value instead. These pin exactly those, and nothing else.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from jasper.active_speaker.crossover_v2 import accountability, intervention
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_DRIVER_LEVELS_DISAGREE,
-)
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
 from jasper.audio_measurement.program_analysis import RealizedLevelMatch
 
@@ -90,6 +88,7 @@ _UNSET = object()
 
 def _state(
     *, suspect=False, matched=True, linearized=("f", "m"), consistency=_UNSET,
+    difference_db=_UNSET, polish_delta_db=None,
 ):
     return LinearizationState(
         outcome="fitted",
@@ -99,12 +98,20 @@ def _state(
                        "radiating_band_hz": (0.0, 1282.3)},
         },
         trim_band_estimate_db={"woofer": 0.1},
+        polish_delta_db=dict(polish_delta_db or {}),
         level_consistency=(
             _consistency(suspect=suspect) if consistency is _UNSET
             else consistency
         ),
         linearized_predicted_sum=linearized,
-        realized_level_match=_match(matched=matched),
+        realized_level_match=_match(
+            matched=matched,
+            # A mismatched pair defaults to a mismatch worth the name. The
+            # 0.2 dB default belongs to the MATCHED case and would make an
+            # unmatched fixture self-contradictory.
+            **({} if difference_db is _UNSET else {"difference_db": difference_db}),
+        ) if matched or difference_db is not _UNSET
+        else _match(matched=False, difference_db=9.0),
     )
 
 
@@ -115,34 +122,204 @@ def _assess(state, **over):
         state=state,
         grade_prediction=lambda _sum: _report(True),
         material_improvement_db=IMPROVEMENT_DB,
-        reason_levels_disagree=REASON_DRIVER_LEVELS_DISAGREE,
     )
     kwargs.update(over)
     return accountability.assess_accountability(**kwargs)
 
 
+def _one(decision, event):
+    """The single journal line for ``event`` — asserting there IS exactly one.
+
+    A gate that emitted a line twice, or not at all, would otherwise pass a
+    test that merely searched the journal.
+    """
+    lines = [record for record in decision.journal if record.event == event]
+    assert len(lines) == 1, f"expected exactly one {event}, got {len(lines)}"
+    return lines[0]
+
+
 # --------------------------------------------------------------------------- #
-# 1. a refusal must not touch a stash it never reached
+# 1. no arm of this gate refuses any more
 # --------------------------------------------------------------------------- #
+#
+# There were two refusal arms here. The single-datum-owner migration (#2609)
+# deleted the level-consistency one: a suspect verdict banks a finding and
+# proceeds. The realized-level demotion (doctrine deviation (i)) took the last
+# one, for the same never-nanny reason plus a located cost of its own — see
+# ``test_a_mislevelled_pair_discloses_and_the_round_proceeds``.
 #
 # The conductor writes the stash BEFORE it emits the journal, which is not the
-# order the replaced method used. That reordering is unobservable for exactly
-# one reason — a decision only carries a stash when it got PAST the
-# realized-level refusal arm — and "unobservable for a reason" is an argument,
-# not a guard. This is the guard.
-#
-# The level-consistency verdict used to have a second refusal arm here (a
-# disagreement past tolerance that also failed the realized-level check). The
-# single-datum-owner migration deleted it: a suspect verdict banks a finding
-# and proceeds, it never refuses, so there is no second case left to guard.
+# order the replaced method used. That used to be unobservable because no
+# refusal arm reached a stash; now it is unobservable because no arm refuses.
+# The ordering claim is asserted directly instead of through a refusal.
 
 
-def test_a_refusal_arm_never_carries_a_stash():
+def test_a_mislevelled_pair_discloses_and_the_round_proceeds():
+    """The last level refusal, burnt down — doctrine deviation (i).
+
+    A committed pair whose realized inter-driver levels sit past the tolerance
+    used to raise ``driver_levels_disagree`` at the confirm seam and leave the
+    speaker alone. It was a QUALITY check naming no component-damage mechanism,
+    so §4's closed list never covered it and §3's disclose-and-recommend rule
+    always did.
+
+    It also had a cost the estimator arm did not: the number it graded is the
+    MEASURE ripple polish's trim excursion, and the polish was admitted out to
+    6.0 dB while this gate refused past 3.0 — a dead band in which the session
+    manufactured its own refusal. ``program_analysis`` closes that band by
+    coupling the admission to this same tolerance.
+
+    Four promises, each asserted. The round is not refused. The disclosure
+    still carries every number the refusal carried. It names the polish, so a
+    reader can tell whether the polish explains it. And item 2 still runs,
+    which it never did behind a refusal.
+
+    **Mutation guard.** Re-adding the early ``return`` fails the last
+    assertion. The refusal itself cannot be restored without also restoring the
+    field it was carried on, which
+    ``test_the_decision_carries_no_refusal_field_to_set`` pins.
+    """
     decision = _assess(_state(suspect=False, matched=False))
 
-    assert decision.refusal_reason == REASON_DRIVER_LEVELS_DISAGREE
-    assert decision.spec_report_written is False
-    assert decision.spec_report is None
+    line = _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+    assert line.level == logging.WARNING
+    assert line.fields["reason"] == intervention.REALIZED_LEVEL_SUSPECT_REASON
+    assert line.fields["difference_db"] == 9.0
+    assert line.fields["tolerance_db"] == TOLERANCE_DB
+    assert line.fields["level_w_db"] == 0.0
+    assert line.fields["level_t_db"] == 9.0
+    # Item 2 ran, which is only reachable because item 1 stopped returning:
+    # its ledger line is the last thing this gate emits.
+    assert decision.journal[-1].event == accountability.EVENT_PREDICTION_GATE
+
+
+def test_a_realized_disclosure_survives_a_fit_that_produced_no_core_bands():
+    """The record is the DURABLE half of the disclosure, so it must not vanish
+    on the one input the realized check does not need.
+
+    ``level_frame_record`` takes the finding's band from the per-role CORE
+    spans — the bands the fit's two medians were computed over. When the fit
+    produced none, that used to drop the whole record and leave the journal
+    line as the only trace. Harmless while the realized check REFUSED (the
+    session had already stopped and said why); a real loss now that the round
+    proceeds and the banked finding is what the household reads.
+
+    The realized verdict carries its own two spans — the mirrored half-bands
+    about Fc it read the levels on — so the record falls back to those. The
+    estimator condition has no such fallback and needs none: with no core
+    median for any role there is nothing for it to have disagreed about.
+    """
+    state = _state(suspect=False, matched=False)
+    state = dataclasses.replace(state, core_level_evidence={})
+
+    decision = _assess(state)
+
+    assert decision.finding is not None
+    assert decision.finding["reason"] == intervention.REALIZED_LEVEL_SUSPECT_REASON
+    # The union of the realized check's own half-bands, outer hull.
+    assert decision.finding["f_lo_hz"] == 150.0
+    assert decision.finding["f_hi_hz"] == 9000.0
+    assert decision.finding["realized_difference_db"] == 9.0
+    # The journal line fires either way — it always did. This test is about the
+    # DURABLE record, which is the half that used to go missing.
+    _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+
+
+def test_the_realized_band_fallback_does_not_describe_an_estimator_finding():
+    """The fallback is guarded on the REASON, not on the bands being absent.
+
+    A band has to be the span its own reason was measured over. An estimator
+    disagreement with no per-role core spans has no band it can honestly
+    state — the realized check's half-bands belong to a different
+    instrument — so the record is still ``None`` there rather than borrowing
+    them. The realized NUMBERS ride an estimator record freely; the BAND is
+    the one field that cannot be lent.
+    """
+    state = _state(suspect=True, matched=False)
+    state = dataclasses.replace(state, core_level_evidence={})
+
+    decision = _assess(state)
+
+    assert decision.finding is None
+    # Both journal lines still fire: losing the record is not losing the
+    # disclosure, only its durable half.
+    _one(decision, accountability.EVENT_LEVEL_ESTIMATOR_FINDING)
+    _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+
+
+def test_the_decision_carries_no_refusal_field_to_set():
+    """**The demotion's structural mutation guard.**
+
+    Every "the round proceeds" assertion in this file used to be
+    ``decision.refusal_reason is None``, which is a weak guard: it holds
+    whether the field is dead or merely unset on that one path, and it kept a
+    ``raise`` alive in ``crossover_v2_flow`` that nothing could reach. Both
+    accountability refusals are gone — item 2's with the nanny burn-down
+    (deviation (c)) and item 1's with the realized-level demotion (deviation
+    (i)) — so the field went with its last writer, and the guard is now that
+    there is nowhere to put a refusal back without a visible edit here.
+
+    ``spec_report_written`` went in the same cut: it existed to tell "item 2
+    ran and graded nothing" from "item 2 never ran", and deviation (i)'s
+    deleted return was the only path that could produce the second.
+    """
+    names = {
+        field.name
+        for field in dataclasses.fields(accountability.AccountabilityDecision)
+    }
+    assert names == {"journal", "finding", "spec_report"}
+
+
+def test_the_mislevelled_disclosure_names_the_polish_that_could_explain_it():
+    """The attribution, and why it is worth carrying.
+
+    With the admission coupled to this gate's tolerance, a polish can no longer
+    push the realized error past the bar on its own — so a firing here means a
+    NON-polish source of inter-driver mismatch, which is exactly the thing a
+    disclosure exists to surface. The reader can only draw that conclusion if
+    the round says what the polish did, so it rides both the journal line and
+    the banked record.
+
+    **Mutation guard.** Dropping ``polish_delta_db`` from either surface fails
+    here; the two assertions are deliberately on different surfaces.
+    """
+    decision = _assess(_state(
+        suspect=False, matched=False,
+        polish_delta_db={"woofer": 0.0, "tweeter": 1.25},
+    ))
+
+    line = _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+    assert line.fields["polish_delta_db"] == {"woofer": 0.0, "tweeter": 1.25}
+    assert decision.finding is not None
+    assert decision.finding["polish_delta_db_tweeter"] == 1.25
+    assert decision.finding["reason"] == intervention.REALIZED_LEVEL_SUSPECT_REASON
+
+
+def test_an_estimator_disagreement_still_owns_the_reason_when_both_fire():
+    """One reason field, and the more specific diagnosis wins.
+
+    Both checks grade the same disease and both can fire on one round. The
+    record carries ONE ``reason``, so the precedence is a decision rather than
+    an accident: the estimator disagreement is the narrower finding and keeps
+    it, exactly as its gate runs first. Nothing is lost — both sets of numbers
+    ride the record either way, which is what this asserts.
+    """
+    decision = _assess(_state(suspect=True, matched=False))
+
+    assert decision.finding["reason"] == intervention.LEVEL_ESTIMATOR_SUSPECT_REASON
+    # The realized numbers ride anyway, so the precedence costs no evidence.
+    assert decision.finding["realized_difference_db"] == 9.0
+    assert decision.finding["estimator_worst_delta_db"] is not None
+    # Both journal lines fired, in emission order — the more specific
+    # diagnosis first, which is the same precedence the reason field carries.
+    # Asserted here because no arm returns early any more, so the ordering can
+    # no longer be demonstrated by which line a refusal cut off.
+    events = [record.event for record in decision.journal]
+    assert events.index(accountability.EVENT_LEVEL_ESTIMATOR_FINDING) < events.index(
+        accountability.EVENT_LEVEL_MATCH_FINDING
+    )
+    _one(decision, accountability.EVENT_LEVEL_ESTIMATOR_FINDING)
+    _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
 
 
 def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
@@ -163,15 +340,14 @@ def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
     names the verdict, so "the forecast said worse" and "the forecast was
     never run" stay distinguishable in the journal.
 
-    **Mutation guard.** Restoring the veto — a ``refusal_reason`` on this
-    path — fails the first assertion.
+    **Mutation guard.** Restoring the veto needs the field it would be
+    carried on, which ``test_the_decision_carries_no_refusal_field_to_set``
+    pins as absent.
     """
     decision = _assess(
         _state(), grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason is None
-    assert decision.spec_report_written is True
     assert decision.spec_report is not None
     comparison = decision.spec_report["comparison"]
     assert comparison["reason"] == accountability.LEDGER_NOT_AN_IMPROVEMENT
@@ -190,17 +366,20 @@ def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
 
 
 def test_an_ungradeable_prediction_clears_the_stash_rather_than_leaving_it():
-    """``spec_report is None`` with ``written`` True is a third state.
+    """``spec_report is None`` means item 2 ran and graded nothing, so the
+    conductor CLEARS its stash rather than leaving a previous session's report
+    in place.
 
-    Collapsing the two fields would make this indistinguishable from the
-    realized-level refusal, and the conductor would leave a previous
-    session's report in place where the gate meant to clear it.
+    This used to need a second field (``spec_report_written``) to tell "ran and
+    produced nothing" from "never ran". The realized-level demotion deleted the
+    only return that could produce the second, so ``None`` now has one meaning
+    and the flag went with the path it described.
     """
     decision = _assess(_state(), grade_prediction=lambda _sum: None)
 
     assert decision.spec_report is None
-    assert decision.spec_report_written is True
-    assert decision.refusal_reason is None
+    # Item 2 ran: it is the last line on the journal either way.
+    assert decision.journal[-1].event == accountability.EVENT_PREDICTION_GATE
 
 
 # --------------------------------------------------------------------------- #
@@ -224,7 +403,7 @@ def test_asked_twice_it_answers_the_same_and_writes_nothing_between():
     assert [(r.event, r.level, r.fields) for r in first.journal] == [
         (r.event, r.level, r.fields) for r in second.journal
     ]
-    assert first.refusal_reason == second.refusal_reason
+    assert first.spec_report == second.spec_report
     assert first.finding == second.finding
 
 
@@ -276,9 +455,8 @@ def test_a_distrusted_forecast_rides_WITH_the_prediction_it_produced():
         grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
-    assert decision.refusal_reason is None
     assert decision.finding is not None
-    assert decision.finding["worst_delta_db"] == 5.799
+    assert decision.finding["estimator_worst_delta_db"] == 5.799
     ledger = decision.journal[-1]
     assert ledger.fields["level_estimator_suspect"] is True
     assert decision.spec_report["comparison"]["level_estimator_suspect"] is True
@@ -312,7 +490,6 @@ def test_the_journal_is_in_emission_order_estimator_finding_then_ledger():
 def test_the_trims_only_lane_abstains_rather_than_grading_a_thing_against_itself():
     decision = _assess(_state(linearized=None))
 
-    assert decision.refusal_reason is None
     assert [r.fields["reason"] for r in decision.journal] == [
         accountability.LEDGER_NO_LINEARIZATION
     ]

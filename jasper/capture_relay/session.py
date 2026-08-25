@@ -1888,10 +1888,13 @@ def _poll_capture_plan(
             try:
                 on_completion_signal()
             except CaptureBeginRefused as refusal:
-                # The host refused ON the confirmation (the v2 session's
-                # pre-apply accountability veto is the shipped case). Same
-                # publication an admission refusal gets, so the phone renders
-                # the named reason rather than waiting out a budget.
+                # The host refused ON the confirmation. Same publication an
+                # admission refusal gets, so the phone renders the named reason
+                # rather than waiting out a budget. (The v2 session's pre-apply
+                # accountability veto was the shipped case of this; it refuses
+                # nothing since the measurement-loop doctrine's deviations (c)
+                # and (i), so the arm now guards the seam's contract rather
+                # than one known producer.)
                 log_event(
                     logger,
                     "capture_relay.plan_refused",

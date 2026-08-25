@@ -536,14 +536,21 @@ runs AFTER the flattening peaking loop:
   `raw_trim_db` did — `solve_branch_trims` over these bands produces
   `trim_t_band_average`. But the MEASURE path may hand over the **ripple-polished**
   tweeter trim instead (`solve_ripple_optimal_trim`, a *flatness* choice),
-  admitted whenever it sits within `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB) of the
-  band average. When it fires, δ of polish becomes exactly δ of realized
-  inter-driver level error — and **that bound is double the 3.0 dB realized-level
-  tolerance**, so a polish legal by its own guard can still push the pair past the
-  level gate. The gate is the arbiter and fails closed; the polish delta is
-  published on every round (`polish_delta_db`) so the precondition is observed
-  rather than assumed. Whether the anchor should bind to `trim_band_average_db`
-  instead is an open design question, filed for the architect.
+  admitted only while it sits within `REALIZED_LEVEL_MATCH_TOLERANCE_DB` (3.0 dB)
+  of the band average. When it fires, δ of polish becomes exactly δ of realized
+  inter-driver level error — which is **why that bound is the level gate's own
+  tolerance** rather than a number this seam picks. It was
+  `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB), double the gate, until the
+  realized-level demotion
+  ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (i)):
+  a polish legal by its own guard could push the pair past the level gate, so
+  every δ in 3.0–6.0 dB was admitted and then produced a round the session was
+  certain to refuse. Coupling the two closes that dead band by construction; a
+  rejected polish falls back to the band-average seed, disclosed. The gate no
+  longer refuses either — it banks a finding and the round proceeds — and the
+  polish delta is published on every round (`polish_delta_db`), reaching that
+  finding as its attribution. Whether the anchor should bind to
+  `trim_band_average_db` instead is still an open design question (#2653).
 
   **What the fix does is level-match, not quieten.** It is tempting to read this
   as "the tweeter gets quieter"; it does not. The committed trim moves by exactly
@@ -1894,6 +1901,12 @@ the Epique preset and the preview-staging path as declaring 80, and dropped the
 2026-08-18 audit note's "the two 80 dB presets" tail — that pass did verify
 those fields, but restating their values is what went stale. Every
 one of those was a claim the change in hand falsified; none verified anything
-else here.
+else here. The realized-level demotion
+([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (i))
+trued up the ripple-polish precondition paragraph, which named a 6.0 dB
+admission bound that is now the level gate's own 3.0 dB tolerance and called
+that gate an arbiter that "fails closed" when it now banks a finding and
+proceeds; the "filed for the architect" tail was replaced with the ruling. That
+paragraph only — nothing else here was re-verified that pass.
 
-Last verified: 2026-08-18
+Last verified: 2026-08-24

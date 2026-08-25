@@ -35,6 +35,9 @@ from jasper.attribution.findings import (
     FindingError,
     FindingSet,
 )
+from jasper.active_speaker.crossover_v2.intervention import (
+    REALIZED_LEVEL_SUSPECT_REASON,
+)
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,
     MECHANISM_HF_REFLECTION,
@@ -46,6 +49,7 @@ from jasper.attribution.mechanisms import (
 from jasper.attribution.promotion import (
     LEVEL_FRAME_HOUSEHOLD_COPY,
     PRODUCED_BY,
+    REALIZED_LEVEL_HOUSEHOLD_COPY,
     promote_carve_outs,
     promote_level_frame_disagreement,
 )
@@ -685,20 +689,24 @@ def test_a_set_may_not_hold_a_finding_from_another_session_s_bundle() -> None:
 
 def _level_frame_record(**overrides: object) -> dict:
     """A banked record in the shape
-    ``crossover_v2.accountability.level_frame_finding_record`` emits.
+    ``crossover_v2.accountability.level_frame_record`` emits.
 
     Numbers are the conductor fixture's own, measured in
     ``tests/test_crossover_v2_conductor.py`` on a woofer carrying an extra
     -1.6 dB/octave of passband tilt — the synthetic stand-in for the
     2026-07-30 field session (3.2307 dB frame, realized -0.247, both recorded
     on #1870 and not replayable in-repo).
+
+    This is the ESTIMATOR shape: the two estimates disagree and the realized
+    check PASSES (-0.828 dB, inside 3.0). ``_realized_only_record`` below is
+    its sibling for the other condition the record can now carry.
     """
 
     record = {
         "f_lo_hz": 150.0,
         "f_hi_hz": 5844.7,
-        "worst_delta_db": 3.209,
-        "tolerance_db": 3.0,
+        "estimator_worst_delta_db": 3.209,
+        "estimator_tolerance_db": 3.0,
         "reason": "level_estimators_disagree",
         "realized_difference_db": -0.828,
         "realized_tolerance_db": 3.0,
@@ -727,6 +735,209 @@ def _level_frame_finding(**overrides: object):
     return promote_level_frame_disagreement(
         _level_frame_record(**overrides), session=_SESSION, cites=(_CITE,)
     )
+
+
+def _realized_only_record(**overrides: object) -> dict:
+    """The record ``level_frame_record`` builds when ONLY the realized check
+    fires — the shape the realized-level demotion (doctrine deviation (i))
+    made reachable, and the one that used to be a refusal instead.
+
+    Derived from the estimator fixture by making it true of the other
+    condition rather than by inventing a second table: the estimator pair is
+    dropped (they AGREED, so ``level_consistency`` contributes nothing and its
+    two keys are absent), the reason is the realized sibling, and the realized
+    difference is the ~9 dB the 2026-07-27 dark-tweeter profile measured — the
+    case ``refusal_copy``'s deleted row was written for.
+    """
+
+    record = _level_frame_record()
+    for key in ("estimator_worst_delta_db", "estimator_tolerance_db"):
+        record.pop(key)
+    for role in ("woofer", "tweeter"):
+        record.pop(f"estimator_delta_db_{role}")
+    record.update(
+        reason=REALIZED_LEVEL_SUSPECT_REASON,
+        realized_difference_db=-9.0,
+        realized_level_w_db=0.213,
+        realized_level_t_db=-8.787,
+        polish_delta_db_woofer=0.0,
+        polish_delta_db_tweeter=0.0,
+    )
+    record.update(overrides)
+    return record
+
+
+def _realized_only_finding(**overrides: object):
+    return promote_level_frame_disagreement(
+        _realized_only_record(**overrides), session=_SESSION, cites=(_CITE,)
+    )
+
+
+def test_a_realized_level_mismatch_is_promoted_as_its_own_condition() -> None:
+    """**The blocker this test exists for.** The producer was widened to bank a
+    realized-only record; its only production reader was not, so every such
+    record rendered the ESTIMATOR finding — a household sentence that is false
+    in all three of its claims here, routed to the wrong fix class.
+
+    What must be true instead: the promoter reads the record's own ``reason``
+    and nothing else, and a realized-only record gets ``eq`` — §4 M7's own
+    split, ``eq`` "when a driver's level is genuinely low" against ``refit``
+    "when the level error is upstream in the fit's own frame". The frame is not
+    in dispute here; the pair that would ship is simply not level.
+    """
+
+    finding = _realized_only_finding()
+    assert finding is not None
+    assert finding.mechanism == MECHANISM_LEVEL_FRAME
+    assert finding.fix_class == "eq"
+    # …and the estimator arm still routes the other way, so this is a branch
+    # and not a flip. Both classes are declared on M7 for exactly this reason.
+    assert _level_frame_finding().fix_class == "refit"
+    assert set(mechanism_spec(MECHANISM_LEVEL_FRAME).fix_classes) == {"eq", "refit"}
+
+
+def test_the_realized_household_copy_is_true_and_still_recommends() -> None:
+    """Doctrine §3: a defect outside §4's closed list "discloses **and
+    recommends a next action**". The demotion removed the stop; it must not
+    also have removed the recommendation.
+
+    Three things are asserted, each one a clause of the estimator sentence that
+    is FALSE about this record:
+
+    * it does not claim two cross-checks disagreed — they agreed, which is why
+      this reason won;
+    * it does not reassure that "nothing was guessed at", which is exactly the
+      thing that is wrong;
+    * it does not send the household to re-run the room pass, which does not
+      address a sensitivity figure or a pad.
+
+    And the recommendation the deleted ``refusal_copy`` row carried — "Re-check
+    the driver details — sensitivity and any resistor pad — in speaker setup,
+    then measure again" — survives, minus the two things about it that stopped
+    being true: the speaker is NOT left alone (the round proceeds), and the
+    hardware nouns cannot pass ``Finding``'s own validator.
+    """
+
+    finding = _realized_only_finding()
+    assert finding.household_copy == REALIZED_LEVEL_HOUSEHOLD_COPY
+    assert finding.household_copy != LEVEL_FRAME_HOUSEHOLD_COPY
+    lowered = REALIZED_LEVEL_HOUSEHOLD_COPY.lower()
+
+    for false_clause in (
+        "cross-check", "cross check", "nothing was guessed",
+        "room pass", "left your speaker alone", "left alone",
+    ):
+        assert false_clause not in lowered, false_clause
+    # The recommendation, in the two words that make it actionable.
+    assert "sensitivity" in lowered
+    assert "pad" in lowered
+    assert "measure again" in lowered
+    # It must not claim the tuning was applied — the candidate is a PROPOSAL at
+    # the moment this is minted, same rule as the sibling copy.
+    for banned in ("applied", "was kept", "your speaker now", "phone"):
+        assert banned not in lowered, banned
+    # …and it must not claim the pair WAS measured at those levels. The check
+    # reads the fit's MODEL of the emission — the measured per-branch responses
+    # through the modelled correction — not a capture of the applied tuning,
+    # which is the delta probe's job after an apply that has not happened. The
+    # deleted refusal's "would not have ended up at matching levels" is the
+    # tense this instrument earns, and the copy keeps it.
+    assert "would not end up" in lowered
+    for overclaim in (
+        "measured on", "we measured", "confirmed", "verified", "proved",
+        "independent",
+    ):
+        assert overclaim not in lowered, overclaim
+    # §3.1's contract holds on the new string too, enforced by the validator
+    # rather than by this list: a round-trip reconstructs it unchanged.
+    assert Finding.from_mapping(finding.to_dict()).household_copy == (
+        REALIZED_LEVEL_HOUSEHOLD_COPY
+    )
+    # Short enough to read on a review screen (IA over copy) — the same bar
+    # its sibling is held to, even though this one also carries a
+    # recommendation and that one does not.
+    assert len(REALIZED_LEVEL_HOUSEHOLD_COPY) < 260
+
+
+def test_the_realized_finding_is_unsure_for_its_own_reason() -> None:
+    """The tier is the same as the estimator arm's and the argument is not.
+
+    ``realized_branch_level_match``'s own docstring says it is "One estimator,
+    not a second opinion" — the same power-band average over the same halves
+    that set the trim — so none of the estimator arm's rival-span artifacts
+    apply. What is unsure is the CAUSE: the levels are read off the emission
+    the fit MODELS, not off a post-apply capture, and nothing here separates a
+    wrong sensitivity or pad value from an error in the fit's own frame.
+
+    ``unsure`` obliges a recommended probe (§3.2), and this finding carries
+    M7's two raisers rather than claiming a probe ran.
+    """
+
+    finding = _realized_only_finding()
+    assert finding.confidence == "unsure"
+    assert finding.probes_run == ()
+    assert finding.probes_recommended == ("P5", "P7")
+
+
+def test_the_realized_evidence_rides_and_the_estimator_keys_are_named() -> None:
+    """Every non-band key is evidence, and the two instruments' keys are told
+    apart by name rather than by a reader's memory.
+
+    A realized-only record carries no estimator pair at all, so a bare
+    ``worst_delta_db`` beside ``reason=realized_levels_disagree`` would be a
+    number from the OTHER instrument wearing an unqualified name. The producer
+    prefixes them; this pins that a reader of the finding sees the prefix.
+    """
+
+    evidence = _realized_only_finding().evidence
+    assert evidence["reason"] == REALIZED_LEVEL_SUSPECT_REASON
+    assert evidence["realized_difference_db"] == -9.0
+    assert evidence["realized_tolerance_db"] == 3.0
+    assert evidence["realized_level_w_db"] == 0.213
+    assert evidence["realized_level_t_db"] == -8.787
+    # The attribution that says how much of the mismatch the MEASURE ripple
+    # polish could explain. Zero here, which is the reader's cue to look
+    # elsewhere — the disclosure's whole job.
+    assert evidence["polish_delta_db_tweeter"] == 0.0
+    assert evidence["polish_delta_db_woofer"] == 0.0
+    # No estimator keys on THIS fixture, which models the session that
+    # produced no consistency verdict at all. A realized-only record whose
+    # estimators ran and AGREED still carries them — prefixed — which is what
+    # makes the prefix load-bearing rather than cosmetic; the producer's own
+    # test covers that shape.
+    assert not [key for key in evidence if key.startswith("estimator_")]
+    # …and on the estimator record they are present, PREFIXED.
+    estimator_evidence = _level_frame_finding().evidence
+    assert estimator_evidence["estimator_worst_delta_db"] == 3.209
+    assert estimator_evidence["estimator_tolerance_db"] == 3.0
+    assert "worst_delta_db" not in estimator_evidence
+    assert "tolerance_db" not in estimator_evidence
+
+
+def test_the_estimator_reason_still_owns_the_copy_when_both_conditions_fire(
+) -> None:
+    """The producer writes ONE reason and the estimator condition wins it. This
+    pins that the promoter follows that ordering rather than re-deriving which
+    condition fired from the numbers.
+
+    Why the estimator sentence is still TRUE here, and not merely the one the
+    precedence happens to pick: two instruments that disagree about the frame
+    make the realized read downstream of a suspect frame, so "this room pass is
+    worth re-running" is the right first move and acting on a setup value is
+    not. Re-deriving the realized verdict here to append a second sentence is
+    what the promoter's own "re-decides nothing" rule forbids.
+    """
+
+    both = _level_frame_record(realized_difference_db=-9.0)
+    finding = promote_level_frame_disagreement(
+        both, session=_SESSION, cites=(_CITE,)
+    )
+    assert finding is not None
+    assert finding.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
+    assert finding.fix_class == "refit"
+    # Nothing is lost to the precedence: the realized numbers still ride.
+    assert finding.evidence["realized_difference_db"] == -9.0
+    assert finding.evidence["estimator_worst_delta_db"] == 3.209
 
 
 def test_a_banked_frame_disagreement_becomes_an_m7_finding() -> None:
@@ -779,10 +990,11 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     # A high-pass branch radiates to infinity; ``None`` says so and survives
     # JSON, where ``inf`` does not.
     assert evidence["radiating_band_hi_hz_tweeter"] is None
-    # The disagreement, its tolerance, and the realized check whose pass is
-    # what let the session proceed.
-    assert evidence["worst_delta_db"] == 3.209
-    assert evidence["tolerance_db"] == 3.0
+    # The disagreement and its tolerance, both PREFIXED with the instrument
+    # they belong to, plus the realized check — which passes on this record and
+    # so is not why it was banked.
+    assert evidence["estimator_worst_delta_db"] == 3.209
+    assert evidence["estimator_tolerance_db"] == 3.0
     assert evidence["realized_difference_db"] == -0.828
     assert evidence["realized_tolerance_db"] == 3.0
 
@@ -839,12 +1051,13 @@ def test_the_banked_finding_s_household_copy_obeys_the_conventions() -> None:
     path mints.
 
     It is minted rather than copied — unlike the carve-out path, the frame
-    gate has no shipped sentence for a session that PROCEEDS; its only
-    household copy is the refusal's, which is both wrong here and the copy
-    #1924's family is separately about. So the prohibition has to bite on a
-    new string, and it does: ``Finding`` itself rejects a hardware noun, an
-    internal slug, or a mechanism id, so a future edit reaching for "woofer"
-    fails at construction rather than in front of a household.
+    gate had no shipped sentence for a session that PROCEEDS. So the
+    prohibition has to bite on a new string, and it does: ``Finding`` itself
+    rejects a hardware noun, an internal slug, or a mechanism id, so a future
+    edit reaching for "woofer" fails at construction rather than in front of a
+    household. (Its realized-level sibling is held to the same bar, one test
+    up, where the noun ban is what forced the deleted refusal's wording to be
+    carried over rather than pasted.)
     """
 
     finding = _level_frame_finding()
@@ -886,14 +1099,33 @@ def test_the_banked_finding_re_decides_nothing() -> None:
     the realized check failed, is still promoted verbatim: it could only have
     arrived from a gate that decided to bank it, and second-guessing that here
     would make two owners for one ruling.
+
+    ``reason`` is the ONE field it does read, and reading it is not
+    re-deciding: the producer already wrote which condition fired, and choosing
+    the sentence for a condition somebody else decided is exactly the
+    translation this path is for. What it must never do is compare
+    ``realized_difference_db`` against ``realized_tolerance_db`` itself, which
+    is what the second half of this test pins.
     """
 
     contradictory = _level_frame_finding(
-        worst_delta_db=0.1, realized_difference_db=99.0
+        estimator_worst_delta_db=0.1, realized_difference_db=99.0
     )
     assert contradictory is not None
-    assert contradictory.evidence["worst_delta_db"] == 0.1
+    assert contradictory.evidence["estimator_worst_delta_db"] == 0.1
     assert contradictory.evidence["realized_difference_db"] == 99.0
+    # A realized number far past its own tolerance does not move the copy or
+    # the routing on an ESTIMATOR record: only ``reason`` does that. If the
+    # promoter ever re-derived the realized verdict, this record — whose
+    # realized error is 99 dB — would flip, and it must not.
+    assert contradictory.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
+    assert contradictory.fix_class == "refit"
+    # …and symmetrically, a realized-only record whose realized error is INSIDE
+    # tolerance still gets the realized treatment, because its reason says so.
+    inside = _realized_only_finding(realized_difference_db=-0.1)
+    assert inside is not None
+    assert inside.household_copy == REALIZED_LEVEL_HOUSEHOLD_COPY
+    assert inside.fix_class == "eq"
 
 
 def test_a_malformed_banked_record_is_refused_loudly_not_raised(

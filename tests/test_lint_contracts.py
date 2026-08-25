@@ -168,10 +168,12 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # household may still moot by retaking. The arm therefore drops the result and
 # leaves the bank empty; the confirm path then refits and raises the identical
 # exception from the identical place, where the host maps it to a real
-# terminal screen. It must not name a family: the PR-L4 accountability veto
-# (``CaptureBeginRefused``) already raises outside the named families this file
-# uses, and guessing the fit's raise surface is exactly how a swallowed
-# exception becomes a hang. Logs
+# terminal screen. It must not name a family: guessing the fit's raise surface
+# is exactly how a swallowed exception becomes a hang. (The PR-L4
+# accountability veto's ``CaptureBeginRefused`` was the worked example of a
+# raise outside the named families this file uses; both its items bank instead
+# of refusing since doctrine deviations (c) and (i), which narrows what can
+# arrive without making it enumerable.) Logs
 # event=correction.crossover_v2_speculative_close_failed at WARNING with the
 # exception type + traceback — never a silent path, and never the household's
 # only signal, since the confirm re-raises. Ceilings 623 -> 624 / 816 -> 817.
@@ -1096,7 +1098,28 @@ MAX_LINES_BY_PATH = {
     # so the +22 here is smaller than the +30 the pre-round draft cost.
     # Every rule about WHICH level may be commanded still lives on
     # `SessionVolumePlan`; this file learned no new fact about volumes.
-    "jasper/active_speaker/crossover_v2_flow.py": 13_440,
+    #
+    # 2026-08-24, the realized-level demotion (doctrine deviation (i)):
+    # 13,440 -> 13,459, +19 physical, RECOUNTED against this base after a
+    # rebase onto #2929/#2936. Two blocks are net-additive and everything else
+    # is prose that REPLACES prose, hunk for hunk.
+    #
+    # +6: `_log_measure_diag` gains `ripple_polish_rejected_delta_db`, the
+    # field that tells apart the three rounds `trim_ripple_gain_db == 0.0`
+    # otherwise renders identically. Four executable lines, two of comment.
+    #
+    # +7: `_refuse` now says it has no production caller. That is a fact this
+    # change created — deleting the accountability refusal took its only one —
+    # and a method whose first line reads "one construction point so a refusal
+    # can never ship a bare code" otherwise reads as live. The gate panel found
+    # exactly this class of wrong pointer six times in this file's neighbours.
+    #
+    # The rest is the correction itself, and it was trimmed twice before this
+    # ceiling was written: the demotion falsified eleven present-tense passages
+    # here (item 1 "still REFUSES", the seam raising `CaptureBeginRefused`,
+    # the speculative-close and BLE001 rationales that named the veto as their
+    # example), and every one was rewritten in place rather than appended to.
+    "jasper/active_speaker/crossover_v2_flow.py": 13_459,
     # ...and 9,292 -> 9,296, +4 physical / 0 logical: the sweep caught that
     # comment overclaiming its own readership ("the surface /state, the doctor
     # and the done screen read" — no renderer reads it today). It is a forensic
@@ -1804,7 +1827,27 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_538,
+    #
+    # 2026-08-24, the realized-level demotion (doctrine deviation (i)):
+    # 7,537 -> 7,582, +45 physical. RECOUNTED against the current base after a
+    # rebase onto #2929/#2936, and trimmed THREE times before asking: a 32-line
+    # re-telling of the dead-band account became a 19-line pointer at the
+    # doctrine row that owns it and then a 13-line one, a field docstring lost
+    # its restatement of its own second paragraph, and three inline comments
+    # that repeated the constant block above them were cut to a pointer. Forty
+    # lines given back in total, because restating one account at six sites is
+    # six places for it to drift.
+    #
+    # What earned the remaining room, in mechanism: the polish admission is
+    # now bound to `REALIZED_LEVEL_MATCH_TOLERANCE_DB` instead of its own
+    # deleted 6.0 dB constant, which closes a dead band in which a polish was
+    # admitted and the round it produced was then certain to be refused; the
+    # rejection carries its excursion on the event (`rejected_delta_db`,
+    # `tolerance_db`) and on a new `CrossoverCandidate` field with its
+    # docstring; and `analysis_diagnostic_summary` exports that field. The
+    # deleted constant and its comment block gave lines back; the new field,
+    # its export, and the coupling's stated invariant took more.
+    "jasper/audio_measurement/program_analysis.py": 7_582,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its

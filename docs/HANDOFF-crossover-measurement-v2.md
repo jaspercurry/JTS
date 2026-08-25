@@ -1012,8 +1012,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 # by name, never infer safety from a quiet log.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_recovery_timeout)'
 
-# Why a session refused, and what the speaker actually did with the correction.
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
+# What accountability GRADED and banked (it refuses nothing since doctrine
+# deviations (c)/(i)), why a session refused (the delta probe, post-apply),
+# and what the speaker actually did with the correction.
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_finding|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 
 # Calibration handoff / uncalibrated warnings.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
@@ -2129,9 +2131,15 @@ carries for the same capture.
 summed-response ripple, scanned in a bounded window (±10 dB,
 `RIPPLE_TRIM_SEARCH_WINDOW_DB`) around the band-average seed and clamped to
 the physically valid attenuation range; a result more than
-`RIPPLE_TRIM_SANITY_MARGIN_DB` (6 dB) from the seed is distrusted and
-discarded in favor of band-average, with a WARNING (never a silent wild
-trim). Selection is flat-minimum-regularized (architect follow-up): among
+`REALIZED_LEVEL_MATCH_TOLERANCE_DB` (3 dB) from the seed is distrusted and
+discarded in favor of band-average, with a WARNING and a
+`ripple_polish_rejected_delta_db` on the candidate (never a silent wild trim).
+That bound is the realized-level gate's own tolerance and not a number this
+seam owns: the excursion passes straight through to the committed pair, so a
+polish admitted past it produces a round the gate can only report against. It
+was `RIPPLE_TRIM_SANITY_MARGIN_DB` (6 dB) until the realized-level demotion
+([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (i))
+deleted that constant and coupled the two. Selection is flat-minimum-regularized (architect follow-up): among
 every scanned candidate within `RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB`
 (0.25 dB) of the scan's global minimum ripple, the one closest to the
 band-average seed wins — a shallow ripple bowl's exact minimizer is
@@ -3820,7 +3828,7 @@ unready setup.
 | `verify_level_shift` | VERIFY | 2 | G3, session-scoped since #1927 — the recording chain moved DURING this sitting, so the capture is not evidence about the speaker. Structurally unreachable on a session's FIRST usable attempt. Same verify-fail screen; its copy (#1924) is written for the fact that ONE string renders where "try again" is two different controls — the measurement page's in-session re-arm, which re-compares the same reference and can repeat, and the wizard's fresh session, which re-baselines and settles it in one capture. So it names the visible primary and makes Re-measure / Undo the escalation *if the retry repeats*, commanding neither |
 | `low_alignment_confidence` | MEASURE | 1 | **TWO causes, since #2087 took away a third.** Alignment confidence below the trust floor, OR the measured delay falls outside the crossover region's declared `delay_range_ms` search bound (± a modest margin) — a confidently-wrong GCC estimate. Either way: re-measure at a cleaner mic position (gotcha #18). The **G1 predicted-ripple** check reused this code as an undocumented third cause until the owner's 2026-08-03 ruling, and that reuse is exactly what made the ruling necessary: a high ripple says the two branches summed incoherently on this rig, which the copy above answers by telling a household to move a microphone that was often already right (#2085), and the refusal then consumed the attempt budget until the session died (#2086). G1 now discloses instead — see "G1 discloses, it does not refuse" below. The `guard` diag field still separates the two remaining causes (empty for both) from G1's `ripple_disclosure`, which now rides an **accepted** capture |
 | `apply_failed` | APPLYING | new session | the conductor's own auto-apply came back blocked or errored (gotcha #18). Unlike every other "new session" row, MEASURE's OWN evidence is NOT invalidated (`_persist_terminal_failure`'s §5.6 reset is scoped away from this one code) — an apply failure says nothing about the mic position, and keeping MEASURE accepted is what lets the specific blocked-issue nudge actually render (adversarial review SF2, 2026-07-20) |
-| `driver_levels_disagree` | confirm seam | 0 (hard stop) | **ONE gate holds this code since the single-datum-owner migration (#2609).** `event=…_level_match_refused` — PR-L4 item 1: after the committed trim the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sit further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart, so a flat sum is impossible whatever the per-driver fit achieved. It refuses BEFORE the apply thread starts, so the speaker is untouched. **The second gate that used to share this code is deleted.** `event=…_level_frame_refused` fired when two per-driver level estimates (`solve_branch_trims`' mirrored ±1-octave power average and the fit's `driver_core_level_db` median) disagreed past 3.0 dB *and* the realized check also failed. Both the refusal and the arbitration behind it are gone: the level datum now has one owner — the **raw per-branch trim solve**, carried as `LinearizationRequest.raw_trim_db` and placed by `intervention.anchor_trims` (fed `anchor_base_db=raw_trim`) — so there is no second estimate to disagree with and nothing to arbitrate. The summed at-the-mark capture is explicitly **not** that owner: it rides the applied incumbent graph while the per-branch sweeps ride the protected-neutral one, so combining them double-counts the incumbent's own trims. `plan_linearization`'s anchor block carries the full account; making the summed capture the owner needs a frame reconciliation and an anchor re-place that are deferred together behind [#2653](https://github.com/jaspercurry/JTS/issues/2653). The two per-driver estimates became an advisory consistency check (`intervention.check_level_consistency`) that flags a capture as retriable on `event=…_level_estimator_finding` and **never refuses and never moves a number**. Why it went: the exclusion cliff at 3.0 dB was the located mechanism of the 2026-08-16 shortfall round — a disagreement missed the bar by 0.326 dB, every per-role offset was zeroed, and the tweeter shipped +3.79 dB hotter than its own raw measurement asked (raw `-10.835` → committed `-7.043`), which overshot the crossover band by +3.10 dB, failed VERIFY's absolute check at -2.83 dB @ 1935 Hz, and was rolled back |
+| ~~`driver_levels_disagree`~~ | — | — | **RETIRED by the nanny burn-down** ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (i)). PR-L4 item 1 refused here when, after the committed trim, the two drivers' *realized* levels — read on their own mirrored ±1-octave half-bands about Fc, not across each whole passband — sat further than `REALIZED_LEVEL_MATCH_TOLERANCE_DB` apart. The MEASUREMENT is unchanged and still fires, now as `event=…_level_match_finding` plus a banked level-frame finding, and the round PROCEEDS. Why it went: it graded inter-driver tonal balance and named no component-damage mechanism, so §4's closed list never covered it — and its cost was a refusal the session manufactured for itself. The number it grades IS the MEASURE ripple polish's trim excursion (`difference_db == polish_delta_db[tweeter] − polish_delta_db[woofer]`, since the give-back is a per-role constant that passes each role's excursion straight through — and the woofer term is 0.0 in the shipped program, which ripple-polishes only the tweeter trim), and the polish was admitted out to `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB) against this gate's 3.0 — so every polish landing in that dead band produced a round certain to be refused. jts3's landed at 3.9 dB. The polish admission is now COUPLED to this tolerance (`RIPPLE_TRIM_SANITY_MARGIN_DB` is deleted) and a rejected polish falls back to the band-average trim, disclosed on `event=program_analysis.ripple_trim_rejected` and on the candidate's `ripple_polish_rejected_delta_db`. **The gate that used to share this code was already deleted** by the single-datum-owner migration (#2609): `event=…_level_frame_refused` fired when two per-driver level estimates disagreed past 3.0 dB *and* the realized check also failed. The level datum has one owner — the **raw per-branch trim solve**, carried as `LinearizationRequest.raw_trim_db` and placed by `intervention.anchor_trims` (fed `anchor_base_db=raw_trim`). The summed at-the-mark capture is explicitly **not** that owner: it rides the applied incumbent graph while the per-branch sweeps ride the protected-neutral one, so combining them double-counts the incumbent's own trims; making it the owner needs a frame reconciliation and an anchor re-place deferred together behind [#2653](https://github.com/jaspercurry/JTS/issues/2653). The two per-driver estimates became an advisory consistency check (`intervention.check_level_consistency`) reporting on `event=…_level_estimator_finding`. A round persisted before either change can still carry this code; readers of a historical failure resolve it through `REASON_REGISTRY.get`, which now misses and falls back |
 | ~~`correction_not_an_improvement`~~ | — | — | **RETIRED by the nanny burn-down** ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (c)). PR-L4 item 2 refused here when the PREDICTED post-apply response failed the flat spec and was not better than its own pre-fit model by `PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`. A forecast vetoing the measurement that would have settled it, which the doctrine's authority model forbids; it took jts3's first prescribed-boost round on 2026-08-22 (`improvement_db=-0.703`) one log line after disclosing its own level estimators 11.635 dB apart. Item 2 now banks `accountability.LEDGER_NOT_AN_IMPROVEMENT` on `event=…_prediction_gate` and the round proceeds. Its prescribed-class sibling `prescribed_correction_not_an_improvement` went with it — one ledger value for both bars, told apart by `required_db`. **Since rung P3 / R10b both of the comparison's terms carry the committed residual delay, which does not cancel between them and narrows the margin as the residual grows** — see "VERIFY compares the applied response with the summed model at the committed delay" below for the measured curve. A round persisted before the burn-down can still carry this code; readers of a historical failure resolve it through `REASON_REGISTRY.get`, which now misses and falls back |
 | `correction_model_error` | VERIFY / post-apply group | 0 (hard stop) | linearization-integrity PR-L5: the delta probe's realized-vs-commanded map does not match in SHAPE — the emitted filters are not doing what the fit's model of them says. Catches the PR-L2 shelf-Q class permanently. **Fires AFTER the apply**, so it rolls the correction back first and then names itself. **Since #2521 it fires only on an exceedance that survives the capture's trusted band AND the removal of the fitted frame** — one that does not survive is the non-rollback `frame_mismatch` finding instead (see "The delta probe verifies the apply" below) |
 | `correction_level_shortfall` | VERIFY / post-apply group | 0 (hard stop) | PR-L5: the shape landed but the depth did not — realized/commanded scale below `DELTA_PROBE_SHORTFALL_GAIN_CEILING` on a commanded LIFT. A driver-compression diagnostic. Rolled back. **Since #2521 it sits behind the same frame gate `correction_model_error` does** — a real but in-tolerance depth shortfall riding a room tilt demotes to `frame_mismatch` rather than reverting a tuning on evidence that is entirely instrument |
@@ -3938,21 +3946,39 @@ never the outcome: `predicted_ripple_db` says how coherently two branches can
 sum at all, not how the speaker will sound, and every accountability gate
 below still grades the correction itself on this candidate.
 
-**The accountability veto guards the confirm seam.** PR-6b's
+**The accountability seam GRADES the confirm seam; it refuses nothing.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
 about the CORRECTION built from it. (That key is DELETED since PR-T3: nothing
-auto-applies, so a flag named for an automatic trigger would name a path that
-no longer exists. The veto below is unchanged and now refuses on the
-household's confirmation.) `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
-agreement, then PR-L4's items 1 and 2, most-specific-first — between the
-candidate build and the publish, so a refusal leaves no candidate for anything
-downstream to apply. (The four `correction_*` rows are different: they fire
-after the apply, from the delta probe.) All three raise through
-`CrossoverV2Conductor._refuse`, which stamps `_last_failure_code`: the host's
-`CaptureBeginRefused` arm reads THAT, not the exception, and falls back to
-`relay_timeout` when it is unset — so raising any other way would render a
-deliberate refusal as a manufactured timeout.
+auto-applies.) `_assert_accountable` runs THREE checks between the
+candidate build and the publish, most-specific-first — the level-frame
+agreement of the two per-driver level estimates, then PR-L4's item 1 (the
+committed pair's realized inter-driver level) and item 2 (the spec-graded
+prediction) — because that is where the numbers they grade exist. **None of the
+three refuses**; the module's own docstring is "Three disclosures and no
+refusals, most-specific-first". The agreement check flags the CAPTURE as
+retriable on `event=…_level_estimator_finding` (WARNING) and proceeds; item 2
+stopped refusing with the nanny burn-down
+([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (c))
+and item 1 with the realized-level demotion (deviation (i)), and both now bank
+what they measured — `event=…_prediction_gate` carrying an
+`accountability.LEDGER_*` value, `event=…_level_match_finding` plus a level-frame
+finding. The round proceeds to the review screen either way. What the
+single-datum-owner migration (#2609) deleted was the agreement check's REFUSAL
+ARM, not the check: that arm asked one more question — does the realized-level
+check pass on the pair about to ship? — and refused under item 1's own
+`driver_levels_disagree` code, so its deletion "removed a second owner of one
+refusal, not a stop", and the check itself still runs first on every round.
+
+What that leaves refusing in this flow: the four `correction_*` rows below, which
+fire AFTER the apply from the delta probe, and the admission seam, which refuses
+a capture on its own codes. Those build `CaptureBeginRefused` where they classify
+it. `CrossoverV2Conductor._refuse` — the constructor that stamps
+`_last_failure_code`, which the host's `CaptureBeginRefused` arm reads INSTEAD of
+the exception, falling back to `relay_timeout` when unset — had exactly one
+production caller, the accountability refusal, and has none since deviation (i).
+The stamp rule it exists to enforce is unchanged and still the reason a refusal
+raised any other way would render as a manufactured timeout.
 
 **The delta probe verifies the apply; the ROUND rolls it back** (PR-L5, rerouted
 by the fifth principle). The three `correction_*` rows above are the only
@@ -4560,9 +4586,10 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
-# Accountability + delta probe (PR-L4/L5) — why a session refused, and what
-# the speaker actually did with the correction:
-journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_refused|prediction_gate|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
+# Accountability + delta probe (PR-L4/L5) — what accountability graded and
+# banked, why a session refused (the delta probe half; accountability refuses
+# nothing now), and what the speaker actually did with the correction:
+journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_finding|prediction_gate|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 ```
 
 `event=correction.crossover_v2_level_estimator_finding` is the banked-and-
@@ -4572,13 +4599,18 @@ per-driver level estimate disagreed with the OTHER one, neither of them having
 placed the pair (the raw per-branch trim did). It carries both estimators' own
 readings (`trim_band_average_db` / `core_level_db`), their per-role distance
 from **each other** (`estimator_delta_db`, i.e. |overlap-band placement −
-core-median placement|), the largest of those (`worst_delta_db`) against
-`tolerance_db`, and `realized_difference_db` (the independent outcome check,
-which decides its own gate and not this one). The durable copy is the bundle's
-`findings_measure.json` — one M7 finding, `confidence=unsure`,
-`fix_class=refit` — written by `bind_findings_publisher` right after the
-candidate artifact it cites. Two adjacent events say when that did NOT happen:
-`…_level_estimator_finding_failed` (the store refused; the tune is unaffected) and
+core-median placement|), the largest of those (`estimator_worst_delta_db`)
+against `estimator_tolerance_db`, and `realized_difference_db` (the outcome
+check on the committed pair, which since the realized-level demotion banks into
+this same record instead of refusing on its own — so the record is now built
+when EITHER check fires, and its `reason` says which). The durable copy is the
+bundle's `findings_measure.json` — one M7 finding, `confidence=unsure`, and a
+`fix_class` that follows that `reason`: `refit` when the two estimators
+disagreed (the error is upstream in the fit's own frame) and `eq` when only the
+realized levels did (the frame is not in dispute; the committed pair is simply
+not level). Written by `bind_findings_publisher` right after the candidate
+artifact it cites. Two adjacent events say when that did NOT happen:
+`…_level_frame_publish_failed` (the store refused; the tune is unaffected) and
 `attribution.level_frame_promotion_refused` (the record could not become a
 finding).
 
@@ -6618,8 +6650,16 @@ spec-verdict consumer bullet and the cloud-`flatness` "gates?" cell were both
 re-read against `_done_nudges` and the done-screen assembly, which had
 falsified them (the terminal result code overrode badge and copy on every
 post-R18 session); the bullet now names the cap and its one capped code, and
-the table cell was found true again as written. **Scope: only the paragraphs
-named above were re-verified this pass**; the rest of the live spine carries
+the table cell was found true again as written. Carried forward: the
+realized-level demotion (`measurement-loop-doctrine.md` deviation (i)) — the
+`driver_levels_disagree` row was re-read against `accountability`'s item 1 arm
+and `refusal_copy`'s registry, found falsified in both (the code and its row
+are deleted, the gate banks a finding and the round proceeds), and rewritten as
+a struck RETIRED row on the `correction_not_an_improvement` pattern; the two
+journalctl recipes naming `…_level_match_refused` were repointed at
+`…_level_match_finding`. Only that row and those two recipes were re-derived
+that pass. **Scope: only the paragraphs named above were re-verified this
+pass**; the rest of the live spine carries
 its 2026-08-16 reading, and the appendix's dated narrative was NOT re-verified
 and still shows the pre-#2602 five-row table, as its own status callout says
 it will)

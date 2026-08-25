@@ -338,31 +338,32 @@ REASON_GEOMETRY_RETAKE_UNREACHABLE = "geometry_retake_unreachable"
 # surface renders it yet, PR-7 renders it) rather than blocking a
 # measurement on a defect no mic move can decorrelate.
 REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
-# Accountability assertions (linearization-integrity PR-L4). Both refuse a
-# candidate at the confirm seam, so no proposal ever reaches the review screen
-# and the speaker is never touched: the honest outcome of "we cannot show this
-# makes your speaker better" is to leave it alone and say so.
+# Accountability assertions (linearization-integrity PR-L4) have NO reason codes
+# left. Both arms used to refuse a candidate at the confirm seam; neither does.
 #
-# item 1 — the two drivers' realized levels, read on their own mirrored
-# ±1-octave half-bands about Fc after the committed trim, sit further apart than
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB. A 2-way sums flat only when both branches
-# hand off at the same level, so this is a tonal-balance defect that no amount
-# of per-driver flattening can hide. Fired at ~9 dB on the 2026-07-27 JTS3
-# profile the owner heard as dark. (It grades the HANDOFF, not the whole
-# passband: a driver whose own band tilts while its half-band level is right is
-# the fit's problem to catch, not this assertion's.)
-REASON_DRIVER_LEVELS_DISAGREE = "driver_levels_disagree"
-# item 2 has NO reason code. It used to have two — ``correction_not_an_improvement``
-# and its prescribed-class sibling, one refusal apiece — and the nanny burn-down
-# (docs/measurement-loop-doctrine.md deviation (c)) deleted both with the refusal
-# they existed to name. Item 2 now banks
-# ``accountability.LEDGER_NOT_AN_IMPROVEMENT`` and the round proceeds to the
-# measurement that decides, so there is no household sentence left to write:
-# nobody is being told their speaker was left alone. A durable state persisted
-# before that change can still carry either literal, and every reader of one
-# already tolerates a code with no registry row — ``_failure_history_note`` in
-# ``crossover_envelope_v2`` reads the registry with ``.get`` and falls back to
-# its generic clause.
+# item 1 was ``driver_levels_disagree`` — the two drivers' realized levels, read
+# on their own mirrored ±1-octave half-bands about Fc after the committed trim,
+# sitting further apart than REALIZED_LEVEL_MATCH_TOLERANCE_DB. It is still
+# MEASURED and still disclosed, on
+# ``accountability.EVENT_LEVEL_MATCH_FINDING`` and in the banked level-frame
+# record; what went is the refusal, under the doctrine's never-nanny rule
+# (docs/measurement-loop-doctrine.md deviation (i)). It graded a tonal-balance
+# quality, named no component-damage mechanism, and — the located cost — it sat
+# 3.0 dB against a ripple polish admitted out to 6.0, so a polish inside its own
+# guard could produce a round the session was then guaranteed to refuse. The
+# admission is coupled to this gate's tolerance now, and the gate reports rather
+# than stops.
+#
+# item 2 used to have two — ``correction_not_an_improvement`` and its
+# prescribed-class sibling, one refusal apiece — and the nanny burn-down
+# (deviation (c)) deleted both with the refusal they existed to name. Item 2 now
+# banks ``accountability.LEDGER_NOT_AN_IMPROVEMENT`` and the round proceeds to
+# the measurement that decides.
+#
+# In every case a durable state persisted before the change can still carry the
+# old literal, and every reader of one already tolerates a code with no registry
+# row — ``_failure_history_note`` in ``crossover_envelope_v2`` reads the registry
+# with ``.get`` and falls back to its generic clause.
 #
 # Delta-probe verdicts (linearization-integrity PR-L5). Unlike item 1 above,
 # these fire AFTER the apply — they are what the post-apply sweep found — so
@@ -1192,20 +1193,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Take this one from further out and we will use it instead.",
         ),
     ),
-    # PR-L4 item 1, and since the nanny burn-down the only PR-L4 row here.
-    # HARD_STOP with budget 0: the defect is systematic, not transient — a
-    # second identical measurement reproduces it — and the copy names the one
-    # thing a household can actually act on, the declared driver details the
-    # level frame is built from. Copy names the ACTION, not the arithmetic.
-    # Item 2's two rows were deleted with item 2's refusal; a round whose
-    # forecast says worse now proceeds and says so in the ledger, so there is
-    # no sentence to address to anybody.
-    REASON_DRIVER_LEVELS_DISAGREE: ReasonSpec(
-        REASON_DRIVER_LEVELS_DISAGREE, TEMPLATE_HARD_STOP, 0, "",
-        "The two drivers would not have ended up at matching levels, so JTS "
-        "left your speaker alone. Re-check the driver details — sensitivity "
-        "and any resistor pad — in speaker setup, then measure again.",
-    ),
+    # PR-L4 has NO rows here any more. Item 2's two went with the nanny
+    # burn-down (deviation (c)); item 1's went the same way with the
+    # realized-level demotion (deviation (i)), and for the same reason: a round
+    # whose committed pair mis-levels now proceeds to the measurement that
+    # decides and banks a finding, so there is no sentence to address to
+    # anybody — nobody is being told their speaker was left alone.
     # PR-L5 delta-probe rollbacks. All three are TEMPLATE_HARD_STOP with no
     # retry budget: the correction has already been undone, so "try again"
     # would re-run the same measurement into the same defect. Each names what
@@ -1447,8 +1440,11 @@ def reason_message(
     shows the moment a capture is refused
     (:meth:`PhaseVerdict.to_relay_dict`), the envelope jts.local serves for
     the persisted terminal failure
-    (``crossover_envelope_v2._reason_message``), the apply-seam refusal, and
-    :meth:`_refuse`'s accountability refusals. Two codes now choose their copy
+    (``crossover_envelope_v2._reason_message``), and the apply-seam refusal.
+    (:meth:`_refuse`'s accountability refusals were a fourth until doctrine
+    deviation (i) demoted the gate that raised them; the constructor is still
+    the one that stamps the failure code, but nothing in production reaches
+    it.) Two codes now choose their copy
     from evidence rather than holding a literal, and a household looking at
     two of those surfaces after ONE failure must not be handed two different
     accounts of it — which is exactly how the inconclusive copy's own bug

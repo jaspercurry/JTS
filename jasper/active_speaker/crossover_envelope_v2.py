@@ -3161,7 +3161,8 @@ def _finding_notes(status: Mapping[str, Any]) -> list[dict[str, str]]:
     the projection does not silently publish it here.
 
     **One line per finding, never a paragraph.** The sentence is minted and
-    validated at the producer (``promotion.LEVEL_FRAME_HOUSEHOLD_COPY``, checked
+    validated at the producer (``promotion.LEVEL_FRAME_HOUSEHOLD_COPY`` or its
+    realized-level sibling ``REALIZED_LEVEL_HOUSEHOLD_COPY``, both checked
     hardware-noun-free and slug-free at construction), so this composes nothing
     and rewrites nothing — it only decides whether the sentence needs a date in
     front of it.

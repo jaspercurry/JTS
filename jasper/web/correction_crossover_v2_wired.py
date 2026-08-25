@@ -785,8 +785,8 @@ def build_v2_wired_run_and_consume(
                 if complete_event.wait(min(poll_s, remaining)):
                     complete_event.clear()
                     # The host's group-close seam — fit + persist. A refusal
-                    # (the PR-L4 accountability veto) propagates like any
-                    # admission refusal.
+                    # raised under it propagates like any admission refusal;
+                    # `drive_group_close` says why PR-L4 no longer makes one.
                     _host.drive_group_close(conductor, evidence=evidence_refs)
                     continue
                 # The set is held open, which the relay states is exactly when

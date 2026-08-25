@@ -57,7 +57,7 @@ set):
    source (arg-0, or a keyword named `event`), which is where the literal
    or constant-reference actually lives. Without this path,
    `correction.crossover_v2_level_frame_finding`,
-   `..._level_frame_refused`, `..._level_match_refused`, and
+   `..._level_frame_refused`, `..._level_match_finding`, and
    `..._prediction_gate` -- each constructed as a `GateRecord` in
    `accountability.py` and drained only through that opaque `record.event`
    call -- all resolve to nothing (jointly with path 3, since each is

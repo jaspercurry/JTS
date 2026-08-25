@@ -18,9 +18,11 @@ and promotion attaches the three things a finding adds — a ``mechanism``, a
   carrying its band, its tau, its r, its depth, its position-variance
   classification, and its household sentence.
 * :func:`promote_level_frame_disagreement` — the level-frame gate's own
-  comparison, banked under the owner's 2026-07-30 ruling on #1866 when the two
-  estimators disagree and the realized-level check nonetheless passes on the
-  pair the session is about to ship.
+  comparisons, banked when EITHER has something to report: the two estimators
+  disagreeing (the owner's 2026-07-30 ruling on #1866), or the committed pair's
+  realized levels landing further apart than the tolerance (doctrine deviation
+  (i), which turned that second one from a refusal into a finding). The record's
+  ``reason`` says which, and the household sentence and fix class follow it.
 
 **Neither is a detector** (that is WO-4). No signal is analysed here, no
 threshold is applied, no classification is computed. Every number comes from a
@@ -277,19 +279,18 @@ def promote_carve_outs(
     return tuple(out)
 
 
-#: The one sentence a household may be shown about a banked frame
-#: disagreement, and the ONLY place it is written.
+#: The one sentence a household may be shown when the ESTIMATORS disagree,
+#: and the ONLY place it is written. Its realized-level sibling is
+#: :data:`REALIZED_LEVEL_HOUSEHOLD_COPY` below; the record's ``reason`` picks
+#: between them, and nothing here re-derives which condition fired.
 #:
 #: **Minted here rather than copied**, which is the one way this path differs
 #: from :func:`promote_carve_outs`'s rule 3. That rule exists because the
 #: carve-out record already carries the shipped sentence a household is told
 #: about an excluded band, so writing a second one would be two owners for one
-#: verdict. The frame gate has no such sentence for this outcome: its only
-#: household copy is the REFUSAL's ("re-check sensitivity and the pad"), which
-#: is both wrong for a session that proceeds and the copy #1924's family is
-#: separately about. So this string is the first copy for a new outcome, and
-#: it lives here — beside the schema that validates it — rather than in the
-#: flow, so there is still exactly one owner.
+#: verdict. The frame gate has no such sentence for this outcome, so this
+#: string is the first copy for it, and it lives here — beside the schema that
+#: validates it — rather than in the flow, so there is still exactly one owner.
 #:
 #: Three claims, each true at the moment of minting and no more:
 #:
@@ -318,6 +319,44 @@ LEVEL_FRAME_HOUSEHOLD_COPY = (
     "re-running when you have a few minutes."
 )
 
+#: The sentence for the OTHER condition this record can carry: the committed
+#: pair's two REALIZED levels sit further apart than the tolerance
+#: (``intervention.REALIZED_LEVEL_SUSPECT_REASON``). It exists because the
+#: realized-level demotion (`docs/measurement-loop-doctrine.md` deviation (i))
+#: turned that condition from a refusal into a banked finding, and the
+#: estimator sentence above is false about it in all three of its claims: the
+#: two cross-checks AGREED (that is why this reason won), nothing "cross-checks
+#: the balance" here — one estimator read the pair that would ship — and
+#: re-running the room pass is not the fix.
+#:
+#: **It restores the recommendation the demotion would otherwise have lost.**
+#: The refusal this replaced carried the actionable sentence (``refusal_copy``'s
+#: registry row, deleted in the same change): "The two drivers would not have
+#: ended up at matching levels, so JTS left your speaker alone. Re-check the
+#: driver details — sensitivity and any resistor pad — in speaker setup, then
+#: measure again." Doctrine §3 requires a defect outside §4's closed list to
+#: "disclose and recommend a next action", so the recommendation is carried
+#: over and only the two things that stopped being true are dropped: the
+#: speaker is NOT left alone (the round proceeds to the review screen), and the
+#: hardware nouns cannot survive
+#: :func:`~jasper.attribution.findings._validated_household_copy` — "driver" is
+#: on its banned list, so the ranges are named the way the sibling above names
+#: them.
+#:
+#: **"would not end up" and not "did not come out"**, which is the tense the
+#: deleted refusal used and the one the instrument earns. The levels are read
+#: off the pair as the fit MODELS it emitting — the measured per-branch
+#: responses through the modelled correction — not off a capture of the applied
+#: tuning, which is the delta probe's job after an apply that has not happened
+#: yet. A household sentence saying the pair WAS measured that way would claim a
+#: capture the session never took.
+REALIZED_LEVEL_HOUSEHOLD_COPY = (
+    "This speaker's high and low ranges would not end up level with each other "
+    "on the tuning this pass produced. Re-check what you entered in speaker "
+    "setup — each range's sensitivity, and any resistor pad — then measure "
+    "again."
+)
+
 #: The band keys, which become ``band_hz`` rather than evidence. Named so the
 #: producer and this reader cannot drift; every OTHER key in the record is
 #: evidence, deliberately (see :func:`promote_level_frame_disagreement`).
@@ -330,9 +369,24 @@ def promote_level_frame_disagreement(
     session: SessionIdentity,
     cites: Iterable[EvidenceRef],
 ) -> Finding | None:
-    """Promote one banked estimator disagreement to an M7 finding.
+    """Promote one banked level-frame disagreement to an M7 finding.
 
-    **What this finding now means (#2609).** The two per-driver level estimates
+    **TWO conditions reach here, and the record's own ``reason`` says which.**
+    The producer (:func:`~jasper.active_speaker.crossover_v2.accountability.
+    level_frame_record`) banks when the two per-driver ESTIMATORS disagree, when
+    the committed pair's REALIZED levels disagree, or both — and it writes one
+    ``reason``, with the estimator condition winning when both fire. This
+    function reads that field and nothing else to choose the household sentence
+    and the fix class. It does **not** look at ``realized_difference_db`` and
+    compare it against ``realized_tolerance_db``, or at the estimator pair, for
+    the same reason the paragraph below gives: that comparison is the gate's,
+    and computing it twice is §3.1's forbidden second verdict. The consequence
+    is deliberate and is the producer's stated ordering — when both fire the
+    household is told about the estimators, because two instruments that
+    disagree about the frame make the realized read downstream of a suspect
+    frame, and better evidence comes before acting on a setup value.
+
+    **What the ESTIMATOR finding means (#2609).** The two per-driver estimates
     — the trim solve's overlap-band average and the fit's core-band median — no
     longer vote on anything. They are compared to EACH OTHER as a consistency
     check
@@ -356,6 +410,16 @@ def promote_level_frame_disagreement(
     number. #2609's conviction comment records what the old arrangement cost —
     a 0.326 dB miss at that bar moved a tweeter +3.79 dB hotter than its own
     measurement asked, and the round was rolled back.
+
+    **What the REALIZED finding means** (doctrine deviation (i)). Not two
+    estimates of the frame disagreeing, but the pair that would ship measured
+    apart: ``realized_branch_level_match`` re-reads each branch's level on its
+    own mirrored half-band about Fc, after the committed trim, and the two land
+    further apart than ``REALIZED_LEVEL_MATCH_TOLERANCE_DB``. A 2-way sums flat
+    only when both branches hand off at the same level, so this is a
+    tonal-balance defect no amount of per-branch flattening can hide. It used to
+    REFUSE the round; it now discloses, so this finding is the durable half of
+    that disclosure and carries the recommendation the refusal used to.
 
     **It re-decides nothing.** There is no threshold here, no comparison of the
     disagreement against the tolerance, no re-reading of the realized check —
@@ -405,39 +469,90 @@ def promote_level_frame_disagreement(
             ),
         )
         return None
+    # The producer's own answer to "why does this record exist", read and never
+    # recomputed (see the docstring's first paragraph). Imported from its one
+    # owner rather than re-declared here, which is what the one-vocabulary rule
+    # asks; `storage.py`'s local import of the evidence store is the same move.
+    #
+    # Inside the function for two reasons, and the second is the load-bearing
+    # one. Cost: `intervention` is ~1.8 s and ~1000 modules, against ~0.1 s for
+    # the whole attribution package, which is otherwise a leaf a light surface
+    # can import. Safety: on the ONLY path that reaches here the module is
+    # already in `sys.modules` — `crossover_v2_flow` imports `accountability`,
+    # which imports this same constant from `intervention` — so this is a dict
+    # lookup that cannot raise. That matters because the seam above catches
+    # `(OSError, RuntimeError, TypeError, ValueError)` and an `ImportError`
+    # would escape it, costing a session whose candidate is already published
+    # the fail-soft guarantee this function's own docstring makes.
+    from jasper.active_speaker.crossover_v2.intervention import (
+        REALIZED_LEVEL_SUSPECT_REASON,
+    )
+
+    # `.get`, so an absent or unrecognised `reason` falls to the estimator arm
+    # — the conservative default rather than the arbitrary one. That arm asks
+    # for a re-measure, which costs a household nothing if it is wrong; the
+    # realized arm asks them to go change a setup value, which is an action to
+    # take only on a record that actually says so. The producer always writes
+    # the field, so this is a floor and not an expected path.
+    realized_only = record.get("reason") == REALIZED_LEVEL_SUSPECT_REASON
     try:
         return Finding(
             mechanism=MECHANISM_LEVEL_FRAME,
             band_hz=band_hz,
             evidence=evidence,
-            # `unsure`, and this is the honest tier rather than a cautious
-            # one. THAT the two estimators disagreed is measured; that the
-            # disagreement is a real inter-driver level error is not, because
-            # the shipped gate's own residual produces this exact signature on
-            # a healthy speaker — a pair identical by construction reads
-            # 0.910 dB apart, and ordinary woofer passband tilt adds roughly
-            # 1.33 dB per dB/octave (both measured, see
-            # `LEVEL_ESTIMATOR_TOLERANCE_DB`'s own comment). A single
-            # session cannot separate "the drivers really sit that far apart"
-            # from "these two estimators read different spans of a curve that
-            # is not flat in the same way over both", so it does not claim to.
+            # `unsure` on both arms, for two DIFFERENT honest reasons rather
+            # than one reason stretched over both.
             #
-            # `unsure` survived the single-datum-owner migration on purpose and
-            # is now MORE right, not less: the finding's claim narrowed to "this
-            # capture is worth re-taking", and a suspicion about a capture is
-            # exactly an unsure one. The raw measured trim owns the PLACEMENT,
-            # which is why no committed number is in doubt; nothing adjudicates
-            # WHY the two estimates read differently, which is what this
-            # records.
+            # ESTIMATOR arm: THAT the two estimators disagreed is measured;
+            # that the disagreement is a real inter-driver level error is not,
+            # because the shipped gate's own residual produces this exact
+            # signature on a healthy speaker — a pair identical by construction
+            # reads 0.910 dB apart, and ordinary woofer passband tilt adds
+            # roughly 1.33 dB per dB/octave (both measured, see
+            # `LEVEL_ESTIMATOR_TOLERANCE_DB`'s own comment). A single session
+            # cannot separate "the drivers really sit that far apart" from
+            # "these two estimators read different spans of a curve that is not
+            # flat in the same way over both", so it does not claim to. That
+            # tier survived the single-datum-owner migration on purpose and is
+            # now MORE right, not less: the claim narrowed to "this capture is
+            # worth re-taking", and a suspicion about a capture is exactly an
+            # unsure one.
+            #
+            # REALIZED arm: none of the above applies — there is no rival
+            # estimate and no span mismatch. `realized_branch_level_match` is
+            # explicit that it is "One estimator, not a second opinion",
+            # re-reading the SAME power-band average over the SAME halves that
+            # set the trim, so THAT the pair lands apart is measured about the
+            # pair that would ship. What is unsure is the CAUSE, which is what
+            # a mechanism finding claims: the levels are read off the emission
+            # the fit MODELS (`resp.complex_tf * correction`), not off a
+            # post-apply capture — the delta probe is what measures that — and
+            # nothing here separates a wrong sensitivity or pad value in setup
+            # from an error in the fit's own frame. `polish_delta_db_*` rides
+            # the evidence precisely so a reader can subtract the one
+            # instrument-side contribution that is known and bounded.
             confidence=CONFIDENCE_UNSURE,
-            # `refit`, never `eq`. M7 declares both, and the split is exactly
-            # plan §4's: `eq` when a driver's level is genuinely low, `refit`
-            # "when the level error is upstream in the fit's own frame". A
-            # disagreement BETWEEN two estimates of the frame is upstream of
-            # every trim derived from them by construction, so adding level
-            # cannot be the fix — re-solving the frame is.
-            fix_class="refit",
-            household_copy=LEVEL_FRAME_HOUSEHOLD_COPY,
+            # M7 declares BOTH classes and the split is plan §4's: `eq` when a
+            # driver's level is genuinely low, `refit` "when the level error is
+            # upstream in the fit's own frame". The two arms land on opposite
+            # sides of exactly that line, which is why the declaration has two
+            # entries rather than one.
+            #
+            # ESTIMATOR -> `refit`: a disagreement BETWEEN two estimates of the
+            # frame is upstream of every trim derived from them by
+            # construction, so adding level cannot be the fix.
+            #
+            # REALIZED -> `eq`: the frame is not in dispute (that is why this
+            # reason won); what is measured is the committed pair sitting at
+            # levels that do not match, which is the first half of the split
+            # verbatim. Routing `refit` here would send a re-solve at a
+            # measurement the re-solve already agrees with.
+            fix_class="eq" if realized_only else "refit",
+            household_copy=(
+                REALIZED_LEVEL_HOUSEHOLD_COPY
+                if realized_only
+                else LEVEL_FRAME_HOUSEHOLD_COPY
+            ),
             # NO probe was run. The evidence is the flow's own two estimators
             # plus the realized-level check, none of which is a §5 primitive,
             # and claiming one ran would be the cheapest possible way to
@@ -461,6 +576,7 @@ __all__ = [
     "LEVEL_FRAME_HOUSEHOLD_COPY",
     "PRODUCED_BY",
     "PRODUCED_BY_LEVEL_FRAME",
+    "REALIZED_LEVEL_HOUSEHOLD_COPY",
     "SOURCE_IDENTIFIED_NULL",
     "promote_carve_outs",
     "promote_level_frame_disagreement",

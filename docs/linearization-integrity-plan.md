@@ -211,8 +211,13 @@ order's plain reading and are recorded here rather than only in the code:
   preferring either estimator by 10 dB would be the same "nothing ever
   compared these" failure pointed a new direction. This moves which instrument
   catches the 2026-07-27 shape — the frame gate now fires before PR-L4 item 1,
-  under the same reason code and copy, distinguished in the journal by
-  `event=`. Item 1 remains as the backstop it should always have been.
+  distinguished in the journal by `event=`. **Neither is a backstop any
+  more.** Both level verdicts DISCLOSE: the estimator check has flagged a
+  capture retriable rather than refusing since #2609, and item 1 was demoted by
+  the nanny burn-down ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)
+  deviation (i)) — it banks `event=…_level_match_finding` plus a level-frame
+  finding and the round proceeds. The shared reason code and copy went with
+  that demotion; each verdict now names itself.
 - **"Reduce our own cuts" is part of the LIFT vocabulary.** `reduce_cuts_for_lift`
   is a public, separately-tested operation the lift stage calls before any
   boost, but the stage as a whole is inert under a cut-only vocabulary. A

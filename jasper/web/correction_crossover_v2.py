@@ -1835,7 +1835,7 @@ def _prediction_status(state: Any) -> dict[str, Any] | None:
     Rides :func:`crossover_v2_status_block`'s returned dict beside ``cloud`` /
     ``cloud_chart``. Both halves were already computed — the curve by
     ``_decimate_sum`` at persist time, the verdict by the conductor's
-    accountability veto against the FULL-RESOLUTION tuple — and neither reached
+    accountability seam against the FULL-RESOLUTION tuple — and neither reached
     any surface. This projects; it never grades.
 
     **Nothing renders it yet.** It is the wire half of the two-stage flow's
@@ -2013,7 +2013,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         # its own re-decimation ceiling, which is the actual size mitigation.
         "cloud_chart": _chart_cloud_status((state or {}).get("cloud")),
         # Two-stage commission D4: the PREDICTED post-apply response and the
-        # spec verdict the accountability veto graded it with. It rides beside
+        # spec verdict the accountability seam graded it with. It rides beside
         # ``cloud``/``cloud_chart`` because the review screen (PR-T2 — no
         # consumer yet) will draw all three in one frame — measured, proposed,
         # predicted — and a household
@@ -3943,7 +3943,7 @@ def persist_conductor_state(
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             # Two-stage commission D4: the spec verdict for the curve above,
-            # graded ONCE by the conductor's accountability veto against the
+            # graded ONCE by the conductor's accountability seam against the
             # full-resolution tuple — this is a copy of that one report, never
             # a re-grade of the decimation the line above just wrote.
             # ``None`` means ungradeable, which is not a pass.
@@ -5888,9 +5888,9 @@ def drive_group_close(conductor: Any, *, evidence: Mapping[str, Any] | None) -> 
     from durable state, so a confirmation whose fit never reached disk would
     leave the review screen with nothing to review), then the conductor's
     confirm (the only thing that fits a correction in stage 1), then persist
-    the fitted result. A refusal (the PR-L4 accountability veto raises
-    ``CaptureBeginRefused``) propagates to the calling runner, which ends the
-    session exactly as an admission refusal does.
+    the fitted result. A ``CaptureBeginRefused`` raised under the close
+    propagates to the calling runner, which ends the session as an admission
+    refusal does; PR-L4's seam has refused nothing since deviations (c)/(i).
 
     What this deliberately does NOT do is apply — the review interlude is the
     apply decision point (2026-07-28 ruling); the full history lives on the

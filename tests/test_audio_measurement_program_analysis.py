@@ -100,7 +100,7 @@ from jasper.audio_measurement.program_analysis import (
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
     RIPPLE_TRIM_MIN_DB,
-    RIPPLE_TRIM_SANITY_MARGIN_DB,
+
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
@@ -3296,9 +3296,10 @@ def test_a_held_round_clears_the_accountability_prediction_gate():
             state=LinearizationState(outcome="fitted", linearized_predicted_sum=predicted),
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-            reason_levels_disagree="driver_levels_disagree",
         )
-        assert decision.refusal_reason is None
+        # No refusal to assert away: the gate has no ``refusal_reason`` to set
+        # since the realized-level demotion (doctrine deviation (i)), which
+        # ``test_crossover_v2_accountability`` pins structurally.
         return decision.spec_report["comparison"]["reason"]
 
     # The held round clears its own gate…
@@ -7071,14 +7072,17 @@ def test_realized_level_match_tolerance_clears_the_measured_frame_noise():
     PR-L3 measured the level frame against the fit frame on all five archived
     cdhorn MEASURE captures and they agreed to 1.30 dB worst case, on top of a
     known +0.54 dB linear-bin systematic. A tolerance at or below that would
-    refuse honest sessions; this pins the margin that keeps it from doing so.
+    put a finding on honest sessions — a refusal on them, when this bound was
+    derived and the check still refused — and either way a bar the honest
+    spread crosses says nothing. This pins the margin that keeps it from doing
+    so.
     """
     worst_measured_frame_disagreement_db = 1.30
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB > worst_measured_frame_disagreement_db
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB >= 2.0 * MIRRORED_HALVES_BIAS_DB
     # ...and its ceiling argument: a level error of this size already puts each
     # side of Fc at the tightest spec band's tolerance, so nothing the spec
-    # calls a pass is refused here.
+    # calls a pass is reported as mislevelled here.
     from jasper.active_speaker.flat_spec import SPEC_BANDS
 
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB == pytest.approx(
@@ -7315,7 +7319,8 @@ def test_build_candidate_applies_ripple_optimal_trim_with_band_average_evidence(
     assert candidate.trim_db["tweeter"] > candidate.trim_band_average_db["tweeter"]
     assert abs(
         candidate.trim_db["tweeter"] - candidate.trim_band_average_db["tweeter"]
-    ) <= RIPPLE_TRIM_SANITY_MARGIN_DB
+    ) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB
+    assert candidate.ripple_polish_rejected_delta_db is None
 
 
 def test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band(caplog):
@@ -7369,12 +7374,30 @@ def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
     assert "level_t_db=" in caplog.text
 
 
-def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
-    caplog, monkeypatch,
+@pytest.mark.parametrize("excursion_db", [-4.0, 4.0])
+def test_build_candidate_rejects_a_polish_the_level_gate_could_not_grade(
+    caplog, monkeypatch, excursion_db,
 ):
-    """The guard's contract: a ripple-optimal result implausibly far (>6 dB)
-    from the seed is distrusted, falls back to the band-average, and logs a
-    WARNING — never a silent wild trim.
+    """The coupling, and it is the whole point of the guard now.
+
+    A polish that moves the trim further than
+    ``REALIZED_LEVEL_MATCH_TOLERANCE_DB`` is rejected back to the band-average
+    seed, disclosed on the journal AND on the candidate. Both signs, because
+    the bound is on the magnitude and a one-sided guard would let the other
+    direction through.
+
+    **Why this bound and not a separate one.** The excursion passes straight
+    through to the committed pair as realized inter-driver level error, so a
+    polish admitted past the gate's tolerance produces a round that cannot be
+    graded as level-matched. The old bound was ``RIPPLE_TRIM_SANITY_MARGIN_DB``
+    (6.0 dB) — DOUBLE the tolerance — which left a 3.0-6.0 dB dead band of
+    admitted polishes that the realized-level gate was then guaranteed to
+    report against. On jts3 the polish landed 3.9 dB into that band.
+
+    **Mutation guard, and it is exact.** ``excursion_db = 4.0`` sits above 3.0
+    and below 6.0. Restoring a 6.0 dB bound admits it, so ``trim_db`` no longer
+    equals the seed and every assertion below fails. A bound anywhere in
+    (3.0, 4.0] would also fail the sibling case that admits at 2.5.
 
     Driven by stubbing the solver rather than by a fixture. Before PR-L3 a
     plain LR4 pair fired this guard on every run, because the SEED was the
@@ -7383,6 +7406,7 @@ def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
     PR-L3), so the honest way to keep the guard covered is to exercise the
     guard, not to contrive physics that no longer happens."""
     caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis")
+    assert abs(excursion_db) > REALIZED_LEVEL_MATCH_TOLERANCE_DB
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
     n_fft = _n_fft_for(woofer_ir, tweeter_ir)
@@ -7390,8 +7414,7 @@ def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
         program_analysis,
         "solve_ripple_optimal_trim",
         lambda *a, **kw: (
-            kw["seed_trim_db"] - RIPPLE_TRIM_SANITY_MARGIN_DB - 1.0, 0.0,
-            kw["seed_trim_db"],
+            kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"],
         ),
     )
     candidate, _pred = _build_candidate(
@@ -7401,8 +7424,51 @@ def test_build_candidate_ripple_trim_sanity_guard_falls_back_with_warning(
     # Rejected: the applied trim falls back to the band-average seed exactly.
     assert candidate.trim_db == candidate.trim_band_average_db
     assert "event=program_analysis.ripple_trim_rejected" in caplog.text
-    assert f"margin_db={RIPPLE_TRIM_SANITY_MARGIN_DB}" in caplog.text
-    assert RIPPLE_TRIM_SEARCH_WINDOW_DB > RIPPLE_TRIM_SANITY_MARGIN_DB  # the guard has real teeth
+    assert f"tolerance_db={REALIZED_LEVEL_MATCH_TOLERANCE_DB}" in caplog.text
+    assert f"rejected_delta_db={excursion_db}" in caplog.text
+    # The candidate carries it too — without this the three ways `trim_db` can
+    # equal the seed are indistinguishable downstream.
+    assert candidate.ripple_polish_rejected_delta_db == pytest.approx(excursion_db)
+    # The guard still has real teeth: the scan can reach further than the bound.
+    assert RIPPLE_TRIM_SEARCH_WINDOW_DB > REALIZED_LEVEL_MATCH_TOLERANCE_DB
+
+
+def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
+    caplog, monkeypatch,
+):
+    """The other side of the coupled bound, and the half a one-sided test
+    would miss: a polish INSIDE the tolerance is applied, not rejected.
+
+    2.5 dB is above nothing in particular except the point — it is a real
+    excursion that the old 6.0 dB bound also admitted, so this asserts the
+    change narrowed the guard rather than closing it. The candidate's
+    rejection field stays ``None``, which is what lets a reader tell an
+    admitted polish from a discarded one.
+
+    **Mutation guard.** Lowering the bound below 2.5 dB rejects this and fails
+    the first two assertions."""
+    caplog.set_level(logging.WARNING, logger="jasper.audio_measurement.program_analysis")
+    excursion_db = 2.5
+    assert abs(excursion_db) < REALIZED_LEVEL_MATCH_TOLERANCE_DB
+    fc_hz = 2000.0
+    woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
+    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    monkeypatch.setattr(
+        program_analysis,
+        "solve_ripple_optimal_trim",
+        lambda *a, **kw: (
+            kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"],
+        ),
+    )
+    candidate, _pred = _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
+        _candidate_alignment(), None, **_straddling_sweeps(fc_hz),
+    )
+    assert candidate.trim_db["tweeter"] == pytest.approx(
+        candidate.trim_band_average_db["tweeter"] + excursion_db
+    )
+    assert candidate.ripple_polish_rejected_delta_db is None
+    assert "event=program_analysis.ripple_trim_rejected" not in caplog.text
 
 
 # --------------------------------------------------------------------------- #

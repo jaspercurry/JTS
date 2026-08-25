@@ -144,6 +144,15 @@ class LinearizationState:
     outcome: str = ""
     core_level_evidence: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     trim_band_estimate_db: Mapping[str, float] = field(default_factory=dict)
+    polish_delta_db: Mapping[str, float] = field(default_factory=dict)
+    """Per role: the MEASURE ripple polish's trim excursion off the band-average
+    solve, as :class:`~.intervention.LinearizationPlan` measured it.
+
+    Empty on every non-planning outcome — the "not measured" state, and NOT a
+    synonym for "the polish moved nothing", which is an all-zero mapping. The
+    realized-level disclosure reads it to say whether the polish explains the
+    level error it is reporting.
+    """
     level_consistency: LevelConsistency | None = None
     """The two per-driver level estimates, graded against each other.
 
@@ -168,6 +177,7 @@ class LinearizationState:
             outcome=plan.outcome,
             core_level_evidence=plan.core_level_evidence,
             trim_band_estimate_db=plan.trim_band_estimate_db,
+            polish_delta_db=plan.polish_delta_db,
             level_consistency=plan.level_consistency,
             linearized_predicted_sum=plan.linearized_predicted_sum,
             realized_level_match=plan.realized_level_match,

@@ -579,11 +579,14 @@ def _request(**overrides):
 def test_the_shipped_margin_satisfies_the_coupling_its_safety_rests_on():
     """The two constants, in two modules, pinned against each other.
 
-    ``decide_trim``'s "a badly-levelled anchor produces a loud refusal, not a
-    loud speaker" holds only while the margin is at least twice the
-    realized-level tolerance. Today that is 6.0 against 2 × 3.0 — exactly on
-    the edge — so a one-line retune of either constant, in either module,
-    silently voids the promise. Same shape as
+    ``decide_trim``'s promise — that a badly-levelled anchor produces a round
+    which SAYS it is badly levelled — holds only while the margin is at least
+    twice the realized-level tolerance. Today that is 6.0 against 2 × 3.0 —
+    exactly on the edge — so a one-line retune of either constant, in either
+    module, silently voids the promise. It read "a loud refusal, not a loud
+    speaker" while item 1 refused; doctrine deviation (i) demoted it, so what
+    ``M >= 2T`` buys is visibility rather than a stop. The arithmetic, the two
+    constants, and this assertion are unchanged. Same shape as
     ``test_realized_level_match_tolerance_clears_the_measured_frame_noise``,
     which pins that tolerance against ITS own floor argument.
     """

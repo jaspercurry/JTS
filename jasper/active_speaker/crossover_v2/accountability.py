@@ -5,13 +5,19 @@
 """Whether a built candidate may be PROPOSED at all (#2291 Phase 5a-v).
 
 The gate that runs after a candidate is built and before anything downstream
-can apply it.  One refusal and two disclosures, most-specific-first: whether
-the two per-driver level estimates agree with each other (banked, never
-refusing), then PR-L4's item 1 (the realized inter-driver level, the one
-refusal left) and item 2 (the spec-graded prediction, banked and never
-refusing since the nanny burn-down below).  Refusing here means no candidate is
-ever stashed or published, so the review screen has nothing to offer and the
-household is never asked to decide about a correction JTS cannot stand behind.
+can apply it.  **Three disclosures and no refusals**, most-specific-first:
+whether the two per-driver level estimates agree with each other, then PR-L4's
+item 1 (the realized inter-driver level) and item 2 (the spec-graded
+prediction).  Every one banks what it found and lets the round proceed to the
+measurement that decides.
+
+It is still a gate in the sense that matters — it is the last place a
+candidate's own evidence is read before anything can apply it, and everything
+it reads reaches the receipt — but it stops nothing.  The two refusals it used
+to hold went in the two nanny burn-downs recorded below and in deviation (i);
+the class of thing it grades (a forecast, a tonal-balance quality) names no
+component-damage mechanism, so `docs/measurement-loop-doctrine.md` §4's closed
+list never covered either.
 
 **Item 2 stopped refusing (docs/measurement-loop-doctrine.md deviation (c)).**
 Until that burn-down it raised ``correction_not_an_improvement`` — a forecast
@@ -34,11 +40,11 @@ burn-down removed is the refusal, not one field of the account.
 **This module DECIDES; it does not act.**  That split is the whole reason it
 is a module rather than a method, and it is the completion of the #2291
 "return accountability as data" principle that Phase 2b started one layer
-down.  :func:`assess_accountability` computes whether the one refusal fires,
-what gets said, and what gets banked, and hands all three back as an
-:class:`AccountabilityDecision`.  The session owns every irreversible half:
-the logger and the ``session_id``, the ``CaptureBeginRefused`` construction
-that stamps ``_last_failure_code``, and the stash the host later persists.
+down.  :func:`assess_accountability` computes what gets said and what gets
+banked and hands both back as an :class:`AccountabilityDecision`.  The session
+owns every irreversible half: the logger and the ``session_id``, the stash the
+host later persists, and the ``CaptureBeginRefused`` construction that stamps
+``_last_failure_code`` — which nothing here now asks it to build.
 A pure gate can be asked the same question twice and answer the same way,
 which is what makes the speculative build safe to drop.
 
@@ -59,14 +65,18 @@ module should own and are deliberately not:
   estimator-consistency tolerance is owned once, by
   :data:`~.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`, and rides the verdict
   this gate reads rather than being passed alongside it.)
-* **The household reason code.**  It is an opaque token here: this module never
-  renders it, never branches on it, and only routes the one it was handed — into
-  a journal payload and into
-  :attr:`AccountabilityDecision.refusal_reason`.  :mod:`.spatial` returns
-  refusal KINDS and lets the flow map them, which is the better shape when a
-  refusal is only *selected*; it does not fit here, because the code appears
-  as a VALUE inside a log line whose bytes are pinned.  It used to be a pair —
-  item 2's second code went with item 2's refusal.
+* **The household reason codes — all of them, now gone.**  This module used to
+  be handed the token to refuse under, precisely because it never rendered or
+  branched on one and only routed it into a journal payload and into a
+  ``refusal_reason`` on the decision it returns.  Item 2's went with item 2's
+  refusal, and item 1's with the realized-level demotion, so the parameter is
+  deleted rather than left unused — and so is that field, since deleting the
+  last writer of a thing and keeping the thing is how a dead branch outlives
+  the condition it described.  The finding vocabulary that replaced it is
+  owned where the verdicts are — :data:`~.intervention.LEVEL_ESTIMATOR_SUSPECT_REASON`
+  and :data:`~.intervention.REALIZED_LEVEL_SUSPECT_REASON` — and is imported
+  rather than passed, because a disclosure's reason is this gate's own word for
+  what it measured and not the household's word for why it stopped.
 
 **Order is the decision.**  Each step is a narrower diagnosis of the one after
 it, so when more than one is true the earliest cause is the one named — more
@@ -85,10 +95,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .candidates import LinearizationState
+from .intervention import REALIZED_LEVEL_SUSPECT_REASON
 
 __all__ = [
     "EVENT_LEVEL_ESTIMATOR_FINDING",
-    "EVENT_LEVEL_MATCH_REFUSED",
+    "EVENT_LEVEL_MATCH_FINDING",
     "EVENT_PREDICTION_GATE",
     "EVENT_PREDICTION_UNGRADEABLE",
     "LEDGER_BASELINE_UNGRADEABLE",
@@ -101,7 +112,7 @@ __all__ = [
     "AccountabilityDecision",
     "GateRecord",
     "assess_accountability",
-    "estimator_consistency_record",
+    "level_frame_record",
 ]
 
 #: The four event names this gate emits. Named constants rather than literals
@@ -116,9 +127,17 @@ __all__ = [
 #: ``…_level_frame_refused`` is DELETED outright rather than
 #: renamed: a consistency suspicion never refuses (the owner's never-nanny
 #: ruling), so the line has no condition left to describe.
-#: ``…_level_match_refused`` is untouched and is now the only level refusal.
+#:
+#: A third changed on the same terms with the realized-level demotion
+#: (doctrine deviation (i)). ``…_level_match_refused`` is RENAMED to
+#: ``…_level_match_finding``: the condition it describes is unchanged and still
+#: fires with every number it carried, but the round now proceeds, so a line
+#: whose name says the session stopped would be a false statement about the
+#: speaker. Renamed rather than deleted — unlike ``…_level_frame_refused``,
+#: whose condition went away — because there is still exactly this much to say.
+#: **There is now no level refusal.**
 EVENT_LEVEL_ESTIMATOR_FINDING = "correction.crossover_v2_level_estimator_finding"
-EVENT_LEVEL_MATCH_REFUSED = "correction.crossover_v2_level_match_refused"
+EVENT_LEVEL_MATCH_FINDING = "correction.crossover_v2_level_match_finding"
 EVENT_PREDICTION_UNGRADEABLE = "correction.crossover_v2_prediction_ungradeable"
 EVENT_PREDICTION_GATE = "correction.crossover_v2_prediction_gate"
 
@@ -176,56 +195,70 @@ class GateRecord:
 class AccountabilityDecision:
     """What the gate decided, and everything the caller must do about it.
 
-    ``refusal_reason`` is the household code to refuse under, or ``None`` to
-    proceed.  Only item 1 ever sets it now, so it is ``None`` on every path that
-    reaches item 2's ledger.  ``finding`` is the banked record when the
-    estimator-consistency gate found the two per-driver estimates in
-    disagreement.  That gate has no refusal arm since #2609 — it always
-    proceeds — so a ``finding`` and a ``refusal_reason`` can co-occur, where
-    before they could not.
+    **There is no ``refusal_reason``, and its absence is the ruling rather than
+    an omission.**  This gate carried one until the realized-level demotion
+    (`docs/measurement-loop-doctrine.md` deviation (i)) deleted its last writer;
+    item 2's had already gone with the nanny burn-down (deviation (c)).  The
+    field went WITH that writer rather than staying behind as a permanently
+    ``None`` seam, because a field nothing can set is not an ability the gate
+    retains — it is a branch every caller must trace to discover is dead, and
+    the flow carried exactly such a ``raise`` until this change removed it.  A
+    future refusal here would be a deliberate act under §4's closed list, and it
+    adds the field back beside the writer that earns it.
 
-    **``spec_report`` and ``spec_report_written`` are two facts, not one.**
-    ``None`` with ``spec_report_written`` True means item 2 ran and produced no
-    report — no summed model to grade, or an evaluator that declined the
-    curve — so the stash must be cleared.  ``None`` with it False means the
-    gate refused before item 2 ran at all and the stash must not be touched.
-    Collapsing them would make a level refusal clear a stash it never reached,
-    which is a different session state than the one that happened.  (The pair
-    also used to separate "graded, and the grader refused"; item 2 has no
-    refusal arm left, so that third case is gone and this one is not.)
+    ``spec_report_written`` went in the same cut and for the same reason.  It
+    existed to tell "item 2 ran and produced no report — clear the stash" from
+    "item 2 never ran — do not touch it", and deviation (i)'s deleted return was
+    the last path that could produce the second.  Item 2 is now reached on every
+    path this gate takes, so the caller assigns the stash unconditionally and
+    ``spec_report`` alone carries the one fact left: a report, or ``None``
+    meaning there was no summed model to grade.
+
+    ``finding`` is the banked record when EITHER level check had something to
+    report: the two per-driver estimates in disagreement, the committed pair's
+    realized levels too far apart, or both.  Neither has a refusal arm, so a
+    ``finding`` now accompanies a round that proceeds — which is the only kind
+    of round there is.
 
     ``journal`` is in emission order.  A caller that writes the stash first and
     then iterates produces the same journal, and the same session state, as
     the method this replaced — the one ordering claim worth pinning rather than
-    arguing, which ``test_crossover_v2_accountability`` does from the
-    realized-level refusal, the only level refusal left since #2609.
+    arguing, which ``test_crossover_v2_accountability`` does directly, now that
+    no arm returns early enough to demonstrate it.
     """
 
     journal: tuple[GateRecord, ...] = ()
-    refusal_reason: str | None = None
     finding: Mapping[str, Any] | None = None
     #: A ``dict`` rather than a ``Mapping``: this IS the host's stash, which the
     #: host owns and the review screen's persistence later reads back, and the
     #: gate has already merged item 2's ``comparison`` block into it.
     spec_report: dict[str, Any] | None = None
-    spec_report_written: bool = False
 
 
-def estimator_consistency_record(
+def level_frame_record(
     state: LinearizationState,
 ) -> Mapping[str, Any] | None:
-    """This session's banked estimator disagreement, as flat evidence.
+    """This session's banked level-frame reservation, as flat evidence.
 
-    Built ONLY when the planner's own consistency verdict came back SUSPECT,
-    from the plan this candidate's own build returned — no measurement, no
-    re-derivation, no second verdict. Taking the state as an argument rather
-    than reading it off ``self`` is what makes "this session's" true of one
-    candidate rather than of whichever build ran last (#2291 Phase 2b). The
-    attribution package turns it into a finding
+    Built when EITHER level check has something to report — the two per-driver
+    estimates in disagreement, the committed pair's realized levels past
+    tolerance, or both — from the plan this candidate's own build returned; no
+    measurement, no re-derivation, no second verdict. Taking the state as an
+    argument rather than reading it off ``self`` is what makes "this session's"
+    true of one candidate rather than of whichever build ran last (#2291 Phase
+    2b). The attribution package turns it into a finding
     (:func:`~jasper.attribution.promotion.promote_level_frame_disagreement`);
     this function owns *what the evidence is*, that one owns *what it means*.
     Nothing here imports attribution, so the flow keeps no dependency on the
     diagnosis layer.
+
+    **Named for the frame, not for one of its two instruments.** It was
+    ``estimator_consistency_record`` while the estimator check was the only one
+    that could bank — the realized check refused instead of banking, so it had
+    no record to build. The realized-level demotion (`docs/measurement-loop-
+    doctrine.md` deviation (i)) gave it one, and the promoter, the seam, and the
+    session field this feeds were all already called *level frame*. Renaming is
+    the honest half of widening it, exactly as the two event renames above are.
 
     **Flat, and every value a finite scalar or a string**, because that is
     what :class:`~jasper.attribution.findings.Finding` accepts — nesting would
@@ -251,17 +284,32 @@ def estimator_consistency_record(
     offsets; no verdict here moves a number, so there is no dB consequence to
     report and those two fields are deleted rather than left reading zero.
 
-    Returns ``None`` when the planner produced no per-role bands to describe —
-    unreachable on this path (a suspicion needs an owner and both estimators,
-    which needs roles), but a record with no band cannot become a finding, and
-    returning ``None`` here says so at the producer instead of failing
-    validation two layers away.
+    **A realized-only record does not need the fit's core bands, and no longer
+    dies without them.** The band a finding carries has to come from somewhere,
+    and the estimator condition can only take it from ``cores`` — the spans its
+    two medians were computed on. The realized condition has its own: the
+    mirrored half-bands about Fc that ``realized_branch_level_match`` read the
+    two levels on, which ride on the verdict itself. So a missing core band
+    falls back to those rather than dropping the record. This mattered the
+    moment the realized check stopped refusing: while it refused, losing the
+    record cost a diagnosis beside a session that had already stopped and said
+    why; now the record is the only DURABLE half of a disclosure on a round that
+    proceeds, and the journal line the gate also emits is not a reader.
+
+    Returns ``None`` when the condition this record is ABOUT cannot name a
+    band — which needs an estimator disagreement with no per-role core spans,
+    since the realized verdict always carries its two. NEITHER instrument
+    having one is deliberately NOT the bar: in that same case the realized
+    spans do exist, and the guard below declines to borrow them to describe an
+    estimator finding.
     """
 
     consistency = state.level_consistency
     cores = state.core_level_evidence
     realized = state.realized_level_match
-    if consistency is None:
+    estimators_suspect = consistency is not None and consistency.suspect
+    realized_suspect = realized is not None and not realized.matched
+    if not estimators_suspect and not realized_suspect:
         return None
     # The band this finding is ABOUT: the span the level reads were actually
     # taken over, unioned across roles. Deliberately the CORE bands and not the
@@ -287,6 +335,17 @@ def estimator_consistency_record(
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
     ]
+    if not edges and realized is not None and not estimators_suspect:
+        # The realized instrument's OWN spans — the mirrored half-bands about
+        # Fc that its two levels were read on — for a record the REALIZED
+        # condition is the reason for. Guarded on that rather than on the
+        # bands' absence alone: the band a finding carries has to be the span
+        # its own reason was measured over, so an estimator disagreement with
+        # no core spans still returns ``None`` (as the docstring says) rather
+        # than borrowing the other instrument's bands to describe itself.
+        # Both spans are non-optional on ``RealizedLevelMatch``, and the
+        # ``hi_edges`` filter below is the backstop either way.
+        edges = [realized.woofer_band_hz, realized.tweeter_band_hz]
     lo_edges = [float(band[0]) for band in edges]
     hi_edges = [float(band[1]) for band in edges if band[1] is not None]
     if not lo_edges or not hi_edges:
@@ -294,10 +353,36 @@ def estimator_consistency_record(
     record: dict[str, Any] = {
         "f_lo_hz": min(lo_edges),
         "f_hi_hz": max(hi_edges),
-        "worst_delta_db": round(float(consistency.worst_delta_db), 3),
-        "tolerance_db": float(consistency.tolerance_db),
-        "reason": consistency.reason,
     }
+    # ONE reason field, and the estimator disagreement wins when both fire —
+    # for the same reason its gate runs first below: it is the more specific
+    # diagnosis of the same disease. Nothing is lost to the precedence, because
+    # BOTH sub-verdicts' numbers ride this record unconditionally; the field
+    # says which one is why the record exists.
+    #
+    # Spelled as the full condition rather than reusing ``estimators_suspect``
+    # so the ``consistency is not None`` narrowing is expressed where the
+    # attribute is read; a bare boolean carries the fact but not the type, and
+    # this attribute access is the one place it matters.
+    if consistency is not None and consistency.suspect:
+        record["reason"] = consistency.reason
+    else:
+        record["reason"] = REALIZED_LEVEL_SUSPECT_REASON
+    # PREFIXED, like every other key that belongs to one of the two
+    # instruments. They were bare while this record could only ever be about
+    # the estimators, and widening it to the realized condition is what made
+    # bare ambiguous: a reader who finds ``reason=realized_levels_disagree``
+    # beside an unqualified ``worst_delta_db`` has no way to know the number
+    # belongs to the OTHER instrument and is not the realized error. The prefix
+    # is the record's own existing one — ``estimator_delta_db_{role}`` below —
+    # so this disambiguates without minting a second vocabulary, and it matches
+    # what ``plan_linearization``'s journal already spells
+    # ``level_estimator_worst_delta_db`` one module over.
+    if consistency is not None:
+        record["estimator_worst_delta_db"] = round(
+            float(consistency.worst_delta_db), 3
+        )
+        record["estimator_tolerance_db"] = float(consistency.tolerance_db)
     if realized is not None:
         record.update(
             realized_difference_db=round(float(realized.difference_db), 3),
@@ -323,10 +408,27 @@ def estimator_consistency_record(
         # estimators ride whether or not either one is the reason this record
         # exists: which of them disagreed is the diagnosis, and banking only
         # the worst would drop it.
-        if role in consistency.estimator_delta_db:
+        if consistency is not None and role in consistency.estimator_delta_db:
             record[f"estimator_delta_db_{role}"] = round(
                 float(consistency.estimator_delta_db[role]), 3
             )
+    # THE ATTRIBUTION, and the whole reason a realized-level record can now
+    # exist without an estimator disagreement beside it. The MEASURE ripple
+    # polish moves one trim off the level-matching solve, and the excursion
+    # passes straight through to the realized inter-driver level error. Since
+    # the polish is admitted only within ``REALIZED_LEVEL_MATCH_TOLERANCE_DB``
+    # it can no longer be the whole story of a realized disagreement — so a
+    # reader who finds this near zero knows to look somewhere other than the
+    # polish, which is exactly what a disclosure is for.
+    #
+    # Its OWN loop, keyed on its own mapping rather than folded into the
+    # per-core loop above: the polish is a property of the trim solve and its
+    # roles are the request's, while ``cores`` carries only the roles the fit
+    # produced a median for. Keying this on ``cores`` silently dropped a role
+    # the fit had no core band for — the case where the attribution is most
+    # worth having.
+    for role, delta_db in state.polish_delta_db.items():
+        record[f"polish_delta_db_{role}"] = round(float(delta_db), 3)
     return record
 
 
@@ -337,7 +439,6 @@ def assess_accountability(
     state: LinearizationState | None,
     grade_prediction: Callable[[Any], Any],
     material_improvement_db: float,
-    reason_levels_disagree: str,
 ) -> AccountabilityDecision:
     """The three accountability assertions, as a decision rather than an act.
 
@@ -378,12 +479,14 @@ def assess_accountability(
     # question — does the realized-level check pass on the pair about to
     # ship? — and refused when it did not, under item 1's own
     # ``driver_levels_disagree`` code. Every case that arm could refuse,
-    # item 1 refuses on its own two branches below, under the same code:
+    # item 1 refused on its own two branches below, under the same code:
     # the arm's extra reach was the ``realized is None`` case, and the
     # code's own prior finding is that a state carrying no realized verdict
     # carries no disagreement either (a fit that raised part-way yields
     # neither), so the pair never co-occurred. What the arm's deletion
-    # therefore removes is a second owner of one refusal, not a stop.
+    # therefore removed was a second owner of one refusal, not a stop.
+    # (Item 1's refusal has since gone too — deviation (i) — so both halves
+    # of this paragraph are now archaeology; the code it names is deleted.)
     #
     # The cliff that arm sat on is the located mechanism of the 2026-08-16
     # shortfall round — 3.326 dB against a 3.0 dB bar, +3.79 dB of
@@ -422,9 +525,6 @@ def assess_accountability(
             },
             level=logging.WARNING,
         ))
-        finding = estimator_consistency_record(state)
-    else:
-        finding = None
     # The one fact item 2's ledger borrows from this gate: were the two
     # estimators that placed the drivers in disagreement when the forecast
     # below was built? ``None`` when no consistency verdict exists at all,
@@ -445,22 +545,55 @@ def assess_accountability(
     )
 
     # --- item 1: the inter-driver realized level ---------------------
+    #
+    # **It banks and proceeds. It never refuses** — the doctrine's never-nanny
+    # rule (`docs/measurement-loop-doctrine.md` §3 and §5, deviation (i)). This
+    # was the last level refusal, and it was a QUALITY check: it names no
+    # component-damage mechanism, so it is outside §4's closed list and
+    # discloses rather than blocking. The absolute rails that DO bound loudness
+    # are untouched and are elsewhere — the output limiters, the non-positive
+    # trim clamps, `devices.volume_limit`, and the commissioning SPL stop.
+    #
+    # **What made refusing here indefensible rather than merely strict.** The
+    # number it grades is the MEASURE ripple polish's trim excursion, near
+    # enough exactly: the polish moves one trim off the level-matching solve and
+    # the give-back passes that excursion straight through. Until this change
+    # the polish was ADMITTED out to 6.0 dB while this gate refused past 3.0, so
+    # every polish landing in that band produced a round the session was
+    # guaranteed to refuse — a refusal it manufactured for itself, between two
+    # thresholds neither of which had measured anything. `program_analysis`
+    # closes the band by coupling the admission to this same tolerance; with
+    # that in place a firing here is no longer the polish's doing, which is
+    # precisely when a disclosure is worth reading. `polish_delta_db_*` rides
+    # the banked record so the reader can check that for themselves.
     match = state.realized_level_match
     if match is not None and not match.matched:
         journal.append(GateRecord(
-            EVENT_LEVEL_MATCH_REFUSED,
+            EVENT_LEVEL_MATCH_FINDING,
             {
-                "reason": reason_levels_disagree,
+                # The FINDING vocabulary, not the retired household refusal
+                # code — see `intervention.REALIZED_LEVEL_SUSPECT_REASON` for
+                # why the old literal is not reused here.
+                "reason": REALIZED_LEVEL_SUSPECT_REASON,
                 "difference_db": round(float(match.difference_db), 3),
                 "tolerance_db": match.tolerance_db,
                 "level_w_db": round(float(match.level_w_db), 3),
                 "level_t_db": round(float(match.level_t_db), 3),
+                # The attribution, on the line as well as in the record: a
+                # journal reader diagnosing a round in the field should not have
+                # to open the finding store to learn whether the polish explains
+                # this. ``None`` when no plan measured it.
+                "polish_delta_db": (
+                    {k: round(float(v), 3) for k, v in state.polish_delta_db.items()}
+                    or None
+                ),
             },
-            level=logging.ERROR,
+            level=logging.WARNING,
         ))
-        return AccountabilityDecision(
-            journal=tuple(journal), refusal_reason=reason_levels_disagree,
-        )
+    # Built from the state, so it covers whichever of the two checks above
+    # fired — and both, when both did. ``None`` when neither has anything to
+    # say, which is the ordinary round.
+    finding = level_frame_record(state)
 
     # --- item 2: spec-grade the prediction ---------------------------
     #
@@ -590,7 +723,6 @@ def assess_accountability(
             journal=tuple(journal),
             finding=finding,
             spec_report=spec_report,
-            spec_report_written=True,
         )
 
     if raw_predicted_sum is None or state.linearized_predicted_sum is None:
