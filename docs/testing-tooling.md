@@ -2537,12 +2537,15 @@ blames #2506 for a typo. Unreadable polls are counted separately and a whole
 `unreadable_ceiling_s` of them without one good read is its own named exit. A
 single blip is absorbed: any readable poll clears the run.
 
-**`--expect-angles` is how a silently degraded walk is caught.** A session that
-refuses a staged walk runs its ordinary shape instead, whose captures are ALL
-design-axis — so an unattended driver serves them happily and the run looks
-fine. Stating the walk's non-zero angles turns that into `rc 10`. The envelope
-cannot be asked "did you take a walk", so the pre-motion half of the check is
-narrower: with no session yet in flight, a walk must still be staged (`rc 9`).
+**`--expect-angles` is how a walk that never runs is caught.** A staged walk the
+session cannot honour REFUSES THE OPEN — it no longer degrades into an ordinary
+all-design-axis session that an unattended driver would serve happily
+([ADR-0006](adr/0006-staged-walk-refuses-the-open.md)) — but the driver cannot
+read that refusal off the envelope, and an angle can go unserved for other
+reasons. Stating the walk's non-zero angles turns any unserved angle into
+`rc 10`. The envelope cannot be asked "did you take a walk", so the pre-motion
+half of the check is narrower: with no session yet in flight, a walk must still
+be staged (`rc 9`).
 
 **A signal stops the walk once — and SIGHUP is one of them.** A remote walk is
 stopped by its ssh transport going away: sshd closes the PTY and the kernel
