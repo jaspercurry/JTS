@@ -10,8 +10,8 @@
 > plan's R5 (acknowledged 2026-08-25, both directions).
 
 
-**Status: final.** Every gate the inventory escalated is closed — ten owner
-rulings, S1–S10, recorded in §4 — and both programs have reconciled their
+**Status: final.** Every gate the inventory escalated is closed — eleven owner
+rulings, S1–S11, recorded in §4 — and both programs have reconciled their
 boundaries in writing (§6 R5). One decision arrived *with* newly-assigned scope
 rather than being left open: **#1738**, wire or delete `jasper/bass_extension/`
 (§4). A fresh session executes this. **Read §6's R9 and R5 first**: the repo's
@@ -437,7 +437,8 @@ No fallback flags. No duplication. No coexistence windows. Where a wave keeps an
 old route alive for a moment, it is a **proof bracket** and it dies in that same
 wave. **What "prove" means scales with what the wave changes:** waves that alter
 what the box actually does (4, 5, 6) take the acceptance run — the r1/r2
-reproduction inside the 0.37 dB noise floor (§5 row 9). Waves that move code
+reproduction inside the 0.37 dB noise floor (§5 row 9), which is a **sanctioned
+S11 validation act**, not a licence to tune. Waves that move code
 without changing measurement behaviour (0, 2, 3, 7, 8) prove with the class-A
 suite. *That split is the conductor's scoping of the rule, not the owner's
 words — say so, and let the owner collapse it if he meant a hardware run every
@@ -856,7 +857,7 @@ the deleting the duck complexity. That sounds exactly right."* The whole
 volume-dance mechanism class is **plumbing the LLM never sees**. The new engine
 changes configs *without* the dance; a simple pipeline-health check may remain;
 the gymnastics are deleted. So this is not an open gate and the plan does not ask
-for a nod. What it does ask for is **one piece of evidence** — the no-pop check
+for a nod. What it does ask for is **one piece of evidence** — the no-pop check (**sanctioned S11 validation act 2**)
 (swap the graph inside an open measurement window with the fader parked and a
 recorder running, and listen). It is still unrun. Pass → the duck goes on the
 measurement path. Fail → the session-scoped graph still fires it once per session
@@ -876,7 +877,8 @@ keeping any generator from emitting `volume_ramp_time`, and its stated
 justification dies with the duck.
 
 **Verify.** If any `rust/jasper-fanin` change has landed since, re-run `08`'s
-five-case stereo tap on the box **before** this wave executes (`11`). Then the
+five-case stereo tap on the box **before** this wave executes (`11`; **sanctioned S11
+validation act 3**). Then the
 acceptance run in §5. **Gate:** the duck is **not** on the closed clamp list, but
 it carries a hearing-safety claim in its own test docstring — *"a hearing-safety
 fade across a graph swap that can step the graph's own gain by tens of dB."* So
@@ -901,7 +903,7 @@ coexistence window; the old swap machinery dies whole.
 | 7f | The mechanical doc cuts: two HANDOFF hybrids lose their appendices (**−8,043, zero information lost**); the five-file linearization plan family collapses to one archived decision record (**−4,527, −5 files, −5 doc-map rows**); six already-`Status: historical` docs move. Fence `docs/research/`, `bass-extension-waves/`, `correction-ux-wave3/` (78 files / 19,460 lines) off the maintenance rules — they are primary sources and are *supposed* to be frozen. | −12,570 |
 | 7g | **Move `docs/calibration-agent/` (12 files / 1,356 lines) out of `docs/` entirely.** It is runtime product input, resolved at run time from three search roots by `calibration_agent/tools.py`. Its residence in `docs/` is what forces every doc rule to make an exception for it. `07` calls this the single highest-leverage item in its section — and it is a code change, not a doc change. | code |
 | 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE — DONE (§6 R9b).** The governance-reset branch already deleted `test_agents_md_toc.py` (108) and `test_doc_staleness_sweep_20260604.py` (167) — **275 lines banked**, so this row is **−6,561**, not −6,836. It did **NOT** touch `test_lint_contracts.py`, `test_docs_handoff_freshness.py`, or `test_crossover_v2_measurement_doc_pins.py`; all three remain ours to delete. *(One clause for the executing session: `07`'s 22-test guard slice was the tuning slice, and the ToC test was not separately enumerated in it — confirm the 108 sits inside the 7,436 before booking the full 275.)* | **−6,561** |
-| 7j | **Demote the #2935 topology-staleness block** (ruling S10's worked example, and this program paid for it TWICE this week). Today, entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`, the box goes `blocked` / `active_baseline_topology_changed`, and **a v2 measure session refuses to open** even though the edit provably does not affect the compiled graph for that role. After this: **playback continues on the applied graph, measuring continues**, and the fact surfaces as **one loud `event=` plus a doctor line** — *"topology changed since the applied baseline; re-mint when convenient."* **The narrow carve, and it is the only one:** a **DECLARED-CAP change that makes the currently-applied graph exceed the new limit** is clamp territory and may gate. **Metadata never does.** | a block becomes a disclosure |
+| 7j | **Demote the #2935 topology-staleness block** (ruling S10's worked example, and this program paid for it TWICE this week). Today, entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`, the box goes `blocked` / `active_baseline_topology_changed`, and **a v2 measure session refuses to open** even though the edit provably does not affect the compiled graph for that role. After this: **playback continues on the applied graph, measuring continues**, and the fact surfaces as **one loud `event=` plus a doctor line** — *"topology changed since the applied baseline; re-mint when convenient."* **The narrow carve, and it is the only one:** a **DECLARED-CAP change that makes the currently-applied graph exceed the new limit** is clamp territory and may gate. **Metadata never does.** **Verify on the box that a metadata edit no longer blocks a measure session, and that the doctor line appears** — **sanctioned S11 validation act 5**. | a block becomes a disclosure |
 
 **Wave 7i is DROPPED, and the reason is self-demonstrating.** It proposed adding
 `07`'s rule to AGENTS.md — *a doc may state a fact once; if a second doc needs it,
@@ -1006,20 +1008,21 @@ fresh session does not re-litigate them.
 | **S8** | **"Level-matched" means matched ACOUSTIC OUTPUT THROUGH THE HANDOVER REGION.** *(Source: owner-commissioned prior-art research, 2026-08-25.)* | After the target filters are applied, the two driver traces are **equal at Fc and each sits −6 dB against the summed target** — the Linkwitz-Riley unity condition; Rane/Bohn's *"amplitude response of each is −6 dB at crossover"*; McCarthy's equal-level acoustic-crossover definition. **Passband-average sensitivity is NOT the level fact.** It is the *starting estimate* that sizes the horn's fixed attenuation, and on a horn with a sloped response the two conventions **legitimately disagree by many dB**. Consequences: `solve_branch_trims` (linear-frequency power mean over mirrored ±1-octave halves about Fc) **is** the consensus statistic and becomes the level fact; `driver_core_level_db` is demoted, kept, and its delta disclosed — the research's own instruction being to *"surface this discrepancy to the user rather than hiding it."* **This explains the 8.6 dB dispute rather than fixing it:** the two owner comments two rounds apart that pointed opposite ways on the same numeric pair were each right about a different quantity, and `05`'s "defect 1" was never a defect in either estimator — it was a comparator asking a question neither one answered. Implemented as wave 4k; the campaign instrument it unlocks is in §5. |
 | **S9** | **The doctrine deviation table: DELETED.** Owner, verbatim: *"delete it."* | The nine-row table goes. **§4's clamp list becomes positively complete** — that is the substitute, and it is the part that must actually get written: a reader who can read the 5 clamps and their ~112 enforcement families never needs a list of what stopped being one. Row (e) `BOOST_ROUTE_UNAVAILABLE` **survives inline as a normal ruling sentence**, not as a table row — it is a live retention, so it reads as doctrine, not as archaeology. The demotion *record* lives in git history. `04`'s counter-proposal (add rows j, k, l and the camilla slope arm) is answered rather than overruled: those four demotions are real and already landed, and a positively-complete clamp list makes them unnecessary to track. **Wave 7b's gate is clear.** |
 | **S10** | **Attestation never gates OPERATION — only the clamps do.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"things should just keep working as we are. And if something I did upstream breaks it, then we should just loudly complain… there should be a clear issue in the doctor… we shouldn't stop stuff from working because it hasn't been proven yet… when someone else downloads the software and they have that hardware that I've already tested… they shouldn't have to recommission it. It should just work."* Three consequences. **(1) Last-known-good keeps working.** Staleness and unproven-ness become a **LOUD disclosure** — a doctor line, an `event=`, a UI hint — **never a stop.** **(2) Proof travels with the PROJECT, not the box.** Hardware the project has commissioned once ships as known-good; per-box re-proving is reserved for genuinely novel hardware, and even there it **discloses and degrades** rather than parks, wherever the clamps permit. **(3) The distinction this plan already drew becomes law: refusing to WORK dies; refusing to CLAIM stays.** The integrity class banks nothing it cannot prove — and never stops the speaker playing or the session measuring again. **MS-14 is the canonical survivor**: a fader that cannot be proven refuses to BANK the capture; it does not refuse to play the stimulus, and it does not refuse to try again. Outside the §4 clamps, that is the only shape a refusal may take. |
+| **S11** | **Sequencing: finish the refactor FIRST. Hardware use during it is ENGINEERING VALIDATION ONLY.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"I don't think there's any point in continuing to try to measure and test the speaker until all of this stuff is done, unless you're just trying to validate that your code is working as you expect on actual hardware, in which case that's fine… the cleanup and refactor is the most important thing. We'll get that done and then we'll start measuring on hardware once everything's landed to flush out issues."* **The licence is CLOSED, not open-ended — five sanctioned items, and only these five:** **(1)** acceptance row 9, the baseline reproduction — *an instrument-validation act, not a measurement campaign*; **(2)** wave 6's no-pop check; **(3)** the 5-case stereo-tap re-verify after a fan-in change; **(4)** the #2202 one-hour scoping; **(5)** 7j's demotion verification. **NO tuning. NO candidate campaigns. NO commissioning. NO EQ or crossover changes to the speaker's sound** until the plan's acceptance closes. Then — and only then — the campaign (acceptance row 10, the owner's linearization bar). **Anything hardware-shaped that is not on this list gets ADDED to it explicitly before it runs, never assumed onto it.** *Operational form (the bench discipline this program already follows):* **jts3 stays parked between validation acts**, and every act ends with the standing park — **nothing playing, fader at the household value, spool clean** — exactly as `captures/postfix-baseline-2026-08`'s end-state probe records it. |
 
 ### Still open — none
 
 **No open gates. The plan is final.**
 
 Every decision the inventory escalated has been answered by the owner on
-2026-08-25 and recorded as S1–S10 above. Nothing in this plan waits on a ruling;
+2026-08-25 and recorded as S1–S11 above. Nothing in this plan waits on a ruling;
 what remains is execution, and the evidence still owed is named in §6 rather than
 left as a decision in disguise — the no-pop check, the #2202 scoping hour, and
 the class-B verification pass are measurements to take, not questions to ask.
 
 ### One decision arrived WITH new scope — and it is not a reopened gate
 
-Said plainly, because the heading above must stay true. S1–S10 settled **this
+Said plainly, because the heading above must stay true. S1–S11 settled **this
 plan's shape**, and none of them reopens. But the audit-program reconciliation
 (2026-08-25) **assigned this plan a package it did not previously own**, and that
 package came with its own owner decision attached:
@@ -1058,8 +1061,8 @@ nothing about whether *we* merge a wave before its evidence lands, and we do not
 | 6 | **`web/correction_crossover_v2.py`** | 9,563 lines | the apply/rollback transaction (1,185) plus route wiring. *No explicit target exists in the evidence base — see §6.* |
 | 7 | **Net lines at the END STATE** (ruling S4) | — | **NEGATIVE. Stated floor: −90,000.** Table below. Temporary adds during a wave do not count against this; scaffolding that would need deleting is not built at all. |
 | 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
-| 9 | **The baseline campaign reproduced** | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
-| 10 | **Then the real thing** | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. |
+| 9 | **The baseline campaign reproduced** — *an instrument-validation act, not a measurement campaign* (S11) | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
+| 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. |
 
 **Row 7 has a measurement instrument now — stop hand-counting.** The audit program
 is building **`scripts/right-size-report.sh`** with committed baselines: per-zone
@@ -1077,11 +1080,13 @@ published its own noise floor. Reproducing it on the new engine, inside that
 floor, is what turns "the refactor didn't break anything" from an assertion into
 a measurement. Run it **before** row 10, not after.
 
-### For the campaign that follows — NOT refactor scope
+### For the campaign that follows — AFTER acceptance closes, per S11
 
-Recorded here because ruling S8 unlocked it and it would otherwise be lost, but
-**no wave owns it.** It is a campaign-phase instrument, wave-agnostic, built after
-the engine lands.
+**Nothing in this subsection runs during the refactor.** Ruling S11 reserves the
+hardware for five enumerated validation acts, and this is not one of them. Recorded
+here because ruling S8 unlocked it and it would otherwise be lost, but **no wave owns
+it** — it is a campaign-phase instrument, wave-agnostic, built after the engine lands
+and run only once acceptance row 10 opens.
 
 **The reverse-polarity null test.** Invert one driver's polarity and re-measure.
 A **deep, symmetric null centred at Fc** verifies **level and time
@@ -1247,7 +1252,8 @@ reader** — `read_commissioning_room_authority`, which answers
 `active_commissioning_receipt_unavailable` on every call today. Wiring a producer
 means deciding what that receipt should *say*, which is a design question about
 commissioning eligibility, not a plumbing fix. **Scope it on the box during the
-#2202 fix, before wave 4 books an estimate.** Two independent mechanisms were
+#2202 fix, before wave 4 books an estimate** — that hour is **sanctioned S11
+validation act 4**, and it is scoping, not commissioning. Two independent mechanisms were
 blocking this lane and only one of them is now settled.
 
 **R9 — GROUND SHIFT: the governance reset. Read this before your first edit.**
