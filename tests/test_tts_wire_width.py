@@ -412,15 +412,6 @@ def test_the_spine_scale_is_the_shift_the_rust_primitive_applies():
     assert _SPINE_SCALE == 2 ** int(match.group(1))
 
 
-def test_the_sounddevice_playout_refuses_a_wide_input():
-    """It writes S16 straight to ALSA; silently narrowing would be -96 dB."""
-    from jasper.audio_io import TtsPlayout
-
-    playout = TtsPlayout.__new__(TtsPlayout)
-    with pytest.raises(ValueError, match="no wide"):
-        asyncio.run(playout.write_segment(b"\0\0\0\0", pcm_wide=True))
-
-
 def test_audio_io_module_is_the_one_the_worktree_owns():
     """Guard against a shared venv resolving `jasper` to another checkout."""
     assert Path(audio_io.__file__).resolve().parent.parent == _REPO

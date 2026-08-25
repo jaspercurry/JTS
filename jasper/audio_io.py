@@ -32,10 +32,10 @@ from .tts_routing import FANIN_TTS_SOCKET
 # `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
 # installed in the local dev venv and isn't needed by the pure-Python
 # helpers in this module (parse_udp_device, UdpMicCapture, the dataclasses).
-# Lazy-import inside the three places that actually open PortAudio streams
-# (_log_audio_open_failure, MicCapture.__aenter__, TtsPlayout.__aenter__)
-# so the module can be imported on a dev machine, hardware-free tests can
-# parse it, and the lazy-import guards in test_lazy_imports.py can run.
+# Lazy-import inside the two places that actually open PortAudio streams
+# (_log_audio_open_failure, MicCapture.__aenter__) so the module can be
+# imported on a dev machine, hardware-free tests can parse it, and the
+# lazy-import guards in test_lazy_imports.py can run.
 # The annotations on _stream attributes use `sd.InputStream` /
 # `sd.RawOutputStream`, but `from __future__ import annotations` above
 # makes those strings — never evaluated.
@@ -68,8 +68,8 @@ class InputDeviceUnavailable(RuntimeError):
 def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     """Dump environmental state when a sounddevice stream open fails.
 
-    Called from MicCapture / TtsPlayout `__aenter__` immediately
-    before re-raising. The bare exception (typically
+    Called from MicCapture.__aenter__ immediately before re-raising
+    on a real open failure. The bare exception (typically
     `ValueError: No <kind> device matching '<name>'`) doesn't tell
     us whether ALSA can see the device, whether dmesg has a recent
     USB-disconnect line, or what PortAudio actually has enumerated —
@@ -431,19 +431,18 @@ def make_mic_capture(
 
 
 class TtsPlayout:
-    """Plays provider 24 kHz int16 mono PCM stream out to an ALSA device.
+    """Shared TtsPlayout base: gain validation, rate bookkeeping, and
+    drain-deadline timing. Playback (write/flush/segment lifecycle) is
+    entirely subclass-owned — `OutputdTtsPlayout` is the only transport
+    `make_tts_playout` can construct, since both it and `Config`'s
+    `tts_transport` validation refuse anything else. The methods below
+    that OutputdTtsPlayout overrides raise here; they stay declared so
+    code typed on `TtsPlayout` (turn_playback.py, voice_daemon.py) still
+    type-checks against every transport's interface.
 
-    The output device may not natively support 24 kHz mono — `jasper_dongle`
-    (the shared dmix wrapping the Apple USB-C dongle) is fixed at 48 kHz
-    and PortAudio doesn't go through ALSA's `plug` layer for rate
-    conversion. So we let the caller configure an `output_rate` and
-    polyphase-upsample 24 kHz → output_rate inside `write()`.
-
-    Gain validation for the legacy direct-device path. Current production
-    sends TTS through the local IPC path before CamillaDSP, where the
-    mix owner matches assistant loudness to content and applies the
-    peak-aware ceiling. This Python class only rejects malformed values
-    and floors extreme attenuation to the mute-equivalent minimum.
+    `output_rate` must be an exact multiple of `INPUT_RATE`: the output
+    device may not natively support 24 kHz, so the subclass
+    polyphase-upsamples 24 kHz → `output_rate` in its own write path.
     """
 
     INPUT_RATE = 24000
@@ -482,8 +481,8 @@ class TtsPlayout:
         self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
         self._gain_db = self.MIN_TTS_GAIN_DB
         # Cumulative pacing-sleep time since the last take_paced_sec().
-        # Only the outputd/fan-in transport paces (the PortAudio path is
-        # device-paced), but the field lives here so every transport
+        # Only the outputd/fan-in transport paces (a device-paced transport
+        # wouldn't need to), but the field lives here so every transport
         # answers take_paced_sec() and callers stay transport-agnostic.
         self._paced_total_sec = 0.0
         self._stream: sd.RawOutputStream | None = None
@@ -545,52 +544,10 @@ class TtsPlayout:
         return self._gain_db
 
     async def __aenter__(self) -> "TtsPlayout":
-        import sounddevice as sd  # Pi-side dep, lazy — see module top.
-        # Eagerly warm scipy.signal so the first runtime write() doesn't
-        # pay ~1 s of module-import cost on the event loop. Before this,
-        # the first wake of a fresh daemon paid for the import inside
-        # write()'s polyphase resample step — blocking the loop for
-        # ~941 ms and delaying _acquire_and_drain so a fast-talker's
-        # whole question ended up in the acquire-buffer (sent to the
-        # LLM but never seen by Silero, which then aborted the turn).
-        # See voice_daemon._handle_wake_frame + the sched_lag breakdown
-        # in _begin_turn for the diagnostic that surfaced this.
-        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
-
-        # Open as STEREO even though our input is mono. The dongle's
-        # dmix (`pcm.jasper_out` in /etc/asound.conf) is configured at
-        # channels=2 with no plug layer; opening at channels=1
-        # against it makes PortAudio do something quietly broken —
-        # mono samples land in the stereo frame interleave as if they
-        # were L/R pairs, and audio comes out at half speed with
-        # weird amplitude. Manual mono→stereo duplication in write()
-        # is unambiguous and matches the dmix's native shape.
-        try:
-            self._stream = sd.RawOutputStream(
-                device=self._device,
-                samplerate=self._output_rate,
-                channels=2,
-                dtype="int16",
-            )
-            self._stream.start()
-        except Exception as e:  # noqa: BLE001
-            # Most common cause of "No output device matching ..." is
-            # the Apple dongle de-enumerating because nothing's
-            # plugged into its 3.5 mm jack (it loses USB Audio class
-            # exposure without an analog load). Dump enough state to
-            # tell that case apart from "device exists but is busy"
-            # or "PortAudio internal error" — the bare ValueError
-            # alone wasn't enough to root-cause the 9000+ restart
-            # spiral on 2026-05-10.
-            _log_audio_open_failure("TtsPlayout", self._device, e)
-            raise
-        return self
+        raise NotImplementedError
 
     async def __aexit__(self, *exc) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        raise NotImplementedError
 
     async def write_segment(
         self,
@@ -601,35 +558,10 @@ class TtsPlayout:
         source_profile=None,
         pcm_wide: bool = False,
     ) -> None:
-        """Write one provider audio chunk.
-
-        The sounddevice transport has no playout ledger, so segment
-        metadata is intentionally ignored here. Outputd overrides this
-        to carry provider identity across the IPC boundary.
-
-        `pcm_wide` is accepted so the signature matches the outputd override
-        and REJECTED rather than ignored: this path has no wide route (it
-        writes S16 straight to ALSA), and silently narrowing a wide buffer
-        would play the earcon 96 dB down. It cannot be reached in production —
-        `JASPER_TTS_TRANSPORT=sounddevice` is refused at config load — so this
-        guards a direct unit-test or archaeology caller.
-        """
-        _ = (provider_item_id, segment_kind, source_profile)
-        if pcm_wide:
-            raise ValueError(
-                "the sounddevice TtsPlayout has no wide (S32) input route; "
-                "pcm_wide=True is only valid on OutputdTtsPlayout"
-            )
-        await self.write(pcm)
+        raise NotImplementedError
 
     async def end_segment(self) -> None:
-        """Mark the current logical TTS segment complete.
-
-        No-op for sounddevice; outputd uses it to let the ledger
-        distinguish "fully queued and waiting to drain" from "still
-        streaming more audio."
-        """
-        return None
+        raise NotImplementedError
 
     async def prepare_assistant_context(
         self,
@@ -644,118 +576,19 @@ class TtsPlayout:
         muted: bool | None = None,
         context_stamp_boot_ns: int | None = None,
     ) -> None:
-        """Freeze final-output loudness context before a turn starts.
-
-        No-op for the legacy sounddevice path. Outputd overrides this
-        because it owns content metering and final assistant gain.
-        """
-        _ = (
-            provider,
-            model,
-            voice,
-            tts_envelope_lufs,
-            canonical_volume_db,
-            downstream_volume_db,
-            context_tts_envelope_lufs,
-            muted,
-            context_stamp_boot_ns,
-        )
-        return None
+        raise NotImplementedError
 
     async def pause_content_meter(self) -> None:
-        """Tell the final-output owner to ignore temporary measurement/ducking.
-
-        No-op for sounddevice.
-        """
-        return None
+        raise NotImplementedError
 
     async def resume_content_meter(self) -> None:
-        """Resume content metering after a paused section."""
-        return None
+        raise NotImplementedError
 
     async def write(self, pcm: bytes) -> None:
-        """Input is MONO int16 PCM at INPUT_RATE (24 kHz) — same shape
-        live providers emit and what cue WAVs are stored at. Internally
-        we apply gain + upsample + mono→stereo duplication, then
-        hand off to the (stereo) sounddevice stream."""
-        if self._stream is None:
-            if not self._closed_stream_warned:
-                logger.warning(
-                    "TtsPlayout.write called on a closed stream — "
-                    "%d bytes silently dropped. Did you forget "
-                    "`async with tts:`? (Suppressing further such "
-                    "warnings for this instance.)",
-                    len(pcm),
-                )
-                self._closed_stream_warned = True
-            return
-        # Empty PCM would set the drain deadline to "now + 0", masking the silent state.
-        if not pcm:
-            return
-        # Always go through the numpy pipeline so the mono→stereo
-        # duplication at the end runs uniformly. The dropped fast
-        # path was for "no gain, no upsample" which is a test-only
-        # config in practice — production always has both.
-        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-        if self._gain_linear != 1.0:
-            arr = arr * self._gain_linear
-        if self._upsample > 1:
-            # Polyphase resample with built-in anti-alias filter. Same
-            # reasoning as MicCapture's downsampler — naive zero-stuff
-            # would create high-frequency images.
-            # scipy.signal is pre-warmed in __aenter__ — this `from`
-            # statement is a sys.modules cache lookup, not a real
-            # import. Keep as-is to bind the symbol into local scope.
-            from scipy.signal import resample_poly
-            arr = resample_poly(arr, up=self._upsample, down=1)
-        # Mono → stereo: each mono sample becomes a (L, R) pair with
-        # L=R. np.repeat(arr, 2) interleaves correctly: [s0, s0, s1,
-        # s1, …]. The stream is opened at channels=2 so this is the
-        # exact byte layout it expects.
-        mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
-        stereo_i16 = np.repeat(mono_i16, 2)
-        # Update the drain deadline *before* the blocking write so a
-        # concurrent reader (the idle watchdog) sees a consistent view.
-        chunk_duration_sec = len(mono_i16) / self._output_rate
-        now = time.monotonic()
-        if self._ring_end_monotonic is None or now > self._ring_end_monotonic:
-            self._ring_end_monotonic = now + chunk_duration_sec
-        else:
-            self._ring_end_monotonic += chunk_duration_sec
-        write_start = now
-        await asyncio.to_thread(self._stream.write, stereo_i16.tobytes())
-        write_ms = (time.monotonic() - write_start) * 1000
-        chunk_ms = chunk_duration_sec * 1000
-        # Sustained back-pressure correlates with OS-layer underruns and
-        # audible glitches. Doesn't affect drain timing (we track samples
-        # queued, not write latency).
-        if write_ms > chunk_ms + 100:
-            logger.warning(
-                "tts.write slow: %.0fms for %.0fms of audio "
-                "(%d frames @ %d Hz)",
-                write_ms, chunk_ms, len(mono_i16), self._output_rate,
-            )
+        raise NotImplementedError
 
     async def flush(self) -> dict | None:
-        """Drop any audio currently buffered inside sounddevice / ALSA so
-        the speaker goes silent immediately. Used for barge-in: when the
-        user interrupts the model, we want sub-50ms cutoff, not the
-        100-300ms tail you'd get from waiting for buffered samples to
-        finish playing.
-
-        sounddevice's abort() stops the stream and discards pending
-        samples (vs. stop() which finishes them). Restart with start()
-        so the next write() works immediately."""
-        if self._stream is None:
-            return None
-        try:
-            await asyncio.to_thread(self._stream.abort)
-            await asyncio.to_thread(self._stream.start)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("tts flush failed: %s", e)
-        # abort() discarded the ring; the tracked deadline is stale.
-        self._ring_end_monotonic = None
-        return None
+        raise NotImplementedError
 
     def expected_drain_at(self) -> float:
         """Monotonic deadline at which the last-queued sample's tail
@@ -781,8 +614,8 @@ class TtsPlayout:
 
         The voice daemon reads this once per turn for the turn-ended
         accounting line. Zero means no write waited on the IPC owner's
-        pending budget (always true for the device-paced PortAudio
-        transport, which never sleeps deliberately).
+        pending budget (always true for a device-paced transport, which
+        never sleeps deliberately).
         """
         v = self._paced_total_sec
         self._paced_total_sec = 0.0
