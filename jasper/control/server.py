@@ -551,9 +551,41 @@ def _safe_audio_quality_state() -> dict[str, Any]:
     return _state_aggregate._safe_audio_quality_state()
 
 
+_USB_LATENCY_APPLY_GRACE_SEC = 30.0
+_usb_latency_applying: tuple[str, float] | None = None
+
+
+def _mark_usb_latency_applying(mode: str) -> None:
+    global _usb_latency_applying
+    _usb_latency_applying = (mode, time.monotonic() + _USB_LATENCY_APPLY_GRACE_SEC)
+
+
+def _usb_latency_applying_mode() -> str | None:
+    global _usb_latency_applying
+    current = _usb_latency_applying
+    if current is None:
+        return None
+    if current[1] <= time.monotonic():
+        _usb_latency_applying = None
+        return None
+    return current[0]
+
+
 def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
+    global _usb_latency_applying
     try:
-        return _read_usb_latency_state(airplay_health)
+        applying_mode = _usb_latency_applying_mode()
+        state = _read_usb_latency_state(
+            airplay_health,
+            applying_mode=applying_mode,
+        )
+        if applying_mode is not None and state.get("state") != "applying":
+            if (
+                _usb_latency_applying is not None
+                and _usb_latency_applying[0] == applying_mode
+            ):
+                _usb_latency_applying = None
+        return state
     except Exception as e:  # noqa: BLE001
         logger.exception("USB latency state read failed")
         return {

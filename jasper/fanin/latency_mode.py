@@ -120,6 +120,11 @@ def _runtime_resampler(airplay_health: Any) -> dict[str, Any]:
     return _mapping(_mapping(inputs.get("usbsink")).get("resampler"))
 
 
+def _runtime_host_clock(airplay_health: Any) -> dict[str, Any]:
+    current = _mapping(_mapping(airplay_health).get("current"))
+    return _mapping(_mapping(current.get("fanin")).get("host_clock"))
+
+
 def applied_mode_from_resampler(resampler: dict[str, Any]) -> str | None:
     decay = _mapping(resampler.get("decay"))
     enabled = decay.get("enabled")
@@ -142,6 +147,7 @@ def read_state(
     airplay_health: Any = None,
     *,
     state_path: str | os.PathLike[str] | None = None,
+    applying_mode: str | None = None,
 ) -> dict[str, Any]:
     error: str | None = None
     try:
@@ -159,7 +165,11 @@ def read_state(
     selected_preset = PRESETS[selected]
     state = "unavailable"
     detail = "Waiting for live USB fan-in state."
-    if applied is not None and applied != selected:
+    applying = applying_mode == selected and applied != selected
+    if applying:
+        state = "applying"
+        detail = f"Applying {selected_preset.label}; waiting for live fan-in state."
+    elif applied is not None and applied != selected:
         state = "error"
         error = (
             f"{selected_preset.label} is selected, but fan-in is running "
@@ -174,8 +184,19 @@ def read_state(
             and held_frames is not None
             and held_frames > selected_preset.floor_frames
         ):
-            state = "recovery"
-            detail = "Recovery buffer active; latency will fall after timing stabilizes."
+            if _runtime_host_clock(airplay_health).get("ladder") == "l2_fallback":
+                state = "fallback"
+                detail = (
+                    f"{selected_preset.label} is selected, but the host timing "
+                    f"check failed. This USB session is using the stable "
+                    f"{held_frames * 1000 / SAMPLE_RATE:.1f} ms buffer."
+                )
+            else:
+                state = "recovery"
+                detail = (
+                    "Recovery buffer active; latency will fall after timing "
+                    "stabilizes."
+                )
     return {
         "selected_mode": selected,
         "applied_mode": applied,

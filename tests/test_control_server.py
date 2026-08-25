@@ -1193,16 +1193,23 @@ def test_system_usb_latency_applies_fixed_mode(
     import jasper.control.server as srv_mod
 
     applied: list[str] = []
+    marked: list[str] = []
     monkeypatch.setattr(
         srv_mod,
         "_apply_usb_latency_mode",
         lambda mode: applied.append(mode),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_mark_usb_latency_applying",
+        lambda mode: marked.append(mode),
     )
 
     status, body = _post(f"{base}/system/usb-latency", {"mode": "medium"})
 
     assert status == 200
     assert applied == ["medium"]
+    assert marked == ["medium"]
     assert body == {"ok": True, "action": "usb-latency", "mode": "medium"}
 
 

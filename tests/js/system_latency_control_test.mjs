@@ -52,6 +52,15 @@ assert.equal(refs.live.textContent, "53.3 ms");
 assert.match(refs.status.textContent, /Recovery buffer active/);
 assert.equal(refs.buttons[1].el.attrs["aria-pressed"], "true");
 
+sections.updateUsbLatency(refs, {
+  selected_mode: "low",
+  applied_mode: "low",
+  live_buffer_ms: 53.3,
+  state: "fallback",
+  detail: "Low is selected, but the host timing check failed. This USB session is using the stable 53.3 ms buffer.",
+});
+assert.match(refs.status.textContent, /host timing check failed/);
+
 const quietConsole = { error() {} };
 const actions = await new AsyncFunction(
   "fetch", "jsonHeaders", "console",

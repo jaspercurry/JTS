@@ -358,6 +358,7 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
+        _server._mark_usb_latency_applying(mode)
         _server.log_event(
             _server.logger,
             "usb_latency.set",

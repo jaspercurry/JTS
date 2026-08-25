@@ -106,7 +106,7 @@ export async function setLatencyMode(refs, mode, onApplied) {
     latency.buttons.forEach((button) => button.el.setAttribute(
       "aria-pressed", button.mode === mode ? "true" : "false"));
     latency.selected.textContent = mode[0].toUpperCase() + mode.slice(1);
-    latency.status.textContent = "Applied. Audio restarted briefly.";
+    latency.status.textContent = "Mode saved. Checking the live buffer…";
     if (onApplied) onApplied(mode);
   } catch (e) {
     console.error("system: USB latency apply failed", e);

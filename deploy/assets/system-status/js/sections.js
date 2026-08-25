@@ -211,12 +211,15 @@ function usbLatencyLabel(mode) {
 export function updateUsbLatency(refs, state) {
   const selected = state && state.selected_mode;
   const applied = state && state.applied_mode;
+  const requestApplying = refs.buttons.some((button) => button.el.dataset.applying);
   refs.selected.textContent = usbLatencyLabel(selected);
   refs.applied.textContent = usbLatencyLabel(applied);
   refs.live.textContent = state && Number.isFinite(state.live_buffer_ms)
     ? state.live_buffer_ms.toFixed(1) + " ms" : "unknown";
-  if (state && state.error) refs.status.textContent = "Could not apply: " + state.error;
-  else if (state && state.detail) refs.status.textContent = state.detail;
+  if (!requestApplying) {
+    if (state && state.error) refs.status.textContent = "Could not apply: " + state.error;
+    else if (state && state.detail) refs.status.textContent = state.detail;
+  }
   refs.buttons.forEach((button) => {
     button.el.setAttribute("aria-pressed", button.mode === selected ? "true" : "false");
     if (!button.el.dataset.applying) button.el.disabled = false;
