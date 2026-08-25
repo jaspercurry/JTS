@@ -87,6 +87,12 @@ Each item below survived adversarial re-reading; LOC figures are the *verifier's
 | `jasper/bass_extension/bench/excitation.py` | Zero references of any kind, including tests | ~85 `jasper-periphery-2#0` |
 | Small verified: `control/__main__.py` (9), `chip_aec_policy` 3 dead emitted fields + `..._DAC_GATE_ACTION` end-to-end (~15), `CaptureActivityProbe` (52), dead voice-protocol members (`last_chunk_played_at`, `supports_provider_vad`, `interrupted()`, `AudioOutChunk.kind`, `_create_response_only`, `DEFAULT_TEMPERATURE`) (~115) | Each proven no-caller incl. dynamic dispatch | ~190 |
 
+> **Correction (2026-08-25, #2970):** two rows above were refuted on
+> re-execution of their negative proofs — `bass_alignment.py` (consumed by
+> tuning-zone contract tests) and `AudioOutChunk.kind` (live: `turn_playback`
+> → `segment_kind` → fanin `SegmentKind` AEC-reference accounting). Do not
+> delete either; see [docs/REFACTOR-2026-08.md](REFACTOR-2026-08.md) Wave 1.
+
 Also verified dead but leave-in-place unless already editing: `rust/jasper-host-clock` `ObsMode::Fill` machinery (~150, `rust-misc-0#0`), `wake_fusion.py`'s inert threshold-offset seam (74 lines, has a documented future consumer).
 
 ### 4.2 Over-engineering — verified right-sizing (~9–12K non-census lines)

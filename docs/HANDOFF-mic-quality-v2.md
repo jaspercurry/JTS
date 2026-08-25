@@ -1183,14 +1183,16 @@ doesn't waste a round arguing about them:
 2. **Skim the spike's README**:
    [`experiments/aec3-v2-deep-tune-spike/README.md`](../experiments/aec3-v2-deep-tune-spike/README.md)
    for the BEST_A canonical config + sweep methodology. The binding +
-   sweep + forensic scripts in that directory all work today on the
-   laptop.
+   sweep + forensic scripts it describes shipped their output into
+   `jasper_aec3` and were deleted from the tree; they're preserved in
+   git history if you need to re-run them.
 3. **The 10-condition `reference-conditions/` corpus** is on the user's
    laptop (gitignored). All experiments from tonight ran offline against
    it. WAV outputs per engine are still there if you want to listen.
 4. **Begin Triple-stream Phase 1, Step 1: productionize BEST_A binding.**
    - Vendor `webrtc-audio-processing` v2.1 statically inside `jasper_aec3/`
-   - Promote the binding from `experiments/aec3-v2-deep-tune-spike/binding.cpp`
+   - Promote the binding from `binding.cpp` (deleted from the spike
+     directory once its output shipped; see git history)
    - Apt deps in install.sh: `meson`, `ninja`
    - Cross-build risk: ~half a day for ARM64 build-env. macOS laptop
      build worked clean tonight; Linux/Pi 5 may surface a CFLAGS quirk.

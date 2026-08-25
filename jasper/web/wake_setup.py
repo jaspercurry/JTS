@@ -650,7 +650,7 @@ def _apply_layer(
 ) -> tuple[int, bytes]:
     """Translate a /layer/<name> POST into jasper-control's /aec/leg
     call. Returns (status, body) for proxying."""
-    if layer in ("raw", "dtln", "chip_aec_150", "chip_aec_210"):
+    if layer in _VALID_LAYERS:
         return proxy_post(
             "/aec/leg",
             control_base=control_base, timeout=5.0,
