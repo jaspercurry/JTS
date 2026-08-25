@@ -1767,7 +1767,8 @@ install_nginx_site() {
         systemctl reload nginx
         echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
     else
-        echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
+        echo "  ERROR: nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
+        return 1
     fi
 }
 

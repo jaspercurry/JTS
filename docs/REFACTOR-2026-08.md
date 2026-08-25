@@ -85,7 +85,7 @@ ack, never silence.
       replace both config-truncating `tee` recipes (BLOCKER; landed
       code-verified from the cloud lane — the Pi walk is still owed: run
       Phase 5 on the next spare-Pi commission, never jts3)
-- [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
+- [x] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
 - [x] `User=` + hardening for jasper-correction-web / -bluetooth-web /
       -system-web units
 - [x] `/wake-corpus/`: call `guard_mutating_host` inside `_check_csrf`
