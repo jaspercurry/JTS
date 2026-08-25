@@ -306,7 +306,6 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
 
     room_peqs_right: Any
     channel_delays_ms: Any
-    channel_split: Any
     playback_pipe_path: str | None
     enable_rate_adjust: bool
     # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via

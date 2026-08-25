@@ -102,7 +102,7 @@ CHANNEL_DELAY_MS_HI = 100.0
 # BOUND TO the one shared bass-management corner definition
 # (jasper.camilla_emit) so the wireless sub, the local-DAC sub, and the safety
 # guard reference one number, not four that can drift. The public spelling
-# stays for this module's importers (control.server, channel_split, etc.).
+# stays for this module's importers (control.server, etc.).
 DEFAULT_CROSSOVER_HZ = BASS_MANAGEMENT_CORNER_HZ_DEFAULT
 CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
 CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI

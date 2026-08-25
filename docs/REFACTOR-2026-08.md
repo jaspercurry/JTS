@@ -101,7 +101,7 @@ ack, never silence.
 
 **Wave 1 — verified dead code (~8.4K lines; one PR per row of audit §4.1)**
 - [x] orbs.js bundle (+tests +CI step +css tokens)
-- [ ] multiroom/channel_split.py + always-None param chain
+- [x] multiroom/channel_split.py + always-None param chain
 - [ ] TtsPlayout PortAudio body collapse
 - [x] five dead wizard main()s + 2 orphan console_scripts
 - [ ] wake_setup.py dead layer branches; bass_alignment.py; aec3-spike code

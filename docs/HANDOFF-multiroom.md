@@ -4,8 +4,8 @@
 > is the canonical design home for grouped/synchronized playback across
 > multiple JTS speakers (stereo pairs, 2.1 with a wireless sub, and
 > multi-room). SHIPPED: the control/observability scaffolding
-> (config/state/reconcile, the `/rooms` bond-forming UI, the channel-split
-> weave, inv-5), **Increment 2** (the per-channel correction axis — one CamillaDSP
+> (config/state/reconcile, the `/rooms` bond-forming UI, inv-5),
+> **Increment 2** (the per-channel correction axis — one CamillaDSP
 > bakes L-for-leader-seat / R-for-follower-seat), **Increment 5 PR-1** (leader
 > CamillaDSP → snapserver pipe → snapclient FIFO → member outputd
 > `dac_content` lane), **Increment 5 PR-2** (member-local TTS + grouping
@@ -228,43 +228,42 @@ Increment 6 (per-follower calibration). What exists:
   driver-domain graph spell the pick one canonical way. The shipped generators are byte-identical post-migration
   (golden-diffed); multi-room's sub crossover upgraded to CamillaDSP's
   native `BiquadCombo LinkwitzRileyLowpass`.
-- **`jasper/multiroom/channel_split.py`** — pure channel-split DSP
-  fragment generator (P1.2). `build_channel_split(channel)` emits the
-  CamillaDSP `channel_select` Mixer (left/right route; mono/sub L+R sum
-  at a clip-safe −6.02 dB so identical L==R hits exactly 0 dBFS) and,
-  for `sub`, a native LR4 `BiquadCombo` 80 Hz lowpass crossover — all via
-  the shared `camilla_emit` primitives. Host-agnostic recipe: the same
-  fragment runs *locally* on a brainy stereo-pair member or *on the
-  leader* to pre-bake a dumb endpoint's stream (§4). Never names
-  `master_gain` (preserves the Ducker's identity-mixer contract) and
-  emits no positive gain — every generated mixer holds the signal ≤ 0
-  dBFS under `volume_limit: 0.0`. The `channel` axis is inter-speaker and
-  composes with `output_topology.SpeakerChannel`'s intra-speaker driver
-  axis because channel-select is interface-preserving 2→2 (§4). Pure /
-  hardware-free; live weaving into the active config is P1.3.
-  **Two distinct sub low-pass mechanisms now exist — don't conflate them.**
-  This CamillaDSP `BiquadCombo` fragment is *not* on the live dumb-follower
-  round-trip path (members drop their channel in `jasper-outputd`'s
-  `ChannelPick`, not a local CamillaDSP weave). The **shipped** dumb wireless
-  sub (2026-06-23) low-passes **receiver-side in `jasper-outputd`** —
+- **`jasper/multiroom/channel_split.py` — REMOVED (Wave 1 dead-code cleanup,
+  2026-08-25).** This was the pure channel-split DSP fragment generator
+  (P1.2): `build_channel_split(channel)` emitted the CamillaDSP
+  `channel_select` Mixer + sub crossover for weaving into a MEMBER's own
+  local config — the pre-Increment-5 self-correct model. It had zero
+  production callers by the time it was removed:
+  `member_camilla_kwargs` always resolved `channel_split=None` (both
+  before and after this parameter itself was deleted from
+  `emit_sound_config`), so the weave never ran. **A bonded member's
+  channel pick is live receiver-side in `jasper-outputd`'s `ChannelPick`**
+  (`rust/jasper-outputd/src/dac_content.rs`), driven by
+  `jasper.multiroom.reconcile.outputd_grouping_env`
+  (`OUTPUTD_DAC_CONTENT_CHANNEL_ENV` = the member's `cfg.channel`) — not a
+  local CamillaDSP splice. The **shipped** dumb wireless sub (2026-06-23)
+  low-passes **receiver-side in `jasper-outputd`** —
   `ChannelPick::Sub(corner)` runs its own Rust LR4 (mono-sum → 4th-order
   Linkwitz-Riley at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ`, default 80 Hz) before
   the DAC, fail-closed (never full-range on FIFO / inv-B fallback / missing
-  filter). Passive/dumb mains in the same bond now also high-pass
+  filter). Passive/dumb mains in the same bond also high-pass
   receiver-side in `jasper-outputd`: the reconciler writes
   `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` at the same bond `crossover_hz` when a sub
   is present and the default-on mains-HP toggle is enabled; the shared
   Snapcast stream stays full-range. Active endpoints are different: their
   outputd `dac_content` lane is disabled, so Layer-A CamillaDSP owns the HP/LP
-  protection path. This `channel_split.py` LR4 fragment stays the recipe for
-  the *brainy/CamillaDSP* sub and the leader pre-bake (gap 5 alternatives).
-  Both reuse the same `emit_linkwitz_riley` corner math. **The corner value
+  protection path. The shared `channel_select` mixer name + clip-safe
+  −6.02 dB mono-sum primitive (`emit_channel_select_mixer`, in
+  `jasper/camilla_emit.py`) remains live, now consumed only by the
+  active-speaker follower's driver-domain graph
+  (`jasper/active_speaker/camilla_yaml.py`). **The corner value
   itself has ONE home since P5** — `jasper.camilla_emit.BASS_MANAGEMENT_CORNER_HZ_*`
   (default 80 Hz / 40-200 Hz bounds / LR4); `multiroom.config`
   (`DEFAULT_CROSSOVER_HZ`/`CROSSOVER_HZ_LO`/`_HI`), `active_speaker.profile`,
-  `output_topology`, and `channel_split` all bind to it rather than
-  re-declaring four numbers that could drift, and the 200 Hz sub-LP guard
-  ceiling references the same constant. The **§6 corner precedence** is explicit
+  and `output_topology` bind to it rather than re-declaring independent
+  numbers that could drift, and the 200 Hz sub-LP guard ceiling references
+  the same constant. The
+  **§6 corner precedence** is explicit
   + tested in `reconcile.outputd_grouping_env`: an active main bonded to a
   wireless sub clears the wireless `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` — for an
   active main WITH a local sub, mains-HP is therefore applied exactly once, in
@@ -293,7 +292,7 @@ Increment 6 (per-follower calibration). What exists:
   bond changes is a resilience win the cleanup banked). A bonded leader's
   runtime health honestly reads `degraded` ("no music producer feeds the
   snapfifo") until the real producer lands. **SHIPPED:** inv. 5
-  (`rate_adjust=false`) and the channel-split live weave (§2/§4).
+  (`rate_adjust=false`).
 - **`jasper-fanin` music-only output (Increment 1) — DELETED 2026-08-14 by owner
   ruling** ([#2285](https://github.com/jaspercurry/JTS/issues/2285) deletion arc;
   PR [#2483](https://github.com/jaspercurry/JTS/pull/2483)). It shipped as
@@ -487,12 +486,13 @@ unsynced output), and the on-device end-to-end + acoustic sync validation.
 **not** stream to followers yet (it reads `degraded`); re-wiring is blocked on
 TTS separation, and sample-lock additionally needs inv. 2. See the §0 intro +
 §2 "inv-2 realization.")* **SHIPPED since:** inv. 5
-(`rate_adjust=false`, §2) AND the **live weave of the channel-split
-fragment into the active config** — `weave_channel_split()`
-(`channel_split.py`) splices the `channel_select` mixer + sub crossover
-into the generated config (validated YAML; `stereo` is byte-for-byte
-passthrough), and `emit_sound_config(channel_split=…)` weaves it on the
-live `/sound` apply path for an active member.
+(`rate_adjust=false`, §2). The member-side channel-select weave once
+described here (`weave_channel_split()` / `channel_split.py`) was removed
+in the Wave 1 dead-code cleanup (2026-08-25): it never ran in production
+(`member_camilla_kwargs` always resolved `channel_split=None`) — a
+bonded member's channel selection is live via outputd's `ChannelPick`
+instead (see the `jasper/multiroom/channel_split.py` file-map entry
+above).
 
 ---
 
@@ -1085,12 +1085,12 @@ each step needs from the owner):**
 and the doctor's `check_grouping_tts_separation` (folded into `check_grouping`'s
 runtime detail) all assumed **outputd** feeds the pipe; the canonical design has
 **CamillaDSP** feed it, so that machinery was dead **by design** and is now gone.
-**Deliberately KEPT (live until Increment 5):** `channel_split.py` /
-`member_config.py` / their doctor checks — they serve the currently-SHIPPED
-member model (the live `/sound` apply path weaves the split for an active
-member); Increment 5 replaces that wiring with the leader-bake axis (the
-`room_peqs_right` × `channel_split` mutual-exclusion guard polices the
-migration). Also kept: `desired_snapfifo_path` (the pure "this role needs a
+**Increment 5 status: SHIPPED.** Canonical members resolve their channel via
+outputd's `ChannelPick` (the leader-bake axis), never a local CamillaDSP
+weave. `channel_split.py` served the pre-Increment-5 member model and was
+removed (Wave 1 dead-code cleanup, 2026-08-25) once Increment 5 fully
+superseded it — `member_config.py` and its doctor checks are unaffected.
+Also kept: `desired_snapfifo_path` (the pure "this role needs a
 producer" predicate driving the runtime-health derive) and snapserver's pipe
 source (the consumer side is unchanged; only the producer moves). snd-aloop
 substreams are **already exhausted (8/8)**, so the round-trip uses a raw FIFO
@@ -1308,11 +1308,15 @@ the dual-read loop proves too costly on the Pi 5.
 **Two CamillaDSP instances on the leader.** CamillaDSP-A (shared, pre-stream)
 and CamillaDSP-B (per-member, post-snapclient) are distinct configs and likely
 distinct instances (~+85 MB each on the 1 GB Pi — a leader is a brainy Pi 5, so
-affordable, but measure). A follower runs only CamillaDSP-B. The
-already-shipped channel-split weave (`weave_channel_split`) + inv-5
-`rate_adjust=false` produce CamillaDSP-B's config exactly — that work is done;
-inv-2 is what *positions* CamillaDSP-B post-snapclient and feeds its output to
-the DAC.
+affordable, but measure). A follower runs only CamillaDSP-B. **This whole
+CamillaDSP-B proposal was itself superseded by the canonical model (§0/§2
+above):** a member never runs a second per-member CamillaDSP at all —
+`jasper-outputd`'s `ChannelPick`, driven by
+`jasper.multiroom.reconcile.outputd_grouping_env`, picks the channel
+receiver-side on the round-tripped stream instead. The weave this section
+assumed (`weave_channel_split`) was removed as dead code (Wave 1 cleanup,
+2026-08-25); inv-5's `rate_adjust=false` shipped, but on the leader's ONE
+CamillaDSP, not a `CamillaDSP-B` that was never built.
 
 **Reconciler / env contract (the scaffolding to build first, INERT until the
 outputd reader lands + the flag is on):**
@@ -1420,9 +1424,8 @@ receivers are dumb channel-droppers.**
   bake a different room correction per channel in ONE config (`None` = solo
   byte-identical mono-duplicate; `[]` = FLAT right channel — an uncalibrated
   follower never gets the wrong-room curve). The earlier "`target_channels`"
-  phrasing referred to this axis. `room_peqs_right` and the (superseded
-  member-model) `channel_split` weave are **mutually exclusive** — the emitter
-  raises on the combination. Every generated config keeps `volume_limit: 0.0`.
+  phrasing referred to this axis. Every generated config keeps
+  `volume_limit: 0.0`.
 
 - **Wireless sub (transport endpoint):** the leader computes the
   crossover, level, and delay and bakes them into the **LFE
@@ -1456,8 +1459,8 @@ receivers are dumb channel-droppers.**
   [`research/balance-sync-calibration.md`](research/balance-sync-calibration.md).
 
 **P1.2 (2026-06-08):** the channel-split DSP itself is now codified,
-pure and tested, in
-[`jasper/multiroom/channel_split.py`](../jasper/multiroom/channel_split.py)
+pure and tested, in `jasper/multiroom/channel_split.py` (removed as dead
+code in the Wave 1 cleanup, 2026-08-25 — see the file-map entry above)
 — the `channel_select` Mixer (an L/R route, or a clip-safe −6.02 dB L+R
 sum for mono/sub) plus the sub's LR4 80 Hz lowpass. It is the *same*
 recipe whether a brainy stereo-pair member applies it locally or the

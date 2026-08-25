@@ -75,7 +75,6 @@ def test_member_camilla_kwargs_active_leader_gets_the_pipe_sink():
     kw = member_camilla_kwargs(
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
     assert kw["enable_rate_adjust"] is False
-    assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] == SNAPFIFO
     assert "channel_delays_ms" not in kw
 
@@ -90,7 +89,6 @@ def test_member_camilla_kwargs_active_follower_is_solo_defaults():
     kw = member_camilla_kwargs(_cfg(enabled=True, role="follower", channel="right",
                                     bond_id="b", leader_addr="jts.local"))
     assert kw["enable_rate_adjust"] is True
-    assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] is None
 
 
@@ -99,7 +97,6 @@ def test_member_camilla_kwargs_solo_is_unchanged_defaults():
     from jasper.multiroom.member_config import member_camilla_kwargs
     kw = member_camilla_kwargs(_cfg())  # grouping off
     assert kw["enable_rate_adjust"] is True
-    assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] is None
 
 
@@ -110,7 +107,6 @@ def test_member_camilla_kwargs_stereo_leader_still_bakes_the_pipe():
     from jasper.multiroom.reconcile import SNAPFIFO
     kw = member_camilla_kwargs(_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"))
     assert kw["enable_rate_adjust"] is False
-    assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] == SNAPFIFO
 
 
@@ -138,7 +134,6 @@ def test_member_camilla_kwargs_invalid_member_unchanged():
     kw = member_camilla_kwargs(_cfg(enabled=True, role="", channel="left",
                                     bond_id="", error="bond_id empty"))
     assert kw["enable_rate_adjust"] is True
-    assert kw["channel_split"] is None
     assert kw["playback_pipe_path"] is None
 
 

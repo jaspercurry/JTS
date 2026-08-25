@@ -3968,8 +3968,7 @@ def emit_active_speaker_driver_domain_config(
     pair_balance_trim -> split_active_<way>way (2->N) -> per-driver chain``:
     the inter-speaker channel-select runs FIRST (which channel of the pair this
     box plays), THEN the attenuate-only pair trim for this physical member,
-    THEN the intra-speaker driver split — exactly
-    ``jasper.multiroom.channel_split``'s documented composition order.
+    THEN the intra-speaker driver split.
     ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
     (``left`` / ``right`` / ``mono``); the channel-select mixer is the shared
     ``emit_channel_select_mixer`` primitive, so a follower and a bonded member

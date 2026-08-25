@@ -275,6 +275,4 @@ def test_metadata_records_program_channel() -> None:
 
 
 def test_channel_select_mixer_name_is_one_shared_constant() -> None:
-    from jasper.multiroom.channel_split import CHANNEL_SELECT_MIXER as cs_split
-
-    assert channel_select_mixer_name == CHANNEL_SELECT_MIXER == cs_split == "channel_select"
+    assert channel_select_mixer_name == CHANNEL_SELECT_MIXER == "channel_select"

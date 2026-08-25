@@ -204,13 +204,7 @@ carrier and the Camilla restart loads the unmuted result — the very graph the
 guard refuses. The mute is **withheld** whenever the resolved sink is not this
 speaker's own DAC: a `playback_pipe_path` (bonded-leader Snap FIFO) carries the
 SHARED stereo program, so muting a channel would strip it out of the group's
-stream rather than silence a local output; a `channel_split` weave duplicates one
-program channel onto both outputs (so a per-output muted set stops meaning what
-the topology's per-output claim meant) and, for `channel="sub"`, **appends** its
-crossover after the mute in the same Filter step, defeating terminality outright
-— `emit_sound_config` raises on the combination. (The weave's `channel_select`
-Mixer is spliced right after `master_gain`, *before* the per-channel steps, so it
-is not the mechanism.) An explicit passive stereo topology mutes nothing.
+stream rather than silence a local output. An explicit passive stereo topology mutes nothing.
 Unconfigured and unauthorized layouts do not re-emit at all. The full
 topology-to-runtime and reset contract is owned by the
 [speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).

@@ -7,11 +7,12 @@ the leaf helpers that turn a value into a line of CamillaDSP config.
 
 Why this module exists
 ----------------------
-Three subsystems generate CamillaDSP configs — sound-preference EQ
-(`jasper.sound.camilla_yaml`, which also composes live room correction),
-active-speaker crossovers (`jasper.active_speaker.camilla_yaml`), and
-multi-room channel-split (`jasper.multiroom.channel_split`). Before this
-module each had its own
+Two subsystems generate CamillaDSP configs today — sound-preference EQ
+(`jasper.sound.camilla_yaml`, which also composes live room correction) and
+active-speaker crossovers (`jasper.active_speaker.camilla_yaml`). A third,
+multi-room channel-split (`jasper.multiroom.channel_split`), consumed this
+module the same way until it was removed as dead code (Wave 1 cleanup,
+2026-08-25). Before this module existed, each had its own
 copy of `_fmt` and its own hand-rolled `Gain` / `Biquad` / `Mixer`
 emitters, so the CamillaDSP *format* (decimal places, field order,
 inline-flow style, the `BiquadCombo` Linkwitz-Riley spelling) was
@@ -129,14 +130,14 @@ def emit_peaking_biquad(name: str, *, freq: float, q: float, gain: float) -> lis
 #
 # It lives in this stdlib-only leaf — next to `emit_linkwitz_riley`, the shared
 # primitive that spells the corner into YAML — because that is the one module
-# every corner consumer already imports (multiroom.channel_split directly,
-# active_speaker.camilla_yaml directly, and output_topology can import it
-# without the circular active_speaker dependency its bounds comment warned
-# about). Before P5 the same three numbers were re-declared four ways
-# (multiroom.config, active_speaker.profile, output_topology,
-# multiroom.channel_split) — four independent numbers that could drift. Each of
-# those modules now BINDS its public constant name to these values (keeping the
-# stable public spelling) so there is one source of truth. The 200 Hz ceiling
+# every corner consumer already imports (active_speaker.camilla_yaml directly,
+# and output_topology can import it without the circular active_speaker
+# dependency its bounds comment warned about). Before P5 the same three
+# numbers were re-declared four ways (multiroom.config, active_speaker.profile,
+# output_topology, multiroom.channel_split — the last removed as dead code in
+# the Wave 1 cleanup) — four independent numbers that could drift. The
+# surviving modules each BIND their public constant name to these values
+# (keeping the stable public spelling) so there is one source of truth. The 200 Hz ceiling
 # in particular is load-bearing safety: `graph_safety.sub_audible_guard_present`
 # caps an audible sub's low-pass at it, so a corner ceiling that drifted higher
 # than the guard's would let a wider-than-legal sub low-pass past the guard.
@@ -272,11 +273,12 @@ def emit_mixer(
 # plays in a bond (left / right / a clip-safe mono+sub sum). This is the
 # INTER-speaker axis; it composes BEFORE any intra-speaker driver split. It is a
 # pure format/routing primitive (the "how"), so it lives here in the shared leaf
-# rather than in either caller — the two consumers are
-# ``jasper.multiroom.channel_split`` (weaves it into a 2-ch member config) and
-# ``jasper.active_speaker.camilla_yaml`` (prepends it to a follower's
-# driver-domain-only crossover graph). Sharing one definition keeps the mixer
-# name + the clip-safe mono-sum gain from drifting between them.
+# rather than in the caller — ``jasper.active_speaker.camilla_yaml`` (prepends
+# it to a follower's driver-domain-only crossover graph). A bonded DUMB
+# member's channel pick is a SEPARATE, receiver-side mechanism instead
+# (`jasper-outputd`'s Rust `ChannelPick`, driven by
+# ``jasper.multiroom.reconcile.outputd_grouping_env``) — not a consumer of
+# this Python primitive.
 
 # The split mixer's name. Distinct from ``master_gain`` on purpose: the Ducker
 # drives CamillaDSP's global ``main_volume`` fader and relies on ``master_gain``
@@ -377,10 +379,12 @@ def emit_master_gain_pipeline(
     the mixer as an identity placeholder and preserve it VERBATIM.
     Precisely (do not restate this wrong): the Ducker attenuates
     CamillaDSP's built-in ``main_volume`` fader, **not** this mixer;
-    ``master_gain`` is the stable identity anchor that downstream weaves
-    position against (multiroom's ``channel_select`` splices immediately
-    after it) and the reserved hook for future mixer ops. See the
-    sound-emitter tests for the byte-level contract.
+    ``master_gain`` is the stable identity anchor that a downstream weave
+    would position against — the multi-room channel-split weave once
+    spliced ``channel_select`` immediately after it this way, before it was
+    removed as dead code (Wave 1 cleanup, 2026-08-25) — and the reserved
+    hook for future mixer ops. See the sound-emitter tests for the
+    byte-level contract.
 
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
     reproduces the sound emitter's solo pipeline byte-for-byte (the

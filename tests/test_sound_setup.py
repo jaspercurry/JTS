@@ -7363,7 +7363,6 @@ async def test_apply_profile_blocks_program_bake_without_dirtying_dsp_state(
         "jasper.multiroom.member_config.member_camilla_kwargs",
         lambda: {
             "enable_rate_adjust": True,
-            "channel_split": None,
             "playback_pipe_path": None,
         },
     )

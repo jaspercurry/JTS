@@ -49,7 +49,8 @@
 //! drop. `ChannelPick` therefore mirrors the channel-split vocabulary
 //! (docs/HANDOFF-multiroom.md §4): `left`/`right` duplicate that program
 //! channel onto both DAC channels; `mono` averages (the clip-safe L+R sum
-//! at −6.02 dB, matching `channel_split.py`); `stereo` is passthrough.
+//! at −6.02 dB, matching `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo`
+//! is passthrough.
 //!
 //! **The pick applies to FIFO periods ONLY — a deliberate decision, not
 //! an oversight.** The pick is a property of the shared-STREAM format
