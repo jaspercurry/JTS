@@ -2723,7 +2723,8 @@ async function completePlanCaptureSet(ctx, { index, attempt, target }) {
     } else if (verdict.setExhausted) {
       renderPlanExhausted(ctx, { ...verdict, target, index });
     } else if (verdict.refused) {
-      // TERMINAL. The Pi refused ON the confirmation and re-raised, so the
+      // TERMINAL. The Pi refused ON the confirmation — the pre-apply
+      // accountability veto is the shipped case — and re-raised, so the
       // session is already gone: failure persisted, volume abandoned, relay
       // purged. `renderPlanRefused` is the page's existing terminal for
       // exactly this, and it offers no begin affordance, which is the point:
@@ -2747,7 +2748,8 @@ async function completePlanCaptureSet(ctx, { index, attempt, target }) {
 // `capture_result` (the one this screen was rendered from), so that function
 // would match it immediately and route straight back to the confirm screen.
 // Only session-level outcomes count here — plus a NEW terminal verdict, which
-// is how a refused group close reaches the household instead of timing out.
+// is how a refused group close (the pre-apply accountability veto) reaches the
+// household instead of timing out.
 async function waitForCaptureSetComplete(client, spec, isAborted) {
   const pollMs = Math.max(100, Math.min(1000, Number(spec.progress_poll_ms) || 250));
   // The group close runs the combine and the fit — the slowest analysis of the
