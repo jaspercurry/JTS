@@ -21,7 +21,7 @@ import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.fc_sweep import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
 )

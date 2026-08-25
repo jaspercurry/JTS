@@ -744,7 +744,7 @@ def test_the_low_tolerance_is_the_flows_own_measured_vs_predicted_bar():
     """**N3.** The probe and the tracking check must not hold one chain to two
     different standards in two different bands — so the constant is pinned to
     the flow's, not merely documented as equal to it."""
-    from jasper.active_speaker.crossover_v2_flow import VERIFY_TOLERANCE_DB
+    from jasper.active_speaker.crossover_v2.contracts import VERIFY_TOLERANCE_DB
 
     assert DELTA_PROBE_TOLERANCE_LOW_DB == VERIFY_TOLERANCE_DB
 
@@ -785,7 +785,7 @@ def test_the_spread_widening_tolerance_is_pinned_to_its_stated_value():
     Moving the constant is a product decision about that line and should fail
     here first.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.contracts import (
         DEFAULT_CLOUD_MEASURE_POSITIONS,
     )
 

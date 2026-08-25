@@ -83,9 +83,14 @@ __all__ = [
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "LATERAL_POSE_REGIME",
+    "MARK_DISTANCE_M",
     "POSITION_AXES",
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
+    "POSITION_ROLES",
+    "POSITION_ROLE_OFFAX",
+    "POSITION_ROLE_ONAX",
+    "POSITION_ROLE_XOVR",
     "PositionGeometry",
     "SCREEN_LOCATE_FAILED",
     "SCREEN_PILOT_LEVEL_COLLAPSE",
@@ -99,6 +104,7 @@ __all__ = [
     "BoostExclusion",
     "LateralPose",
     "LateralPoseCurve",
+    "cloud_position_capture",
     "cloud_position_screens",
     "lateral_pose_screens",
     "lateral_curves_sufficient",
@@ -1115,3 +1121,179 @@ def boost_excluded_bands_hz(
             "variance_check_failed": variance_check_failed,
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# the cloud group: one position, and the capture it becomes
+# --------------------------------------------------------------------------- #
+
+# The named question each prompted position answers (McCarthy's mic-position
+# vocabulary, attribution-stage plan §5 promotion queue item 1). Persisted with
+# the position so the attribution stage can consume a labelled sample instead
+# of an anonymous member of an average; profile-independent, so both listening
+# profiles read the same labels.
+#
+#   ONAX  — inside the design-axis window (lateral offset < WIDE_OFFSET_MIN_CM)
+#   OFFAX — out at the coverage edge (lateral offset >= WIDE_OFFSET_MIN_CM)
+#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on,
+#           which is the mechanism M8 needs a labelled sample of
+#
+# WHAT A CONSUMER MUST NOT ASSUME: a cloud carries every role. Roles come from
+# the walked PREFIX of the table, so the Full tier's 8 prompted positions
+# sample all three, but EXPRESS's 4 sample {onax, offax} ONLY — its walk stops
+# before the first vertical move. That is by design (express is the shorter
+# instrument, §1.3), so an attribution consumer reads the roles a group
+# actually has and reports the absent one as unsampled, never as null evidence.
+POSITION_ROLE_ONAX = "onax"
+POSITION_ROLE_OFFAX = "offax"
+POSITION_ROLE_XOVR = "xovr"
+POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
+#
+# The mark distance the CHECK screen asks for ("about 1 m in front of the
+# speaker"). It is the reference length that turns this flow's lateral OFFSETS
+# into the BEARINGS a positioner can act on, so it lives beside them rather than
+# only inside that sentence.
+MARK_DISTANCE_M = 1.0
+#: The pose a capture with no prompted move of its own was taken at — every
+#: one of them (CHECK, MEASURE, the entry baseline, stage 2's anchor) is a
+#: design-axis capture, which is the same fact :func:`_entry_policy` states to
+#: the position gate when it is handed no prompt.
+_DESIGN_AXIS_GEOMETRY = PositionGeometry(
+    axis=POSITION_AXIS_HORIZONTAL,
+    degrees=0,
+    mark_distance_m=MARK_DISTANCE_M,
+)
+@dataclass(frozen=True)
+class _CloudPosition:
+    """One accepted position inside a group, retained for the group-end combine.
+
+    ``response`` is the capture's ``ProgramAnalysis.summed_response`` — a
+    ``program_analysis.DriverResponse`` carrying the calibrated, reflection-gated
+    magnitude on a linear (rfftfreq) grid plus the matching complex TF. Holding
+    the response rather than a pre-built
+    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` is
+    deliberate: PR-4 needs the same object for the per-position work the null
+    gate and the spec curve do, and re-deriving it from a lossy intermediate
+    would be the drift this seam exists to prevent.
+    """
+
+    position_id: str
+    index: int
+    attempt: int
+    prompt: str
+    wide: bool
+    captured_at: float
+    response: Any
+    sample_rate_hz: int
+    # The named question this position answers (:data:`POSITION_ROLES`), copied
+    # off the prompt the operator was actually given. Persisted with the
+    # position so the attribution stage reads a labelled sample rather than an
+    # anonymous member of an average (attribution-stage plan §5 promotion queue
+    # item 1). Defaulted so every construction site that predates roles — the
+    # corpus and unit fixtures — stays valid unchanged.
+    role: str = POSITION_ROLE_ONAX
+    # WHERE the microphone was, carried off the SAME prompt ``role`` and
+    # ``wide`` come from (owner ruling, 2026-08-24). Held on the position
+    # rather than re-derived at retention: a geometry retake shows a different
+    # prompt than the table's, and a second derivation from the index would
+    # state the spot the operator was told to abandon.
+    #
+    # Defaulted to the design axis so every construction site that predates it
+    # — the corpus and unit fixtures — stays valid unchanged, exactly as
+    # ``role`` above is. That default is the honest one for a fixture: a
+    # position built without a pose is one nobody moved.
+    geometry: PositionGeometry = _DESIGN_AXIS_GEOMETRY
+    # PR-4: the contract-derived analysis bands this position's GROUP should be
+    # combined/searched with — spatial_combine.combine_positions's own
+    # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
+    # threaded as a separate call-site argument. Carrying them on the position
+    # (every position in one group shares the same session-derived values —
+    # see ``CrossoverV2Session.__init__``) is what lets
+    # :func:`combine_cloud_positions` derive the right bands from
+    # ``positions`` alone, with no caller (``_close_cloud_group``'s single
+    # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
+    # pass them explicitly or risk two call sites drifting apart.
+    # ``None`` means "use the module defaults" — the pre-PR-4 behaviour, still
+    # exercised by every corpus/unit test that builds a ``_CloudPosition``
+    # without these two kwargs.
+    echo_band_hz: tuple[float, float] | None = None
+    signal_band_hz: tuple[float, float] | None = None
+def cloud_position_capture(position: _CloudPosition) -> Any:
+    """One retained position → a :class:`spatial_combine.PositionCapture`.
+
+    **The PR-4 seam.** PR-3b calls the combiner for one thing — the geometry
+    verdict — but the input assembly is the whole assembly, so PR-4's wider
+    pipeline (``identify_interference_nulls`` → ``evaluate_flat_spec``) extends
+    the consumer, never this builder.
+
+    Regime of the ``ir`` field, stated exactly because ``detect_echo``'s answer
+    depends on it: it is the inverse rFFT of the response's **gated, calibrated**
+    complex transfer function — i.e. the impulse response AFTER
+    ``deconv.direct_arrival_window`` and the adaptive reflection gate that
+    ``program_analysis._driver_response`` applies, not the raw deconvolved IR.
+    The direct arrival is therefore present (the window places it at a fixed
+    pre-offset) and early secondary arrivals inside the gate survive, which is
+    the region ``detect_echo`` windows itself down to; LATE room reflections
+    beyond the gate are gone by construction. The S0 forensics ran the detector
+    on the ungated IR instead — ``tests/test_crossover_v2_cloud_geometry_corpus.py``
+    is the measurement that the two agree on the S0 corpus's geometry verdict,
+    rather than an assumption that they must.
+    """
+    from jasper.audio_measurement.spatial_combine import PositionCapture
+
+    response = position.response
+    freqs = np.asarray(response.freqs_hz, dtype=float)
+    magnitude = np.asarray(response.magnitude_db, dtype=float)
+    complex_tf = np.asarray(response.complex_tf)
+    # ``program_analysis._n_fft_for`` always returns a power of two (>= 8192),
+    # so the analysis grid is an even-length rfft and ``n = 2*(bins-1)``
+    # inverts it exactly rather than approximately.
+    ir = np.fft.irfft(complex_tf, n=2 * (complex_tf.size - 1))
+    return PositionCapture(
+        position_id=position.position_id,
+        freqs_hz=freqs,
+        magnitude_db=magnitude,
+        sample_rate=int(position.sample_rate_hz),
+        ir=ir,
+        # §4.2's one line. The role was written to the position RECORD and the
+        # persisted row and read by nothing analytical — the combiner's only
+        # per-position struct dropped it here, so nothing that decides or
+        # remembers a round ever saw a position's KIND. Carrying it changes no
+        # combination (the reduction stays unweighted; see
+        # ``PositionCapture.role``) and is what lets the per-position residual
+        # say "on-axis" rather than "position 3".
+        role=str(position.role or ""),
+    )
+
+
+def _geometry_verdict_from_combined(
+    combined: Any, n_positions: int,
+) -> dict[str, Any]:
+    """The geometry-verdict dict from an ALREADY-COMBINED result.
+
+    Split out of :func:`cloud_geometry_verdict` (S3 review finding,
+    2026-07-26) so :meth:`CrossoverV2Session._close_cloud_group` can
+    combine a group's positions exactly ONCE and derive both the retry-gating
+    verdict and the honest-instrument pipeline from that ONE object, rather
+    than each deriving its own combine. A plain JSON-native dict, because the
+    host persists it verbatim into the durable v2 state. ``locked`` is
+    ``False`` on every degraded path — but the ``reason`` says WHICH degraded
+    path, so "no credible echo estimates" never reads the same as "the cloud
+    combined and its nulls move".
+    """
+    if combined is None:
+        return {
+            "locked": False,
+            "reason": "combine_failed",
+            "n_positions": n_positions,
+        }
+    geometry = combined.geometry
+    return {
+        "locked": bool(geometry.locked),
+        "reason": str(geometry.reason),
+        "n_confident": int(geometry.n_confident),
+        "n_positions": int(geometry.n_positions),
+        "median_tau_us": float(geometry.median_tau_us),
+        "clustered_fraction": float(geometry.clustered_fraction),
+        "thin_evidence": bool(geometry.thin_evidence),
+    }

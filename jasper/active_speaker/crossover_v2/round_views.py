@@ -135,7 +135,7 @@ __all__ = [
     "verify_pose_curve",
 ]
 
-#: Mirrors ``crossover_v2_flow.POSITION_ROLE_ONAX`` as a local literal rather
+#: Mirrors ``.spatial.POSITION_ROLE_ONAX`` as a local literal rather
 #: than importing that (large, orchestration-heavy) module for one string.
 #: :mod:`.flat_spec_views` follows the same policy for the same reason — see
 #: its ``PositionCurve.role`` docstring: this package never owns that

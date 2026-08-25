@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 import jasper.active_speaker.crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
     _crossover_region_null_registry,
     committed_crossover_region_hz,

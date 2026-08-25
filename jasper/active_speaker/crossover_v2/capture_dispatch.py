@@ -69,7 +69,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from jasper.audio_measurement.program import KIND_SWEEP
+from jasper.audio_measurement.program import KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_SWEEP_HEARD,
     channel_map_isolation_db,
@@ -90,6 +90,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "ANCHOR_SCREEN_KINDS",
     "CAPTURE_SCREEN_KINDS",
+    "LOCATE_MIN_CONFIDENCE",
     "SCREEN_ALIGNMENT_UNRESOLVED",
     "SCREEN_ANCHOR_AMBIGUOUS",
     "SCREEN_CHANNEL_MAP_MISMATCH",
@@ -844,3 +845,43 @@ def _pilot_diag_fields(pilot: Any | None) -> dict[str, float | None]:
             round(isolation, 3) if isolation is not None else None
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# the locate-confidence screen
+# --------------------------------------------------------------------------- #
+
+# A located stimulus below this correlation confidence reads as "couldn't hear
+# the speaker" (locate_failed).
+LOCATE_MIN_CONFIDENCE = 0.1
+def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
+    """False when any ROLE's stimuli all failed the locate-confidence floor.
+
+    D8 (issue #1838). This used to be ``max(confidences) >= floor`` over every
+    stimulus segment in the capture, which is effectively no floor at all on a
+    multi-driver program: one clearly-located segment anywhere cleared the
+    gate for the whole capture, so a capture in which an entire driver was
+    inaudible passed and went on to be analysed as if both drivers had been
+    heard. Grouping by role first makes the gate mean what its name says.
+
+    Per ROLE, not per SEGMENT, deliberately. A role's segments are not
+    equally locatable by design — a two-level pilot pair's quiet side sits
+    10 dB under its loud side and locates more coarsely — so requiring every
+    segment to clear the floor would fail captures that are fine. One
+    confidently-located stimulus is enough to say "this driver was heard";
+    zero is not. Role-less stimuli (a summed sweep, which carries no role)
+    group together and are held to the same rule.
+
+    The stricter per-SWEEP floor that MEASURE also applies lives in
+    :func:`_sweep_locate_confidence_ok`.
+    """
+    by_role: dict[str | None, float] = {}
+    for loc in analysis.locations:
+        if loc.kind not in STIMULUS_KINDS:
+            continue
+        best = by_role.get(loc.role)
+        if best is None or loc.confidence > best:
+            by_role[loc.role] = loc.confidence
+    if not by_role:
+        return False
+    return all(best >= LOCATE_MIN_CONFIDENCE for best in by_role.values())

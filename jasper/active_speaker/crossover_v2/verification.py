@@ -99,12 +99,15 @@ every time.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
 
 import numpy as np
+
+from jasper.log_event import log_event
 
 from ..delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
@@ -160,6 +163,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # ``.failed`` / ``.not_evaluated`` are read at runtime.
     from jasper.audio_measurement.program_analysis import CaptureIntegrity
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "ADOPTION_MEASURED_REGRESSION",
     "ADOPTION_NO_ROLLBACK_ANCHOR",
@@ -183,6 +188,7 @@ __all__ = [
     "CAPTURE_INTEGRITY_FAILED",
     "CAPTURE_INTEGRITY_UNAVAILABLE",
     "CLIPPED_RUN_CHECK",
+    "ECHO_BAND_HF_REGIME_FLOOR_HZ",
     "HEADROOM_CAP_REACHED",
     "HEADROOM_NO_OBJECTIVES",
     "HEADROOM_PLATEAUED",
@@ -211,6 +217,7 @@ __all__ = [
     "TRACKING_COMPARATOR_KEY",
     "TRUST_MEASURED",
     "Verdict",
+    "committed_crossover_region_hz",
     "decide_adoption",
     "evaluate_applied_safety",
     "evaluate_benefit",
@@ -2132,3 +2139,305 @@ RESULT_KEEP_PREVIOUS = "keep_previous"
 #: which is why the conventions test that pins this vocabulary skips exactly
 #: this string and says so.
 RESULT_INCONCLUSIVE = "inconclusive"
+
+
+# --------------------------------------------------------------------------- #
+# region, null-registry and flatness diagnostics
+# --------------------------------------------------------------------------- #
+
+def _band_edge(band: Any, index: int) -> float | None:
+    """One edge of a persisted ``[lo, hi]`` band pair, or ``None``.
+
+    For log lines that carry a band as two scalars (the shape
+    ``_log_verify_diag``'s ``tracking_band_lo_hz``/``_hi_hz`` established)
+    rather than one bracketed value logfmt would have to quote.
+    """
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    edge = band[index]
+    return float(edge) if isinstance(edge, (int, float)) else None
+def _flatness_tilt_log_field(flatness: Any) -> str:
+    """The band-to-band level step as one logfmt token — issue #1857's
+    frame-free reading, beside a ``flatness_max_db`` that is not.
+
+    ``flatness_max_db`` and ``flatness_bands`` are both distances from a
+    reference pooled ACROSS bands, so a uniformly-off band drags that zero
+    and inflates the others: on the corpus session this event's own
+    forensics started from, a woofer flat to +/-0.1 dB logged
+    ``+4.84 dB @ 1339.6 Hz`` because a ~5 dB dark tweeter had already pulled
+    the frame down. A step BETWEEN two band levels cannot be moved by the
+    frame -- the reference cancels in the subtraction -- so this token says
+    the same thing under whichever anchor #1857's still-open Q-E eventually
+    picks.
+
+    Shape: ``<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz``, the higher-sitting band
+    first, no space or bracket for logfmt to quote. ``""`` (never a
+    fabricated reading) when the gauge carried no tilt -- an older
+    persisted block, or fewer than two bands with a measured level. Copied
+    from :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`'s own
+    output; nothing here is recomputed and no verdict moves.
+    """
+    if not isinstance(flatness, Mapping):
+        return ""
+    tilt = flatness.get("tilt")
+    if not isinstance(tilt, Mapping) or tilt.get("evaluable") is not True:
+        return ""
+    step_db = tilt.get("step_db")
+    high, low = tilt.get("high_band_hz"), tilt.get("low_band_hz")
+    if (
+        not isinstance(step_db, (int, float)) or isinstance(step_db, bool)
+        or not isinstance(high, (list, tuple)) or len(high) != 2
+        or not isinstance(low, (list, tuple)) or len(low) != 2
+    ):
+        return ""
+    edges = [_band_edge(high, 0), _band_edge(high, 1), _band_edge(low, 0), _band_edge(low, 1)]
+    if any(edge is None for edge in edges):
+        return ""
+    high_lo, high_hi, low_lo, low_hi = edges
+    return (
+        f"{step_db:.2f}dB:{high_lo:.0f}-{high_hi:.0f}Hz>{low_lo:.0f}-{low_hi:.0f}Hz"
+    )
+# The contract-derived echo/null analysis band's LOWER edge must not drift
+# below this floor without disclosure. Provenance, not a new calibration:
+# spatial_combine.py's BAND_BELOW_PASSBAND_MARGIN_DB comment (PR-2, N-3) pins
+# a six-band sweep of the SAME JTS3 cdhorn corpus this program's corpus tests
+# already use --
+#
+#   band            residue deficit    screen catches it?
+#   (5000, 19000)   40.43-41.98 dB     yes  (the module default)
+#   (4000, 20000)   35.46-35.58 dB     yes, by 10.46 dB -- comfortable
+#   (3000, 19000)   26.53-27.05 dB     yes, by only 1.53 dB -- "already thin
+#                                      one octave up"
+#   (2000, 19000)   18.21-18.23 dB     NO -- a false negative, not a
+#                                      narrowed gap (this speaker's crossover
+#                                      sits at 2 kHz; the woofer's own
+#                                      passband is inside the analysed band)
+#
+# re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
+# 4000 Hz is the lowest edge in that pinned table with COMFORTABLE headroom
+# (10.46 dB, vs the 3 kHz row's thin 1.53 dB) -- the row printed above is
+# the one that actually justifies this constant's value.
+#
+# **A declared contract whose derived echo band dips below this floor is
+# CLAMPED up to it, and the clamp is disclosed** (event + payload). PR-4
+# shipped the reviewed disclose-don't-override design -- warn, then run the
+# detector on the declared band anyway -- and the first real cloud session
+# falsified it (2026-07-27, session cap_4NUGqx3yIzSuv4ta2ozfKw; issue
+# #1763): the JTS3 tweeter's CORRECTLY declared measurement_band_hz
+# [2000, 18000] produced a (2000, 18000) analysis band, fired the designed
+# WARNING, and proceeded -- so that session's tau/r/registry outputs carry
+# an uncalibrated-regime asterisk on the one measurement that mattered (the
+# 2 kHz row above is a false NEGATIVE, not a narrowed gap: this speaker
+# crosses over at 2 kHz, so the woofer's own passband sits inside the
+# analysed band). Disclosure alone does not keep a session inside a
+# calibrated regime; the clamp does, and the disclosure keeps the declared
+# value visible so nobody has to read the clamped band as a declaration.
+# The two quantities the derivation had been conflating are the driver's
+# declared operating/measurement WINDOW (excitation + SNR scoring, which
+# measurement_band_hz owns) and the echo/null ANALYSIS band (a
+# detector-calibration concern, which this floor owns).
+#
+# **Clamping costs no cross-session comparability**, which is why it is
+# cheap: the detector's quefrency step is 1e6 / BANDWIDTH, so the clamped
+# JTS3 band (4000, 18000) resolves at 1e6 / 14000 = 71.4 us -- identical to
+# the module default (5000, 19000), also 14 kHz wide, the band S0 was
+# measured at. A clamped session's tau ladder is directly comparable to
+# S0's rather than merely adjacent to it.
+#
+# See _derive_cloud_echo_band_hz.
+ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
+def _null_registry_to_dict(report: Any) -> dict[str, Any]:
+    """``InterferenceNullReport`` -> a plain JSON dict.
+
+    PR-1 shipped no ``to_dict`` (the module docstring's own words: "zero
+    production callers by design until the plan's PR-4 wires it into the
+    session's cloud-group analysis") -- this is that wiring layer's owned
+    serialization, mirroring ``FlatSpecReport.to_dict``'s shape so the two
+    persisted reports read consistently.
+    """
+    return {
+        "nulls": [
+            {
+                "f_lo_hz": n.f_lo_hz, "f_hi_hz": n.f_hi_hz,
+                "f_center_hz": n.f_center_hz, "n": n.n, "tau_us": n.tau_us,
+                "r_time": n.r_time, "r_freq": n.r_freq,
+                "agreement": n.agreement, "depth_db": n.depth_db,
+                "classification": n.classification,
+                "evidence": dict(n.evidence),
+            }
+            for n in report.nulls
+        ],
+        "excluded_bands_hz": [list(b) for b in report.excluded_bands_hz],
+        "excluded_fraction": float(report.excluded_fraction),
+        "refusals": [
+            {
+                "f_center_hz": r.f_center_hz, "depth_db": r.depth_db,
+                "reason": r.reason, "evidence": dict(r.evidence),
+            }
+            for r in report.refusals
+        ],
+        "reason": report.reason,
+        "classification": report.classification,
+        "band_hz": list(report.band_hz),
+        "tau_ladder_us": float(report.tau_ladder_us),
+        "arrival_tau_us": float(report.arrival_tau_us),
+        "arrival_r_time": float(report.arrival_r_time),
+        "arrival_r_max": float(report.arrival_r_max),
+        "n_corroborating": int(report.n_corroborating),
+        "r_freq": float(report.r_freq),
+        "agreement": float(report.agreement),
+        "ladder_arrival_gap": float(report.ladder_arrival_gap),
+        "capped": bool(report.capped),
+        "min_depth_db": float(report.min_depth_db),
+        "n_candidates": int(report.n_candidates),
+    }
+def _crossover_region_null_registry(
+    combined: Any,
+    *,
+    echo_band_hz: tuple[float, float],
+    crossover_region_hz: tuple[float, float] | None,
+    identify: Any,
+) -> dict[str, Any] | None:
+    """Ask the null registry about the CROSSOVER REGION — and never let the
+    answer gate anything (#1967, #1867).
+
+    The defect, in the panel's own words: the registry "did not return
+    'unknown,' it was **never asked** — its band excludes the region." The
+    gating band's lower edge is floored at
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so on a 2 kHz crossover the
+    one region that dominates the residual is structurally unreachable by the
+    one instrument built to explain it, while the cloud screen separately
+    carves it out of grading. #1867 adds the mechanism that makes this
+    concrete: the τ ≈ 303 µs comb's own model puts rungs at 1649 Hz and
+    4948 Hz, and neither is visible from above 4 kHz.
+
+    **What the 4 kHz floor protects, stated before it is touched.** It is not
+    a round number: ``ECHO_BAND_HF_REGIME_FLOOR_HZ``'s comment pins a six-band
+    sweep of this same corpus in which the detector's signal-presence screen
+    catches the band-below-passband condition by 10.46 dB at a 4 kHz edge, by
+    only 1.53 dB at 3 kHz, and **fails outright at 2 kHz — a false NEGATIVE,
+    not a narrowed gap**, precisely because at that edge the woofer's own
+    passband sits inside the analysed band. #1763 then falsified the original
+    disclose-and-proceed design in the field: a correctly declared
+    [2000, 18000] window fired the designed warning, proceeded, and left that
+    session's τ/r/registry outputs carrying an uncalibrated-regime asterisk on
+    the one measurement that mattered. Disclosure did not keep the session
+    inside a calibrated regime; the clamp did.
+
+    **So the floor does not move.** ``echo_band_hz`` is unchanged, the gating
+    registry still runs on it, and this function's output is unioned into
+    NOTHING — not ``merged_mask``, not ``spec_mask``, not the trusted floor,
+    not a verdict. What changes is only that the question gets asked and the
+    answer gets published.
+
+    **Why that is sound, and it is the same argument R9 already ships.** The
+    failure the clamp prevents is a screen whose deficit statistic is
+    uncalibrated in this regime — i.e. the band's outputs are not trustworthy
+    enough to *decide* on. It is not that the detector produces nothing there.
+    Classification that can never reach a decision cannot be corrupted by a
+    mis-calibrated screen; the worst case is a finding a reader discounts.
+    ``gating.SEARCH_T_MIN_MS`` made exactly this trade for exactly this reason
+    — a candidate below it "is recorded in the ``internal_reflection_ledger``,
+    and it NEVER gates" — after the R9 certification found a challenger that
+    fired 13/13 on the horn's own internal feature. Asymmetric cost: a false
+    *detection* that gates is catastrophic, a false detection that only
+    classifies is noise.
+
+    **And this is where R10a's objective is the enabling context, not
+    decoration.** A finding here used to be uninterpretable: nothing in the
+    flow could say whether energy at 1649 Hz was a room null, a driver
+    feature, or the two branches summing. The committed crossover now answers
+    that — ``crossover_region_hz`` comes from the shipped graph's own
+    committed regions, and the per-branch objective knows what each branch is
+    *supposed* to be doing across that span. The finding is published WITH the
+    band that produced it, so a reader gets "a null inside the committed
+    handoff" rather than an unattributed anomaly. That is why this ships in
+    the objective round and not before it.
+
+    Returns ``None`` — never an empty dict — when there is no committed
+    crossover to name a region with, or when the gating band already reaches
+    the region (nothing was hidden, so there is nothing to disclose), or when
+    the extension would be degenerate.
+    """
+    if crossover_region_hz is None:
+        return None
+    region_lo_hz = float(crossover_region_hz[0])
+    gating_lo_hz, gating_hi_hz = float(echo_band_hz[0]), float(echo_band_hz[1])
+    if region_lo_hz >= gating_lo_hz:
+        return None
+    if region_lo_hz <= 0.0 or region_lo_hz >= gating_hi_hz:
+        return None
+
+    # The SAME upper edge as the gating band, lowered to reach the region.
+    # Extending rather than carving a narrow window keeps the detector's own
+    # width constraints satisfied (its quefrency step is 1e6 / bandwidth), so
+    # the extension is not a differently-resolved instrument reporting in the
+    # same units as the gating one.
+    band_hz = (region_lo_hz, gating_hi_hz)
+    try:
+        report = identify(combined, band_hz=band_hz)
+    except Exception:  # noqa: BLE001 - a classify-only surface may never
+        # break a session. The gating registry above has already run and is
+        # unaffected; an extension that cannot be computed is simply absent.
+        log_event(
+            logger, "correction.crossover_v2_crossover_region_registry_failed",
+            level=logging.WARNING, band_hz=list(band_hz),
+        )
+        return None
+
+    block = _null_registry_to_dict(report)
+    block.update({
+        "band_hz": list(band_hz),
+        # The two load-bearing flags, spelled out rather than implied by
+        # absence from a mask a reader cannot see from here.
+        "gating": False,
+        "regime": "uncalibrated_below_hf_floor",
+        "hf_regime_floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        "crossover_region_hz": [
+            float(crossover_region_hz[0]), float(crossover_region_hz[1]),
+        ],
+        "why": (
+            "Classification only. Below "
+            f"{ECHO_BAND_HF_REGIME_FLOOR_HZ:.0f} Hz the detector's "
+            "signal-presence screen is uncalibrated for a band that spans the "
+            "committed crossover, so a finding here is evidence to read, "
+            "never a reason to exclude a band or move a verdict."
+        ),
+    })
+    log_event(
+        logger, "correction.crossover_v2_crossover_region_registry",
+        band_hz=list(band_hz),
+        crossover_region_hz=list(crossover_region_hz),
+        classification=str(block.get("classification", "")),
+        n_candidates=int(block.get("n_candidates", 0) or 0),
+        gating=False,
+    )
+    return block
+
+
+def committed_crossover_region_hz(
+    regions: Iterable[Any], *, octaves: float = 1.0,
+) -> tuple[float, float] | None:
+    """The band the COMMITTED crossover hands off in — ``Fc ± octaves`` across
+    every committed region, or ``None`` when nothing is committed.
+
+    Derived from the preset's own ``crossover_regions`` (the same objects
+    :func:`~jasper.active_speaker.branch_chain.sections_by_role` walks), never
+    from the session's working Fc, because this band's whole purpose is to say
+    where the SHIPPED graph divides the spectrum. A speaker with no committed
+    region has no handoff and gets ``None`` — the same "invent nothing" rule
+    ``sections_by_role`` follows.
+
+    One octave because that is the span the crossover report (#1968 Q4) uses
+    for correction-authority tapering and the span R10a's own bench scores the
+    crossover-region residual over; keeping one number for "the crossover
+    region" is why it is a default here rather than three literals.
+    """
+    fcs = [
+        float(getattr(r, "fc_hz", 0.0)) for r in regions
+        if float(getattr(r, "fc_hz", 0.0)) > 0.0
+    ]
+    if not fcs:
+        return None
+    span = 2.0 ** octaves
+    return (min(fcs) / span, max(fcs) * span)

@@ -996,7 +996,7 @@ def test_hf_min_occurrences_matches_flow_paired_gate():
     disagree about the N>=3 'paired gate.' Kept as a local constant in the fit
     module (not imported) because the flow imports THIS module -- this test is
     the guard that keeps the two numerically identical."""
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.intervention import (
         LINEARIZATION_MIN_PAIRED_OCCURRENCES,
     )
     assert _HF_MIN_OCCURRENCES == LINEARIZATION_MIN_PAIRED_OCCURRENCES

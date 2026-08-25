@@ -603,7 +603,9 @@ def _check_screen(analysis, *, honour_ambiguity: bool = True) -> str | None:
     build say" and "what does this one say" without a second copy of the ladder.
     """
     from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
-    from jasper.active_speaker.crossover_v2_flow import _stimulus_locate_ok
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (
+        _stimulus_locate_ok,
+    )
 
     plan = analysis.gain_plan
     return _dispatch.check_screens(_dispatch.CheckScreens(

@@ -813,7 +813,7 @@ def test_every_decision_serialises_with_the_numbers_it_used():
 
 
 def test_material_improvement_bar_is_the_shipped_constant_not_a_copy():
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.attempt_grading import (
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
 

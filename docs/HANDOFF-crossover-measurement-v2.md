@@ -4862,7 +4862,7 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(c
   band-to-band subtraction, so this token reads the same under whichever
   anchor Q-E eventually picks. `""` when the gauge carried no tilt — an
   older persisted block, or fewer than two bands with a measured level. See
-  `crossover_v2_flow._flatness_tilt_log_field` and
+  `crossover_v2.verification._flatness_tilt_log_field` and
   `flat_spec.spec_band_tilt`), `flatness_rms_db`,
   `spec_n_excluded`, `validity_floor_hz`. Emitted from `_run_cloud_pipeline`,
   and since the flat-linearization plan's PR-5 it is the ONLY place a
