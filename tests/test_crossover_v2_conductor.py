@@ -38,6 +38,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2 import planning
@@ -69,11 +70,32 @@ from jasper.active_speaker.delta_probe import (
     VERDICT_SAFETY_ONLY,
     VERDICT_UNAVAILABLE,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.attempt_grading import (
+    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+)
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_APPLYING,
+    PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
+    PHASE_DONE,
+    PHASE_ENTRY_BASELINE,
+    PHASE_MEASURE,
+    PHASE_VERIFY,
+)
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     DELTA_PROBE_REASON_BY_VERDICT,
     REASON_CORRECTION_MODEL_ERROR,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_UNSAFE_RESULT,
+    REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_LOCATE_FAILED,
+    REASON_REGISTRY,
+    REASON_RELAY_TIMEOUT,
+    TRANSIENT_AUTO_RETRY_CODES,
+    locate_failed_diagnosis,
+)
+from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
@@ -99,28 +121,15 @@ from jasper.active_speaker.crossover_v2_flow import (
     MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
     MIN_CLOUD_VERIFY_POSITIONS,
-    PHASE_APPLYING,
-    PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
-    PHASE_DONE,
-    PHASE_ENTRY_BASELINE,
-    PHASE_MEASURE,
-    PHASE_VERIFY,
     POSITION_ROLE_ONAX,
     POSITION_ROLES,
     PILOT_LEVEL_DELTA_DB,
     PILOT_SNR_UNUSABLE_DB,
-    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     CLAIM_FAIL,
     CLAIM_NOT_EVALUATED,
     CLAIM_NO_PER_BRANCH_CAPTURE,
     CLAIM_PASS,
     verify_absolute_tolerance_db,
-    REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_LOCATE_FAILED,
-    REASON_REGISTRY,
-    REASON_RELAY_TIMEOUT,
     REVERIFY_NO_REWALK_HEADLINE,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
@@ -128,7 +137,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     WIDE_OFFSET_MIN_CM,
     TIER_FULL,
     TIER_REMOTE,
-    TRANSIENT_AUTO_RETRY_CODES,
     VERIFY_ANCHOR_HOLD_MESSAGE,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
     CrossoverV2Session,
@@ -157,7 +165,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     courtesy_prelude_for_phase,
     express_cloud_measure_positions,
     format_position_distance,
-    locate_failed_diagnosis,
     open_measurement_volume,
     resolve_plan_shape,
     spec_report_for_predicted_sum,
@@ -4488,8 +4495,8 @@ def test_every_retriable_reason_has_one_structured_diagnosis_source():
 @pytest.mark.parametrize(
     ("analysis_kwargs", "expected_code"),
     [
-        ({"linearity": False}, flow.REASON_AGC_BEHAVIORAL_FAIL),
-        ({"pilot_snr_ok": False}, flow.REASON_SNR_FLOOR),
+        ({"linearity": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL),
+        ({"pilot_snr_ok": False}, refusal_copy.REASON_SNR_FLOOR),
     ],
 )
 def test_non_special_reasons_keep_their_diagnosis_on_the_final_extra(
@@ -4530,7 +4537,7 @@ def test_verify_inconclusive_keeps_its_measured_reflection_at_exhaustion():
     for attempt in range(3, 3 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
         verdict = _run_phase(c, 3, attempt)
 
-    diagnosis = flow.verify_inconclusive_diagnosis(True)
+    diagnosis = refusal_copy.verify_inconclusive_diagnosis(True)
     assert verdict["terminal"] is True
     assert verdict["reflection_measured"] is True
     assert verdict["reason"].startswith(diagnosis)

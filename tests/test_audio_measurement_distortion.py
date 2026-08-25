@@ -776,7 +776,7 @@ def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
     from jasper.active_speaker.crossover_v2.programs import (
         courtesy_prelude_for_phase,
     )
-    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 
     cli, spec = _replay_cli("_hd_replay_identity")
     bands = {"woofer": WOOFER_BAND_HZ, "tweeter": TWEETER_BAND_HZ}
@@ -842,7 +842,7 @@ def test_the_replay_run_names_the_prelude_vintage_it_solved(
     from jasper.active_speaker.crossover_v2.programs import (
         courtesy_prelude_for_phase,
     )
-    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 
     cli, spec = _replay_cli("_hd_replay_disclosure")
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)

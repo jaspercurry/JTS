@@ -63,6 +63,7 @@ import pytest
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ROLLBACK_VERDICTS,
     SEAM_DEFERRED_QUIETER_THAN_COMMANDED,
@@ -108,13 +109,15 @@ from jasper.active_speaker.crossover_v2.verification import (
     TRUST_MEASURED,
     Verdict,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CORRECTION_MEASURED_REGRESSION,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_UNPROVEN_BOOST,
     REASON_REGISTRY,
     REASON_VERIFY_OUT_OF_TOLERANCE,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
     REFERENCE_MARK_DESIGN_AXIS,
 )
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -3602,7 +3605,7 @@ def test_an_unknown_probe_class_falls_to_the_floor_not_to_a_guess():
         f"{ADOPTION_PROBE_ROLLBACK_CLASS}:a_class_from_the_future"
     )
 
-    assert code == flow.REASON_CORRECTION_UNVERIFIABLE_RESULT
+    assert code == refusal_copy.REASON_CORRECTION_UNVERIFIABLE_RESULT
     assert code != REASON_CORRECTION_MEASURED_REGRESSION
 
 

@@ -34,13 +34,15 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     measured_response_from_analysis,
 )
 from jasper.active_speaker.attempts_loop import FloorStats
-from jasper.active_speaker.crossover_v2_flow import (
-    GEOMETRY_RETRY_POSITIONS,
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
     PHASE_VERIFY,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    GEOMETRY_RETRY_POSITIONS,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     CrossoverV2Session,
     V2FlowSeams,

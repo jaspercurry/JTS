@@ -50,11 +50,7 @@ import pytest
 from jasper.active_speaker.driver_protection import (
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    STAGE1_INCLUDES_CLOUD_MEASURE,
-    DEFAULT_CLOUD_MEASURE_POSITIONS,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    GEOMETRY_RETRY_OFFSET_CM,
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -62,7 +58,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     PHASE_DONE,
     PHASE_MEASURE,
     PHASE_VERIFY,
-    POSITION_ROLES,
+)
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     PhaseVerdict,
     REASON_APPLY_FAILED,
     REASON_CHANNEL_MAP_MISMATCH,
@@ -71,6 +68,14 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_DETERMINISTIC_MISMATCH,
+    locate_failed_diagnosis,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    STAGE1_INCLUDES_CLOUD_MEASURE,
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    GEOMETRY_RETRY_OFFSET_CM,
+    POSITION_ROLES,
     TIER_EXPRESS,
     TIER_FULL,
     V2_FIRST_BEGIN_TIMEOUT_S,
@@ -82,7 +87,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     build_v2_verify_session_spec,
     cloud_capture_target,
     format_position_distance,
-    locate_failed_diagnosis,
     resolve_plan_shape,
     v2_first_begin_timeout_s,
 )
@@ -1029,9 +1033,11 @@ def test_a_position_hold_that_expires_is_named_not_blamed_on_the_transport():
     Both halves are pinned here: what lands on disk, and what the phone is left
     holding.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_POSITION_HOLD_EXPIRED,
         REASON_RELAY_TIMEOUT,
+    )
+    from jasper.active_speaker.crossover_v2_flow import (
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
         TIER_REMOTE,
@@ -3237,7 +3243,7 @@ def test_a_measure_only_session_resolves_to_review_never_done():
     theoretical one — and the acceptance criterion is explicit that "a stage-1
     session never renders 'your speaker is tuned'".
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3318,7 +3324,7 @@ def test_a_corrupt_state_cannot_reach_the_review_screen_either():
     It resolves through the loop to its first unaccepted phase, exactly as
     before this change.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     v2host.save_v2_state({
         "session_id": "cap_x",
@@ -3383,7 +3389,7 @@ def test_a_refused_preflight_carries_the_predicates_own_sentence(caplog):
     passed through verbatim rather than re-phrased here — and the refusal gets
     a named log line, because a household-visible dead end nobody can grep for
     is not a disclosure (AGENTS.md's no-silent-failure rule)."""
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _refuse(status):
         raise v2host.CrossoverV2Refused(
@@ -3412,7 +3418,7 @@ def test_a_coded_refusal_carries_its_registrys_own_resolution_control():
     it declares that control, from the SAME registry entry the hard-stop screen
     reads — so the review screen's message and its button can never disagree
     about what the household should do next."""
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _refuse(status):
         raise v2host.CrossoverV2Refused(
@@ -3438,7 +3444,7 @@ def test_an_unexpected_preflight_failure_fails_closed(caplog):
     Apply on its own honest sentence, because the end state being prevented
     (applied, then stage 2 refuses at open, box corrected and ungraded) is
     identical whether the predicate refused or simply could not run."""
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _explode(status):
         raise OSError("the topology file is unreadable")
@@ -3812,7 +3818,7 @@ def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     original = v2host.resolve_conductor_context
     v2host.resolve_conductor_context = lambda status: object()
@@ -4312,7 +4318,9 @@ def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     """
     import logging
 
-    from jasper.active_speaker.crossover_v2_flow import REASON_PROGRAM_UNPLAYABLE
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
+        REASON_PROGRAM_UNPLAYABLE,
+    )
 
     class _Ready:
         needs_recovery = False
@@ -5521,8 +5529,8 @@ def _no_sweep_state(*, fc_selection=None):
     they are not about. The shipped shape has its own pin in
     ``test_crossover_v2_lateral_evidence.py``.
     """
+    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
     from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_VERIFY,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
         build_v2_cloud_index_phase_map,
@@ -5581,7 +5589,7 @@ def test_a_paused_walk_commission_still_grades_and_keeps_its_undo():
     afterwards". VERIFY answered it here; no selector was consulted, and none
     had to be.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_ENTRY_BASELINE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
@@ -8674,10 +8682,10 @@ def test_a_program_failure_before_any_capture_is_armed_posts_an_honest_exhausted
     ``_post_terminal_failure_host_event`` runs: exactly the "no capture
     armed" branch the issue names.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        CrossoverV2FlowError,
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_PROGRAM_UNPLAYABLE,
     )
+    from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
     from jasper.capture_relay import session as session_mod
 
     backend = FakePlanRelayBackend()
@@ -11272,11 +11280,8 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_VERIFY,
-        CrossoverV2Session,
-        V2FlowSeams,
-    )
+    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
+    from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams
 
     from tests.crossover_v2_fixtures import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
 

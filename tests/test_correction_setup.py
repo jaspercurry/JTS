@@ -1035,7 +1035,7 @@ def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_co
     the v2 envelope itself renders for internal_error — never the raw
     exception. The raw string still reaches the journal unchanged; only the
     household-facing surface is sanitized here."""
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_INTERNAL_ERROR,
         REASON_REGISTRY,
     )

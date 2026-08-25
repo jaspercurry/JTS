@@ -57,7 +57,7 @@ from jasper.active_speaker.capture_provenance import (
     volume_fields_agree,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_VERIFY
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_VOLUME_DRIFT,
     REASON_REGISTRY,
 )
@@ -316,7 +316,9 @@ def test_the_drift_refusal_is_classified_as_its_own_reason():
     opposite of what happened — the program was admissible and the SPEAKER's
     level was not the one it was admitted against (the #1820 rule that a
     refusal needing a different action needs a different code)."""
-    from jasper.active_speaker.crossover_v2_flow import REASON_PROGRAM_UNPLAYABLE
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
+        REASON_PROGRAM_UNPLAYABLE,
+    )
 
     classified = v2host.classify_program_failure(
         MeasurementFaderDrift(
@@ -332,7 +334,7 @@ def test_the_drift_reason_is_terminal_and_not_retried_around():
     retry around." The re-assert has already been tried and could not be
     confirmed, so another attempt at the same capture only re-runs it against
     whatever is holding the fader."""
-    from jasper.active_speaker.crossover_v2_flow import TEMPLATE_HARD_STOP
+    from jasper.active_speaker.crossover_v2.refusal_copy import TEMPLATE_HARD_STOP
 
     spec = REASON_REGISTRY[REASON_MEASUREMENT_VOLUME_DRIFT]
     assert spec.template == TEMPLATE_HARD_STOP

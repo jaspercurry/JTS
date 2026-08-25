@@ -213,20 +213,14 @@ from jasper.active_speaker.crossover_v2.intervention import (
     plan_linearization,
 )
 from jasper.active_speaker.crossover_v2.journey import (
-    CAPTURE_PHASES,
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
-    LATERAL_CONSUMER_FORWARD_MODEL,
-    PHASE_APPLYING,
     PHASE_CHECK,
-    PHASE_CLOSING,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_DONE,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
-    PHASE_REVIEW,
     PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
@@ -2124,110 +2118,43 @@ def build_v2_verify_index_phase_map(
 
 
 # --------------------------------------------------------------------------- #
-# failure taxonomy (§5.10) — re-exported, no longer defined here
+# failure taxonomy (§5.10) — owned by
+# :mod:`jasper.active_speaker.crossover_v2.refusal_copy`
 #
-# #2291 Phase 5c-ii moved the whole household vocabulary — the reason codes, the
-# remediation templates, the ``ReasonSpec``/``RetryableReasonCopy`` carriers, the
-# ``REASON_REGISTRY`` that binds a code to its sentence and its retry budget, the
-# copy selectors, and ``PhaseVerdict`` — into
-# :mod:`jasper.active_speaker.crossover_v2.refusal_copy`, and the four library
-# clusters below into the package siblings that already own their decisions.
-#
-# Why the vocabulary had to move, when 5a-vii ruled it did not: that ruling was
-# about ORGANS, and an organ answers with a kind. Phase 5c dissolved
-# ``CrossoverV2Conductor``, and the spine that survived it lands in the
-# package — whose whole
-# job is building ``PhaseVerdict``s, while
+# #2291 Phase 5c-ii moved the whole household vocabulary there — the reason
+# codes, the remediation templates, the ``ReasonSpec``/``RetryableReasonCopy``
+# carriers, the ``REASON_REGISTRY`` that binds a code to its sentence and its
+# retry budget, the copy selectors, and ``PhaseVerdict``. Spine-in-package
+# forced vocabulary-in-package:
 # ``test_no_domain_module_imports_the_host_or_the_legacy_flow`` forbids any
-# module there importing this one. Spine-in-package forces
-# vocabulary-in-package. Where the vocabulary PHILOSOPHICALLY belongs is a
-# separate, still-open question (issue #2390) — the envelope is its largest
-# consumer, and 5c-ii settled only the mechanical half.
+# module there importing this one. Where the vocabulary PHILOSOPHICALLY
+# belongs is a separate, still-open question (issue #2390).
 #
-# The ``X as X`` spelling is the explicit-re-export form, exactly as the Phase
-# 5a-v(b) fc_sweep block below uses it: a plain ``import X`` would read as dead,
-# and a suppression marker would spend the repository's frozen ``noqa`` budget
-# (``test_lint_contracts.test_noqa_debt_does_not_grow``) on something that is not
-# a suppression at all. Every name keeps its historical spelling, so this move
-# changed no importer anywhere — 3 production files and 17 test files reach these
-# names and not one of them was edited.
+# What follows is what THIS module reads. Every other consumer imports from
+# the owning module directly.
 #
-# **These doors are READ-ONLY for anything the package resolves itself.**
-# Substituting one here rebinds THIS module's name and nothing else, so it binds
-# only for readers that are themselves in this module. Every reader of these
-# names is, which is why the existing substitutions still work. A reader that
-# lives in the package resolves the owning module directly and would not see the
-# patch: patch that module, or inject through the ports its caller takes.
+# Substituting one of these names here rebinds THIS module's name and nothing
+# else, so it binds only for readers inside this module. A reader that lives in
+# the package resolves the owning module directly and would not see the patch:
+# patch that module, or inject through the ports its caller takes.
 # --------------------------------------------------------------------------- #
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    DELTA_PROBE_REASON_BY_VERDICT as DELTA_PROBE_REASON_BY_VERDICT,
-    NON_RETRIABLE_CODES as NON_RETRIABLE_CODES,
-    REASON_AGC_BEHAVIORAL_FAIL as REASON_AGC_BEHAVIORAL_FAIL,
-    REASON_ANCHOR_AMBIGUOUS as REASON_ANCHOR_AMBIGUOUS,
-    REASON_APPLY_FAILED as REASON_APPLY_FAILED,
-    REASON_CHANNEL_MAP_MISMATCH as REASON_CHANNEL_MAP_MISMATCH,
-    REASON_CLIPPED as REASON_CLIPPED,
-    REASON_CLOUD_GEOMETRY_LOCKED as REASON_CLOUD_GEOMETRY_LOCKED,
-    REASON_CORRECTION_LEVEL_SHORTFALL as REASON_CORRECTION_LEVEL_SHORTFALL,
-    REASON_CORRECTION_MEASURED_REGRESSION as REASON_CORRECTION_MEASURED_REGRESSION,
-    REASON_CORRECTION_MODEL_ERROR as REASON_CORRECTION_MODEL_ERROR,
-    REASON_CORRECTION_ROLLBACK_FAILED as REASON_CORRECTION_ROLLBACK_FAILED,
-    REASON_CORRECTION_SPATIALLY_COSTLY as REASON_CORRECTION_SPATIALLY_COSTLY,
-    REASON_CORRECTION_UNPROVEN_BOOST as REASON_CORRECTION_UNPROVEN_BOOST,
-    REASON_CORRECTION_UNSAFE_RESULT as REASON_CORRECTION_UNSAFE_RESULT,
-    REASON_CORRECTION_UNVERIFIABLE_RESULT as REASON_CORRECTION_UNVERIFIABLE_RESULT,
-    REASON_DELAY_EXCEEDS_SEARCH_WINDOW as REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    REASON_DRIFT_BASELINES_DISAGREE as REASON_DRIFT_BASELINES_DISAGREE,
-    REASON_INTERNAL_ERROR as REASON_INTERNAL_ERROR,
-    REASON_LOCATE_FAILED as REASON_LOCATE_FAILED,
-    REASON_LOW_ALIGNMENT_CONFIDENCE as REASON_LOW_ALIGNMENT_CONFIDENCE,
-    REASON_MEASUREMENT_VOLUME_DRIFT as REASON_MEASUREMENT_VOLUME_DRIFT,
-    REASON_NOISY_ROOM_LINEARITY as REASON_NOISY_ROOM_LINEARITY,
-    REASON_PILOT_LEVEL_COLLAPSE as REASON_PILOT_LEVEL_COLLAPSE,
-    REASON_PROGRAM_PROFILE_INCOMPLETE as REASON_PROGRAM_PROFILE_INCOMPLETE,
-    REASON_PROGRAM_PROFILE_MISSING as REASON_PROGRAM_PROFILE_MISSING,
-    REASON_PROGRAM_PROFILE_NOT_CONFIRMED as REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
-    REASON_PROGRAM_UNPLAYABLE as REASON_PROGRAM_UNPLAYABLE,
-    REASON_PROTECTION_NOT_SEPARABLE as REASON_PROTECTION_NOT_SEPARABLE,
-    REASON_GEOMETRY_RETAKE_UNREACHABLE as REASON_GEOMETRY_RETAKE_UNREACHABLE,
-    REASON_POSITION_HOLD_EXPIRED as REASON_POSITION_HOLD_EXPIRED,
-    REASON_POSITION_TARGET_MISSING as REASON_POSITION_TARGET_MISSING,
-    REASON_SESSION_CEILING_EXPIRED as REASON_SESSION_CEILING_EXPIRED,
-    REASON_PROTECTION_SWEEP_TOO_LOW as REASON_PROTECTION_SWEEP_TOO_LOW,
-    REASON_REGISTRY as REASON_REGISTRY,
-    REASON_RELAY_TIMEOUT as REASON_RELAY_TIMEOUT,
-    REASON_REVIEW_HOLD_TIMEOUT as REASON_REVIEW_HOLD_TIMEOUT,
-    REASON_SNR_FLOOR as REASON_SNR_FLOOR,
-    REASON_USER_STOPPED as REASON_USER_STOPPED,
-    REASON_VERIFY_CROSSOVER_REGION as REASON_VERIFY_CROSSOVER_REGION,
-    REASON_VERIFY_DETERMINISTIC_MISMATCH as REASON_VERIFY_DETERMINISTIC_MISMATCH,
-    REASON_VERIFY_INCONCLUSIVE as REASON_VERIFY_INCONCLUSIVE,
-    REASON_VERIFY_LEVEL_SHIFT as REASON_VERIFY_LEVEL_SHIFT,
-    REASON_VERIFY_OUT_OF_TOLERANCE as REASON_VERIFY_OUT_OF_TOLERANCE,
-    REASON_VOLUME_UNRESOLVED as REASON_VOLUME_UNRESOLVED,
-    SCREEN_KIND_REASONS as SCREEN_KIND_REASONS,
-    TEMPLATE_FIX_AND_RETRY as TEMPLATE_FIX_AND_RETRY,
-    TEMPLATE_HARD_STOP as TEMPLATE_HARD_STOP,
-    TEMPLATE_SESSION_RESTART as TEMPLATE_SESSION_RESTART,
-    TEMPLATE_SILENT_AUTO_RETRY as TEMPLATE_SILENT_AUTO_RETRY,
-    TEMPLATE_VERIFY_FAIL as TEMPLATE_VERIFY_FAIL,
-    TEMPLATE_VOLUME_RECOVERY as TEMPLATE_VOLUME_RECOVERY,
-    TRANSIENT_AUTO_RETRY_CODES as TRANSIENT_AUTO_RETRY_CODES,
-    PhaseVerdict as PhaseVerdict,
-    ReasonSpec as ReasonSpec,
-    RetryableReasonCopy as RetryableReasonCopy,
-    _retriable_reason as _retriable_reason,
-    _screen_refusal_code as _screen_refusal_code,
-    correction_rollback_failed_message as correction_rollback_failed_message,
-    locate_failed_diagnosis as locate_failed_diagnosis,
-    locate_failed_message as locate_failed_message,
-    reason_diagnosis as reason_diagnosis,
-    reason_message as reason_message,
-    round_restore_reason as round_restore_reason,
-    verify_inconclusive_cause as verify_inconclusive_cause,
-    verify_inconclusive_diagnosis as verify_inconclusive_diagnosis,
-    verify_inconclusive_message as verify_inconclusive_message,
+    NON_RETRIABLE_CODES,
+    REASON_CLOUD_GEOMETRY_LOCKED,
+    REASON_CORRECTION_ROLLBACK_FAILED,
+    REASON_LOCATE_FAILED,
+    REASON_GEOMETRY_RETAKE_UNREACHABLE,
+    REASON_REGISTRY,
+    REASON_VERIFY_DETERMINISTIC_MISMATCH,
+    REASON_VERIFY_INCONCLUSIVE,
+    REASON_VERIFY_LEVEL_SHIFT,
+    REASON_VERIFY_OUT_OF_TOLERANCE,
+    PhaseVerdict,
+    _screen_refusal_code,
+    reason_diagnosis,
+    reason_message,
+    round_restore_reason,
 )
 
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -12852,11 +12779,6 @@ async def abandon_measurement_volume(
 __all__ = [
     "CrossoverV2Session",
     "CrossoverV2FlowError",
-    # Re-exported, not used here, since #2291 Phase 5a-vii moved VERIFY's
-    # integrity ladder to :mod:`.crossover_v2.capture_dispatch` (the entry
-    # baseline's went to :mod:`.crossover_v2.spatial` before it). Three test
-    # modules reach it as ``flow.INTEGRITY_CHECK_SWEEP_HEARD``; listing it here
-    # is what says the import survived on purpose rather than as an orphan.
     "INTEGRITY_CHECK_SWEEP_HEARD",
     "bind_program_playback_seams",
     "build_v2_capture_plan",
@@ -12884,26 +12806,7 @@ __all__ = [
     "tier_display_info",
     "capture_progress_label",
     "REVERIFY_NO_REWALK_HEADLINE",
-    "PhaseVerdict",
-    "ReasonSpec",
-    "REASON_REGISTRY",
-    "TRANSIENT_AUTO_RETRY_CODES",
-    "PHASE_CHECK",
-    "PHASE_MEASURE",
-    "PHASE_APPLYING",
-    "PHASE_VERIFY",
-    "PHASE_DONE",
-    # Control-page phases this module never evaluates itself, but re-exports
-    # for ``crossover_envelope_v2`` and the web host, which both resolve a
-    # persisted state to one of them. Listed here since #2291 Phase 4 moved the
-    # vocabulary to ``crossover_v2.journey``: naming them is what says the
-    # pass-through is deliberate rather than a stray import.
-    "PHASE_REVIEW",
-    "PHASE_CLOSING",
-    "PHASE_LATERAL",
     "stage1_plan_max_attempts",
-    "LATERAL_CONSUMER_FC_SELECTOR",
-    "LATERAL_CONSUMER_FORWARD_MODEL",
     "LATERAL_POSE_PROMPTS",
     "CLOUD_VERIFY_POSE_PROMPTS",
     "VERIFY_MARK_PROMPT",
@@ -12915,10 +12818,8 @@ __all__ = [
     "LateralPoseCurve",
     "lateral_evidence_grid_hz",
     "lateral_pose_curve",
-    "PHASE_ENTRY_BASELINE",
     "REFERENCE_MARK_DESIGN_AXIS",
     "STAGE1_INCLUDES_ENTRY_BASELINE",
-    "CAPTURE_PHASES",
     "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
@@ -12932,55 +12833,9 @@ __all__ = [
     "VERIFY_TERMINAL_OUTCOME_DETERMINISTIC",
     "alignment_to_candidate_fields",
     "back_off_gain",
-    "TEMPLATE_SILENT_AUTO_RETRY",
-    "TEMPLATE_FIX_AND_RETRY",
-    "TEMPLATE_HARD_STOP",
-    "TEMPLATE_SESSION_RESTART",
-    "TEMPLATE_VERIFY_FAIL",
-    "TEMPLATE_VOLUME_RECOVERY",
-    "REASON_AGC_BEHAVIORAL_FAIL",
-    "REASON_NOISY_ROOM_LINEARITY",
-    "REASON_PILOT_LEVEL_COLLAPSE",
     "PRESCRIBED_NON_WORSENING_DB",
-    "REASON_SNR_FLOOR",
-    "REASON_CHANNEL_MAP_MISMATCH",
-    "REASON_CLIPPED",
-    "REASON_DRIFT_BASELINES_DISAGREE",
-    "REASON_DELAY_EXCEEDS_SEARCH_WINDOW",
-    "REASON_LOCATE_FAILED",
-    "REASON_RELAY_TIMEOUT",
-    "REASON_VOLUME_UNRESOLVED",
-    "REASON_MEASUREMENT_VOLUME_DRIFT",
-    "REASON_PROGRAM_UNPLAYABLE",
-    "REASON_PROGRAM_PROFILE_NOT_CONFIRMED",
-    "REASON_PROGRAM_PROFILE_MISSING",
-    "REASON_PROGRAM_PROFILE_INCOMPLETE",
-    "REASON_INTERNAL_ERROR",
-    "REASON_VERIFY_OUT_OF_TOLERANCE",
-    "REASON_VERIFY_DETERMINISTIC_MISMATCH",
-    "REASON_VERIFY_CROSSOVER_REGION",
-    "REASON_VERIFY_INCONCLUSIVE",
-    "REASON_VERIFY_LEVEL_SHIFT",
     "verify_absolute_tolerance_db",
-    "REASON_LOW_ALIGNMENT_CONFIDENCE",
-    "REASON_APPLY_FAILED",
-    "REASON_USER_STOPPED",
-    "REASON_REVIEW_HOLD_TIMEOUT",
-    "REASON_POSITION_HOLD_EXPIRED",
-    "REASON_GEOMETRY_RETAKE_UNREACHABLE",
-    "REASON_POSITION_TARGET_MISSING",
-    "REASON_SESSION_CEILING_EXPIRED",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "spec_report_for_predicted_sum",
-    # The inconclusive-verdict copy, exported because it has TWO screens and
-    # therefore cannot live inside either one (issue #1974).
-    "verify_inconclusive_cause",
-    "verify_inconclusive_message",
-    # The copy selector and the second evidence-keyed sentence (#2085). Same
-    # reason as the pair above, one surface further: ``locate_failed`` is
-    # narrated by the relay verdict, the budget refusal, AND the envelope, so
-    # the sentence cannot live in any of them.
-    "locate_failed_message",
-    "reason_message",
 ]

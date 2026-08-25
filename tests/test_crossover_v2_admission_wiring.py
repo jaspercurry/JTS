@@ -26,6 +26,7 @@ from dataclasses import replace
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -795,10 +796,10 @@ def test_the_flow_states_the_condition_inputs_the_ladder_needs():
         )
         c._resolve_spent_slot(
             PHASE_CLOUD_MEASURE, index, slot,
-            flow.PhaseVerdict(False, code=flow.REASON_CHANNEL_MAP_MISMATCH),
+            flow.PhaseVerdict(False, code=refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
         )
 
-    assert seen[0]["code"] == flow.REASON_CHANNEL_MAP_MISMATCH
+    assert seen[0]["code"] == refusal_copy.REASON_CHANNEL_MAP_MISMATCH
     assert seen[0]["non_retriable"] is flow.NON_RETRIABLE_CODES
 
 

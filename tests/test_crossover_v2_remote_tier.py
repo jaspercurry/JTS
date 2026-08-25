@@ -44,11 +44,13 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _done_nudges,
     _tier_choice_actions,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    AUTO_ADVANCE_COUNTDOWN,
-    PHASE_CLOUD_MEASURE,
+from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_GEOMETRY_RETAKE_UNREACHABLE,
     REASON_REGISTRY,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_TAP,
     POSITION_DEG_KEY,

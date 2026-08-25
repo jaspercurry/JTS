@@ -721,7 +721,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     is still reported in the detail text below — never hidden, it just does
     not drive the warn.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_VERIFY
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
     from jasper.web.correction_crossover_v2 import crossover_v2_status_block
 
     label = "crossover v2 cloud pipeline"

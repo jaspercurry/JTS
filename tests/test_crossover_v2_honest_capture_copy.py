@@ -36,17 +36,19 @@ import logging
 import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-from jasper.active_speaker.crossover_v2_flow import (
-    LOCATE_MIN_CONFIDENCE,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
     REASON_REGISTRY,
     REASON_RELAY_TIMEOUT,
-    SWEEP_LOCATE_CONFIDENCE_FLOOR,
     locate_failed_diagnosis,
     locate_failed_message,
     reason_message,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    LOCATE_MIN_CONFIDENCE,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR,
 )
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.capture_relay.session import CaptureBeginRefused

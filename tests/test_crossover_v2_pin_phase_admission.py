@@ -68,15 +68,16 @@ import inspect
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
-    REASON_AGC_BEHAVIORAL_FAIL,
-    build_v2_cloud_index_phase_map,
 )
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_AGC_BEHAVIORAL_FAIL
+from jasper.active_speaker.crossover_v2_flow import build_v2_cloud_index_phase_map
 
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,
@@ -317,5 +318,5 @@ def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():
     ``PLAIN_LINEARITY_PHASES`` cannot quietly become wrong.
     """
 
-    assert flow.REASON_NOISY_ROOM_LINEARITY != REASON_AGC_BEHAVIORAL_FAIL
-    assert flow.REASON_NOISY_ROOM_LINEARITY in flow.REASON_REGISTRY
+    assert refusal_copy.REASON_NOISY_ROOM_LINEARITY != REASON_AGC_BEHAVIORAL_FAIL
+    assert refusal_copy.REASON_NOISY_ROOM_LINEARITY in flow.REASON_REGISTRY

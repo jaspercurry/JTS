@@ -602,11 +602,11 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
     mapper handles this exception class, which reads like end-to-end containment
     and is not: nothing on this route called the mapper.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_PROGRAM_UNPLAYABLE,
         REASON_REGISTRY,
-        CrossoverV2FlowError,
     )
+    from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
@@ -664,7 +664,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     only honest answer is prose, and inventing a button for them would be worse
     than none.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_REGISTRY,
     )

@@ -25,6 +25,7 @@ from dataclasses import replace
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2 import planning
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -591,7 +592,7 @@ def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
     # One: the two outcomes are different sentences, not the same one.
     assert classify_program_failure(
         flow.CrossoverV2FlowError("MEASURE analysis produced no candidate")
-    ) == (flow.REASON_PROGRAM_UNPLAYABLE, ())
+    ) == (refusal_copy.REASON_PROGRAM_UNPLAYABLE, ())
     for fallback in (AttributeError("NoneType"), TypeError("NoneType"), ValueError("x")):
         assert classify_program_failure(fallback) is None
 

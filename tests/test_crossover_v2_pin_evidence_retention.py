@@ -22,13 +22,13 @@ What follows is the boundary those leave open.
 from __future__ import annotations
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
-    build_v2_cloud_index_phase_map,
 )
+from jasper.active_speaker.crossover_v2_flow import build_v2_cloud_index_phase_map
 from jasper.attribution.position_evidence import position_evidence_block
 
 from tests.test_attribution_persistence import _combined, _records

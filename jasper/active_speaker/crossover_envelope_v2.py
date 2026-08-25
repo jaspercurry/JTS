@@ -71,9 +71,7 @@ from .attempts_loop import (
     REASON_SITTING_MISMATCH,
     REASON_SITTING_UNRECORDED,
 )
-from .crossover_v2_flow import (
-    ATTEMPT_REASON_NO_FLOOR,
-    CLAIM_NO_PER_BRANCH_CAPTURE,
+from .crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -82,10 +80,11 @@ from .crossover_v2_flow import (
     PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
-    CLOUD_CLOSE_RUNNING,
     PHASE_CLOSING,
     PHASE_REVIEW,
     PHASE_VERIFY,
+)
+from .crossover_v2.refusal_copy import (
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_REGISTRY,
     ReasonSpec,
@@ -93,12 +92,17 @@ from .crossover_v2_flow import (
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
     TEMPLATE_VERIFY_FAIL,
+    reason_message,
+    verify_inconclusive_cause,
+)
+from .crossover_v2_flow import (
+    ATTEMPT_REASON_NO_FLOOR,
+    CLAIM_NO_PER_BRANCH_CAPTURE,
+    CLOUD_CLOSE_RUNNING,
     TIER_EXPRESS,
     TIER_REMOTE,
     TIER_FULL,
-    reason_message,
     tier_display_info,
-    verify_inconclusive_cause,
 )
 from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP,
