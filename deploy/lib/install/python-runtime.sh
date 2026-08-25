@@ -408,17 +408,7 @@ PY
     # (Home Assistant token + Spotify credentials/caches).
     reassert_intsecrets_compartment_perms
     render_voice_provider_ids_manifest
-    migrate_transit_config
-    migrate_weather_config
     migrate_wifi_guardian
-    migrate_wake_legs_config
-    migrate_grouping
-    migrate_control_host_bind_seed
-    # Relocate JASPER_FANIN_CAMILLA_COUPLING out of jasper.env into the
-    # reconciler-owned fanin.env (jasper.fanin.coupling_reconcile is its single
-    # writer). No-op on a fresh box (the flag is unset) and on a box already
-    # using fanin.env; only moves a hand-set experimental-phase value.
-    migrate_fanin_coupling
 }
 
 jasper_aec3_import_probe() {

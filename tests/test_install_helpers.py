@@ -770,7 +770,7 @@ def test_install_dry_run_exits_before_root_and_lists_major_surfaces():
         "openWakeWord ONNX assets",
         "cargo build --release --locked",
         "/var/lib/jasper/build.txt",
-        "Migrate wizard-owned keys",
+        "WiFi guardian recovery",
         "Reload udev and systemd",
         "python3 scripts/check-provenance.py",
     ]:

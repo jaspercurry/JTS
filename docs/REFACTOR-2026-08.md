@@ -113,8 +113,11 @@ ack, never silence.
       branches + 36 contract assertions)
 - [ ] doctor never-fail consolidation (install-settings-drift family)
 - [ ] CI classifier shrink (~120-line path predicate + ~150-line tests)
-- [ ] env-migrations retirement (GATE: owner confirms every live Pi deployed
-      since the migrations ran)
+- [x] env-migrations retirement (GATE: owner confirms every live Pi deployed
+      since the migrations ran) — gate cleared 2026-08-25: fleet verified
+      (all boxes past every candidate; the Aug-22 gate SHA was the
+      extraction commit, not new logic); owner ruling: no legacy-box-support
+      code in-tree, stale boxes are fix-forward
 - [ ] nginx: proxy-header snippet + merge streambox conf
 - [ ] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
       the shipped package
@@ -199,7 +202,8 @@ already open)**
       no path move (it is the tuning program's robotic-arm driver; a move
       would force re-verification for zero behavior win). Its README now
       records the acceptance
-- [ ] env-migrations fleet confirmation (unblocks Wave 2 item)
+- [x] env-migrations fleet confirmation (unblocks Wave 2 item) — answered
+      2026-08-25, see Wave 2 line
 
 ## Driving PRs (the conductor's standing duties)
 

@@ -622,13 +622,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
-   - Migrate wizard-owned keys out of /etc/jasper/jasper.env into
-     /var/lib/jasper/* env files for transit, weather, wake detection
-     legs, multi-room grouping, and WiFi guardian recovery, and move an
-     operator-seeded LLM API key into the jasper-secrets compartment.
+   - Sweep an operator-seeded LLM API key or Google Routes key out of
+     /etc/jasper/jasper.env into the jasper-secrets compartment.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
-     resilience, and correction TLS CA/cert files.
+     resilience, WiFi guardian recovery, and correction TLS CA/cert files.
    - Remove the retired dmix/fanin topology switch state file, which
      jasper-doctor warns about on presence.
    - Reconcile the USB data role from board topology and the registered
@@ -1529,9 +1527,7 @@ reconcile_aec_state() {
     # On upgrade, the reconciler's ensure_mode_file appends any
     # missing keys with these same defaults — preserving an
     # operator's hand-set JASPER_AEC_MODE/leg fields while inferring a
-    # profile for pre-profile installs. Migration from hand-set underlying
-    # env vars in /etc/jasper/jasper.env runs separately in
-    # migrate_wake_legs_config.
+    # profile for pre-profile installs.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
         printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
             > "${STATE_DIR}/aec_mode.env"
