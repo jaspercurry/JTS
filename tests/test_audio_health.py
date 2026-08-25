@@ -234,6 +234,29 @@ def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
     assert usb["timing"]["headline"] == "Stable fallback · latency increased"
 
 
+def test_usb_runtime_preset_outranks_stale_route_label() -> None:
+    airplay = _airplay(selected="usbsink", ladder="l0_locked")
+    usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
+    usb["resampler"] = {
+        "held_target_frames": 2560,
+        "decay": {"enabled": True, "floor_frames": 1024},
+    }
+
+    health = compose_audio_health(
+        airplay=airplay,
+        outputd=_outputd(),
+        route={**_route(), "low_latency_claim": False},
+        issues=[],
+        sampled_at=1000.0,
+    )
+
+    assert health["latency"]["runtime"]["preset"] == "medium"
+    assert health["latency"]["headline"] == (
+        "Recovery buffer active · 53.3 ms input buffer"
+    )
+    assert health["latency"]["status"] == "warn"
+
+
 def test_stale_artifact_is_technical_evidence_not_a_household_warning() -> None:
     health = _compose(
         selected="usbsink",
@@ -2745,12 +2768,22 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
                 "frames_read": 100,
                 "xrun_count": 2,
                 "rms_dbfs": -20.0,
-                "direct": {"health": "capturing"},
+                "direct": {
+                    "health": "capturing",
+                    "stream_starts": 2,
+                    "stream_stops": 1,
+                    "buffer_frames": 768,
+                    "drain_avail": {"max": 516},
+                },
                 "resampler": {
                     "health": "steady",
                     "locked": True,
+                    "lock_count": 18,
+                    "unlock_count": 17,
                     "fill_frames": 512,
                     "target_fill_frames": 512,
+                    "held_target_frames": 1024,
+                    "decay": {"enabled": True, "floor_frames": 1024},
                 },
             }
         ],
@@ -2780,6 +2813,9 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
         spec.id.value for spec in MUSIC_SOURCE_SPECS
     }
     assert fanin["inputs"]["usbsink"]["health"] == "capturing"
+    assert fanin["inputs"]["usbsink"]["direct"]["drain_avail"]["max"] == 516
+    assert fanin["inputs"]["usbsink"]["resampler"]["unlock_count"] == 17
+    assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["enabled"] is True
     assert fanin["inputs"]["spotify"]["present"] is False
     assert fanin["host_clock"]["ladder"] == "l0_locked"
     assert fanin["output"]["snd_pcm_delay_frames"] == 864
@@ -2802,6 +2838,47 @@ class _FakeAirPlay:
 
     def snapshot(self) -> dict:
         return self._snapshots[max(0, self._index)]
+
+
+@pytest.mark.parametrize("stream_stops,expected", [(0, 1), (1, 0)])
+def test_usb_underfill_is_recorded_but_normal_stream_stop_is_suppressed(
+    stream_stops: int,
+    expected: int,
+) -> None:
+    def snapshot(unlocks: int, stops: int) -> dict:
+        state = _airplay(selected="usbsink", ladder="l0_locked")
+        usb = state["current"]["fanin"]["inputs"]["usbsink"]
+        usb["resampler"] = {
+            "unlock_count": unlocks,
+            "held_target_frames": 576,
+            "decay": {"enabled": True, "floor_frames": 576},
+        }
+        usb["direct"] = {"stream_stops": stops}
+        return state
+
+    now = [1000.0]
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([
+            snapshot(1, 0),
+            snapshot(2, stream_stops),
+        ]),
+        outputd_probe=_outputd,
+        mux_probe=lambda: None,
+        route_probe=_route,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    issues = [
+        issue for issue in sampler.snapshot()["issues"]
+        if issue["key"] == "usbsink.latency_buffer_underfill"
+    ]
+    assert len(issues) == expected
+    if expected:
+        assert issues[0]["title"] == "USB input buffer ran dry"
+        assert sampler.snapshot()["current_stream"]["session"]["interruptions"] == 1
 
 
 def test_sampler_uses_mux_status_as_current_source_truth() -> None:

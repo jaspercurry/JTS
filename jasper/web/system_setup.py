@@ -154,7 +154,7 @@ def _make_handler(
             path = url.path.rstrip("/") or "/"
             POST_ROUTES = (
                 "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
-                "/audio-quality", "/usb-forensics",
+                "/audio-quality", "/usb-latency", "/usb-forensics",
                 "/optional-features/enhanced-aec/install",
             )
             if path not in POST_ROUTES:
@@ -165,7 +165,7 @@ def _make_handler(
                 return
             body = None
             if path in (
-                "/audio-quality", "/usb-forensics",
+                "/audio-quality", "/usb-latency", "/usb-forensics",
                 "/optional-features/enhanced-aec/install",
             ):
                 try:
@@ -192,6 +192,7 @@ def _make_handler(
             status, body = proxy_post(
                 control_path, control_base=control_base, body=body,
                 headers=forward_control_token_headers(self),
+                timeout=120.0 if path == "/usb-latency" else 5.0,
             )
             send_proxy_json(self, body, status=status)
 

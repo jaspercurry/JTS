@@ -35,6 +35,7 @@ SHIPPED_RING_CONF_D = (
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
+from jasper.fanin import latency_mode as lm
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -138,7 +139,9 @@ def test_no_gate_refuses_a_box_for_its_install_profile(monkeypatch):
     # original gate's other justification, which must survive its deletion.
     assert decision.combo_armed is True
     assert decision.usb_combo_actions
-    assert all(a.value == "enabled" for a in decision.usb_combo_actions)
+    assert [a.value for a in decision.usb_combo_actions] == [
+        "enabled", "enabled", "enabled", "576",
+    ]
 
 
 def test_a_streambox_arms_when_its_own_ring_evidence_passes(monkeypatch):
@@ -254,7 +257,9 @@ def test_decision_operator_marker_freezes_coupling_but_not_usb_permission():
     assert d.owned is False
     assert d.coupling == COUPLING_SHM_RING
     assert d.combo_armed is True
-    assert all(action.value == "enabled" for action in d.usb_combo_actions)
+    assert [action.value for action in d.usb_combo_actions] == [
+        "enabled", "enabled", "enabled", "576",
+    ]
 
 
 def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
@@ -271,6 +276,7 @@ def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
         ("set", ca.USB_DIRECT_ENV_VAR, "enabled"),
         ("set", ca.HOST_CLOCK_ENV_VAR, "enabled"),
         ("set", ca.CUSHION_DECAY_ENV_VAR, "enabled"),
+        ("set", ca.CUSHION_DECAY_FLOOR_ENV_VAR, "576"),
     ]
 
 
@@ -288,6 +294,7 @@ def test_decision_gadget_without_usb_intent_does_not_arm_combo():
         ("set", ca.USB_DIRECT_ENV_VAR, "disabled"),
         ("set", ca.HOST_CLOCK_ENV_VAR, "disabled"),
         ("set", ca.CUSHION_DECAY_ENV_VAR, "disabled"),
+        ("set", ca.CUSHION_DECAY_FLOOR_ENV_VAR, "576"),
     ]
 
 
@@ -300,7 +307,9 @@ def test_decision_usb_intent_without_gadget_does_not_arm_combo():
         ring_gates=(("assets", _pass_gate()),),
     )
     assert d.combo_armed is False
-    assert all(a.value == "disabled" for a in d.usb_combo_actions)
+    assert [a.value for a in d.usb_combo_actions] == [
+        "disabled", "disabled", "disabled", "576",
+    ]
 
 
 def test_decision_first_failing_gate_short_circuits_to_loopback():
@@ -366,17 +375,75 @@ def test_usb_combo_authority_has_no_runtime_health_override():
     assert not hasattr(decision, "fallback_active")
 
 
-def test_usb_combo_actions_enabled_when_armed():
-    acts = ca.usb_combo_actions(armed=True)
-    assert all(a.action == "set" and a.value == "enabled" for a in acts)
-    assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
+@pytest.mark.parametrize(
+    "mode,decay,floor",
+    [
+        ("low", "enabled", "576"),
+        ("medium", "enabled", "1024"),
+        ("high", "disabled", "2560"),
+    ],
+)
+def test_usb_combo_actions_map_fixed_latency_presets(mode, decay, floor):
+    acts = ca.usb_combo_actions(armed=True, latency_mode=mode)
+    values = {action.key: action.value for action in acts}
+    assert all(action.action == "set" for action in acts)
+    assert values[ca.USB_DIRECT_ENV_VAR] == "enabled"
+    assert values[ca.HOST_CLOCK_ENV_VAR] == "enabled"
+    assert values[ca.CUSHION_DECAY_ENV_VAR] == decay
+    assert values[ca.CUSHION_DECAY_FLOOR_ENV_VAR] == floor
 
 
 def test_usb_combo_actions_explicit_disabled_when_not_armed():
     # F5: explicit `disabled` (NOT unset) so a stale jasper.env `enabled` can't win.
     acts = ca.usb_combo_actions(armed=False)
-    assert all(a.action == "set" and a.value == "disabled" for a in acts)
+    assert all(a.action == "set" for a in acts)
+    assert [a.value for a in acts[:3]] == ["disabled"] * 3
+    assert acts[3].value == "576"
     assert {a.key for a in acts} == set(ca.USB_COMBO_ENV_VARS)
+
+
+def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
+    state_path = tmp_path / "usb_latency.env"
+    lm.write_requested_mode("medium", state_path)
+    airplay = {
+        "current": {
+            "fanin": {
+                "inputs": {
+                    "usbsink": {
+                        "resampler": {
+                            "held_target_frames": 2560,
+                            "decay": {"enabled": True, "floor_frames": 1024},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    state = lm.read_state(airplay, state_path=state_path)
+
+    assert state["selected_mode"] == "medium"
+    assert state["applied_mode"] == "medium"
+    assert state["state"] == "recovery"
+    assert state["live_buffer_ms"] == 53.3
+    assert lm.read_requested_mode(state_path) == "medium"
+
+
+def test_usb_latency_apply_keeps_requested_mode_visible_on_reconcile_failure(
+    tmp_path,
+):
+    state_path = tmp_path / "usb_latency.env"
+
+    with pytest.raises(lm.LatencyApplyError, match="restart failed"):
+        lm.apply_requested_mode(
+            "high",
+            state_path=state_path,
+            reconcile=lambda **_kwargs: SimpleNamespace(
+                ok=False, detail="restart failed"
+            ),
+        )
+
+    assert lm.read_requested_mode(state_path) == "high"
 
 
 def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
@@ -1351,6 +1418,7 @@ def test_an_operator_pinned_box_still_converges_its_ring_path_projection(
         f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
         f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
         f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
+        f"{ca.CUSHION_DECAY_FLOOR_ENV_VAR}=576\n"
     )
     outputd.write_text(
         "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
@@ -1407,6 +1475,7 @@ def test_a_pinned_loopback_box_keeps_its_coupling_when_the_marker_is_hand_armed(
         f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
         f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
         f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
+        f"{ca.CUSHION_DECAY_FLOOR_ENV_VAR}=576\n"
     )
     outputd.write_text(
         "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"

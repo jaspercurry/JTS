@@ -32,8 +32,8 @@ is eligible":
   boot overlay alone is NOT enough: the same data port may belong to a USB
   output DAC on a Zero-class board. All signals present
   → arm the fan-in half: ``JASPER_FANIN_USB_DIRECT`` + ``JASPER_FANIN_HOST_CLOCK``
-  + ``JASPER_FANIN_RESAMPLER_CUSHION_DECAY`` = ``enabled`` in fanin.env (fan-in owns
-  the gadget capture). Off a combo box the three fan-in keys are written to their
+  and the household's fixed cushion-decay preset in fanin.env (fan-in owns the
+  gadget capture). Off a combo box the feature keys are written to their
   EXPLICIT off value (``disabled``), NOT unset — an unset key lets a stale
   ``enabled`` in ``/etc/jasper/jasper.env`` (loaded before the reconciler-owned
   files) win. There is no separate USB bridge process: armed means USB flows
@@ -94,6 +94,7 @@ from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
 )
+from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
 from jasper.output_hardware import current_usb_data_role
 
 logger = logging.getLogger(__name__)
@@ -107,23 +108,31 @@ COUPLING_CHOICE_ENV_VAR = "JASPER_FANIN_COUPLING_CHOICE"
 COUPLING_CHOICE_OPERATOR = "operator"
 
 # The USB low-latency combo the P3 default arms on a gadget box that ALSO has USB
-# audio turned on. Each is a fan-in Rust flag whose fail-safe is off (only the
-# literal ``enabled`` arms it — see rust/jasper-fanin/src/config.rs). The
+# audio turned on. Its feature flags fail safe off (only the literal ``enabled``
+# arms them — see rust/jasper-fanin/src/config.rs); the preset also owns the
+# explicit decay floor. The
 # reconciler is the SINGLE writer of this set (mirrors jasper-aec-reconcile owning
-# the mic-device vars). On a combo box each is written ``enabled``; off a combo box
-# each is written the EXPLICIT off literal ``disabled`` (NOT unset — an unset key
+# the mic-device vars). Off a combo box each feature is written the EXPLICIT off
+# literal ``disabled`` (NOT unset — an unset key
 # lets a stale ``enabled`` in /etc/jasper/jasper.env, loaded BEFORE fanin.env, win;
 # ``disabled`` in the later-loaded fanin.env overrides it and the Rust reader treats
 # any non-``enabled`` value as off).
 USB_DIRECT_ENV_VAR = "JASPER_FANIN_USB_DIRECT"
 HOST_CLOCK_ENV_VAR = "JASPER_FANIN_HOST_CLOCK"
 CUSHION_DECAY_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY"
+CUSHION_DECAY_FLOOR_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"
 USB_COMBO_ENABLED_VALUE = "enabled"
 USB_COMBO_DISABLED_VALUE = "disabled"
 # The ordered combo keys (deterministic write order for idempotence + readable
 # logs). Order is not load-bearing to the Rust reader; it is fixed only so the
 # emitted actions are stable across runs.
-USB_COMBO_ENV_VARS = (USB_DIRECT_ENV_VAR, HOST_CLOCK_ENV_VAR, CUSHION_DECAY_ENV_VAR)
+USB_COMBO_ENV_VARS = (
+    USB_DIRECT_ENV_VAR,
+    HOST_CLOCK_ENV_VAR,
+    CUSHION_DECAY_ENV_VAR,
+    CUSHION_DECAY_FLOOR_ENV_VAR,
+)
+
 
 def is_operator_choice(marker_raw: str | None) -> bool:
     """True iff the coupling-choice marker names an explicit operator choice.
@@ -148,8 +157,8 @@ class AutoCouplingDecision:
     is the resolved default (``shm_ring`` when every ring gate passed, else
     ``loopback``). ``combo_armed`` records whether the USB combo is on;
     ``usb_combo_actions`` is the reconciler-owned set of ``fanin.env`` actions for
-    the three fan-in combo keys (``enabled`` when armed, explicit ``disabled``
-    otherwise). ``reason`` is a stable, log-friendly explanation of the coupling
+    the fan-in feature keys and selected latency floor. ``reason`` is a stable,
+    log-friendly explanation of the coupling
     decision; ``gate_details`` carries the per-gate detail for the journal.
     """
 
@@ -159,6 +168,7 @@ class AutoCouplingDecision:
     combo_armed: bool = False
     gadget_present: bool = False
     usb_intent_enabled: bool = False
+    usb_latency_mode: str = DEFAULT_MODE
     reason: str = ""
     gate_details: tuple[str, ...] = field(default_factory=tuple)
 
@@ -179,17 +189,31 @@ def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
     return gadget_present and usb_intent_enabled
 
 
-def usb_combo_actions(*, armed: bool) -> tuple[RuntimeEnvAction, ...]:
-    """The reconciler-owned ``fanin.env`` actions for the three fan-in combo keys.
+def usb_combo_actions(
+    *, armed: bool, latency_mode: str = DEFAULT_MODE,
+) -> tuple[RuntimeEnvAction, ...]:
+    """The reconciler-owned ``fanin.env`` actions for the USB fan-in keys.
 
-    Armed → set all three to ``enabled``. NOT armed → set all three to the EXPLICIT
-    ``disabled`` literal (NOT unset — the reconciler is the single writer, and an
-    unset key would let a stale ``enabled`` in the earlier-loaded jasper.env win;
-    ``disabled`` in the later-loaded fanin.env overrides it and the Rust reader
-    treats any non-``enabled`` value as off). Deterministic order for idempotence.
+    Direct capture and host clock follow ``armed``. Cushion decay additionally
+    follows the preset; High keeps direct capture but pins the stable ceiling.
+    Feature keys use explicit ``disabled`` rather than unset, so a stale earlier
+    environment value cannot win. Deterministic order keeps writes idempotent.
     """
-    value = USB_COMBO_ENABLED_VALUE if armed else USB_COMBO_DISABLED_VALUE
-    return tuple(RuntimeEnvAction("set", key, value) for key in USB_COMBO_ENV_VARS)
+    preset = preset_for(latency_mode)
+    feature_value = USB_COMBO_ENABLED_VALUE if armed else USB_COMBO_DISABLED_VALUE
+    decay_value = (
+        USB_COMBO_ENABLED_VALUE
+        if armed and preset.decay_enabled
+        else USB_COMBO_DISABLED_VALUE
+    )
+    return (
+        RuntimeEnvAction("set", USB_DIRECT_ENV_VAR, feature_value),
+        RuntimeEnvAction("set", HOST_CLOCK_ENV_VAR, feature_value),
+        RuntimeEnvAction("set", CUSHION_DECAY_ENV_VAR, decay_value),
+        RuntimeEnvAction(
+            "set", CUSHION_DECAY_FLOOR_ENV_VAR, str(preset.floor_frames)
+        ),
+    )
 
 
 # A ring gate is a zero-arg callable returning (ok, detail) — the same shape the
@@ -205,6 +229,7 @@ def resolve_auto_decision(
     usb_intent_enabled: bool,
     ring_gates: "tuple[tuple[str, RingGate], ...]",
     current_coupling: str = COUPLING_LOOPBACK,
+    usb_latency_mode: str = DEFAULT_MODE,
 ) -> AutoCouplingDecision:
     """Resolve the default coupling + USB combo for one box (pure).
 
@@ -241,10 +266,13 @@ def resolve_auto_decision(
         return AutoCouplingDecision(
             owned=False,
             coupling=current_coupling,
-            usb_combo_actions=usb_combo_actions(armed=armed),
+            usb_combo_actions=usb_combo_actions(
+                armed=armed, latency_mode=usb_latency_mode
+            ),
             combo_armed=armed,
             gadget_present=gadget_present,
             usb_intent_enabled=usb_intent_enabled,
+            usb_latency_mode=usb_latency_mode,
             reason=(
                 "operator coupling choice preserved; USB combo resolved from "
                 "canonical source intent"
@@ -270,10 +298,13 @@ def resolve_auto_decision(
     return AutoCouplingDecision(
         owned=True,
         coupling=coupling,
-        usb_combo_actions=usb_combo_actions(armed=armed),
+        usb_combo_actions=usb_combo_actions(
+            armed=armed, latency_mode=usb_latency_mode
+        ),
         combo_armed=armed,
         gadget_present=gadget_present,
         usb_intent_enabled=usb_intent_enabled,
+        usb_latency_mode=usb_latency_mode,
         reason=reason,
         gate_details=tuple(details),
     )

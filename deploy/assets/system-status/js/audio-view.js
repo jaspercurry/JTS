@@ -10,7 +10,7 @@ import { h } from "/assets/shared/js/dom.js";
 import {
   livePill, titledCard, choiceCard, collapsible, renderSection,
 } from "./components.js";
-import { AUDIO_OPTIONS, updateAudioQuality } from "./sections.js";
+import { AUDIO_OPTIONS, updateAudioQuality, updateUsbLatency } from "./sections.js";
 import { fmtEpochAgo } from "./format.js";
 import {
   unavailableBody, currentStreamBody, currentIncident, currentIncidentBody,
@@ -44,6 +44,36 @@ function buildAudioQuality(handlers) {
   return { section, requested, active, status, buttons };
 }
 
+function buildUsbLatency(handlers) {
+  const selected = h("dd", null, "—");
+  const applied = h("dd", null, "—");
+  const live = h("dd", null, "—");
+  const status = h("p.info-card__note", {
+    "attr:role": "status", "attr:aria-live": "polite",
+  });
+  const buttons = ["low", "medium", "high"].map((mode) => ({
+    mode,
+    el: h("button.segmented__btn", {
+      type: "button",
+      "attr:aria-pressed": "false",
+      onclick: () => handlers.setLatencyMode(mode),
+    }, mode[0].toUpperCase() + mode.slice(1)),
+  }));
+  const card = titledCard("USB latency");
+  card.body.append(
+    h("dl.deflist", null,
+      h("dt", null, "Selected"), selected,
+      h("dt", null, "Applied"), applied,
+      h("dt", null, "Live input buffer"), live),
+    h("p.info-card__note", null,
+      "Lower settings reduce delay. A busy computer can cause clicks or brief gaps."),
+    h("div.segmented", { "attr:role": "group", "attr:aria-label": "USB latency" },
+      buttons.map((button) => button.el)),
+    status,
+  );
+  return { section: card.section, selected, applied, live, status, buttons };
+}
+
 export function buildAudioPanel(handlers) {
   const live = livePill();
   const stream = titledCard("Current stream", { accent: true });
@@ -55,6 +85,7 @@ export function buildAudioPanel(handlers) {
   const technical = collapsible({
     title: "Technical evidence", open: false, body: technicalBodyHost,
   });
+  const latency = buildUsbLatency(handlers);
   const quality = buildAudioQuality(handlers);
 
   const panel = h("main.app-main.audio-main", {
@@ -65,6 +96,7 @@ export function buildAudioPanel(handlers) {
     currentIssue.section,
     issues.section,
     sources.section,
+    latency.section,
     technical,
     quality.section,
   );
@@ -78,6 +110,7 @@ export function buildAudioPanel(handlers) {
     sourcesSection: sources.section,
     sources: sources.body,
     technical: technicalBodyHost,
+    latency,
     qualitySection: quality.section,
     aq: quality,
     _memo: {},
@@ -144,6 +177,11 @@ export function updateAudio(refs, snap) {
     () => health ? technicalBody(health) : h("p.audio-empty", null, "No technical snapshot available."));
   refreshRelativeTimes(refs.panel);
 
+  try {
+    updateUsbLatency(refs.latency, snap.usb_latency);
+  } catch (e) {
+    console.error("audio status: updating USB latency failed", e);
+  }
   try {
     updateAudioQuality(refs.aq, snap.audio_quality);
   } catch (e) {

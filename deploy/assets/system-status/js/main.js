@@ -16,7 +16,7 @@ import { buildSystemPanel, update } from "./views.js";
 import { buildAudioPanel, updateAudio } from "./audio-view.js";
 import { header } from "./components.js";
 import { getJSON } from "./api.js";
-import { postAction, setQuality, runDiagnostics } from "./actions.js";
+import { postAction, setQuality, setLatencyMode, runDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
 const root = document.getElementById("app");
@@ -49,6 +49,12 @@ const handlers = {
       sentMessage: "Powering off — the speaker will stay off until you physically re-plug power." }),
   setQuality: (converter) => setQuality(activeEntry.refs, converter, (quality) => {
     latestSnapshot = { ...(latestSnapshot || {}), audio_quality: quality };
+  }),
+  setLatencyMode: (mode) => setLatencyMode(activeEntry.refs, mode, () => {
+    latestSnapshot = {
+      ...(latestSnapshot || {}),
+      usb_latency: { ...((latestSnapshot || {}).usb_latency || {}), selected_mode: mode },
+    };
   }),
   runDiagnostics: (btn, out) => runDiagnostics(btn, out),
 };

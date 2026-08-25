@@ -90,6 +90,35 @@ export async function setQuality(refs, converter, onApplied) {
   }
 }
 
+export async function setLatencyMode(refs, mode, onApplied) {
+  const latency = refs.latency;
+  latency.buttons.forEach((button) => {
+    button.el.disabled = true;
+    button.el.dataset.applying = "1";
+  });
+  latency.status.textContent = "Applying… Audio will pause briefly.";
+  try {
+    const response = await fetch("/system/usb-latency", {
+      method: "POST", headers: jsonHeaders(), body: JSON.stringify({ mode }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+    latency.buttons.forEach((button) => button.el.setAttribute(
+      "aria-pressed", button.mode === mode ? "true" : "false"));
+    latency.selected.textContent = mode[0].toUpperCase() + mode.slice(1);
+    latency.status.textContent = "Applied. Audio restarted briefly.";
+    if (onApplied) onApplied(mode);
+  } catch (e) {
+    console.error("system: USB latency apply failed", e);
+    latency.status.textContent = "Could not apply: " + e.message;
+  } finally {
+    latency.buttons.forEach((button) => {
+      delete button.el.dataset.applying;
+      button.el.disabled = false;
+    });
+  }
+}
+
 function renderDiagnostics(out, body) {
   const mark = (s) => (s === "fail" ? "✗" : s === "warn" ? "!" : "✓");
   const tone = (s) => (s === "fail" ? "danger" : s === "warn" ? "warn" : "ok");

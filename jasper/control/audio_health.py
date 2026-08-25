@@ -37,6 +37,7 @@ from ..audio_runtime_plan import (
 )
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..fanin.latency_mode import PRESETS, applied_mode_from_resampler
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -854,12 +855,17 @@ def _verification(route: Mapping[str, Any]) -> dict[str, Any]:
 def _usb_timing(
     route: Mapping[str, Any],
     host_clock: Mapping[str, Any] | None,
+    usb_input: Mapping[str, Any] | None = None,
     *,
     active: bool,
 ) -> dict[str, Any]:
     claimed = bool(route.get("low_latency_claim"))
     verification = _verification(route)
     raw_mode = host_clock.get("ladder") if host_clock is not None else None
+    resampler = _mapping(_mapping(usb_input).get("resampler"))
+    preset_mode = applied_mode_from_resampler(resampler)
+    held_frames = _as_int(resampler.get("held_target_frames"))
+    floor_frames = _as_int(_mapping(resampler.get("decay")).get("floor_frames"))
     mode = {
         "l0_locked": "lowest_latency",
         "l1_warn": "tracking_warn",
@@ -868,6 +874,48 @@ def _usb_timing(
         "disabled": "standard",
     }.get(str(raw_mode), "unknown")
     runtime = {"mode": mode, "raw_mode": raw_mode}
+    if preset_mode is not None:
+        runtime.update({
+            "preset": preset_mode,
+            "held_target_frames": held_frames or None,
+            "floor_frames": floor_frames or None,
+        })
+
+    if preset_mode is not None:
+        preset = PRESETS[preset_mode]
+        current_frames = held_frames or preset.floor_frames
+        current_ms = current_frames * 1000 / 48_000
+        if active and preset_mode != "high" and current_frames > preset.floor_frames:
+            status = "warn"
+            headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
+            detail = "Latency will fall after USB host timing stabilizes."
+        elif active and raw_mode == "l1_warn":
+            status = "warn"
+            headline = f"{preset.label} latency · clock tracking under strain"
+            detail = "Playback remains locked at the selected buffer setting."
+        elif active and raw_mode == "l2_fallback" and preset_mode != "high":
+            status = "warn"
+            headline = f"Stable fallback · {current_ms:.1f} ms input buffer"
+            detail = "Playback is protected by more buffering while host timing recovers."
+        else:
+            status = "ok"
+            headline = f"{preset.label} latency · {current_ms:.1f} ms input buffer"
+            detail = (
+                "The larger stable USB buffer is active."
+                if preset_mode == "high"
+                else "The selected USB input buffer is active."
+            )
+        return {
+            "applicable": active,
+            "source_id": Source.USBSINK.value,
+            "kind": "route_latency",
+            "status": status,
+            "headline": headline,
+            "detail": detail,
+            "route_id": route.get("route_id"),
+            "verification": verification,
+            "runtime": runtime,
+        }
 
     if route.get("status") != "available":
         return {
@@ -1122,8 +1170,9 @@ def _state_issues(
             detail=str(signal_path.get("detail") or "The active source stopped capturing."),
         ))
     if active_source == Source.USBSINK.value:
-        raw_mode = _mapping(latency.get("runtime")).get("raw_mode")
-        if raw_mode == "l2_fallback":
+        latency_runtime = _mapping(latency.get("runtime"))
+        raw_mode = latency_runtime.get("raw_mode")
+        if raw_mode == "l2_fallback" and latency_runtime.get("preset") != "high":
             issues.append(_issue(
                 "usbsink.latency_fallback",
                 scope="latency",
@@ -1330,6 +1379,7 @@ def _source_cards(
 ) -> list[dict[str, Any]]:
     current = _mapping(airplay.get("current"))
     fanin = _mapping(current.get("fanin"))
+    inputs = _mapping(fanin.get("inputs"))
     host_clock = _mapping(fanin.get("host_clock")) or None
     cards: list[dict[str, Any]] = []
     for spec in MUSIC_SOURCE_SPECS:
@@ -1361,7 +1411,9 @@ def _source_cards(
             if active and timing["status"] in {"warn", "unknown"}:
                 status = "warn"
         elif spec.id == Source.USBSINK:
-            timing = _usb_timing(route, host_clock, active=active)
+            timing = _usb_timing(
+                route, host_clock, _mapping(inputs.get(source_id)), active=active
+            )
             if active and timing["status"] in {"warn", "unknown"}:
                 status = "warn"
         if active and signal_path.get("status") in {"issue", "unknown"}:
@@ -1847,9 +1899,15 @@ def compose_audio_health(
         signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
+    inputs = _mapping(fanin.get("inputs"))
     host_clock = _mapping(fanin.get("host_clock")) or None
     if active_source == Source.USBSINK.value:
-        latency = _usb_timing(route_state, host_clock, active=True)
+        latency = _usb_timing(
+            route_state,
+            host_clock,
+            _mapping(inputs.get(Source.USBSINK.value)),
+            active=True,
+        )
     else:
         latency = _not_applicable_timing()
     source_cards = _source_cards(
@@ -2068,6 +2126,7 @@ class AudioHealthSampler:
         self._snapshot: dict[str, Any] | None = None
         self._last_route_sample_at = 0.0
         self._previous_input_xruns: dict[str, int] | None = None
+        self._previous_usb_buffer_counts: tuple[int, int] | None = None
         self._previous_fanin_pings_skipped: int | None = None
         self._previous_outputd_xruns: dict[str, int] | None = None
         self._previous_outputd_clipped: int | None = None
@@ -2248,9 +2307,15 @@ class AudioHealthSampler:
             signal_path = _activity_unavailable_signal()
         current = _mapping(airplay.get("current"))
         fanin = _mapping(current.get("fanin"))
+        inputs = _mapping(fanin.get("inputs"))
         host_clock = _mapping(fanin.get("host_clock")) or None
         if active_source == Source.USBSINK.value:
-            latency = _usb_timing(_mapping(self._route), host_clock, active=True)
+            latency = _usb_timing(
+                _mapping(self._route),
+                host_clock,
+                _mapping(inputs.get(Source.USBSINK.value)),
+                active=True,
+            )
         else:
             latency = _not_applicable_timing()
         # Computed once here and passed to both _state_issues (below) and
@@ -2495,6 +2560,46 @@ class AudioHealthSampler:
                         context=context,
                     )
         self._previous_input_xruns = input_counts
+
+        usb_input = _mapping(inputs.get(Source.USBSINK.value))
+        unlocks = _nonnegative_counter(
+            _mapping(usb_input.get("resampler")).get("unlock_count")
+        )
+        stream_stops = _nonnegative_counter(
+            _mapping(usb_input.get("direct")).get("stream_stops")
+        )
+        if unlocks is None or stream_stops is None:
+            self._previous_usb_buffer_counts = None
+        else:
+            previous_usb = self._previous_usb_buffer_counts
+            if previous_usb is not None:
+                unlock_delta = unlocks - previous_usb[0]
+                stop_delta = stream_stops - previous_usb[1]
+                if (
+                    unlock_delta > 0
+                    and stop_delta >= 0
+                    and self._session.source_id == Source.USBSINK.value
+                ):
+                    unexpected = max(0, unlock_delta - stop_delta)
+                    if unexpected:
+                        self._record_point(
+                            _issue(
+                                "usbsink.latency_buffer_underfill",
+                                scope="source",
+                                source_id=Source.USBSINK.value,
+                                impact="continuity",
+                                severity="issue",
+                                title="USB input buffer ran dry",
+                                detail=(
+                                    "USB audio arrived too late for the selected "
+                                    "buffer. JTS refilled it and resumed playback."
+                                ),
+                            ),
+                            now,
+                            count=unexpected,
+                            context=context,
+                        )
+            self._previous_usb_buffer_counts = (unlocks, stream_stops)
 
         if outputd is None:
             self._previous_outputd_xruns = None
