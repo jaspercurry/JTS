@@ -888,7 +888,11 @@ def test_the_realized_evidence_rides_and_the_estimator_keys_are_named() -> None:
     # elsewhere — the disclosure's whole job.
     assert evidence["polish_delta_db_tweeter"] == 0.0
     assert evidence["polish_delta_db_woofer"] == 0.0
-    # No estimator keys, prefixed or otherwise: they did not disagree.
+    # No estimator keys on THIS fixture, which models the session that
+    # produced no consistency verdict at all. A realized-only record whose
+    # estimators ran and AGREED still carries them — prefixed — which is what
+    # makes the prefix load-bearing rather than cosmetic; the producer's own
+    # test covers that shape.
     assert not [key for key in evidence if key.startswith("estimator_")]
     # …and on the estimator record they are present, PREFIXED.
     estimator_evidence = _level_frame_finding().evidence
