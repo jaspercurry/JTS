@@ -104,10 +104,10 @@ def doctor_check(
         order: sort key in the canonical run sequence — a sparse key, not
             a contiguous index. To insert between two checks pass a value
             between their orders (e.g. 20.5); no renumber. Must be unique.
-        group: subsystem/domain the check belongs to (env, voice, audio,
-            wake, renderers, integrations, web, correction, memory,
-            resilience, aec, usbsink, network, peering,
-            grouping). Organizational metadata only.
+        group: subsystem/domain the check belongs to, normally its
+            module name. Organizational metadata only, except that
+            ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole
+            groups a streambox does not install.
         label: explicit display/crash label. Required for ``needs_cfg``
             checks (the original ``(label, lambda)`` tuples). Leave empty
             for bare checks so the label is derived from ``__name__``.

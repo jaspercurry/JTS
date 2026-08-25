@@ -265,8 +265,8 @@ def _pid_of_unit(unit: str) -> int | None:
     isn't running, or if systemctl isn't available (dev host).
 
     Used only when a caller wants just one PID. The batch caller
-    `check_oom_score_adj` uses `_systemctl_show_property` directly
-    to avoid N subprocess invocations for N units."""
+    `check_installed_settings_drift` uses `_systemctl_show_property`
+    directly to avoid N subprocess invocations for N units."""
     try:
         out = _run(
             ["systemctl", "show", "-p", "MainPID", "--value", f"{unit}.service"],
@@ -284,8 +284,8 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         list of values (length == len(units)), OR None if systemctl
         is unavailable (dev host).
 
-    Why this matters: before the batch, check_oom_score_adj called
-    `systemctl show` once per (property × daemon) — a dozen-plus
+    Why this matters: unbatched, the installed-settings drift check would
+    call `systemctl show` once per (property × daemon) — a dozen-plus
     subprocess invocations per doctor run. Batched, it's one invocation
     per property (LoadState, MainPID, OOMScoreAdjust), a large
     constant-factor win on the Pi.

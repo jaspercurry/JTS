@@ -368,9 +368,9 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
     """The nginx recovery drop-in (Restart=always + OOMScoreAdjust=-450)
     shipped 2026-06-29 on the streambox path only. Full-profile boxes ran
     an unprotected nginx (an OOM-killed nginx stayed dead) with a
-    permanently-warning doctor check — check_oom_score_adj expects -450 on
-    nginx regardless of profile, and its "re-run install.sh" remediation
-    could never fix it there. The whole-text check above cannot catch a
+    permanently-warning doctor check — the installed-settings drift check
+    expects -450 on nginx regardless of profile, and its "re-run install.sh"
+    remediation could never fix it there. The whole-text check above cannot catch a
     per-profile gap, so pin that the shared helper installs the drop-in
     and that BOTH profile entry points reach it."""
     source = _SYSTEMD_UNITS_FRAGMENT.read_text(encoding="utf-8")
