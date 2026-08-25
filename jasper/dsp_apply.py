@@ -657,21 +657,6 @@ async def _dsp_apply_lock(
         lock.release()
 
 
-@contextlib.asynccontextmanager
-async def _maybe_dsp_apply_lock(
-    path: Path,
-    *,
-    timeout_s: float = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
-    source: str = "unspecified",
-):
-    async with _dsp_apply_lock(
-        path,
-        timeout_s=timeout_s,
-        source=source,
-    ):
-        yield
-
-
 def dsp_apply_lock_path(config_dir: str | Path) -> Path:
     """Return the shared local lock path for generated CamillaDSP configs."""
 
@@ -835,7 +820,7 @@ async def apply_dsp_config(
         sound_filter_count=sound_filter_count,
     )
 
-    async with _maybe_dsp_apply_lock(
+    async with _dsp_apply_lock(
         lock,
         timeout_s=lock_timeout_s,
         source=source,

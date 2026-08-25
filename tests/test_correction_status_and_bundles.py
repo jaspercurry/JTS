@@ -760,7 +760,7 @@ async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
     async def fake_get_config() -> str:
         return loaded["path"]
 
-    monkeypatch.setattr(dsp_apply, "_maybe_dsp_apply_lock", observed_lock)
+    monkeypatch.setattr(dsp_apply, "_dsp_apply_lock", observed_lock)
 
     await sess.apply(
         fake_set_config,
