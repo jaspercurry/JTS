@@ -82,7 +82,9 @@ ack, never silence.
       owner-directed; restoring the full matrix afterward is an owner call
       (record either way via ADR).
 - [x] BRINGUP.md Phase 5 rewrite: profile-first AEC flow, `jasper-aec-commission`,
-      replace both config-truncating `tee` recipes (BLOCKER; validate on a Pi)
+      replace both config-truncating `tee` recipes (BLOCKER; landed
+      code-verified from the cloud lane — the Pi walk is still owed: run
+      Phase 5 on the next spare-Pi commission, never jts3)
 - [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
 - [ ] `User=` + hardening for jasper-correction-web / -bluetooth-web /
       -system-web units
