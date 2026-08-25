@@ -75,7 +75,7 @@ ack, never silence.
 ## Cloud waves
 
 **Wave 0 — correctness & safety (first, small PRs)**
-- [ ] CI matrix → the deployed interpreter only: `tests.yml` pytest matrix
+- [x] CI matrix → the deployed interpreter only: `tests.yml` pytest matrix
       becomes `["3.13"]` (PiOS Trixie ships python3.13 only — see
       `deploy/lib/install/python-runtime.sh`) + the one classifier-test
       assertion that names the version list. Campaign speed measure,

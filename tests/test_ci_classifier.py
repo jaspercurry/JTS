@@ -704,7 +704,7 @@ def test_workflow_keeps_one_fail_closed_required_aggregate() -> None:
     assert "fast-landing lane selected work did not succeed" in workflow
     assert "docs lane selected work did not succeed" in workflow
     assert "full lane selected work did not succeed" in workflow
-    assert 'python-version: ["3.11", "3.12", "3.13"]' in workflow
+    assert 'python-version: ["3.13"]' in workflow
     assert "python3 scripts/ci-classify.py --landing-pytest-targets" in workflow
     assert "python3 scripts/ci-classify.py --docs-pytest-targets" in workflow
     assert "python3 scripts/ci-classify.py --routing-policy-pytest-targets" in workflow
