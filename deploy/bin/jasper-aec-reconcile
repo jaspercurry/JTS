@@ -318,7 +318,7 @@ VOICE_IRRELEVANT_ENV_KEYS="\
 JASPER_XVF_DISPLAY_NAME JASPER_XVF_REASON JASPER_XVF_RECOMMENDED_PROFILE \
 JASPER_AEC_CHIP_AEC_TESTING_REQUESTED JASPER_AEC_CHIP_AEC_DAC_ID \
 JASPER_AEC_CHIP_AEC_DAC_STATUS JASPER_AEC_CHIP_AEC_DAC_SOURCE \
-JASPER_AEC_CHIP_AEC_DAC_DETAIL JASPER_AEC_CHIP_AEC_DAC_ACTION \
+JASPER_AEC_CHIP_AEC_DAC_DETAIL \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"
 
@@ -657,7 +657,6 @@ CHIP_AEC_DAC_GATE_OK=0
 CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
 CHIP_AEC_DAC_GATE_SOURCE="unresolved"
 CHIP_AEC_DAC_GATE_DETAIL=""
-CHIP_AEC_DAC_GATE_ACTION="use_software_aec3_or_enable_testing"
 
 refresh_chip_aec_dac_gate() {
     local dac_id testing payload args
@@ -673,7 +672,6 @@ refresh_chip_aec_dac_gate() {
     CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
     CHIP_AEC_DAC_GATE_SOURCE="policy_unavailable"
     CHIP_AEC_DAC_GATE_DETAIL=""
-    CHIP_AEC_DAC_GATE_ACTION="use_software_aec3_or_enable_testing"
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
         CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy unavailable: python not found at ${MIC_PROFILE_PYTHON}"
         return
@@ -696,7 +694,6 @@ refresh_chip_aec_dac_gate() {
     CHIP_AEC_DAC_GATE_STATUS="${JASPER_CHIP_AEC_DAC_GATE_STATUS:-needs_calibration}"
     CHIP_AEC_DAC_GATE_SOURCE="${JASPER_CHIP_AEC_DAC_GATE_SOURCE:-unknown}"
     CHIP_AEC_DAC_GATE_DETAIL="${JASPER_CHIP_AEC_DAC_GATE_DETAIL:-}"
-    CHIP_AEC_DAC_GATE_ACTION="${JASPER_CHIP_AEC_DAC_GATE_ACTION:-use_software_aec3_or_enable_testing}"
 }
 
 chip_aec_dac_supported() {
@@ -722,7 +719,6 @@ write_chip_aec_gate_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_STATUS "$CHIP_AEC_DAC_GATE_STATUS"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_SOURCE "$CHIP_AEC_DAC_GATE_SOURCE"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_DETAIL "$CHIP_AEC_DAC_GATE_DETAIL"
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_ACTION "$CHIP_AEC_DAC_GATE_ACTION"
 }
 
 chip_aec_mic_supported() {

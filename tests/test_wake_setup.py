@@ -625,8 +625,8 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
 # ---------- Mic/wake proxy routes ------------------------------------------
 # These cover the /detection.json poll plus the /layer/<name> and
 # /sensitivity POST routes that forward to jasper-control with the
-# wizard's user-facing vocabulary (legacy layer/aec, sensitivity) rewritten
-# to jasper-control's internal vocabulary (/aec/{toggle,leg,threshold}).
+# wizard's user-facing vocabulary (leg name, sensitivity) rewritten to
+# jasper-control's internal vocabulary (/aec/{leg,threshold}).
 
 
 @pytest.fixture
@@ -646,7 +646,6 @@ def fake_control():
             "legs": {"raw": {"configured": True}, "dtln": {"configured": False}},
             "threshold": 0.5,
         },
-        "/aec/toggle": {"mode": "disabled", "bridge_active": True},
         "/aec/leg": {
             "mode": "auto",
             "bridge_active": True,
@@ -892,33 +891,6 @@ def test_detection_json_proxies_aec(wired_server):
     assert ("GET", "/aec", None) in received
 
 
-def test_layer_aec_no_op_when_already_in_state(wired_server):
-    """Software AEC3 uses set-state semantics: setting `enabled=true` when
-    the upstream is already in mode=auto must NOT call /aec/toggle
-    (which would flip to disabled). The handler reads /aec first and
-    short-circuits if the state already matches."""
-    base, received, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/layer/aec", {"enabled": True})
-    assert status == 200
-    assert body["mode"] == "auto"
-    posts = [r for r in received if r[0] == "POST"]
-    assert posts == [], f"unexpected upstream POSTs: {posts}"
-
-
-def test_layer_aec_toggles_when_state_differs(wired_server):
-    """When the user asks for `enabled=false` and upstream reports
-    mode=auto, the handler must POST /aec/toggle to flip the state."""
-    base, received, _, _ = wired_server
-    status, _ = _json_post_with_csrf(base, "/layer/aec", {"enabled": False})
-    assert status == 200
-    posts = [r for r in received if r[0] == "POST"]
-    assert len(posts) == 1
-    method, path, parsed = posts[0]
-    assert path == "/aec/toggle"
-    # /aec/toggle takes no body — the handler sent zero bytes upstream.
-    assert parsed is None
-
-
 def test_layer_raw_posts_aec_leg_with_body(wired_server):
     """Leg toggles rewrite to /aec/leg with `{leg, enabled}` so
     jasper-control's existing single-endpoint handler stays unchanged."""
@@ -1002,18 +974,6 @@ def test_usb_mic_leg_posts_choice_and_forwards_control_token(wired_server):
         {"leg": "primary"},
         "control-token",
     ) in received
-
-
-def test_legacy_layer_chip_aec_posts_both_beam_legs(wired_server):
-    base, received, _, _ = wired_server
-    _json_post_with_csrf(base, "/layer/chip_aec", {"enabled": True})
-    posts = [r for r in received if r[0] == "POST"]
-    assert (
-        "POST", "/aec/leg", {"leg": "chip_aec_150", "enabled": True}
-    ) in posts
-    assert (
-        "POST", "/aec/leg", {"leg": "chip_aec_210", "enabled": True}
-    ) in posts
 
 
 def test_firmware_update_posts_control_update_route(wired_server):

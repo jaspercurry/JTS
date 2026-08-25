@@ -104,9 +104,15 @@ ack, never silence.
 - [x] multiroom/channel_split.py + always-None param chain
 - [ ] TtsPlayout PortAudio body collapse
 - [x] five dead wizard main()s + 2 orphan console_scripts
-- [ ] wake_setup.py dead layer branches; bass_alignment.py; aec3-spike code
-      files; control/__main__.py; chip_aec dead fields; CaptureActivityProbe;
-      dead voice-protocol members
+- [x] wake_setup.py dead layer branches; aec3-spike code files;
+      control/__main__.py; chip_aec dead fields; CaptureActivityProbe;
+      dead voice-protocol members. Two audit claims REFUTED on
+      re-verification — do not re-attempt: bass_alignment.py is consumed by
+      tuning-zone contract tests (test_active_speaker_alignment_walk,
+      test_audio_measurement_delay_graph) — its fate is handed to the tuning
+      program with those tests; AudioOutChunk.kind is live
+      (turn_playback → segment_kind → fanin SegmentKind AEC-reference
+      accounting)
 
 **Wave 2 — over-engineering (~9–12K)**
 - [ ] rust host-compliance/prime machinery (host_compliance.rs + mixer/lane

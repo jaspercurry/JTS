@@ -25,14 +25,17 @@ the access path AND ran a proper tuning campaign:
    `reference-conditions/` 10-cell baseline.
 6. Combine the winning knobs into `BEST_A`.
 
-Files in this directory:
-- [`binding.cpp`](binding.cpp) — pybind11 binding (rev 3); accepts a
+The spike's code (`binding.cpp`, `run_offline.py`, `sweep.py`,
+`forensic.py`) shipped its output into `jasper_aec3` and has been
+deleted from the tree; it remains available in git history. What each
+did:
+- `binding.cpp` — pybind11 binding (rev 3); accepts a
   `py::dict` of knobs, defaults match webrtc-audio-processing v2.1
-- [`run_offline.py`](run_offline.py) — process all 10 baseline cells
+- `run_offline.py` — process all 10 baseline cells
   through a given config, write `aec-v2*.wav` outputs
-- [`sweep.py`](sweep.py) — the **single-variable sweep methodology**
+- `sweep.py` — the **single-variable sweep methodology**
   used to identify BEST_A. Re-run with new knobs to extend.
-- [`forensic.py`](forensic.py) — per-stream audio quality metrics
+- `forensic.py` — per-stream audio quality metrics
   (pumping CV, HF tearing, crest factor)
 
 ## The BEST_A config (canonical)

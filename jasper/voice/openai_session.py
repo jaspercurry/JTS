@@ -131,12 +131,6 @@ DEFAULT_INITIAL_CONNECT_BUDGET_SEC = 600.0
 # via ``JASPER_OPENAI_REASONING_EFFORT`` if needed.
 DEFAULT_REASONING_EFFORT = "low"
 
-# Inert: ``temperature`` was removed from the Realtime 2 session-create
-# schema (see ``_build_session_payload``'s docstring) — the model has its
-# own defaults now. The constructor param / ``self._temperature`` field
-# below are dead but kept to avoid an API-signature change in this pass;
-# nothing reads them.
-DEFAULT_TEMPERATURE = 0.7
 DEFAULT_NOISE_REDUCTION = "off"
 # ``auto`` is resolved by voice.input_policy before production constructs
 # this adapter. If a bare test/tool instantiates the adapter with auto, omit
@@ -225,14 +219,9 @@ class OpenAIRealtimeTurn:
                 "text_tokens": 0,
             },
         }
-        self._interrupted = False
         self._interrupt_event = asyncio.Event()
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
-        # Updated by `audio_out()` each time the consumer dequeues a
-        # chunk — the right anchor for the idle watchdog's tail wait.
-        # See `last_chunk_played_at()` docstring on LiveTurn for why.
-        self._last_chunk_dequeued_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at_monotonic: float = _time.monotonic()
         self._bytes_sent: int = 0
@@ -407,13 +396,6 @@ class OpenAIRealtimeTurn:
                 return
             if isinstance(chunk, bytes):
                 chunk = AudioOutChunk(pcm=chunk)
-            # Stamp the dequeue time so the idle watchdog can see the
-            # consumer making real-time progress through the queue,
-            # not just network arrivals. Without this, OpenAI's "all
-            # chunks arrive in 1.4 s, played over 7 s" pattern would
-            # let the watchdog end the turn while ~5 s of audio is
-            # still queued.
-            self._last_chunk_dequeued_at = asyncio.get_event_loop().time()
             yield chunk
 
     async def release(self) -> None:
@@ -481,9 +463,6 @@ class OpenAIRealtimeTurn:
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
 
-    def last_chunk_played_at(self) -> float:
-        return self._last_chunk_dequeued_at
-
     def server_turn_complete(self) -> bool:
         return self._server_turn_complete
 
@@ -518,14 +497,10 @@ class OpenAIRealtimeTurn:
     def user_transcript(self) -> str:
         return " ".join(self._user_transcript_parts)
 
-    def interrupted(self) -> bool:
-        return self._interrupted
-
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()
 
     def clear_interrupted(self) -> None:
-        self._interrupted = False
         self._interrupt_event.clear()
 
     # ---- Barge-in capability seam (OpenAI reference pack) ----
@@ -644,7 +619,6 @@ class OpenAIRealtimeTurn:
         # drives *after* the flush. OpenAI/Grok never set _interrupt_event from
         # the server side, so this is the only path that arms the flush race
         # for these providers.
-        self._interrupted = True
         self._interrupt_event.set()
 
     def drop_pending_audio(self) -> int:
@@ -861,7 +835,6 @@ class OpenAIRealtimeConnection:
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         noise_reduction: str = DEFAULT_NOISE_REDUCTION,
-        temperature: float = DEFAULT_TEMPERATURE,
         # Proactive pre-cap reconnect — see `_proactive_reconnect_watchdog`.
         # Both default to 0 (disabled) so tests and bare-construction don't
         # spawn surprise tasks. Production wires production values from
@@ -906,7 +879,6 @@ class OpenAIRealtimeConnection:
         self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
         self._noise_reduction = _normalize_noise_reduction(noise_reduction)
-        self._temperature = temperature
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
         self._backoff_schedule = backoff_schedule
@@ -1147,14 +1119,6 @@ class OpenAIRealtimeConnection:
     def supports_server_vad(self) -> bool:
         return True
 
-    def supports_provider_vad(self) -> bool:
-        # OpenAI Realtime exposes native server-side VAD (`server_vad`) — the
-        # same engine `supports_server_vad()` lets the daemon switch to
-        # mid-session. Capability, not current config: production runs manual
-        # VAD. Grok inherits this (xAI is OpenAI-compatible). Separate from
-        # barge-in support — see the LiveConnection docstring.
-        return True
-
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
@@ -1237,9 +1201,6 @@ class OpenAIRealtimeConnection:
         """Send response.create WITHOUT a preceding commit — used when
         server_vad has already committed the audio buffer."""
         await self._send_event({"type": "response.create"})
-
-    async def _create_response_only(self) -> None:
-        await self.create_response_only()
 
     async def set_turn_detection(self, mode: dict | None) -> None:
         """Switch turn detection mid-session.

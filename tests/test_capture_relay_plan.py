@@ -39,7 +39,6 @@ from jasper.capture_relay.session import (
     RETAKE_TOO_LATE_MESSAGE,
     STATUS_POLL_TRANSIENT_GRACE_S,
     STATUS_POLL_WARN_BUDGET,
-    CaptureActivityProbe,
     CaptureAborted,
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -3022,39 +3021,6 @@ def test_client_pull_blob_keys_the_request_by_capture_index():
         client.pull_blob("cap_1", "pull", capture_index=-1)
     with pytest.raises(ValueError, match="capture_index"):
         client.pull_blob("cap_1", "pull", capture_index=True)
-
-
-def test_activity_probe_is_per_index_aware_for_plans():
-    backend = FakePlanRelayBackend()
-    client, session, _phone = _mint_plan_session(backend, driver=False)
-    backend.phone_post(
-        session.session_id,
-        {
-            "armed": True,
-            "begin_capture": {"index": 2, "attempt": 2},
-            "capture_page": dict(_PAGE),
-        },
-        session=session,
-        sequence=1,
-    )
-    # Attempt 1's blob already exists (legacy state == ready for the session),
-    # which must NOT read as "capture 2's recorder finished".
-    backend.phone_upload(
-        session.session_id, session.content_key, _wav(1), index=0
-    )
-    probe = CaptureActivityProbe(client, session, capture_index=1)
-    probe.assert_active()
-
-    # v2 semantics would have aborted host playback here:
-    with pytest.raises(CaptureAborted, match="ended before host playback"):
-        CaptureActivityProbe(client, session).assert_active()
-
-    # Once THIS capture's blob lands, the plan-aware probe flags it too.
-    backend.phone_upload(
-        session.session_id, session.content_key, _wav(2), index=1
-    )
-    with pytest.raises(CaptureAborted, match="ended before host playback"):
-        probe.assert_active()
 
 
 def test_plan_session_tap_link_and_spec_round_trip_via_relay():

@@ -1014,69 +1014,6 @@ async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
         await conn.stop()
 
 
-async def test_last_chunk_played_at_tracks_consumer_dequeues():
-    """The idle watchdog uses ``last_chunk_played_at`` to know when
-    the consumer has finished draining the audio queue. The whole
-    point of having TWO timestamps (chunk_at vs chunk_played_at) is
-    that they diverge: OpenAI Realtime delivers all of a response's
-    audio chunks back-to-back over the WebSocket within milliseconds,
-    while the consumer plays them at real-time rate via ALSA over
-    seconds. Using ``last_chunk_at`` (network arrival) for the tail
-    wait ends the turn while the queue still has 5+ seconds of audio
-    waiting to play — that was the live-deploy bug the user described
-    as "she's still cutting out".
-
-    Pin the invariant: ``last_chunk_played_at`` is 0 until the
-    consumer dequeues a chunk, and it advances each time it does."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        # Initially zero — no chunks dequeued yet.
-        assert turn.last_chunk_played_at() == 0.0
-
-        # Simulate fast back-to-back network delivery of 5 chunks.
-        for i in range(5):
-            sess.feed({
-                "type": "response.output_audio.delta",
-                "delta": _b64(b"\x00\x01" * 200),
-                "response_id": "resp_1",
-            })
-        # Let the dispatcher route those events into audio_q.
-        await asyncio.sleep(0.05)
-
-        # Network arrival anchor advanced (chunks have arrived);
-        # played-at anchor still zero because the consumer hasn't
-        # run. This is the divergence the bug exploited.
-        assert turn.last_chunk_at() > 0
-        assert turn.last_chunk_played_at() == 0.0
-
-        # Consumer dequeues one. played-at becomes non-zero.
-        gen = turn.audio_out()
-        await gen.__anext__()
-        played_after_one = turn.last_chunk_played_at()
-        assert played_after_one > 0
-
-        # Sleep slightly, dequeue another. played-at advances.
-        await asyncio.sleep(0.02)
-        await gen.__anext__()
-        played_after_two = turn.last_chunk_played_at()
-        assert played_after_two > played_after_one, (
-            "last_chunk_played_at should advance each time the consumer "
-            "dequeues a chunk; this is what makes the watchdog wait for "
-            "the consumer to drain the queue rather than ending the "
-            "turn 1.5 s after the network finished delivering."
-        )
-
-        # Cleanup: drain the rest so the consumer task can finish.
-        await gen.aclose()
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
 async def test_function_call_round_trip():
     """Tool dispatch is triggered by ``response.done`` (with a
     ``function_call`` item in ``response.output[]``), NOT by
@@ -2606,14 +2543,14 @@ async def test_server_vad_events_ignored_under_manual_vad():
 
 
 async def test_create_response_only_sends_response_create_without_commit():
-    """_create_response_only sends just response.create, no commit."""
+    """create_response_only sends just response.create, no commit."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
     try:
         sess = factory.conns[0]
         baseline = len(sess.sent)
-        await conn._create_response_only()
+        await conn.create_response_only()
         new = sess.sent[baseline:]
         assert len(new) == 1
         assert new[0]["type"] == "response.create"
