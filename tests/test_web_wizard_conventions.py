@@ -560,7 +560,14 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
                 "the compare_digest() token compare"
             )
             continue
-        if "guard_mutating_request" not in seg:
+        # AST Call, not a substring — a comment naming the guard must not
+        # satisfy the chokepoint, same rule as the bespoke branch above.
+        handler_fn = ast.parse(textwrap.dedent(seg)).body[0]
+        if not any(
+            isinstance(node, ast.Call)
+            and _call_target_name(node) == "guard_mutating_request"
+            for node in ast.walk(handler_fn)
+        ):
             offenders.append(f"{path}::{name}")
     assert offenders == [], (
         "wizard mutating handlers that never call guard_mutating_request() "
