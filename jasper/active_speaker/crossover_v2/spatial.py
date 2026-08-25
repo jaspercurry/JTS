@@ -102,9 +102,13 @@ __all__ = [
     "EntryBaselineScreen",
     "GeometryRetake",
     "BoostExclusion",
+    "CloudCombine",
+    "CloudVerdict",
     "LateralPose",
     "LateralPoseCurve",
     "cloud_position_capture",
+    "combine_cloud_positions",
+    "cloud_geometry_verdict",
     "cloud_position_screens",
     "lateral_pose_screens",
     "lateral_curves_sufficient",
@@ -1297,3 +1301,121 @@ def _geometry_verdict_from_combined(
         "clustered_fraction": float(geometry.clustered_fraction),
         "thin_evidence": bool(geometry.thin_evidence),
     }
+
+
+@dataclass(frozen=True)
+class CloudCombine:
+    """:func:`combine_cloud_positions`'s answer, plus the line a failure earns.
+
+    ``diagnostics`` carries the journal fields the flow emits under
+    ``event=correction.crossover_v2_cloud_combine_failed``, and is ``None``
+    when there was nothing to say.  They travel as data rather than as a log
+    call because this module is side-effect-free (see the module docstring);
+    the event NAME and the ``session_id`` stay with the flow, which owns both.
+    Same shape as :class:`BoostExclusion`, for the same reason.
+    """
+
+    combined: Any | None
+    diagnostics: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CloudVerdict:
+    """:func:`cloud_geometry_verdict`'s answer, carrying the same line.
+
+    ``verdict`` is the plain JSON-native dict the host persists verbatim into
+    the durable v2 state; ``diagnostics`` is whatever the combine underneath
+    it would have journalled.
+    """
+
+    verdict: dict[str, Any]
+    diagnostics: dict[str, Any] | None = None
+
+
+def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> CloudCombine:
+    """Assemble a closed group and combine it — the whole PR-4 seam.
+
+    ``CloudCombine.combined`` is a
+    :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`, or
+    ``None`` when the group cannot be combined (no positions, or a malformed
+    one).  Called exactly ONCE per group-close event, from
+    ``CrossoverV2Session._close_cloud_group``: PR-3b reads one field off the
+    result (``geometry``, via :func:`_geometry_verdict_from_combined`); PR-4's
+    pipeline (``assemble_cloud_group_result``) reads the rest of the SAME
+    object.  Never a second combine — see S3 review finding (2026-07-26): an
+    earlier revision of this wiring called this function TWICE per close
+    attempt (once through :func:`cloud_geometry_verdict` for the retry gate,
+    once more from the pipeline) — measured seconds-per-combine (3-6 s across
+    runs/hosts on the S0 ten-position corpus; interpreter-bound
+    ``smooth_fractional_octave``, worse on a Pi 5 — N2 review finding,
+    2026-07-27: an earlier "5.6-6.2 s" point figure did not reproduce across
+    hosts, so this states the regime instead of a false-precision number).
+    :data:`GEOMETRY_RETRY_POSITIONS` allows up to 3 close attempts per group
+    (2 retries + the accepting close), so the pre-fix worst case was 3 × 2 =
+    6 combines, not the earlier "4x" claim — real operator seconds for a
+    claim (byte-for-byte determinism) that was true but not worth paying for.
+
+    Never raises.  A group's captures are already-accepted evidence and a
+    combiner failure must not retroactively fail them, so an unusable cloud is
+    a ``None`` the caller turns into an honest "unknown" rather than an
+    exception that would strand the session.
+    """
+    from jasper.audio_measurement.spatial_combine import (
+        DEFAULT_ECHO_BAND_HZ,
+        combine_positions,
+    )
+
+    if not positions:
+        return CloudCombine(None)
+    # Every position in one group carries the SAME session-derived bands
+    # (set once at construction — see ``_CloudPosition``'s docstring), so
+    # reading them off the first position is reading the group's own bands,
+    # not an arbitrary one.  ``None`` (a position built before PR-4, or by a
+    # caller that never declared a driver contract) falls back to the
+    # module's own long-standing default, unchanged from pre-PR-4 behaviour.
+    echo_band_hz = positions[0].echo_band_hz or DEFAULT_ECHO_BAND_HZ
+    signal_band_hz = positions[0].signal_band_hz
+    try:
+        return CloudCombine(combine_positions(
+            [cloud_position_capture(p) for p in positions],
+            echo_band_hz=echo_band_hz,
+            signal_band_hz=signal_band_hz,
+        ))
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        return CloudCombine(
+            None, {"positions": len(positions), "error": str(exc)},
+        )
+
+
+def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
+    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+
+    A convenience wrapper around :func:`combine_cloud_positions` +
+    :func:`_geometry_verdict_from_combined` for callers that only have
+    ``positions`` (the corpus acceptance test; any future direct caller) —
+    the session itself does NOT call this (see
+    ``CrossoverV2Session._close_cloud_group``'s own single combine).
+
+    **Reason-string divergence, documented not silently left (N4 review
+    finding, 2026-07-27).**  An empty ``positions`` short-circuits HERE with
+    ``reason="no_positions"`` before ever reaching the combiner, while
+    :func:`_geometry_verdict_from_combined` called directly with a
+    ``combined=None`` and ``n_positions=0`` (e.g. because
+    :func:`combine_cloud_positions` was handed an empty group some other way)
+    reports ``reason="combine_failed"`` for the exact same "there were zero
+    positions" fact.  Unreachable through the session today (a group only
+    closes with at least its just-captured position already retained), but
+    the two functions disagree on naming WHICH degraded path a caller hit —
+    the entire point of a ``reason`` field — so this wrapper owns disclosing
+    the split rather than leaving a future reader to discover it by diffing
+    the two bodies.
+    """
+    if not positions:
+        return CloudVerdict(
+            {"locked": False, "reason": "no_positions", "n_positions": 0}
+        )
+    result = combine_cloud_positions(positions)
+    return CloudVerdict(
+        _geometry_verdict_from_combined(result.combined, len(positions)),
+        result.diagnostics,
+    )

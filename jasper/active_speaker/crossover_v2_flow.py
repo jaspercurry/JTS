@@ -3470,90 +3470,49 @@ cloud_position_capture = _spatial.cloud_position_capture
 _geometry_verdict_from_combined = _spatial._geometry_verdict_from_combined
 
 
-def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
-    """Assemble a closed group and combine it — the whole PR-4 seam.
+def _emit_cloud_combine_diagnostics(diagnostics: Mapping[str, Any] | None) -> None:
+    """Journal what the side-effect-free combiner could only hand back as data.
 
-    Returns a :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`,
-    or ``None`` when the group cannot be combined (no positions, or a malformed
-    one). Called exactly ONCE per group-close event, from
-    :meth:`CrossoverV2Session._close_cloud_group`: PR-3b reads one field off
-    the result (``geometry``, via :func:`_geometry_verdict_from_combined`);
-    PR-4's pipeline (:func:`assemble_cloud_group_result`) reads the rest of
-    the SAME object. Never a second combine — see S3 review finding
-    (2026-07-26): an earlier revision of this wiring called this function
-    TWICE per close attempt (once through :func:`cloud_geometry_verdict` for
-    the retry gate, once more from the pipeline) — measured seconds-per-combine
-    (3-6 s across runs/hosts on the S0 ten-position corpus; interpreter-bound
-    ``smooth_fractional_octave``, worse on a Pi 5 — N2 review finding,
-    2026-07-27: an earlier "5.6-6.2 s" point figure did not reproduce across
-    hosts, so this states the regime instead of a false-precision number).
-    ``GEOMETRY_RETRY_POSITIONS = 2`` allows up to 3 close attempts per group
-    (2 retries + the accepting close), so the pre-fix worst case was 3 × 2 =
-    6 combines, not the earlier "4x" claim — real operator seconds for a
-    claim (byte-for-byte determinism) that was true but not worth paying for.
-
-    Never raises. A group's captures are already-accepted evidence and a
-    combiner failure must not retroactively fail them, so an unusable cloud is
-    a ``None`` the caller turns into an honest "unknown" rather than an
-    exception that would strand the session.
+    :mod:`jasper.active_speaker.crossover_v2.spatial` owns the combine and is
+    side-effect-free by charter, so it returns its log fields rather than
+    writing them — the pattern :class:`~.crossover_v2.spatial.BoostExclusion`
+    already ships. The event NAME lives here, with the module that owns it.
     """
-    from jasper.audio_measurement.spatial_combine import (
-        DEFAULT_ECHO_BAND_HZ,
-        combine_positions,
+    if diagnostics is None:
+        return
+    log_event(
+        logger, "correction.crossover_v2_cloud_combine_failed",
+        level=logging.WARNING, **diagnostics,
     )
 
-    if not positions:
-        return None
-    # Every position in one group carries the SAME session-derived bands
-    # (set once at construction — see ``_CloudPosition``'s docstring), so
-    # reading them off the first position is reading the group's own bands,
-    # not an arbitrary one. ``None`` (a position built before PR-4, or by a
-    # caller that never declared a driver contract) falls back to the
-    # module's own long-standing default, unchanged from pre-PR-4 behaviour.
-    echo_band_hz = positions[0].echo_band_hz or DEFAULT_ECHO_BAND_HZ
-    signal_band_hz = positions[0].signal_band_hz
-    try:
-        return combine_positions(
-            [cloud_position_capture(p) for p in positions],
-            echo_band_hz=echo_band_hz,
-            signal_band_hz=signal_band_hz,
-        )
-    except (ValueError, TypeError, IndexError, AttributeError) as exc:
-        log_event(
-            logger, "correction.crossover_v2_cloud_combine_failed",
-            level=logging.WARNING,
-            positions=len(positions), error=str(exc),
-        )
-        return None
+
+def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
+    """Combine a closed group, and journal a combiner failure.
+
+    The emitting half of
+    :func:`~jasper.active_speaker.crossover_v2.spatial.combine_cloud_positions`,
+    which owns the seam and its whole contract — one combine per group close,
+    never raising, ``None`` for an unusable cloud. Kept as a function rather
+    than a bare re-export for two reasons: this is where the journal event
+    lives, and ``_close_cloud_group`` reaches it as a module global, which is
+    what lets ``test_close_cloud_group_calls_the_combiner_exactly_once`` count
+    the calls.
+    """
+    result = _spatial.combine_cloud_positions(positions)
+    _emit_cloud_combine_diagnostics(result.diagnostics)
+    return result.combined
 
 
 def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
-    """PR-3b's one use of the combiner: combine, then read ``.geometry``.
+    """Combine, read ``.geometry``, and journal a combiner failure.
 
-    A convenience wrapper around :func:`combine_cloud_positions` +
-    :func:`_geometry_verdict_from_combined` for callers that only have
-    ``positions`` (the corpus acceptance test; any future direct caller) —
-    the session itself does NOT call this (see
-    :meth:`CrossoverV2Session._close_cloud_group`'s own single combine).
-
-    **Reason-string divergence, documented not silently left (N4 review
-    finding, 2026-07-27).** An empty ``positions`` short-circuits HERE with
-    ``reason="no_positions"`` before ever reaching the combiner, while
-    :func:`_geometry_verdict_from_combined` called directly with a
-    ``combined=None`` and ``n_positions=0`` (e.g. because
-    ``combine_cloud_positions([])`` was called some other way) reports
-    ``reason="combine_failed"`` for the exact same "there were zero
-    positions" fact. Unreachable through the session today (a group only
-    closes with at least its just-captured position already retained), but
-    the two functions disagree on naming WHICH degraded path a caller hit —
-    the entire point of a ``reason`` field — so this wrapper owns disclosing
-    the split rather than leaving a future reader to discover it by diffing
-    the two bodies.
+    The emitting half of
+    :func:`~jasper.active_speaker.crossover_v2.spatial.cloud_geometry_verdict`,
+    which owns the verdict shape and the reason-string divergence it discloses.
     """
-    if not positions:
-        return {"locked": False, "reason": "no_positions", "n_positions": 0}
-    combined = combine_cloud_positions(positions)
-    return _geometry_verdict_from_combined(combined, len(positions))
+    result = _spatial.cloud_geometry_verdict(positions)
+    _emit_cloud_combine_diagnostics(result.diagnostics)
+    return result.verdict
 
 
 # --------------------------------------------------------------------------- #
