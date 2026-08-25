@@ -4,7 +4,7 @@
 "Check for updates" button, which is **not built**. Stage 1 of the
 recommended path — GitHub Actions CI — **has since shipped**
 (`.github/workflows/tests.yml`, #251, 2026-05-23; now pytest on
-Python 3.11/3.12/3.13 with `ruff`/`mypy`, plus `shell`, `js`, and
+the deployed interpreter (py3.13) with `ruff`/`mypy`, plus `shell`, `js`, and
 `rust` jobs and the doc-hygiene workflows). The remaining Stages 2–3
 (auto-release + the dashboard button) are still unbuilt research.
 This document captures the option space, the recommended staged
@@ -287,8 +287,8 @@ workflow on a fast-moving `main`" for the authoritative description):
   branch-protected on the `pytest` and `rust` checks.
 - **Jobs.**
   - `pytest` — the hardware-free merge lane (`scripts/test-merge`,
-    voice_eval excluded) across Python 3.11/3.12/3.13, with
-    `ruff check .` and a lenient `mypy` gate in the 3.13 leg.
+    voice_eval excluded) on py3.13, the deployed interpreter, with
+    `ruff check .` and a lenient `mypy` gate.
   - `shell` (`bash -n` + `shellcheck`), `js`
     (`scripts/check-js-syntax.sh` + browser-module harnesses), and a
     pinned-toolchain `rust` job (Rustfmt, Clippy `-D warnings`,

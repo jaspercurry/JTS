@@ -51,10 +51,11 @@ The hooks mirror the low-noise CI gates contributors most often trip:
 Ruff for Python and `node --check` for the static wizard modules.
 
 If you'd rather not install a new tool, stock pip + venv works too —
-just make sure your python is 3.11+:
+just make sure your python is 3.13 — the deployed and CI-tested
+interpreter:
 
 ```sh
-python3.11 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
+python3.13 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
 pip install -e '.[full,dev]'
 scripts/test-fast
@@ -213,7 +214,9 @@ Two operational notes:
 
 ## Code style
 
-- Python 3.11+ (Pi runs 3.13).
+- Python 3.13 — the deployed and sole CI-tested interpreter
+  (`requires-python` still floors at 3.11, but no CI leg verifies older
+  interpreters).
 - Lint with `ruff check .` and type-check with `mypy`. Do not run a
   tree-wide `ruff format` as drive-by cleanup; formatting the whole tree is a
   separate, deliberate PR.
