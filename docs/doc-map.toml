@@ -48,6 +48,10 @@ session_artifacts = [
   # HANDOFF-crossover-measurement-v2.md), so routing a code change here
   # instead of to those would invert the single-source-of-truth rule.
   "docs/audio-commissioning-roadmap.md",
+  # Point-in-time line census emitted by scripts/right-size-report.sh; the
+  # right-sizing campaign's provable "before". Dies with
+  # docs/REFACTOR-2026-08.md, so it is never a routing target.
+  "docs/right-size-baseline-2026-08.md",
 ]
 # Prior-art research artifacts: long-lived studies kept as reference (each
 # tagged `Status: research` in-doc), not canonical operational scan targets.

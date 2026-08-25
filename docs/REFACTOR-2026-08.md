@@ -92,7 +92,7 @@ ack, never silence.
 - [x] Delete the phantom `acquire_lock` knob through `dsp_apply.py` (13 signatures)
 
 **Wave 0.5 — baseline instrumentation (report script, not CI gates)**
-- [ ] `scripts/right-size-report.sh`: comment-to-code ratio, test-vs-product
+- [x] `scripts/right-size-report.sh`: comment-to-code ratio, test-vs-product
       LOC, dead-code scan (vulture / cargo lints / knip), per-zone; run and
       commit the baseline numbers so the diet is provable. The per-zone
       output is also the tuning program's net-lines evidence — one
