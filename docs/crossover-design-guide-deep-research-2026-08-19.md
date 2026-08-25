@@ -11,13 +11,31 @@
 **Provenance:** deep-research report supplied by the owner during the
 crossover-optimization build-out; reviewed by the conductor the same day.
 **Adoptions** (recorded in the build dispatches and PR coordination
-sections): measured directivity bounds for candidate_space (woofer
-−6 dB @ 30° ceiling; matched-beamwidth prior; three-source precedence:
-declared-safety hard / measured-directivity hard-ceiling-soft-prior /
-geometry-prior seed-only); a DI-continuity term in the objective; the
-reverse-null test in the confirmation protocol and calibration rung; a
-slope-aware distortion-informed tweeter floor as a candidate_space
-refinement with the #2736 apply gate as the conservative backstop.
+sections; corrected against the tree at `2c191417e`, 2026-08-25): two died
+with `a31f1fa24` (#2832)'s deletion of
+`crossover_v2/{search,objective,candidate_space}.py`, with no successor
+anywhere in the tree — measured directivity bounds for candidate_space
+(woofer −6 dB @ 30° ceiling; matched-beamwidth prior; three-source
+precedence: declared-safety hard / measured-directivity hard-ceiling-soft-
+prior / geometry-prior seed-only), and a DI-continuity term in the
+objective. The reverse-null test was never part of that deleted machinery:
+its code ships and is live (`profile.py`'s `SUPPORTED_POLARITY`;
+`commissioning_evidence.py`'s and `commissioning_host.py`'s `"reverse"`
+evidence/graph kind; `driver_acoustics.analyze_summed_crossover`'s
+null-depth pass signal; `crossover_alignment.py`'s
+`POLARITY_KEEP`/`POLARITY_INVERT` decision on measured null depth) — but no
+physical inverted-polarity probe has ever been banked:
+`commissioning_capture_producer.SummedCaptureProducer` is a confirmed
+runtime orphan nothing instantiates, `docs/attribution-stage-plan.md`
+records "No P1 has ever been run" (P1 = `PROBE_REVERSE_NULL` in
+`attribution/closed_sets.py`), and `null_walk.py`'s walk executor
+`run_null_walk` was deleted because nothing called it. The slope-aware
+distortion-informed tweeter floor split: the candidate_space refinement was
+deferred prose that never shipped as code and died with the file; the
+#2736 apply gate it named as backstop is live and deliberately slope-blind
+(`camilla_yaml.EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR`,
+`crossover_declaration.CROSSOVER_BELOW_DECLARED_FLOOR`,
+`fc_sweep.FC_REJECT_BELOW_DECLARED_FLOOR`).
 **Standing caution:** every numeric anchor below is a PRIOR that seeds
 the search space — in-situ measurement decides (the report's own rule,
 and the house fresh-eyes rule).
