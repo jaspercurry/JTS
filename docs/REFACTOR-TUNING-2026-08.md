@@ -10,8 +10,8 @@
 > plan's R5 (acknowledged 2026-08-25, both directions).
 
 
-**Status: final.** Every gate the inventory escalated is closed — nine owner
-rulings, S1–S9, recorded in §4 — and both programs have reconciled their
+**Status: final.** Every gate the inventory escalated is closed — ten owner
+rulings, S1–S10, recorded in §4 — and both programs have reconciled their
 boundaries in writing (§6 R5). One decision arrived *with* newly-assigned scope
 rather than being left open: **#1738**, wire or delete `jasper/bass_extension/`
 (§4). A fresh session executes this. **Read §6's R9 and R5 first**: the repo's
@@ -301,6 +301,8 @@ principles the consolidated code should carry forward.
     The fader is read back and proven before any audio, and a fader that cannot be
     proven refuses the capture rather than banking it — because
     `readmit_program_from_wav` admitted the program against that declared level.
+    **This is the shape ruling S10 preserves**: it refuses to CLAIM, never to WORK —
+    the stimulus still plays and the session still measures again.
 15. **MS-15 — The lane wire is a boot-time fact with zero writers.** A measurement
     session must never write `JASPER_FANIN_RING_WIRE_FORMAT` or re-render the ring
     conf.d; that key is the fleet's only rollback lever off the wide wire, and its
@@ -363,6 +365,11 @@ neither of which knows who moved the mic.
    measured against; any change to that geometry must park the box with
    `CommissionRequired`, never degrade quietly. (The reference *signal* is safe —
    the tap is downstream of CamillaDSP — so this is geometry only.)
+   **MS-7 survives ruling S10, and the reason is scope, not exception:** chip-AEC
+   geometry parking is a **clamp-class call owned by the AEC side**, which this plan
+   fences out (§0 non-goals, §1's fence line). We neither relax it nor endorse it —
+   we state that it is not ours to demote. If the other program reconsiders it under
+   S10's principle, that is their call to make on their surface.
 8. **MS-8 — A tone must fit its lease.** Anything played under a single
    un-refreshed fan-in test lease stays shorter than `mux.FANIN_TEST_LEASE_SEC`
    (60 s), or it adopts the measurement window's refresh loop instead.
@@ -636,7 +643,7 @@ lines, PERSIST 20 / 19,023.
 | 4d | Duplication 2 — entry baseline full vs digest: move the full copy to a write-once artifact. *(Landed in wave 2a if taken there.)* | S |
 | 4e | Duplication 3 — room `position_analysis` ×3: one owner, two views. Kills four-way `or` chains in readers. | M |
 | 4f | Deletions: the dump-ring **sidecar** as a second capture record (its four unique blocks move into block 4; the ring keeps its WAVs) · `prediction.json` · the round-root `candidate.json` · the 72-point `fr_curve` third copy · the five dead commissioning publishers and their typed schemas · `CalibrationCurve.phase_deg` (delete or apply — "parsed, stored, reloaded, migrated, never applied" is a decision, not a pending task). | 24 orphan sites |
-| 4g | **The commissioning lane is being REPAIRED, not abandoned** — the owner settled #2202 as *fix*, so this is now the **producer path, not the deletion path.** `commissioning_capture_producer.SummedCaptureProducer` is a confirmed runtime orphan: nothing instantiates it, so `verification.json` and `commissioning-eligibility-receipt.json` are never produced and `read_commissioning_room_authority` always answers `active_commissioning_receipt_unavailable`. Wire a real producer as part of the #2202 fix, and correct `docs/HANDOFF-audio-measurement-core.md`, which still describes the module as live. **The free −2,089-line deletion this plan previously booked is withdrawn** — see §5's net-lines table and §6. | **+producer, −0** |
+| 4g | **The commissioning lane is being REPAIRED, not abandoned** — the owner settled #2202 as *fix*, so this is now the **producer path, not the deletion path.** `commissioning_capture_producer.SummedCaptureProducer` is a confirmed runtime orphan: nothing instantiates it, so `verification.json` and `commissioning-eligibility-receipt.json` are never produced and `read_commissioning_room_authority` always answers `active_commissioning_receipt_unavailable`. Wire a real producer as part of the #2202 fix, and correct `docs/HANDOFF-audio-measurement-core.md`, which still describes the module as live. **The free −2,089-line deletion this plan previously booked is withdrawn** — see §5's net-lines table and §6. **The design question §6 R8 raised now has its answer shape, from ruling S10: the eligibility receipt RECORDS what was proven; it never FORBIDS.** Build the #2202 fix and the producer to that shape — a receipt that cannot be produced must leave the lane working and say so loudly, not close it. | **+producer, −0** |
 | 4h | **Fix, do not unify, the two inverse orphans.** `runs/{run_id}/complete.json` (six production readers, writer callable only from three tests) and post-apply `repeat-{ordinal:04d}.json` (**no writer anywhere, tests included**). A reader whose writer does not exist stays broken whatever the record shape becomes. Warning that travels: if anyone re-arms a `protected → measured` transition without restoring a `complete.json` writer, `commissioning_host.status()` starts raising on every poll. | 2 |
 | 4i | Give the room stack its reader. It banks the richest per-frequency curves in the tree (`analysis/{stem}_response.json`) and nothing opens them; `recompute_bundle_summary` re-derives the whole chain from raw WAVs. | free |
 | 4j | **The little measurement database** (owner-added, 2026-08-25). A **small SQLite index over the banked record files**: session id · kind (`baseline` / `candidate` / `verify`) · position · candidate id · timestamp · record path. Nothing else. House precedent to copy: [`jasper/wake_events.py`](jasper/wake_events.py) — SQLite rows over banked WAVs, already shipped and already the pattern this repo trusts. | small |
@@ -885,8 +892,8 @@ coexistence window; the old swap machinery dies whole.
 
 | PR | What | Counted |
 |---|---|---|
-| 7a0 | **Rewrite the doctrine's §1 loop AND its §2 motto into plain words.** The six-step loop (Measure · Propose · Run · Collect · Recommend · Confirm) becomes the owner's cycle: **measure → analyze → recommend → loop → save.** And §2's authority model stops speaking in slogan: *"predictions propose, measurements dispose"* → **the LLM recommends; the measurement decides.** The sense survives exactly; the jargon dies. Per the owner: *"what does that mean? …That is a stupid thing, but let's turn it to recommend and keep it simple language that anyone would understand."* Then sweep the tree for the retired step names and the retired motto used as going-forward language — AGENTS.md's doctrine pointer, the prescriber CLI's prose, `docs/measurement-loop-doctrine.md`'s own §2/§3, and any module or constant that took its name from a step. Per `00 §R4` this is a **deletion from an enumerated set**, the class the sweeps are structurally blind to, so sweep by subject and read the block around every edit. | rewrite |
-| 7a | **Name the integrity class** in the doctrine's §4 (or a new §4a — the doctrine's numbering, not this plan's), with the "would measuring again fix it?" test quoted from the #2087 ruling, its six sub-kinds, and its three rules. **Name the STOP-RELAXER pattern** — three implementations already, and it is the obvious shape for #2935's fix. | ADD |
+| 7a0 | **Rewrite the doctrine's §1 loop AND its §2 motto into plain words.** The six-step loop (Measure · Propose · Run · Collect · Recommend · Confirm) becomes the owner's cycle: **measure → analyze → recommend → loop → save.** And §2's authority model stops speaking in slogan: *"predictions propose, measurements dispose"* → **the LLM recommends; the measurement decides.** The sense survives exactly; the jargon dies. Per the owner: *"what does that mean? …That is a stupid thing, but let's turn it to recommend and keep it simple language that anyone would understand."* Then sweep the tree for the retired step names and the retired motto used as going-forward language — AGENTS.md's doctrine pointer, the prescriber CLI's prose, `docs/measurement-loop-doctrine.md`'s own §2/§3, and any module or constant that took its name from a step. Per `00 §R4` this is a **deletion from an enumerated set**, the class the sweeps are structurally blind to, so sweep by subject and read the block around every edit. **And write ruling S10 into the doctrine as measurement-zone law:** outside the §4 clamps, an unproven or stale fact **discloses loudly and never stops the work**. One sentence each way against drift: the doctrine says *the repo-wide form of this rule lives in the governance charter*, and the charter says *the measurement zone's form lives in the doctrine*. Neither restates the other's scope — that is the charter's own Docs default, applied to the one principle both files need. | rewrite |
+| 7a | **Name the integrity class** in the doctrine's §4 (or a new §4a — the doctrine's numbering, not this plan's), with the "would measuring again fix it?" test quoted from the #2087 ruling, its six sub-kinds, and its three rules. **Name the STOP-RELAXER pattern** — three implementations already, and it is how a mostly-right stop gets narrowed. *(It is no longer #2935's fix: a relaxer lets a block THROUGH, and ruling S10 DELETES that block outright — see 7j. The pattern still earns its name on its own three implementations.)* **Carry S10 itself** as measurement-zone law: outside the clamps, an unproven or stale fact discloses loudly and never stops the work. | ADD |
 | 7b | **Delete the deviation table** (9 rows, 8 closed, 1 retained), keeping row (e) `BOOST_ROUTE_UNAVAILABLE` inline as the one live retention — and close `04`'s risk by the other route: **make §4's closed clamp list positively complete**. A reader who can read "here are the 5 clamps and their ~112 enforcement families" never needs a list of what stopped being one. **Settled by S9 — no gate; execute it.** Row (e) `BOOST_ROUTE_UNAVAILABLE` survives inline as a normal ruling sentence, not a table row. | doctrine 255 → ≈150 |
 | 7c | Demote the 4 nanny survivors: N1 `ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6` (confidence branch only), N2 `REASON_VERIFY_DETERMINISTIC_MISMATCH` (terminality only — "the clearest §3 violation in the tree"), N3 `INSUFFICIENT_POSITIONAL_EVIDENCE` + `BOOST_DIP_NOT_STABLE`, N4 `BOOST_IN_CROSSOVER_OVERLAP`. | 4 / 5 slugs |
 | 7d | Two doctrine edits `04` raises that this plan adopts: state **which registry codes can take a graph off the speaker** (`TEMPLATE_HARD_STOP`'s "0 retries" collides with §4's "hard stop" in the same file), and say whether a published **slope** is inside §4. | ADD |
@@ -894,6 +901,7 @@ coexistence window; the old swap machinery dies whole.
 | 7f | The mechanical doc cuts: two HANDOFF hybrids lose their appendices (**−8,043, zero information lost**); the five-file linearization plan family collapses to one archived decision record (**−4,527, −5 files, −5 doc-map rows**); six already-`Status: historical` docs move. Fence `docs/research/`, `bass-extension-waves/`, `correction-ux-wave3/` (78 files / 19,460 lines) off the maintenance rules — they are primary sources and are *supposed* to be frozen. | −12,570 |
 | 7g | **Move `docs/calibration-agent/` (12 files / 1,356 lines) out of `docs/` entirely.** It is runtime product input, resolved at run time from three search roots by `calibration_agent/tools.py`. Its residence in `docs/` is what forces every doc rule to make an exception for it. `07` calls this the single highest-leverage item in its section — and it is a code change, not a doc change. | code |
 | 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE — DONE (§6 R9b).** The governance-reset branch already deleted `test_agents_md_toc.py` (108) and `test_doc_staleness_sweep_20260604.py` (167) — **275 lines banked**, so this row is **−6,561**, not −6,836. It did **NOT** touch `test_lint_contracts.py`, `test_docs_handoff_freshness.py`, or `test_crossover_v2_measurement_doc_pins.py`; all three remain ours to delete. *(One clause for the executing session: `07`'s 22-test guard slice was the tuning slice, and the ToC test was not separately enumerated in it — confirm the 108 sits inside the 7,436 before booking the full 275.)* | **−6,561** |
+| 7j | **Demote the #2935 topology-staleness block** (ruling S10's worked example, and this program paid for it TWICE this week). Today, entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`, the box goes `blocked` / `active_baseline_topology_changed`, and **a v2 measure session refuses to open** even though the edit provably does not affect the compiled graph for that role. After this: **playback continues on the applied graph, measuring continues**, and the fact surfaces as **one loud `event=` plus a doctor line** — *"topology changed since the applied baseline; re-mint when convenient."* **The narrow carve, and it is the only one:** a **DECLARED-CAP change that makes the currently-applied graph exceed the new limit** is clamp territory and may gate. **Metadata never does.** | a block becomes a disclosure |
 
 **Wave 7i is DROPPED, and the reason is self-demonstrating.** It proposed adding
 `07`'s rule to AGENTS.md — *a doc may state a fact once; if a second doc needs it,
@@ -997,20 +1005,21 @@ fresh session does not re-litigate them.
 | **S7** | **Deletion aggressiveness: the unit is the TEST FUNCTION, not the file.** *(Source: the audit agent's consult, 2026-08-25, via the owner.)* | This **supersedes the file-grained question** that stood here as gate G3 — `10`'s A–E classes are a map, not a verdict, and a mixed file is the normal case. **Default-aggressive is licensed for dying happy-path choreography ONLY**, with three exceptions that are class B in costume: FAILURE-BRANCH pins (the proving ground exercises none of them), DEADNESS-ENFORCING tests (die in the same PR as their subject, never before), and CROSS-PROCESS / cross-language pins (grep the subject's literals repo-wide first). The mechanical triage pass, the never-window-sample rule, and the deletion checklist are operational and live in **§3, "The deletion rules"**, because they bind every deleting wave — not just wave 8. Two consequences priced elsewhere: the docstring residual drops to **~15–20K** (S7's deletions take their docstrings for free, which also **retires this plan's double-count caveat**), and the invariant→pin table becomes **wave 0 PR 0d**. |
 | **S8** | **"Level-matched" means matched ACOUSTIC OUTPUT THROUGH THE HANDOVER REGION.** *(Source: owner-commissioned prior-art research, 2026-08-25.)* | After the target filters are applied, the two driver traces are **equal at Fc and each sits −6 dB against the summed target** — the Linkwitz-Riley unity condition; Rane/Bohn's *"amplitude response of each is −6 dB at crossover"*; McCarthy's equal-level acoustic-crossover definition. **Passband-average sensitivity is NOT the level fact.** It is the *starting estimate* that sizes the horn's fixed attenuation, and on a horn with a sloped response the two conventions **legitimately disagree by many dB**. Consequences: `solve_branch_trims` (linear-frequency power mean over mirrored ±1-octave halves about Fc) **is** the consensus statistic and becomes the level fact; `driver_core_level_db` is demoted, kept, and its delta disclosed — the research's own instruction being to *"surface this discrepancy to the user rather than hiding it."* **This explains the 8.6 dB dispute rather than fixing it:** the two owner comments two rounds apart that pointed opposite ways on the same numeric pair were each right about a different quantity, and `05`'s "defect 1" was never a defect in either estimator — it was a comparator asking a question neither one answered. Implemented as wave 4k; the campaign instrument it unlocks is in §5. |
 | **S9** | **The doctrine deviation table: DELETED.** Owner, verbatim: *"delete it."* | The nine-row table goes. **§4's clamp list becomes positively complete** — that is the substitute, and it is the part that must actually get written: a reader who can read the 5 clamps and their ~112 enforcement families never needs a list of what stopped being one. Row (e) `BOOST_ROUTE_UNAVAILABLE` **survives inline as a normal ruling sentence**, not as a table row — it is a live retention, so it reads as doctrine, not as archaeology. The demotion *record* lives in git history. `04`'s counter-proposal (add rows j, k, l and the camilla slope arm) is answered rather than overruled: those four demotions are real and already landed, and a positively-complete clamp list makes them unnecessary to track. **Wave 7b's gate is clear.** |
+| **S10** | **Attestation never gates OPERATION — only the clamps do.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"things should just keep working as we are. And if something I did upstream breaks it, then we should just loudly complain… there should be a clear issue in the doctor… we shouldn't stop stuff from working because it hasn't been proven yet… when someone else downloads the software and they have that hardware that I've already tested… they shouldn't have to recommission it. It should just work."* Three consequences. **(1) Last-known-good keeps working.** Staleness and unproven-ness become a **LOUD disclosure** — a doctor line, an `event=`, a UI hint — **never a stop.** **(2) Proof travels with the PROJECT, not the box.** Hardware the project has commissioned once ships as known-good; per-box re-proving is reserved for genuinely novel hardware, and even there it **discloses and degrades** rather than parks, wherever the clamps permit. **(3) The distinction this plan already drew becomes law: refusing to WORK dies; refusing to CLAIM stays.** The integrity class banks nothing it cannot prove — and never stops the speaker playing or the session measuring again. **MS-14 is the canonical survivor**: a fader that cannot be proven refuses to BANK the capture; it does not refuse to play the stimulus, and it does not refuse to try again. Outside the §4 clamps, that is the only shape a refusal may take. |
 
 ### Still open — none
 
 **No open gates. The plan is final.**
 
 Every decision the inventory escalated has been answered by the owner on
-2026-08-25 and recorded as S1–S9 above. Nothing in this plan waits on a ruling;
+2026-08-25 and recorded as S1–S10 above. Nothing in this plan waits on a ruling;
 what remains is execution, and the evidence still owed is named in §6 rather than
 left as a decision in disguise — the no-pop check, the #2202 scoping hour, and
 the class-B verification pass are measurements to take, not questions to ask.
 
 ### One decision arrived WITH new scope — and it is not a reopened gate
 
-Said plainly, because the heading above must stay true. S1–S9 settled **this
+Said plainly, because the heading above must stay true. S1–S10 settled **this
 plan's shape**, and none of them reopens. But the audit-program reconciliation
 (2026-08-25) **assigned this plan a package it did not previously own**, and that
 package came with its own owner decision attached:
@@ -1031,6 +1040,11 @@ Detail sits beside wave 4.
 ## 5. Acceptance, counted
 
 The plan is DONE when every row below reads true.
+
+*One distinction, because ruling S10 makes it easy to blur:* **these are development
+gates on merging a wave, not runtime gates on the speaker.** S10 governs what the
+product does when a fact is unproven — it keeps working and complains loudly. It says
+nothing about whether *we* merge a wave before its evidence lands, and we do not.
 
 | # | Criterion | From | To |
 |---|---|---|---|
@@ -1158,7 +1172,8 @@ is **a new place where a format and a period get declared**, and a commissioned
 `K` is valid only for the exact geometry it was measured against. If the session
 graph's declared geometry differs from the applied graph's, **every commissioned
 chip-AEC box parks with `CommissionRequired`.** Check once, before wave 6's
-design freezes (MS-7).
+design freezes (MS-7). That park is the AEC side's clamp-class call and stays —
+**ruling S10 does not reach across the fence to demote it** (MS-7's note).
 
 **R4 — The #2935 staleness trap is live on jts3, and there is one wrong way to
 clear it.** The box is `blocked` / `active_baseline_topology_changed` because
@@ -1170,6 +1185,12 @@ re-minting and applying a MEASURED baseline — never by applying the bare
 correction, tweeter linearization, and level trim. **Carry this warning into the
 acceptance run's prompt** — it is exactly the shortcut a fresh session takes to
 unblock itself.
+
+**R4 has an expiry date, and it is wave 7j.** Ruling S10 deletes this block rather
+than relaxing it: once 7j lands, a rotated topology fingerprint discloses instead of
+blocking, and **this whole trap class dies** — there is no longer a state a fresh
+session needs to "unblock itself" out of. **Until 7j lands the warning above stands in
+full**, because the trap is live on jts3 today and the acceptance run predates the fix.
 
 **R5 — Coordination with the audit program: ACKNOWLEDGED, with terms.** The
 double-lock this section used to demand has cleared. Both programs have now
