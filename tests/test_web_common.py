@@ -753,6 +753,9 @@ def test_canonical_banner_escapes_message():
     ("a" * 32 + "-_", True),   # 34 chars, alphabet ok, length ok
     ("a" * 32 + "%!", False),  # 34 chars, alphabet invalid
     ("-_" * 16, True),         # all-alphabet
+    ("é" * 32, False),         # Unicode-alnum but non-ASCII: compare_digest
+                               # raises TypeError on it, so it must never
+                               # reach the compare
 ])
 def test_is_valid_token_shape(value, expected):
     assert _common._is_valid_token(value) is expected
