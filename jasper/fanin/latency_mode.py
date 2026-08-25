@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -144,7 +145,7 @@ def _usb_session_active(resampler: dict[str, Any], host_clock: dict[str, Any]) -
     return ladder == "probing" and probe.get("waiting_for_lock") is True
 
 
-def applied_mode_from_resampler(resampler: dict[str, Any]) -> str | None:
+def applied_mode_from_resampler(resampler: Mapping[str, Any]) -> str | None:
     decay = _mapping(resampler.get("decay"))
     enabled = decay.get("enabled")
     if enabled is False:

@@ -255,6 +255,9 @@ def test_usb_runtime_preset_outranks_stale_route_label() -> None:
         "Recovery buffer active · 53.3 ms input buffer"
     )
     assert health["latency"]["status"] == "warn"
+    assert health["current_stream"]["latency"]["summary"].endswith(
+        "ms · latency adjusting"
+    )
 
 
 def test_stale_artifact_is_technical_evidence_not_a_household_warning() -> None:

@@ -1526,13 +1526,24 @@ def _receiver_latency(
     if dac_delay is not None:
         components.append(("DAC presentation queue", float(dac_delay)))
 
-    mode = str(_mapping(timing.get("runtime")).get("raw_mode") or "")
-    mode_label = {
-        "l0_locked": "low latency stable",
-        "l1_warn": "clock adjusting",
-        "l2_fallback": "stable fallback",
-        "probing": "timing check in progress",
-    }.get(mode)
+    runtime = _mapping(timing.get("runtime"))
+    mode = str(runtime.get("raw_mode") or "")
+    preset = str(runtime.get("preset") or "")
+    held_frames = _as_int(runtime.get("held_target_frames"))
+    floor_frames = _as_int(runtime.get("floor_frames"))
+    if mode == "l2_fallback":
+        mode_label = "stable fallback"
+    elif mode == "probing":
+        mode_label = "timing check in progress"
+    elif mode == "l1_warn":
+        mode_label = "clock adjusting"
+    elif held_frames > floor_frames > 0:
+        mode_label = "latency adjusting"
+    elif mode == "l0_locked":
+        label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
+        mode_label = f"{label} latency stable"
+    else:
+        mode_label = None
     details = [
         _detail(label, f"{value:.1f} ms")
         for label, value in components
