@@ -177,7 +177,7 @@ already open)**
       named park with `event=` logs; fix forward then.
 - [ ] GATES: tuning program's explicit ack (ring = its measurement
       transport) + the 5-case stereo tap re-run after the fanin diff.
-- [ ] File the composite-on-ring tracked issue.
+- [x] File the composite-on-ring tracked issue — #2982.
 
 **Wave 7 — proven once, disclose on change ([ADR-0101](adr/0101-proven-once-disclose-on-change.md))**
 - [ ] Recommission-gate demotion sweep (this campaign's zone: voice / mic /
