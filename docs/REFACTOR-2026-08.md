@@ -81,7 +81,7 @@ ack, never silence.
       assertion that names the version list. Campaign speed measure,
       owner-directed; restoring the full matrix afterward is an owner call
       (record either way via ADR).
-- [ ] BRINGUP.md Phase 5 rewrite: profile-first AEC flow, `jasper-aec-commission`,
+- [x] BRINGUP.md Phase 5 rewrite: profile-first AEC flow, `jasper-aec-commission`,
       replace both config-truncating `tee` recipes (BLOCKER; validate on a Pi)
 - [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
 - [ ] `User=` + hardening for jasper-correction-web / -bluetooth-web /
