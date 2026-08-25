@@ -86,7 +86,7 @@ ack, never silence.
       code-verified from the cloud lane — the Pi walk is still owed: run
       Phase 5 on the next spare-Pi commission, never jts3)
 - [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
-- [ ] `User=` + hardening for jasper-correction-web / -bluetooth-web /
+- [x] `User=` + hardening for jasper-correction-web / -bluetooth-web /
       -system-web units
 - [ ] `/wake-corpus/`: call `guard_mutating_host` inside `_check_csrf`
 - [ ] Delete the phantom `acquire_lock` knob through `dsp_apply.py` (13 signatures)

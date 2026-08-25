@@ -19,6 +19,7 @@ CI has no root and no `jasper` group, so `getent`/`chgrp` are stubbed; the real
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,20 @@ LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
 # for real.
 _STUBS = r"""
 getent() { printf 'jasper:x:%s:\n' "$(id -g)"; }
+chgrp() { :; }
+"""
+
+# Same stubs plus a `getent passwd jasper-web` that resolves to the test user,
+# so the owner-moving `w:` specs actually chown (a non-root process may chown a
+# file it already owns to itself, which is enough to exercise the path).
+_STUBS_WITH_WEB_USER = r"""
+getent() {
+    if [ "$1" = "passwd" ]; then
+        printf 'jasper-web:x:%s:%s:::\n' "$(id -u)" "$(id -g)"
+    else
+        printf 'jasper:x:%s:\n' "$(id -g)"
+    fi
+}
 chgrp() { :; }
 """
 
@@ -45,10 +60,10 @@ def _extract(name: str) -> str:
     return out
 
 
-def _run_heal(state_dir: Path) -> None:
+def _run_heal(state_dir: Path, *, stubs: str = _STUBS) -> None:
     script = (
         "set -euo pipefail\n"
-        + _STUBS
+        + stubs
         + _extract("heal_shared_state_modes")
         + f'\nSTATE_DIR="{state_dir}"\nheal_shared_state_modes\n'
     )
@@ -114,6 +129,41 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
     assert _mode(tmp_path / "wake-events") & 0o070 == 0o070
 
 
+def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
+    """jasper-{bluetooth,correction}-web dropped from root to jasper-web, so the
+    state their root incarnation created must move with them: readable for the
+    files a writer atomically replaces, and OWNED for the SQLite ledger it
+    modifies in place ("attempt to write a readonly database" otherwise)."""
+    roles = _mk(tmp_path / "bt_roles.json", 0o600)
+    measurements = _mk(tmp_path / "active_speaker_measurements.json", 0o600)
+    tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
+    # A capture tree the root /correction/ arms made with a bare mkdir under
+    # UMask=0077 — 0700, which the dropped writer cannot even traverse.
+    captures = tmp_path / "active_speaker_captures"
+    captures.mkdir(mode=0o700)
+
+    _run_heal(tmp_path, stubs=_STUBS_WITH_WEB_USER)
+
+    # RoleStore.set() loads before it writes: an unreadable map republishes an
+    # empty one and forgets every paired device's handler.
+    assert _mode(roles) == 0o640
+    assert _mode(measurements) == 0o640
+    assert _mode(tuning_db) == 0o644
+    assert tuning_db.stat().st_uid == os.getuid()  # the stubbed jasper-web uid
+    # setgid so anything measured into it keeps inheriting group `jasper`.
+    assert captures.stat().st_mode & 0o7777 == 0o2770
+
+
+def test_heal_leaves_owner_alone_when_the_web_user_does_not_exist(tmp_path):
+    """Fresh install, before create_jasper_service_users: no uid to move to, so
+    the pass must degrade to a group/mode heal instead of failing the install."""
+    tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
+
+    _run_heal(tmp_path)  # stubs resolve no `jasper-web` passwd entry
+
+    assert _mode(tuning_db) == 0o644
+
+
 def test_heal_never_touches_the_wifi_psk(tmp_path):
     """The PSK stash (wifi_guardian.env, 0600) must stay root-only — the heal is
     an allowlist precisely so a blanket chmod cannot leak it to the group."""
@@ -161,8 +211,6 @@ def test_heal_refuses_all_source_intent_symlinks_without_mutating_target(tmp_pat
 
 
 def test_heal_refuses_source_intent_fifo_without_blocking(tmp_path):
-    import os
-
     os.mkfifo(tmp_path / "source_intent.env")
     script = (
         "set -euo pipefail\n"

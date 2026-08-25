@@ -4,9 +4,11 @@
 
 """jasper-doctor checks — privilege-separation read access.
 
-WS1 dropped jasper-control/-web/-chat-web/-mux/-voice/-input/-wiim-remote-mic
-to non-root; the USB mic relay likewise runs under its own non-secret-bearing
-``jasper-usbmic`` identity (all use primary group ``jasper``). A config or
+WS1 dropped jasper-control/-mux/-voice/-input/-wiim-remote-mic and the whole
+nginx-fronted wizard family (-web/-chat-web/-correction-web/-bluetooth-web/
+-system-web, which share one ``jasper-web`` account) to non-root; the USB mic
+relay likewise runs under its own non-secret-bearing ``jasper-usbmic``
+identity (all use primary group ``jasper``). A config or
 state file written ``0600`` root-only is then **unreadable** by the owning
 daemon — and because every one of these reads is fail-soft (a caught
 ``OSError`` mapped to a benign default), a permission failure looks *identical*
@@ -194,6 +196,59 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # without restarting jasper-voice or jasper-chat-web.
             "/var/lib/jasper/conversation_history.env",
             "/var/lib/jasper/conversation_history.db",
+        ),
+    ),
+    DaemonReadSpec(
+        unit="jasper-correction-web",
+        unit_file="deploy/jasper-correction-web.service",
+        user="jasper-web",
+        group="jasper",
+        supplementary_groups=("audio", "jts-ring"),
+        paths=(
+            # The graphs /correction/ validates, applies, and rolls back.
+            "/var/lib/camilladsp/configs/*.yml",
+            # Written by whichever commissioning arm measured first — /sound/
+            # as jasper-web, or this unit. The root era could read either;
+            # after the drop an unreadable one reads as "no measurements" and
+            # silently discards the household's captures.
+            "/var/lib/jasper/active_speaker_measurements.json",
+            "/var/lib/jasper/active_speaker_design_draft.json",
+            "/var/lib/jasper/active_speaker_crossover_preview.json",
+            # The tuning surface reads the provider file fresh for its spend
+            # settings and sums BOTH ledgers for the household cap, so an
+            # unreadable one under-counts spend against a paid API.
+            "/var/lib/jasper/voice_provider.env",
+            "/var/lib/jasper/usage.db",
+            "/var/lib/jasper/usage-tuning.db",
+        ),
+    ),
+    DaemonReadSpec(
+        unit="jasper-bluetooth-web",
+        unit_file="deploy/jasper-bluetooth-web.service",
+        user="jasper-web",
+        group="jasper",
+        supplementary_groups=("bluetooth",),
+        paths=(
+            # The #901 file again, from its other reader. RoleStore.set() LOADS
+            # before it writes, so unreadable here does not degrade — it
+            # republishes an empty map and forgets every device's handler.
+            "/var/lib/jasper/bt_roles.json",
+            # The shared source-intent SSOT the Bluetooth power switch and
+            # /sources/ both drive.
+            "/var/lib/jasper/source_intent.env",
+        ),
+    ),
+    DaemonReadSpec(
+        unit="jasper-system-web",
+        unit_file="deploy/jasper-system-web.service",
+        user="jasper-web",
+        group="jasper",
+        supplementary_groups=(),
+        paths=(
+            # The dashboard writes nothing and proxies the rest to
+            # jasper-control. Its one on-disk read is the token canonical_page()
+            # embeds — and _stored_token() fails safe to gate-OFF on EACCES.
+            "/var/lib/jasper/control_token",
         ),
     ),
     DaemonReadSpec(
@@ -516,6 +571,27 @@ def check_chat_web_readable_inputs() -> CheckResult:
     """jasper-chat-web must be able to read the conversation-history settings
     and SQLite store it renders and mutates."""
     return _check_daemon("jasper-chat-web")
+
+
+@doctor_check(order=23.566, group="privsep")
+def check_correction_web_readable_inputs() -> CheckResult:
+    """jasper-correction-web must be able to read the graphs it applies, the
+    commissioning stores /sound/ shares with it, and both spend ledgers."""
+    return _check_daemon("jasper-correction-web")
+
+
+@doctor_check(order=23.567, group="privsep")
+def check_bluetooth_web_readable_inputs() -> CheckResult:
+    """jasper-bluetooth-web must be able to read the device role map (an
+    unreadable one is republished EMPTY) and the shared source intent."""
+    return _check_daemon("jasper-bluetooth-web")
+
+
+@doctor_check(order=23.568, group="privsep")
+def check_system_web_readable_inputs() -> CheckResult:
+    """jasper-system-web must be able to read the control token it embeds; the
+    reader fails safe to gate-OFF, so unreadable = the CSRF gate silently off."""
+    return _check_daemon("jasper-system-web")
 
 
 @doctor_check(order=23.57, group="privsep")

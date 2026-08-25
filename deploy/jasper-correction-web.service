@@ -22,16 +22,66 @@ ExecStart=/opt/jasper/.venv/bin/jasper-correction-web --host 127.0.0.1 --port 87
 Restart=on-failure
 RestartSec=2
 
-# Hardening — needs to read /etc/jasper/jasper.env (for JASPER_HOSTNAME)
-# and accept connections on the systemd-passed loopback fd. ProtectSystem=full
-# still leaves /var writable for correction profiles, measurement bundles,
-# and calibration files under /var/lib/{jasper,camilladsp}.
+# Runs as the SHARED wizard identity rather than a dedicated user, because
+# three of its privileged surfaces are keyed on `jasper-web` specifically and
+# a fourth is shared state:
+#   * the tuning LLM's OPENAI_API_KEY is read fresh off
+#     /var/lib/jasper-secrets/voice_keys.env, whose group `jasper-secrets` has
+#     exactly two members (jasper-voice, jasper-web) —
+#     jasper.calibration_agent.key_provisioning.
+#   * unit starts (jasper-audio-hardware-reconcile after a graph transition)
+#     go through jasper-control's restart broker, whose client list
+#     (restart_broker.BROKER_CLIENT_USERS) is closed.
+#   * the /run marker directory below is also jasper-web's RuntimeDirectory=;
+#     systemd re-chowns an ExecDirectory to the starting unit's user, so a
+#     second uid would take the 0755 directory away from the other writer.
+#   * /correction/ and /sound/ write the same active-speaker state files.
+# `audio` is /dev/snd for the correction-lane aplay children; `jts-ring` lets
+# those children create the lane's SHM ring while this box has the lane armed
+# (both already on the jasper-web account — named here for legibility, since
+# SupplementaryGroups= extends the user database rather than replacing it).
+User=jasper-web
+Group=jasper
+SupplementaryGroups=audio jts-ring
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+# ProtectSystem stays `full` (NOT strict): the tuning program's write surface
+# spans jasper.{correction,active_speaker,audio_measurement,bass_extension}
+# and is not enumerable with confidence off-hardware. The user drop is what
+# bounds writes now — every shared tree it needs is group-`jasper` writable
+# (/var/lib/jasper 0770, correction/* and camilladsp/configs setgid 2775).
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper /var/lib/camilladsp
+# Deliberately tight: correction profiles, capture bundles, and measurement
+# artifacts stay owner-only. Every file shared across daemons is published by
+# jasper.atomic_io with an explicit mode, so this governs only the private
+# set. The correction-lane aplay children override it per spawn with
+# CORRECTION_PLAY_UMASK so an armed box's ring still comes up group-writable.
 UMask=0077
+# /run is root-owned 0755, so the non-root process cannot create the
+# staged-startup hold marker's directory itself; RuntimeDirectory= creates it
+# as jasper-web:jasper. Same name/mode/preserve triple as jasper-web.service —
+# both units write jasper.active_speaker.startup_hold's marker, and
+# Preserve=yes is load-bearing because either daemon can idle out while a
+# commission hold is still in force (/run is tmpfs, so a reboot still clears
+# it, which is the property the selector's guard rung depends on).
+RuntimeDirectory=jasper-active-speaker
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# AF_UNIX: the restart broker, the mux/outputd/voice control sockets,
+# sd_notify, journald. AF_INET/AF_INET6: the loopback listener, CamillaDSP's
+# websocket, jasper-control, the capture relay, and vendor calibration fetches.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 
 [Install]
 # systemctl enable jasper-correction-web.socket

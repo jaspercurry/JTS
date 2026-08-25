@@ -44,7 +44,9 @@ ensure_state_dir() {
 # no longer own, and the voice DBs raise
 # "attempt to write a readonly database" (the 2026-06-19 incident). This
 # one-time heal fixes the EXISTING files on upgrade; UMask=0007 keeps new ones
-# correct.
+# correct. It carries the same repair for the wizard units that later dropped
+# from root to jasper-web: state their root incarnation created has to become
+# readable — and, where a writer modifies it in place, owned — by the new uid.
 #
 # Deliberately an ALLOWLIST, not a recursive chmod: a blanket `chmod -R g+w`
 # would also widen single-writer secrets that live in STATE_DIR — notably
@@ -52,7 +54,7 @@ ensure_state_dir() {
 # known group-shared, multi-writer state is touched. Fresh installs no-op (the
 # files don't exist until a daemon first creates them).
 heal_shared_state_modes() {
-    local group_line jasper_gid base sidecar
+    local group_line jasper_gid base sidecar web_uid
     group_line="$(getent group jasper 2>/dev/null || true)"
     [[ -n "${group_line}" ]] || return 0
     jasper_gid="$(printf '%s\n' "${group_line}" | awk -F: 'NR == 1 { print $3 }')"
@@ -60,6 +62,12 @@ heal_shared_state_modes() {
         echo "  ERROR: could not resolve numeric jasper group id for shared-state heal" >&2
         return 1
     fi
+    # Owner for the `w:` specs below (-1 = leave the uid alone). Absent only on
+    # a fresh install before create_jasper_service_users, where those files do
+    # not exist yet either, so the pass is a no-op.
+    web_uid="$(getent passwd jasper-web 2>/dev/null \
+        | awk -F: '$1 == "jasper-web" { print $3; exit }')"
+    [[ "${web_uid}" =~ ^[0-9]+$ ]] || web_uid="-1"
 
     # Pass the complete allowlist through one descriptor-based helper. These
     # paths live below a group-writable directory, so a root deploy must never
@@ -67,6 +75,12 @@ heal_shared_state_modes() {
     # with a symlink between the check and mutation. O_NOFOLLOW + fstat pins a
     # regular file/directory inode before fchown/fchmod. A symlink or unexpected
     # file type aborts install loudly without touching its target.
+    #
+    # Spec kinds: `f` regular file, `d` directory — both re-group only, because
+    # every writer publishes them through jasper.atomic_io (tempfile + replace),
+    # which needs write on the DIRECTORY rather than on the old inode. `w` is
+    # the exception: a file its writer modifies IN PLACE, so the OWNER has to
+    # move with the writer as well.
     local -a heal_specs=()
     for base in \
         "${STATE_DIR}/usage.db" \
@@ -96,14 +110,48 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/source_intent.env.request.lock"
         "f:0660:${STATE_DIR}/source_intent.env.reconcile.lock"
         "d:0770:${STATE_DIR}/wake-events"
+        # The three wizard units that used to run as root now run as
+        # jasper-web, so state they created root-owned has to move with them.
+        # bt_roles.json is the dangerous one: RoleStore.set() LOADS before it
+        # writes, so an unreadable map would republish an EMPTY one and forget
+        # every device's handler. The measurement state is the same shape one
+        # step milder (an unreadable file reads as "no measurements").
+        "f:0640:${STATE_DIR}/bt_roles.json"
+        "f:0640:${STATE_DIR}/active_speaker_measurements.json"
+        # The capture/sweep/tone trees the /correction/ and /sound/ commissioning
+        # arms share. Nothing creates them at install time; whichever surface
+        # measured first made them with a bare mkdir, so a box that ran
+        # /correction/ while it was root carries root:root 0700 (its UMask=0077)
+        # and the dropped writer cannot even traverse in. 2770 group `jasper`
+        # matches what install.sh gives their /var/lib/jasper/correction siblings.
+        "d:2770:${STATE_DIR}/active_speaker"
+        "d:2770:${STATE_DIR}/active_speaker/sessions"
+        "d:2770:${STATE_DIR}/active_speaker_captures"
+        "d:2770:${STATE_DIR}/active_speaker_sweeps"
+        "d:2770:${STATE_DIR}/active_speaker_stimuli"
+        "d:2770:${STATE_DIR}/active_speaker_tone_artifacts"
     )
-    /usr/bin/python3 - "${jasper_gid}" "${heal_specs[@]}" <<'PY'
+    # The tuning spend ledger is SQLite, written in place rather than
+    # replaced, so a root-owned file left by the pre-drop jasper-correction-web
+    # would raise "attempt to write a readonly database" for the new writer —
+    # the 2026-06-19 class again, and here it would silently stop the paid
+    # tuning calls counting against the household spend cap. 0644 is the mode
+    # jasper.web.correction_tuning maintains for its group-`jasper` readers.
+    for sidecar in \
+        "${STATE_DIR}/usage-tuning.db" \
+        "${STATE_DIR}/usage-tuning.db-wal" \
+        "${STATE_DIR}/usage-tuning.db-shm" \
+        "${STATE_DIR}/usage-tuning.db-journal"; do
+        heal_specs+=("w:0644:${sidecar}")
+    done
+    /usr/bin/python3 - "${jasper_gid}" "${web_uid}" "${heal_specs[@]}" <<'PY'
 import os
 import stat
 import sys
 
 gid = int(sys.argv[1])
-for spec in sys.argv[2:]:
+web_uid = int(sys.argv[2])
+for spec in sys.argv[3:]:
     kind, mode_text, path = spec.split(":", 2)
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     if kind == "d":
@@ -123,7 +171,7 @@ for spec in sys.argv[2:]:
             raise SystemExit(
                 f"ERROR: refusing unexpected shared-state file type at {path}"
             )
-        os.fchown(fd, -1, gid)
+        os.fchown(fd, web_uid if kind == "w" else -1, gid)
         os.fchmod(fd, int(mode_text, 8))
     finally:
         os.close(fd)

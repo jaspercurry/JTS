@@ -119,7 +119,12 @@ create_jasper_service_users() {
     if getent group systemd-journal >/dev/null 2>&1; then
         usermod -aG systemd-journal jasper-control 2>/dev/null || true
     fi
-    # WS1 Phase 3b-3 — jasper-web (the wizard HTTP server) drops to non-root too.
+    # WS1 Phase 3b-3 — jasper-web (the wizard HTTP servers) drops to non-root too.
+    # One account serves every nginx-fronted wizard unit — jasper-web,
+    # jasper-chat-web, jasper-correction-web, jasper-bluetooth-web,
+    # jasper-system-web — because they share state files, the /run
+    # staged-startup-hold directory, the jasper-secrets compartment the tuning
+    # LLM key lives in, and the restart broker's closed client list.
     # The /wifi/ page drives NetworkManager: its privileged restarts/reboots are
     # NOT needed, but its NM writes are granted by polkit
     # (deploy/polkit/49-jasper-web.rules), keyed on User=jasper-web. Its
@@ -198,12 +203,13 @@ create_jasper_service_users() {
         # convention that -G lists match each unit's SupplementaryGroups=.
         # The useradd -G above is skipped when the user already exists
         # (every pre-P6c-i box), hence this idempotent add — same shape as
-        # the jasper-secrets/jasper-intsecrets upgrade blocks. The other
-        # correction-lane writer identities (jasper-correction-web, the
-        # streambox variant, operator CLIs) run as root and write the 2775
-        # root-owned directory regardless — the P6b root exemption; their
-        # ring FILE mode comes from the shared spawn helper's umask, not a
-        # group.
+        # the jasper-secrets/jasper-intsecrets upgrade blocks. It covers
+        # jasper-correction-web too: that unit spawns the same aplay children
+        # under this same account. The remaining correction-lane writer
+        # identities (the streambox variant, operator CLIs) run as root and
+        # write the 2775 root-owned directory regardless — the P6b root
+        # exemption; their ring FILE mode comes from the shared spawn
+        # helper's umask, not a group.
         usermod -aG jts-ring jasper-web 2>/dev/null || true
         # #2786 — jasper-control READS one ring header: /state's grouping
         # `ring` block opens /dev/shm/jts-ring/grouping.ring O_RDONLY for its
@@ -225,7 +231,7 @@ create_jasper_service_users() {
             usermod -aG jts-ring shairport-sync 2>/dev/null || true
         fi
     fi
-    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the root correction-lane identities write rings as root)"
+    echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the remaining root correction-lane identities write rings as root)"
 
     # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
     # group-aware ensure_state_dir() (env-migrations.sh), which runs on every

@@ -23,16 +23,38 @@ ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-web --host 127.0.0.1 --port 876
 Restart=on-failure
 RestartSec=2
 
-# Run as root for unfettered org.bluez access (Adapter1.Powered et al.
-# require either being in the lp/bluetooth group or root, and we
-# already run the sibling jasper-* services as root for similar
-# reasons). The HTTP listener binds 127.0.0.1, fronted by nginx on
-# jts.local/bluetooth/. No external surface.
-ProtectSystem=full
+# Runs as the shared wizard identity, like jasper-chat-web. Each privileged
+# surface this panel drives has a non-root mechanism:
+#   * org.bluez (adapter power/discoverable, StartDiscovery, Pair/Connect/
+#     Forget, and the Agent1 pairing agent) — the `bluetooth` supplementary
+#     group. That is a D-Bus policy grant (`send_destination="org.bluez"` for
+#     the group), not polkit and not a capability; jasper-web already holds it
+#     for the /speaker BlueZ rename.
+#   * source-intent writes + the reconcile that follows — the fixed root
+#     oneshot, started through jasper-control's restart broker (manage_units).
+#     The broker only accepts the known service users, jasper-web among them.
+#   * `systemctl is-active` / `show` — read-only probes systemd allows any uid.
+# The HTTP listener binds 127.0.0.1, fronted by nginx on jts.local/bluetooth/.
+User=jasper-web
+Group=jasper
+SupplementaryGroups=bluetooth
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-# State for the {mac: handler_id} role map.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# AF_UNIX: the system D-Bus socket, the restart broker, sd_notify, journald.
+# AF_INET/AF_INET6: the systemd-passed loopback listener.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+# State for the {mac: handler_id} role map and the shared source-intent file.
 ReadWritePaths=/var/lib/jasper
 
 # Single async loop + a handful of dbus + http threads. The observer

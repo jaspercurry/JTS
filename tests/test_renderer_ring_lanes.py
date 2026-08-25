@@ -453,10 +453,11 @@ def _assert_unitless_writer_umask_facts():
       umask), so none is demanded here — and none of its OTHER duties want
       one.
     * jasper-correction-web KEEPS its deliberately tight `UMask=0077` (its
-      own correction profiles/bundles stay owner-only) while running as
-      root (no `User=`): the per-spawn umask overrides in the CHILD only,
+      own correction profiles/bundles stay owner-only) across its drop to
+      `User=jasper-web`: the per-spawn umask overrides in the CHILD only,
       which is the whole reason the umask rides the spawn rather than the
-      units.
+      units. Its ring-group half moved to
+      `_assert_unitless_writer_group_facts` when the drop landed.
     """
     from jasper.audio_measurement.correction_lane import CORRECTION_PLAY_UMASK
 
@@ -467,11 +468,6 @@ def _assert_unitless_writer_umask_facts():
         "unitless-lane design (per-spawn umask overrides it in the child); "
         "if the unit changed, re-derive the correction-lane umask story"
     )
-    assert not re.search(r"^User=", correction_web, re.M), (
-        "jasper-correction-web was root when the unitless-writer facts were "
-        "pinned; a User= drop changes its ring-group story — extend "
-        "_assert_unitless_writer_group_facts for it"
-    )
 
 
 def _assert_unitless_writer_group_facts():
@@ -481,30 +477,32 @@ def _assert_unitless_writer_group_facts():
     writes the 2775 root-owned directory regardless — the P6b root
     exemption; group membership is only required of non-root writers):
 
-    * jasper-web (non-root) — the one non-root ephemeral identity; its unit
-      must carry jts-ring so wizard-spawned aplay children can create the
-      lane's ring.
-    * jasper-correction-web and the streambox variant — root (no `User=`),
-      exempt.
+    * jasper-web and jasper-correction-web — both non-root, both spawning
+      wizard aplay children, and both running as the same `jasper-web`
+      account, so each unit must carry jts-ring.
+    * The streambox variant — root (no `User=`), exempt.
     * Root operator CLIs (aec_tune / aec_commission / doctor aec_probe) —
       root by the doctor/CLI contract and unit-less by nature, exempt the
       same way.
     """
-    web = WEB_UNIT.read_text()
-    assert re.search(
-        rf"^SupplementaryGroups=.*\b{re.escape(rl.RING_GROUP)}\b", web, re.M
-    ), (
-        "jasper-web runs non-root and its wizard-spawned aplay children "
-        f"must be able to create the correction lane's ring: {rl.RING_GROUP} "
-        "membership is required (U3/P6c-i)"
-    )
-    for root_unit in (CORRECTION_WEB_UNIT, STREAMBOX_WEB_UNIT):
-        text = root_unit.read_text()
-        assert not re.search(r"^User=", text, re.M), (
-            f"{root_unit.name} was root (P6b root exemption — no jts-ring "
-            "needed) when the unitless-writer facts were pinned; a User= "
-            "drop must add group membership and extend this pin"
+    for unit in (WEB_UNIT, CORRECTION_WEB_UNIT):
+        text = unit.read_text()
+        assert re.search(r"^User=jasper-web$", text, re.M), (
+            f"{unit.name}'s ring-group requirement below is derived from it "
+            "running non-root as jasper-web; re-derive it if the user changed"
         )
+        assert re.search(
+            rf"^SupplementaryGroups=.*\b{re.escape(rl.RING_GROUP)}\b", text, re.M
+        ), (
+            f"{unit.name} runs non-root and its wizard-spawned aplay children "
+            f"must be able to create the correction lane's ring: "
+            f"{rl.RING_GROUP} membership is required (U3/P6c-i)"
+        )
+    assert not re.search(r"^User=", STREAMBOX_WEB_UNIT.read_text(), re.M), (
+        f"{STREAMBOX_WEB_UNIT.name} was root (P6b root exemption — no "
+        "jts-ring needed) when the unitless-writer facts were pinned; a "
+        "User= drop must add group membership and extend this pin"
+    )
 
 
 def _run_conf_renderer(lane, tmp: pathlib.Path, map_text: str | None) -> str:
