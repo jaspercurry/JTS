@@ -51,8 +51,8 @@ What's missing:
 - **The deploy path itself has no pre-merge/pre-deploy coupling to
   CI.** A CI gate now exists — `.github/workflows/tests.yml` runs the
   hardware-free suite on every PR and push to `main`, and `main` is
-  branch-protected on it (see AGENTS.md "PR workflow on a fast-moving
-  `main`"). What's still missing is the *link* from that green check
+  branch-protected on its `ci` aggregate (lanes and required checks:
+  CONTRIBUTING.md). What's still missing is the *link* from that green check
   to the deploy: `deploy-to-pi.sh` rsyncs whatever is in the local
   working tree, green or not, so "works on my laptop" is still the
   only bar the deploy itself enforces. Stage 1 of the recommended
@@ -280,11 +280,11 @@ any point.
 ### Stage 1: GitHub Actions CI (no Pi side at all) — **SHIPPED**
 
 This stage landed as `.github/workflows/tests.yml` (#251,
-2026-05-23) and has since grown. What ships today (see AGENTS.md "PR
-workflow on a fast-moving `main`" for the authoritative description):
+2026-05-23) and has since grown. What ships today (CONTRIBUTING.md's
+CI-lane section is the authoritative description):
 
 - **Triggers.** Every PR and every push to `main`; `main` is
-  branch-protected on the `pytest` and `rust` checks.
+  branch-protected on the `ci` aggregate check.
 - **Jobs.**
   - `pytest` — the hardware-free merge lane (`scripts/test-merge`,
     voice_eval excluded) on py3.13, the deployed interpreter, with

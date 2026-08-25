@@ -16,7 +16,8 @@ first PR."
 
 Recommended path is [uv](https://docs.astral.sh/uv/) — it reads
 `requires-python` from `pyproject.toml` and refuses to build a venv
-on the wrong Python. (Plain `python -m venv` silently accepts
+below the 3.11 floor (prefer 3.13; uv accepts any floor-satisfying
+interpreter, so check `.venv/bin/python --version`). (Plain `python -m venv` silently accepts
 whatever python you invoked it with, which on macOS defaults to
 Apple's 3.9 — produces a broken venv that fails with confusing
 errors deep in `jasper/peering/`.)
@@ -214,9 +215,10 @@ Two operational notes:
 
 ## Code style
 
-- Python 3.13 — the deployed and sole CI-tested interpreter
-  (`requires-python` still floors at 3.11, but no CI leg verifies older
-  interpreters).
+- Python 3.13 — the deployed interpreter and the only one any CI test
+  leg runs. `requires-python` still floors at 3.11, and mypy/ruff still
+  target the 3.11 API surface (pyproject `python_version`/`target-version`),
+  but no test leg executes an older interpreter.
 - Lint with `ruff check .` and type-check with `mypy`. Do not run a
   tree-wide `ruff format` as drive-by cleanup; formatting the whole tree is a
   separate, deliberate PR.
